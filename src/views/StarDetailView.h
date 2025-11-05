@@ -3,9 +3,9 @@
 
 #include <QWidget>
 #include <memory>
+#include <QtCharts/QChartView>
 
 QT_BEGIN_NAMESPACE
-class QChartView;
 class QListWidget;
 class QTableWidget;
 class QPushButton;

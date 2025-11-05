@@ -6,6 +6,7 @@
 #include <QPushButton>
 #include <QListWidget>
 #include <QTableWidget>
+#include <QHeaderView>
 #include <QLabel>
 #include <QGroupBox>
 #include <QDesktopServices>
@@ -15,8 +16,6 @@
 #include <QtCharts/QLineSeries>
 #include <QtCharts/QChart>
 #include <QtCharts/QValueAxis>
-
-QT_CHARTS_USE_NAMESPACE
 
 StarDetailView::StarDetailView(std::shared_ptr<Star> star, QWidget *parent)
     : QWidget(parent)

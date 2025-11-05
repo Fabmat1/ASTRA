@@ -5,6 +5,7 @@
 #include <QDateTime>
 #include <vector>
 #include <memory>
+#include <map>
 
 // Single photometric measurement
 struct PhotometricPoint

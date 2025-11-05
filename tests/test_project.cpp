@@ -1,6 +1,6 @@
-#include <QTest>
-#include "models/Project.h"
-#include "models/Star.h"
+#include <QtTest/QTest>
+#include "../src/models/Project.h"
+#include "../src/models/Star.h"
 
 class TestProject : public QObject
 {
@@ -42,5 +42,5 @@ private slots:
     }
 };
 
-// QTEST_MAIN(TestProject)
-// #include "test_project.moc"
+QTEST_MAIN(TestProject)
+#include "test_project.moc"

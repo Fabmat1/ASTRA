@@ -2,6 +2,7 @@
 #define PROJECTVIEW_H
 
 #include <QWidget>
+#include <QAbstractTableModel>
 #include <memory>
 
 QT_BEGIN_NAMESPACE

@@ -1,6 +1,7 @@
 #include "Spectrum.h"
 #include <QFile>
 #include <QTextStream>
+#include <QRegularExpression>
 
 // SpectralFit implementation
 SpectralFit::SpectralFit()
@@ -84,7 +85,7 @@ bool Spectrum::loadFromFile(const QString& filepath)
             continue;
         }
 
-        QStringList parts = line.split(QRegExp("\\s+"), Qt::SkipEmptyParts);
+        QStringList parts = line.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
         if (parts.size() >= 3) {
             bool ok1, ok2, ok3;
             double wl = parts[0].toDouble(&ok1);

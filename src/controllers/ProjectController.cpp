@@ -99,7 +99,11 @@ bool ProjectController::exportToCSV(const QString& filepath)
 
     // Write headers
     auto columns = m_project->getVisibleColumns();
-    out << columns.join(",") << "\n";
+    QStringList columnList;
+    for (const auto& col : columns) {
+        columnList << col;
+    }
+    out << columnList.join(",") << "\n";
 
     // Write star data
     auto stars = m_project->getAllStars();

@@ -1,5 +1,5 @@
-#include <QTest>
-#include "models/Star.h"
+#include <QtTest/QTest>
+#include "../src/models/Star.h"
 
 class TestStar : public QObject
 {
@@ -27,5 +27,5 @@ private slots:
     }
 };
 
-// QTEST_MAIN(TestStar)
-// #include "test_star.moc"
+QTEST_MAIN(TestStar)
+#include "test_star.moc"

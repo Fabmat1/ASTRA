@@ -13,7 +13,6 @@
 #include <QHeaderView>
 #include <QMessageBox>
 #include <QFileDialog>
-#include <QAbstractTableModel>
 
 ProjectView::ProjectView(ApplicationController* controller, QWidget *parent)
     : QWidget(parent)
