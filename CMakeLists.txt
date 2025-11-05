@@ -49,24 +49,11 @@ set(HEADERS
     src/utils/DatabaseManager.h
 )
 
-# Resources
-set(RESOURCES
-    resources/resources.qrc
-)
-
 # Create executable
 qt_add_executable(ASTRA
     ${SOURCES}
     ${HEADERS}
-)
-
-# Add resources
-qt_add_resources(ASTRA "resources"
-    PREFIX "/"
-    BASE "resources"
-    FILES
-        themes/catppuccin_light.qss
-        themes/catppuccin_dark.qss
+    resources/resources.qrc
 )
 
 # Link libraries

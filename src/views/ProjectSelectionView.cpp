@@ -163,17 +163,11 @@ ProjectCard::ProjectCard(const QString& id, const QString& name,
 
     layout->addStretch();
 
-    // Style
+    // Simplified style to avoid parsing errors
     setStyleSheet(
-        "ProjectCard { "
-        "  background-color: white; "
-        "  border: 1px solid #ddd; "
-        "  border-radius: 10px; "
-        "} "
-        "ProjectCard:hover { "
-        "  border-color: #999; "
-        "  background-color: #f8f8f8; "
-        "}");
+        "background-color: white; "
+        "border: 1px solid #ddd; "
+        "border-radius: 10px;");
 }
 
 void ProjectCard::mousePressEvent(QMouseEvent* event)

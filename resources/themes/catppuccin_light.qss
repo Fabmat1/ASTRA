@@ -1,109 +1,26 @@
-/* Catppuccin Light Theme for ASTRA */
-
-/* Base colors */
+/* Catppuccin Light Theme - Simplified */
 QWidget {
     background-color: #eff1f5;
     color: #4c4f69;
-    font-family: "Segoe UI", "Ubuntu", "Helvetica Neue", sans-serif;
-    font-size: 14px;
 }
 
-/* Main window */
 QMainWindow {
     background-color: #e6e9ef;
 }
 
-/* Menu bar */
-QMenuBar {
-    background-color: #dce0e8;
-    border-bottom: 1px solid #ccd0da;
-}
-
-QMenuBar::item {
-    padding: 5px 10px;
-    background-color: transparent;
-}
-
-QMenuBar::item:selected {
-    background-color: #ccd0da;
-}
-
-QMenu {
-    background-color: #eff1f5;
-    border: 1px solid #ccd0da;
-}
-
-QMenu::item {
-    padding: 5px 20px;
-}
-
-QMenu::item:selected {
-    background-color: #dce0e8;
-}
-
-/* Tables */
-QTableView {
-    background-color: #ffffff;
-    alternate-background-color: #f4f4f9;
-    selection-background-color: #8caaee;
-    selection-color: #ffffff;
-    gridline-color: #dce0e8;
-}
-
-QHeaderView::section {
-    background-color: #e6e9ef;
-    padding: 5px;
-    border: 1px solid #ccd0da;
-}
-
-/* Buttons */
 QPushButton {
     background-color: #8caaee;
-    color: #ffffff;
-    border: none;
-    border-radius: 4px;
-    padding: 6px 12px;
-    min-width: 80px;
+    color: white;
+    border: 1px solid #8caaee;
+    padding: 5px 10px;
+    border-radius: 3px;
 }
 
-QPushButton:hover {
-    background-color: #7a9edd;
+QTableView {
+    background-color: white;
+    selection-background-color: #8caaee;
 }
 
-QPushButton:pressed {
-    background-color: #6988cc;
-}
-
-/* Project cards */
-ProjectCard {
-    background-color: #ffffff;
-    border: 1px solid #dce0e8;
-    border-radius: 8px;
-}
-
-ProjectCard:hover {
-    border: 2px solid #8caaee;
-}
-
-/* Status bar */
-QStatusBar {
-    background-color: #e6e9ef;
-    border-top: 1px solid #ccd0da;
-}
-
-/* Scroll bars */
-QScrollBar:vertical {
-    background-color: #e6e9ef;
-    width: 12px;
-    border-radius: 6px;
-}
-
-QScrollBar::handle:vertical {
-    background-color: #acb0be;
-    border-radius: 6px;
-    min-height: 20px;
-}
-
-QScrollBar::handle:vertical:hover {
-    background-color: #9ca0b0;
+QMenuBar {
+    background-color: #dce0e8;
 }

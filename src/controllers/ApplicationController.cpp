@@ -7,10 +7,12 @@
 ApplicationController::ApplicationController(QObject *parent)
     : QObject(parent)
     , m_isDarkTheme(false)
+    , m_currentProject(nullptr)
 {
     m_databaseManager = std::make_unique<DatabaseManager>();
     loadProjects();
-    applyTheme();
+    // Temporarily disable theme loading to avoid stylesheet errors
+    // applyTheme();
 }
 
 ApplicationController::~ApplicationController()
@@ -82,6 +84,15 @@ void ApplicationController::loadProjects()
 
 void ApplicationController::applyTheme()
 {
+    // Temporarily simplified to avoid stylesheet parse errors
+    QString simpleStyle = m_isDarkTheme
+        ? "QWidget { background-color: #1e1e2e; color: #cdd6f4; }"
+        : "QWidget { background-color: #eff1f5; color: #4c4f69; }";
+
+    qApp->setStyleSheet(simpleStyle);
+
+    // Original resource-based loading (commented out for now)
+    /*
     QString themePath = m_isDarkTheme
         ? ":/themes/catppuccin_dark.qss"
         : ":/themes/catppuccin_light.qss";
@@ -92,4 +103,5 @@ void ApplicationController::applyTheme()
         qApp->setStyleSheet(styleSheet);
         themeFile.close();
     }
+    */
 }
