@@ -1,0 +1,111 @@
+#include "Spectrum.h"
+#include <QFile>
+#include <QTextStream>
+
+// SpectralFit implementation
+SpectralFit::SpectralFit()
+    : isBestFit(false)
+    , teff(0.0)
+    , teffError(0.0)
+    , logg(0.0)
+    , loggError(0.0)
+    , he(0.0)
+    , heError(0.0)
+    , vsini(0.0)
+    , vsiniError(0.0)
+    , radialVelocity(0.0)
+    , radialVelocityError(0.0)
+{
+    creationDate = QDateTime::currentDateTime();
+}
+
+// Spectrum implementation
+Spectrum::Spectrum()
+    : m_mjd(0.0)
+    , m_bjd(0.0)
+    , m_exposureTime(0.0)
+{
+}
+
+Spectrum::~Spectrum()
+{
+}
+
+void Spectrum::setData(const std::vector<double>& wavelengths,
+                      const std::vector<double>& fluxes,
+                      const std::vector<double>& errors)
+{
+    m_wavelengths = wavelengths;
+    m_fluxes = fluxes;
+    m_fluxErrors = errors;
+}
+
+void Spectrum::addSpectralFit(std::shared_ptr<SpectralFit> fit)
+{
+    // If this is set as best fit, unset others
+    if (fit->isBestFit) {
+        for (auto& existing : m_spectralFits) {
+            existing->isBestFit = false;
+        }
+    }
+    m_spectralFits.push_back(fit);
+}
+
+std::vector<std::shared_ptr<SpectralFit>> Spectrum::getSpectralFits() const
+{
+    return m_spectralFits;
+}
+
+std::shared_ptr<SpectralFit> Spectrum::getBestFit() const
+{
+    for (const auto& fit : m_spectralFits) {
+        if (fit->isBestFit) {
+            return fit;
+        }
+    }
+    return nullptr;
+}
+
+bool Spectrum::loadFromFile(const QString& filepath)
+{
+    QFile file(filepath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        return false;
+    }
+
+    std::vector<double> wavelengths;
+    std::vector<double> fluxes;
+    std::vector<double> errors;
+
+    QTextStream in(&file);
+    while (!in.atEnd()) {
+        QString line = in.readLine();
+        if (line.trimmed().isEmpty() || line.startsWith("#")) {
+            continue;
+        }
+
+        QStringList parts = line.split(QRegExp("\\s+"), Qt::SkipEmptyParts);
+        if (parts.size() >= 3) {
+            bool ok1, ok2, ok3;
+            double wl = parts[0].toDouble(&ok1);
+            double flux = parts[1].toDouble(&ok2);
+            double err = parts[2].toDouble(&ok3);
+
+            if (ok1 && ok2 && ok3) {
+                wavelengths.push_back(wl);
+                fluxes.push_back(flux);
+                errors.push_back(err);
+            }
+        }
+    }
+
+    file.close();
+
+    if (!wavelengths.empty()) {
+        setData(wavelengths, fluxes, errors);
+        m_file = filepath;
+        return true;
+    }
+
+    return false;
+}

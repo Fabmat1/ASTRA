@@ -1,0 +1,7 @@
+<!DOCTYPE RCC>
+<RCC version="1.0">
+    <qresource prefix="/">
+        <file>themes/catppuccin_light.qss</file>
+        <file>themes/catppuccin_dark.qss</file>
+    </qresource>
+</RCC>

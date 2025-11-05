@@ -1,0 +1,109 @@
+/* Catppuccin Dark (Mocha) Theme for ASTRA */
+
+/* Base colors */
+QWidget {
+    background-color: #1e1e2e;
+    color: #cdd6f4;
+    font-family: "Segoe UI", "Ubuntu", "Helvetica Neue", sans-serif;
+    font-size: 14px;
+}
+
+/* Main window */
+QMainWindow {
+    background-color: #181825;
+}
+
+/* Menu bar */
+QMenuBar {
+    background-color: #11111b;
+    border-bottom: 1px solid #313244;
+}
+
+QMenuBar::item {
+    padding: 5px 10px;
+    background-color: transparent;
+}
+
+QMenuBar::item:selected {
+    background-color: #313244;
+}
+
+QMenu {
+    background-color: #1e1e2e;
+    border: 1px solid #313244;
+}
+
+QMenu::item {
+    padding: 5px 20px;
+}
+
+QMenu::item:selected {
+    background-color: #313244;
+}
+
+/* Tables */
+QTableView {
+    background-color: #11111b;
+    alternate-background-color: #181825;
+    selection-background-color: #89b4fa;
+    selection-color: #11111b;
+    gridline-color: #313244;
+}
+
+QHeaderView::section {
+    background-color: #181825;
+    padding: 5px;
+    border: 1px solid #313244;
+}
+
+/* Buttons */
+QPushButton {
+    background-color: #89b4fa;
+    color: #11111b;
+    border: none;
+    border-radius: 4px;
+    padding: 6px 12px;
+    min-width: 80px;
+}
+
+QPushButton:hover {
+    background-color: #74a7f7;
+}
+
+QPushButton:pressed {
+    background-color: #5f9af4;
+}
+
+/* Project cards */
+ProjectCard {
+    background-color: #181825;
+    border: 1px solid #313244;
+    border-radius: 8px;
+}
+
+ProjectCard:hover {
+    border: 2px solid #89b4fa;
+}
+
+/* Status bar */
+QStatusBar {
+    background-color: #181825;
+    border-top: 1px solid #313244;
+}
+
+/* Scroll bars */
+QScrollBar:vertical {
+    background-color: #181825;
+    width: 12px;
+    border-radius: 6px;
+}
+
+QScrollBar::handle:vertical {
+    background-color: #45475a;
+    border-radius: 6px;
+    min-height: 20px;
+}
+
+QScrollBar::handle:vertical:hover {
+    background-color: #585b70;
+}
