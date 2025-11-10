@@ -33,18 +33,18 @@ private:
     void setupMenus();
     void createActions();
 
-    ApplicationController* m_controller;
-    QStackedWidget* m_centralStack;
-    ProjectSelectionView* m_projectSelectionView;
-    ProjectView* m_projectView;
+    ApplicationController* _controller;
+    QStackedWidget* _centralStack;
+    ProjectSelectionView* _projectSelectionView;
+    ProjectView* _projectView;
 
     // Actions
-    QAction* m_newProjectAction;
-    QAction* m_openProjectAction;
-    QAction* m_closeProjectAction;
-    QAction* m_exitAction;
-    QAction* m_toggleThemeAction;
-    QAction* m_aboutAction;
+    QAction* _newProjectAction;
+    QAction* _openProjectAction;
+    QAction* _closeProjectAction;
+    QAction* _exitAction;
+    QAction* _toggleThemeAction;
+    QAction* _aboutAction;
 };
 
 #endif // MAINWINDOW_H

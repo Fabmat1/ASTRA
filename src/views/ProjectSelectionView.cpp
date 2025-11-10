@@ -13,7 +13,7 @@
 
 ProjectSelectionView::ProjectSelectionView(ApplicationController* controller, QWidget *parent)
     : QWidget(parent)
-    , m_controller(controller)
+    , _controller(controller)
 {
     setupUi();
     loadProjects();
@@ -35,14 +35,14 @@ void ProjectSelectionView::setupUi()
 
     // Project grid
     QWidget* gridWidget = new QWidget;
-    m_projectGrid = new QGridLayout(gridWidget);
-    m_projectGrid->setSpacing(20);
+    _projectGrid = new QGridLayout(gridWidget);
+    _projectGrid->setSpacing(20);
     mainLayout->addWidget(gridWidget, 1);
 
     // New project button
-    m_newProjectButton = new QPushButton("+ Create New Project");
-    m_newProjectButton->setFixedSize(200, 200);
-    m_newProjectButton->setStyleSheet(
+    _newProjectButton = new QPushButton("+ Create New Project");
+    _newProjectButton->setFixedSize(200, 200);
+    _newProjectButton->setStyleSheet(
         "QPushButton { "
         "  border: 2px dashed #999; "
         "  border-radius: 10px; "
@@ -52,24 +52,24 @@ void ProjectSelectionView::setupUi()
         "  border-color: #666; "
         "  background-color: rgba(0,0,0,0.05); "
         "}");
-    connect(m_newProjectButton, &QPushButton::clicked, this, &ProjectSelectionView::onNewProjectClicked);
+    connect(_newProjectButton, &QPushButton::clicked, this, &ProjectSelectionView::onNewProjectClicked);
 }
 
 void ProjectSelectionView::loadProjects()
 {
     // Clear only project cards
-    for (auto* card : m_projectCards) {
-        m_projectGrid->removeWidget(card);
+    for (auto* card : _projectCards) {
+        _projectGrid->removeWidget(card);
         delete card;
     }
-    m_projectCards.clear();
+    _projectCards.clear();
 
     // Remove and re-add the new project button
-    m_projectGrid->removeWidget(m_newProjectButton);
+    _projectGrid->removeWidget(_newProjectButton);
     
-    m_projectGrid->addWidget(m_newProjectButton, 0, 0);
+    _projectGrid->addWidget(_newProjectButton, 0, 0);
 
-    auto projects = m_controller->getProjects();
+    auto projects = _controller->getProjects();
     int row = 0, col = 1;
     for (const auto& project : projects) {
         ProjectCard* card = createProjectCard(
@@ -81,8 +81,8 @@ void ProjectSelectionView::loadProjects()
         connect(card, &ProjectCard::clicked, 
                 this, &ProjectSelectionView::onProjectCardClicked);
         
-        m_projectCards.append(card);
-        m_projectGrid->addWidget(card, row, col);
+        _projectCards.append(card);
+        _projectGrid->addWidget(card, row, col);
 
         col++;
         if (col > 3) {
@@ -119,7 +119,7 @@ void ProjectSelectionView::createNewProject()
                                                     "Project Description (optional):",
                                                     QLineEdit::Normal, "", &ok);
         if (ok) {
-            m_controller->createProject(name, description);
+            _controller->createProject(name, description);
             refreshProjects();
         }
     }
@@ -135,10 +135,10 @@ ProjectCard::ProjectCard(const QString& id, const QString& name,
                         const QString& description, int starCount,
                         QWidget *parent)
     : QWidget(parent)
-    , m_projectId(id)
-    , m_name(name)
-    , m_description(description)
-    , m_starCount(starCount)
+    , _projectId(id)
+    , _name(name)
+    , _description(description)
+    , _starCount(starCount)
 {
     setFixedSize(200, 200);
     setCursor(Qt::PointingHandCursor);
@@ -178,7 +178,7 @@ ProjectCard::ProjectCard(const QString& id, const QString& name,
 void ProjectCard::mousePressEvent(QMouseEvent* event)
 {
     Q_UNUSED(event)
-    emit clicked(m_projectId);
+    emit clicked(_projectId);
 }
 
 void ProjectCard::enterEvent(QEnterEvent* event)

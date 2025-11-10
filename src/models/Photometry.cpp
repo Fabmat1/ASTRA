@@ -34,23 +34,23 @@ Photometry::~Photometry()
 
 void Photometry::addPhotometricPoint(const PhotometricPoint& point)
 {
-    m_photometricPoints.push_back(point);
+    _photometricPoints.push_back(point);
 }
 
 std::vector<PhotometricPoint> Photometry::getPhotometricPoints() const
 {
-    return m_photometricPoints;
+    return _photometricPoints;
 }
 
 void Photometry::addLightcurve(const QString& source, const std::vector<LightcurvePoint>& points)
 {
-    m_lightcurves[source] = points;
+    _lightcurves[source] = points;
 }
 
 std::vector<LightcurvePoint> Photometry::getLightcurve(const QString& source) const
 {
-    auto it = m_lightcurves.find(source);
-    if (it != m_lightcurves.end()) {
+    auto it = _lightcurves.find(source);
+    if (it != _lightcurves.end()) {
         return it->second;
     }
     return std::vector<LightcurvePoint>();
@@ -59,7 +59,7 @@ std::vector<LightcurvePoint> Photometry::getLightcurve(const QString& source) co
 std::vector<QString> Photometry::getLightcurveSources() const
 {
     std::vector<QString> sources;
-    for (const auto& pair : m_lightcurves) {
+    for (const auto& pair : _lightcurves) {
         sources.push_back(pair.first);
     }
     return sources;
@@ -69,21 +69,21 @@ void Photometry::addSEDModel(std::shared_ptr<SEDModel> model)
 {
     // If this is set as best fit, unset others
     if (model->isBestFit) {
-        for (auto& existing : m_sedModels) {
+        for (auto& existing : _sedModels) {
             existing->isBestFit = false;
         }
     }
-    m_sedModels.push_back(model);
+    _sedModels.push_back(model);
 }
 
 std::vector<std::shared_ptr<SEDModel>> Photometry::getSEDModels() const
 {
-    return m_sedModels;
+    return _sedModels;
 }
 
 std::shared_ptr<SEDModel> Photometry::getBestSEDModel() const
 {
-    for (const auto& model : m_sedModels) {
+    for (const auto& model : _sedModels) {
         if (model->isBestFit) {
             return model;
         }
@@ -95,17 +95,17 @@ void Photometry::addLightcurveModel(const QString& source, std::shared_ptr<Light
 {
     // If this is set as best fit, unset others for this source
     if (model->isBestFit) {
-        for (auto& existing : m_lightcurveModels[source]) {
+        for (auto& existing : _lightcurveModels[source]) {
             existing->isBestFit = false;
         }
     }
-    m_lightcurveModels[source].push_back(model);
+    _lightcurveModels[source].push_back(model);
 }
 
 std::vector<std::shared_ptr<LightcurveModel>> Photometry::getLightcurveModels(const QString& source) const
 {
-    auto it = m_lightcurveModels.find(source);
-    if (it != m_lightcurveModels.end()) {
+    auto it = _lightcurveModels.find(source);
+    if (it != _lightcurveModels.end()) {
         return it->second;
     }
     return std::vector<std::shared_ptr<LightcurveModel>>();

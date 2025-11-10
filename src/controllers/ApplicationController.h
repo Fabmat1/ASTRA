@@ -25,7 +25,7 @@ public:
 
     // Theme management
     void toggleTheme();
-    bool isDarkTheme() const { return m_isDarkTheme; }
+    bool isDarkTheme() const { return _isDarkTheme; }
 
 signals:
     void projectCreated(const QString& projectId);
@@ -34,10 +34,10 @@ signals:
     void themeChanged(bool isDark);
 
 private:
-    std::unique_ptr<DatabaseManager> m_databaseManager;
-    std::shared_ptr<Project> m_currentProject;
-    std::vector<std::shared_ptr<Project>> m_projects;
-    bool m_isDarkTheme;
+    std::unique_ptr<DatabaseManager> _databaseManager;
+    std::shared_ptr<Project> _currentProject;
+    std::vector<std::shared_ptr<Project>> _projects;
+    bool _isDarkTheme;
 
     void loadProjects();
     void applyTheme();

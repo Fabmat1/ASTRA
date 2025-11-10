@@ -41,8 +41,8 @@ private:
     bool createTables();
     bool executeQuery(const QString& query);
 
-    QSqlDatabase m_database;
-    QString m_databasePath;
+    QSqlDatabase _database;
+    QString _databasePath;
 };
 
 #endif // DATABASEMANAGER_H

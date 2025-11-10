@@ -4,37 +4,37 @@
 #include <QVariant>
 
 Star::Star()
-    : m_ra(0.0)
-    , m_dec(0.0)
-    , m_pmra(0.0)
-    , m_pmdec(0.0)
-    , m_e_pmra(0.0)
-    , m_e_pmdec(0.0)
-    , m_plx(0.0)
-    , m_e_plx(0.0)
-    , m_pmra_pmdec_corr(0.0)
-    , m_plx_pmdec_corr(0.0)
-    , m_plx_pmra_corr(0.0)
-    , m_gmag(0.0)
-    , m_e_gmag(0.0)
-    , m_bp(0.0)
-    , m_e_bp(0.0)
-    , m_rp(0.0)
-    , m_e_rp(0.0)
-    , m_bp_rp(0.0)
-    , m_teff(0.0)
-    , m_e_teff(0.0)
-    , m_logg(0.0)
-    , m_e_logg(0.0)
-    , m_he(0.0)
-    , m_e_he(0.0)
-    , m_logp(0.0)
-    , m_deltaRV(0.0)
-    , m_e_deltaRV(0.0)
-    , m_rv_avg(0.0)
-    , m_e_rv_avg(0.0)
-    , m_rv_med(0.0)
-    , m_e_rv_med(0.0)
+    : _ra(0.0)
+    , _dec(0.0)
+    , _pmra(0.0)
+    , _pmdec(0.0)
+    , _e_pmra(0.0)
+    , _e_pmdec(0.0)
+    , _plx(0.0)
+    , _e_plx(0.0)
+    , _pmra_pmdec_corr(0.0)
+    , _plx_pmdec_corr(0.0)
+    , _plx_pmra_corr(0.0)
+    , _gmag(0.0)
+    , _e_gmag(0.0)
+    , _bp(0.0)
+    , _e_bp(0.0)
+    , _rp(0.0)
+    , _e_rp(0.0)
+    , _bp_rp(0.0)
+    , _teff(0.0)
+    , _e_teff(0.0)
+    , _logg(0.0)
+    , _e_logg(0.0)
+    , _he(0.0)
+    , _e_he(0.0)
+    , _logp(0.0)
+    , _deltaRV(0.0)
+    , _e_deltaRV(0.0)
+    , _rv_avg(0.0)
+    , _e_rv_avg(0.0)
+    , _rv_med(0.0)
+    , _e_rv_med(0.0)
 {
 }
 
@@ -45,43 +45,43 @@ Star::~Star()
 QVariant Star::getFieldValue(const QString& fieldName) const
 {
     // Map field names to values for table display
-    if (fieldName == "alias") return m_alias;
-    if (fieldName == "source_id") return m_sourceId;
-    if (fieldName == "tic") return m_tic;
-    if (fieldName == "jname") return m_jname;
+    if (fieldName == "alias") return _alias;
+    if (fieldName == "source_id") return _sourceId;
+    if (fieldName == "tic") return _tic;
+    if (fieldName == "jname") return _jname;
 
-    if (fieldName == "ra") return m_ra;
-    if (fieldName == "dec") return m_dec;
-    if (fieldName == "pmra") return m_pmra;
-    if (fieldName == "pmdec") return m_pmdec;
-    if (fieldName == "e_pmra") return m_e_pmra;
-    if (fieldName == "e_pmdec") return m_e_pmdec;
-    if (fieldName == "plx") return m_plx;
-    if (fieldName == "e_plx") return m_e_plx;
+    if (fieldName == "ra") return _ra;
+    if (fieldName == "dec") return _dec;
+    if (fieldName == "pmra") return _pmra;
+    if (fieldName == "pmdec") return _pmdec;
+    if (fieldName == "e_pmra") return _e_pmra;
+    if (fieldName == "e_pmdec") return _e_pmdec;
+    if (fieldName == "plx") return _plx;
+    if (fieldName == "e_plx") return _e_plx;
 
-    if (fieldName == "gmag") return m_gmag;
-    if (fieldName == "e_gmag") return m_e_gmag;
-    if (fieldName == "bp") return m_bp;
-    if (fieldName == "e_bp") return m_e_bp;
-    if (fieldName == "rp") return m_rp;
-    if (fieldName == "e_rp") return m_e_rp;
-    if (fieldName == "bp_rp") return m_bp_rp;
+    if (fieldName == "gmag") return _gmag;
+    if (fieldName == "e_gmag") return _e_gmag;
+    if (fieldName == "bp") return _bp;
+    if (fieldName == "e_bp") return _e_bp;
+    if (fieldName == "rp") return _rp;
+    if (fieldName == "e_rp") return _e_rp;
+    if (fieldName == "bp_rp") return _bp_rp;
 
-    if (fieldName == "spec_class") return m_spec_class;
-    if (fieldName == "teff") return m_teff;
-    if (fieldName == "e_teff") return m_e_teff;
-    if (fieldName == "logg") return m_logg;
-    if (fieldName == "e_logg") return m_e_logg;
-    if (fieldName == "he") return m_he;
-    if (fieldName == "e_he") return m_e_he;
+    if (fieldName == "spec_class") return _spec_class;
+    if (fieldName == "teff") return _teff;
+    if (fieldName == "e_teff") return _e_teff;
+    if (fieldName == "logg") return _logg;
+    if (fieldName == "e_logg") return _e_logg;
+    if (fieldName == "he") return _he;
+    if (fieldName == "e_he") return _e_he;
 
-    if (fieldName == "logp") return m_logp;
-    if (fieldName == "deltaRV") return m_deltaRV;
-    if (fieldName == "e_deltaRV") return m_e_deltaRV;
-    if (fieldName == "rv_avg") return m_rv_avg;
-    if (fieldName == "e_rv_avg") return m_e_rv_avg;
-    if (fieldName == "rv_med") return m_rv_med;
-    if (fieldName == "e_rv_med") return m_e_rv_med;
+    if (fieldName == "logp") return _logp;
+    if (fieldName == "deltaRV") return _deltaRV;
+    if (fieldName == "e_deltaRV") return _e_deltaRV;
+    if (fieldName == "rv_avg") return _rv_avg;
+    if (fieldName == "e_rv_avg") return _e_rv_avg;
+    if (fieldName == "rv_med") return _rv_med;
+    if (fieldName == "e_rv_med") return _e_rv_med;
 
     return QVariant();
 }

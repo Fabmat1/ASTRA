@@ -100,10 +100,10 @@ public:
     std::shared_ptr<LightcurveModel> getBestLightcurveModel(const QString& source) const;
 
 private:
-    std::vector<PhotometricPoint> m_photometricPoints;
-    std::map<QString, std::vector<LightcurvePoint>> m_lightcurves;
-    std::vector<std::shared_ptr<SEDModel>> m_sedModels;
-    std::map<QString, std::vector<std::shared_ptr<LightcurveModel>>> m_lightcurveModels;
+    std::vector<PhotometricPoint> _photometricPoints;
+    std::map<QString, std::vector<LightcurvePoint>> _lightcurves;
+    std::vector<std::shared_ptr<SEDModel>> _sedModels;
+    std::map<QString, std::vector<std::shared_ptr<LightcurveModel>>> _lightcurveModels;
 };
 
 #endif // PHOTOMETRY_H

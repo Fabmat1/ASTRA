@@ -6,10 +6,10 @@
 
 ApplicationController::ApplicationController(QObject *parent)
     : QObject(parent)
-    , m_isDarkTheme(false)
-    , m_currentProject(nullptr)
+    , _isDarkTheme(false)
+    , _currentProject(nullptr)
 {
-    m_databaseManager = std::make_unique<DatabaseManager>();
+    _databaseManager = std::make_unique<DatabaseManager>();
     loadProjects();
     // Temporarily disable theme loading to avoid stylesheet errors
     // applyTheme();
@@ -21,16 +21,16 @@ ApplicationController::~ApplicationController()
 
 std::vector<std::shared_ptr<Project>> ApplicationController::getProjects() const
 {
-    return m_projects;
+    return _projects;
 }
 
 std::shared_ptr<Project> ApplicationController::createProject(const QString& name, const QString& description)
 {
     auto project = std::make_shared<Project>(name, description);
-    m_projects.push_back(project);
+    _projects.push_back(project);
 
     // Save to database
-    m_databaseManager->saveProject(project);
+    _databaseManager->saveProject(project);
 
     emit projectCreated(project->getId());
     return project;
@@ -38,9 +38,9 @@ std::shared_ptr<Project> ApplicationController::createProject(const QString& nam
 
 std::shared_ptr<Project> ApplicationController::openProject(const QString& projectId)
 {
-    for (const auto& project : m_projects) {
+    for (const auto& project : _projects) {
         if (project->getId() == projectId) {
-            m_currentProject = project;
+            _currentProject = project;
             emit projectOpened(projectId);
             return project;
         }
@@ -50,20 +50,20 @@ std::shared_ptr<Project> ApplicationController::openProject(const QString& proje
 
 void ApplicationController::closeProject()
 {
-    m_currentProject = nullptr;
+    _currentProject = nullptr;
     emit projectClosed();
 }
 
 bool ApplicationController::deleteProject(const QString& projectId)
 {
-    auto it = std::remove_if(m_projects.begin(), m_projects.end(),
+    auto it = std::remove_if(_projects.begin(), _projects.end(),
         [&projectId](const std::shared_ptr<Project>& project) {
             return project->getId() == projectId;
         });
 
-    if (it != m_projects.end()) {
-        m_projects.erase(it, m_projects.end());
-        m_databaseManager->deleteProject(projectId);
+    if (it != _projects.end()) {
+        _projects.erase(it, _projects.end());
+        _databaseManager->deleteProject(projectId);
         return true;
     }
     return false;
@@ -71,21 +71,21 @@ bool ApplicationController::deleteProject(const QString& projectId)
 
 void ApplicationController::toggleTheme()
 {
-    m_isDarkTheme = !m_isDarkTheme;
+    _isDarkTheme = !_isDarkTheme;
     applyTheme();
-    emit themeChanged(m_isDarkTheme);
+    emit themeChanged(_isDarkTheme);
 }
 
 void ApplicationController::loadProjects()
 {
     // Load projects from database
-    m_projects = m_databaseManager->loadProjects();
+    _projects = _databaseManager->loadProjects();
 }
 
 void ApplicationController::applyTheme()
 {
     // Temporarily simplified to avoid stylesheet parse errors
-    QString simpleStyle = m_isDarkTheme
+    QString simpleStyle = _isDarkTheme
         ? "QWidget { background-color: #1e1e2e; color: #cdd6f4; }"
         : "QWidget { background-color: #eff1f5; color: #4c4f69; }";
 
@@ -93,7 +93,7 @@ void ApplicationController::applyTheme()
 
     // Original resource-based loading (commented out for now)
     /*
-    QString themePath = m_isDarkTheme
+    QString themePath = _isDarkTheme
         ? ":/themes/catppuccin_dark.qss"
         : ":/themes/catppuccin_light.qss";
 

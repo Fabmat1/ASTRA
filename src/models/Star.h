@@ -16,160 +16,160 @@ public:
     ~Star();
 
     // Identifying fields
-    QString getAlias() const { return m_alias; }
-    QString getSourceId() const { return m_sourceId; }
-    QString getTic() const { return m_tic; }
-    QString getJName() const { return m_jname; }
+    QString getAlias() const { return _alias; }
+    QString getSourceId() const { return _sourceId; }
+    QString getTic() const { return _tic; }
+    QString getJName() const { return _jname; }
 
-    void setAlias(const QString& alias) { m_alias = alias; }
-    void setSourceId(const QString& id) { m_sourceId = id; }
-    void setTic(const QString& tic) { m_tic = tic; }
-    void setJName(const QString& jname) { m_jname = jname; }
+    void setAlias(const QString& alias) { _alias = alias; }
+    void setSourceId(const QString& id) { _sourceId = id; }
+    void setTic(const QString& tic) { _tic = tic; }
+    void setJName(const QString& jname) { _jname = jname; }
 
     // Astrometric fields
-    double getRa() const { return m_ra; }
-    double getDec() const { return m_dec; }
-    double getPmra() const { return m_pmra; }
-    double getPmdec() const { return m_pmdec; }
-    double getEPmra() const { return m_e_pmra; }
-    double getEPmdec() const { return m_e_pmdec; }
-    double getPlx() const { return m_plx; }
-    double getEPlx() const { return m_e_plx; }
-    double getPmraPmdecCorr() const { return m_pmra_pmdec_corr; }
-    double getPlxPmdecCorr() const { return m_plx_pmdec_corr; }
-    double getPlxPmraCorr() const { return m_plx_pmra_corr; }
+    double getRa() const { return _ra; }
+    double getDec() const { return _dec; }
+    double getPmra() const { return _pmra; }
+    double getPmdec() const { return _pmdec; }
+    double getEPmra() const { return _e_pmra; }
+    double getEPmdec() const { return _e_pmdec; }
+    double getPlx() const { return _plx; }
+    double getEPlx() const { return _e_plx; }
+    double getPmraPmdecCorr() const { return _pmra_pmdec_corr; }
+    double getPlxPmdecCorr() const { return _plx_pmdec_corr; }
+    double getPlxPmraCorr() const { return _plx_pmra_corr; }
 
-    void setRa(double ra) { m_ra = ra; }
-    void setDec(double dec) { m_dec = dec; }
-    void setPmra(double pmra) { m_pmra = pmra; }
-    void setPmdec(double pmdec) { m_pmdec = pmdec; }
-    void setEPmra(double e_pmra) { m_e_pmra = e_pmra; }
-    void setEPmdec(double e_pmdec) { m_e_pmdec = e_pmdec; }
-    void setPlx(double plx) { m_plx = plx; }
-    void setEPlx(double e_plx) { m_e_plx = e_plx; }
-    void setPmraPmdecCorr(double corr) { m_pmra_pmdec_corr = corr; }
-    void setPlxPmdecCorr(double corr) { m_plx_pmdec_corr = corr; }
-    void setPlxPmraCorr(double corr) { m_plx_pmra_corr = corr; }
+    void setRa(double ra) { _ra = ra; }
+    void setDec(double dec) { _dec = dec; }
+    void setPmra(double pmra) { _pmra = pmra; }
+    void setPmdec(double pmdec) { _pmdec = pmdec; }
+    void setEPmra(double e_pmra) { _e_pmra = e_pmra; }
+    void setEPmdec(double e_pmdec) { _e_pmdec = e_pmdec; }
+    void setPlx(double plx) { _plx = plx; }
+    void setEPlx(double e_plx) { _e_plx = e_plx; }
+    void setPmraPmdecCorr(double corr) { _pmra_pmdec_corr = corr; }
+    void setPlxPmdecCorr(double corr) { _plx_pmdec_corr = corr; }
+    void setPlxPmraCorr(double corr) { _plx_pmra_corr = corr; }
 
     // Photometric fields
-    double getGmag() const { return m_gmag; }
-    double getEGmag() const { return m_e_gmag; }
-    double getBp() const { return m_bp; }
-    double getEBp() const { return m_e_bp; }
-    double getRp() const { return m_rp; }
-    double getERp() const { return m_e_rp; }
-    double getBpRp() const { return m_bp_rp; }
+    double getGmag() const { return _gmag; }
+    double getEGmag() const { return _e_gmag; }
+    double getBp() const { return _bp; }
+    double getEBp() const { return _e_bp; }
+    double getRp() const { return _rp; }
+    double getERp() const { return _e_rp; }
+    double getBpRp() const { return _bp_rp; }
 
-    void setGmag(double gmag) { m_gmag = gmag; }
-    void setEGmag(double e_gmag) { m_e_gmag = e_gmag; }
-    void setBp(double bp) { m_bp = bp; }
-    void setEBp(double e_bp) { m_e_bp = e_bp; }
-    void setRp(double rp) { m_rp = rp; }
-    void setERp(double e_rp) { m_e_rp = e_rp; }
-    void setBpRp(double bp_rp) { m_bp_rp = bp_rp; }
+    void setGmag(double gmag) { _gmag = gmag; }
+    void setEGmag(double e_gmag) { _e_gmag = e_gmag; }
+    void setBp(double bp) { _bp = bp; }
+    void setEBp(double e_bp) { _e_bp = e_bp; }
+    void setRp(double rp) { _rp = rp; }
+    void setERp(double e_rp) { _e_rp = e_rp; }
+    void setBpRp(double bp_rp) { _bp_rp = bp_rp; }
 
     // Spectroscopic fields
-    QString getSpecClass() const { return m_spec_class; }
-    double getTeff() const { return m_teff; }
-    double getETeff() const { return m_e_teff; }
-    double getLogg() const { return m_logg; }
-    double getELogg() const { return m_e_logg; }
-    double getHe() const { return m_he; }
-    double getEHe() const { return m_e_he; }
+    QString getSpecClass() const { return _spec_class; }
+    double getTeff() const { return _teff; }
+    double getETeff() const { return _e_teff; }
+    double getLogg() const { return _logg; }
+    double getELogg() const { return _e_logg; }
+    double getHe() const { return _he; }
+    double getEHe() const { return _e_he; }
 
-    void setSpecClass(const QString& spec_class) { m_spec_class = spec_class; }
-    void setTeff(double teff) { m_teff = teff; }
-    void setETeff(double e_teff) { m_e_teff = e_teff; }
-    void setLogg(double logg) { m_logg = logg; }
-    void setELogg(double e_logg) { m_e_logg = e_logg; }
-    void setHe(double he) { m_he = he; }
-    void setEHe(double e_he) { m_e_he = e_he; }
+    void setSpecClass(const QString& spec_class) { _spec_class = spec_class; }
+    void setTeff(double teff) { _teff = teff; }
+    void setETeff(double e_teff) { _e_teff = e_teff; }
+    void setLogg(double logg) { _logg = logg; }
+    void setELogg(double e_logg) { _e_logg = e_logg; }
+    void setHe(double he) { _he = he; }
+    void setEHe(double e_he) { _e_he = e_he; }
 
     // Radial velocity fields
-    double getLogP() const { return m_logp; }
-    double getDeltaRV() const { return m_deltaRV; }
-    double getEDeltaRV() const { return m_e_deltaRV; }
-    double getRVAvg() const { return m_rv_avg; }
-    double getERVAvg() const { return m_e_rv_avg; }
-    double getRVMed() const { return m_rv_med; }
-    double getERVMed() const { return m_e_rv_med; }
+    double getLogP() const { return _logp; }
+    double getDeltaRV() const { return _deltaRV; }
+    double getEDeltaRV() const { return _e_deltaRV; }
+    double getRVAvg() const { return _rv_avg; }
+    double getERVAvg() const { return _e_rv_avg; }
+    double getRVMed() const { return _rv_med; }
+    double getERVMed() const { return _e_rv_med; }
 
-    void setLogP(double logp) { m_logp = logp; }
-    void setDeltaRV(double deltaRV) { m_deltaRV = deltaRV; }
-    void setEDeltaRV(double e_deltaRV) { m_e_deltaRV = e_deltaRV; }
-    void setRVAvg(double rv_avg) { m_rv_avg = rv_avg; }
-    void setERVAvg(double e_rv_avg) { m_e_rv_avg = e_rv_avg; }
-    void setRVMed(double rv_med) { m_rv_med = rv_med; }
-    void setERVMed(double e_rv_med) { m_e_rv_med = e_rv_med; }
+    void setLogP(double logp) { _logp = logp; }
+    void setDeltaRV(double deltaRV) { _deltaRV = deltaRV; }
+    void setEDeltaRV(double e_deltaRV) { _e_deltaRV = e_deltaRV; }
+    void setRVAvg(double rv_avg) { _rv_avg = rv_avg; }
+    void setERVAvg(double e_rv_avg) { _e_rv_avg = e_rv_avg; }
+    void setRVMed(double rv_med) { _rv_med = rv_med; }
+    void setERVMed(double e_rv_med) { _e_rv_med = e_rv_med; }
 
     // Metadata
-    std::vector<QString> getBibcodes() const { return m_bibcodes; }
-    void setBibcodes(const std::vector<QString>& bibcodes) { m_bibcodes = bibcodes; }
-    void addBibcode(const QString& bibcode) { m_bibcodes.push_back(bibcode); }
+    std::vector<QString> getBibcodes() const { return _bibcodes; }
+    void setBibcodes(const std::vector<QString>& bibcodes) { _bibcodes = bibcodes; }
+    void addBibcode(const QString& bibcode) { _bibcodes.push_back(bibcode); }
 
     // Photometry and Spectroscopy
-    std::shared_ptr<Photometry> getPhotometry() const { return m_photometry; }
-    void setPhotometry(std::shared_ptr<Photometry> photometry) { m_photometry = photometry; }
+    std::shared_ptr<Photometry> getPhotometry() const { return _photometry; }
+    void setPhotometry(std::shared_ptr<Photometry> photometry) { _photometry = photometry; }
 
-    std::vector<std::shared_ptr<Spectrum>> getSpectra() const { return m_spectra; }
-    void addSpectrum(std::shared_ptr<Spectrum> spectrum) { m_spectra.push_back(spectrum); }
+    std::vector<std::shared_ptr<Spectrum>> getSpectra() const { return _spectra; }
+    void addSpectrum(std::shared_ptr<Spectrum> spectrum) { _spectra.push_back(spectrum); }
 
     // Generic field access for table display
     QVariant getFieldValue(const QString& fieldName) const;
 
 private:
     // Identifying fields
-    QString m_alias;
-    QString m_sourceId;
-    QString m_tic;
-    QString m_jname;
+    QString _alias;
+    QString _sourceId;
+    QString _tic;
+    QString _jname;
 
     // Astrometric fields
-    double m_ra;
-    double m_dec;
-    double m_pmra;
-    double m_pmdec;
-    double m_e_pmra;
-    double m_e_pmdec;
-    double m_plx;
-    double m_e_plx;
-    double m_pmra_pmdec_corr;
-    double m_plx_pmdec_corr;
-    double m_plx_pmra_corr;
+    double _ra;
+    double _dec;
+    double _pmra;
+    double _pmdec;
+    double _e_pmra;
+    double _e_pmdec;
+    double _plx;
+    double _e_plx;
+    double _pmra_pmdec_corr;
+    double _plx_pmdec_corr;
+    double _plx_pmra_corr;
 
     // Photometric fields (Gaia)
-    double m_gmag;
-    double m_e_gmag;
-    double m_bp;
-    double m_e_bp;
-    double m_rp;
-    double m_e_rp;
-    double m_bp_rp;
+    double _gmag;
+    double _e_gmag;
+    double _bp;
+    double _e_bp;
+    double _rp;
+    double _e_rp;
+    double _bp_rp;
 
     // Spectroscopic fields
-    QString m_spec_class;
-    double m_teff;
-    double m_e_teff;
-    double m_logg;
-    double m_e_logg;
-    double m_he;
-    double m_e_he;
+    QString _spec_class;
+    double _teff;
+    double _e_teff;
+    double _logg;
+    double _e_logg;
+    double _he;
+    double _e_he;
 
     // Radial velocity fields
-    double m_logp;
-    double m_deltaRV;
-    double m_e_deltaRV;
-    double m_rv_avg;
-    double m_e_rv_avg;
-    double m_rv_med;
-    double m_e_rv_med;
+    double _logp;
+    double _deltaRV;
+    double _e_deltaRV;
+    double _rv_avg;
+    double _e_rv_avg;
+    double _rv_med;
+    double _e_rv_med;
 
     // Metadata
-    std::vector<QString> m_bibcodes;
+    std::vector<QString> _bibcodes;
 
     // Associated data
-    std::shared_ptr<Photometry> m_photometry;
-    std::vector<std::shared_ptr<Spectrum>> m_spectra;
+    std::shared_ptr<Photometry> _photometry;
+    std::vector<std::shared_ptr<Spectrum>> _spectra;
 };
 
 #endif // STAR_H

@@ -40,23 +40,23 @@ private:
     void setupMenuBar();
     void createActions();
 
-    ApplicationController* m_controller;
-    std::shared_ptr<Project> m_currentProject;
+    ApplicationController* _controller;
+    std::shared_ptr<Project> _currentProject;
 
     // UI elements
-    QTableView* m_starTable;
-    StarTableModel* m_tableModel;
-    QLabel* m_projectTitle;
-    QLabel* m_statusLabel;
-    QMenuBar* m_menuBar;
+    QTableView* _starTable;
+    StarTableModel* _tableModel;
+    QLabel* _projectTitle;
+    QLabel* _statusLabel;
+    QMenuBar* _menuBar;
 
     // Actions
-    QAction* m_addStarAction;
-    QAction* m_importStarsAction;
-    QAction* m_removeStarAction;
-    QAction* m_detailWindowAction;
-    QAction* m_configureColumnsAction;
-    QAction* m_createPlotAction;
+    QAction* _addStarAction;
+    QAction* _importStarsAction;
+    QAction* _removeStarAction;
+    QAction* _detailWindowAction;
+    QAction* _configureColumnsAction;
+    QAction* _createPlotAction;
 };
 
 // Custom table model for stars
@@ -76,7 +76,7 @@ public:
     void refresh();
 
 private:
-    std::shared_ptr<Project> m_project;
+    std::shared_ptr<Project> _project;
 };
 
 #endif // PROJECTVIEW_H

@@ -7,7 +7,7 @@
 
 ProjectController::ProjectController(std::shared_ptr<Project> project, QObject *parent)
     : QObject(parent)
-    , m_project(project)
+    , _project(project)
 {
 }
 
@@ -17,11 +17,11 @@ ProjectController::~ProjectController()
 
 bool ProjectController::addStar(std::shared_ptr<Star> star)
 {
-    if (!m_project || !star) {
+    if (!_project || !star) {
         return false;
     }
 
-    m_project->addStar(star);
+    _project->addStar(star);
     emit starAdded(star->getSourceId());
     emit dataChanged();
     return true;
@@ -29,11 +29,11 @@ bool ProjectController::addStar(std::shared_ptr<Star> star)
 
 bool ProjectController::removeStar(const QString& sourceId)
 {
-    if (!m_project) {
+    if (!_project) {
         return false;
     }
 
-    m_project->removeStar(sourceId);
+    _project->removeStar(sourceId);
     emit starRemoved(sourceId);
     emit dataChanged();
     return true;
@@ -41,13 +41,13 @@ bool ProjectController::removeStar(const QString& sourceId)
 
 bool ProjectController::updateStar(std::shared_ptr<Star> star)
 {
-    if (!m_project || !star) {
+    if (!_project || !star) {
         return false;
     }
 
     // Remove old and add updated
-    m_project->removeStar(star->getSourceId());
-    m_project->addStar(star);
+    _project->removeStar(star->getSourceId());
+    _project->addStar(star);
     emit starUpdated(star->getSourceId());
     emit dataChanged();
     return true;
@@ -85,7 +85,7 @@ bool ProjectController::importFromCSV(const QString& filepath)
 
 bool ProjectController::exportToCSV(const QString& filepath)
 {
-    if (!m_project) {
+    if (!_project) {
         return false;
     }
 
@@ -98,7 +98,7 @@ bool ProjectController::exportToCSV(const QString& filepath)
     QTextStream out(&file);
 
     // Write headers
-    auto columns = m_project->getVisibleColumns();
+    auto columns = _project->getVisibleColumns();
     QStringList columnList;
     for (const auto& col : columns) {
         columnList << col;
@@ -106,7 +106,7 @@ bool ProjectController::exportToCSV(const QString& filepath)
     out << columnList.join(",") << "\n";
 
     // Write star data
-    auto stars = m_project->getAllStars();
+    auto stars = _project->getAllStars();
     for (const auto& star : stars) {
         QStringList values;
         for (const auto& col : columns) {
@@ -121,8 +121,8 @@ bool ProjectController::exportToCSV(const QString& filepath)
 
 void ProjectController::setVisibleColumns(const std::vector<QString>& columns)
 {
-    if (m_project) {
-        m_project->setVisibleColumns(columns);
+    if (_project) {
+        _project->setVisibleColumns(columns);
         emit dataChanged();
     }
 }

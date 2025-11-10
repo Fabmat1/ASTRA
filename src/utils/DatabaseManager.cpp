@@ -18,7 +18,7 @@ DatabaseManager::DatabaseManager(QObject *parent)
     if (!dir.exists()) {
         dir.mkpath(dataPath);
     }
-    m_databasePath = dir.filePath("astra.db");
+    _databasePath = dir.filePath("astra.db");
 
     openDatabase();
 }
@@ -31,14 +31,14 @@ DatabaseManager::~DatabaseManager()
 bool DatabaseManager::openDatabase(const QString& path)
 {
     if (!path.isEmpty()) {
-        m_databasePath = path;
+        _databasePath = path;
     }
 
-    m_database = QSqlDatabase::addDatabase("QSQLITE");
-    m_database.setDatabaseName(m_databasePath);
+    _database = QSqlDatabase::addDatabase("QSQLITE");
+    _database.setDatabaseName(_databasePath);
 
-    if (!m_database.open()) {
-        qDebug() << "Error: Could not open database" << m_database.lastError();
+    if (!_database.open()) {
+        qDebug() << "Error: Could not open database" << _database.lastError();
         return false;
     }
 
@@ -47,14 +47,14 @@ bool DatabaseManager::openDatabase(const QString& path)
 
 void DatabaseManager::closeDatabase()
 {
-    if (m_database.isOpen()) {
-        m_database.close();
+    if (_database.isOpen()) {
+        _database.close();
     }
 }
 
 bool DatabaseManager::isOpen() const
 {
-    return m_database.isOpen();
+    return _database.isOpen();
 }
 
 bool DatabaseManager::createTables()

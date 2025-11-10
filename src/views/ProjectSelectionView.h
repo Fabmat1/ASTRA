@@ -36,10 +36,10 @@ private:
     ProjectCard* createProjectCard(const QString& id, const QString& name,
                                    const QString& description, int starCount);
     
-    QList<ProjectCard*> m_projectCards;
-    ApplicationController* m_controller;
-    QGridLayout* m_projectGrid;
-    QPushButton* m_newProjectButton;
+    QList<ProjectCard*> _projectCards;
+    ApplicationController* _controller;
+    QGridLayout* _projectGrid;
+    QPushButton* _newProjectButton;
 };
 
 // Project card widget
@@ -52,7 +52,7 @@ public:
                         const QString& description, int starCount,
                         QWidget *parent = nullptr);
 
-    QString getProjectId() const { return m_projectId; }
+    QString getProjectId() const { return _projectId; }
 
 signals:
     void clicked(const QString& projectId);
@@ -65,10 +65,10 @@ protected:
     void leaveEvent(QEvent* event) override;
 
 private:
-    QString m_projectId;
-    QString m_name;
-    QString m_description;
-    int m_starCount;
+    QString _projectId;
+    QString _name;
+    QString _description;
+    int _starCount;
 };
 
 #endif // PROJECTSELECTIONVIEW_H

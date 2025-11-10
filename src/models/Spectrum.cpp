@@ -22,9 +22,9 @@ SpectralFit::SpectralFit()
 
 // Spectrum implementation
 Spectrum::Spectrum()
-    : m_mjd(0.0)
-    , m_bjd(0.0)
-    , m_exposureTime(0.0)
+    : _mjd(0.0)
+    , _bjd(0.0)
+    , _exposureTime(0.0)
 {
 }
 
@@ -36,30 +36,30 @@ void Spectrum::setData(const std::vector<double>& wavelengths,
                       const std::vector<double>& fluxes,
                       const std::vector<double>& errors)
 {
-    m_wavelengths = wavelengths;
-    m_fluxes = fluxes;
-    m_fluxErrors = errors;
+    _wavelengths = wavelengths;
+    _fluxes = fluxes;
+    _fluxErrors = errors;
 }
 
 void Spectrum::addSpectralFit(std::shared_ptr<SpectralFit> fit)
 {
     // If this is set as best fit, unset others
     if (fit->isBestFit) {
-        for (auto& existing : m_spectralFits) {
+        for (auto& existing : _spectralFits) {
             existing->isBestFit = false;
         }
     }
-    m_spectralFits.push_back(fit);
+    _spectralFits.push_back(fit);
 }
 
 std::vector<std::shared_ptr<SpectralFit>> Spectrum::getSpectralFits() const
 {
-    return m_spectralFits;
+    return _spectralFits;
 }
 
 std::shared_ptr<SpectralFit> Spectrum::getBestFit() const
 {
-    for (const auto& fit : m_spectralFits) {
+    for (const auto& fit : _spectralFits) {
         if (fit->isBestFit) {
             return fit;
         }
@@ -104,7 +104,7 @@ bool Spectrum::loadFromFile(const QString& filepath)
 
     if (!wavelengths.empty()) {
         setData(wavelengths, fluxes, errors);
-        m_file = filepath;
+        _file = filepath;
         return true;
     }
 

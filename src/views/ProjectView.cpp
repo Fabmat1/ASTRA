@@ -16,7 +16,7 @@
 
 ProjectView::ProjectView(ApplicationController* controller, QWidget *parent)
     : QWidget(parent)
-    , m_controller(controller)
+    , _controller(controller)
 {
     setupUi();
     setupMenuBar();
@@ -33,81 +33,81 @@ void ProjectView::setupUi()
     mainLayout->setContentsMargins(0, 0, 0, 0);
 
     // Menu bar
-    m_menuBar = new QMenuBar(this);
-    mainLayout->addWidget(m_menuBar);
+    _menuBar = new QMenuBar(this);
+    mainLayout->addWidget(_menuBar);
 
     // Project title
-    m_projectTitle = new QLabel("Project");
-    m_projectTitle->setStyleSheet("font-size: 20px; font-weight: bold; margin: 10px;");
-    mainLayout->addWidget(m_projectTitle);
+    _projectTitle = new QLabel("Project");
+    _projectTitle->setStyleSheet("font-size: 20px; font-weight: bold; margin: 10px;");
+    mainLayout->addWidget(_projectTitle);
 
     // Star table
-    m_starTable = new QTableView(this);
-    m_starTable->setAlternatingRowColors(true);
-    m_starTable->setSelectionBehavior(QAbstractItemView::SelectRows);
-    m_starTable->setSortingEnabled(true);
-    m_starTable->horizontalHeader()->setStretchLastSection(true);
-    mainLayout->addWidget(m_starTable, 1);
+    _starTable = new QTableView(this);
+    _starTable->setAlternatingRowColors(true);
+    _starTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    _starTable->setSortingEnabled(true);
+    _starTable->horizontalHeader()->setStretchLastSection(true);
+    mainLayout->addWidget(_starTable, 1);
 
     // Status bar
-    m_statusLabel = new QLabel("Ready");
-    m_statusLabel->setStyleSheet("padding: 5px; border-top: 1px solid #ddd;");
-    mainLayout->addWidget(m_statusLabel);
+    _statusLabel = new QLabel("Ready");
+    _statusLabel->setStyleSheet("padding: 5px; border-top: 1px solid #ddd;");
+    mainLayout->addWidget(_statusLabel);
 
     // Connect double-click
-    connect(m_starTable, &QTableView::doubleClicked,
+    connect(_starTable, &QTableView::doubleClicked,
             this, &ProjectView::onStarDoubleClicked);
 }
 
 void ProjectView::setupMenuBar()
 {
     // Stars menu
-    QMenu* starsMenu = m_menuBar->addMenu("&Stars");
-    m_addStarAction = starsMenu->addAction("&Add Star...");
-    m_importStarsAction = starsMenu->addAction("&Import Stars...");
+    QMenu* starsMenu = _menuBar->addMenu("&Stars");
+    _addStarAction = starsMenu->addAction("&Add Star...");
+    _importStarsAction = starsMenu->addAction("&Import Stars...");
     starsMenu->addSeparator();
-    m_removeStarAction = starsMenu->addAction("&Remove Selected");
+    _removeStarAction = starsMenu->addAction("&Remove Selected");
     starsMenu->addSeparator();
-    m_detailWindowAction = starsMenu->addAction("View &Detail Window");
+    _detailWindowAction = starsMenu->addAction("View &Detail Window");
 
     // View menu
-    QMenu* viewMenu = m_menuBar->addMenu("&View");
-    m_configureColumnsAction = viewMenu->addAction("&Configure Columns...");
+    QMenu* viewMenu = _menuBar->addMenu("&View");
+    _configureColumnsAction = viewMenu->addAction("&Configure Columns...");
 
     // Analysis menu
-    QMenu* analysisMenu = m_menuBar->addMenu("&Analysis");
-    m_createPlotAction = analysisMenu->addAction("Create &Plot...");
+    QMenu* analysisMenu = _menuBar->addMenu("&Analysis");
+    _createPlotAction = analysisMenu->addAction("Create &Plot...");
 }
 
 void ProjectView::createActions()
 {
-    connect(m_addStarAction, &QAction::triggered, this, &ProjectView::onAddStar);
-    connect(m_importStarsAction, &QAction::triggered, this, &ProjectView::onImportStars);
-    connect(m_removeStarAction, &QAction::triggered, this, &ProjectView::onRemoveStar);
-    connect(m_detailWindowAction, &QAction::triggered, this, &ProjectView::onShowDetailWindow);
-    connect(m_configureColumnsAction, &QAction::triggered, this, &ProjectView::onConfigureColumns);
-    connect(m_createPlotAction, &QAction::triggered, this, &ProjectView::onCreatePlot);
+    connect(_addStarAction, &QAction::triggered, this, &ProjectView::onAddStar);
+    connect(_importStarsAction, &QAction::triggered, this, &ProjectView::onImportStars);
+    connect(_removeStarAction, &QAction::triggered, this, &ProjectView::onRemoveStar);
+    connect(_detailWindowAction, &QAction::triggered, this, &ProjectView::onShowDetailWindow);
+    connect(_configureColumnsAction, &QAction::triggered, this, &ProjectView::onConfigureColumns);
+    connect(_createPlotAction, &QAction::triggered, this, &ProjectView::onCreatePlot);
 }
 
 void ProjectView::loadProject(const QString& projectId)
 {
-    m_currentProject = m_controller->openProject(projectId);
-    if (m_currentProject) {
-        m_projectTitle->setText(m_currentProject->getName());
+    _currentProject = _controller->openProject(projectId);
+    if (_currentProject) {
+        _projectTitle->setText(_currentProject->getName());
 
         // Create and set table model
-        m_tableModel = new StarTableModel(m_currentProject, this);
-        m_starTable->setModel(m_tableModel);
+        _tableModel = new StarTableModel(_currentProject, this);
+        _starTable->setModel(_tableModel);
 
         // Update status
-        m_statusLabel->setText(QString("Loaded %1 stars").arg(m_currentProject->getStarCount()));
+        _statusLabel->setText(QString("Loaded %1 stars").arg(_currentProject->getStarCount()));
     }
 }
 
 void ProjectView::onStarDoubleClicked(const QModelIndex& index)
 {
-    if (m_currentProject && index.isValid()) {
-        auto stars = m_currentProject->getAllStars();
+    if (_currentProject && index.isValid()) {
+        auto stars = _currentProject->getAllStars();
         if (index.row() < static_cast<int>(stars.size())) {
             auto star = stars[index.row()];
             onShowDetailWindow();
@@ -159,34 +159,34 @@ void ProjectView::onCreatePlot()
 // StarTableModel implementation
 StarTableModel::StarTableModel(std::shared_ptr<Project> project, QObject *parent)
     : QAbstractTableModel(parent)
-    , m_project(project)
+    , _project(project)
 {
 }
 
 int StarTableModel::rowCount(const QModelIndex &parent) const
 {
     Q_UNUSED(parent)
-    return m_project ? m_project->getStarCount() : 0;
+    return _project ? _project->getStarCount() : 0;
 }
 
 int StarTableModel::columnCount(const QModelIndex &parent) const
 {
     Q_UNUSED(parent)
-    if (!m_project) return 0;
-    return m_project->getVisibleColumns().size();
+    if (!_project) return 0;
+    return _project->getVisibleColumns().size();
 }
 
 QVariant StarTableModel::data(const QModelIndex &index, int role) const
 {
-    if (!m_project || !index.isValid())
+    if (!_project || !index.isValid())
         return QVariant();
 
-    auto stars = m_project->getAllStars();
+    auto stars = _project->getAllStars();
     if (index.row() >= static_cast<int>(stars.size()))
         return QVariant();
 
     auto star = stars[index.row()];
-    auto columns = m_project->getVisibleColumns();
+    auto columns = _project->getVisibleColumns();
 
     if (role == Qt::DisplayRole) {
         if (index.column() < static_cast<int>(columns.size())) {
@@ -199,10 +199,10 @@ QVariant StarTableModel::data(const QModelIndex &index, int role) const
 
 QVariant StarTableModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
-    if (!m_project || orientation != Qt::Horizontal || role != Qt::DisplayRole)
+    if (!_project || orientation != Qt::Horizontal || role != Qt::DisplayRole)
         return QVariant();
 
-    auto columns = m_project->getVisibleColumns();
+    auto columns = _project->getVisibleColumns();
     if (section < static_cast<int>(columns.size())) {
         return columns[section];
     }

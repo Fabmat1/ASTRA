@@ -35,21 +35,21 @@ private:
     void createObservabilityPlot();
     void createSpectraPlot();
 
-    std::shared_ptr<Star> m_star;
+    std::shared_ptr<Star> _star;
 
     // UI elements
-    QChartView* m_rvPlot;
-    QChartView* m_observabilityPlot;
-    QChartView* m_spectraPlot;
-    QListWidget* m_bibcodesList;
-    QTableWidget* m_infoTable;
+    QChartView* _rvPlot;
+    QChartView* _observabilityPlot;
+    QChartView* _spectraPlot;
+    QListWidget* _bibcodesList;
+    QTableWidget* _infoTable;
 
     // Action buttons
-    QPushButton* m_simbadButton;
-    QPushButton* m_spectraButton;
-    QPushButton* m_sedButton;
-    QPushButton* m_rvFitButton;
-    QPushButton* m_cmdButton;
+    QPushButton* _simbadButton;
+    QPushButton* _spectraButton;
+    QPushButton* _sedButton;
+    QPushButton* _rvFitButton;
+    QPushButton* _cmdButton;
 };
 
 #endif // STARDETAILVIEW_H

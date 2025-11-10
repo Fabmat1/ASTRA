@@ -11,7 +11,7 @@
 
 MainWindow::MainWindow(ApplicationController* controller, QWidget *parent)
     : QMainWindow(parent)
-    , m_controller(controller)
+    , _controller(controller)
 {
     setupUi();
     setupMenus();
@@ -32,19 +32,19 @@ void MainWindow::setupUi()
     resize(1400, 900);
 
     // Create central stacked widget for switching between views
-    m_centralStack = new QStackedWidget(this);
-    setCentralWidget(m_centralStack);
+    _centralStack = new QStackedWidget(this);
+    setCentralWidget(_centralStack);
 
     // Create views
-    m_projectSelectionView = new ProjectSelectionView(m_controller, this);
-    m_projectView = new ProjectView(m_controller, this);
+    _projectSelectionView = new ProjectSelectionView(_controller, this);
+    _projectView = new ProjectView(_controller, this);
 
     // Add views to stack
-    m_centralStack->addWidget(m_projectSelectionView);
-    m_centralStack->addWidget(m_projectView);
+    _centralStack->addWidget(_projectSelectionView);
+    _centralStack->addWidget(_projectView);
 
     // Connect signals
-    connect(m_projectSelectionView, &ProjectSelectionView::projectSelected,
+    connect(_projectSelectionView, &ProjectSelectionView::projectSelected,
             this, &MainWindow::showProject);
 
     // Status bar
@@ -57,39 +57,39 @@ void MainWindow::setupMenus()
 
     // File menu
     QMenu* fileMenu = menuBar->addMenu("&File");
-    m_newProjectAction = fileMenu->addAction("&New Project...");
-    m_openProjectAction = fileMenu->addAction("&Open Project...");
-    m_closeProjectAction = fileMenu->addAction("&Close Project");
+    _newProjectAction = fileMenu->addAction("&New Project...");
+    _openProjectAction = fileMenu->addAction("&Open Project...");
+    _closeProjectAction = fileMenu->addAction("&Close Project");
     fileMenu->addSeparator();
-    m_exitAction = fileMenu->addAction("E&xit");
+    _exitAction = fileMenu->addAction("E&xit");
 
     // View menu
     QMenu* viewMenu = menuBar->addMenu("&View");
-    m_toggleThemeAction = viewMenu->addAction("Toggle &Theme");
+    _toggleThemeAction = viewMenu->addAction("Toggle &Theme");
 
     // Help menu
     QMenu* helpMenu = menuBar->addMenu("&Help");
-    m_aboutAction = helpMenu->addAction("&About ASTRA...");
+    _aboutAction = helpMenu->addAction("&About ASTRA...");
 }
 
 void MainWindow::createActions()
 {
     // File actions
-    connect(m_newProjectAction, &QAction::triggered, [this]() {
-        m_projectSelectionView->createNewProject();
+    connect(_newProjectAction, &QAction::triggered, [this]() {
+        _projectSelectionView->createNewProject();
     });
 
-    connect(m_closeProjectAction, &QAction::triggered, [this]() {
+    connect(_closeProjectAction, &QAction::triggered, [this]() {
         showProjectSelection();
     });
 
-    connect(m_exitAction, &QAction::triggered, this, &QWidget::close);
+    connect(_exitAction, &QAction::triggered, this, &QWidget::close);
 
     // View actions
-    connect(m_toggleThemeAction, &QAction::triggered, this, &MainWindow::toggleTheme);
+    connect(_toggleThemeAction, &QAction::triggered, this, &MainWindow::toggleTheme);
 
     // Help actions
-    connect(m_aboutAction, &QAction::triggered, [this]() {
+    connect(_aboutAction, &QAction::triggered, [this]() {
         QMessageBox::about(this, "About ASTRA",
             "ASTRA - Stellar Astrophysics Data Manager\n\n"
             "Version 0.1.0\n\n"
@@ -99,19 +99,19 @@ void MainWindow::createActions()
 
 void MainWindow::showProjectSelection()
 {
-    m_centralStack->setCurrentWidget(m_projectSelectionView);
-    m_closeProjectAction->setEnabled(false);
+    _centralStack->setCurrentWidget(_projectSelectionView);
+    _closeProjectAction->setEnabled(false);
 }
 
 void MainWindow::showProject(const QString& projectId)
 {
-    m_projectView->loadProject(projectId);
-    m_centralStack->setCurrentWidget(m_projectView);
-    m_closeProjectAction->setEnabled(true);
+    _projectView->loadProject(projectId);
+    _centralStack->setCurrentWidget(_projectView);
+    _closeProjectAction->setEnabled(true);
 }
 
 void MainWindow::toggleTheme()
 {
     // TODO: Implement theme toggling between Catppuccin Light and Dark
-    m_controller->toggleTheme();
+    _controller->toggleTheme();
 }

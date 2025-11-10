@@ -19,7 +19,7 @@
 
 StarDetailView::StarDetailView(std::shared_ptr<Star> star, QWidget *parent)
     : QWidget(parent)
-    , m_star(star)
+    , _star(star)
 {
     setupUi();
     loadStarData();
@@ -42,9 +42,9 @@ void StarDetailView::setupUi()
     // RV curve plot
     QGroupBox* rvGroup = new QGroupBox("Radial Velocity Curve");
     QVBoxLayout* rvLayout = new QVBoxLayout(rvGroup);
-    m_rvPlot = new QChartView;
-    m_rvPlot->setMinimumHeight(300);
-    rvLayout->addWidget(m_rvPlot);
+    _rvPlot = new QChartView;
+    _rvPlot->setMinimumHeight(300);
+    rvLayout->addWidget(_rvPlot);
     leftLayout->addWidget(rvGroup);
 
     // Bibcodes and info table
@@ -53,18 +53,18 @@ void StarDetailView::setupUi()
     // Bibcodes list
     QGroupBox* bibGroup = new QGroupBox("Bibcodes");
     QVBoxLayout* bibLayout = new QVBoxLayout(bibGroup);
-    m_bibcodesList = new QListWidget;
-    bibLayout->addWidget(m_bibcodesList);
+    _bibcodesList = new QListWidget;
+    bibLayout->addWidget(_bibcodesList);
     infoLayout->addWidget(bibGroup);
 
     // Info table
     QGroupBox* infoGroup = new QGroupBox("Star Information");
     QVBoxLayout* infoGroupLayout = new QVBoxLayout(infoGroup);
-    m_infoTable = new QTableWidget;
-    m_infoTable->setColumnCount(2);
-    m_infoTable->setHorizontalHeaderLabels({"Property", "Value"});
-    m_infoTable->horizontalHeader()->setStretchLastSection(true);
-    infoGroupLayout->addWidget(m_infoTable);
+    _infoTable = new QTableWidget;
+    _infoTable->setColumnCount(2);
+    _infoTable->setHorizontalHeaderLabels({"Property", "Value"});
+    _infoTable->horizontalHeader()->setStretchLastSection(true);
+    infoGroupLayout->addWidget(_infoTable);
     infoLayout->addWidget(infoGroup);
 
     leftLayout->addLayout(infoLayout);
@@ -76,42 +76,42 @@ void StarDetailView::setupUi()
     // Observability plot
     QGroupBox* obsGroup = new QGroupBox("Observability");
     QVBoxLayout* obsLayout = new QVBoxLayout(obsGroup);
-    m_observabilityPlot = new QChartView;
-    m_observabilityPlot->setMinimumHeight(250);
-    obsLayout->addWidget(m_observabilityPlot);
+    _observabilityPlot = new QChartView;
+    _observabilityPlot->setMinimumHeight(250);
+    obsLayout->addWidget(_observabilityPlot);
     rightLayout->addWidget(obsGroup);
 
     // Spectra plot
     QGroupBox* specGroup = new QGroupBox("Spectra");
     QVBoxLayout* specLayout = new QVBoxLayout(specGroup);
-    m_spectraPlot = new QChartView;
-    m_spectraPlot->setMinimumHeight(250);
-    specLayout->addWidget(m_spectraPlot);
+    _spectraPlot = new QChartView;
+    _spectraPlot->setMinimumHeight(250);
+    specLayout->addWidget(_spectraPlot);
     rightLayout->addWidget(specGroup);
 
     // Action buttons
     QGroupBox* actionsGroup = new QGroupBox("Actions");
     QVBoxLayout* actionsLayout = new QVBoxLayout(actionsGroup);
 
-    m_simbadButton = new QPushButton("Show in SIMBAD");
-    connect(m_simbadButton, &QPushButton::clicked, this, &StarDetailView::onShowInSimbad);
-    actionsLayout->addWidget(m_simbadButton);
+    _simbadButton = new QPushButton("Show in SIMBAD");
+    connect(_simbadButton, &QPushButton::clicked, this, &StarDetailView::onShowInSimbad);
+    actionsLayout->addWidget(_simbadButton);
 
-    m_spectraButton = new QPushButton("View Spectra");
-    connect(m_spectraButton, &QPushButton::clicked, this, &StarDetailView::onViewSpectra);
-    actionsLayout->addWidget(m_spectraButton);
+    _spectraButton = new QPushButton("View Spectra");
+    connect(_spectraButton, &QPushButton::clicked, this, &StarDetailView::onViewSpectra);
+    actionsLayout->addWidget(_spectraButton);
 
-    m_sedButton = new QPushButton("View SED");
-    connect(m_sedButton, &QPushButton::clicked, this, &StarDetailView::onViewSED);
-    actionsLayout->addWidget(m_sedButton);
+    _sedButton = new QPushButton("View SED");
+    connect(_sedButton, &QPushButton::clicked, this, &StarDetailView::onViewSED);
+    actionsLayout->addWidget(_sedButton);
 
-    m_rvFitButton = new QPushButton("Fit RV Curve");
-    connect(m_rvFitButton, &QPushButton::clicked, this, &StarDetailView::onFitRVCurve);
-    actionsLayout->addWidget(m_rvFitButton);
+    _rvFitButton = new QPushButton("Fit RV Curve");
+    connect(_rvFitButton, &QPushButton::clicked, this, &StarDetailView::onFitRVCurve);
+    actionsLayout->addWidget(_rvFitButton);
 
-    m_cmdButton = new QPushButton("View CMD");
-    connect(m_cmdButton, &QPushButton::clicked, this, &StarDetailView::onViewCMD);
-    actionsLayout->addWidget(m_cmdButton);
+    _cmdButton = new QPushButton("View CMD");
+    connect(_cmdButton, &QPushButton::clicked, this, &StarDetailView::onViewCMD);
+    actionsLayout->addWidget(_cmdButton);
 
     rightLayout->addWidget(actionsGroup);
     rightLayout->addStretch();
@@ -121,13 +121,13 @@ void StarDetailView::setupUi()
 
 void StarDetailView::loadStarData()
 {
-    if (!m_star) return;
+    if (!_star) return;
 
     // Load bibcodes
-    for (const auto& bibcode : m_star->getBibcodes()) {
-        m_bibcodesList->addItem(bibcode);
+    for (const auto& bibcode : _star->getBibcodes()) {
+        _bibcodesList->addItem(bibcode);
     }
-    connect(m_bibcodesList, &QListWidget::itemDoubleClicked,
+    connect(_bibcodesList, &QListWidget::itemDoubleClicked,
             [](QListWidgetItem* item) {
                 QString url = QString("https://ui.adsabs.harvard.edu/abs/%1/abstract")
                                 .arg(item->text());
@@ -137,21 +137,21 @@ void StarDetailView::loadStarData()
     // Load info table
     int row = 0;
     auto addRow = [this, &row](const QString& property, const QString& value) {
-        m_infoTable->insertRow(row);
-        m_infoTable->setItem(row, 0, new QTableWidgetItem(property));
-        m_infoTable->setItem(row, 1, new QTableWidgetItem(value));
+        _infoTable->insertRow(row);
+        _infoTable->setItem(row, 0, new QTableWidgetItem(property));
+        _infoTable->setItem(row, 1, new QTableWidgetItem(value));
         row++;
     };
 
-    addRow("Name", m_star->getAlias());
-    addRow("Source ID", m_star->getSourceId());
-    addRow("RA", QString::number(m_star->getRa()));
-    addRow("DEC", QString::number(m_star->getDec()));
-    addRow("Spectral Class", m_star->getSpecClass());
-    addRow("Teff", QString::number(m_star->getTeff()));
-    addRow("log g", QString::number(m_star->getLogg()));
-    addRow("G mag", QString::number(m_star->getGmag()));
-    addRow("BP-RP", QString::number(m_star->getBpRp()));
+    addRow("Name", _star->getAlias());
+    addRow("Source ID", _star->getSourceId());
+    addRow("RA", QString::number(_star->getRa()));
+    addRow("DEC", QString::number(_star->getDec()));
+    addRow("Spectral Class", _star->getSpecClass());
+    addRow("Teff", QString::number(_star->getTeff()));
+    addRow("log g", QString::number(_star->getLogg()));
+    addRow("G mag", QString::number(_star->getGmag()));
+    addRow("BP-RP", QString::number(_star->getBpRp()));
 
     // Create plots
     createRVPlot();
@@ -172,7 +172,7 @@ void StarDetailView::createRVPlot()
     chart->addSeries(series);
 
     chart->createDefaultAxes();
-    m_rvPlot->setChart(chart);
+    _rvPlot->setChart(chart);
 }
 
 void StarDetailView::createObservabilityPlot()
@@ -180,7 +180,7 @@ void StarDetailView::createObservabilityPlot()
     // TODO: Implement observability plot
     QChart* chart = new QChart;
     chart->setTitle("Observability");
-    m_observabilityPlot->setChart(chart);
+    _observabilityPlot->setChart(chart);
 }
 
 void StarDetailView::createSpectraPlot()
@@ -188,15 +188,15 @@ void StarDetailView::createSpectraPlot()
     // TODO: Implement spectra stacking plot
     QChart* chart = new QChart;
     chart->setTitle("Stacked Spectra");
-    m_spectraPlot->setChart(chart);
+    _spectraPlot->setChart(chart);
 }
 
 void StarDetailView::onShowInSimbad()
 {
-    if (!m_star) return;
+    if (!_star) return;
 
     QString url = QString("https://simbad.cds.unistra.fr/simbad/sim-id?Ident=Gaia+DR3+%1&submit=submit+id")
-                    .arg(m_star->getSourceId());
+                    .arg(_star->getSourceId());
     QDesktopServices::openUrl(QUrl(url));
 }
 

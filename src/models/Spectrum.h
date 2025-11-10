@@ -42,29 +42,29 @@ public:
     ~Spectrum();
 
     // File and metadata
-    QString getFile() const { return m_file; }
-    void setFile(const QString& file) { m_file = file; }
+    QString getFile() const { return _file; }
+    void setFile(const QString& file) { _file = file; }
 
-    double getMJD() const { return m_mjd; }
-    void setMJD(double mjd) { m_mjd = mjd; }
+    double getMJD() const { return _mjd; }
+    void setMJD(double mjd) { _mjd = mjd; }
 
-    double getBJD() const { return m_bjd; }
-    void setBJD(double bjd) { m_bjd = bjd; }
+    double getBJD() const { return _bjd; }
+    void setBJD(double bjd) { _bjd = bjd; }
 
-    double getExposureTime() const { return m_exposureTime; }
-    void setExposureTime(double expTime) { m_exposureTime = expTime; }
+    double getExposureTime() const { return _exposureTime; }
+    void setExposureTime(double expTime) { _exposureTime = expTime; }
 
-    QString getInstrument() const { return m_instrument; }
-    void setInstrument(const QString& instrument) { m_instrument = instrument; }
+    QString getInstrument() const { return _instrument; }
+    void setInstrument(const QString& instrument) { _instrument = instrument; }
 
     // Spectral data
     void setData(const std::vector<double>& wavelengths,
                  const std::vector<double>& fluxes,
                  const std::vector<double>& errors);
 
-    std::vector<double> getWavelengths() const { return m_wavelengths; }
-    std::vector<double> getFluxes() const { return m_fluxes; }
-    std::vector<double> getFluxErrors() const { return m_fluxErrors; }
+    std::vector<double> getWavelengths() const { return _wavelengths; }
+    std::vector<double> getFluxes() const { return _fluxes; }
+    std::vector<double> getFluxErrors() const { return _fluxErrors; }
 
     // Model fits
     void addSpectralFit(std::shared_ptr<SpectralFit> fit);
@@ -73,23 +73,23 @@ public:
 
     // Utilities
     bool loadFromFile(const QString& filepath);
-    bool hasData() const { return !m_wavelengths.empty(); }
+    bool hasData() const { return !_wavelengths.empty(); }
 
 private:
     // File and metadata
-    QString m_file;
-    QString m_instrument;
-    double m_mjd;  // Modified Julian Date
-    double m_bjd;  // Barycentric Julian Date
-    double m_exposureTime;
+    QString _file;
+    QString _instrument;
+    double _mjd;  // Modified Julian Date
+    double _bjd;  // Barycentric Julian Date
+    double _exposureTime;
 
     // Spectral data
-    std::vector<double> m_wavelengths;  // in Angstroms
-    std::vector<double> m_fluxes;
-    std::vector<double> m_fluxErrors;
+    std::vector<double> _wavelengths;  // in Angstroms
+    std::vector<double> _fluxes;
+    std::vector<double> _fluxErrors;
 
     // Model fits
-    std::vector<std::shared_ptr<SpectralFit>> m_spectralFits;
+    std::vector<std::shared_ptr<SpectralFit>> _spectralFits;
 };
 
 #endif // SPECTRUM_H

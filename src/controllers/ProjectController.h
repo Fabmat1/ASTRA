@@ -35,7 +35,7 @@ signals:
     void dataChanged();
 
 private:
-    std::shared_ptr<Project> m_project;
+    std::shared_ptr<Project> _project;
 };
 
 #endif // PROJECTCONTROLLER_H

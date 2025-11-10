@@ -15,12 +15,12 @@ public:
     ~Project();
 
     // Getters
-    QString getId() const { return m_id; }
-    QString getName() const { return m_name; }
-    QString getDescription() const { return m_description; }
-    QString getImagePath() const { return m_imagePath; }
-    QDateTime getCreatedDate() const { return m_createdDate; }
-    QDateTime getModifiedDate() const { return m_modifiedDate; }
+    QString getId() const { return _id; }
+    QString getName() const { return _name; }
+    QString getDescription() const { return _description; }
+    QString getImagePath() const { return _imagePath; }
+    QDateTime getCreatedDate() const { return _createdDate; }
+    QDateTime getModifiedDate() const { return _modifiedDate; }
 
     // Setters
     void setName(const QString& name);
@@ -32,22 +32,22 @@ public:
     void removeStar(const QString& sourceId);
     std::shared_ptr<Star> getStar(const QString& sourceId) const;
     std::vector<std::shared_ptr<Star>> getAllStars() const;
-    size_t getStarCount() const { return m_stars.size(); }
+    size_t getStarCount() const { return _stars.size(); }
 
     // Column visibility management
-    std::vector<QString> getVisibleColumns() const { return m_visibleColumns; }
+    std::vector<QString> getVisibleColumns() const { return _visibleColumns; }
     void setVisibleColumns(const std::vector<QString>& columns);
 
 private:
-    QString m_id;
-    QString m_name;
-    QString m_description;
-    QString m_imagePath;
-    QDateTime m_createdDate;
-    QDateTime m_modifiedDate;
+    QString _id;
+    QString _name;
+    QString _description;
+    QString _imagePath;
+    QDateTime _createdDate;
+    QDateTime _modifiedDate;
 
-    std::vector<std::shared_ptr<Star>> m_stars;
-    std::vector<QString> m_visibleColumns;
+    std::vector<std::shared_ptr<Star>> _stars;
+    std::vector<QString> _visibleColumns;
 
     QString generateId() const;
 };
