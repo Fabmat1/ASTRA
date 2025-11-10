@@ -35,7 +35,8 @@ private:
     void loadProjects();
     ProjectCard* createProjectCard(const QString& id, const QString& name,
                                    const QString& description, int starCount);
-
+    
+    QList<ProjectCard*> m_projectCards;
     ApplicationController* m_controller;
     QGridLayout* m_projectGrid;
     QPushButton* m_newProjectButton;

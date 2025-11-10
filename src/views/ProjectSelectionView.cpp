@@ -9,6 +9,7 @@
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QMessageBox>
+#include <iostream>
 
 ProjectSelectionView::ProjectSelectionView(ApplicationController* controller, QWidget *parent)
     : QWidget(parent)
@@ -56,17 +57,18 @@ void ProjectSelectionView::setupUi()
 
 void ProjectSelectionView::loadProjects()
 {
-    // Clear existing cards
-    QLayoutItem* item;
-    while ((item = m_projectGrid->takeAt(0)) != nullptr) {
-        delete item->widget();
-        delete item;
+    // Clear only project cards
+    for (auto* card : m_projectCards) {
+        m_projectGrid->removeWidget(card);
+        delete card;
     }
+    m_projectCards.clear();
 
-    // Add new project button first
+    // Remove and re-add the new project button
+    m_projectGrid->removeWidget(m_newProjectButton);
+    
     m_projectGrid->addWidget(m_newProjectButton, 0, 0);
 
-    // Load projects from controller
     auto projects = m_controller->getProjects();
     int row = 0, col = 1;
     for (const auto& project : projects) {
@@ -76,11 +78,14 @@ void ProjectSelectionView::loadProjects()
             project->getDescription(),
             project->getStarCount()
         );
-        connect(card, &ProjectCard::clicked, this, &ProjectSelectionView::onProjectCardClicked);
+        connect(card, &ProjectCard::clicked, 
+                this, &ProjectSelectionView::onProjectCardClicked);
+        
+        m_projectCards.append(card);
         m_projectGrid->addWidget(card, row, col);
 
         col++;
-        if (col > 3) {  // 4 cards per row
+        if (col > 3) {
             col = 0;
             row++;
         }
