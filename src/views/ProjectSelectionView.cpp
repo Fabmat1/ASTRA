@@ -1,6 +1,7 @@
 #include "ProjectSelectionView.h"
 #include "controllers/ApplicationController.h"
 #include "models/Project.h"
+#include "dialogs/NewProjectDialog.h"
 #include <QGridLayout>
 #include <QPushButton>
 #include <QLabel>
@@ -9,6 +10,8 @@
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QMessageBox>
+#include <QMenu>
+#include <QContextMenuEvent>
 #include <iostream>
 
 ProjectSelectionView::ProjectSelectionView(ApplicationController* controller, QWidget *parent)
@@ -28,18 +31,15 @@ void ProjectSelectionView::setupUi()
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(20, 20, 20, 20);
 
-    // Title
     QLabel* titleLabel = new QLabel("Select a Project");
     titleLabel->setStyleSheet("font-size: 24px; font-weight: bold; margin-bottom: 20px;");
     mainLayout->addWidget(titleLabel);
 
-    // Project grid
     QWidget* gridWidget = new QWidget;
     _projectGrid = new QGridLayout(gridWidget);
     _projectGrid->setSpacing(20);
     mainLayout->addWidget(gridWidget, 1);
 
-    // New project button
     _newProjectButton = new QPushButton("+ Create New Project");
     _newProjectButton->setFixedSize(200, 200);
     _newProjectButton->setStyleSheet(
@@ -57,16 +57,13 @@ void ProjectSelectionView::setupUi()
 
 void ProjectSelectionView::loadProjects()
 {
-    // Clear only project cards
     for (auto* card : _projectCards) {
         _projectGrid->removeWidget(card);
         delete card;
     }
     _projectCards.clear();
 
-    // Remove and re-add the new project button
     _projectGrid->removeWidget(_newProjectButton);
-    
     _projectGrid->addWidget(_newProjectButton, 0, 0);
 
     auto projects = _controller->getProjects();
@@ -78,8 +75,13 @@ void ProjectSelectionView::loadProjects()
             project->getDescription(),
             project->getStarCount()
         );
+        
         connect(card, &ProjectCard::clicked, 
                 this, &ProjectSelectionView::onProjectCardClicked);
+        connect(card, &ProjectCard::editRequested,
+                this, &ProjectSelectionView::onProjectEdit);
+        connect(card, &ProjectCard::deleteRequested,
+                this, &ProjectSelectionView::onProjectDelete);
         
         _projectCards.append(card);
         _projectGrid->addWidget(card, row, col);
@@ -110,24 +112,67 @@ void ProjectSelectionView::onNewProjectClicked()
 
 void ProjectSelectionView::createNewProject()
 {
-    bool ok;
-    QString name = QInputDialog::getText(this, "New Project",
-                                         "Project Name:", QLineEdit::Normal,
-                                         "", &ok);
-    if (ok && !name.isEmpty()) {
-        QString description = QInputDialog::getText(this, "New Project",
-                                                    "Project Description (optional):",
-                                                    QLineEdit::Normal, "", &ok);
-        if (ok) {
-            _controller->createProject(name, description);
-            refreshProjects();
-        }
+    NewProjectDialog dialog(this);
+    if (dialog.exec() == QDialog::Accepted) {
+        _controller->createProject(dialog.projectName(), dialog.projectDescription());
+        refreshProjects();
     }
 }
 
 void ProjectSelectionView::refreshProjects()
 {
     loadProjects();
+}
+
+void ProjectSelectionView::onProjectEdit(const QString& projectId)
+{
+    // Find project
+    auto projects = _controller->getProjects();
+    for (const auto& project : projects) {
+        if (project->getId() == projectId) {
+            bool ok;
+            QString newName = QInputDialog::getText(this, "Edit Project",
+                                                   "Project Name:", QLineEdit::Normal,
+                                                   project->getName(), &ok);
+            if (ok && !newName.isEmpty()) {
+                project->setName(newName);
+                refreshProjects();
+            }
+            break;
+        }
+    }
+}
+
+void ProjectSelectionView::onProjectDelete(const QString& projectId)
+{
+    // Find project to get details
+    auto projects = _controller->getProjects();
+    for (const auto& project : projects) {
+        if (project->getId() == projectId) {
+            QMessageBox msgBox(this);
+            msgBox.setWindowTitle("Confirm Delete");
+            msgBox.setText(QString("You are about to delete \"%1\" containing %2 stars.")
+                          .arg(project->getName())
+                          .arg(project->getStarCount()));
+            msgBox.setInformativeText("Are you sure?");
+            msgBox.setStandardButtons(QMessageBox::Cancel);
+            
+            QPushButton* deleteButton = msgBox.addButton("Delete", QMessageBox::DestructiveRole);
+            deleteButton->setStyleSheet("QPushButton { background-color: #dc3545; color: white; }");
+            
+            msgBox.setDefaultButton(QMessageBox::Cancel);
+            
+            if (msgBox.exec() == QMessageBox::Cancel) {
+                return;
+            }
+            
+            if (msgBox.clickedButton() == deleteButton) {
+                _controller->deleteProject(projectId);
+                refreshProjects();
+            }
+            break;
+        }
+    }
 }
 
 // ProjectCard implementation
@@ -139,6 +184,7 @@ ProjectCard::ProjectCard(const QString& id, const QString& name,
     , _name(name)
     , _description(description)
     , _starCount(starCount)
+    , _contextMenu(nullptr)
 {
     setFixedSize(200, 200);
     setCursor(Qt::PointingHandCursor);
@@ -146,21 +192,18 @@ ProjectCard::ProjectCard(const QString& id, const QString& name,
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->setContentsMargins(15, 15, 15, 15);
 
-    // Project icon/image placeholder
     QLabel* iconLabel = new QLabel;
     iconLabel->setFixedSize(80, 80);
     iconLabel->setStyleSheet("background-color: #e0e0e0; border-radius: 5px;");
     iconLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(iconLabel, 0, Qt::AlignHCenter);
 
-    // Project name
     QLabel* nameLabel = new QLabel(name);
     nameLabel->setStyleSheet("font-size: 16px; font-weight: bold;");
     nameLabel->setWordWrap(true);
     nameLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(nameLabel);
 
-    // Star count
     QLabel* countLabel = new QLabel(QString("%1 stars").arg(starCount));
     countLabel->setStyleSheet("color: #666;");
     countLabel->setAlignment(Qt::AlignCenter);
@@ -168,25 +211,78 @@ ProjectCard::ProjectCard(const QString& id, const QString& name,
 
     layout->addStretch();
 
-    // Simplified style to avoid parsing errors
     setStyleSheet(
         "background-color: white; "
         "border: 1px solid #ddd; "
         "border-radius: 10px;");
+    
+    createContextMenu();
+}
+
+void ProjectCard::createContextMenu()
+{
+    _contextMenu = new QMenu(this);
+    
+    QAction* openAction = _contextMenu->addAction("Open Project");
+    connect(openAction, &QAction::triggered, [this]() {
+        emit clicked(_projectId);
+    });
+    
+    _contextMenu->addSeparator();
+    
+    QAction* editNameAction = _contextMenu->addAction("Modify Name");
+    connect(editNameAction, &QAction::triggered, [this]() {
+        emit editRequested(_projectId);
+    });
+    
+    QAction* editDescAction = _contextMenu->addAction("Modify Description");
+    connect(editDescAction, &QAction::triggered, [this]() {
+        // Placeholder for description editing
+        QMessageBox::information(this, "Edit Description", 
+                                "Description editing to be implemented");
+    });
+    
+    QAction* editThumbAction = _contextMenu->addAction("Modify Thumbnail");
+    connect(editThumbAction, &QAction::triggered, [this]() {
+        // Placeholder for thumbnail editing
+        QMessageBox::information(this, "Edit Thumbnail", 
+                                "Thumbnail editing to be implemented");
+    });
+    
+    _contextMenu->addSeparator();
+    
+    QAction* deleteAction = _contextMenu->addAction("Delete Project");
+    connect(deleteAction, &QAction::triggered, [this]() {
+        emit deleteRequested(_projectId);
+    });
 }
 
 void ProjectCard::mousePressEvent(QMouseEvent* event)
 {
-    Q_UNUSED(event)
-    emit clicked(_projectId);
+    if (event->button() == Qt::LeftButton) {
+        emit clicked(_projectId);
+    }
+}
+
+void ProjectCard::contextMenuEvent(QContextMenuEvent* event)
+{
+    _contextMenu->exec(event->globalPos());
 }
 
 void ProjectCard::enterEvent(QEnterEvent* event)
 {
     Q_UNUSED(event)
+    setStyleSheet(
+        "background-color: #f5f5f5; "
+        "border: 1px solid #999; "
+        "border-radius: 10px;");
 }
 
 void ProjectCard::leaveEvent(QEvent* event)
 {
     Q_UNUSED(event)
+    setStyleSheet(
+        "background-color: white; "
+        "border: 1px solid #ddd; "
+        "border-radius: 10px;");
 }

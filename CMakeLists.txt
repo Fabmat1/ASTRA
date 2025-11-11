@@ -31,6 +31,7 @@ set(SOURCES
     src/views/ProjectSelectionView.cpp
     src/views/ProjectView.cpp
     src/views/StarDetailView.cpp
+    src/dialogs/NewProjectDialog.cpp
     src/utils/DatabaseManager.cpp
 )
 
@@ -46,6 +47,7 @@ set(HEADERS
     src/views/ProjectSelectionView.h
     src/views/ProjectView.h
     src/views/StarDetailView.h
+    src/dialogs/NewProjectDialog.h
     src/utils/DatabaseManager.h
 )
 

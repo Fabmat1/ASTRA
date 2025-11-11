@@ -7,9 +7,8 @@
 
 QT_BEGIN_NAMESPACE
 class QTableView;
-class QMenuBar;
-class QToolBar;
 class QLabel;
+class QModelIndex;
 QT_END_NAMESPACE
 
 class ApplicationController;
@@ -26,8 +25,7 @@ public:
 
     void loadProject(const QString& projectId);
 
-private slots:
-    void onStarDoubleClicked(const QModelIndex& index);
+public slots:
     void onAddStar();
     void onImportStars();
     void onRemoveStar();
@@ -35,10 +33,11 @@ private slots:
     void onConfigureColumns();
     void onCreatePlot();
 
+private slots:
+    void onStarDoubleClicked(const QModelIndex& index);
+
 private:
     void setupUi();
-    void setupMenuBar();
-    void createActions();
 
     ApplicationController* _controller;
     std::shared_ptr<Project> _currentProject;
@@ -48,15 +47,6 @@ private:
     StarTableModel* _tableModel;
     QLabel* _projectTitle;
     QLabel* _statusLabel;
-    QMenuBar* _menuBar;
-
-    // Actions
-    QAction* _addStarAction;
-    QAction* _importStarsAction;
-    QAction* _removeStarAction;
-    QAction* _detailWindowAction;
-    QAction* _configureColumnsAction;
-    QAction* _createPlotAction;
 };
 
 // Custom table model for stars

@@ -11,8 +11,7 @@ ApplicationController::ApplicationController(QObject *parent)
 {
     _databaseManager = std::make_unique<DatabaseManager>();
     loadProjects();
-    // Temporarily disable theme loading to avoid stylesheet errors
-    // applyTheme();
+    applyTheme();
 }
 
 ApplicationController::~ApplicationController()
@@ -29,7 +28,6 @@ std::shared_ptr<Project> ApplicationController::createProject(const QString& nam
     auto project = std::make_shared<Project>(name, description);
     _projects.push_back(project);
 
-    // Save to database
     _databaseManager->saveProject(project);
 
     emit projectCreated(project->getId());
@@ -64,6 +62,7 @@ bool ApplicationController::deleteProject(const QString& projectId)
     if (it != _projects.end()) {
         _projects.erase(it, _projects.end());
         _databaseManager->deleteProject(projectId);
+        emit projectDeleted(projectId);
         return true;
     }
     return false;
@@ -78,21 +77,11 @@ void ApplicationController::toggleTheme()
 
 void ApplicationController::loadProjects()
 {
-    // Load projects from database
     _projects = _databaseManager->loadProjects();
 }
 
 void ApplicationController::applyTheme()
 {
-    // Temporarily simplified to avoid stylesheet parse errors
-    QString simpleStyle = _isDarkTheme
-        ? "QWidget { background-color: #1e1e2e; color: #cdd6f4; }"
-        : "QWidget { background-color: #eff1f5; color: #4c4f69; }";
-
-    qApp->setStyleSheet(simpleStyle);
-
-    // Original resource-based loading (commented out for now)
-    /*
     QString themePath = _isDarkTheme
         ? ":/themes/catppuccin_dark.qss"
         : ":/themes/catppuccin_light.qss";
@@ -103,5 +92,4 @@ void ApplicationController::applyTheme()
         qApp->setStyleSheet(styleSheet);
         themeFile.close();
     }
-    */
 }

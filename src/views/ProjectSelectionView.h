@@ -7,6 +7,7 @@
 QT_BEGIN_NAMESPACE
 class QGridLayout;
 class QPushButton;
+class QMenu;
 QT_END_NAMESPACE
 
 class ApplicationController;
@@ -21,6 +22,7 @@ public:
     ~ProjectSelectionView();
 
     void createNewProject();
+    void refreshProjects();
 
 signals:
     void projectSelected(const QString& projectId);
@@ -28,7 +30,8 @@ signals:
 private slots:
     void onProjectCardClicked(const QString& projectId);
     void onNewProjectClicked();
-    void refreshProjects();
+    void onProjectEdit(const QString& projectId);
+    void onProjectDelete(const QString& projectId);
 
 private:
     void setupUi();
@@ -53,6 +56,7 @@ public:
                         QWidget *parent = nullptr);
 
     QString getProjectId() const { return _projectId; }
+    QString getName() const { return _name; }
 
 signals:
     void clicked(const QString& projectId);
@@ -63,12 +67,16 @@ protected:
     void mousePressEvent(QMouseEvent* event) override;
     void enterEvent(QEnterEvent* event) override;
     void leaveEvent(QEvent* event) override;
+    void contextMenuEvent(QContextMenuEvent* event) override;
 
 private:
     QString _projectId;
     QString _name;
     QString _description;
     int _starCount;
+    QMenu* _contextMenu;
+    
+    void createContextMenu();
 };
 
 #endif // PROJECTSELECTIONVIEW_H

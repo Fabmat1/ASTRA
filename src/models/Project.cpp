@@ -13,7 +13,7 @@ Project::Project(const QString& name, const QString& description)
     // Default visible columns
     _visibleColumns = {
         "alias", "source_id", "ra", "dec",
-        "gmag", "bp_rp", "spec_class", "teff"
+        "gmag", "bp_rp", "logp", "spec_class", "teff", "logg", "he"
     };
 }
 

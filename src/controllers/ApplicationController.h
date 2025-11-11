@@ -22,6 +22,7 @@ public:
     std::shared_ptr<Project> openProject(const QString& projectId);
     void closeProject();
     bool deleteProject(const QString& projectId);
+    std::shared_ptr<Project> getCurrentProject() const { return _currentProject; }
 
     // Theme management
     void toggleTheme();
@@ -31,6 +32,7 @@ signals:
     void projectCreated(const QString& projectId);
     void projectOpened(const QString& projectId);
     void projectClosed();
+    void projectDeleted(const QString& projectId);
     void themeChanged(bool isDark);
 
 private:
