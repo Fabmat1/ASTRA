@@ -21,22 +21,44 @@ Project::~Project()
 {
 }
 
-void Project::setName(const QString& name)
+void Project::setId(const QString& id, bool updateModifiedDate)
+{
+    _id = id;
+    if (updateModifiedDate)
+    _modifiedDate = QDateTime::currentDateTime();
+}
+
+void Project::setName(const QString& name, bool updateModifiedDate)
 {
     _name = name;
+    if (updateModifiedDate)
     _modifiedDate = QDateTime::currentDateTime();
 }
 
-void Project::setDescription(const QString& description)
+void Project::setDescription(const QString& description, bool updateModifiedDate)
 {
     _description = description;
+    if (updateModifiedDate)
     _modifiedDate = QDateTime::currentDateTime();
 }
 
-void Project::setImagePath(const QString& path)
+void Project::setImagePath(const QString& path, bool updateModifiedDate)
 {
     _imagePath = path;
+    if (updateModifiedDate)
     _modifiedDate = QDateTime::currentDateTime();
+}
+
+void Project::setCreatedDate(const QDateTime& date, bool updateModifiedDate)
+{
+    _createdDate = date;
+    if (updateModifiedDate)
+    _modifiedDate = QDateTime::currentDateTime();
+}
+
+void Project::setModifiedDate(const QDateTime& date)
+{
+    _modifiedDate = date;
 }
 
 void Project::addStar(std::shared_ptr<Star> star)
@@ -73,9 +95,10 @@ std::vector<std::shared_ptr<Star>> Project::getAllStars() const
     return _stars;
 }
 
-void Project::setVisibleColumns(const std::vector<QString>& columns)
+void Project::setVisibleColumns(const std::vector<QString>& columns, bool updateModifiedDate)
 {
     _visibleColumns = columns;
+    if (updateModifiedDate)
     _modifiedDate = QDateTime::currentDateTime();
 }
 

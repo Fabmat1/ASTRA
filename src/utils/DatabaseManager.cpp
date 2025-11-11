@@ -147,6 +147,22 @@ std::vector<std::shared_ptr<Project>> DatabaseManager::loadProjects()
             query.value("name").toString(),
             query.value("description").toString()
         );
+        project->setId(query.value("id").toString(), false);
+        project->setCreatedDate(QDateTime::fromString(
+            query.value("created_date").toString(), Qt::ISODate), false);
+        project->setModifiedDate(QDateTime::fromString(
+            query.value("modified_date").toString(), Qt::ISODate));
+        
+        QString columnsStr = query.value("visible_columns").toString();
+        if (!columnsStr.isEmpty()) {
+            QStringList columnsList = columnsStr.split(",");
+            std::vector<QString> columns;
+            for (const auto& col : columnsList) {
+                columns.push_back(col);
+            }
+            project->setVisibleColumns(columns, false);
+        }
+        
         // TODO: Set other project properties from database
         projects.push_back(project);
     }
@@ -215,7 +231,13 @@ bool DatabaseManager::deleteProject(const QString& projectId)
     QSqlQuery query;
     query.prepare("DELETE FROM projects WHERE id = :id");
     query.bindValue(":id", projectId);
-    return query.exec();
+    bool result = query.exec();
+    qDebug() << "Delete query executed:" << result;
+    qDebug() << "Rows affected:" << query.numRowsAffected();
+    if (!result) {
+        qDebug() << "Error:" << query.lastError().text();
+    }
+    return result;
 }
 
 bool DatabaseManager::saveStars(const QString& projectId, const std::vector<std::shared_ptr<Star>>& stars)

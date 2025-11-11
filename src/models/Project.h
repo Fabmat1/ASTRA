@@ -23,9 +23,12 @@ public:
     QDateTime getModifiedDate() const { return _modifiedDate; }
 
     // Setters
-    void setName(const QString& name);
-    void setDescription(const QString& description);
-    void setImagePath(const QString& path);
+    void setId(const QString& id, bool updateModifiedDate = true);
+    void setName(const QString& name, bool updateModifiedDate = true);
+    void setDescription(const QString& description, bool updateModifiedDate = true);
+    void setImagePath(const QString& path, bool updateModifiedDate = true);
+    void setCreatedDate(const QDateTime& date, bool updateModifiedDate = true);
+    void setModifiedDate(const QDateTime& date);
 
     // Star management
     void addStar(std::shared_ptr<Star> star);
@@ -36,7 +39,7 @@ public:
 
     // Column visibility management
     std::vector<QString> getVisibleColumns() const { return _visibleColumns; }
-    void setVisibleColumns(const std::vector<QString>& columns);
+    void setVisibleColumns(const std::vector<QString>& columns, bool updateModifiedDate = true);
 
 private:
     QString _id;

@@ -54,17 +54,19 @@ void ApplicationController::closeProject()
 
 bool ApplicationController::deleteProject(const QString& projectId)
 {
+    qDebug() << "Deleting project:" << projectId;
     auto it = std::remove_if(_projects.begin(), _projects.end(),
         [&projectId](const std::shared_ptr<Project>& project) {
             return project->getId() == projectId;
         });
-
     if (it != _projects.end()) {
         _projects.erase(it, _projects.end());
-        _databaseManager->deleteProject(projectId);
+        bool result = _databaseManager->deleteProject(projectId);
+        qDebug() << "Database delete result:" << result;
         emit projectDeleted(projectId);
         return true;
     }
+    qDebug() << "Project not found in memory";
     return false;
 }
 
