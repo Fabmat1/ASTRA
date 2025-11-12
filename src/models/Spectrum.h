@@ -12,12 +12,22 @@ class SpectralFit
 public:
     SpectralFit();
 
-    // Model metadata
+    // UUID for database
+    QString getId() const { return _id; }
+    void setId(const QString& id) { _id = id; }
+
+    // File operations for model data
+    void setModelDataFile(const QString& file) { _modelDataFile = file; }
+    QString getModelDataFile() const { return _modelDataFile; }
+    bool saveDataToFile(const QString& filepath);
+    bool loadDataFromFile(const QString& filepath);
+
+    // [Rest of existing members remain the same]
     QDateTime creationDate;
     QString modelId;
     bool isBestFit;
-
-    // Model data
+    
+    // Model data - not loaded by default
     std::vector<double> modelWavelengths;
     std::vector<double> modelFluxes;
 
@@ -32,7 +42,12 @@ public:
     double vsiniError;
     double radialVelocity;
     double radialVelocityError;
+
+private:
+    QString _id;
+    QString _modelDataFile;
 };
+
 
 // Main spectrum class
 class Spectrum
@@ -41,7 +56,16 @@ public:
     Spectrum();
     ~Spectrum();
 
-    // File and metadata
+    // UUID for database
+    QString getId() const { return _id; }
+    void setId(const QString& id) { _id = id; }
+
+    // File operations for spectral data
+    void setDataFile(const QString& file) { _dataFile = file; }
+    QString getDataFile() const { return _dataFile; }
+    bool saveDataToFile(const QString& filepath);
+    bool loadDataFromFile(const QString& filepath);
+
     QString getFile() const { return _file; }
     void setFile(const QString& file) { _file = file; }
 
@@ -77,6 +101,8 @@ public:
 
 private:
     // File and metadata
+    QString _id;
+    QString _dataFile;
     QString _file;
     QString _instrument;
     double _mjd;  // Modified Julian Date

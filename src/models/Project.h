@@ -28,6 +28,7 @@ public:
     void setDescription(const QString& description, bool updateModifiedDate = true);
     void setImagePath(const QString& path, bool updateModifiedDate = true);
     void setCreatedDate(const QDateTime& date, bool updateModifiedDate = true);
+    void setStars(std::vector<std::shared_ptr<Star>> stars, bool updateModifiedDate = true);
     void setModifiedDate(const QDateTime& date);
 
     // Star management

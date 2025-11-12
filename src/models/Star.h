@@ -15,6 +15,10 @@ public:
     Star();
     ~Star();
 
+    // UUID for database
+    QString getId() const { return _id; }
+    void setId(const QString& id) { _id = id; }
+
     // Identifying fields
     QString getAlias() const { return _alias; }
     QString getSourceId() const { return _sourceId; }
@@ -119,6 +123,7 @@ public:
 
 private:
     // Identifying fields
+    QString _id;
     QString _alias;
     QString _sourceId;
     QString _tic;

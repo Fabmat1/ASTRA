@@ -95,6 +95,13 @@ std::vector<std::shared_ptr<Star>> Project::getAllStars() const
     return _stars;
 }
 
+void Project::setStars(std::vector<std::shared_ptr<Star>> stars, bool updateModifiedDate)
+{
+    _stars = stars;
+    if (updateModifiedDate)
+    _modifiedDate = QDateTime::currentDateTime();
+}
+
 void Project::setVisibleColumns(const std::vector<QString>& columns, bool updateModifiedDate)
 {
     _visibleColumns = columns;

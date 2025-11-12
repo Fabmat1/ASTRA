@@ -34,12 +34,21 @@ class SEDModel
 public:
     SEDModel();
 
-    // Model parameters
+    // UUID for database
+    QString getId() const { return _id; }
+    void setId(const QString& id) { _id = id; }
+
+    // File operations for model data
+    void setModelDataFile(const QString& file) { _modelDataFile = file; }
+    QString getModelDataFile() const { return _modelDataFile; }
+    bool saveDataToFile(const QString& filepath);
+    bool loadDataFromFile(const QString& filepath);
+
+    // [Rest of existing members remain the same]
     QDateTime creationDate;
     QString modelId;
     bool isBestFit;
 
-    // Fitted parameters
     double angularSize;
     double angularSizeError;
     double radius;
@@ -47,9 +56,13 @@ public:
     double temperature;
     double temperatureError;
 
-    // Model data
+    // Model data - not loaded by default
     std::vector<double> modelWavelengths;
     std::vector<double> modelFluxes;
+
+private:
+    QString _id;
+    QString _modelDataFile;
 };
 
 // Lightcurve model fit
@@ -58,19 +71,32 @@ class LightcurveModel
 public:
     LightcurveModel();
 
-    // Model parameters
+    // UUID for database
+    QString getId() const { return _id; }
+    void setId(const QString& id) { _id = id; }
+
+    // File operations for model data
+    void setModelDataFile(const QString& file) { _modelDataFile = file; }
+    QString getModelDataFile() const { return _modelDataFile; }
+    bool saveDataToFile(const QString& filepath);
+    bool loadDataFromFile(const QString& filepath);
+
+    // [Rest of existing members remain the same]
     QDateTime creationDate;
     QString modelId;
     bool isBestFit;
 
-    // Model data
+    // Model data - not loaded by default
     std::vector<double> modelTimes;
     std::vector<double> modelFluxes;
 
-    // Fitted parameters (e.g., period, amplitude, etc.)
     double period;
     double amplitude;
     double phase;
+
+private:
+    QString _id;
+    QString _modelDataFile;
 };
 
 // Main photometry container
@@ -79,6 +105,21 @@ class Photometry
 public:
     Photometry();
     ~Photometry();
+
+    // UUID for database
+    QString getId() const { return _id; }
+    void setId(const QString& id) { _id = id; }
+
+    // File operations
+    void setPhotometricPointsFile(const QString& file) { _photometricPointsFile = file; }
+    QString getPhotometricPointsFile() const { return _photometricPointsFile; }
+    bool savePhotometricPointsToFile(const QString& filepath);
+    bool loadPhotometricPointsFromFile(const QString& filepath);
+
+    void setLightcurveFile(const QString& source, const QString& file) { _lightcurveFiles[source] = file; }
+    QString getLightcurveFile(const QString& source) const;
+    bool saveLightcurveToFile(const QString& source, const QString& filepath);
+    bool loadLightcurveFromFile(const QString& source, const QString& filepath);
 
     // Single photometric measurements
     void addPhotometricPoint(const PhotometricPoint& point);
@@ -100,6 +141,9 @@ public:
     std::shared_ptr<LightcurveModel> getBestLightcurveModel(const QString& source) const;
 
 private:
+    QString _id;
+    QString _photometricPointsFile;
+    std::map<QString, QString> _lightcurveFiles;
     std::vector<PhotometricPoint> _photometricPoints;
     std::map<QString, std::vector<LightcurvePoint>> _lightcurves;
     std::vector<std::shared_ptr<SEDModel>> _sedModels;
