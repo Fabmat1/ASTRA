@@ -3,6 +3,7 @@
 
 #include <QWidget>
 #include <memory>
+#include <models/Project.h>
 
 QT_BEGIN_NAMESPACE
 class QGridLayout;
@@ -22,6 +23,7 @@ public:
     ~ProjectSelectionView();
 
     void createNewProject();
+    void editProject(std::shared_ptr<Project> project);
     void refreshProjects();
 
 signals:

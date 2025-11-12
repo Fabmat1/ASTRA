@@ -2,6 +2,7 @@
 #include "controllers/ApplicationController.h"
 #include "models/Project.h"
 #include "dialogs/NewProjectDialog.h"
+#include "dialogs/EditProjectDialog.h"
 #include <QGridLayout>
 #include <QPushButton>
 #include <QLabel>
@@ -121,6 +122,16 @@ void ProjectSelectionView::createNewProject()
     }
 }
 
+void ProjectSelectionView::editProject(std::shared_ptr<Project> project)
+{
+    EditProjectDialog dialog(project, this);
+    if (dialog.exec() == QDialog::Accepted) {
+        dialog.applyChanges();
+        _controller->updateProject(project);
+        refreshProjects();
+    }
+}
+
 void ProjectSelectionView::refreshProjects()
 {
     loadProjects();
@@ -132,15 +143,7 @@ void ProjectSelectionView::onProjectEdit(const QString& projectId)
     auto projects = _controller->getProjects();
     for (const auto& project : projects) {
         if (project->getId() == projectId) {
-            bool ok;
-            QString newName = QInputDialog::getText(this, "Edit Project",
-                                                   "Project Name:", QLineEdit::Normal,
-                                                   project->getName(), &ok);
-            if (ok && !newName.isEmpty()) {
-                project->setName(newName);
-                refreshProjects();
-            }
-            _controller->updateProject(project);
+            editProject(project);
             break;
         }
     }
@@ -245,28 +248,10 @@ void ProjectCard::createContextMenu()
         emit clicked(_projectId);
     });
     
-    _contextMenu->addSeparator();
-    
-    QAction* editNameAction = _contextMenu->addAction("Modify Name");
+    QAction* editNameAction = _contextMenu->addAction("Edit Project");
     connect(editNameAction, &QAction::triggered, [this]() {
         emit editRequested(_projectId);
     });
-    
-    QAction* editDescAction = _contextMenu->addAction("Modify Description");
-    connect(editDescAction, &QAction::triggered, [this]() {
-        // Placeholder for description editing
-        QMessageBox::information(this, "Edit Description", 
-                                "Description editing to be implemented");
-    });
-    
-    QAction* editThumbAction = _contextMenu->addAction("Modify Thumbnail");
-    connect(editThumbAction, &QAction::triggered, [this]() {
-        // Placeholder for thumbnail editing
-        QMessageBox::information(this, "Edit Thumbnail", 
-                                "Thumbnail editing to be implemented");
-    });
-    
-    _contextMenu->addSeparator();
     
     QAction* deleteAction = _contextMenu->addAction("Delete Project");
     connect(deleteAction, &QAction::triggered, [this]() {

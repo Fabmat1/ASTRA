@@ -20,11 +20,11 @@ public:
     QString projectDescription() const;
     QString thumbnailPath() const;
 
-private slots:
+protected slots:
     void onBrowseThumbnail();
     void validateInput();
 
-private:
+protected:
     QLineEdit* _nameEdit;
     QTextEdit* _descriptionEdit;
     QLabel* _thumbnailPreview;
