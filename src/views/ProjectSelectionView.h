@@ -37,7 +37,8 @@ private:
     void setupUi();
     void loadProjects();
     ProjectCard* createProjectCard(const QString& id, const QString& name,
-                                   const QString& description, int starCount);
+                                   const QString& description, int starCount,
+                                   const QString& imagePath);
     
     QList<ProjectCard*> _projectCards;
     ApplicationController* _controller;
@@ -53,6 +54,7 @@ class ProjectCard : public QWidget
 public:
     explicit ProjectCard(const QString& id, const QString& name,
                         const QString& description, int starCount,
+                        const QString& imagePath,
                         QWidget *parent = nullptr);
 
     QString getProjectId() const { return _projectId; }
@@ -73,6 +75,7 @@ private:
     QString _projectId;
     QString _name;
     QString _description;
+    QString _imagePath;
     int _starCount;
     QMenu* _contextMenu;
     

@@ -3,6 +3,8 @@
 #include "utils/DatabaseManager.h"
 #include <QApplication>
 #include <QFile>
+#include <QUuid>
+#include <QDir>
 
 ApplicationController::ApplicationController(QObject *parent)
     : QObject(parent)
@@ -23,13 +25,38 @@ std::vector<std::shared_ptr<Project>> ApplicationController::getProjects() const
     return _projects;
 }
 
-std::shared_ptr<Project> ApplicationController::createProject(const QString& name, const QString& description)
+std::shared_ptr<Project> ApplicationController::createProject(const QString& name, const QString& description, const QString& thumbnailPath)
 {
-    auto project = std::make_shared<Project>(name, description);
+    const QString dataDir = _databaseManager->getDataDirectory();
+    
+    QString storedThumbnailPath;
+    
+    if (!thumbnailPath.isEmpty() && QFile::exists(thumbnailPath)) {
+        QString mediaDir = QDir(dataDir).filePath("media");
+        QDir dir;
+        if (!dir.exists(mediaDir)) {
+            dir.mkpath(mediaDir);
+        }
+        
+        QFileInfo originalFile(thumbnailPath);
+        QString extension = originalFile.suffix();
+        QString uniqueFileName = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        if (!extension.isEmpty()) {
+            uniqueFileName += "." + extension;
+        }
+        
+        storedThumbnailPath = QDir(mediaDir).filePath(uniqueFileName);
+        
+        if (!QFile::copy(thumbnailPath, storedThumbnailPath)) {
+            qWarning() << "Failed to copy thumbnail from" << thumbnailPath << "to" << storedThumbnailPath;
+            storedThumbnailPath.clear(); 
+        }
+    }
+    
+    auto project = std::make_shared<Project>(name, description, storedThumbnailPath);
     _projects.push_back(project);
-
     _databaseManager->saveProject(project);
-
+    
     emit projectCreated(project->getId());
     return project;
 }
@@ -44,6 +71,11 @@ std::shared_ptr<Project> ApplicationController::openProject(const QString& proje
         }
     }
     return nullptr;
+}
+
+void ApplicationController::updateProject(std::shared_ptr<Project> project)
+{
+    _databaseManager->updateProject(project);
 }
 
 void ApplicationController::closeProject()

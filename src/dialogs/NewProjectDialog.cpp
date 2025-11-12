@@ -14,7 +14,7 @@ NewProjectDialog::NewProjectDialog(QWidget *parent)
     : QDialog(parent)
 {
     setWindowTitle("New Project");
-    setFixedSize(500, 400);
+    setFixedSize(500, 450);
 
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
 

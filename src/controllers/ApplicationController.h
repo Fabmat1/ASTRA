@@ -18,8 +18,9 @@ public:
 
     // Project management
     std::vector<std::shared_ptr<Project>> getProjects() const;
-    std::shared_ptr<Project> createProject(const QString& name, const QString& description);
+    std::shared_ptr<Project> createProject(const QString& name, const QString& description, const QString& thumbnailPath);
     std::shared_ptr<Project> openProject(const QString& projectId);
+    void updateProject(std::shared_ptr<Project> project);
     void closeProject();
     bool deleteProject(const QString& projectId);
     std::shared_ptr<Project> getCurrentProject() const { return _currentProject; }

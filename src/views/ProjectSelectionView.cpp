@@ -13,6 +13,7 @@
 #include <QMenu>
 #include <QContextMenuEvent>
 #include <iostream>
+#include <QDebug>
 
 ProjectSelectionView::ProjectSelectionView(ApplicationController* controller, QWidget *parent)
     : QWidget(parent)
@@ -73,7 +74,8 @@ void ProjectSelectionView::loadProjects()
             project->getId(),
             project->getName(),
             project->getDescription(),
-            project->getStarCount()
+            project->getStarCount(),
+            project->getImagePath()
         );
         
         connect(card, &ProjectCard::clicked, 
@@ -95,9 +97,9 @@ void ProjectSelectionView::loadProjects()
 }
 
 ProjectCard* ProjectSelectionView::createProjectCard(const QString& id, const QString& name,
-                                                     const QString& description, int starCount)
+                                                     const QString& description, int starCount, const QString& imagePath) 
 {
-    return new ProjectCard(id, name, description, starCount, this);
+    return new ProjectCard(id, name, description, starCount, imagePath, this);
 }
 
 void ProjectSelectionView::onProjectCardClicked(const QString& projectId)
@@ -114,7 +116,7 @@ void ProjectSelectionView::createNewProject()
 {
     NewProjectDialog dialog(this);
     if (dialog.exec() == QDialog::Accepted) {
-        _controller->createProject(dialog.projectName(), dialog.projectDescription());
+        _controller->createProject(dialog.projectName(), dialog.projectDescription(), dialog.thumbnailPath());
         refreshProjects();
     }
 }
@@ -138,6 +140,7 @@ void ProjectSelectionView::onProjectEdit(const QString& projectId)
                 project->setName(newName);
                 refreshProjects();
             }
+            _controller->updateProject(project);
             break;
         }
     }
@@ -178,39 +181,55 @@ void ProjectSelectionView::onProjectDelete(const QString& projectId)
 // ProjectCard implementation
 ProjectCard::ProjectCard(const QString& id, const QString& name,
                         const QString& description, int starCount,
+                        const QString& imagePath,
                         QWidget *parent)
     : QWidget(parent)
     , _projectId(id)
     , _name(name)
     , _description(description)
     , _starCount(starCount)
+    , _imagePath(imagePath)
     , _contextMenu(nullptr)
 {
     setFixedSize(200, 200);
     setCursor(Qt::PointingHandCursor);
-
+    
     QVBoxLayout* layout = new QVBoxLayout(this);
     layout->setContentsMargins(15, 15, 15, 15);
-
+    
     QLabel* iconLabel = new QLabel;
     iconLabel->setFixedSize(80, 80);
-    iconLabel->setStyleSheet("background-color: #e0e0e0; border-radius: 5px;");
     iconLabel->setAlignment(Qt::AlignCenter);
-    layout->addWidget(iconLabel, 0, Qt::AlignHCenter);
 
+    qDebug() << "Image path for Project " << name << " is " << imagePath;
+    
+    if (!imagePath.isEmpty()) {
+        QPixmap pixmap(imagePath);
+        if (!pixmap.isNull()) {
+            iconLabel->setPixmap(pixmap.scaled(80, 80, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            iconLabel->setStyleSheet("border-radius: 5px;");
+        } else {
+            iconLabel->setStyleSheet("background-color: #e0e0e0; border-radius: 5px;");
+        }
+    } else {
+        iconLabel->setStyleSheet("background-color: #e0e0e0; border-radius: 5px;");
+    }
+    
+    layout->addWidget(iconLabel, 0, Qt::AlignHCenter);
+    
     QLabel* nameLabel = new QLabel(name);
     nameLabel->setStyleSheet("font-size: 16px; font-weight: bold;");
     nameLabel->setWordWrap(true);
     nameLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(nameLabel);
-
+    
     QLabel* countLabel = new QLabel(QString("%1 stars").arg(starCount));
     countLabel->setStyleSheet("color: #666;");
     countLabel->setAlignment(Qt::AlignCenter);
     layout->addWidget(countLabel);
-
+    
     layout->addStretch();
-
+    
     setStyleSheet(
         "background-color: white; "
         "border: 1px solid #ddd; "

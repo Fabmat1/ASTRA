@@ -11,7 +11,7 @@ class Star;
 class Project
 {
 public:
-    explicit Project(const QString& name, const QString& description = "");
+    explicit Project(const QString& name, const QString& description = "", const QString& thumbnailPath = "");
     ~Project();
 
     // Getters

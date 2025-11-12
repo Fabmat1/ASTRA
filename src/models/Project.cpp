@@ -2,9 +2,10 @@
 #include "Star.h"
 #include <QUuid>
 
-Project::Project(const QString& name, const QString& description)
+Project::Project(const QString& name, const QString& description, const QString& thumbnailPath)
     : _name(name)
     , _description(description)
+    , _imagePath(thumbnailPath)
     , _createdDate(QDateTime::currentDateTime())
     , _modifiedDate(QDateTime::currentDateTime())
 {

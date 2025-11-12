@@ -362,11 +362,6 @@ bool DatabaseManager::deleteProject(const QString& projectId)
     query.prepare("DELETE FROM projects WHERE id = :id");
     query.bindValue(":id", projectId);
     bool result = query.exec();
-    qDebug() << "Delete query executed:" << result;
-    qDebug() << "Rows affected:" << query.numRowsAffected();
-    if (!result) {
-        qDebug() << "Error:" << query.lastError().text();
-    }
     return result;
 }
 

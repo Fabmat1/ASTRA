@@ -27,6 +27,9 @@ public:
     void closeDatabase();
     bool isOpen() const;
 
+    // Filesystem operations
+    QString getDataDirectory() const;
+
     // Project operations
     std::vector<std::shared_ptr<Project>> loadProjects();
     bool saveProject(std::shared_ptr<Project> project);
@@ -46,7 +49,6 @@ private:
     bool createTables();
     bool executeQuery(const QString& query);
     QString generateUUID();
-    QString getDataDirectory() const;
 
     // Star operations
     bool saveStar(const QString& projectId, std::shared_ptr<Star> star);
