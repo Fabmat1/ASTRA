@@ -14,7 +14,6 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 
-
 DatabaseManager::DatabaseManager(QObject *parent)
     : QObject(parent)
 {
@@ -275,7 +274,8 @@ std::vector<std::shared_ptr<Project>> DatabaseManager::loadProjects()
     while (query.next()) {
         auto project = std::make_shared<Project>(
             query.value("name").toString(),
-            query.value("description").toString()
+            query.value("description").toString(),
+            query.value("image_path").toString()
         );
         project->setId(query.value("id").toString(), false);
         project->setCreatedDate(QDateTime::fromString(
@@ -306,13 +306,14 @@ bool DatabaseManager::saveProject(std::shared_ptr<Project> project)
 
     QSqlQuery query;
     query.prepare(R"(
-        INSERT INTO projects (id, name, description, created_date, modified_date, visible_columns)
-        VALUES (:id, :name, :description, :created, :modified, :columns)
+        INSERT INTO projects (id, name, description, image_path, created_date, modified_date, visible_columns)
+        VALUES (:id, :name, :description, :image_path, :created, :modified, :columns)
     )");
 
     query.bindValue(":id", project->getId());
     query.bindValue(":name", project->getName());
     query.bindValue(":description", project->getDescription());
+    query.bindValue(":image_path", project->getImagePath());
     query.bindValue(":created", project->getCreatedDate().toString(Qt::ISODate));
     query.bindValue(":modified", project->getModifiedDate().toString(Qt::ISODate));
 
@@ -338,13 +339,14 @@ bool DatabaseManager::updateProject(std::shared_ptr<Project> project)
     QSqlQuery query;
     query.prepare(R"(
         UPDATE projects
-        SET name = :name, description = :description, modified_date = :modified, visible_columns = :columns
+        SET name = :name, description = :description, image_path = :image_path, modified_date = :modified, visible_columns = :columns
         WHERE id = :id
     )");
 
     query.bindValue(":id", project->getId());
     query.bindValue(":name", project->getName());
     query.bindValue(":description", project->getDescription());
+    query.bindValue(":image_path", project->getImagePath());
     query.bindValue(":modified", project->getModifiedDate().toString(Qt::ISODate));
 
     QStringList columns;
@@ -365,9 +367,6 @@ bool DatabaseManager::deleteProject(const QString& projectId)
     return result;
 }
 
-#include <QUuid>
-#include <QJsonDocument>
-#include <QJsonArray>
 
 QString DatabaseManager::generateUUID()
 {

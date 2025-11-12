@@ -200,8 +200,6 @@ ProjectCard::ProjectCard(const QString& id, const QString& name,
     QLabel* iconLabel = new QLabel;
     iconLabel->setFixedSize(80, 80);
     iconLabel->setAlignment(Qt::AlignCenter);
-
-    qDebug() << "Image path for Project " << name << " is " << imagePath;
     
     if (!imagePath.isEmpty()) {
         QPixmap pixmap(imagePath);
