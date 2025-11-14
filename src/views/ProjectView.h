@@ -17,6 +17,7 @@ QT_END_NAMESPACE
 class ApplicationController;
 class Project;
 class StarTableModel;
+class Star;
 
 class ProjectView : public QWidget
 {
@@ -70,6 +71,9 @@ public:
 
 private:
     std::shared_ptr<Project> _project;
+    void cacheData();
+    std::vector<std::shared_ptr<Star>> _cachedStars;
+    std::vector<QString> _cachedColumns;
 };
 
 #endif // PROJECTVIEW_H

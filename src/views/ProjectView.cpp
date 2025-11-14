@@ -33,7 +33,7 @@ void ProjectView::setupUi()
     mainLayout->addWidget(_projectTitle);
 
     _starTable = new QTableView(this);
-    _starTable->setAlternatingRowColors(true);
+    _starTable->setAlternatingRowColors(false);
     _starTable->setSelectionBehavior(QAbstractItemView::SelectRows);
     _starTable->setSortingEnabled(true);
     _starTable->horizontalHeader()->setStretchLastSection(true);
@@ -117,55 +117,56 @@ void ProjectView::onCreatePlot()
     QMessageBox::information(this, "Create Plot", "Plot creation to be implemented");
 }
 
-// StarTableModel implementation
+// StarTableModel - optimized implementation
 StarTableModel::StarTableModel(std::shared_ptr<Project> project, QObject *parent)
     : QAbstractTableModel(parent)
     , _project(project)
 {
+    cacheData();
+}
+
+void StarTableModel::cacheData()
+{
+    if (_project) {
+        _cachedStars = _project->getAllStars();
+        _cachedColumns = _project->getVisibleColumns();
+    } else {
+        _cachedStars.clear();
+        _cachedColumns.clear();
+    }
 }
 
 int StarTableModel::rowCount(const QModelIndex &parent) const
 {
     Q_UNUSED(parent)
-    return _project ? _project->getStarCount() : 0;
+    return _cachedStars.size();
 }
 
 int StarTableModel::columnCount(const QModelIndex &parent) const
 {
     Q_UNUSED(parent)
-    if (!_project) return 0;
-    return _project->getVisibleColumns().size();
+    return _cachedColumns.size();
 }
 
 QVariant StarTableModel::data(const QModelIndex &index, int role) const
 {
-    if (!_project || !index.isValid())
+    if (!index.isValid() || role != Qt::DisplayRole)
         return QVariant();
 
-    auto stars = _project->getAllStars();
-    if (index.row() >= static_cast<int>(stars.size()))
+    if (index.row() >= static_cast<int>(_cachedStars.size()) ||
+        index.column() >= static_cast<int>(_cachedColumns.size()))
         return QVariant();
 
-    auto star = stars[index.row()];
-    auto columns = _project->getVisibleColumns();
-
-    if (role == Qt::DisplayRole) {
-        if (index.column() < static_cast<int>(columns.size())) {
-            return star->getFieldValue(columns[index.column()]);
-        }
-    }
-
-    return QVariant();
+    return _cachedStars[index.row()]->getFieldValue(_cachedColumns[index.column()]);
 }
 
 QVariant StarTableModel::headerData(int section, Qt::Orientation orientation, int role) const
 {
-    if (!_project || orientation != Qt::Horizontal || role != Qt::DisplayRole)
+    if (orientation != Qt::Horizontal || role != Qt::DisplayRole)
         return QVariant();
 
-    auto columns = _project->getVisibleColumns();
-    if (section < static_cast<int>(columns.size())) {
-        return columns[section];
+    if (section < static_cast<int>(_cachedColumns.size())) {
+        return _cachedColumns[section];
     }
 
     return QVariant();
@@ -174,5 +175,6 @@ QVariant StarTableModel::headerData(int section, Qt::Orientation orientation, in
 void StarTableModel::refresh()
 {
     beginResetModel();
+    cacheData();
     endResetModel();
 }
