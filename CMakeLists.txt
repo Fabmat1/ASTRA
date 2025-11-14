@@ -27,6 +27,8 @@ set(SOURCES
     src/models/Star.cpp
     src/models/Photometry.cpp
     src/models/Spectrum.cpp
+    src/models/Instrument.cpp
+    src/models/RadialVelocity.cpp
     src/views/MainWindow.cpp
     src/views/ProjectSelectionView.cpp
     src/views/ProjectView.cpp
@@ -44,6 +46,8 @@ set(HEADERS
     src/models/Star.h
     src/models/Photometry.h
     src/models/Spectrum.h
+    src/models/Instrument.h
+    src/models/RadialVelocity.h
     src/views/MainWindow.h
     src/views/ProjectSelectionView.h
     src/views/ProjectView.h

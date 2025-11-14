@@ -12,6 +12,8 @@ set(MODEL_SOURCES
     ${CMAKE_SOURCE_DIR}/src/models/Project.cpp
     ${CMAKE_SOURCE_DIR}/src/models/Photometry.cpp
     ${CMAKE_SOURCE_DIR}/src/models/Spectrum.cpp
+    ${CMAKE_SOURCE_DIR}/src/models/RadialVelocity.cpp
+    ${CMAKE_SOURCE_DIR}/src/models/Instrument.cpp
 )
 
 # Test for Star model

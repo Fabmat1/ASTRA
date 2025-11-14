@@ -5,6 +5,7 @@
 #include <QVariant>
 #include <memory>
 #include <vector>
+#include "RadialVelocity.h"
 
 class Photometry;
 class Spectrum;
@@ -121,6 +122,13 @@ public:
     // Generic field access for table display
     QVariant getFieldValue(const QString& fieldName) const;
 
+    // Radial velocity curve management
+    std::shared_ptr<RadialVelocityCurve> getRVCurve() const { return _rvCurve; }
+    void setRVCurve(std::shared_ptr<RadialVelocityCurve> rvCurve) { _rvCurve = rvCurve; }
+    
+    // Update RV metrics from curve
+    void updateRVMetricsFromCurve();
+
 private:
     // Identifying fields
     QString _id;
@@ -175,6 +183,8 @@ private:
     // Associated data
     std::shared_ptr<Photometry> _photometry;
     std::vector<std::shared_ptr<Spectrum>> _spectra;
+    std::shared_ptr<RadialVelocityCurve> _rvCurve;
+
 };
 
 #endif // STAR_H

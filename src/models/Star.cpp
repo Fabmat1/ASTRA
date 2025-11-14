@@ -1,6 +1,7 @@
 #include "Star.h"
 #include "Photometry.h"
 #include "Spectrum.h"
+#include "RadialVelocity.h"
 #include <QVariant>
 
 Star::Star()
@@ -84,4 +85,26 @@ QVariant Star::getFieldValue(const QString& fieldName) const
     if (fieldName == "e_rv_med") return _e_rv_med;
 
     return QVariant();
+}
+
+void Star::updateRVMetricsFromCurve()
+{
+    if (!_rvCurve || _rvCurve->getNumPoints() == 0) {
+        return;
+    }
+    
+    // Update average and median RV
+    _rv_avg = _rvCurve->getWeightedMeanRV();
+    _e_rv_avg = _rvCurve->getWeightedStdDevRV();
+    _rv_med = _rvCurve->getMedianRV();
+    _e_rv_med = _rvCurve->getStdDevRV();
+    
+    // Update delta RV (amplitude)
+    _deltaRV = _rvCurve->getRVAmplitude();
+    
+    // If we have an orbital fit, we could update period
+    auto bestFit = _rvCurve->getBestFit();
+    if (bestFit && bestFit->getPeriod() > 0) {
+        _logp = std::log10(bestFit->getPeriod());
+    }
 }
