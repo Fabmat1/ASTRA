@@ -1,5 +1,6 @@
 #include "ApplicationController.h"
 #include "models/Project.h"
+#include "models/Star.h"
 #include "utils/DatabaseManager.h"
 #include <QApplication>
 #include <QFile>
@@ -97,6 +98,19 @@ bool ApplicationController::deleteProject(const QString& projectId)
         return true;
     }
     return false;
+}
+
+bool ApplicationController::saveStarsToProject(std::shared_ptr<Project> project, const std::vector<std::shared_ptr<Star>>& stars)
+{
+    if (!project) return false;
+    
+    // Add stars to project
+    for (const auto& star : stars) {
+        project->addStar(star);
+    }
+    
+    // Save to database
+    return _databaseManager->saveStars(project->getId(), stars);
 }
 
 void ApplicationController::toggleTheme()

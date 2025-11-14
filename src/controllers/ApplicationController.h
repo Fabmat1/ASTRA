@@ -7,6 +7,7 @@
 
 class Project;
 class DatabaseManager;
+class Star;
 
 class ApplicationController : public QObject
 {
@@ -24,6 +25,7 @@ public:
     void closeProject();
     bool deleteProject(const QString& projectId);
     std::shared_ptr<Project> getCurrentProject() const { return _currentProject; }
+    bool saveStarsToProject(std::shared_ptr<Project> project, const std::vector<std::shared_ptr<Star>>& stars);
 
     // Theme management
     void toggleTheme();

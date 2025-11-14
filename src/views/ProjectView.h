@@ -4,6 +4,9 @@
 #include <QWidget>
 #include <QAbstractTableModel>
 #include <memory>
+#include <QMenuBar>
+#include <QMenu>
+#include <QSplitter>
 
 QT_BEGIN_NAMESPACE
 class QTableView;

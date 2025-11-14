@@ -2,6 +2,7 @@
 #include "controllers/ApplicationController.h"
 #include "models/Project.h"
 #include "models/Star.h"
+#include "utils/StarImportWizard.h"
 #include <QTableView>
 #include <QVBoxLayout>
 #include <QLabel>
@@ -81,11 +82,18 @@ void ProjectView::onAddStar()
 
 void ProjectView::onImportStars()
 {
-    QString fileName = QFileDialog::getOpenFileName(this,
-        "Import Stars", "", "CSV Files (*.csv);;All Files (*)");
-    if (!fileName.isEmpty()) {
-        QMessageBox::information(this, "Import Stars",
-            QString("Import functionality to be implemented for:\n%1").arg(fileName));
+    if (!_currentProject) {
+        QMessageBox::warning(this, "No Project", "Please open a project first.");
+        return;
+    }
+    
+    StarImportWizard wizard(_controller, _currentProject, this);
+    if (wizard.exec() == QDialog::Accepted) {
+        // Refresh the table
+        if (_tableModel) {
+            _tableModel->refresh();
+        }
+        _statusLabel->setText(QString("Loaded %1 stars").arg(_currentProject->getStarCount()));
     }
 }
 
