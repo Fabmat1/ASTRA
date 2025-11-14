@@ -292,12 +292,30 @@ std::vector<std::shared_ptr<Project>> DatabaseManager::loadProjects()
             }
             project->setVisibleColumns(columns, false);
         }
-        project->setStars(loadStars(query.value("id").toString()));
         
+        // Set the callback for lazy star count fetching
+        project->setStarCountCallback([this](const QString& projectId) {
+            return this->getStarCountForProject(projectId);
+        });
+
         projects.push_back(project);
     }
 
     return projects;
+}
+
+size_t DatabaseManager::getStarCountForProject(const QString& projectId)
+{
+    QSqlQuery query;
+    query.prepare("SELECT COUNT(*) FROM stars WHERE project_id = :project_id");
+    query.bindValue(":project_id", projectId);
+    
+    if (!query.exec() || !query.next()) {
+        qDebug() << "Failed to get star count:" << query.lastError();
+        return 0;
+    }
+    
+    return query.value(0).toULongLong();
 }
 
 bool DatabaseManager::saveProject(std::shared_ptr<Project> project)

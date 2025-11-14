@@ -1,6 +1,7 @@
 #include "ProjectController.h"
 #include "models/Project.h"
 #include "models/Star.h"
+#include "utils/DatabaseManager.h"
 #include <QFile>
 #include <QTextStream>
 #include <QDebug>
@@ -9,6 +10,7 @@ ProjectController::ProjectController(std::shared_ptr<Project> project, QObject *
     : QObject(parent)
     , _project(project)
 {
+    _databaseManager = std::make_unique<DatabaseManager>();
 }
 
 ProjectController::~ProjectController()

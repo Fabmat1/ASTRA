@@ -6,6 +6,7 @@
 
 class Project;
 class Star;
+class DatabaseManager;
 
 class ProjectController : public QObject
 {
@@ -19,6 +20,7 @@ public:
     bool addStar(std::shared_ptr<Star> star);
     bool removeStar(const QString& sourceId);
     bool updateStar(std::shared_ptr<Star> star);
+    bool loadStars();
 
     // Import/Export
     bool importFromCSV(const QString& filepath);
@@ -36,6 +38,7 @@ signals:
 
 private:
     std::shared_ptr<Project> _project;
+    std::unique_ptr<DatabaseManager> _databaseManager;
 };
 
 #endif // PROJECTCONTROLLER_H

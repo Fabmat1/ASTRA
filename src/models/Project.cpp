@@ -91,6 +91,19 @@ std::shared_ptr<Star> Project::getStar(const QString& sourceId) const
     return nullptr;
 }
 
+size_t Project::getStarCount() const
+{
+    if (!_stars.empty()) {
+        return _stars.size();
+    }
+    
+    if (_starCountCallback) {
+        return _starCountCallback(_id);
+    }
+    
+    return 0;
+}
+
 std::vector<std::shared_ptr<Star>> Project::getAllStars() const
 {
     return _stars;

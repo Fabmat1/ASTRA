@@ -41,6 +41,7 @@ public:
     std::vector<std::shared_ptr<Star>> loadStars(const QString& projectId);
     bool updateStar(const QString& projectId, std::shared_ptr<Star> star);
     bool deleteStar(const QString& projectId, const QString& sourceId);
+    size_t getStarCountForProject(const QString& projectId);
 
     // Import operations
     bool importCSV(const QString& filepath, std::shared_ptr<Project> project);

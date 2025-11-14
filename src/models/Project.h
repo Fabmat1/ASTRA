@@ -5,6 +5,7 @@
 #include <QDateTime>
 #include <vector>
 #include <memory>
+#include <functional>
 
 class Star;
 
@@ -36,7 +37,12 @@ public:
     void removeStar(const QString& sourceId);
     std::shared_ptr<Star> getStar(const QString& sourceId) const;
     std::vector<std::shared_ptr<Star>> getAllStars() const;
-    size_t getStarCount() const { return _stars.size(); }
+    size_t getStarCount() const;
+
+    // Set callback for fetching star count from database
+    void setStarCountCallback(std::function<size_t(const QString&)> callback) {
+        _starCountCallback = callback;
+    }
 
     // Column visibility management
     std::vector<QString> getVisibleColumns() const { return _visibleColumns; }
@@ -52,6 +58,7 @@ private:
 
     std::vector<std::shared_ptr<Star>> _stars;
     std::vector<QString> _visibleColumns;
+    std::function<size_t(const QString&)> _starCountCallback;
 
     QString generateId() const;
 };
