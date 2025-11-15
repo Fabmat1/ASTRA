@@ -151,3 +151,5 @@ spectrum_fits
 # Example data files
 object_catalogue.csv
 result_parameters.csv
+
+CLAUDE.md

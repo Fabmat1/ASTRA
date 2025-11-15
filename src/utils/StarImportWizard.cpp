@@ -325,6 +325,14 @@ QVariant GeneralImportPage::convertValue(const QString& value) const
     bool ok;
     double doubleVal = value.toDouble(&ok);
     if (ok) {
+        // Check if this looks like a large integer (no decimal point and outside safe integer range)
+        if (!value.contains('.') && !value.contains('e', Qt::CaseInsensitive)) {
+            qlonglong intVal = value.toLongLong(&ok);
+            if (ok && (intVal > 9007199254740991LL || intVal < -9007199254740991LL)) {
+                // Large integer outside double's safe range - preserve as string
+                return value;
+            }
+        }
         return doubleVal;
     }
     
