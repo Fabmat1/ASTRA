@@ -67,6 +67,9 @@ std::shared_ptr<Project> ApplicationController::openProject(const QString& proje
     for (const auto& project : _projects) {
         if (project->getId() == projectId) {
             _currentProject = project;
+            if (!project->starsLoaded()){
+                project->setStars(_databaseManager->loadStars(projectId), false);
+            }
             emit projectOpened(projectId);
             return project;
         }

@@ -38,6 +38,7 @@ public:
     std::shared_ptr<Star> getStar(const QString& sourceId) const;
     std::vector<std::shared_ptr<Star>> getAllStars() const;
     size_t getStarCount() const;
+    bool starsLoaded() const;
 
     // Set callback for fetching star count from database
     void setStarCountCallback(std::function<size_t(const QString&)> callback) {

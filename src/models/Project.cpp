@@ -104,6 +104,11 @@ size_t Project::getStarCount() const
     return 0;
 }
 
+bool Project::starsLoaded() const
+{
+    return !_stars.empty();
+}
+
 std::vector<std::shared_ptr<Star>> Project::getAllStars() const
 {
     return _stars;

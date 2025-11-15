@@ -35,6 +35,7 @@ public:
     bool saveProject(std::shared_ptr<Project> project);
     bool updateProject(std::shared_ptr<Project> project);
     bool deleteProject(const QString& projectId);
+    void populateProjectStars(const QString& projectId);
 
     // Star operations
     bool saveStars(const QString& projectId, const std::vector<std::shared_ptr<Star>>& stars);
