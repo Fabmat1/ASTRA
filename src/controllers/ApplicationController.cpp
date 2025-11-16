@@ -116,6 +116,11 @@ bool ApplicationController::saveStarsToProject(std::shared_ptr<Project> project,
     return _databaseManager->saveStars(project->getId(), stars);
 }
 
+void ApplicationController::updateStar(std::shared_ptr<Project> project, std::shared_ptr<Star> star)
+{
+    _databaseManager->updateStar(project->getId(), star);
+}
+
 void ApplicationController::toggleTheme()
 {
     _isDarkTheme = !_isDarkTheme;

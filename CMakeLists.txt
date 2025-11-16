@@ -7,7 +7,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Find required Qt6 components
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Charts Sql Network)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Charts Sql Network Concurrent)
 qt_standard_project_setup()
 
 # Set automatic MOC, UIC and RCC for Qt
@@ -127,6 +127,7 @@ target_link_libraries(ASTRA PRIVATE
     Qt6::Charts
     Qt6::Sql
     Qt6::Network
+    Qt6::Concurrent
 )
 
 # Add CCfits support if available

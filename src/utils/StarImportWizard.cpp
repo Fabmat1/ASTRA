@@ -59,6 +59,9 @@ StarImportWizard::StarImportWizard(ApplicationController* controller,
 // GeneralImportPage implementation
 GeneralImportPage::GeneralImportPage(QWidget* parent)
     : QWizardPage(parent)
+    , _simbadThread(nullptr)
+    , _simbadWorker(nullptr)
+    , _fitsWatcher(nullptr)
 {
     setTitle("Import Stars - General Information");
     setSubTitle("Import stellar data from FITS or CSV/ASCII files");
@@ -127,9 +130,26 @@ GeneralImportPage::GeneralImportPage(QWidget* parent)
     _gaiaCheckBox = new QCheckBox("Query Gaia DR3 via Vizier for missing data");
     queryLayout->addWidget(_gaiaCheckBox);
     
+    // After adding _simbadCheckBox:
     _simbadCheckBox = new QCheckBox("Query SIMBAD for bibliography codes");
     queryLayout->addWidget(_simbadCheckBox);
     
+    // Add warning label
+    _simbadWarningLabel = new QLabel();
+    _simbadWarningLabel->setWordWrap(true);
+    _simbadWarningLabel->setStyleSheet("QLabel { color: #666666; font-size: 10pt; }");
+    _simbadWarningLabel->hide();
+    queryLayout->addWidget(_simbadWarningLabel);
+    
+    // Connect to show/hide warning
+    connect(_filePathEdit, &QLineEdit::textChanged, this, [this]() {
+        updateSimbadWarning();
+    });
+
+    connect(_simbadCheckBox, &QCheckBox::toggled, this, [this]() {
+        updateSimbadWarning();
+    });
+
     queryOptionsGroup->setLayout(queryLayout);
     layout->addWidget(queryOptionsGroup);
     
@@ -145,6 +165,17 @@ GeneralImportPage::GeneralImportPage(QWidget* parent)
     registerField("filePath*", _filePathEdit);
     registerField("queryGaia", _gaiaCheckBox);
     registerField("querySimbad", _simbadCheckBox);
+}
+
+void GeneralImportPage::updateSimbadWarning()
+{
+    if (_simbadCheckBox->isChecked() && _dataRows.size() > 100) {
+        _simbadWarningLabel->setText(QString("⚠ Querying SIMBAD for %1 stars may take several minutes.")
+                                    .arg(_dataRows.size()));
+        _simbadWarningLabel->show();
+    } else {
+        _simbadWarningLabel->hide();
+    }
 }
 
 void GeneralImportPage::setupColumnAliases()
@@ -436,113 +467,189 @@ bool GeneralImportPage::readCSV(const QString& filePath)
 bool GeneralImportPage::readFITS(const QString& filePath)
 {
 #ifdef HAVE_CCFITS
+    QProgressDialog progress("Reading FITS file...", "Cancel", 0, 100, this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(0);
+    progress.show();
+    
+    // Clear existing data
+    _dataRows.clear();
+    _columnNames.clear();
+    
     try {
         std::unique_ptr<CCfits::FITS> pInfile(new CCfits::FITS(filePath.toStdString(), CCfits::Read, true));
         
-        // Get all extensions
         const CCfits::ExtMap& extMap = pInfile->extension();
-        
         if (extMap.empty()) {
-            QMessageBox::warning(this, "FITS Error", "No table extensions found in FITS file");
             return false;
         }
         
-        // Use first table extension (usually extension 1)
+        // Find first table extension
         CCfits::ExtHDU* table = nullptr;
         for (const auto& ext : extMap) {
             if (dynamic_cast<CCfits::Table*>(ext.second) != nullptr) {
-                table = dynamic_cast<CCfits::Table*>(ext.second);  
+                table = ext.second;
                 break;
             }
         }
         
         if (!table) {
-            QMessageBox::warning(this, "FITS Error", "No table found in FITS file");
             return false;
         }
         
         long nrows = table->rows();
         if (nrows == 0) {
-            QMessageBox::warning(this, "FITS Error", "Table has no rows");
             return false;
         }
         
-        // Get column information
+        // Limit rows if needed
+        long maxRows = std::min(nrows, 100000L);
+        
+        // Get column information and prepare bulk read
         const CCfits::ColMap& columns = table->column();
-        //std::map<std::string, CCfits::Column*>& columns = table->column();
-        std::vector<CCfits::Column*> columnPtrs;
+        struct ColumnInfo {
+            CCfits::Column* ptr;
+            QString name;
+            int type;  // Use int instead of ColumnType
+        };
+        std::vector<ColumnInfo> columnInfos;
         
         for (const auto& col : columns) {
             _columnNames.push_back(QString::fromStdString(col.first));
-            columnPtrs.push_back(col.second);
+            ColumnInfo info;
+            info.ptr = col.second;
+            info.name = QString::fromStdString(col.first);
+            info.type = col.second->type();
+            columnInfos.push_back(info);
         }
         
-        // Read data
-        _dataRows.clear();
+        // Pre-allocate data storage
+        _dataRows.reserve(maxRows);
         
-        // Read all rows (or limit for very large files)
-        long maxRows = std::min(nrows, 100000L); // Limit to 100k rows for memory
+        // Prepare column data buffers for bulk reading
+        struct ColumnData {
+            std::vector<double> doubleData;
+            std::vector<float> floatData;
+            std::vector<long> longData;
+            std::vector<std::string> stringData;
+        };
+        std::vector<ColumnData> columnBuffers(columnInfos.size());
         
-        for (long row = 1; row <= maxRows; ++row) {
-            DataRow dataRow;
+        // Read data in large chunks (10000 rows at a time or all at once if less)
+        const long chunkSize = std::min(10000L, maxRows);
+        
+        for (long startRow = 1; startRow <= maxRows; startRow += chunkSize) {
+            if (progress.wasCanceled()) {
+                _dataRows.clear();
+                _columnNames.clear();
+                return false;
+            }
             
-            for (size_t colIdx = 0; colIdx < columnPtrs.size(); ++colIdx) {
-                CCfits::Column* col = columnPtrs[colIdx];
-                QString colName = _columnNames[colIdx];
+            long endRow = std::min(startRow + chunkSize - 1, maxRows);
+            long rowsInChunk = endRow - startRow + 1;
+            
+            // Update progress
+            int progressValue = static_cast<int>((startRow * 100) / maxRows);
+            progress.setValue(progressValue);
+            progress.setLabelText(QString("Reading FITS file... %1/%2 rows").arg(startRow).arg(maxRows));
+            QApplication::processEvents();
+            
+            // Bulk read entire columns for this chunk
+            for (size_t colIdx = 0; colIdx < columnInfos.size(); ++colIdx) {
+                const auto& colInfo = columnInfos[colIdx];
+                auto& buffer = columnBuffers[colIdx];
                 
                 try {
-                    // Handle different column types
-                    if (col->type() == CCfits::Tdouble) {
-                        std::vector<double> value;
-                        col->read(value, row, row);
-                        if (!value.empty() && !std::isnan(value[0])) {
-                            dataRow.values[colName] = value[0];
+                    if (colInfo.type == CCfits::Tdouble) {
+                        buffer.doubleData.clear();
+                        colInfo.ptr->read(buffer.doubleData, startRow, endRow);
+                    } else if (colInfo.type == CCfits::Tfloat) {
+                        buffer.floatData.clear();
+                        colInfo.ptr->read(buffer.floatData, startRow, endRow);
+                    // NEW:
+                    } else if (colInfo.type == CCfits::Tint || 
+                            colInfo.type == CCfits::Tlong || 
+                            colInfo.type == CCfits::Tlonglong) {
+                        buffer.longData.clear();
+                        colInfo.ptr->read(buffer.longData, startRow, endRow);
+                        // Also try to read as string for large integers
+                        if (colInfo.type == CCfits::Tlonglong) {
+                            buffer.stringData.clear();
+                            colInfo.ptr->read(buffer.stringData, startRow, endRow);
                         }
-                    } else if (col->type() == CCfits::Tfloat) {
-                        std::vector<float> value;
-                        col->read(value, row, row);
-                        if (!value.empty() && !std::isnan(value[0])) {
-                            dataRow.values[colName] = static_cast<double>(value[0]);
-                        }
-                    } else if (col->type() == CCfits::Tint || col->type() == CCfits::Tlong || col->type() == CCfits::Tlonglong) {
-                        std::vector<long> value;
-                        col->read(value, row, row);
-                        if (!value.empty()) {
-                            dataRow.values[colName] = static_cast<double>(value[0]);
-                        }
-                    } else if (col->type() == CCfits::Tstring) {
-                        std::vector<std::string> value;
-                        col->read(value, row, row);
-                        if (!value.empty()) {
-                            dataRow.values[colName] = QString::fromStdString(value[0]).trimmed();
-                        }
+                    } else if (colInfo.type == CCfits::Tstring) {
+                        buffer.stringData.clear();
+                        colInfo.ptr->read(buffer.stringData, startRow, endRow);
                     }
-                } catch (CCfits::Column::InvalidRowNumber&) {
-                    // Skip invalid rows
-                    continue;
                 } catch (...) {
-                    // Skip problematic values
+                    // If column read fails, continue with other columns
                     continue;
                 }
             }
             
-            _dataRows.push_back(dataRow);
+            // Process the chunk data into DataRows
+            for (long i = 0; i < rowsInChunk; ++i) {
+                DataRow dataRow;
+                
+                for (size_t colIdx = 0; colIdx < columnInfos.size(); ++colIdx) {
+                    const auto& colInfo = columnInfos[colIdx];
+                    const auto& buffer = columnBuffers[colIdx];
+                    
+                    try {
+                        if (colInfo.type == CCfits::Tdouble) {
+                            if (i < static_cast<long>(buffer.doubleData.size()) && !std::isnan(buffer.doubleData[i])) {
+                                dataRow.values[colInfo.name] = buffer.doubleData[i];
+                            }
+                        } else if (colInfo.type == CCfits::Tfloat) {
+                            if (i < static_cast<long>(buffer.floatData.size()) && !std::isnan(buffer.floatData[i])) {
+                                dataRow.values[colInfo.name] = static_cast<double>(buffer.floatData[i]);
+                            }
+                        } else if (colInfo.type == CCfits::Tint || 
+                                colInfo.type == CCfits::Tlong || 
+                                colInfo.type == CCfits::Tlonglong) {
+                            if (i < static_cast<long>(buffer.longData.size())) {
+                                long val = buffer.longData[i];
+                                // Check for invalid/error values (INT_MIN, INT_MAX, etc.)
+                                if (val == std::numeric_limits<int>::min() || 
+                                    val == std::numeric_limits<long>::min()) {
+                                    // Skip invalid values
+                                    continue;
+                                }
+                                // For large integers, convert through string to preserve precision
+                                if (colInfo.type == CCfits::Tlonglong && i < static_cast<long>(buffer.stringData.size())) {
+                                    QVariant converted = convertValue(QString::fromStdString(buffer.stringData[i]));
+                                    if (!converted.isNull()) {
+                                        dataRow.values[colInfo.name] = converted;
+                                    }
+                                } else {
+                                    QString strVal = QString::number(val);
+                                    QVariant converted = convertValue(strVal);
+                                    if (!converted.isNull()) {
+                                        dataRow.values[colInfo.name] = converted;
+                                    }
+                                }
+                            }
+                        } else if (colInfo.type == CCfits::Tstring) {
+                            if (i < static_cast<long>(buffer.stringData.size())) {
+                                dataRow.values[colInfo.name] = QString::fromStdString(buffer.stringData[i]).trimmed();
+                            }
+                        }
+                    } catch (...) {
+                        continue;
+                    }
+                }
+                
+                _dataRows.push_back(std::move(dataRow));
+            }
         }
         
-        if (maxRows < nrows) {
-            QMessageBox::information(this, "Large File", 
-                QString("File contains %1 rows. Loaded first %2 for preview.")
-                .arg(nrows).arg(maxRows));
-        }
-        
+        progress.setValue(100);
+        updateSimbadWarning();
         return true;
         
-    } catch (CCfits::FITS::CantOpen& e) {
+    } catch (const std::exception& e) {
         QMessageBox::warning(this, "FITS Error", 
-            QString("Cannot open FITS file: %1").arg(QString::fromStdString(e.message())));
-        return false;
-    } catch (CCfits::FitsException& e) {
-        QMessageBox::warning(this, "FITS Error", QString::fromStdString(e.message()));
+                           QString("Failed to read FITS file: %1").arg(e.what()));
         return false;
     }
 #else
@@ -786,8 +893,7 @@ bool GeneralImportPage::validatePage()
     
     // Query SIMBAD if requested
     if (_simbadCheckBox->isChecked()) {
-        progress.setLabelText("Querying SIMBAD for bibcodes...");
-        // TODO: Implementation for SIMBAD query
+        querySimbadBibcodes(stars);
     }
     
     progress.setValue(stars.size());
@@ -803,6 +909,319 @@ int GeneralImportPage::nextId() const
     // Skip to photometry page for now (until other pages are implemented)
     return -1; // Return -1 to finish the wizard after this page
 }
+
+// Add SIMBAD query method
+void GeneralImportPage::querySimbadBibcodes(const std::vector<std::shared_ptr<Star>>& stars)
+{
+    // Create progress dialog
+    QProgressDialog* progress = new QProgressDialog("Querying SIMBAD for bibliography codes...", 
+                                                    "Cancel", 0, stars.size(), this);
+    progress->setWindowModality(Qt::WindowModal);
+    progress->setMinimumDuration(0);
+    progress->show();
+    
+    // Create worker and thread
+    _simbadThread = new QThread;
+    _simbadWorker = new SimbadWorker(stars);
+    _simbadWorker->moveToThread(_simbadThread);
+    
+    // Connect signals - use Qt::QueuedConnection to ensure slots run on main thread
+    connect(_simbadThread, &QThread::started, _simbadWorker, &SimbadWorker::process);
+    
+    connect(_simbadWorker, &SimbadWorker::progress, this,
+            [progress](int current, int total, const QString& message) {
+        progress->setValue(current);
+        progress->setMaximum(total);
+        progress->setLabelText(message);
+        QApplication::processEvents();
+    }, Qt::QueuedConnection);
+    
+    connect(_simbadWorker, &SimbadWorker::finished, this,
+            [this, stars, progress](const QMap<QString, QStringList>& bibcodes) {
+        // This will now run on the main thread
+        StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
+        if (importWizard) {
+            auto controller = importWizard->controller();
+            auto project = importWizard->project();
+            
+            // Update stars with bibcodes
+            int updatedCount = 0;
+            for (auto& star : stars) {
+                QString sourceId = star->getSourceId();
+                if (bibcodes.contains(sourceId)) {
+                    const QStringList& starBibcodes = bibcodes[sourceId];
+                    for (const QString& bibcode : starBibcodes) {
+                        star->addBibcode(bibcode);
+                    }
+                    updatedCount++;
+                }
+            }
+            
+            // Save all stars with updated bibcodes in a single batch
+            if (updatedCount > 0) {
+                if (!controller->saveStarsToProject(project, stars)) {
+                    QMessageBox::warning(this, "Update Error", 
+                        "Failed to update stars with bibliography codes");
+                } else {
+                    QMessageBox::information(this, "SIMBAD Query Complete",
+                        QString("Successfully retrieved bibliography codes for %1 stars")
+                        .arg(updatedCount));
+                }
+            }
+        }
+        
+        progress->close();
+        progress->deleteLater();
+        
+        // Clean up thread
+        _simbadThread->quit();
+        _simbadThread->wait();
+        _simbadThread->deleteLater();
+        _simbadWorker->deleteLater();
+        _simbadThread = nullptr;
+        _simbadWorker = nullptr;
+    }, Qt::QueuedConnection);  // This ensures the slot runs on the main thread
+    
+    connect(_simbadWorker, &SimbadWorker::error, this,
+            [progress](const QString& error) {
+        QMessageBox::warning(nullptr, "SIMBAD Error", error);
+        progress->close();
+        progress->deleteLater();
+    }, Qt::QueuedConnection);
+    
+    // Handle progress dialog cancellation
+    connect(progress, &QProgressDialog::canceled, [this]() {
+        if (_simbadThread && _simbadThread->isRunning()) {
+            _simbadThread->quit();
+            _simbadThread->wait();
+        }
+    });
+    
+    // Start the thread
+    _simbadThread->start();
+}
+
+// SimbadWorker implementation
+SimbadWorker::SimbadWorker(const std::vector<std::shared_ptr<Star>>& stars, QObject* parent)
+    : QObject(parent)
+    , _stars(stars)
+    , _networkManager(new QNetworkAccessManager(this))
+{
+}
+
+void SimbadWorker::process()
+{
+    emit progress(0, _stars.size(), "Generating SIMBAD script...");
+    
+    QString script = generateSimbadScript();
+    if (script.isEmpty()) {
+        emit error("No stars with valid Gaia IDs to query");
+        return;
+    }
+    
+    //qDebug() << "Generated SIMBAD script with" << _stars.size() << "stars";
+    
+    // Create temporary file for script
+    QTemporaryFile scriptFile;
+    if (!scriptFile.open()) {
+        emit error("Failed to create temporary script file");
+        return;
+    }
+    scriptFile.write(script.toUtf8());
+    scriptFile.flush();  // Ensure data is written
+    QString scriptPath = scriptFile.fileName();
+    scriptFile.close();  // Close but keep the file
+    
+    emit progress(0, _stars.size(), "Sending query to SIMBAD...");
+    
+    // Prepare POST request
+    QNetworkRequest request(QUrl("http://simbad.u-strasbg.fr/simbad/sim-script"));
+    request.setRawHeader("User-Agent", "ASTRA/1.0");
+    
+    // Create multipart form data
+    QHttpMultiPart* multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+    
+    // Add script file
+    QFile* file = new QFile(scriptPath);
+    if (!file->open(QIODevice::ReadOnly)) {
+        emit error("Failed to open script file");
+        delete multiPart;
+        return;
+    }
+    
+    QHttpPart scriptPart;
+    scriptPart.setHeader(QNetworkRequest::ContentDispositionHeader, 
+                         QVariant("form-data; name=\"scriptFile\"; filename=\"script.txt\""));
+    scriptPart.setHeader(QNetworkRequest::ContentTypeHeader, QVariant("text/plain"));
+    scriptPart.setBodyDevice(file);
+    file->setParent(multiPart);  // multiPart takes ownership
+    multiPart->append(scriptPart);
+    
+    // Add submit field
+    QHttpPart submitPart;
+    submitPart.setHeader(QNetworkRequest::ContentDispositionHeader, 
+                         QVariant("form-data; name=\"submit\""));
+    submitPart.setBody("submit file");
+    multiPart->append(submitPart);
+    
+    // Send request
+    QNetworkReply* reply = _networkManager->post(request, multiPart);
+    multiPart->setParent(reply);  // reply takes ownership
+    
+    // Wait for response
+    QEventLoop loop;
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    
+    // Add timeout
+    QTimer::singleShot(60000, &loop, &QEventLoop::quit); // 60 second timeout
+    
+    loop.exec();
+    
+    if (reply->error() != QNetworkReply::NoError) {
+        emit error(QString("Network error: %1").arg(reply->errorString()));
+        reply->deleteLater();
+        return;
+    }
+    
+    emit progress(_stars.size() / 2, _stars.size(), "Parsing SIMBAD response...");
+    
+    QString response = QString::fromUtf8(reply->readAll());
+    reply->deleteLater();
+    
+    //qDebug() << "Received SIMBAD response of size:" << response.size();
+    
+    QMap<QString, QStringList> bibcodes = parseSimbadResponse(response);
+    
+    emit progress(_stars.size(), _stars.size(), "Complete");
+    emit finished(bibcodes);
+}
+
+QString SimbadWorker::generateSimbadScript()
+{
+    QString script = "format object f1 \"start %OBJECT\\n\"+\n";
+    script += "\"%BIBCODELIST\"\n";
+    
+    int validStars = 0;
+    for (const auto& star : _stars) {
+        QString sourceId = star->getSourceId();
+        if (!sourceId.isEmpty()) {
+            script += QString("query id GAIA DR3 %1\n").arg(sourceId);
+            validStars++;
+        } else if (!star->getAlias().isEmpty()) {
+            script += QString("query id %1\n").arg(star->getAlias());
+            validStars++;
+        }
+    }
+    
+    return validStars > 0 ? script : QString();
+}
+
+QMap<QString, QStringList> SimbadWorker::parseSimbadResponse(const QString& response)
+{
+    QMap<QString, QStringList> bibcodesMap;
+    QStringList lines = response.split('\n');
+    
+    // Debug output
+    //qDebug() << "SIMBAD response size:" << response.size() << "bytes";
+    
+    // Find data section
+    int dataIndex = -1;
+    int errorIndex = -1;
+    
+    for (int i = 0; i < lines.size(); ++i) {
+        if (lines[i].contains("::data::")) {
+            dataIndex = i;
+            //qDebug() << "Found data section at line" << i;
+        } else if (lines[i].contains("::error::")) {
+            errorIndex = i;
+            //qDebug() << "Found error section at line" << i;
+        }
+    }
+    
+    if (dataIndex == -1) {
+        //qDebug() << "No data section found in SIMBAD response";
+        // Try to parse anyway if we have "start" lines
+        for (const QString& line : lines) {
+            if (line.trimmed().startsWith("start ")) {
+                dataIndex = 0;  // Found at least one result
+                break;
+            }
+        }
+        
+        if (dataIndex == -1) {
+            emit error("Invalid SIMBAD response format - no data section found");
+            return bibcodesMap;
+        }
+    }
+    
+    // Process all lines looking for star entries and bibcodes
+    QString currentStar;
+    QStringList currentBibcodes;
+    
+    for (const QString& line : lines) {
+        QString trimmedLine = line.trimmed();
+        
+        if (trimmedLine.startsWith("start GAIA DR3 ")) {
+            // Save previous star's bibcodes if any
+            if (!currentStar.isEmpty() && !currentBibcodes.isEmpty()) {
+                bibcodesMap[currentStar] = currentBibcodes;
+                //qDebug() << "Found" << currentBibcodes.size() << "bibcodes for" << currentStar;
+            }
+            
+            // Start new star - extract just the ID number
+            currentStar = trimmedLine.mid(15).trimmed();
+            // Remove any trailing colons or extra text
+            if (currentStar.contains(':')) {
+                currentStar = currentStar.left(currentStar.indexOf(':'));
+            }
+            currentBibcodes.clear();
+        } else if (trimmedLine.startsWith("start ")) {
+            // Handle other star identifiers
+            if (!currentStar.isEmpty() && !currentBibcodes.isEmpty()) {
+                bibcodesMap[currentStar] = currentBibcodes;
+                //qDebug() << "Found" << currentBibcodes.size() << "bibcodes for" << currentStar;
+            }
+            
+            currentStar = trimmedLine.mid(6).trimmed();
+            if (currentStar.contains(':')) {
+                currentStar = currentStar.left(currentStar.indexOf(':'));
+            }
+            currentBibcodes.clear();
+        } else if (!trimmedLine.isEmpty() && 
+                   !trimmedLine.startsWith("::") && 
+                   !trimmedLine.startsWith("#") &&
+                   trimmedLine.length() > 10 &&  // Bibcodes are typically 19 chars
+                   !currentStar.isEmpty()) {
+            // This looks like a bibcode (format: YYYYJJJJJVVVVPPPPPA)
+            // Basic validation: should contain year at start and have proper format
+            bool looksLikeBibcode = false;
+            if (trimmedLine.length() >= 19) {
+                // Check if first 4 chars could be a year
+                QString yearStr = trimmedLine.left(4);
+                bool yearOk;
+                int year = yearStr.toInt(&yearOk);
+                if (yearOk && year >= 1800 && year <= 2100) {
+                    looksLikeBibcode = true;
+                }
+            }
+            
+            if (looksLikeBibcode || trimmedLine.contains("...")) {  // Some bibcodes have dots
+                currentBibcodes.append(trimmedLine);
+            }
+        }
+    }
+    
+    // Save last star's bibcodes if any
+    if (!currentStar.isEmpty() && !currentBibcodes.isEmpty()) {
+        bibcodesMap[currentStar] = currentBibcodes;
+        //qDebug() << "Found" << currentBibcodes.size() << "bibcodes for" << currentStar;
+    }
+    
+    //qDebug() << "Total stars with bibcodes:" << bibcodesMap.size();
+    
+    return bibcodesMap;
+}
+
 
 // ColumnMappingDialog implementation
 ColumnMappingDialog::ColumnMappingDialog(const std::vector<QString>& unmappedColumns,
