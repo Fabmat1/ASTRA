@@ -1051,18 +1051,10 @@ void SimbadWorker::process()
     
     QHttpPart scriptPart;
     scriptPart.setHeader(QNetworkRequest::ContentDispositionHeader, 
-                         QVariant("form-data; name=\"scriptFile\"; filename=\"script.txt\""));
+        QVariant("form-data; name=\"scriptFile\"; filename=\"script.txt\""));
     scriptPart.setHeader(QNetworkRequest::ContentTypeHeader, QVariant("text/plain"));
-    scriptPart.setBodyDevice(file);
-    file->setParent(multiPart);  // multiPart takes ownership
+    scriptPart.setBody(script.toUtf8());
     multiPart->append(scriptPart);
-    
-    // Add submit field
-    QHttpPart submitPart;
-    submitPart.setHeader(QNetworkRequest::ContentDispositionHeader, 
-                         QVariant("form-data; name=\"submit\""));
-    submitPart.setBody("submit file");
-    multiPart->append(submitPart);
     
     // Send request
     QNetworkReply* reply = _networkManager->post(request, multiPart);
