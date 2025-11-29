@@ -36,6 +36,8 @@ Star::Star()
     , _e_rv_avg(0.0)
     , _rv_med(0.0)
     , _e_rv_med(0.0)
+    , _photometryLoaded(false)
+    , _spectraLoaded(false)
 {
 }
 
@@ -107,4 +109,22 @@ void Star::updateRVMetricsFromCurve()
     if (bestFit && bestFit->getPeriod() > 0) {
         _logp = std::log10(bestFit->getPeriod());
     }
+}
+
+std::shared_ptr<Photometry> Star::getPhotometry()
+{
+    if (!_photometryLoaded && _photometryLoader && !_id.isEmpty()) {
+        _photometry = _photometryLoader(_id);
+        _photometryLoaded = true;
+    }
+    return _photometry;
+}
+
+std::vector<std::shared_ptr<Spectrum>> Star::getSpectra()
+{
+    if (!_spectraLoaded && _spectraLoader && !_id.isEmpty()) {
+        _spectra = _spectraLoader(_id);
+        _spectraLoaded = true;
+    }
+    return _spectra;
 }

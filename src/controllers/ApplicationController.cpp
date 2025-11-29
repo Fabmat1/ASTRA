@@ -67,8 +67,20 @@ std::shared_ptr<Project> ApplicationController::openProject(const QString& proje
     for (const auto& project : _projects) {
         if (project->getId() == projectId) {
             _currentProject = project;
-            if (!project->starsLoaded()){
-                project->setStars(_databaseManager->loadStars(projectId), false);
+            if (!project->starsLoaded()) {
+                auto stars = _databaseManager->loadStars(projectId);
+                
+                // Set up lazy loaders for each star
+                for (auto& star : stars) {
+                    star->setPhotometryLoader([this](const QString& starId) {
+                        return _databaseManager->loadPhotometry(starId);
+                    });
+                    star->setSpectraLoader([this](const QString& starId) {
+                        return _databaseManager->loadSpectra(starId);
+                    });
+                }
+                
+                project->setStars(stars, false);
             }
             emit projectOpened(projectId);
             return project;
@@ -76,6 +88,7 @@ std::shared_ptr<Project> ApplicationController::openProject(const QString& proje
     }
     return nullptr;
 }
+
 
 void ApplicationController::updateProject(std::shared_ptr<Project> project)
 {

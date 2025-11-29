@@ -5,6 +5,7 @@
 #include <QVariant>
 #include <memory>
 #include <vector>
+#include <functional>
 #include "RadialVelocity.h"
 
 class Photometry;
@@ -114,7 +115,25 @@ public:
 
     // Photometry and Spectroscopy
     std::shared_ptr<Photometry> getPhotometry() const { return _photometry; }
-    void setPhotometry(std::shared_ptr<Photometry> photometry) { _photometry = photometry; }
+    void setPhotometry(std::shared_ptr<Photometry> photometry) { 
+        _photometry = photometry; 
+        _photometryLoaded = true; 
+    }
+
+    // Lazy loading support
+    bool hasPhotometryLoaded() const { return _photometryLoaded; }
+    bool hasSpectraLoaded() const { return _spectraLoaded; }
+    
+    void setPhotometryLoader(std::function<std::shared_ptr<Photometry>(const QString&)> loader) {
+        _photometryLoader = loader;
+    }
+    void setSpectraLoader(std::function<std::vector<std::shared_ptr<Spectrum>>(const QString&)> loader) {
+        _spectraLoader = loader;
+    }
+    
+    // Modified getters that trigger lazy loading
+    std::shared_ptr<Photometry> getPhotometry();  // Remove const, will lazy load
+    std::vector<std::shared_ptr<Spectrum>> getSpectra();  // Remove const, will lazy load
 
     std::vector<std::shared_ptr<Spectrum>> getSpectra() const { return _spectra; }
     void addSpectrum(std::shared_ptr<Spectrum> spectrum) { _spectra.push_back(spectrum); }
@@ -185,6 +204,11 @@ private:
     std::vector<std::shared_ptr<Spectrum>> _spectra;
     std::shared_ptr<RadialVelocityCurve> _rvCurve;
 
+    // Lazy loading state
+    bool _photometryLoaded = false;
+    bool _spectraLoaded = false;
+    std::function<std::shared_ptr<Photometry>(const QString&)> _photometryLoader;
+    std::function<std::vector<std::shared_ptr<Spectrum>>(const QString&)> _spectraLoader;
 };
 
 #endif // STAR_H

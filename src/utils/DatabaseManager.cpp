@@ -47,8 +47,19 @@ bool DatabaseManager::openDatabase(const QString& path)
         return false;
     }
 
-    return createTables();
+    // Enable WAL mode for better concurrent performance
+    QSqlQuery walQuery;
+    walQuery.exec("PRAGMA journal_mode=WAL");
+    walQuery.exec("PRAGMA synchronous=NORMAL");
+    walQuery.exec("PRAGMA cache_size=10000");
+
+    if (!createTables()) {
+        return false;
+    }
+
+    return createIndexes();
 }
+
 
 void DatabaseManager::closeDatabase()
 {
@@ -249,6 +260,28 @@ bool DatabaseManager::createTables()
     for (const QString& query : queries) {
         if (!executeQuery(query)) {
             return false;
+        }
+    }
+
+    return true;
+}
+
+
+bool DatabaseManager::createIndexes()
+{
+    QStringList indexQueries = {
+        "CREATE INDEX IF NOT EXISTS idx_stars_project_id ON stars(project_id)",
+        "CREATE INDEX IF NOT EXISTS idx_photometry_star_id ON photometry(star_id)",
+        "CREATE INDEX IF NOT EXISTS idx_spectra_star_id ON spectra(star_id)",
+        "CREATE INDEX IF NOT EXISTS idx_photometric_points_photometry_id ON photometric_points(photometry_id)",
+        "CREATE INDEX IF NOT EXISTS idx_lightcurves_photometry_id ON lightcurves(photometry_id)",
+        "CREATE INDEX IF NOT EXISTS idx_sed_models_photometry_id ON sed_models(photometry_id)",
+        "CREATE INDEX IF NOT EXISTS idx_spectral_fits_spectrum_id ON spectral_fits(spectrum_id)"
+    };
+
+    for (const QString& query : indexQueries) {
+        if (!executeQuery(query)) {
+            qWarning() << "Failed to create index";
         }
     }
 
@@ -514,6 +547,8 @@ bool DatabaseManager::saveStar(const QString& projectId, std::shared_ptr<Star> s
     return true;
 }
 
+// In src/utils/DatabaseManager.cpp - replace loadStars()
+
 std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& projectId)
 {
     std::vector<std::shared_ptr<Star>> stars;
@@ -526,6 +561,12 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
         qDebug() << "Failed to load stars:" << query.lastError();
         return stars;
     }
+
+    // Pre-allocate based on expected size
+    stars.reserve(getStarCountForProject(projectId));
+
+    // Build a map for quick star lookup by ID
+    std::unordered_map<QString, std::shared_ptr<Star>> starMap;
 
     while (query.next()) {
         auto star = std::make_shared<Star>();
@@ -573,27 +614,21 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
         star->setERVMed(query.value("e_rv_med").toDouble());
         
         // Parse bibcodes from JSON
-        QJsonDocument doc = QJsonDocument::fromJson(query.value("bibcodes").toByteArray());
-        if (doc.isArray()) {
-            std::vector<QString> bibcodes;
-            for (const auto& value : doc.array()) {
-                bibcodes.push_back(value.toString());
+        QByteArray bibcodesData = query.value("bibcodes").toByteArray();
+        if (!bibcodesData.isEmpty()) {
+            QJsonDocument doc = QJsonDocument::fromJson(bibcodesData);
+            if (doc.isArray()) {
+                std::vector<QString> bibcodes;
+                const QJsonArray arr = doc.array();
+                bibcodes.reserve(arr.size());
+                for (const auto& value : arr) {
+                    bibcodes.push_back(value.toString());
+                }
+                star->setBibcodes(bibcodes);
             }
-            star->setBibcodes(bibcodes);
         }
 
-        // Load photometry (lazy loading - just set the ID, load data when needed)
-        auto photometry = loadPhotometry(star->getId());
-        if (photometry) {
-            star->setPhotometry(photometry);
-        }
-
-        // Load spectra (lazy loading - just set metadata, load data when needed)
-        auto spectra = loadSpectra(star->getId());
-        for (const auto& spectrum : spectra) {
-            star->addSpectrum(spectrum);
-        }
-
+        starMap[star->getId()] = star;
         stars.push_back(star);
     }
 
