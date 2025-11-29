@@ -6,6 +6,7 @@
 #include <memory>
 #include <vector>
 #include <functional>
+#include <unordered_map>
 #include "RadialVelocity.h"
 
 class Photometry;
@@ -138,6 +139,10 @@ public:
     std::vector<std::shared_ptr<Spectrum>> getSpectra() const { return _spectra; }
     void addSpectrum(std::shared_ptr<Spectrum> spectrum) { _spectra.push_back(spectrum); }
 
+    // Fast field access using function pointers
+    using FieldGetter = std::function<QVariant(const Star*)>;
+    static const std::unordered_map<QString, FieldGetter>& getFieldMap();
+    
     // Generic field access for table display
     QVariant getFieldValue(const QString& fieldName) const;
 

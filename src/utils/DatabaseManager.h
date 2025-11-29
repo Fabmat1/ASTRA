@@ -41,7 +41,7 @@ public:
     bool saveStars(const QString& projectId, const std::vector<std::shared_ptr<Star>>& stars);
     std::vector<std::shared_ptr<Star>> loadStars(const QString& projectId);
     bool updateStar(const QString& projectId, std::shared_ptr<Star> star);
-    bool deleteStar(const QString& projectId, const QString& sourceId);
+    bool deleteStar(const QString& projectId, const QString& starId);
     size_t getStarCountForProject(const QString& projectId);
 
     // Import operations
@@ -49,7 +49,7 @@ public:
 
     std::shared_ptr<Photometry> loadPhotometry(const QString& starId);
     std::vector<std::shared_ptr<Spectrum>> loadSpectra(const QString& starId);
-    
+
 private:
     bool createTables();
     bool createIndexes();

@@ -70,17 +70,22 @@ std::shared_ptr<Project> ApplicationController::openProject(const QString& proje
             if (!project->starsLoaded()) {
                 auto stars = _databaseManager->loadStars(projectId);
                 
-                // Set up lazy loaders for each star
+                // Create loaders ONCE, capture by value (shared ownership)
+                DatabaseManager* dbMgr = _databaseManager.get();
+                auto photometryLoader = [dbMgr](const QString& starId) {
+                    return dbMgr->loadPhotometry(starId);
+                };
+                auto spectraLoader = [dbMgr](const QString& starId) {
+                    return dbMgr->loadSpectra(starId);
+                };
+                
+                // Set the same loader instances on all stars
                 for (auto& star : stars) {
-                    star->setPhotometryLoader([this](const QString& starId) {
-                        return _databaseManager->loadPhotometry(starId);
-                    });
-                    star->setSpectraLoader([this](const QString& starId) {
-                        return _databaseManager->loadSpectra(starId);
-                    });
+                    star->setPhotometryLoader(photometryLoader);
+                    star->setSpectraLoader(spectraLoader);
                 }
                 
-                project->setStars(stars, false);
+                project->setStars(std::move(stars), false);
             }
             emit projectOpened(projectId);
             return project;
@@ -158,4 +163,33 @@ void ApplicationController::applyTheme()
         qApp->setStyleSheet(styleSheet);
         themeFile.close();
     }
+}
+
+bool ApplicationController::deleteStarFromProject(std::shared_ptr<Project> project, std::shared_ptr<Star> star)
+{
+    if (!project || !star) return false;
+    
+    // Remove from database
+    if (!_databaseManager->deleteStar(project->getId(), star->getId())) {
+        return false;
+    }
+    
+    // Remove from project
+    project->removeStar(star);
+    
+    return true;
+}
+
+bool ApplicationController::deleteStarsFromProject(std::shared_ptr<Project> project, const std::vector<std::shared_ptr<Star>>& stars)
+{
+    if (!project || stars.empty()) return false;
+    
+    bool allSuccess = true;
+    for (const auto& star : stars) {
+        if (!deleteStarFromProject(project, star)) {
+            allSuccess = false;
+        }
+    }
+    
+    return allSuccess;
 }

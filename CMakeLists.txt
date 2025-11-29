@@ -71,7 +71,6 @@ endif()
 set(SOURCES
     src/main.cpp
     src/controllers/ApplicationController.cpp
-    src/controllers/ProjectController.cpp
     src/models/Project.cpp
     src/models/Star.cpp
     src/models/Photometry.cpp
@@ -91,7 +90,6 @@ set(SOURCES
 # Header files
 set(HEADERS
     src/controllers/ApplicationController.h
-    src/controllers/ProjectController.h
     src/models/Project.h
     src/models/Star.h
     src/models/Photometry.h

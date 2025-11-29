@@ -34,7 +34,7 @@ public:
 
     // Star management
     void addStar(std::shared_ptr<Star> star);
-    void removeStar(const QString& sourceId);
+    void removeStar(std::shared_ptr<Star> star);
     std::shared_ptr<Star> getStar(const QString& sourceId) const;
     std::vector<std::shared_ptr<Star>> getAllStars() const;
     size_t getStarCount() const;
@@ -48,6 +48,11 @@ public:
     // Column visibility management
     std::vector<QString> getVisibleColumns() const { return _visibleColumns; }
     void setVisibleColumns(const std::vector<QString>& columns, bool updateModifiedDate = true);
+
+    // In src/models/Project.h - add to public section (you likely have this file)
+
+
+    void removeStars(const std::vector<std::shared_ptr<Star>>& stars);
 
 private:
     QString _id;

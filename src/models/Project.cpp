@@ -1,6 +1,7 @@
 #include "Project.h"
 #include "Star.h"
 #include <QUuid>
+#include <algorithm>
 
 Project::Project(const QString& name, const QString& description, const QString& thumbnailPath)
     : _name(name)
@@ -68,16 +69,20 @@ void Project::addStar(std::shared_ptr<Star> star)
     _modifiedDate = QDateTime::currentDateTime();
 }
 
-void Project::removeStar(const QString& sourceId)
+void Project::removeStar(std::shared_ptr<Star> star)
 {
-    auto it = std::remove_if(_stars.begin(), _stars.end(),
-        [&sourceId](const std::shared_ptr<Star>& star) {
-            return star->getSourceId() == sourceId;
-        });
-
+    if (!star) return;
+    
+    auto it = std::find(_stars.begin(), _stars.end(), star);
     if (it != _stars.end()) {
-        _stars.erase(it, _stars.end());
-        _modifiedDate = QDateTime::currentDateTime();
+        _stars.erase(it);
+    }
+}
+
+void Project::removeStars(const std::vector<std::shared_ptr<Star>>& stars)
+{
+    for (const auto& star : stars) {
+        removeStar(star);
     }
 }
 

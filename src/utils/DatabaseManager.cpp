@@ -13,6 +13,7 @@
 #include <QUuid>
 #include <QJsonDocument>
 #include <QJsonArray>
+#include <QSqlRecord>
 
 DatabaseManager::DatabaseManager(QObject *parent)
     : QObject(parent)
@@ -547,8 +548,6 @@ bool DatabaseManager::saveStar(const QString& projectId, std::shared_ptr<Star> s
     return true;
 }
 
-// In src/utils/DatabaseManager.cpp - replace loadStars()
-
 std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& projectId)
 {
     std::vector<std::shared_ptr<Star>> stars;
@@ -562,74 +561,114 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
         return stars;
     }
 
-    // Pre-allocate based on expected size
-    stars.reserve(getStarCountForProject(projectId));
+    // Get column indices ONCE before the loop
+    QSqlRecord rec = query.record();
+    const int idxId = rec.indexOf("id");
+    const int idxAlias = rec.indexOf("alias");
+    const int idxSourceId = rec.indexOf("source_id");
+    const int idxTic = rec.indexOf("tic");
+    const int idxJname = rec.indexOf("jname");
+    const int idxRa = rec.indexOf("ra");
+    const int idxDec = rec.indexOf("dec");
+    const int idxPmra = rec.indexOf("pmra");
+    const int idxPmdec = rec.indexOf("pmdec");
+    const int idxEPmra = rec.indexOf("e_pmra");
+    const int idxEPmdec = rec.indexOf("e_pmdec");
+    const int idxPlx = rec.indexOf("plx");
+    const int idxEPlx = rec.indexOf("e_plx");
+    const int idxPmraPmdecCorr = rec.indexOf("pmra_pmdec_corr");
+    const int idxPlxPmdecCorr = rec.indexOf("plx_pmdec_corr");
+    const int idxPlxPmraCorr = rec.indexOf("plx_pmra_corr");
+    const int idxGmag = rec.indexOf("gmag");
+    const int idxEGmag = rec.indexOf("e_gmag");
+    const int idxBp = rec.indexOf("bp");
+    const int idxEBp = rec.indexOf("e_bp");
+    const int idxRp = rec.indexOf("rp");
+    const int idxERp = rec.indexOf("e_rp");
+    const int idxBpRp = rec.indexOf("bp_rp");
+    const int idxSpecClass = rec.indexOf("spec_class");
+    const int idxTeff = rec.indexOf("teff");
+    const int idxETeff = rec.indexOf("e_teff");
+    const int idxLogg = rec.indexOf("logg");
+    const int idxELogg = rec.indexOf("e_logg");
+    const int idxHe = rec.indexOf("he");
+    const int idxEHe = rec.indexOf("e_he");
+    const int idxLogp = rec.indexOf("logp");
+    const int idxDeltaRV = rec.indexOf("deltaRV");
+    const int idxEDeltaRV = rec.indexOf("e_deltaRV");
+    const int idxRvAvg = rec.indexOf("rv_avg");
+    const int idxERvAvg = rec.indexOf("e_rv_avg");
+    const int idxRvMed = rec.indexOf("rv_med");
+    const int idxERvMed = rec.indexOf("e_rv_med");
+    const int idxBibcodes = rec.indexOf("bibcodes");
 
-    // Build a map for quick star lookup by ID
-    std::unordered_map<QString, std::shared_ptr<Star>> starMap;
+    // Pre-allocate
+    const size_t estimatedCount = getStarCountForProject(projectId);
+    stars.reserve(estimatedCount);
 
     while (query.next()) {
         auto star = std::make_shared<Star>();
         
-        star->setId(query.value("id").toString());
-        star->setAlias(query.value("alias").toString());
-        star->setSourceId(query.value("source_id").toString());
-        star->setTic(query.value("tic").toString());
-        star->setJName(query.value("jname").toString());
+        star->setId(query.value(idxId).toString());
+        star->setAlias(query.value(idxAlias).toString());
+        star->setSourceId(query.value(idxSourceId).toString());
+        star->setTic(query.value(idxTic).toString());
+        star->setJName(query.value(idxJname).toString());
         
-        star->setRa(query.value("ra").toDouble());
-        star->setDec(query.value("dec").toDouble());
-        star->setPmra(query.value("pmra").toDouble());
-        star->setPmdec(query.value("pmdec").toDouble());
-        star->setEPmra(query.value("e_pmra").toDouble());
-        star->setEPmdec(query.value("e_pmdec").toDouble());
-        star->setPlx(query.value("plx").toDouble());
-        star->setEPlx(query.value("e_plx").toDouble());
-        star->setPmraPmdecCorr(query.value("pmra_pmdec_corr").toDouble());
-        star->setPlxPmdecCorr(query.value("plx_pmdec_corr").toDouble());
-        star->setPlxPmraCorr(query.value("plx_pmra_corr").toDouble());
+        star->setRa(query.value(idxRa).toDouble());
+        star->setDec(query.value(idxDec).toDouble());
+        star->setPmra(query.value(idxPmra).toDouble());
+        star->setPmdec(query.value(idxPmdec).toDouble());
+        star->setEPmra(query.value(idxEPmra).toDouble());
+        star->setEPmdec(query.value(idxEPmdec).toDouble());
+        star->setPlx(query.value(idxPlx).toDouble());
+        star->setEPlx(query.value(idxEPlx).toDouble());
+        star->setPmraPmdecCorr(query.value(idxPmraPmdecCorr).toDouble());
+        star->setPlxPmdecCorr(query.value(idxPlxPmdecCorr).toDouble());
+        star->setPlxPmraCorr(query.value(idxPlxPmraCorr).toDouble());
         
-        star->setGmag(query.value("gmag").toDouble());
-        star->setEGmag(query.value("e_gmag").toDouble());
-        star->setBp(query.value("bp").toDouble());
-        star->setEBp(query.value("e_bp").toDouble());
-        star->setRp(query.value("rp").toDouble());
-        star->setERp(query.value("e_rp").toDouble());
-        star->setBpRp(query.value("bp_rp").toDouble());
+        star->setGmag(query.value(idxGmag).toDouble());
+        star->setEGmag(query.value(idxEGmag).toDouble());
+        star->setBp(query.value(idxBp).toDouble());
+        star->setEBp(query.value(idxEBp).toDouble());
+        star->setRp(query.value(idxRp).toDouble());
+        star->setERp(query.value(idxERp).toDouble());
+        star->setBpRp(query.value(idxBpRp).toDouble());
         
-        star->setSpecClass(query.value("spec_class").toString());
-        star->setTeff(query.value("teff").toDouble());
-        star->setETeff(query.value("e_teff").toDouble());
-        star->setLogg(query.value("logg").toDouble());
-        star->setELogg(query.value("e_logg").toDouble());
-        star->setHe(query.value("he").toDouble());
-        star->setEHe(query.value("e_he").toDouble());
+        star->setSpecClass(query.value(idxSpecClass).toString());
+        star->setTeff(query.value(idxTeff).toDouble());
+        star->setETeff(query.value(idxETeff).toDouble());
+        star->setLogg(query.value(idxLogg).toDouble());
+        star->setELogg(query.value(idxELogg).toDouble());
+        star->setHe(query.value(idxHe).toDouble());
+        star->setEHe(query.value(idxEHe).toDouble());
         
-        star->setLogP(query.value("logp").toDouble());
-        star->setDeltaRV(query.value("deltaRV").toDouble());
-        star->setEDeltaRV(query.value("e_deltaRV").toDouble());
-        star->setRVAvg(query.value("rv_avg").toDouble());
-        star->setERVAvg(query.value("e_rv_avg").toDouble());
-        star->setRVMed(query.value("rv_med").toDouble());
-        star->setERVMed(query.value("e_rv_med").toDouble());
+        star->setLogP(query.value(idxLogp).toDouble());
+        star->setDeltaRV(query.value(idxDeltaRV).toDouble());
+        star->setEDeltaRV(query.value(idxEDeltaRV).toDouble());
+        star->setRVAvg(query.value(idxRvAvg).toDouble());
+        star->setERVAvg(query.value(idxERvAvg).toDouble());
+        star->setRVMed(query.value(idxRvMed).toDouble());
+        star->setERVMed(query.value(idxERvMed).toDouble());
         
-        // Parse bibcodes from JSON
-        QByteArray bibcodesData = query.value("bibcodes").toByteArray();
-        if (!bibcodesData.isEmpty()) {
-            QJsonDocument doc = QJsonDocument::fromJson(bibcodesData);
-            if (doc.isArray()) {
-                std::vector<QString> bibcodes;
-                const QJsonArray arr = doc.array();
-                bibcodes.reserve(arr.size());
-                for (const auto& value : arr) {
-                    bibcodes.push_back(value.toString());
+        // Only parse bibcodes if not null/empty
+        if (!query.isNull(idxBibcodes)) {
+            QByteArray bibcodesData = query.value(idxBibcodes).toByteArray();
+            if (!bibcodesData.isEmpty() && bibcodesData != "[]") {
+                QJsonDocument doc = QJsonDocument::fromJson(bibcodesData);
+                if (doc.isArray()) {
+                    const QJsonArray arr = doc.array();
+                    std::vector<QString> bibcodes;
+                    bibcodes.reserve(arr.size());
+                    for (const auto& value : arr) {
+                        bibcodes.push_back(value.toString());
+                    }
+                    star->setBibcodes(std::move(bibcodes));
                 }
-                star->setBibcodes(bibcodes);
             }
         }
 
-        starMap[star->getId()] = star;
-        stars.push_back(star);
+        stars.push_back(std::move(star));
     }
 
     return stars;
@@ -641,12 +680,80 @@ bool DatabaseManager::updateStar(const QString& projectId, std::shared_ptr<Star>
     return saveStar(projectId, star);
 }
 
-bool DatabaseManager::deleteStar(const QString& projectId, const QString& sourceId)
+bool DatabaseManager::deleteStar(const QString& projectId, const QString& starId)
 {
+    // Delete photometry and related data
+    QSqlQuery photometryQuery;
+    photometryQuery.prepare("SELECT id FROM photometry WHERE star_id = :star_id");
+    photometryQuery.bindValue(":star_id", starId);
+    if (photometryQuery.exec()) {
+        while (photometryQuery.next()) {
+            QString photometryId = photometryQuery.value(0).toString();
+            
+            // Delete SED models
+            QSqlQuery sedQuery;
+            sedQuery.prepare("DELETE FROM sed_models WHERE photometry_id = :id");
+            sedQuery.bindValue(":id", photometryId);
+            sedQuery.exec();
+            
+            // Delete lightcurve models and lightcurves
+            QSqlQuery lcQuery;
+            lcQuery.prepare("SELECT id FROM lightcurves WHERE photometry_id = :id");
+            lcQuery.bindValue(":id", photometryId);
+            if (lcQuery.exec()) {
+                while (lcQuery.next()) {
+                    QString lcId = lcQuery.value(0).toString();
+                    QSqlQuery lcModelQuery;
+                    lcModelQuery.prepare("DELETE FROM lightcurve_models WHERE lightcurve_id = :id");
+                    lcModelQuery.bindValue(":id", lcId);
+                    lcModelQuery.exec();
+                }
+            }
+            
+            QSqlQuery deleteLcQuery;
+            deleteLcQuery.prepare("DELETE FROM lightcurves WHERE photometry_id = :id");
+            deleteLcQuery.bindValue(":id", photometryId);
+            deleteLcQuery.exec();
+            
+            // Delete photometric points
+            QSqlQuery pointsQuery;
+            pointsQuery.prepare("DELETE FROM photometric_points WHERE photometry_id = :id");
+            pointsQuery.bindValue(":id", photometryId);
+            pointsQuery.exec();
+        }
+    }
+    
+    // Delete photometry
+    QSqlQuery deletePhotometry;
+    deletePhotometry.prepare("DELETE FROM photometry WHERE star_id = :star_id");
+    deletePhotometry.bindValue(":star_id", starId);
+    deletePhotometry.exec();
+    
+    // Delete spectra and spectral fits
+    QSqlQuery spectraQuery;
+    spectraQuery.prepare("SELECT id FROM spectra WHERE star_id = :star_id");
+    spectraQuery.bindValue(":star_id", starId);
+    if (spectraQuery.exec()) {
+        while (spectraQuery.next()) {
+            QString spectrumId = spectraQuery.value(0).toString();
+            QSqlQuery fitsQuery;
+            fitsQuery.prepare("DELETE FROM spectral_fits WHERE spectrum_id = :id");
+            fitsQuery.bindValue(":id", spectrumId);
+            fitsQuery.exec();
+        }
+    }
+    
+    QSqlQuery deleteSpectra;
+    deleteSpectra.prepare("DELETE FROM spectra WHERE star_id = :star_id");
+    deleteSpectra.bindValue(":star_id", starId);
+    deleteSpectra.exec();
+    
+    // Finally delete the star
     QSqlQuery query;
-    query.prepare("DELETE FROM stars WHERE project_id = :project_id AND source_id = :source_id");
+    query.prepare("DELETE FROM stars WHERE id = :id AND project_id = :project_id");
+    query.bindValue(":id", starId);
     query.bindValue(":project_id", projectId);
-    query.bindValue(":source_id", sourceId);
+    
     return query.exec();
 }
 

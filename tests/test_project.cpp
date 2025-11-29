@@ -37,7 +37,7 @@ private slots:
         QVERIFY(retrievedStar != nullptr);
         QCOMPARE(retrievedStar->getAlias(), QString("Star One"));
 
-        project.removeStar("star2");
+        project.removeStar(star2);
         QCOMPARE(project.getStarCount(), size_t(1));
     }
 };

@@ -28,6 +28,9 @@ public:
     std::shared_ptr<Project> getCurrentProject() const { return _currentProject; }
     bool saveStarsToProject(std::shared_ptr<Project> project, const std::vector<std::shared_ptr<Star>>& stars);
 
+    bool deleteStarFromProject(std::shared_ptr<Project> project, std::shared_ptr<Star> star);
+    bool deleteStarsFromProject(std::shared_ptr<Project> project, const std::vector<std::shared_ptr<Star>>& stars);
+
     // Theme management
     void toggleTheme();
     bool isDarkTheme() const { return _isDarkTheme; }

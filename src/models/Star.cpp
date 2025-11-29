@@ -45,47 +45,55 @@ Star::~Star()
 {
 }
 
+// In src/models/Star.cpp - replace getFieldValue() and add getFieldMap()
+
+const std::unordered_map<QString, Star::FieldGetter>& Star::getFieldMap()
+{
+    static const std::unordered_map<QString, FieldGetter> fieldMap = {
+        {"alias", [](const Star* s) { return QVariant(s->_alias); }},
+        {"source_id", [](const Star* s) { return QVariant(s->_sourceId); }},
+        {"tic", [](const Star* s) { return QVariant(s->_tic); }},
+        {"jname", [](const Star* s) { return QVariant(s->_jname); }},
+        {"ra", [](const Star* s) { return QVariant(s->_ra); }},
+        {"dec", [](const Star* s) { return QVariant(s->_dec); }},
+        {"pmra", [](const Star* s) { return QVariant(s->_pmra); }},
+        {"pmdec", [](const Star* s) { return QVariant(s->_pmdec); }},
+        {"e_pmra", [](const Star* s) { return QVariant(s->_e_pmra); }},
+        {"e_pmdec", [](const Star* s) { return QVariant(s->_e_pmdec); }},
+        {"plx", [](const Star* s) { return QVariant(s->_plx); }},
+        {"e_plx", [](const Star* s) { return QVariant(s->_e_plx); }},
+        {"gmag", [](const Star* s) { return QVariant(s->_gmag); }},
+        {"e_gmag", [](const Star* s) { return QVariant(s->_e_gmag); }},
+        {"bp", [](const Star* s) { return QVariant(s->_bp); }},
+        {"e_bp", [](const Star* s) { return QVariant(s->_e_bp); }},
+        {"rp", [](const Star* s) { return QVariant(s->_rp); }},
+        {"e_rp", [](const Star* s) { return QVariant(s->_e_rp); }},
+        {"bp_rp", [](const Star* s) { return QVariant(s->_bp_rp); }},
+        {"spec_class", [](const Star* s) { return QVariant(s->_spec_class); }},
+        {"teff", [](const Star* s) { return QVariant(s->_teff); }},
+        {"e_teff", [](const Star* s) { return QVariant(s->_e_teff); }},
+        {"logg", [](const Star* s) { return QVariant(s->_logg); }},
+        {"e_logg", [](const Star* s) { return QVariant(s->_e_logg); }},
+        {"he", [](const Star* s) { return QVariant(s->_he); }},
+        {"e_he", [](const Star* s) { return QVariant(s->_e_he); }},
+        {"logp", [](const Star* s) { return QVariant(s->_logp); }},
+        {"deltaRV", [](const Star* s) { return QVariant(s->_deltaRV); }},
+        {"e_deltaRV", [](const Star* s) { return QVariant(s->_e_deltaRV); }},
+        {"rv_avg", [](const Star* s) { return QVariant(s->_rv_avg); }},
+        {"e_rv_avg", [](const Star* s) { return QVariant(s->_e_rv_avg); }},
+        {"rv_med", [](const Star* s) { return QVariant(s->_rv_med); }},
+        {"e_rv_med", [](const Star* s) { return QVariant(s->_e_rv_med); }}
+    };
+    return fieldMap;
+}
+
 QVariant Star::getFieldValue(const QString& fieldName) const
 {
-    // Map field names to values for table display
-    if (fieldName == "alias") return _alias;
-    if (fieldName == "source_id") return _sourceId;
-    if (fieldName == "tic") return _tic;
-    if (fieldName == "jname") return _jname;
-
-    if (fieldName == "ra") return _ra;
-    if (fieldName == "dec") return _dec;
-    if (fieldName == "pmra") return _pmra;
-    if (fieldName == "pmdec") return _pmdec;
-    if (fieldName == "e_pmra") return _e_pmra;
-    if (fieldName == "e_pmdec") return _e_pmdec;
-    if (fieldName == "plx") return _plx;
-    if (fieldName == "e_plx") return _e_plx;
-
-    if (fieldName == "gmag") return _gmag;
-    if (fieldName == "e_gmag") return _e_gmag;
-    if (fieldName == "bp") return _bp;
-    if (fieldName == "e_bp") return _e_bp;
-    if (fieldName == "rp") return _rp;
-    if (fieldName == "e_rp") return _e_rp;
-    if (fieldName == "bp_rp") return _bp_rp;
-
-    if (fieldName == "spec_class") return _spec_class;
-    if (fieldName == "teff") return _teff;
-    if (fieldName == "e_teff") return _e_teff;
-    if (fieldName == "logg") return _logg;
-    if (fieldName == "e_logg") return _e_logg;
-    if (fieldName == "he") return _he;
-    if (fieldName == "e_he") return _e_he;
-
-    if (fieldName == "logp") return _logp;
-    if (fieldName == "deltaRV") return _deltaRV;
-    if (fieldName == "e_deltaRV") return _e_deltaRV;
-    if (fieldName == "rv_avg") return _rv_avg;
-    if (fieldName == "e_rv_avg") return _e_rv_avg;
-    if (fieldName == "rv_med") return _rv_med;
-    if (fieldName == "e_rv_med") return _e_rv_med;
-
+    const auto& fieldMap = getFieldMap();
+    auto it = fieldMap.find(fieldName);
+    if (it != fieldMap.end()) {
+        return it->second(this);
+    }
     return QVariant();
 }
 
