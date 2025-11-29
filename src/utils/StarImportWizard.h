@@ -8,6 +8,18 @@
 #include <vector>
 #include <unordered_map>
 #include <QVariant>
+#include <QFutureWatcher>
+#include <QtConcurrent>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QTemporaryFile>
+#include <QThread>
+#include <QLabel>
+#include <QApplication>
+#include <QNetworkRequest>
+#include <QHttpMultiPart>
+#include <QHttpPart>
+#include <QEventLoop>
 
 class ApplicationController;
 class Project;
@@ -17,6 +29,7 @@ class QCheckBox;
 class QTableWidget;
 class QProgressDialog;
 class QComboBox;
+class SimbadWorker;
 
 class StarImportWizard : public QWizard
 {
@@ -75,11 +88,15 @@ private:
     QCheckBox* _gaiaCheckBox;
     QCheckBox* _simbadCheckBox;
     QTableWidget* _previewTable;
-    
+    QLabel* _simbadWarningLabel;
+    QThread* _simbadThread;
+    SimbadWorker* _simbadWorker;
+
     std::vector<QString> _columnNames;
     std::unordered_map<QString, QString> _columnMappings;
     std::vector<QString> _unmappedColumns;
     std::vector<DataRow> _dataRows;
+    QFutureWatcher<bool>* _fitsWatcher;
     
     bool readFile(const QString& filePath);
     bool readCSV(const QString& filePath);
@@ -92,6 +109,8 @@ private:
     QChar detectDelimiter(const QString& line) const;
     QStringList parseCSVLine(const QString& line, QChar delimiter) const;
     QVariant convertValue(const QString& value) const;
+    void updateSimbadWarning();
+    void querySimbadBibcodes(const std::vector<std::shared_ptr<Star>>& stars);
     
     // Column name aliases (case-insensitive matching)
     std::unordered_map<QString, std::vector<QString>> _columnAliases;
@@ -148,5 +167,30 @@ class PhotometryImportPage : public QWizardPage
 public:
     PhotometryImportPage(QWidget* parent = nullptr);
 };
+
+// Add SimbadWorker class declaration after StarImportWizard
+class SimbadWorker : public QObject
+{
+    Q_OBJECT
+
+public:
+    SimbadWorker(const std::vector<std::shared_ptr<Star>>& stars, QObject* parent = nullptr);
+    
+public slots:
+    void process();
+    
+signals:
+    void progress(int current, int total, const QString& message);
+    void finished(const QMap<QString, QStringList>& bibcodes);
+    void error(const QString& message);
+    
+private:
+    std::vector<std::shared_ptr<Star>> _stars;
+    QNetworkAccessManager* _networkManager;
+    
+    QString generateSimbadScript();
+    QMap<QString, QStringList> parseSimbadResponse(const QString& response);
+};
+
 
 #endif // STARIMPORTWIZARD_H

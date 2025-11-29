@@ -22,6 +22,7 @@ public:
     std::shared_ptr<Project> createProject(const QString& name, const QString& description, const QString& thumbnailPath);
     std::shared_ptr<Project> openProject(const QString& projectId);
     void updateProject(std::shared_ptr<Project> project);
+    void updateStar(std::shared_ptr<Project> project, std::shared_ptr<Star> star);
     void closeProject();
     bool deleteProject(const QString& projectId);
     std::shared_ptr<Project> getCurrentProject() const { return _currentProject; }

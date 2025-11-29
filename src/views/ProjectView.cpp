@@ -117,7 +117,6 @@ void ProjectView::onCreatePlot()
     QMessageBox::information(this, "Create Plot", "Plot creation to be implemented");
 }
 
-// StarTableModel - optimized implementation
 StarTableModel::StarTableModel(std::shared_ptr<Project> project, QObject *parent)
     : QAbstractTableModel(parent)
     , _project(project)
