@@ -2,6 +2,7 @@
 #include "models/Project.h"
 #include "models/Star.h"
 #include "utils/DatabaseManager.h"
+#include "utils/ThemeManager.h"
 #include <QApplication>
 #include <QFile>
 #include <QUuid>
@@ -9,12 +10,11 @@
 
 ApplicationController::ApplicationController(QObject *parent)
     : QObject(parent)
-    , _isDarkTheme(false)
     , _currentProject(nullptr)
 {
     _databaseManager = std::make_unique<DatabaseManager>();
+    _themeManager = std::make_unique<ThemeManager>(this);
     loadProjects();
-    applyTheme();
 }
 
 ApplicationController::~ApplicationController()
@@ -94,7 +94,6 @@ std::shared_ptr<Project> ApplicationController::openProject(const QString& proje
     return nullptr;
 }
 
-
 void ApplicationController::updateProject(std::shared_ptr<Project> project)
 {
     _databaseManager->updateProject(project);
@@ -134,37 +133,6 @@ bool ApplicationController::saveStarsToProject(std::shared_ptr<Project> project,
     return _databaseManager->saveStars(project->getId(), stars);
 }
 
-void ApplicationController::updateStar(std::shared_ptr<Project> project, std::shared_ptr<Star> star)
-{
-    _databaseManager->updateStar(project->getId(), star);
-}
-
-void ApplicationController::toggleTheme()
-{
-    _isDarkTheme = !_isDarkTheme;
-    applyTheme();
-    emit themeChanged(_isDarkTheme);
-}
-
-void ApplicationController::loadProjects()
-{
-    _projects = _databaseManager->loadProjects();
-}
-
-void ApplicationController::applyTheme()
-{
-    QString themePath = _isDarkTheme
-        ? ":/themes/catppuccin_dark.qss"
-        : ":/themes/catppuccin_light.qss";
-
-    QFile themeFile(themePath);
-    if (themeFile.open(QFile::ReadOnly)) {
-        QString styleSheet = themeFile.readAll();
-        qApp->setStyleSheet(styleSheet);
-        themeFile.close();
-    }
-}
-
 bool ApplicationController::deleteStarFromProject(std::shared_ptr<Project> project, std::shared_ptr<Star> star)
 {
     if (!project || !star) return false;
@@ -192,4 +160,9 @@ bool ApplicationController::deleteStarsFromProject(std::shared_ptr<Project> proj
     }
     
     return allSuccess;
+}
+
+void ApplicationController::loadProjects()
+{
+    _projects = _databaseManager->loadProjects();
 }

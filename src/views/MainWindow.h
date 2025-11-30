@@ -1,3 +1,5 @@
+// In src/views/MainWindow.h - replace entire file
+
 #ifndef MAINWINDOW_H
 #define MAINWINDOW_H
 
@@ -9,11 +11,13 @@ class QStackedWidget;
 class QMenuBar;
 class QToolBar;
 class QStatusBar;
+class QActionGroup;
 QT_END_NAMESPACE
 
 class ApplicationController;
 class ProjectSelectionView;
 class ProjectView;
+struct ThemeInfo;
 
 class MainWindow : public QMainWindow
 {
@@ -28,15 +32,20 @@ public:
 public slots:
     void showProjectSelection();
     void showProject(const QString& projectId);
-    void toggleTheme();
     void openProjectDialog();
     void removeProjectDialog();
+
+private slots:
+    void onThemeActionTriggered(QAction* action);
+    void onThemeChanged(const QString& themeId);
 
 private:
     void setupUi();
     void setupMenus();
     void createActions();
+    void setupThemeMenu();
     void updateOpenProjectAction();
+    void updateThemeMenuSelection(const QString& themeId);
 
     ApplicationController* _controller;
     QStackedWidget* _centralStack;
@@ -46,6 +55,7 @@ private:
     // Menus
     QMenu* _fileMenu;
     QMenu* _viewMenu;
+    QMenu* _themeMenu;
     QMenu* _starsMenu;
     QMenu* _analysisMenu;
     QMenu* _helpMenu;
@@ -56,9 +66,11 @@ private:
     QAction* _closeProjectAction;
     QAction* _removeProjectAction;
     QAction* _exitAction;
-    QAction* _toggleThemeAction;
     QAction* _configureColumnsAction;
     QAction* _aboutAction;
+
+    // Theme actions
+    QActionGroup* _themeActionGroup;
 
     // Stars menu actions
     QAction* _addStarAction;

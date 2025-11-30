@@ -1,12 +1,16 @@
+// In src/views/MainWindow.cpp - replace entire file
+
 #include "MainWindow.h"
 #include "ProjectSelectionView.h"
 #include "ProjectView.h"
 #include "controllers/ApplicationController.h"
 #include "models/Project.h"
+#include "utils/ThemeManager.h"
 #include <QStackedWidget>
 #include <QMenuBar>
 #include <QMenu>
 #include <QAction>
+#include <QActionGroup>
 #include <QStatusBar>
 #include <QMessageBox>
 #include <QInputDialog>
@@ -18,12 +22,18 @@ MainWindow::MainWindow(ApplicationController* controller, QWidget *parent)
     , _starsMenu(nullptr)
     , _analysisMenu(nullptr)
     , _configureColumnsAction(nullptr)
+    , _themeActionGroup(nullptr)
 {
     setupUi();
     setupMenus();
     createActions();
+    setupThemeMenu();
     updateOpenProjectAction();
     showProjectSelection();
+    
+    // Connect theme change signal
+    connect(_controller->themeManager(), &ThemeManager::themeChanged,
+            this, &MainWindow::onThemeChanged);
 }
 
 MainWindow::~MainWindow()
@@ -80,13 +90,93 @@ void MainWindow::setupMenus()
 
     // View menu - always visible
     _viewMenu = menuBar->addMenu("&View");
-    _toggleThemeAction = _viewMenu->addAction("Toggle &Theme");
+    
+    // Theme submenu
+    _themeMenu = _viewMenu->addMenu("&Theme");
 
     // Help menu - always visible  
     _helpMenu = menuBar->addMenu("&Help");
     _aboutAction = _helpMenu->addAction("&About ASTRA...");
 
     _closeProjectAction->setEnabled(false);
+}
+
+void MainWindow::setupThemeMenu()
+{
+    // Create action group for exclusive selection
+    _themeActionGroup = new QActionGroup(this);
+    _themeActionGroup->setExclusive(true);
+    
+    // Get available themes from ThemeManager
+    ThemeManager* themeManager = _controller->themeManager();
+    QVector<ThemeInfo> themes = themeManager->getAvailableThemes();
+    
+    // Group themes by light/dark
+    QList<ThemeInfo> lightThemes;
+    QList<ThemeInfo> darkThemes;
+    
+    for (const auto& theme : themes) {
+        if (theme.isDark) {
+            darkThemes.append(theme);
+        } else {
+            lightThemes.append(theme);
+        }
+    }
+    
+    // Add light themes
+    if (!lightThemes.isEmpty()) {
+        _themeMenu->addSection("Light Themes");
+        for (const auto& theme : lightThemes) {
+            QAction* action = _themeMenu->addAction(theme.name);
+            action->setCheckable(true);
+            action->setData(theme.id);
+            _themeActionGroup->addAction(action);
+        }
+    }
+    
+    // Add dark themes
+    if (!darkThemes.isEmpty()) {
+        _themeMenu->addSection("Dark Themes");
+        for (const auto& theme : darkThemes) {
+            QAction* action = _themeMenu->addAction(theme.name);
+            action->setCheckable(true);
+            action->setData(theme.id);
+            _themeActionGroup->addAction(action);
+        }
+    }
+    
+    // Connect action group signal
+    connect(_themeActionGroup, &QActionGroup::triggered,
+            this, &MainWindow::onThemeActionTriggered);
+    
+    // Set current theme as checked
+    updateThemeMenuSelection(themeManager->getCurrentThemeId());
+}
+
+void MainWindow::onThemeActionTriggered(QAction* action)
+{
+    QString themeId = action->data().toString();
+    _controller->themeManager()->applyTheme(themeId);
+}
+
+void MainWindow::onThemeChanged(const QString& themeId)
+{
+    updateThemeMenuSelection(themeId);
+    statusBar()->showMessage(QString("Theme changed to: %1")
+                             .arg(_controller->themeManager()->getCurrentTheme().name), 3000);
+}
+
+void MainWindow::updateThemeMenuSelection(const QString& themeId)
+{
+    if (!_themeActionGroup)
+        return;
+    
+    for (QAction* action : _themeActionGroup->actions()) {
+        if (action->data().toString() == themeId) {
+            action->setChecked(true);
+            break;
+        }
+    }
 }
 
 void MainWindow::createActions()
@@ -108,9 +198,6 @@ void MainWindow::createActions()
             this, &MainWindow::removeProjectDialog);
 
     connect(_exitAction, &QAction::triggered, this, &QWidget::close);
-
-    // View actions
-    connect(_toggleThemeAction, &QAction::triggered, this, &MainWindow::toggleTheme);
 
     // Help actions
     connect(_aboutAction, &QAction::triggered, [this]() {
@@ -204,11 +291,6 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
     }
 }
 
-void MainWindow::toggleTheme()
-{
-    _controller->toggleTheme();
-}
-
 void MainWindow::openProjectDialog()
 {
     auto projects = _controller->getProjects();
@@ -283,7 +365,6 @@ void MainWindow::removeProjectDialog()
         }
     }
 }
-
 
 void MainWindow::updateOpenProjectAction()
 {

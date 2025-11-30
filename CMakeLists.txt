@@ -85,6 +85,7 @@ set(SOURCES
     src/dialogs/EditProjectDialog.cpp
     src/utils/StarImportWizard.cpp
     src/utils/DatabaseManager.cpp
+    src/utils/ThemeManager.cpp
 )
 
 # Header files
@@ -104,6 +105,7 @@ set(HEADERS
     src/dialogs/EditProjectDialog.h
     src/utils/StarImportWizard.h
     src/utils/DatabaseManager.h
+    src/utils/ThemeManager.h
 )
 
 # Create executable
