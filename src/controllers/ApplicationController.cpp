@@ -3,18 +3,30 @@
 #include "models/Star.h"
 #include "utils/DatabaseManager.h"
 #include "utils/ThemeManager.h"
+#include "utils/BackgroundTaskManager.h"
 #include <QApplication>
 #include <QFile>
 #include <QUuid>
 #include <QDir>
+#include <chrono>
+#include "utils/Logger.h"
 
 ApplicationController::ApplicationController(QObject *parent)
     : QObject(parent)
     , _currentProject(nullptr)
 {
+    auto startTime = std::chrono::high_resolution_clock::now();
+    
+    LOG_INFO("Controller", "Initializing ApplicationController");
     _databaseManager = std::make_unique<DatabaseManager>();
     _themeManager = std::make_unique<ThemeManager>(this);
+    _backgroundTaskManager = std::make_unique<BackgroundTaskManager>(this);
     loadProjects();
+    LOG_INFO("Controller", QString("Loaded %1 projects").arg(_projects.size()));
+    
+    auto endTime = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
+    LOG_INFO("Controller", QString("ApplicationController initialized in %1 ms").arg(duration.count()));
 }
 
 ApplicationController::~ApplicationController()
@@ -53,12 +65,14 @@ std::shared_ptr<Project> ApplicationController::createProject(const QString& nam
             storedThumbnailPath.clear(); 
         }
     }
-    
+
+    LOG_INFO("Controller", QString("Creating project: %1").arg(name));
     auto project = std::make_shared<Project>(name, description, storedThumbnailPath);
     _projects.push_back(project);
     _databaseManager->saveProject(project);
     
     emit projectCreated(project->getId());
+    LOG_INFO("Controller", QString("Project created with ID: %1").arg(project->getId()));
     return project;
 }
 
@@ -107,6 +121,7 @@ void ApplicationController::closeProject()
 
 bool ApplicationController::deleteProject(const QString& projectId)
 {
+    LOG_INFO("Controller", QString("Deleting project: %1").arg(projectId));
     auto it = std::remove_if(_projects.begin(), _projects.end(),
         [&projectId](const std::shared_ptr<Project>& project) {
             return project->getId() == projectId;
@@ -123,6 +138,7 @@ bool ApplicationController::deleteProject(const QString& projectId)
 bool ApplicationController::saveStarsToProject(std::shared_ptr<Project> project, const std::vector<std::shared_ptr<Star>>& stars)
 {
     if (!project) return false;
+    LOG_INFO("Controller", QString("Saving %1 stars to project %2").arg(stars.size()).arg(project->getName()));
     
     // Add stars to project
     for (const auto& star : stars) {

@@ -20,6 +20,10 @@
 #include <QHttpMultiPart>
 #include <QHttpPart>
 #include <QEventLoop>
+#include <unordered_set>
+#include <QTimer>
+#include <QSet>
+#include <cmath> 
 
 class ApplicationController;
 class Project;
@@ -30,6 +34,7 @@ class QTableWidget;
 class QProgressDialog;
 class QComboBox;
 class SimbadWorker;
+class GaiaWorker; 
 
 class StarImportWizard : public QWizard
 {
@@ -91,6 +96,14 @@ private:
     QLabel* _simbadWarningLabel;
     QThread* _simbadThread;
     SimbadWorker* _simbadWorker;
+    // Add to private section of GeneralImportPage
+    QThread* _gaiaThread;
+    GaiaWorker* _gaiaWorker;
+    
+    void queryGaiaData(std::vector<std::shared_ptr<Star>>& stars);
+    void removeDuplicateRows();
+    QString generateRowKey(const DataRow& row) const;
+    QString normalizeValue(const QVariant& value) const;
 
     std::vector<QString> _columnNames;
     std::unordered_map<QString, QString> _columnMappings;
@@ -146,12 +159,12 @@ private:
     void updatePreview();
 };
 
-// Skeleton pages for other steps
 class SpectraImportPage : public QWizardPage
 {
     Q_OBJECT
 public:
     SpectraImportPage(QWidget* parent = nullptr);
+    int nextId() const override;
 };
 
 class RadialVelocityImportPage : public QWizardPage
@@ -159,6 +172,7 @@ class RadialVelocityImportPage : public QWizardPage
     Q_OBJECT
 public:
     RadialVelocityImportPage(QWidget* parent = nullptr);
+    int nextId() const override;
 };
 
 class PhotometryImportPage : public QWizardPage
@@ -166,6 +180,7 @@ class PhotometryImportPage : public QWizardPage
     Q_OBJECT
 public:
     PhotometryImportPage(QWidget* parent = nullptr);
+    int nextId() const override;
 };
 
 // Add SimbadWorker class declaration after StarImportWizard
@@ -192,5 +207,28 @@ private:
     QMap<QString, QStringList> parseSimbadResponse(const QString& response);
 };
 
+class GaiaWorker : public QObject
+{
+    Q_OBJECT
+
+public:
+    GaiaWorker(std::vector<std::shared_ptr<Star>>& stars, QObject* parent = nullptr);
+    
+public slots:
+    void process();
+    
+signals:
+    void progress(int current, int total, const QString& message);
+    void finished(int updatedCount);
+    void error(const QString& message);
+    
+private:
+    std::vector<std::shared_ptr<Star>>& _stars;
+    QNetworkAccessManager* _networkManager;
+    
+    QString buildADQLQuery();
+    void parseVizierResponse(const QString& response);
+    bool starNeedsGaiaData(const std::shared_ptr<Star>& star) const;
+};
 
 #endif // STARIMPORTWIZARD_H

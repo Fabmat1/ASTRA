@@ -113,12 +113,12 @@ QMenuBar {
     background-color: #fffaf3;
     color: #575279;
     border-bottom: 1px solid #f4ede8;
-    padding: 2px;
+    padding: 1px;
 }
 
 QMenuBar::item {
     background-color: transparent;
-    padding: 6px 10px;
+    padding: 4px 5px;
     border-radius: 4px;
     margin: 1px;
 }
@@ -163,7 +163,7 @@ QMenu::item:disabled {
 QMenu::separator {
     height: 1px;
     background-color: #f4ede8;
-    margin: 4px 8px;
+    margin: 2px 4px;
 }
 
 QMenu::icon {
@@ -784,13 +784,13 @@ QTableWidget {
     gridline-color: #f4ede8;
     border: 1px solid #f4ede8;
     border-radius: 6px;
-    selection-background-color: #907aa9;
+    selection-background-color: #dfdad9;
     selection-color: #faf4ed;
 }
 
 QTableView::item,
 QTableWidget::item {
-    padding: 4px 8px;
+    padding: 2px 4px;
     border: none;
 }
 
@@ -801,13 +801,13 @@ QTableWidget::item:hover {
 
 QTableView::item:selected,
 QTableWidget::item:selected {
-    background-color: #907aa9;
+    background-color: #dc8a78;
     color: #faf4ed;
 }
 
 QTableView::item:focus,
 QTableWidget::item:focus {
-    background-color: #286983;
+    background-color: #dd7878;
     color: #faf4ed;
     outline: none;
 }
@@ -835,7 +835,7 @@ QHeaderView {
 QHeaderView::section {
     background-color: #fffaf3;
     color: #575279;
-    padding: 8px 12px;
+    padding: 4px 6px;
     border: none;
     border-right: 1px solid #f4ede8;
     border-bottom: 1px solid #f4ede8;
@@ -855,7 +855,7 @@ QHeaderView::section:checked {
 }
 
 /* Sort indicator */
-QHeaderView::up-arrow {
+/*QHeaderView::up-arrow {
     image: none;
     border-left: 4px solid transparent;
     border-right: 4px solid transparent;
@@ -874,7 +874,7 @@ QHeaderView::down-arrow {
     height: 0;
     margin-left: 4px;
 }
-
+*/
 
 /* =============================================================================
  * TREE VIEW & TREE WIDGET

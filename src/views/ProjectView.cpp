@@ -5,6 +5,7 @@
 #include "models/Project.h"
 #include "models/Star.h"
 #include "utils/StarImportWizard.h"
+#include "utils/Logger.h"
 #include <QTableView>
 #include <QVBoxLayout>
 #include <QLabel>
@@ -104,13 +105,14 @@ void ProjectView::setupContextMenus()
 
 void ProjectView::loadProject(const QString& projectId)
 {
+    auto startTime = std::chrono::high_resolution_clock::now();
+    LOG_INFO("ProjectView", QString("Loading project: %1").arg(projectId));
+    
     updateStatusBar("Loading project...");
     QApplication::processEvents();
-    
     _currentProject = _controller->openProject(projectId);
     if (_currentProject) {
         _projectTitle->setText(_currentProject->getName());
-
         // Clean up old models
         if (_proxyModel) {
             delete _proxyModel;
@@ -120,22 +122,23 @@ void ProjectView::loadProject(const QString& projectId)
             delete _tableModel;
             _tableModel = nullptr;
         }
-
         // Create source model
         _tableModel = new StarTableModel(_currentProject, this);
-        
         // Create proxy model for sorting
         _proxyModel = new QSortFilterProxyModel(this);
         _proxyModel->setSourceModel(_tableModel);
         _proxyModel->setSortRole(Qt::DisplayRole);
-        
         _starTable->setModel(_proxyModel);
-        
         // Connect selection changes
         connect(_starTable->selectionModel(), &QItemSelectionModel::selectionChanged,
                 this, &ProjectView::onSelectionChanged);
-
         updateStatusBar(QString("Loaded %1 stars").arg(_currentProject->getStarCount()));
+        
+        auto endTime = std::chrono::high_resolution_clock::now();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
+        LOG_INFO("ProjectView", QString("Project loaded in %1 ms (%2 stars)").arg(duration.count()).arg(_currentProject->getStarCount()));
+    } else {
+        LOG_ERROR("ProjectView", QString("Failed to load project: %1").arg(projectId));
     }
 }
 
@@ -411,6 +414,14 @@ void ProjectView::updateStatusBar(const QString& message)
             return;
         }
         parent = parent->parentWidget();
+    }
+}
+
+void ProjectView::refreshTable()
+{
+    if (_tableModel) {
+        _tableModel->refresh();
+        updateStatusBar(QString("Loaded %1 stars").arg(_currentProject ? _currentProject->getStarCount() : 0));
     }
 }
 

@@ -86,6 +86,8 @@ set(SOURCES
     src/utils/StarImportWizard.cpp
     src/utils/DatabaseManager.cpp
     src/utils/ThemeManager.cpp
+    src/utils/BackgroundTaskManager.cpp
+    src/utils/Logger.cpp
 )
 
 # Header files
@@ -106,6 +108,8 @@ set(HEADERS
     src/utils/StarImportWizard.h
     src/utils/DatabaseManager.h
     src/utils/ThemeManager.h
+    src/utils/BackgroundTaskManager.h
+    src/utils/Logger.h
 )
 
 # Create executable

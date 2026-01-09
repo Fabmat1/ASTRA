@@ -1,24 +1,29 @@
 #include <QApplication>
-#include <QStyleFactory>
 #include "views/MainWindow.h"
 #include "controllers/ApplicationController.h"
+#include "utils/Logger.h"
 
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
-
-    // Set application metadata
-    QCoreApplication::setOrganizationName("ASTRA");
-    QCoreApplication::setOrganizationDomain("astra.app");
-    QCoreApplication::setApplicationName("ASTRA");
-    QCoreApplication::setApplicationVersion("0.1.0");
-
-    // Initialize application controller
+    app.setApplicationName("ASTRA");
+    app.setApplicationVersion("1.0.0");
+    app.setOrganizationName("ASTRA");
+    
+    // Initialize logging system
+    Logger::initialize("ASTRA");
+    LOG_INFO("Main", "ASTRA starting up");
+    
     ApplicationController controller;
-
-    // Create and show main window
     MainWindow window(&controller);
     window.show();
-
-    return app.exec();
+    
+    LOG_INFO("Main", "Main window displayed");
+    
+    int result = app.exec();
+    
+    LOG_INFO("Main", QString("ASTRA shutting down with exit code %1").arg(result));
+    Logger::shutdown();
+    
+    return result;
 }

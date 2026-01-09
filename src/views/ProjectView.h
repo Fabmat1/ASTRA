@@ -29,6 +29,7 @@ public:
     ~ProjectView();
 
     void loadProject(const QString& projectId);
+    void refreshTable();  // Add this line
 
 public slots:
     void onAddStar();
@@ -99,7 +100,7 @@ public:
     
     // Removal support
     bool removeStars(const std::vector<int>& rows);
-
+    
 private:
     std::shared_ptr<Project> _project;
     

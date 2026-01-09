@@ -6,6 +6,7 @@
 #include "controllers/ApplicationController.h"
 #include "models/Project.h"
 #include "utils/ThemeManager.h"
+#include "utils/BackgroundTaskManager.h"
 #include <QStackedWidget>
 #include <QMenuBar>
 #include <QMenu>
@@ -61,7 +62,6 @@ void MainWindow::setupUi()
         updateOpenProjectAction();
     });
 
-    // Handle project deletion - close and return to selection if it's the currently open project
     connect(_controller, &ApplicationController::projectDeleted, [this](const QString& projectId) {
         auto currentProject = _controller->getCurrentProject();
         if (currentProject && currentProject->getId() == projectId) {
@@ -70,6 +70,16 @@ void MainWindow::setupUi()
         }
         updateOpenProjectAction();
         _projectSelectionView->refreshProjects();
+    });
+    // Connect background task manager to status bar
+    _controller->backgroundTaskManager()->setStatusBar(statusBar());
+    
+    connect(_controller->backgroundTaskManager(), &BackgroundTaskManager::allTasksComplete,
+            this, [this]() {
+        // Refresh current view when background tasks complete
+        if (_centralStack->currentWidget() == _projectView) {
+            _projectView->refreshTable();
+        }
     });
 
     statusBar()->showMessage("Ready");

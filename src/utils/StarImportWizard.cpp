@@ -4,6 +4,7 @@
 #include "controllers/ApplicationController.h"
 #include "models/Project.h"
 #include "models/Star.h"
+#include "utils/BackgroundTaskManager.h"
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>
@@ -28,6 +29,8 @@
 #include <QGroupBox>
 #include <QDialogButtonBox>
 #include <QSplitter>
+#include <QUrlQuery>
+#include <QRegularExpression>
 
 // Include CCfits headers
 #ifdef HAVE_CCFITS
@@ -38,21 +41,25 @@
 
 // Constructor
 StarImportWizard::StarImportWizard(ApplicationController* controller,
-                                   std::shared_ptr<Project> project,
-                                   QWidget* parent)
+    std::shared_ptr<Project> project,
+    QWidget* parent)
     : QWizard(parent)
     , _controller(controller)
     , _project(project)
 {
     setWindowTitle("Star Import Wizard");
     setWizardStyle(QWizard::ModernStyle);
-    
+
     // Add pages
-    addPage(new GeneralImportPage);
-    addPage(new SpectraImportPage);
-    addPage(new RadialVelocityImportPage);
-    addPage(new PhotometryImportPage);
-    
+    setPage(Page_GeneralImport, new GeneralImportPage);
+    setPage(Page_Spectra, new SpectraImportPage);
+    setPage(Page_RadialVelocity, new RadialVelocityImportPage);
+    setPage(Page_Photometry, new PhotometryImportPage);
+
+    // Configure button layout
+    setOptions(QWizard::NoBackButtonOnStartPage | 
+    QWizard::NoCancelButtonOnLastPage);
+
     resize(900, 700);
 }
 
@@ -61,6 +68,8 @@ GeneralImportPage::GeneralImportPage(QWidget* parent)
     : QWizardPage(parent)
     , _simbadThread(nullptr)
     , _simbadWorker(nullptr)
+    , _gaiaThread(nullptr)
+    , _gaiaWorker(nullptr)
     , _fitsWatcher(nullptr)
 {
     setTitle("Import Stars - General Information");
@@ -127,21 +136,18 @@ GeneralImportPage::GeneralImportPage(QWidget* parent)
     QGroupBox* queryOptionsGroup = new QGroupBox("Additional Queries");
     QVBoxLayout* queryLayout = new QVBoxLayout;
     
-    _gaiaCheckBox = new QCheckBox("Query Gaia DR3 via Vizier for missing data");
+    _gaiaCheckBox = new QCheckBox("Query Gaia DR3 via VizieR for missing astrometry data");
     queryLayout->addWidget(_gaiaCheckBox);
     
-    // After adding _simbadCheckBox:
     _simbadCheckBox = new QCheckBox("Query SIMBAD for bibliography codes");
     queryLayout->addWidget(_simbadCheckBox);
     
-    // Add warning label
     _simbadWarningLabel = new QLabel();
     _simbadWarningLabel->setWordWrap(true);
     _simbadWarningLabel->setStyleSheet("QLabel { color: #666666; font-size: 10pt; }");
     _simbadWarningLabel->hide();
     queryLayout->addWidget(_simbadWarningLabel);
     
-    // Connect to show/hide warning
     connect(_filePathEdit, &QLineEdit::textChanged, this, [this]() {
         updateSimbadWarning();
     });
@@ -217,6 +223,107 @@ void GeneralImportPage::setupColumnAliases()
     _columnAliases["pmra_pmdec_corr"] = {"pmra_pmdec_corr", "pmra_pmdec_correlation", "corr_pmra_pmdec"};
     _columnAliases["plx_pmdec_corr"] = {"plx_pmdec_corr", "parallax_pmdec_corr", "corr_plx_pmdec"};
     _columnAliases["plx_pmra_corr"] = {"plx_pmra_corr", "parallax_pmra_corr", "corr_plx_pmra"};
+}
+
+QString GeneralImportPage::normalizeValue(const QVariant& value) const
+{
+    if (value.isNull()) {
+        return QString();
+    }
+    
+    QString str = value.toString().trimmed();
+    
+    // Treat these as empty/null values
+    static const QSet<QString> emptyValues = {
+        "", "-", "--", "---", ".", "..", "...",
+        "none", "null", "nan", "na", "n/a", 
+        "undefined", "unknown", "missing",
+        " ", "  ", "   "
+    };
+    
+    if (emptyValues.contains(str.toLower())) {
+        return QString();
+    }
+    
+    // For numeric values, normalize the format
+    if (value.typeId() == QMetaType::Double) {
+        double d = value.toDouble();
+        if (std::isnan(d) || std::isinf(d)) {
+            return QString();
+        }
+        // Use consistent precision for comparison
+        return QString::number(d, 'g', 12);
+    }
+    
+    return str;
+}
+
+QString GeneralImportPage::generateRowKey(const DataRow& row) const
+{
+    QStringList keyParts;
+    
+    // Only use MAPPED columns for duplicate detection
+    for (const auto& [columnName, fieldName] : _columnMappings) {
+        auto it = row.values.find(columnName);
+        QString normalizedValue;
+        
+        if (it != row.values.end()) {
+            normalizedValue = normalizeValue(it->second);
+        }
+        
+        // Include field name and normalized value (empty string if null/missing)
+        keyParts << QString("%1=%2").arg(fieldName, normalizedValue);
+    }
+    
+    // Sort to ensure consistent ordering
+    keyParts.sort();
+    
+    return keyParts.join("|");
+}
+
+void GeneralImportPage::removeDuplicateRows()
+{
+    if (_dataRows.empty() || _columnMappings.empty()) return;
+    
+    QSet<QString> seenKeys;
+    std::vector<DataRow> uniqueRows;
+    uniqueRows.reserve(_dataRows.size());
+    
+    int duplicatesRemoved = 0;
+    
+    for (const DataRow& row : _dataRows) {
+        QString key = generateRowKey(row);
+        
+        // Skip rows where all mapped values are empty (completely empty rows)
+        bool hasAnyValue = false;
+        for (const auto& [columnName, fieldName] : _columnMappings) {
+            auto it = row.values.find(columnName);
+            if (it != row.values.end()) {
+                QString normalized = normalizeValue(it->second);
+                if (!normalized.isEmpty()) {
+                    hasAnyValue = true;
+                    break;
+                }
+            }
+        }
+        
+        if (!hasAnyValue) {
+            duplicatesRemoved++;  // Skip empty rows
+            continue;
+        }
+        
+        if (!seenKeys.contains(key)) {
+            seenKeys.insert(key);
+            uniqueRows.push_back(row);
+        } else {
+            duplicatesRemoved++;
+        }
+    }
+    
+    if (duplicatesRemoved > 0) {
+        _dataRows = std::move(uniqueRows);
+        qDebug() << "Removed" << duplicatesRemoved << "duplicate/empty rows, kept" << _dataRows.size();
+    }
 }
 
 void GeneralImportPage::onBrowseFile()
@@ -820,6 +927,9 @@ bool GeneralImportPage::validatePage()
         return false;
     }
     
+    // Remove duplicate rows before processing
+    removeDuplicateRows();
+    
     // Check if there are unmapped columns
     if (!_unmappedColumns.empty()) {
         QMessageBox::StandardButton reply = QMessageBox::question(this, "Unmapped Columns",
@@ -828,7 +938,6 @@ bool GeneralImportPage::validatePage()
             QMessageBox::Yes | QMessageBox::No);
         
         if (reply == QMessageBox::Yes) {
-            // Show mapping dialog with data preview
             std::vector<QString> availableFields = {
                 "alias", "source_id", "tic", "jname", "ra", "dec", 
                 "pmra", "pmdec", "e_pmra", "e_pmdec", "plx", "e_plx",
@@ -839,7 +948,6 @@ bool GeneralImportPage::validatePage()
                 "pmra_pmdec_corr", "plx_pmdec_corr", "plx_pmra_corr"
             };
             
-            // Get sample data for preview (first 5 rows)
             std::vector<DataRow> sampleData;
             for (size_t i = 0; i < std::min(size_t(5), _dataRows.size()); ++i) {
                 sampleData.push_back(_dataRows[i]);
@@ -848,7 +956,7 @@ bool GeneralImportPage::validatePage()
             ColumnMappingDialog dialog(_unmappedColumns, _columnMappings, availableFields, sampleData, this);
             if (dialog.exec() == QDialog::Accepted) {
                 _columnMappings = dialog.getMappings();
-                updatePreview(); // Refresh preview with new mappings
+                updatePreview();
             }
         }
     }
@@ -861,11 +969,6 @@ bool GeneralImportPage::validatePage()
         return false;
     }
     
-    // Import the stars
-    QProgressDialog progress("Importing stars...", "Cancel", 0, stars.size(), this);
-    progress.setWindowModality(Qt::WindowModal);
-    
-    // Access controller and project
     StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
     if (!importWizard) {
         QMessageBox::critical(this, "Error", "Internal error: Could not access wizard");
@@ -875,39 +978,121 @@ bool GeneralImportPage::validatePage()
     auto controller = importWizard->controller();
     auto project = importWizard->project();
     
-    // Store imported stars in the wizard for use in later steps
+    // Store imported stars in the wizard
     importWizard->setImportedStars(stars);
     
     // Save all stars at once
-    progress.setLabelText("Saving stars to database...");
     if (!controller->saveStarsToProject(project, stars)) {
         QMessageBox::critical(this, "Error", "Failed to save stars to database");
         return false;
     }
     
-    // Query Gaia DR3 if requested
+    // Queue background tasks for Gaia and SIMBAD queries
+    BackgroundTaskManager* taskManager = controller->backgroundTaskManager();
+    
     if (_gaiaCheckBox->isChecked()) {
-        progress.setLabelText("Querying Gaia DR3...");
-        // TODO: Implementation for Gaia query
+        // Make a copy of stars for the background task
+        std::vector<std::shared_ptr<Star>> starsCopy = stars;
+        auto gaiaTask = new GaiaQueryTask(std::move(starsCopy), project->getId(), controller);
+        taskManager->queueTask(gaiaTask);
     }
     
-    // Query SIMBAD if requested
     if (_simbadCheckBox->isChecked()) {
-        querySimbadBibcodes(stars);
+        // Make a copy of stars for the background task
+        std::vector<std::shared_ptr<Star>> starsCopy = stars;
+        auto simbadTask = new SimbadQueryTask(std::move(starsCopy), project->getId(), controller);
+        taskManager->queueTask(simbadTask);
     }
     
-    progress.setValue(stars.size());
+    QString message = QString("Successfully imported %1 stars.").arg(stars.size());
+    if (_gaiaCheckBox->isChecked() || _simbadCheckBox->isChecked()) {
+        message += "\n\nBackground queries have been started and will update the data automatically.";
+    }
     
-    QMessageBox::information(this, "Import Complete", 
-        QString("Successfully imported %1 stars.").arg(stars.size()));
+    QMessageBox::information(this, "Import Complete", message);
     
     return true;
 }
 
+void GeneralImportPage::queryGaiaData(std::vector<std::shared_ptr<Star>>& stars)
+{
+    // Create progress dialog
+    QProgressDialog* progress = new QProgressDialog("Querying Gaia DR3 via VizieR...", 
+                                                    "Cancel", 0, 100, this);
+    progress->setWindowModality(Qt::WindowModal);
+    progress->setMinimumDuration(0);
+    progress->show();
+    
+    // Create worker and thread
+    _gaiaThread = new QThread;
+    _gaiaWorker = new GaiaWorker(stars);
+    _gaiaWorker->moveToThread(_gaiaThread);
+    
+    // Use a local event loop to wait for completion
+    QEventLoop loop;
+    
+    connect(_gaiaThread, &QThread::started, _gaiaWorker, &GaiaWorker::process);
+    
+    connect(_gaiaWorker, &GaiaWorker::progress, this,
+            [progress](int current, int total, const QString& message) {
+        progress->setValue(current);
+        progress->setMaximum(total);
+        progress->setLabelText(message);
+        QApplication::processEvents();
+    }, Qt::QueuedConnection);
+    
+    connect(_gaiaWorker, &GaiaWorker::finished, this,
+            [this, progress, &loop](int updatedCount) {
+        progress->close();
+        progress->deleteLater();
+        
+        if (updatedCount > 0) {
+            QMessageBox::information(this, "Gaia Query Complete",
+                QString("Updated astrometry data for %1 stars from Gaia DR3.")
+                .arg(updatedCount));
+        }
+        
+        _gaiaThread->quit();
+        _gaiaThread->wait();
+        _gaiaThread->deleteLater();
+        _gaiaWorker->deleteLater();
+        _gaiaThread = nullptr;
+        _gaiaWorker = nullptr;
+        
+        loop.quit();
+    }, Qt::QueuedConnection);
+    
+    connect(_gaiaWorker, &GaiaWorker::error, this,
+            [this, progress, &loop](const QString& error) {
+        QMessageBox::warning(this, "Gaia Query Error", error);
+        progress->close();
+        progress->deleteLater();
+        
+        _gaiaThread->quit();
+        _gaiaThread->wait();
+        _gaiaThread->deleteLater();
+        _gaiaWorker->deleteLater();
+        _gaiaThread = nullptr;
+        _gaiaWorker = nullptr;
+        
+        loop.quit();
+    }, Qt::QueuedConnection);
+    
+    connect(progress, &QProgressDialog::canceled, [this, &loop]() {
+        if (_gaiaThread && _gaiaThread->isRunning()) {
+            _gaiaThread->quit();
+            _gaiaThread->wait();
+        }
+        loop.quit();
+    });
+    
+    _gaiaThread->start();
+    loop.exec();  // Wait for query to complete
+}
+
 int GeneralImportPage::nextId() const
 {
-    // Skip to photometry page for now (until other pages are implemented)
-    return -1; // Return -1 to finish the wizard after this page
+    return StarImportWizard::Page_Spectra;
 }
 
 // Add SIMBAD query method
@@ -1086,6 +1271,342 @@ void SimbadWorker::process()
     
     emit progress(_stars.size(), _stars.size(), "Complete");
     emit finished(bibcodes);
+}
+
+// GaiaWorker implementation
+GaiaWorker::GaiaWorker(std::vector<std::shared_ptr<Star>>& stars, QObject* parent)
+    : QObject(parent)
+    , _stars(stars)
+    , _networkManager(new QNetworkAccessManager(this))
+{
+}
+
+bool GaiaWorker::starNeedsGaiaData(const std::shared_ptr<Star>& star) const
+{
+    // Check if star is missing astrometry data that Gaia can provide
+    return (star->getRa() == 0.0 && star->getDec() == 0.0) ||
+           star->getPmra() == 0.0 ||
+           star->getPmdec() == 0.0 ||
+           star->getPlx() == 0.0 ||
+           star->getGmag() == 0.0 ||
+           star->getBp() == 0.0 ||
+           star->getRp() == 0.0 ||
+           star->getEPmra() == 0.0 ||
+           star->getEPmdec() == 0.0 ||
+           star->getEPlx() == 0.0 ||
+           star->getPmraPmdecCorr() == 0.0 ||
+           star->getPlxPmdecCorr() == 0.0 ||
+           star->getPlxPmraCorr() == 0.0;
+}
+
+QString GaiaWorker::buildADQLQuery()
+{
+    // Collect all source IDs for stars that need data
+    QStringList sourceIds;
+    
+    for (const auto& star : _stars) {
+        if (!starNeedsGaiaData(star)) continue;
+        
+        QString sourceId = star->getSourceId();
+        if (!sourceId.isEmpty()) {
+            // Clean up source_id - ensure it's just the numeric ID
+            sourceId = sourceId.trimmed();
+            // Remove any "Gaia DR3" prefix if present
+            if (sourceId.contains("DR3")) {
+                QRegularExpression re("\\d{10,}");
+                QRegularExpressionMatch match = re.match(sourceId);
+                if (match.hasMatch()) {
+                    sourceId = match.captured(0);
+                }
+            }
+            sourceIds << sourceId;
+        }
+    }
+    
+    if (sourceIds.isEmpty()) {
+        return QString();
+    }
+    
+    // VizieR uses different column names than the Gaia archive!
+    // Build ADQL query - limit chunk size to avoid timeout
+    // VizieR column names for I/355/gaiadr3:
+    // Source, RA_ICRS, DE_ICRS, pmRA, pmDE, e_pmRA, e_pmDE, 
+    // Plx, e_Plx, Gmag, BPmag, RPmag, pmRApmDEcor, PlxpmRAcor, PlxpmDEcor
+    
+    QString query = "SELECT Source, RA_ICRS, DE_ICRS, pmRA, pmDE, e_pmRA, e_pmDE, "
+                   "Plx, e_Plx, Gmag, BPmag, RPmag, "
+                   "pmRApmDEcor, PlxpmRAcor, PlxpmDEcor "
+                   "FROM \"I/355/gaiadr3\" WHERE Source IN (";
+    
+    query += sourceIds.join(",");
+    query += ")";
+    
+    return query;
+}
+
+void GaiaWorker::process()
+{
+    emit progress(0, 100, "Checking which stars need Gaia data...");
+    
+    // Count how many stars need data
+    int starsNeedingData = 0;
+    for (const auto& star : _stars) {
+        if (starNeedsGaiaData(star)) {
+            starsNeedingData++;
+        }
+    }
+    
+    if (starsNeedingData == 0) {
+        emit progress(100, 100, "All stars already have complete data");
+        emit finished(0);
+        return;
+    }
+    
+    emit progress(5, 100, QString("Building query for %1 stars...").arg(starsNeedingData));
+    
+    QString adqlQuery = buildADQLQuery();
+    if (adqlQuery.isEmpty()) {
+        emit progress(100, 100, "No valid source IDs to query");
+        emit finished(0);
+        return;
+    }
+    
+    // Log query for debugging
+    qDebug() << "Gaia ADQL query:" << adqlQuery.left(500) << "...";
+    
+    emit progress(10, 100, "Sending query to VizieR TAP...");
+    
+    // Prepare TAP request
+    QUrl url("http://tapvizier.u-strasbg.fr/TAPVizieR/tap/sync");
+    QNetworkRequest request(url);
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
+    request.setRawHeader("User-Agent", "ASTRA/1.0");
+    
+    // Build POST data
+    QUrlQuery postParams;
+    postParams.addQueryItem("REQUEST", "doQuery");
+    postParams.addQueryItem("LANG", "ADQL");
+    postParams.addQueryItem("FORMAT", "csv");
+    postParams.addQueryItem("QUERY", adqlQuery);
+    
+    QByteArray postData = postParams.toString(QUrl::FullyEncoded).toUtf8();
+    
+    QNetworkReply* reply = _networkManager->post(request, postData);
+    
+    // Connect to download progress
+    connect(reply, &QNetworkReply::downloadProgress, this, 
+            [this](qint64 received, qint64 total) {
+        if (total > 0) {
+            int pct = 10 + (received * 40 / total);
+            emit progress(pct, 100, QString("Downloading... %1 KB").arg(received / 1024));
+        }
+    });
+    
+    // Wait for response with timeout
+    QEventLoop loop;
+    QTimer timeoutTimer;
+    timeoutTimer.setSingleShot(true);
+    
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    
+    timeoutTimer.start(300000);  // 5 minute timeout for large queries
+    loop.exec();
+    
+    if (!timeoutTimer.isActive()) {
+        reply->abort();
+        emit error("Gaia query timed out after 5 minutes");
+        reply->deleteLater();
+        return;
+    }
+    
+    if (reply->error() != QNetworkReply::NoError) {
+        QString errorDetails = reply->errorString();
+        QByteArray responseData = reply->readAll();
+        if (!responseData.isEmpty()) {
+            errorDetails += "\nResponse: " + QString::fromUtf8(responseData.left(500));
+        }
+        emit error(QString("VizieR error: %1").arg(errorDetails));
+        reply->deleteLater();
+        return;
+    }
+    
+    emit progress(50, 100, "Parsing Gaia response...");
+    
+    QString response = QString::fromUtf8(reply->readAll());
+    reply->deleteLater();
+    
+    qDebug() << "Gaia response size:" << response.size() << "bytes";
+    
+    // Check for error in response
+    if (response.contains("Error") || response.contains("error")) {
+        qDebug() << "Gaia response (first 1000 chars):" << response.left(1000);
+    }
+    
+    parseVizierResponse(response);
+}
+
+void GaiaWorker::parseVizierResponse(const QString& response)
+{
+    QStringList lines = response.split('\n', Qt::SkipEmptyParts);
+    
+    if (lines.size() < 2) {
+        qDebug() << "Gaia response too short:" << response;
+        emit progress(100, 100, "No Gaia data found");
+        emit finished(0);
+        return;
+    }
+    
+    // Parse header to get column indices
+    // Expected: Source,RA_ICRS,DE_ICRS,pmRA,pmDE,e_pmRA,e_pmDE,Plx,e_Plx,Gmag,BPmag,RPmag,pmRApmDEcor,PlxpmRAcor,PlxpmDEcor
+    QStringList headers = lines[0].split(',');
+    QMap<QString, int> colIndex;
+    for (int i = 0; i < headers.size(); ++i) {
+        QString header = headers[i].trimmed().toLower();
+        // Remove quotes if present
+        header.remove('"');
+        colIndex[header] = i;
+    }
+    
+    qDebug() << "Gaia columns found:" << colIndex.keys();
+    
+    // Build lookup map by source_id
+    QMap<QString, QStringList> gaiaData;
+    for (int i = 1; i < lines.size(); ++i) {
+        QString line = lines[i].trimmed();
+        if (line.isEmpty()) continue;
+        
+        QStringList values = line.split(',');
+        int sourceIdx = colIndex.value("source", -1);
+        if (sourceIdx >= 0 && sourceIdx < values.size()) {
+            QString sourceId = values[sourceIdx].trimmed();
+            sourceId.remove('"');  // Remove quotes if present
+            gaiaData[sourceId] = values;
+        }
+    }
+    
+    qDebug() << "Parsed" << gaiaData.size() << "Gaia records";
+    
+    emit progress(70, 100, "Updating star data...");
+    
+    int updatedCount = 0;
+    
+    for (auto& star : _stars) {
+        QString sourceId = star->getSourceId();
+        if (sourceId.isEmpty()) continue;
+        
+        // Clean up source ID for matching
+        sourceId = sourceId.trimmed();
+        if (sourceId.contains("DR3")) {
+            QRegularExpression re("\\d{10,}");
+            QRegularExpressionMatch match = re.match(sourceId);
+            if (match.hasMatch()) {
+                sourceId = match.captured(0);
+            }
+        }
+        
+        if (!gaiaData.contains(sourceId)) {
+            continue;
+        }
+        
+        const QStringList& values = gaiaData[sourceId];
+        bool updated = false;
+        
+        auto getValue = [&](const QString& col) -> double {
+            int idx = colIndex.value(col.toLower(), -1);
+            if (idx >= 0 && idx < values.size()) {
+                QString valStr = values[idx].trimmed();
+                valStr.remove('"');
+                if (valStr.isEmpty()) return 0.0;
+                bool ok;
+                double val = valStr.toDouble(&ok);
+                return ok ? val : 0.0;
+            }
+            return 0.0;
+        };
+        
+        // Update missing fields only - using VizieR column names
+        if (star->getRa() == 0.0 && star->getDec() == 0.0) {
+            double ra = getValue("ra_icrs");
+            double dec = getValue("de_icrs");
+            if (ra != 0.0 || dec != 0.0) {
+                star->setRa(ra);
+                star->setDec(dec);
+                updated = true;
+            }
+        }
+        
+        if (star->getPmra() == 0.0) {
+            double val = getValue("pmra");
+            if (val != 0.0) { star->setPmra(val); updated = true; }
+        }
+        
+        if (star->getPmdec() == 0.0) {
+            double val = getValue("pmde");
+            if (val != 0.0) { star->setPmdec(val); updated = true; }
+        }
+        
+        if (star->getEPmra() == 0.0) {
+            double val = getValue("e_pmra");
+            if (val != 0.0) { star->setEPmra(val); updated = true; }
+        }
+        
+        if (star->getEPmdec() == 0.0) {
+            double val = getValue("e_pmde");
+            if (val != 0.0) { star->setEPmdec(val); updated = true; }
+        }
+        
+        if (star->getPlx() == 0.0) {
+            double val = getValue("plx");
+            if (val != 0.0) { star->setPlx(val); updated = true; }
+        }
+        
+        if (star->getEPlx() == 0.0) {
+            double val = getValue("e_plx");
+            if (val != 0.0) { star->setEPlx(val); updated = true; }
+        }
+        
+        if (star->getGmag() == 0.0) {
+            double val = getValue("gmag");
+            if (val != 0.0) { star->setGmag(val); updated = true; }
+        }
+        
+        if (star->getBp() == 0.0) {
+            double val = getValue("bpmag");
+            if (val != 0.0) { star->setBp(val); updated = true; }
+        }
+        
+        if (star->getRp() == 0.0) {
+            double val = getValue("rpmag");
+            if (val != 0.0) { star->setRp(val); updated = true; }
+        }
+        
+        if (star->getPmraPmdecCorr() == 0.0) {
+            double val = getValue("pmrapmdecor");
+            if (val != 0.0) { star->setPmraPmdecCorr(val); updated = true; }
+        }
+        
+        if (star->getPlxPmdecCorr() == 0.0) {
+            double val = getValue("plxpmdecor");
+            if (val != 0.0) { star->setPlxPmdecCorr(val); updated = true; }
+        }
+        
+        if (star->getPlxPmraCorr() == 0.0) {
+            double val = getValue("plxpmracor");
+            if (val != 0.0) { star->setPlxPmraCorr(val); updated = true; }
+        }
+        
+        // Calculate BP-RP if we have both and it's missing
+        if (star->getBpRp() == 0.0 && star->getBp() != 0.0 && star->getRp() != 0.0) {
+            star->setBpRp(star->getBp() - star->getRp());
+            updated = true;
+        }
+        
+        if (updated) updatedCount++;
+    }
+    
+    emit progress(100, 100, QString("Updated %1 stars").arg(updatedCount));
+    emit finished(updatedCount);
 }
 
 QString SimbadWorker::generateSimbadScript()
@@ -1359,19 +1880,41 @@ SpectraImportPage::SpectraImportPage(QWidget* parent)
     setSubTitle("Associate spectral data files with imported stars");
     
     QVBoxLayout* layout = new QVBoxLayout(this);
-    QLabel* label = new QLabel("Spectra import functionality to be implemented");
+    QLabel* label = new QLabel("Spectra import functionality to be implemented.\n\n"
+                               "This page will allow you to:\n"
+                               "• Browse for spectrum files (FITS, ASCII)\n"
+                               "• Match spectra to stars by identifier or position\n"
+                               "• Preview spectral data before import");
+    label->setWordWrap(true);
     layout->addWidget(label);
+    layout->addStretch();
+}
+
+int SpectraImportPage::nextId() const
+{
+    return StarImportWizard::Page_RadialVelocity;
 }
 
 RadialVelocityImportPage::RadialVelocityImportPage(QWidget* parent)
     : QWizardPage(parent)
 {
     setTitle("Import Radial Velocity Data");
-    setSubTitle("Import RV measurements and curves");
+    setSubTitle("Import RV measurements and time series");
     
     QVBoxLayout* layout = new QVBoxLayout(this);
-    QLabel* label = new QLabel("Radial velocity import functionality to be implemented");
+    QLabel* label = new QLabel("Radial velocity import functionality to be implemented.\n\n"
+                               "This page will allow you to:\n"
+                               "• Import RV measurements from tables\n"
+                               "• Import RV time series/curves\n"
+                               "• Associate RV data with imported stars");
+    label->setWordWrap(true);
     layout->addWidget(label);
+    layout->addStretch();
+}
+
+int RadialVelocityImportPage::nextId() const
+{
+    return StarImportWizard::Page_Photometry;
 }
 
 PhotometryImportPage::PhotometryImportPage(QWidget* parent)
@@ -1379,8 +1922,20 @@ PhotometryImportPage::PhotometryImportPage(QWidget* parent)
 {
     setTitle("Import Photometry");
     setSubTitle("Import lightcurves and photometric measurements");
+    setFinalPage(true);  // This makes the Next button say "Finish"
     
     QVBoxLayout* layout = new QVBoxLayout(this);
-    QLabel* label = new QLabel("Photometry import functionality to be implemented");
+    QLabel* label = new QLabel("Photometry import functionality to be implemented.\n\n"
+                               "This page will allow you to:\n"
+                               "• Import photometric measurements\n"
+                               "• Import lightcurve data (TESS, Kepler, etc.)\n"
+                               "• Associate photometry with imported stars");
+    label->setWordWrap(true);
     layout->addWidget(label);
+    layout->addStretch();
+}
+
+int PhotometryImportPage::nextId() const
+{
+    return -1;  // This is the last page
 }

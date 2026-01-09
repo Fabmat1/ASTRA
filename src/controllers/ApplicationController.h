@@ -10,6 +10,8 @@ class DatabaseManager;
 class Star;
 class ThemeManager;
 struct ThemeInfo;
+class BackgroundTaskManager;
+
 
 class ApplicationController : public QObject
 {
@@ -34,6 +36,8 @@ public:
     // Theme management
     ThemeManager* themeManager() const { return _themeManager.get(); }
 
+    BackgroundTaskManager* backgroundTaskManager() const { return _backgroundTaskManager.get(); }
+
 signals:
     void projectCreated(const QString& projectId);
     void projectOpened(const QString& projectId);
@@ -45,6 +49,7 @@ private:
     std::unique_ptr<ThemeManager> _themeManager;
     std::shared_ptr<Project> _currentProject;
     std::vector<std::shared_ptr<Project>> _projects;
+    std::unique_ptr<BackgroundTaskManager> _backgroundTaskManager;
 
     void loadProjects();
 };
