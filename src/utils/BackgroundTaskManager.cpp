@@ -14,6 +14,8 @@
 #include <QStatusBar>
 #include <QLabel>
 #include <QHBoxLayout>
+#include "SpectrumReader.h"
+#include "models/Spectrum.h"
 
 // ============================================================================
 // TaskStatusWidget Implementation
@@ -844,4 +846,122 @@ void SimbadQueryTask::execute()
     LOG_INFO("SIMBAD", QString("Task complete: Added bibcodes for %1 stars").arg(updatedCount));
     emit finished(true, QString("SIMBAD: Added bibliography codes for %1 stars").arg(updatedCount));
     _networkManager->deleteLater();
+}
+
+// ============================================================================
+// SpectraImportTask Implementation
+// ============================================================================
+
+SpectraImportTask::SpectraImportTask(std::vector<SpectrumImportEntry> entries,
+                                     const QString& projectId,
+                                     ApplicationController* controller,
+                                     QObject* parent)
+    : BackgroundTask(parent)
+    , _entries(std::move(entries))
+    , _projectId(projectId)
+    , _controller(controller)
+{
+}
+
+void SpectraImportTask::execute()
+{
+    LOG_SET_THREAD_NAME("SpectraImport");
+    LOG_INFO("SpectraImport", QString("Starting spectra import task with %1 entries").arg(_entries.size()));
+    
+    int imported = 0;
+    int failed = 0;
+    int total = static_cast<int>(_entries.size());
+    
+    auto& registry = SpectrumReaderRegistry::instance();
+    
+    for (int i = 0; i < total; ++i) {
+        // Update progress every 50 spectra or at start/end
+        if (i % 50 == 0 || i == total - 1) {
+            int percent = (total > 0) ? (i * 100 / total) : 0;
+            emit progress(QString("Spectra Import: %1/%2 (%3%)")
+                         .arg(i).arg(total).arg(percent));
+        }
+        
+        const auto& entry = _entries[i];
+        
+        // Skip entries without matched stars
+        if (!entry.matchedStar) {
+            failed++;
+            continue;
+        }
+        
+        // Check if file exists
+        if (!QFile::exists(entry.spectrumFile)) {
+            LOG_DEBUG("SpectraImport", QString("File not found: %1").arg(entry.spectrumFile));  // Changed from WARNING
+            failed++;
+            continue;
+        }
+        
+        // Get appropriate reader
+        auto reader = registry.getReaderForFile(entry.spectrumFile);
+        if (!reader) {
+            LOG_DEBUG("SpectraImport", QString("No reader for file: %1").arg(entry.spectrumFile));  // Changed from WARNING
+            failed++;
+            continue;
+        }
+        
+        // Set external metadata for ASCII files
+        auto asciiReader = std::dynamic_pointer_cast<AsciiSpectrumReader>(reader);
+        if (asciiReader) {
+            SpectrumMetadata meta;
+            meta.filepath = entry.spectrumFile;
+            
+            if (entry.mjd.has_value()) {
+                meta.mjd = entry.mjd.value();
+            }
+            if (entry.bjd.has_value()) {
+                meta.bjd = entry.bjd.value();
+            }
+            if (entry.exposureTime.has_value()) {
+                meta.exposureTime = entry.exposureTime.value();
+            }
+            if (entry.instrument.has_value()) {
+                meta.instrument = entry.instrument.value();
+            }
+            
+            asciiReader->setExternalMetadata(meta);
+        }
+        
+        // Read the spectrum
+        SpectrumReadResult readResult = reader->readSpectrum(entry.spectrumFile);
+        if (!readResult.success) {
+            LOG_DEBUG("SpectraImport", QString("Failed to read %1: %2")  // Changed from WARNING
+                       .arg(entry.spectrumFile).arg(readResult.errorMessage));
+            failed++;
+            continue;
+        }
+        
+        // Set barycentric correction status
+        readResult.spectrum->setBarycentricallyCorrected(entry.isBarycentricallyCorrected);
+        
+        // Add spectrum to star
+        entry.matchedStar->addSpectrum(readResult.spectrum);
+        
+        // Save to database via controller (must be done on main thread)
+        if (_controller) {
+            std::shared_ptr<Star> star = entry.matchedStar;
+            std::shared_ptr<Spectrum> spectrum = readResult.spectrum;
+            QString projectId = _projectId;
+            
+            QMetaObject::invokeMethod(_controller, [this, star, spectrum, projectId]() {
+                _controller->saveSpectrumToProject(projectId, star->getId(), spectrum);
+            }, Qt::QueuedConnection);
+        }
+        
+        imported++;
+        
+        // Emit signal for each imported spectrum (can be used for UI updates)
+        emit spectrumImported(entry.matchedStar, readResult.spectrum);
+    }
+    
+    // Summary logging at INFO level
+    LOG_INFO("SpectraImport", QString("Import complete: %1 imported, %2 failed").arg(imported).arg(failed));
+    
+    emit importComplete(imported, failed);
+    emit finished(true, QString("Spectra Import: %1 imported, %2 failed").arg(imported).arg(failed));
 }

@@ -5,6 +5,7 @@
 #include <memory>
 #include <vector>
 
+class Spectrum; 
 class Project;
 class DatabaseManager;
 class Star;
@@ -32,6 +33,9 @@ public:
     bool saveStarsToProject(std::shared_ptr<Project> project, const std::vector<std::shared_ptr<Star>>& stars);
     bool deleteStarFromProject(std::shared_ptr<Project> project, std::shared_ptr<Star> star);
     bool deleteStarsFromProject(std::shared_ptr<Project> project, const std::vector<std::shared_ptr<Star>>& stars);
+    // Spectrum management
+    bool saveSpectrumToProject(const QString& projectId, const QString& starId, std::shared_ptr<Spectrum> spectrum);
+    bool saveSpectraToProject(const QString& projectId, const QString& starId, const std::vector<std::shared_ptr<Spectrum>>& spectra);
 
     // Theme management
     ThemeManager* themeManager() const { return _themeManager.get(); }

@@ -218,6 +218,8 @@ bool DatabaseManager::createTables()
             bjd REAL,
             exposure_time REAL,
             data_file TEXT,
+            barycentric_corrected INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY(star_id) REFERENCES stars(id) ON DELETE CASCADE
         )
     )";
@@ -1017,13 +1019,14 @@ bool DatabaseManager::saveSpectrum(const QString& starId, std::shared_ptr<Spectr
     // Save spectral data to file
     QString dataFile = spectrumDir + "/spectral_data.dat";
     spectrum->saveDataToFile(dataFile);
+    spectrum->setDataFile(dataFile);
 
     QSqlQuery query;
     query.prepare(R"(
         INSERT OR REPLACE INTO spectra (
-            id, star_id, file, instrument, mjd, bjd, exposure_time, data_file
+            id, star_id, file, instrument, mjd, bjd, exposure_time, data_file, barycentric_corrected
         ) VALUES (
-            :id, :star_id, :file, :instrument, :mjd, :bjd, :exposure_time, :data_file
+            :id, :star_id, :file, :instrument, :mjd, :bjd, :exposure_time, :data_file, :barycentric_corrected
         )
     )");
 
@@ -1035,6 +1038,7 @@ bool DatabaseManager::saveSpectrum(const QString& starId, std::shared_ptr<Spectr
     query.bindValue(":bjd", spectrum->getBJD());
     query.bindValue(":exposure_time", spectrum->getExposureTime());
     query.bindValue(":data_file", dataFile);
+    query.bindValue(":barycentric_corrected", spectrum->isBarycentricallyCorrected() ? 1 : 0);
 
     if (!query.exec()) {
         qDebug() << "Failed to save spectrum:" << query.lastError();
@@ -1098,10 +1102,13 @@ std::vector<std::shared_ptr<Spectrum>> DatabaseManager::loadSpectra(const QStrin
     std::vector<std::shared_ptr<Spectrum>> spectra;
 
     QSqlQuery query;
-    query.prepare("SELECT * FROM spectra WHERE star_id = :star_id");
+    query.prepare(R"(
+        SELECT * FROM spectra WHERE star_id = :star_id
+    )");
     query.bindValue(":star_id", starId);
 
     if (!query.exec()) {
+        qDebug() << "Failed to load spectra:" << query.lastError();
         return spectra;
     }
 
@@ -1114,8 +1121,9 @@ std::vector<std::shared_ptr<Spectrum>> DatabaseManager::loadSpectra(const QStrin
         spectrum->setBJD(query.value("bjd").toDouble());
         spectrum->setExposureTime(query.value("exposure_time").toDouble());
         spectrum->setDataFile(query.value("data_file").toString());
+        spectrum->setBarycentricallyCorrected(query.value("barycentric_corrected").toInt() != 0);
 
-        // Load spectral fits metadata
+        // Load spectral fits
         auto fits = loadSpectralFits(spectrum->getId());
         for (const auto& fit : fits) {
             spectrum->addSpectralFit(fit);

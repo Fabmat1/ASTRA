@@ -22,11 +22,11 @@ SpectralFit::SpectralFit()
     creationDate = QDateTime::currentDateTime();
 }
 
-// Spectrum implementation
 Spectrum::Spectrum()
     : _mjd(0.0)
     , _bjd(0.0)
     , _exposureTime(0.0)
+    , _isBarycentricallyCorrected(false)
 {
 }
 

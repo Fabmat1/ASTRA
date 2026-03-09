@@ -6,35 +6,10 @@
 #include <QWizard>
 #include <memory>
 #include <vector>
-#include <unordered_map>
-#include <QVariant>
-#include <QFutureWatcher>
-#include <QtConcurrent>
-#include <QNetworkAccessManager>
-#include <QNetworkReply>
-#include <QTemporaryFile>
-#include <QThread>
-#include <QLabel>
-#include <QApplication>
-#include <QNetworkRequest>
-#include <QHttpMultiPart>
-#include <QHttpPart>
-#include <QEventLoop>
-#include <unordered_set>
-#include <QTimer>
-#include <QSet>
-#include <cmath> 
 
 class ApplicationController;
 class Project;
 class Star;
-class QLineEdit;
-class QCheckBox;
-class QTableWidget;
-class QProgressDialog;
-class QComboBox;
-class SimbadWorker;
-class GaiaWorker; 
 
 class StarImportWizard : public QWizard
 {
@@ -54,6 +29,7 @@ public:
     // Store imported stars for later steps
     void setImportedStars(const std::vector<std::shared_ptr<Star>>& stars) { _importedStars = stars; }
     std::vector<std::shared_ptr<Star>> importedStars() const { return _importedStars; }
+    std::vector<std::shared_ptr<Star>> getImportedStars() const { return _importedStars; }
 
 private:
     ApplicationController* _controller;
@@ -61,174 +37,10 @@ private:
     std::vector<std::shared_ptr<Star>> _importedStars;
 };
 
-// Data row for storing parsed file data
-struct DataRow {
-    std::unordered_map<QString, QVariant> values;
-};
-
-// First wizard page - General Import
-class GeneralImportPage : public QWizardPage
-{
-    Q_OBJECT
-
-public:
-    GeneralImportPage(QWidget* parent = nullptr);
-
-    bool isComplete() const override;
-    bool validatePage() override;
-    int nextId() const override;
-
-private slots:
-    void onBrowseFile();
-    void onFilePathChanged(const QString& path);
-    void onDelimiterChanged();
-    void onCommentCharChanged(const QString& text);
-
-private:
-    QLineEdit* _filePathEdit;
-    QComboBox* _delimiterCombo;
-    QLineEdit* _customDelimiterEdit;
-    QLineEdit* _commentCharEdit;
-    QCheckBox* _hasHeaderCheckBox;
-    QCheckBox* _gaiaCheckBox;
-    QCheckBox* _simbadCheckBox;
-    QTableWidget* _previewTable;
-    QLabel* _simbadWarningLabel;
-    QThread* _simbadThread;
-    SimbadWorker* _simbadWorker;
-    // Add to private section of GeneralImportPage
-    QThread* _gaiaThread;
-    GaiaWorker* _gaiaWorker;
-    
-    void queryGaiaData(std::vector<std::shared_ptr<Star>>& stars);
-    void removeDuplicateRows();
-    QString generateRowKey(const DataRow& row) const;
-    QString normalizeValue(const QVariant& value) const;
-
-    std::vector<QString> _columnNames;
-    std::unordered_map<QString, QString> _columnMappings;
-    std::vector<QString> _unmappedColumns;
-    std::vector<DataRow> _dataRows;
-    QFutureWatcher<bool>* _fitsWatcher;
-    
-    bool readFile(const QString& filePath);
-    bool readCSV(const QString& filePath);
-    bool readFITS(const QString& filePath);
-    void setupColumnAliases();
-    void mapColumns();
-    void updatePreview();
-    std::vector<std::shared_ptr<Star>> createStarsFromData();
-    
-    QChar detectDelimiter(const QString& line) const;
-    QStringList parseCSVLine(const QString& line, QChar delimiter) const;
-    QVariant convertValue(const QString& value) const;
-    void updateSimbadWarning();
-    void querySimbadBibcodes(const std::vector<std::shared_ptr<Star>>& stars);
-    
-    // Column name aliases (case-insensitive matching)
-    std::unordered_map<QString, std::vector<QString>> _columnAliases;
-    
-    // Helper to apply mapped value to star
-    void applyValueToStar(std::shared_ptr<Star> star, const QString& field, const QVariant& value);
-};
-
-// Column mapping dialog
-class ColumnMappingDialog : public QDialog
-{
-    Q_OBJECT
-
-public:
-    ColumnMappingDialog(const std::vector<QString>& unmappedColumns,
-                       const std::unordered_map<QString, QString>& currentMappings,
-                       const std::vector<QString>& availableFields,
-                       const std::vector<DataRow>& sampleData,
-                       QWidget* parent = nullptr);
-    
-    std::unordered_map<QString, QString> getMappings() const;
-
-//private slots:
-//    void onMappingChanged(int row, int column);
-
-private:
-    QTableWidget* _mappingTable;
-    QTableWidget* _previewTable;
-    std::unordered_map<QString, QString> _mappings;
-    std::vector<DataRow> _sampleData;
-    std::vector<QString> _unmappedColumns;
-    
-    void updatePreview();
-};
-
-class SpectraImportPage : public QWizardPage
-{
-    Q_OBJECT
-public:
-    SpectraImportPage(QWidget* parent = nullptr);
-    int nextId() const override;
-};
-
-class RadialVelocityImportPage : public QWizardPage
-{
-    Q_OBJECT
-public:
-    RadialVelocityImportPage(QWidget* parent = nullptr);
-    int nextId() const override;
-};
-
-class PhotometryImportPage : public QWizardPage
-{
-    Q_OBJECT
-public:
-    PhotometryImportPage(QWidget* parent = nullptr);
-    int nextId() const override;
-};
-
-// Add SimbadWorker class declaration after StarImportWizard
-class SimbadWorker : public QObject
-{
-    Q_OBJECT
-
-public:
-    SimbadWorker(const std::vector<std::shared_ptr<Star>>& stars, QObject* parent = nullptr);
-    
-public slots:
-    void process();
-    
-signals:
-    void progress(int current, int total, const QString& message);
-    void finished(const QMap<QString, QStringList>& bibcodes);
-    void error(const QString& message);
-    
-private:
-    std::vector<std::shared_ptr<Star>> _stars;
-    QNetworkAccessManager* _networkManager;
-    
-    QString generateSimbadScript();
-    QMap<QString, QStringList> parseSimbadResponse(const QString& response);
-};
-
-class GaiaWorker : public QObject
-{
-    Q_OBJECT
-
-public:
-    GaiaWorker(std::vector<std::shared_ptr<Star>>& stars, QObject* parent = nullptr);
-    
-public slots:
-    void process();
-    
-signals:
-    void progress(int current, int total, const QString& message);
-    void finished(int updatedCount);
-    void error(const QString& message);
-    
-private:
-    std::vector<std::shared_ptr<Star>>& _stars;
-    QNetworkAccessManager* _networkManager;
-    
-    QString buildADQLQuery();
-    void parseVizierResponse(const QString& response);
-    bool starNeedsGaiaData(const std::shared_ptr<Star>& star) const;
-};
+// Include all sub-components so users only need to include StarImportWizard.h
+#include "GeneralImportPage.h"
+#include "SpectraImportPage.h"
+#include "RVPhotometryPages.h"
+#include "CatalogQueryWorkers.h"
 
 #endif // STARIMPORTWIZARD_H

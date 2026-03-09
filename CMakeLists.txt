@@ -88,6 +88,12 @@ set(SOURCES
     src/utils/ThemeManager.cpp
     src/utils/BackgroundTaskManager.cpp
     src/utils/Logger.cpp
+    src/utils/SpectrumReader.cpp
+    src/utils/StarImportWizard.cpp
+    src/utils/GeneralImportPage.cpp
+    src/utils/SpectraImportPage.cpp
+    src/utils/RVPhotometryPages.cpp
+    src/utils/CatalogQueryWorkers.cpp
 )
 
 # Header files
@@ -110,6 +116,12 @@ set(HEADERS
     src/utils/ThemeManager.h
     src/utils/BackgroundTaskManager.h
     src/utils/Logger.h
+    src/utils/SpectrumReader.h
+    src/utils/StarImportWizard.h
+    src/utils/GeneralImportPage.h
+    src/utils/SpectraImportPage.h
+    src/utils/RVPhotometryPages.h
+    src/utils/CatalogQueryWorkers.h
 )
 
 # Create executable

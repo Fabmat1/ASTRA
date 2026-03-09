@@ -50,6 +50,12 @@ public:
     std::shared_ptr<Photometry> loadPhotometry(const QString& starId);
     std::vector<std::shared_ptr<Spectrum>> loadSpectra(const QString& starId);
 
+    // Spectrum operations
+    bool saveSpectrum(const QString& starId, std::shared_ptr<Spectrum> spectrum);
+    bool saveSpectralFit(const QString& spectrumId, std::shared_ptr<SpectralFit> fit, const QString& spectrumDir);
+    std::vector<std::shared_ptr<SpectralFit>> loadSpectralFits(const QString& spectrumId);
+
+
 private:
     bool createTables();
     bool createIndexes();
@@ -68,11 +74,6 @@ private:
     bool saveLightcurveModel(const QString& lightcurveId, std::shared_ptr<LightcurveModel> model, const QString& photometryDir);
     std::vector<std::shared_ptr<SEDModel>> loadSEDModels(const QString& photometryId);
     std::vector<std::shared_ptr<LightcurveModel>> loadLightcurveModels(const QString& lightcurveId);
-
-    // Spectrum operations
-    bool saveSpectrum(const QString& starId, std::shared_ptr<Spectrum> spectrum);
-    bool saveSpectralFit(const QString& spectrumId, std::shared_ptr<SpectralFit> fit, const QString& spectrumDir);
-    std::vector<std::shared_ptr<SpectralFit>> loadSpectralFits(const QString& spectrumId);
 
     QSqlDatabase _database;
     QString _databasePath;

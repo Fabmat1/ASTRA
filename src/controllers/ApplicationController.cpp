@@ -182,3 +182,27 @@ void ApplicationController::loadProjects()
 {
     _projects = _databaseManager->loadProjects();
 }
+
+bool ApplicationController::saveSpectrumToProject(const QString& projectId, const QString& starId, std::shared_ptr<Spectrum> spectrum)
+{
+    if (!spectrum) return false;
+    LOG_DEBUG("Controller", QString("Saving spectrum for star %1 in project %2").arg(starId).arg(projectId));
+    
+    return _databaseManager->saveSpectrum(starId, spectrum);
+}
+
+bool ApplicationController::saveSpectraToProject(const QString& projectId, const QString& starId, const std::vector<std::shared_ptr<Spectrum>>& spectra)
+{
+    if (spectra.empty()) return true;
+    
+    LOG_INFO("Controller", QString("Saving %1 spectra for star %2").arg(spectra.size()).arg(starId));
+    
+    bool allSuccess = true;
+    for (const auto& spectrum : spectra) {
+        if (!saveSpectrumToProject(projectId, starId, spectrum)) {
+            allSuccess = false;
+        }
+    }
+    
+    return allSuccess;
+}

@@ -2,6 +2,7 @@
 #define SPECTRUM_H
 
 #include <QString>
+#include <QVector>
 #include <QDateTime>
 #include <vector>
 #include <memory>
@@ -81,6 +82,10 @@ public:
     QString getInstrument() const { return _instrument; }
     void setInstrument(const QString& instrument) { _instrument = instrument; }
 
+    // Barycentric correction status
+    bool isBarycentricallyCorrected() const { return _isBarycentricallyCorrected; }
+    void setBarycentricallyCorrected(bool corrected) { _isBarycentricallyCorrected = corrected; }
+
     // Spectral data
     void setData(const std::vector<double>& wavelengths,
                  const std::vector<double>& fluxes,
@@ -108,6 +113,7 @@ private:
     double _mjd;  // Modified Julian Date
     double _bjd;  // Barycentric Julian Date
     double _exposureTime;
+    bool _isBarycentricallyCorrected;  // Whether wavelengths are barycentric corrected
 
     // Spectral data
     std::vector<double> _wavelengths;  // in Angstroms

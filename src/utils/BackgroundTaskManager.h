@@ -9,8 +9,10 @@
 #include <memory>
 #include <vector>
 #include <functional>
+#include <optional>
 
 class Star;
+class Spectrum;
 class ApplicationController;
 class QNetworkAccessManager;
 class QLabel;
@@ -166,6 +168,48 @@ private:
     int _maxConcurrentTasks;
     
     std::unique_ptr<TaskStatusWidget> _statusWidget;
+};
+
+// ============================================================================
+// SpectraImportTask - Background task for importing spectra
+// ============================================================================
+
+struct SpectrumImportEntry {
+    QString spectrumFile;
+    std::shared_ptr<Star> matchedStar;
+    int sourceRowIndex = -1;  // Index in mapping rows, -1 if from FITS scan
+    
+    // Metadata from mapping file (if applicable)
+    std::optional<double> mjd;
+    std::optional<double> bjd;
+    std::optional<double> exposureTime;
+    std::optional<QString> instrument;
+    bool isBarycentricallyCorrected = false;
+};
+
+class SpectraImportTask : public BackgroundTask
+{
+    Q_OBJECT
+
+public:
+    SpectraImportTask(std::vector<SpectrumImportEntry> entries,
+                      const QString& projectId,
+                      ApplicationController* controller,
+                      QObject* parent = nullptr);
+
+    QString taskName() const override { return "Spectra Import"; }
+
+public slots:
+    void execute() override;
+
+signals:
+    void spectrumImported(std::shared_ptr<Star> star, std::shared_ptr<Spectrum> spectrum);
+    void importComplete(int imported, int failed);
+
+private:
+    std::vector<SpectrumImportEntry> _entries;
+    QString _projectId;
+    ApplicationController* _controller;
 };
 
 #endif // BACKGROUNDTASKMANAGER_H
