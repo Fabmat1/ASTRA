@@ -200,7 +200,6 @@ bool DatabaseManager::createTables()
             model_id TEXT,
             is_best_fit INTEGER,
             period REAL,
-            amplitude REAL,
             phase REAL,
             model_data_file TEXT,
             FOREIGN KEY(lightcurve_id) REFERENCES lightcurves(id) ON DELETE CASCADE
@@ -918,10 +917,10 @@ bool DatabaseManager::saveLightcurveModel(const QString& lightcurveId, std::shar
     query.prepare(R"(
         INSERT OR REPLACE INTO lightcurve_models (
             id, lightcurve_id, creation_date, model_id, is_best_fit,
-            period, amplitude, phase, model_data_file
+            period, phase, model_data_file
         ) VALUES (
             :id, :lightcurve_id, :creation_date, :model_id, :is_best_fit,
-            :period, :amplitude, :phase, :model_data_file
+            :period, :phase, :model_data_file
         )
     )");
 
@@ -931,7 +930,6 @@ bool DatabaseManager::saveLightcurveModel(const QString& lightcurveId, std::shar
     query.bindValue(":model_id", model->modelId);
     query.bindValue(":is_best_fit", model->isBestFit ? 1 : 0);
     query.bindValue(":period", model->period);
-    query.bindValue(":amplitude", model->amplitude);
     query.bindValue(":phase", model->phase);
     query.bindValue(":model_data_file", modelFile);
 
@@ -1222,7 +1220,6 @@ std::vector<std::shared_ptr<LightcurveModel>> DatabaseManager::loadLightcurveMod
         model->modelId = query.value("model_id").toString();
         model->isBestFit = query.value("is_best_fit").toInt() == 1;
         model->period = query.value("period").toDouble();
-        model->amplitude = query.value("amplitude").toDouble();
         model->phase = query.value("phase").toDouble();
         model->setModelDataFile(query.value("model_data_file").toString());
 

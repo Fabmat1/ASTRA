@@ -55,6 +55,8 @@ public:
     double radiusError;
     double temperature;
     double temperatureError;
+    double mass;
+    double massError;
 
     // Model data - not loaded by default
     std::vector<double> modelWavelengths;
@@ -91,8 +93,10 @@ public:
     std::vector<double> modelFluxes;
 
     double period;
-    double amplitude;
     double phase;
+    double inclination;
+    double massRatio;
+    double separation;
 
 private:
     QString _id;

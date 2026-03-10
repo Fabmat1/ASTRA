@@ -1,4 +1,4 @@
-// In src/views/ProjectView.cpp - replace entire file
+// In src/views/ProjectView.cpp
 
 #include "ProjectView.h"
 #include "controllers/ApplicationController.h"
@@ -6,6 +6,7 @@
 #include "models/Star.h"
 #include "utils/StarImportWizard.h"
 #include "utils/Logger.h"
+#include "views/StarDetailView.h"
 #include <QTableView>
 #include <QVBoxLayout>
 #include <QLabel>
@@ -223,16 +224,21 @@ void ProjectView::onSelectionChanged(const QItemSelection& selected, const QItem
     }
 }
 
+
 void ProjectView::onTableContextMenu(const QPoint& pos)
 {
     QModelIndex index = _starTable->indexAt(pos);
+    
+    // Store the right-clicked index so onShowDetailWindow knows which star
+    _rightClickedIndex = index;
     
     // Enable/disable actions based on selection
     bool hasSelection = _starTable->selectionModel() && 
                         !_starTable->selectionModel()->selectedIndexes().isEmpty();
     
+    // "Open Detail View" should only be enabled if we right-clicked on an actual row
     _copyAction->setEnabled(hasSelection);
-    _openDetailAction->setEnabled(hasSelection);
+    _openDetailAction->setEnabled(index.isValid());
     _removeSelectedAction->setEnabled(hasSelection);
     
     _tableContextMenu->exec(_starTable->viewport()->mapToGlobal(pos));
@@ -279,6 +285,13 @@ std::vector<std::shared_ptr<Star>> ProjectView::getSelectedStars() const
 void ProjectView::onStarDoubleClicked(const QModelIndex& index)
 {
     if (index.isValid()) {
+        // For double-click, clear the right-click index so we use the
+        // selection-based path (the double-clicked row IS the selection)
+        _rightClickedIndex = QModelIndex();
+        
+        // Ensure the double-clicked row is selected
+        _starTable->selectRow(index.row());
+        
         onShowDetailWindow();
     }
 }
@@ -378,20 +391,35 @@ void ProjectView::onRemoveStar()
 
 void ProjectView::onShowDetailWindow()
 {
-    auto selectedStars = getSelectedStars();
-    if (selectedStars.empty()) {
-        QMessageBox::information(this, "Star Details", "No star selected.");
+    std::shared_ptr<Star> star;
+
+    // If triggered via right-click context menu, use the right-clicked row
+    if (_rightClickedIndex.isValid()) {
+        QModelIndex sourceIndex = mapToSource(_rightClickedIndex);
+        star = _tableModel->getStarAtRow(sourceIndex.row());
+        _rightClickedIndex = QModelIndex();  // Reset after use
+    }
+
+    // Fallback: if triggered via double-click or shortcut, use selection
+    if (!star) {
+        auto selectedStars = getSelectedStars();
+        if (selectedStars.empty()) {
+            QMessageBox::information(this, "Star Details", "No star selected.");
+            return;
+        }
+        star = selectedStars.front();
+    }
+
+    if (!star) {
+        QMessageBox::information(this, "Star Details", "Could not identify the selected star.");
         return;
     }
-    
-    // For now, show info about first selected star
-    auto star = selectedStars.front();
-    QMessageBox::information(this, "Star Details", 
-                             QString("Star detail window to be implemented.\n\n"
-                                     "Selected star: %1\n"
-                                     "Source ID: %2")
-                             .arg(star->getAlias().isEmpty() ? "(no alias)" : star->getAlias())
-                             .arg(star->getSourceId()));
+
+    // Launch the detail window (WA_DeleteOnClose handles cleanup)
+    StarDetailView* detailView = new StarDetailView(star);
+    detailView->show();
+    detailView->raise();
+    detailView->activateWindow();
 }
 
 void ProjectView::onConfigureColumns()

@@ -73,6 +73,8 @@ private:
     QAction* _openDetailAction;
     QAction* _removeSelectedAction;
     QAction* _configureColumnsAction;
+    
+    QModelIndex _rightClickedIndex;  // Track which cell was right-clicked
 
     void updateStatusBar(const QString& message);
 };

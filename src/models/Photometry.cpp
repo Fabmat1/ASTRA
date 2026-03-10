@@ -21,7 +21,6 @@ SEDModel::SEDModel()
 LightcurveModel::LightcurveModel()
     : isBestFit(false)
     , period(0.0)
-    , amplitude(0.0)
     , phase(0.0)
 {
     creationDate = QDateTime::currentDateTime();
