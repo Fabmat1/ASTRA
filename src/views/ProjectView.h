@@ -3,7 +3,6 @@
 
 #include <QWidget>
 #include <QAbstractTableModel>
-#include <QSortFilterProxyModel>
 #include <memory>
 #include <functional>
 
@@ -18,6 +17,8 @@ QT_END_NAMESPACE
 class ApplicationController;
 class Project;
 class StarTableModel;
+class StarFilterProxyModel;
+class StarFilterWidget;
 class Star;
 
 class ProjectView : public QWidget
@@ -49,7 +50,7 @@ private slots:
 protected:
     void keyPressEvent(QKeyEvent* event) override;
 
-private:
+    private:
     void setupUi();
     void setupContextMenus();
     std::vector<std::shared_ptr<Star>> getSelectedStars() const;
@@ -61,7 +62,8 @@ private:
     // UI elements
     QTableView* _starTable;
     StarTableModel* _tableModel;
-    QSortFilterProxyModel* _proxyModel;
+    StarFilterProxyModel* _proxyModel;
+    StarFilterWidget* _filterWidget;
     QLabel* _projectTitle;
     
     // Context menus
@@ -74,9 +76,10 @@ private:
     QAction* _removeSelectedAction;
     QAction* _configureColumnsAction;
     
-    QModelIndex _rightClickedIndex;  // Track which cell was right-clicked
+    QModelIndex _rightClickedIndex;
 
     void updateStatusBar(const QString& message);
+    void setupFilterColumns();
 };
 
 // Custom table model for stars

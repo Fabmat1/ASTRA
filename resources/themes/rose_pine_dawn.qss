@@ -805,6 +805,41 @@ QTableWidget QTableCornerButton::section {
     border-bottom: 1px solid #f4ede8;
 }
 
+/* =============================================================================
+ * STAR FILTER WIDGET
+ * =============================================================================
+ */
+
+StarFilterWidget QLineEdit#searchEdit {
+    border-radius: 6px;
+    padding: 6px 10px;
+}
+
+FilterConditionRow {
+    background-color: #fffaf3;
+    border: 1px solid #f4ede8;
+    border-radius: 6px;
+    margin: 1px 0;
+}
+
+FilterConditionRow QToolButton {
+    background-color: transparent;
+    border: 1px solid #dfdad9;
+    border-radius: 4px;
+    font-size: 9pt;
+    color: #575279;
+}
+
+FilterConditionRow QToolButton:hover {
+    background-color: #f4ede8;
+}
+
+FilterConditionRow QToolButton:checked {
+    background-color: #286983;
+    color: #faf4ed;
+    border-color: #286983;
+}
+
 
 /* =============================================================================
  * HEADER VIEW (Table & Tree headers)

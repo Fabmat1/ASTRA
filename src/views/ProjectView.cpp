@@ -7,6 +7,7 @@
 #include "utils/StarImportWizard.h"
 #include "utils/Logger.h"
 #include "views/StarDetailView.h"
+#include "StarFilterWidget.h"
 #include <QTableView>
 #include <QVBoxLayout>
 #include <QLabel>
@@ -45,23 +46,40 @@ void ProjectView::setupUi()
 {
     QVBoxLayout* mainLayout = new QVBoxLayout(this);
     mainLayout->setContentsMargins(0, 0, 0, 0);
+    mainLayout->setSpacing(4);
 
     _projectTitle = new QLabel("Project");
     _projectTitle->setStyleSheet("font-size: 20px; font-weight: bold; margin: 10px;");
     mainLayout->addWidget(_projectTitle);
 
+    // Filter widget
+    _filterWidget = new StarFilterWidget(this);
+    _filterWidget->setContentsMargins(10, 0, 10, 0);
+    connect(_filterWidget, &StarFilterWidget::filtersChanged,
+            this, [this]() {
+                int shown = _proxyModel ? _proxyModel->rowCount() : 0;
+                int total = _tableModel ? _tableModel->rowCount() : 0;
+                int filters = _filterWidget->activeFilterCount();
+                if (filters > 0) {
+                    updateStatusBar(QString("Showing %1 of %2 stars (%3 filter%4 active)")
+                        .arg(shown).arg(total)
+                        .arg(filters).arg(filters != 1 ? "s" : ""));
+                } else {
+                    updateStatusBar(QString("Loaded %1 stars").arg(total));
+                }
+            });
+    mainLayout->addWidget(_filterWidget);
+
     _starTable = new QTableView(this);
-    _starTable->setAlternatingRowColors(false);  // No alternating colors
+    _starTable->setAlternatingRowColors(false);
     _starTable->setSortingEnabled(true);
     _starTable->horizontalHeader()->setStretchLastSection(true);
     _starTable->horizontalHeader()->setSectionsClickable(true);
     _starTable->horizontalHeader()->setSortIndicatorShown(true);
     
-    // Excel-like selection behavior
     _starTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     _starTable->setSelectionBehavior(QAbstractItemView::SelectItems);
     
-    // Enable context menus
     _starTable->setContextMenuPolicy(Qt::CustomContextMenu);
     _starTable->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
     _starTable->verticalHeader()->setVisible(true);
@@ -69,7 +87,6 @@ void ProjectView::setupUi()
     
     mainLayout->addWidget(_starTable, 1);
 
-    // Connect signals
     connect(_starTable, &QTableView::doubleClicked,
             this, &ProjectView::onStarDoubleClicked);
     connect(_starTable, &QTableView::customContextMenuRequested,
@@ -114,6 +131,7 @@ void ProjectView::loadProject(const QString& projectId)
     _currentProject = _controller->openProject(projectId);
     if (_currentProject) {
         _projectTitle->setText(_currentProject->getName());
+        
         // Clean up old models
         if (_proxyModel) {
             delete _proxyModel;
@@ -123,13 +141,20 @@ void ProjectView::loadProject(const QString& projectId)
             delete _tableModel;
             _tableModel = nullptr;
         }
+        
         // Create source model
         _tableModel = new StarTableModel(_currentProject, this);
-        // Create proxy model for sorting
-        _proxyModel = new QSortFilterProxyModel(this);
+        
+        // Create custom filter proxy model
+        _proxyModel = new StarFilterProxyModel(this);
         _proxyModel->setSourceModel(_tableModel);
         _proxyModel->setSortRole(Qt::DisplayRole);
         _starTable->setModel(_proxyModel);
+        
+        // Connect filter widget to proxy
+        _filterWidget->connectToProxy(_proxyModel);
+        setupFilterColumns();
+        
         // Connect selection changes
         connect(_starTable->selectionModel(), &QItemSelectionModel::selectionChanged,
                 this, &ProjectView::onSelectionChanged);
@@ -137,10 +162,37 @@ void ProjectView::loadProject(const QString& projectId)
         
         auto endTime = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
-        LOG_INFO("ProjectView", QString("Project loaded in %1 ms (%2 stars)").arg(duration.count()).arg(_currentProject->getStarCount()));
+        LOG_INFO("ProjectView", QString("Project loaded in %1 ms (%2 stars)")
+                 .arg(duration.count()).arg(_currentProject->getStarCount()));
     } else {
         LOG_ERROR("ProjectView", QString("Failed to load project: %1").arg(projectId));
     }
+}
+
+void ProjectView::setupFilterColumns()
+{
+    if (!_tableModel || !_filterWidget) return;
+
+    // Build list of all visible column names
+    QStringList allColumns;
+    for (int i = 0; i < _tableModel->columnCount(); ++i) {
+        allColumns << _tableModel->getColumnName(i);
+    }
+
+    // Determine which columns are numeric
+    // Text columns are the ones with string-type getters
+    static const QSet<QString> textColumns = {
+        "alias", "source_id", "tic", "jname", "spec_class"
+    };
+
+    QStringList numericColumns;
+    for (const auto& col : allColumns) {
+        if (!textColumns.contains(col)) {
+            numericColumns << col;
+        }
+    }
+
+    _filterWidget->setColumns(allColumns, numericColumns);
 }
 
 void ProjectView::keyPressEvent(QKeyEvent* event)
@@ -449,7 +501,9 @@ void ProjectView::refreshTable()
 {
     if (_tableModel) {
         _tableModel->refresh();
-        updateStatusBar(QString("Loaded %1 stars").arg(_currentProject ? _currentProject->getStarCount() : 0));
+        setupFilterColumns();  // Columns may have changed
+        updateStatusBar(QString("Loaded %1 stars")
+                        .arg(_currentProject ? _currentProject->getStarCount() : 0));
     }
 }
 

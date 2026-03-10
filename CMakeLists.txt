@@ -95,6 +95,7 @@ set(SOURCES
     src/utils/RVPhotometryPages.cpp
     src/utils/CatalogQueryWorkers.cpp
     src/utils/DataStore.cpp
+    src/views/StarFilterWidget.cpp
 )
 
 # Header files
@@ -124,6 +125,7 @@ set(HEADERS
     src/utils/RVPhotometryPages.h
     src/utils/CatalogQueryWorkers.h
     src/utils/DataStore.h
+    src/views/StarFilterWidget.h
 )
 
 # Create executable
