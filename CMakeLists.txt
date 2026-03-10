@@ -94,6 +94,7 @@ set(SOURCES
     src/utils/SpectraImportPage.cpp
     src/utils/RVPhotometryPages.cpp
     src/utils/CatalogQueryWorkers.cpp
+    src/utils/DataStore.cpp
 )
 
 # Header files
@@ -122,6 +123,7 @@ set(HEADERS
     src/utils/SpectraImportPage.h
     src/utils/RVPhotometryPages.h
     src/utils/CatalogQueryWorkers.h
+    src/utils/DataStore.h
 )
 
 # Create executable

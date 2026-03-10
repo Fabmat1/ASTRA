@@ -58,7 +58,7 @@
 
 QWidget {
     background-color: #faf4ed;
-    color: #575279;
+    color: #3b3650;
     selection-background-color: #907aa9;
     selection-color: #faf4ed;
 }
@@ -458,22 +458,14 @@ QDoubleSpinBox::down-button:pressed {
 
 QSpinBox::up-arrow,
 QDoubleSpinBox::up-arrow {
-    image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-bottom: 5px solid #575279;
-    width: 0;
-    height: 0;
+    width: 8px;
+    height: 8px;
 }
 
 QSpinBox::down-arrow,
 QDoubleSpinBox::down-arrow {
-    image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid #575279;
-    width: 0;
-    height: 0;
+    width: 8px;
+    height: 8px;
 }
 
 
@@ -515,10 +507,8 @@ QComboBox::drop-down {
 }
 
 QComboBox::down-arrow {
-    image: none;
-    border-left: 5px solid transparent;
-    border-right: 5px solid transparent;
-    border-top: 6px solid #575279;
+    width: 10px;
+    height: 10px;
     margin-right: 8px;
 }
 
@@ -583,12 +573,6 @@ QCheckBox::indicator:hover {
 QCheckBox::indicator:checked {
     background-color: #286983;
     border-color: #286983;
-    image: none;
-}
-
-/* Checkmark using borders */
-QCheckBox::indicator:checked::after {
-    content: "";
 }
 
 QCheckBox::indicator:disabled {
@@ -780,12 +764,12 @@ QTableView,
 QTableWidget {
     background-color: #faf4ed;
     alternate-background-color: #fffaf3;
-    color: #575279;
+    color: #3b3650;
     gridline-color: #f4ede8;
     border: 1px solid #f4ede8;
     border-radius: 6px;
-    selection-background-color: #dfdad9;
-    selection-color: #faf4ed;
+    selection-background-color: #d7e4ea;
+    selection-color: #3b3650;
 }
 
 QTableView::item,
@@ -801,14 +785,14 @@ QTableWidget::item:hover {
 
 QTableView::item:selected,
 QTableWidget::item:selected {
-    background-color: #dc8a78;
-    color: #faf4ed;
+    background-color: #d7e4ea;
+    color: #3b3650;
 }
 
 QTableView::item:focus,
 QTableWidget::item:focus {
-    background-color: #dd7878;
-    color: #faf4ed;
+    background-color: #cadbe3;
+    color: #3b3650;
     outline: none;
 }
 
@@ -854,27 +838,18 @@ QHeaderView::section:checked {
     background-color: #dfdad9;
 }
 
-/* Sort indicator */
-/*QHeaderView::up-arrow {
-    image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-bottom: 5px solid #286983;
-    width: 0;
-    height: 0;
+/* Sort indicator - let Qt draw native arrows on themed background */
+QHeaderView::up-arrow {
+    width: 10px;
+    height: 10px;
     margin-left: 4px;
 }
 
 QHeaderView::down-arrow {
-    image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid #286983;
-    width: 0;
-    height: 0;
+    width: 10px;
+    height: 10px;
     margin-left: 4px;
 }
-*/
 
 /* =============================================================================
  * TREE VIEW & TREE WIDGET
@@ -1084,7 +1059,7 @@ QGroupBox::title {
  */
 
 QLabel {
-    color: #575279;
+    color: #3b3650;
     background-color: transparent;
 }
 
@@ -1109,7 +1084,7 @@ QLabel[heading="3"] {
 }
 
 QLabel[subtext="true"] {
-    color: #9893a5;
+    color: #6e6a86;
 }
 
 

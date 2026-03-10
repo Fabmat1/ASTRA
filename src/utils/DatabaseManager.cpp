@@ -3,6 +3,8 @@
 #include "models/Star.h"
 #include "models/Photometry.h"
 #include "models/Spectrum.h"
+#include "utils/DataStore.h"
+
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QDebug>
@@ -413,11 +415,21 @@ bool DatabaseManager::updateProject(std::shared_ptr<Project> project)
 
 bool DatabaseManager::deleteProject(const QString& projectId)
 {
+    // Clean up all star data directories first
+    QSqlQuery starQuery;
+    starQuery.prepare("SELECT id FROM stars WHERE project_id = :pid");
+    starQuery.bindValue(":pid", projectId);
+    if (starQuery.exec()) {
+        QString dataDir = getDataDirectory();
+        while (starQuery.next()) {
+            DataStore::removeStarData(dataDir, starQuery.value(0).toString());
+        }
+    }
+
     QSqlQuery query;
     query.prepare("DELETE FROM projects WHERE id = :id");
     query.bindValue(":id", projectId);
-    bool result = query.exec();
-    return result;
+    return query.exec();
 }
 
 
@@ -683,6 +695,9 @@ bool DatabaseManager::updateStar(const QString& projectId, std::shared_ptr<Star>
 
 bool DatabaseManager::deleteStar(const QString& projectId, const QString& starId)
 {
+    // Clean up all data files for this star in one shot
+    DataStore::removeStarData(getDataDirectory(), starId);
+
     // Delete photometry and related data
     QSqlQuery photometryQuery;
     photometryQuery.prepare("SELECT id FROM photometry WHERE star_id = :star_id");
@@ -690,73 +705,65 @@ bool DatabaseManager::deleteStar(const QString& projectId, const QString& starId
     if (photometryQuery.exec()) {
         while (photometryQuery.next()) {
             QString photometryId = photometryQuery.value(0).toString();
-            
-            // Delete SED models
+
             QSqlQuery sedQuery;
             sedQuery.prepare("DELETE FROM sed_models WHERE photometry_id = :id");
             sedQuery.bindValue(":id", photometryId);
             sedQuery.exec();
-            
-            // Delete lightcurve models and lightcurves
+
             QSqlQuery lcQuery;
             lcQuery.prepare("SELECT id FROM lightcurves WHERE photometry_id = :id");
             lcQuery.bindValue(":id", photometryId);
             if (lcQuery.exec()) {
                 while (lcQuery.next()) {
-                    QString lcId = lcQuery.value(0).toString();
                     QSqlQuery lcModelQuery;
                     lcModelQuery.prepare("DELETE FROM lightcurve_models WHERE lightcurve_id = :id");
-                    lcModelQuery.bindValue(":id", lcId);
+                    lcModelQuery.bindValue(":id", lcQuery.value(0).toString());
                     lcModelQuery.exec();
                 }
             }
-            
+
             QSqlQuery deleteLcQuery;
             deleteLcQuery.prepare("DELETE FROM lightcurves WHERE photometry_id = :id");
             deleteLcQuery.bindValue(":id", photometryId);
             deleteLcQuery.exec();
-            
-            // Delete photometric points
+
             QSqlQuery pointsQuery;
             pointsQuery.prepare("DELETE FROM photometric_points WHERE photometry_id = :id");
             pointsQuery.bindValue(":id", photometryId);
             pointsQuery.exec();
         }
     }
-    
-    // Delete photometry
+
     QSqlQuery deletePhotometry;
     deletePhotometry.prepare("DELETE FROM photometry WHERE star_id = :star_id");
     deletePhotometry.bindValue(":star_id", starId);
     deletePhotometry.exec();
-    
-    // Delete spectra and spectral fits
+
     QSqlQuery spectraQuery;
     spectraQuery.prepare("SELECT id FROM spectra WHERE star_id = :star_id");
     spectraQuery.bindValue(":star_id", starId);
     if (spectraQuery.exec()) {
         while (spectraQuery.next()) {
-            QString spectrumId = spectraQuery.value(0).toString();
             QSqlQuery fitsQuery;
             fitsQuery.prepare("DELETE FROM spectral_fits WHERE spectrum_id = :id");
-            fitsQuery.bindValue(":id", spectrumId);
+            fitsQuery.bindValue(":id", spectraQuery.value(0).toString());
             fitsQuery.exec();
         }
     }
-    
+
     QSqlQuery deleteSpectra;
     deleteSpectra.prepare("DELETE FROM spectra WHERE star_id = :star_id");
     deleteSpectra.bindValue(":star_id", starId);
     deleteSpectra.exec();
-    
-    // Finally delete the star
+
     QSqlQuery query;
     query.prepare("DELETE FROM stars WHERE id = :id AND project_id = :project_id");
     query.bindValue(":id", starId);
     query.bindValue(":project_id", projectId);
-    
     return query.exec();
 }
+
 
 bool DatabaseManager::importCSV(const QString& filepath, std::shared_ptr<Project> project)
 {
@@ -766,16 +773,14 @@ bool DatabaseManager::importCSV(const QString& filepath, std::shared_ptr<Project
     return true;
 }
 
-bool DatabaseManager::savePhotometry(const QString& starId, std::shared_ptr<Photometry> photometry)
+bool DatabaseManager::savePhotometry(const QString& starId,
+                                     std::shared_ptr<Photometry> photometry)
 {
     if (photometry->getId().isEmpty()) {
         photometry->setId(generateUUID());
     }
 
-    // Create directory structure for data files
     QString dataDir = getDataDirectory();
-    QString photometryDir = dataDir + "/photometry/" + photometry->getId();
-    QDir().mkpath(photometryDir);
 
     // Save main photometry record
     QSqlQuery query;
@@ -783,15 +788,15 @@ bool DatabaseManager::savePhotometry(const QString& starId, std::shared_ptr<Phot
         INSERT OR REPLACE INTO photometry (id, star_id, photometric_points_file)
         VALUES (:id, :star_id, :points_file)
     )");
-    
+
     query.bindValue(":id", photometry->getId());
     query.bindValue(":star_id", starId);
-    
-    // Save photometric points to file if they exist
+
+    // Save photometric points to compressed file
     QString pointsFile;
     if (!photometry->getPhotometricPoints().empty()) {
-        pointsFile = photometryDir + "/photometric_points.dat";
-        // This will be implemented in Photometry class
+        pointsFile = DataStore::photometricPointsPath(dataDir, starId,
+                                                       photometry->getId());
         photometry->savePhotometricPointsToFile(pointsFile);
     }
     query.bindValue(":points_file", pointsFile);
@@ -813,7 +818,7 @@ bool DatabaseManager::savePhotometry(const QString& starId, std::shared_ptr<Phot
                 :flux, :flux_error, :wavelength
             )
         )");
-        
+
         pointQuery.bindValue(":id", generateUUID());
         pointQuery.bindValue(":photometry_id", photometry->getId());
         pointQuery.bindValue(":instrument", point.instrument);
@@ -823,7 +828,7 @@ bool DatabaseManager::savePhotometry(const QString& starId, std::shared_ptr<Phot
         pointQuery.bindValue(":flux", point.flux);
         pointQuery.bindValue(":flux_error", point.fluxError);
         pointQuery.bindValue(":wavelength", point.wavelength);
-        
+
         if (!pointQuery.exec()) {
             qDebug() << "Failed to save photometric point:" << pointQuery.lastError();
         }
@@ -832,48 +837,57 @@ bool DatabaseManager::savePhotometry(const QString& starId, std::shared_ptr<Phot
     // Save lightcurves
     for (const auto& source : photometry->getLightcurveSources()) {
         QString lightcurveId = generateUUID();
-        QString lcFile = photometryDir + "/lightcurve_" + source + ".dat";
-        
-        // Save lightcurve data to file
+        QString lcFile = DataStore::lightcurvePath(dataDir, starId,
+                                                    photometry->getId(), source);
         photometry->saveLightcurveToFile(source, lcFile);
-        
+
         QSqlQuery lcQuery;
         lcQuery.prepare(R"(
             INSERT OR REPLACE INTO lightcurves (id, photometry_id, source, data_file)
             VALUES (:id, :photometry_id, :source, :data_file)
         )");
-        
+
         lcQuery.bindValue(":id", lightcurveId);
         lcQuery.bindValue(":photometry_id", photometry->getId());
         lcQuery.bindValue(":source", source);
         lcQuery.bindValue(":data_file", lcFile);
-        
+
         if (!lcQuery.exec()) {
             qDebug() << "Failed to save lightcurve:" << lcQuery.lastError();
         }
 
-        // Save lightcurve models
         for (const auto& model : photometry->getLightcurveModels(source)) {
-            saveLightcurveModel(lightcurveId, model, photometryDir);
+            saveLightcurveModel(starId, photometry->getId(),
+                                lightcurveId, model);
         }
     }
 
     // Save SED models
     for (const auto& model : photometry->getSEDModels()) {
-        saveSEDModel(photometry->getId(), model, photometryDir);
+        saveSEDModel(starId, photometry->getId(), model);
     }
 
     return true;
 }
 
-bool DatabaseManager::saveSEDModel(const QString& photometryId, std::shared_ptr<SEDModel> model, const QString& photometryDir)
+
+bool DatabaseManager::saveSEDModel(const QString& starId,
+                                   const QString& photometryId,
+                                   std::shared_ptr<SEDModel> model)
 {
     if (model->getId().isEmpty()) {
         model->setId(generateUUID());
     }
 
-    QString modelFile = photometryDir + "/sed_model_" + model->getId() + ".dat";
+    QString dataDir   = getDataDirectory();
+    QString modelFile = DataStore::sedModelPath(dataDir, starId,
+                                                photometryId, model->getId());
     model->saveDataToFile(modelFile);
+
+    QString oldFile = model->getModelDataFile();
+    if (!oldFile.isEmpty() && oldFile != modelFile && QFile::exists(oldFile)) {
+        QFile::remove(oldFile);
+    }
 
     QSqlQuery query;
     query.prepare(R"(
@@ -904,14 +918,25 @@ bool DatabaseManager::saveSEDModel(const QString& photometryId, std::shared_ptr<
     return query.exec();
 }
 
-bool DatabaseManager::saveLightcurveModel(const QString& lightcurveId, std::shared_ptr<LightcurveModel> model, const QString& photometryDir)
+
+bool DatabaseManager::saveLightcurveModel(const QString& starId,
+                                          const QString& photometryId,
+                                          const QString& lightcurveId,
+                                          std::shared_ptr<LightcurveModel> model)
 {
     if (model->getId().isEmpty()) {
         model->setId(generateUUID());
     }
 
-    QString modelFile = photometryDir + "/lc_model_" + model->getId() + ".dat";
+    QString dataDir   = getDataDirectory();
+    QString modelFile = DataStore::lcModelPath(dataDir, starId,
+                                               photometryId, model->getId());
     model->saveDataToFile(modelFile);
+
+    QString oldFile = model->getModelDataFile();
+    if (!oldFile.isEmpty() && oldFile != modelFile && QFile::exists(oldFile)) {
+        QFile::remove(oldFile);
+    }
 
     QSqlQuery query;
     query.prepare(R"(
@@ -1009,22 +1034,27 @@ bool DatabaseManager::saveSpectrum(const QString& starId, std::shared_ptr<Spectr
         spectrum->setId(generateUUID());
     }
 
-    // Create directory structure for data files
     QString dataDir = getDataDirectory();
-    QString spectrumDir = dataDir + "/spectra/" + spectrum->getId();
-    QDir().mkpath(spectrumDir);
+    QString dataFile = DataStore::spectrumPath(dataDir, starId, spectrum->getId());
 
-    // Save spectral data to file
-    QString dataFile = spectrumDir + "/spectral_data.dat";
+    // Save compressed spectral data
     spectrum->saveDataToFile(dataFile);
+
+    // Clean up old file if path changed (legacy migration)
+    QString oldFile = spectrum->getDataFile();
+    if (!oldFile.isEmpty() && oldFile != dataFile && QFile::exists(oldFile)) {
+        QFile::remove(oldFile);
+    }
     spectrum->setDataFile(dataFile);
 
     QSqlQuery query;
     query.prepare(R"(
         INSERT OR REPLACE INTO spectra (
-            id, star_id, file, instrument, mjd, bjd, exposure_time, data_file, barycentric_corrected
+            id, star_id, file, instrument, mjd, bjd, exposure_time,
+            data_file, barycentric_corrected
         ) VALUES (
-            :id, :star_id, :file, :instrument, :mjd, :bjd, :exposure_time, :data_file, :barycentric_corrected
+            :id, :star_id, :file, :instrument, :mjd, :bjd, :exposure_time,
+            :data_file, :barycentric_corrected
         )
     )");
 
@@ -1036,29 +1066,38 @@ bool DatabaseManager::saveSpectrum(const QString& starId, std::shared_ptr<Spectr
     query.bindValue(":bjd", spectrum->getBJD());
     query.bindValue(":exposure_time", spectrum->getExposureTime());
     query.bindValue(":data_file", dataFile);
-    query.bindValue(":barycentric_corrected", spectrum->isBarycentricallyCorrected() ? 1 : 0);
+    query.bindValue(":barycentric_corrected",
+                    spectrum->isBarycentricallyCorrected() ? 1 : 0);
 
     if (!query.exec()) {
         qDebug() << "Failed to save spectrum:" << query.lastError();
         return false;
     }
 
-    // Save spectral fits
     for (const auto& fit : spectrum->getSpectralFits()) {
-        saveSpectralFit(spectrum->getId(), fit, spectrumDir);
+        saveSpectralFit(starId, spectrum->getId(), fit);
     }
-
     return true;
 }
 
-bool DatabaseManager::saveSpectralFit(const QString& spectrumId, std::shared_ptr<SpectralFit> fit, const QString& spectrumDir)
+bool DatabaseManager::saveSpectralFit(const QString& starId,
+                                      const QString& spectrumId,
+                                      std::shared_ptr<SpectralFit> fit)
 {
     if (fit->getId().isEmpty()) {
         fit->setId(generateUUID());
     }
 
-    QString modelFile = spectrumDir + "/fit_" + fit->getId() + ".dat";
+    QString dataDir  = getDataDirectory();
+    QString modelFile = DataStore::spectralFitPath(dataDir, starId,
+                                                   spectrumId, fit->getId());
     fit->saveDataToFile(modelFile);
+
+    // Clean up old file if path changed
+    QString oldFile = fit->getModelDataFile();
+    if (!oldFile.isEmpty() && oldFile != modelFile && QFile::exists(oldFile)) {
+        QFile::remove(oldFile);
+    }
 
     QSqlQuery query;
     query.prepare(R"(

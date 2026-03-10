@@ -1,4 +1,5 @@
 #include "Photometry.h"
+#include "utils/DataStore.h"
 #include <QFile>
 #include <QDataStream>
 #include <QDebug>
@@ -129,196 +130,127 @@ std::shared_ptr<LightcurveModel> Photometry::getBestLightcurveModel(const QStrin
 
 bool SEDModel::saveDataToFile(const QString& filepath)
 {
-    QFile file(filepath);
-    if (!file.open(QIODevice::WriteOnly)) {
-        qDebug() << "Failed to open SED model file for writing:" << filepath;
-        return false;
+    QByteArray buffer;
+    {
+        QDataStream s(&buffer, QIODevice::WriteOnly);
+        s.setVersion(QDataStream::Qt_6_0);
+        s << static_cast<quint32>(modelWavelengths.size());
+        s << static_cast<quint32>(modelFluxes.size());
+        for (const auto& v : modelWavelengths) s << v;
+        for (const auto& v : modelFluxes)      s << v;
     }
-
-    QDataStream stream(&file);
-    stream.setVersion(QDataStream::Qt_5_0);
-    
-    // Write sizes
-    stream << static_cast<quint32>(modelWavelengths.size());
-    stream << static_cast<quint32>(modelFluxes.size());
-    
-    // Write model wavelengths
-    for (const auto& wavelength : modelWavelengths) {
-        stream << wavelength;
-    }
-    
-    // Write model fluxes
-    for (const auto& flux : modelFluxes) {
-        stream << flux;
-    }
-    
-    file.close();
-    return true;
+    return DataStore::writeCompressed(filepath, DataStore::SEDModelData, buffer);
 }
 
 bool SEDModel::loadDataFromFile(const QString& filepath)
 {
-    QFile file(filepath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        qDebug() << "Failed to open SED model file for reading:" << filepath;
-        return false;
-    }
+    auto parse = [this](QDataStream& s) -> bool {
+        quint32 wlN, fN;
+        s >> wlN >> fN;
+        modelWavelengths.clear(); modelWavelengths.reserve(wlN);
+        for (quint32 i = 0; i < wlN; ++i) { double v; s >> v; modelWavelengths.push_back(v); }
+        modelFluxes.clear(); modelFluxes.reserve(fN);
+        for (quint32 i = 0; i < fN; ++i) { double v; s >> v; modelFluxes.push_back(v); }
+        return s.status() == QDataStream::Ok;
+    };
 
-    QDataStream stream(&file);
-    stream.setVersion(QDataStream::Qt_5_0);
-    
-    quint32 wavelengthSize, fluxSize;
-    stream >> wavelengthSize >> fluxSize;
-    
-    // Read model wavelengths
-    modelWavelengths.clear();
-    modelWavelengths.reserve(wavelengthSize);
-    for (quint32 i = 0; i < wavelengthSize; ++i) {
-        double wavelength;
-        stream >> wavelength;
-        modelWavelengths.push_back(wavelength);
+    QByteArray buf;
+    if (DataStore::readCompressed(filepath, DataStore::SEDModelData, buf)) {
+        QDataStream s(&buf, QIODevice::ReadOnly);
+        s.setVersion(QDataStream::Qt_6_0);
+        return parse(s);
     }
-    
-    // Read model fluxes
-    modelFluxes.clear();
-    modelFluxes.reserve(fluxSize);
-    for (quint32 i = 0; i < fluxSize; ++i) {
-        double flux;
-        stream >> flux;
-        modelFluxes.push_back(flux);
-    }
-    
-    file.close();
-    return true;
+    QFile file(filepath);
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    QDataStream s(&file);
+    s.setVersion(QDataStream::Qt_5_0);
+    return parse(s);
 }
 
 bool LightcurveModel::saveDataToFile(const QString& filepath)
 {
-    QFile file(filepath);
-    if (!file.open(QIODevice::WriteOnly)) {
-        qDebug() << "Failed to open lightcurve model file for writing:" << filepath;
-        return false;
+    QByteArray buffer;
+    {
+        QDataStream s(&buffer, QIODevice::WriteOnly);
+        s.setVersion(QDataStream::Qt_6_0);
+        s << static_cast<quint32>(modelTimes.size());
+        s << static_cast<quint32>(modelFluxes.size());
+        for (const auto& v : modelTimes)  s << v;
+        for (const auto& v : modelFluxes) s << v;
     }
-
-    QDataStream stream(&file);
-    stream.setVersion(QDataStream::Qt_5_0);
-    
-    // Write sizes
-    stream << static_cast<quint32>(modelTimes.size());
-    stream << static_cast<quint32>(modelFluxes.size());
-    
-    // Write model times
-    for (const auto& time : modelTimes) {
-        stream << time;
-    }
-    
-    // Write model fluxes
-    for (const auto& flux : modelFluxes) {
-        stream << flux;
-    }
-    
-    file.close();
-    return true;
+    return DataStore::writeCompressed(filepath, DataStore::LightcurveModelData, buffer);
 }
+
 
 bool LightcurveModel::loadDataFromFile(const QString& filepath)
 {
-    QFile file(filepath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        qDebug() << "Failed to open lightcurve model file for reading:" << filepath;
-        return false;
-    }
+    auto parse = [this](QDataStream& s) -> bool {
+        quint32 tN, fN;
+        s >> tN >> fN;
+        modelTimes.clear(); modelTimes.reserve(tN);
+        for (quint32 i = 0; i < tN; ++i) { double v; s >> v; modelTimes.push_back(v); }
+        modelFluxes.clear(); modelFluxes.reserve(fN);
+        for (quint32 i = 0; i < fN; ++i) { double v; s >> v; modelFluxes.push_back(v); }
+        return s.status() == QDataStream::Ok;
+    };
 
-    QDataStream stream(&file);
-    stream.setVersion(QDataStream::Qt_5_0);
-    
-    quint32 timeSize, fluxSize;
-    stream >> timeSize >> fluxSize;
-    
-    // Read model times
-    modelTimes.clear();
-    modelTimes.reserve(timeSize);
-    for (quint32 i = 0; i < timeSize; ++i) {
-        double time;
-        stream >> time;
-        modelTimes.push_back(time);
+    QByteArray buf;
+    if (DataStore::readCompressed(filepath, DataStore::LightcurveModelData, buf)) {
+        QDataStream s(&buf, QIODevice::ReadOnly);
+        s.setVersion(QDataStream::Qt_6_0);
+        return parse(s);
     }
-    
-    // Read model fluxes
-    modelFluxes.clear();
-    modelFluxes.reserve(fluxSize);
-    for (quint32 i = 0; i < fluxSize; ++i) {
-        double flux;
-        stream >> flux;
-        modelFluxes.push_back(flux);
-    }
-    
-    file.close();
-    return true;
+    QFile file(filepath);
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    QDataStream s(&file);
+    s.setVersion(QDataStream::Qt_5_0);
+    return parse(s);
 }
 
 bool Photometry::savePhotometricPointsToFile(const QString& filepath)
 {
-    QFile file(filepath);
-    if (!file.open(QIODevice::WriteOnly)) {
-        qDebug() << "Failed to open photometric points file for writing:" << filepath;
-        return false;
+    QByteArray buffer;
+    {
+        QDataStream s(&buffer, QIODevice::WriteOnly);
+        s.setVersion(QDataStream::Qt_6_0);
+        s << static_cast<quint32>(_photometricPoints.size());
+        for (const auto& p : _photometricPoints) {
+            s << p.instrument << p.filter
+              << p.magnitude << p.magnitudeError
+              << p.flux << p.fluxError << p.wavelength;
+        }
     }
-
-    QDataStream stream(&file);
-    stream.setVersion(QDataStream::Qt_5_0);
-    
-    // Write number of photometric points
-    stream << static_cast<quint32>(_photometricPoints.size());
-    
-    // Write each photometric point
-    for (const auto& point : _photometricPoints) {
-        stream << point.instrument;
-        stream << point.filter;
-        stream << point.magnitude;
-        stream << point.magnitudeError;
-        stream << point.flux;
-        stream << point.fluxError;
-        stream << point.wavelength;
-    }
-    
-    file.close();
-    return true;
+    return DataStore::writeCompressed(filepath, DataStore::PhotometricPointsData, buffer);
 }
 
 bool Photometry::loadPhotometricPointsFromFile(const QString& filepath)
 {
-    QFile file(filepath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        qDebug() << "Failed to open photometric points file for reading:" << filepath;
-        return false;
-    }
+    auto parse = [this](QDataStream& s) -> bool {
+        quint32 n;
+        s >> n;
+        _photometricPoints.clear();
+        _photometricPoints.reserve(n);
+        for (quint32 i = 0; i < n; ++i) {
+            PhotometricPoint p;
+            s >> p.instrument >> p.filter
+              >> p.magnitude >> p.magnitudeError
+              >> p.flux >> p.fluxError >> p.wavelength;
+            _photometricPoints.push_back(p);
+        }
+        return s.status() == QDataStream::Ok;
+    };
 
-    QDataStream stream(&file);
-    stream.setVersion(QDataStream::Qt_5_0);
-    
-    quint32 numPoints;
-    stream >> numPoints;
-    
-    // Clear existing points
-    _photometricPoints.clear();
-    _photometricPoints.reserve(numPoints);
-    
-    // Read each photometric point
-    for (quint32 i = 0; i < numPoints; ++i) {
-        PhotometricPoint point;
-        stream >> point.instrument;
-        stream >> point.filter;
-        stream >> point.magnitude;
-        stream >> point.magnitudeError;
-        stream >> point.flux;
-        stream >> point.fluxError;
-        stream >> point.wavelength;
-        _photometricPoints.push_back(point);
+    QByteArray buf;
+    if (DataStore::readCompressed(filepath, DataStore::PhotometricPointsData, buf)) {
+        QDataStream s(&buf, QIODevice::ReadOnly);
+        s.setVersion(QDataStream::Qt_6_0);
+        return parse(s);
     }
-    
-    file.close();
-    return true;
+    QFile file(filepath);
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    QDataStream s(&file);
+    s.setVersion(QDataStream::Qt_5_0);
+    return parse(s);
 }
 
 bool Photometry::saveLightcurveToFile(const QString& source, const QString& filepath)
@@ -329,65 +261,46 @@ bool Photometry::saveLightcurveToFile(const QString& source, const QString& file
         return false;
     }
 
-    QFile file(filepath);
-    if (!file.open(QIODevice::WriteOnly)) {
-        qDebug() << "Failed to open lightcurve file for writing:" << filepath;
-        return false;
+    QByteArray buffer;
+    {
+        const auto& lc = it->second;
+        QDataStream s(&buffer, QIODevice::WriteOnly);
+        s.setVersion(QDataStream::Qt_6_0);
+        s << static_cast<quint32>(lc.size());
+        for (const auto& p : lc) {
+            s << p.bjd << p.flux << p.fluxError << p.filter;
+        }
     }
-
-    QDataStream stream(&file);
-    stream.setVersion(QDataStream::Qt_5_0);
-    
-    const auto& lightcurve = it->second;
-    
-    // Write number of lightcurve points
-    stream << static_cast<quint32>(lightcurve.size());
-    
-    // Write each lightcurve point
-    for (const auto& point : lightcurve) {
-        stream << point.bjd;
-        stream << point.flux;
-        stream << point.fluxError;
-        stream << point.filter;
-    }
-    
-    file.close();
-    return true;
+    return DataStore::writeCompressed(filepath, DataStore::LightcurveData, buffer);
 }
 
 bool Photometry::loadLightcurveFromFile(const QString& source, const QString& filepath)
 {
-    QFile file(filepath);
-    if (!file.open(QIODevice::ReadOnly)) {
-        qDebug() << "Failed to open lightcurve file for reading:" << filepath;
-        return false;
-    }
+    auto parse = [this, &source](QDataStream& s) -> bool {
+        quint32 n;
+        s >> n;
+        std::vector<LightcurvePoint> lc;
+        lc.reserve(n);
+        for (quint32 i = 0; i < n; ++i) {
+            LightcurvePoint p;
+            s >> p.bjd >> p.flux >> p.fluxError >> p.filter;
+            lc.push_back(p);
+        }
+        _lightcurves[source] = std::move(lc);
+        return s.status() == QDataStream::Ok;
+    };
 
-    QDataStream stream(&file);
-    stream.setVersion(QDataStream::Qt_5_0);
-    
-    quint32 numPoints;
-    stream >> numPoints;
-    
-    // Clear existing lightcurve for this source
-    std::vector<LightcurvePoint> lightcurve;
-    lightcurve.reserve(numPoints);
-    
-    // Read each lightcurve point
-    for (quint32 i = 0; i < numPoints; ++i) {
-        LightcurvePoint point;
-        stream >> point.bjd;
-        stream >> point.flux;
-        stream >> point.fluxError;
-        stream >> point.filter;
-        lightcurve.push_back(point);
+    QByteArray buf;
+    if (DataStore::readCompressed(filepath, DataStore::LightcurveData, buf)) {
+        QDataStream s(&buf, QIODevice::ReadOnly);
+        s.setVersion(QDataStream::Qt_6_0);
+        return parse(s);
     }
-    
-    // Store the lightcurve
-    _lightcurves[source] = std::move(lightcurve);
-    
-    file.close();
-    return true;
+    QFile file(filepath);
+    if (!file.open(QIODevice::ReadOnly)) return false;
+    QDataStream s(&file);
+    s.setVersion(QDataStream::Qt_5_0);
+    return parse(s);
 }
 
 QString Photometry::getLightcurveFile(const QString& source) const

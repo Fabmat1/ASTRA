@@ -19,13 +19,9 @@ ThemeManager::~ThemeManager()
 
 void ThemeManager::registerDefaultThemes()
 {
-    // Register all available themes here
-    // Format: id, display name, resource path, isDark
-    
-    // Catppuccin themes
-    registerTheme("rose_pine_dawn", "Rosé Pine Dawn", ":/themes/rose_pine_dawn.qss", true);
-    registerTheme("one_light", "One Light", ":/themes/one_light.qss", true);
-    registerTheme("catppuccin_mocha", "Catppuccin Mocha", ":/themes/catppuccin_dark.qss", false);
+    registerTheme("rose_pine_dawn", "Rosé Pine Dawn", ":/themes/rose_pine_dawn.qss", false);
+    registerTheme("one_light", "One Light", ":/themes/one_light.qss", false);
+    registerTheme("catppuccin_mocha", "Catppuccin Mocha", ":/themes/catppuccin_dark.qss", true);
 }
 
 void ThemeManager::registerTheme(const ThemeInfo& theme)

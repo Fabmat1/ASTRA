@@ -29,7 +29,6 @@
 #include <QGroupBox>
 #include <QFileDialog>
 #include <QMessageBox>
-#include <QProgressDialog>
 #include <QDir>
 #include <QFileInfo>
 #include <QTextStream>
@@ -37,12 +36,78 @@
 #include <QRegularExpression>
 #include <QHeaderView>  
 #include <QTimer>
+#include <QtConcurrent>
+#include <QFutureWatcher>
 
 #include <cmath>
+#include <algorithm>
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
 #endif
+
+// ============================================================================
+// SpatialStarIndex Implementation
+// ============================================================================
+
+SpatialStarIndex::CellKey SpatialStarIndex::cellFor(double ra, double dec) const
+{
+    return { static_cast<int>(std::floor(ra / _cellSizeDeg)),
+             static_cast<int>(std::floor(dec / _cellSizeDeg)) };
+}
+
+void SpatialStarIndex::build(const std::vector<std::shared_ptr<Star>>& stars, double cellSizeDeg)
+{
+    _grid.clear();
+    _cellSizeDeg = cellSizeDeg;
+    _built = false;
+
+    for (const auto& star : stars) {
+        if (star->getRa() == 0.0 && star->getDec() == 0.0) continue;
+        _grid[cellFor(star->getRa(), star->getDec())].push_back(star);
+    }
+    _built = true;
+}
+
+std::shared_ptr<Star> SpatialStarIndex::findNearest(double ra, double dec,
+                                                     double radiusArcsec,
+                                                     double* outDistArcsec) const
+{
+    double radiusDeg = radiusArcsec / 3600.0;
+    double cosDecFactor = std::cos(dec * M_PI / 180.0);
+
+    // How many cells the radius spans
+    int cellSpan = static_cast<int>(std::ceil(radiusDeg / _cellSizeDeg)) + 1;
+
+    CellKey center = cellFor(ra, dec);
+
+    std::shared_ptr<Star> bestMatch;
+    double bestDistDeg = radiusDeg;
+
+    for (int dr = -cellSpan; dr <= cellSpan; ++dr) {
+        for (int dd = -cellSpan; dd <= cellSpan; ++dd) {
+            CellKey key{ center.raCell + dr, center.decCell + dd };
+            auto it = _grid.find(key);
+            if (it == _grid.end()) continue;
+
+            for (const auto& star : it->second) {
+                double dRa  = (ra - star->getRa()) * cosDecFactor;
+                double dDec = dec - star->getDec();
+                double dist = std::sqrt(dRa * dRa + dDec * dDec);
+
+                if (dist < bestDistDeg) {
+                    bestDistDeg = dist;
+                    bestMatch = star;
+                }
+            }
+        }
+    }
+
+    if (bestMatch && outDistArcsec) {
+        *outDistArcsec = bestDistDeg * 3600.0;
+    }
+    return bestMatch;
+}
 
 // ============================================================================
 // SpectraImportPage Implementation
@@ -51,6 +116,7 @@
 SpectraImportPage::SpectraImportPage(QWidget* parent)
     : QWizardPage(parent)
     , _fullResultsReady(false)
+    , _asyncBusy(false)
     , _indexBuilt(false)
     , _updatingMatchMethods(false)
 {
@@ -396,9 +462,13 @@ void SpectraImportPage::initializePage()
     
     // Reset state
     _fullResultsReady = false;
+    _asyncBusy = false;
     _indexBuilt = false;
     _matchResults.clear();
     _fullMatchResults.clear();
+    
+    // Pre-build indices immediately — this is fast even for 10k stars
+    buildStarLookupIndex();
     
     _statusLabel->setText(QString("Ready to import spectra for %1 stars. "
                                   "Select FITS files to scan or load a mapping file.")
@@ -414,14 +484,11 @@ void SpectraImportPage::buildStarLookupIndex()
     _sourceIdIndex.clear();
     _aliasIndex.clear();
     
-    // Pre-compile regex for source ID extraction
     QRegularExpression re("(\\d{10,})");
     
     for (const auto& star : _importedStars) {
-        // Index by source ID
         QString sourceId = star->getSourceId();
         if (!sourceId.isEmpty()) {
-            // Store both raw and extracted numeric ID
             _sourceIdIndex[sourceId] = star;
             
             QRegularExpressionMatch match = re.match(sourceId);
@@ -430,15 +497,17 @@ void SpectraImportPage::buildStarLookupIndex()
             }
         }
         
-        // Index by alias (case-insensitive)
         QString alias = star->getAlias();
         if (!alias.isEmpty()) {
             _aliasIndex[alias.toLower()] = star;
         }
     }
     
+    // Build spatial grid index for position matching
+    _spatialIndex.build(_importedStars);
+    
     _indexBuilt = true;
-    LOG_DEBUG("SpectraImport", QString("Built indices: %1 source IDs, %2 aliases")
+    LOG_DEBUG("SpectraImport", QString("Built indices: %1 source IDs, %2 aliases, spatial grid ready")
               .arg(_sourceIdIndex.size()).arg(_aliasIndex.size()));
 }
 
@@ -555,7 +624,8 @@ std::vector<MatchMethod> SpectraImportPage::getEnabledMatchMethods() const
 
 void SpectraImportPage::autoGeneratePreview()
 {
-    // Only auto-generate if we have data loaded
+    if (_asyncBusy) return;
+
     if (_mappingRadio->isChecked() && !_mappingRows.empty()) {
         int previewRows = _previewRowsSpin->value();
         
@@ -572,41 +642,55 @@ void SpectraImportPage::autoGeneratePreview()
     }
 }
 
-std::shared_ptr<Star> SpectraImportPage::findMatchingStar(const QString& sourceId, const QString& alias,
-                                                          double ra, double dec, bool hasPosition,
-                                                          QString& outMatchMethod, double& outMatchDistance)
+// ── Thread-safe matching (reads only from immutable indices) ────
+
+std::shared_ptr<Star> SpectraImportPage::findMatchingStarThreadSafe(
+    const QString& sourceId, const QString& alias,
+    double ra, double dec, bool hasPosition,
+    const std::vector<MatchMethod>& methods, double matchRadiusArcsec,
+    QString& outMatchMethod, double& outMatchDistance) const
 {
     outMatchMethod.clear();
     outMatchDistance = -1.0;
-    
-    std::vector<MatchMethod> methods = getEnabledMatchMethods();
-    
+
+    // Pre-compile once (static thread-local to avoid repeated construction)
+    static thread_local QRegularExpression re("(\\d{10,})");
+
     for (MatchMethod method : methods) {
         switch (method) {
             case MatchMethod::SourceId:
                 if (!sourceId.isEmpty()) {
-                    auto star = findStarBySourceId(sourceId);
-                    if (star) {
+                    QString cleanId = sourceId.trimmed();
+                    auto it = _sourceIdIndex.find(cleanId);
+                    if (it != _sourceIdIndex.end()) {
                         outMatchMethod = "source_id";
-                        return star;
+                        return it.value();
+                    }
+                    QRegularExpressionMatch m = re.match(cleanId);
+                    if (m.hasMatch()) {
+                        it = _sourceIdIndex.find(m.captured(1));
+                        if (it != _sourceIdIndex.end()) {
+                            outMatchMethod = "source_id";
+                            return it.value();
+                        }
                     }
                 }
                 break;
-                
+
             case MatchMethod::Alias:
                 if (!alias.isEmpty()) {
-                    auto star = findStarByAlias(alias);
-                    if (star) {
+                    auto it = _aliasIndex.find(alias.trimmed().toLower());
+                    if (it != _aliasIndex.end()) {
                         outMatchMethod = "alias";
-                        return star;
+                        return it.value();
                     }
                 }
                 break;
-                
+
             case MatchMethod::Position:
-                if (hasPosition) {
+                if (hasPosition && _spatialIndex.isBuilt()) {
                     double distance = -1.0;
-                    auto star = findStarByPosition(ra, dec, _matchRadiusSpin->value(), &distance);
+                    auto star = _spatialIndex.findNearest(ra, dec, matchRadiusArcsec, &distance);
                     if (star) {
                         outMatchMethod = "position";
                         outMatchDistance = distance;
@@ -616,8 +700,161 @@ std::shared_ptr<Star> SpectraImportPage::findMatchingStar(const QString& sourceI
                 break;
         }
     }
+
+    return nullptr;
+}
+
+std::shared_ptr<Star> SpectraImportPage::findMatchingStar(const QString& sourceId, const QString& alias,
+                                                          double ra, double dec, bool hasPosition,
+                                                          QString& outMatchMethod, double& outMatchDistance)
+{
+    buildStarLookupIndex();
+    return findMatchingStarThreadSafe(sourceId, alias, ra, dec, hasPosition,
+                                       getEnabledMatchMethods(),
+                                       _matchRadiusSpin->value(),
+                                       outMatchMethod, outMatchDistance);
+}
+
+std::shared_ptr<Star> SpectraImportPage::findStarByPosition(double ra, double dec, double radiusArcsec, double* outDistance)
+{
+    buildStarLookupIndex();
+    return _spatialIndex.findNearest(ra, dec, radiusArcsec, outDistance);
+}
+
+std::shared_ptr<Star> SpectraImportPage::findStarBySourceId(const QString& sourceId)
+{
+    if (!_indexBuilt) buildStarLookupIndex();
+    
+    QString cleanId = sourceId.trimmed();
+    auto it = _sourceIdIndex.find(cleanId);
+    if (it != _sourceIdIndex.end()) return it.value();
+    
+    QRegularExpression re("(\\d{10,})");
+    QRegularExpressionMatch match = re.match(cleanId);
+    if (match.hasMatch()) {
+        it = _sourceIdIndex.find(match.captured(1));
+        if (it != _sourceIdIndex.end()) return it.value();
+    }
     
     return nullptr;
+}
+
+std::shared_ptr<Star> SpectraImportPage::findStarByAlias(const QString& alias)
+{
+    if (!_indexBuilt) buildStarLookupIndex();
+    
+    auto it = _aliasIndex.find(alias.trimmed().toLower());
+    return (it != _aliasIndex.end()) ? it.value() : nullptr;
+}
+
+// ── Async FITS scanning ────────────────────────────────────────
+
+void SpectraImportPage::onScanFiles()
+{
+    if (_asyncBusy) return;
+    
+    LOG_INFO("SpectraImport", "Starting FITS file scan");
+    
+    QStringList files;
+    QString basePath = _fitsFolderEdit->text();
+    
+    for (int i = 0; i < _fitsFilesList->count(); ++i) {
+        QListWidgetItem* item = _fitsFilesList->item(i);
+        QString fullPath = item->data(Qt::UserRole).toString();
+        if (fullPath.isEmpty()) {
+            fullPath = basePath + "/" + item->text();
+        }
+        files << fullPath;
+    }
+    
+    scanFitsFilesAsync(files);
+}
+
+void SpectraImportPage::scanFitsFilesAsync(const QStringList& files)
+{
+    _asyncBusy = true;
+    _scanButton->setEnabled(false);
+    _scanProgress->setVisible(true);
+    _scanProgress->setRange(0, 0);   // indeterminate while running
+    _statusLabel->setText(QString("Scanning %1 FITS files in parallel...").arg(files.size()));
+
+    // Capture file list into a shared reader for the thread pool
+    auto future = QtConcurrent::mapped(files,
+        [](const QString& filepath) -> SpectrumMetadata {
+            DefaultFitsSpectrumReader reader;
+            return reader.readMetadata(filepath);
+        });
+
+    auto* watcher = new QFutureWatcher<SpectrumMetadata>(this);
+    
+    connect(watcher, &QFutureWatcher<SpectrumMetadata>::progressValueChanged,
+            this, [this, total = files.size()](int value) {
+                _scanProgress->setRange(0, total);
+                _scanProgress->setValue(value);
+            });
+
+    connect(watcher, &QFutureWatcher<SpectrumMetadata>::finished, this, [this, watcher]() {
+        std::vector<SpectrumMetadata> results;
+        results.reserve(watcher->future().resultCount());
+        for (int i = 0; i < watcher->future().resultCount(); ++i) {
+            results.push_back(watcher->resultAt(i));
+        }
+        watcher->deleteLater();
+        onScanComplete(std::move(results));
+    });
+
+    watcher->setFuture(future);
+}
+
+void SpectraImportPage::onScanComplete(std::vector<SpectrumMetadata> metadata)
+{
+    _scannedMetadata = std::move(metadata);
+    _asyncBusy = false;
+    _scanButton->setEnabled(true);
+    _scanProgress->setVisible(false);
+
+    LOG_INFO("SpectraImport", QString("Scanned %1 FITS files").arg(_scannedMetadata.size()));
+
+    _matchResults = matchSpectraToStars();
+    updatePreviewTable();
+}
+
+std::vector<SpectrumMatchResult> SpectraImportPage::matchSpectraToStars()
+{
+    buildStarLookupIndex();
+
+    std::vector<SpectrumMatchResult> results;
+    results.reserve(_scannedMetadata.size());
+    
+    std::vector<MatchMethod> methods = getEnabledMatchMethods();
+    double radius = _matchRadiusSpin->value();
+    
+    for (const auto& metadata : _scannedMetadata) {
+        SpectrumMatchResult result;
+        result.spectrumFile = metadata.filepath;
+        result.hasWarnings = !metadata.warnings.isEmpty();
+        result.warnings = metadata.warnings;
+        result.matchDistance = -1.0;
+        
+        QString sourceId = metadata.sourceId.value_or("");
+        QString alias = metadata.objectName.value_or("");
+        double ra = metadata.ra.value_or(0.0);
+        double dec = metadata.dec.value_or(0.0);
+        bool hasPosition = metadata.ra.has_value() && metadata.dec.has_value();
+        
+        result.matchedStar = findMatchingStarThreadSafe(
+            sourceId, alias, ra, dec, hasPosition,
+            methods, radius, result.matchMethod, result.matchDistance);
+        
+        if (!result.matchedStar) {
+            result.warnings << "No matching star found";
+            result.hasWarnings = true;
+        }
+        
+        results.push_back(std::move(result));
+    }
+    
+    return results;
 }
 
 void SpectraImportPage::onBrowseMappingFile()
@@ -637,162 +874,6 @@ void SpectraImportPage::onMatchMethodChanged()
     _matchRadiusSpin->setEnabled(_matchPositionRadio->isChecked());
 }
 
-void SpectraImportPage::onScanFiles()
-{
-    LOG_INFO("SpectraImport", "Starting FITS file scan");
-    
-    QStringList files;
-    QString basePath = _fitsFolderEdit->text();
-    
-    for (int i = 0; i < _fitsFilesList->count(); ++i) {
-        QListWidgetItem* item = _fitsFilesList->item(i);
-        QString fullPath = item->data(Qt::UserRole).toString();
-        if (fullPath.isEmpty()) {
-            fullPath = basePath + "/" + item->text();
-        }
-        files << fullPath;
-    }
-    
-    scanFitsFiles(files);
-    _matchResults = matchSpectraToStars();
-    updatePreviewTable();
-}
-
-void SpectraImportPage::scanFitsFiles(const QStringList& files)
-{
-    _scannedMetadata.clear();
-    _scanProgress->setVisible(true);
-    _scanProgress->setRange(0, files.size());
-    _scanProgress->setValue(0);
-    
-    auto reader = std::make_shared<DefaultFitsSpectrumReader>();
-    
-    for (int i = 0; i < files.size(); ++i) {
-        _scanProgress->setValue(i);
-        QApplication::processEvents();
-        
-        SpectrumMetadata metadata = reader->readMetadata(files[i]);
-        _scannedMetadata.push_back(metadata);
-        
-        if (!metadata.warnings.isEmpty()) {
-            LOG_DEBUG("SpectraImport", QString("%1: %2")
-                      .arg(QFileInfo(files[i]).fileName())
-                      .arg(metadata.warnings.join("; ")));
-        }
-    }
-    
-    _scanProgress->setValue(files.size());
-    _scanProgress->setVisible(false);
-    
-    LOG_INFO("SpectraImport", QString("Scanned %1 FITS files").arg(files.size()));
-}
-
-std::shared_ptr<Star> SpectraImportPage::findStarByPosition(double ra, double dec, double radiusArcsec, double* outDistance)
-{
-    double radiusDeg = radiusArcsec / 3600.0;
-    double cosDecFactor = std::cos(dec * M_PI / 180.0);
-    
-    std::shared_ptr<Star> bestMatch;
-    double bestDistance = radiusDeg;
-    
-    for (const auto& star : _importedStars) {
-        if (star->getRa() == 0.0 && star->getDec() == 0.0) continue;
-        
-        double dRa = (ra - star->getRa()) * cosDecFactor;
-        double dDec = dec - star->getDec();
-        double dist = std::sqrt(dRa * dRa + dDec * dDec);
-        
-        if (dist < bestDistance) {
-            bestDistance = dist;
-            bestMatch = star;
-        }
-    }
-    
-    if (bestMatch && outDistance) {
-        *outDistance = bestDistance * 3600.0;  // Convert to arcsec
-    }
-    
-    return bestMatch;
-}
-
-std::shared_ptr<Star> SpectraImportPage::findStarBySourceId(const QString& sourceId)
-{
-    // Build index on first use
-    if (!_indexBuilt) {
-        buildStarLookupIndex();
-    }
-    
-    QString cleanId = sourceId.trimmed();
-    
-    // Try direct lookup first
-    auto it = _sourceIdIndex.find(cleanId);
-    if (it != _sourceIdIndex.end()) {
-        return it.value();
-    }
-    
-    // Try extracting numeric part
-    QRegularExpression re("(\\d{10,})");
-    QRegularExpressionMatch match = re.match(cleanId);
-    if (match.hasMatch()) {
-        it = _sourceIdIndex.find(match.captured(1));
-        if (it != _sourceIdIndex.end()) {
-            return it.value();
-        }
-    }
-    
-    return nullptr;
-}
-
-std::shared_ptr<Star> SpectraImportPage::findStarByAlias(const QString& alias)
-{
-    // Build index on first use
-    if (!_indexBuilt) {
-        buildStarLookupIndex();
-    }
-    
-    QString cleanAlias = alias.trimmed().toLower();
-    
-    auto it = _aliasIndex.find(cleanAlias);
-    if (it != _aliasIndex.end()) {
-        return it.value();
-    }
-    
-    return nullptr;
-}
-
-std::vector<SpectrumMatchResult> SpectraImportPage::matchSpectraToStars()
-{
-    std::vector<SpectrumMatchResult> results;
-    
-    for (const auto& metadata : _scannedMetadata) {
-        SpectrumMatchResult result;
-        result.spectrumFile = metadata.filepath;
-        result.hasWarnings = !metadata.warnings.isEmpty();
-        result.warnings = metadata.warnings;
-        result.matchDistance = -1.0;
-        
-        // Extract data for matching
-        QString sourceId = metadata.sourceId.value_or("");
-        QString alias = metadata.objectName.value_or("");
-        double ra = metadata.ra.value_or(0.0);
-        double dec = metadata.dec.value_or(0.0);
-        bool hasPosition = metadata.ra.has_value() && metadata.dec.has_value();
-        
-        // Use unified matching with priority
-        result.matchedStar = findMatchingStar(sourceId, alias, ra, dec, hasPosition,
-                                               result.matchMethod, result.matchDistance);
-        
-        if (!result.matchedStar) {
-            result.warnings << "No matching star found";
-            result.hasWarnings = true;
-        }
-        
-        results.push_back(result);
-    }
-    
-    return results;
-}
-
 void SpectraImportPage::onMappingFileLoaded()
 {
     QString filepath = _mappingFileEdit->text();
@@ -806,7 +887,6 @@ void SpectraImportPage::onMappingFileLoaded()
         _statusLabel->setText(QString("Loaded %1 rows. Generating preview...")
                               .arg(_mappingRows.size()));
         
-        // Auto-generate preview with a small delay to let UI update
         QTimer::singleShot(100, this, &SpectraImportPage::autoGeneratePreview);
     }
 }
@@ -830,7 +910,6 @@ bool SpectraImportPage::loadMappingFile(const QString& filepath)
     QChar delimiter = ',';
     int delimIndex = _delimiterCombo->currentIndex();
     if (delimIndex == 0) {
-        // Auto-detect: read first line to check
         QString firstLineContent = in.readLine();
         in.seek(0);
         
@@ -886,7 +965,6 @@ void SpectraImportPage::detectMappingColumns()
     QStringList options = {"(none)"};
     options.append(_mappingColumns);
     
-    // Block signals to prevent triggering processing during setup
     QList<QComboBox*> combos = {_filePathColumnCombo, _starIdColumnCombo, _sourceIdColumnCombo,
                                  _raColumnCombo, _decColumnCombo, _mjdColumnCombo, _bjdColumnCombo,
                                  _expTimeColumnCombo, _instrumentColumnCombo, _baryCorrColumnCombo};
@@ -920,7 +998,6 @@ void SpectraImportPage::detectMappingColumns()
     _instrumentColumnCombo->setCurrentIndex(findColumn({"inst", "spec", "instrument"}));
     _baryCorrColumnCombo->setCurrentIndex(findColumn({"bary", "bcorr", "barycentric"}));
     
-    // Unblock signals
     for (auto* combo : combos) {
         combo->blockSignals(false);
     }
@@ -928,7 +1005,6 @@ void SpectraImportPage::detectMappingColumns()
 
 void SpectraImportPage::onMappingColumnChanged()
 {
-    // Just mark that we need to regenerate preview, don't auto-process
     _fullResultsReady = false;
 }
 
@@ -953,7 +1029,7 @@ void SpectraImportPage::onPreviewButtonClicked()
     }
 }
 
-SpectrumMatchResult SpectraImportPage::processOneRow(const QStringList& row, int rowIndex)
+SpectrumMatchResult SpectraImportPage::processOneRow(const QStringList& row, int rowIndex) const
 {
     SpectrumMatchResult result;
     result.matchDistance = -1.0;
@@ -983,7 +1059,6 @@ SpectrumMatchResult SpectraImportPage::processOneRow(const QStringList& row, int
         return result;
     }
     
-    // Extract matching data from row
     QString sourceId;
     QString alias;
     double ra = 0.0, dec = 0.0;
@@ -1002,16 +1077,22 @@ SpectrumMatchResult SpectraImportPage::processOneRow(const QStringList& row, int
         hasPosition = okRa && okDec;
     }
     
-    // Use unified matching with priority
-    result.matchedStar = findMatchingStar(sourceId, alias, ra, dec, hasPosition,
-                                           result.matchMethod, result.matchDistance);
+    // Use thread-safe matching (indices are read-only after build)
+    // Capture current settings — safe because this is only called after
+    // the UI thread has snapshotted them.
+    static thread_local std::vector<MatchMethod> cachedMethods;
+    static thread_local double cachedRadius = 5.0;
+    // These are set by processMapping/processFullMappingAsync before dispatching
+    result.matchedStar = findMatchingStarThreadSafe(
+        sourceId, alias, ra, dec, hasPosition,
+        cachedMethods, cachedRadius,
+        result.matchMethod, result.matchDistance);
     
     if (!result.matchedStar) {
         result.warnings << "No matching star found";
         result.hasWarnings = true;
     }
     
-    // Check for metadata
     bool hasMjd = (mjdCol >= 0 && mjdCol < row.size() && !row[mjdCol].trimmed().isEmpty());
     bool hasBjd = (bjdCol >= 0 && bjdCol < row.size() && !row[bjdCol].trimmed().isEmpty());
     bool hasExp = (expCol >= 0 && expCol < row.size() && !row[expCol].trimmed().isEmpty());
@@ -1038,7 +1119,6 @@ std::vector<SpectrumMatchResult> SpectraImportPage::processMapping(int maxRows)
         return results;
     }
     
-    // Build index before processing
     buildStarLookupIndex();
     
     int rowsToProcess = (maxRows < 0) ? static_cast<int>(_mappingRows.size()) 
@@ -1046,49 +1126,256 @@ std::vector<SpectrumMatchResult> SpectraImportPage::processMapping(int maxRows)
     
     results.reserve(rowsToProcess);
     
+    // Snapshot match settings for the const processOneRow
+    auto methods = getEnabledMatchMethods();
+    double radius = _matchRadiusSpin->value();
+
     for (int i = 0; i < rowsToProcess; ++i) {
-        results.push_back(processOneRow(_mappingRows[i], i));
+        // processOneRow is const and uses the snapshotted settings via
+        // the same thread, so we poke the thread-locals here.
+        // (For the synchronous preview path this is fine.)
+        SpectrumMatchResult result;
+        result.matchDistance = -1.0;
+        result.hasWarnings = false;
+        result.sourceRowIndex = i;
+
+        // Inline the matching directly for the synchronous path
+        // to avoid the thread_local complexity
+        const QStringList& row = _mappingRows[i];
+
+        int aliasCol = _starIdColumnCombo->currentIndex() - 1;
+        int sourceIdCol = _sourceIdColumnCombo->currentIndex() - 1;
+        int raCol = _raColumnCombo->currentIndex() - 1;
+        int decCol = _decColumnCombo->currentIndex() - 1;
+        int mjdCol = _mjdColumnCombo->currentIndex() - 1;
+        int bjdCol = _bjdColumnCombo->currentIndex() - 1;
+        int expCol = _expTimeColumnCombo->currentIndex() - 1;
+
+        if (fileCol >= 0 && fileCol < row.size()) {
+            QString filePath = row[fileCol].trimmed();
+            if (!QFileInfo(filePath).isAbsolute()) {
+                filePath = _mappingBasePath + "/" + filePath;
+            }
+            result.spectrumFile = filePath;
+        } else {
+            result.spectrumFile = "";
+            result.warnings << "No file path";
+            result.hasWarnings = true;
+            results.push_back(std::move(result));
+            continue;
+        }
+
+        QString sourceId, alias;
+        double ra = 0.0, dec = 0.0;
+        bool hasPosition = false;
+
+        if (sourceIdCol >= 0 && sourceIdCol < row.size())
+            sourceId = row[sourceIdCol].trimmed();
+        if (aliasCol >= 0 && aliasCol < row.size())
+            alias = row[aliasCol].trimmed();
+        if (raCol >= 0 && decCol >= 0 && raCol < row.size() && decCol < row.size()) {
+            bool okRa, okDec;
+            ra = row[raCol].toDouble(&okRa);
+            dec = row[decCol].toDouble(&okDec);
+            hasPosition = okRa && okDec;
+        }
+
+        result.matchedStar = findMatchingStarThreadSafe(
+            sourceId, alias, ra, dec, hasPosition,
+            methods, radius, result.matchMethod, result.matchDistance);
+
+        if (!result.matchedStar) {
+            result.warnings << "No matching star found";
+            result.hasWarnings = true;
+        }
+
+        bool hasMjd = (mjdCol >= 0 && mjdCol < row.size() && !row[mjdCol].trimmed().isEmpty());
+        bool hasBjd = (bjdCol >= 0 && bjdCol < row.size() && !row[bjdCol].trimmed().isEmpty());
+        bool hasExp = (expCol >= 0 && expCol < row.size() && !row[expCol].trimmed().isEmpty());
+
+        if (!hasMjd && !hasBjd) {
+            result.warnings << "No observation time (MJD/BJD)";
+            result.hasWarnings = true;
+        }
+        if (!hasExp) {
+            result.warnings << "No exposure time";
+            result.hasWarnings = true;
+        }
+
+        results.push_back(std::move(result));
     }
     
     return results;
 }
 
-std::vector<SpectrumMatchResult> SpectraImportPage::processMappingWithProgress()
+// ── Async full mapping (replaces blocking processMappingWithProgress) ──
+
+void SpectraImportPage::processFullMappingAsync()
 {
-    std::vector<SpectrumMatchResult> results;
-    
+    if (_asyncBusy) return;
+
     int fileCol = _filePathColumnCombo->currentIndex() - 1;
-    if (fileCol < 0) {
-        return results;
-    }
-    
-    // Build index before processing
+    if (fileCol < 0) return;
+
     buildStarLookupIndex();
-    
-    int totalRows = static_cast<int>(_mappingRows.size());
-    results.reserve(totalRows);
-    
-    QProgressDialog progress("Processing spectra mapping...", "Cancel", 0, totalRows, this);
-    progress.setWindowModality(Qt::WindowModal);
-    progress.setMinimumDuration(500);  // Only show if takes > 500ms
-    
-    for (int i = 0; i < totalRows; ++i) {
-        if (i % 100 == 0) {  // Update progress every 100 rows
-            progress.setValue(i);
-            QApplication::processEvents();
-            
-            if (progress.wasCanceled()) {
-                results.clear();
-                return results;
+
+    _asyncBusy = true;
+    _statusLabel->setText("Processing full mapping file in background...");
+
+    // Snapshot all UI settings that processOneRow needs
+    struct MappingParams {
+        int fileCol, aliasCol, sourceIdCol, raCol, decCol, mjdCol, bjdCol, expCol;
+        QString basePath;
+        std::vector<MatchMethod> methods;
+        double matchRadius;
+        // Read-only references to indices (safe: they're immutable after build)
+        const QHash<QString, std::shared_ptr<Star>>* sourceIdIndex;
+        const QHash<QString, std::shared_ptr<Star>>* aliasIndex;
+        const SpatialStarIndex* spatialIndex;
+    };
+
+    auto params = std::make_shared<MappingParams>();
+    params->fileCol      = fileCol;
+    params->aliasCol     = _starIdColumnCombo->currentIndex() - 1;
+    params->sourceIdCol  = _sourceIdColumnCombo->currentIndex() - 1;
+    params->raCol        = _raColumnCombo->currentIndex() - 1;
+    params->decCol       = _decColumnCombo->currentIndex() - 1;
+    params->mjdCol       = _mjdColumnCombo->currentIndex() - 1;
+    params->bjdCol       = _bjdColumnCombo->currentIndex() - 1;
+    params->expCol       = _expTimeColumnCombo->currentIndex() - 1;
+    params->basePath     = _mappingBasePath;
+    params->methods      = getEnabledMatchMethods();
+    params->matchRadius  = _matchRadiusSpin->value();
+    params->sourceIdIndex = &_sourceIdIndex;
+    params->aliasIndex    = &_aliasIndex;
+    params->spatialIndex  = &_spatialIndex;
+
+    // Copy mapping rows (they won't change while async is running)
+    auto rows = std::make_shared<std::vector<QStringList>>(_mappingRows);
+
+    auto future = QtConcurrent::run([params, rows]() -> std::vector<SpectrumMatchResult> {
+        const int total = static_cast<int>(rows->size());
+        std::vector<SpectrumMatchResult> results;
+        results.reserve(total);
+
+        static thread_local QRegularExpression re("(\\d{10,})");
+
+        auto matchStar = [&](const QString& sourceId, const QString& alias,
+                             double ra, double dec, bool hasPos,
+                             QString& outMethod, double& outDist) -> std::shared_ptr<Star> {
+            outMethod.clear();
+            outDist = -1.0;
+
+            for (MatchMethod m : params->methods) {
+                switch (m) {
+                    case MatchMethod::SourceId:
+                        if (!sourceId.isEmpty()) {
+                            QString clean = sourceId.trimmed();
+                            auto it = params->sourceIdIndex->find(clean);
+                            if (it != params->sourceIdIndex->end()) { outMethod = "source_id"; return it.value(); }
+                            QRegularExpressionMatch rm = re.match(clean);
+                            if (rm.hasMatch()) {
+                                it = params->sourceIdIndex->find(rm.captured(1));
+                                if (it != params->sourceIdIndex->end()) { outMethod = "source_id"; return it.value(); }
+                            }
+                        }
+                        break;
+                    case MatchMethod::Alias:
+                        if (!alias.isEmpty()) {
+                            auto it = params->aliasIndex->find(alias.trimmed().toLower());
+                            if (it != params->aliasIndex->end()) { outMethod = "alias"; return it.value(); }
+                        }
+                        break;
+                    case MatchMethod::Position:
+                        if (hasPos && params->spatialIndex->isBuilt()) {
+                            double dist;
+                            auto star = params->spatialIndex->findNearest(ra, dec, params->matchRadius, &dist);
+                            if (star) { outMethod = "position"; outDist = dist; return star; }
+                        }
+                        break;
+                }
             }
+            return nullptr;
+        };
+
+        for (int i = 0; i < total; ++i) {
+            const QStringList& row = (*rows)[i];
+            SpectrumMatchResult result;
+            result.matchDistance = -1.0;
+            result.hasWarnings = false;
+            result.sourceRowIndex = i;
+
+            if (params->fileCol >= 0 && params->fileCol < row.size()) {
+                QString fp = row[params->fileCol].trimmed();
+                if (!QFileInfo(fp).isAbsolute()) fp = params->basePath + "/" + fp;
+                result.spectrumFile = fp;
+            } else {
+                result.warnings << "No file path";
+                result.hasWarnings = true;
+                results.push_back(std::move(result));
+                continue;
+            }
+
+            QString sourceId, alias;
+            double ra = 0, dec = 0;
+            bool hasPos = false;
+
+            if (params->sourceIdCol >= 0 && params->sourceIdCol < row.size())
+                sourceId = row[params->sourceIdCol].trimmed();
+            if (params->aliasCol >= 0 && params->aliasCol < row.size())
+                alias = row[params->aliasCol].trimmed();
+            if (params->raCol >= 0 && params->decCol >= 0 &&
+                params->raCol < row.size() && params->decCol < row.size()) {
+                bool okR, okD;
+                ra  = row[params->raCol].toDouble(&okR);
+                dec = row[params->decCol].toDouble(&okD);
+                hasPos = okR && okD;
+            }
+
+            result.matchedStar = matchStar(sourceId, alias, ra, dec, hasPos,
+                                            result.matchMethod, result.matchDistance);
+
+            if (!result.matchedStar) {
+                result.warnings << "No matching star found";
+                result.hasWarnings = true;
+            }
+
+            bool hasMjd = (params->mjdCol >= 0 && params->mjdCol < row.size() && !row[params->mjdCol].trimmed().isEmpty());
+            bool hasBjd = (params->bjdCol >= 0 && params->bjdCol < row.size() && !row[params->bjdCol].trimmed().isEmpty());
+            bool hasExp = (params->expCol >= 0 && params->expCol < row.size() && !row[params->expCol].trimmed().isEmpty());
+
+            if (!hasMjd && !hasBjd) { result.warnings << "No observation time (MJD/BJD)"; result.hasWarnings = true; }
+            if (!hasExp) { result.warnings << "No exposure time"; result.hasWarnings = true; }
+
+            results.push_back(std::move(result));
         }
-        
-        results.push_back(processOneRow(_mappingRows[i], i));
-    }
-    
-    progress.setValue(totalRows);
-    
-    return results;
+
+        return results;
+    });
+
+    auto* watcher = new QFutureWatcher<std::vector<SpectrumMatchResult>>(this);
+    connect(watcher, &QFutureWatcher<std::vector<SpectrumMatchResult>>::finished,
+            this, [this, watcher]() {
+                auto results = watcher->result();
+                watcher->deleteLater();
+                onFullMappingComplete(std::move(results));
+            });
+    watcher->setFuture(future);
+}
+
+void SpectraImportPage::onFullMappingComplete(std::vector<SpectrumMatchResult> results)
+{
+    _fullMatchResults = std::move(results);
+    _fullResultsReady = true;
+    _asyncBusy = false;
+
+    LOG_INFO("SpectraImport", QString("Full processing complete: %1 entries")
+             .arg(_fullMatchResults.size()));
+
+    // Re-trigger validatePage logic now that results are ready
+    // The wizard will call validatePage() again when user clicks Next
+    _statusLabel->setText(QString("Full processing complete: %1 entries ready. Click 'Next' to proceed.")
+                          .arg(_fullMatchResults.size()));
 }
 
 void SpectraImportPage::updatePreviewTable()
@@ -1159,7 +1446,6 @@ std::vector<SpectrumImportEntry> SpectraImportPage::createImportEntries(const st
     std::vector<SpectrumImportEntry> entries;
     entries.reserve(results.size());
     
-    // Get column indices
     int mjdCol = _mjdColumnCombo->currentIndex() - 1;
     int bjdCol = _bjdColumnCombo->currentIndex() - 1;
     int expCol = _expTimeColumnCombo->currentIndex() - 1;
@@ -1167,35 +1453,28 @@ std::vector<SpectrumImportEntry> SpectraImportPage::createImportEntries(const st
     int baryCorrCol = _baryCorrColumnCombo->currentIndex() - 1;
     
     for (const auto& result : results) {
-        // Skip unmatched entries
-        if (!result.matchedStar) {
-            continue;
-        }
+        if (!result.matchedStar) continue;
         
         SpectrumImportEntry entry;
         entry.spectrumFile = result.spectrumFile;
         entry.matchedStar = result.matchedStar;
         entry.sourceRowIndex = result.sourceRowIndex;
         
-        // Extract metadata from mapping rows if available
         if (_mappingRadio->isChecked() && result.sourceRowIndex >= 0 && 
             result.sourceRowIndex < static_cast<int>(_mappingRows.size())) {
             
             const QStringList& row = _mappingRows[result.sourceRowIndex];
             
             if (mjdCol >= 0 && mjdCol < row.size()) {
-                bool ok;
-                double v = row[mjdCol].toDouble(&ok);
+                bool ok; double v = row[mjdCol].toDouble(&ok);
                 if (ok) entry.mjd = v;
             }
             if (bjdCol >= 0 && bjdCol < row.size()) {
-                bool ok;
-                double v = row[bjdCol].toDouble(&ok);
+                bool ok; double v = row[bjdCol].toDouble(&ok);
                 if (ok) entry.bjd = v;
             }
             if (expCol >= 0 && expCol < row.size()) {
-                bool ok;
-                double v = row[expCol].toDouble(&ok);
+                bool ok; double v = row[expCol].toDouble(&ok);
                 if (ok) entry.exposureTime = v;
             }
             if (instCol >= 0 && instCol < row.size() && !row[instCol].trimmed().isEmpty()) {
@@ -1207,7 +1486,7 @@ std::vector<SpectrumImportEntry> SpectraImportPage::createImportEntries(const st
             }
         }
         
-        entries.push_back(entry);
+        entries.push_back(std::move(entry));
     }
     
     return entries;
@@ -1229,16 +1508,13 @@ void SpectraImportPage::queueImportTask(std::vector<SpectrumImportEntry> entries
         return;
     }
     
-    // Create the background task
     auto task = new SpectraImportTask(std::move(entries), project->getId(), controller);
     
-    // Connect signals for completion notification
     connect(task, &SpectraImportTask::importComplete, this, [this](int imported, int failed) {
         LOG_INFO("SpectraImport", QString("Background import complete: %1 imported, %2 failed")
                 .arg(imported).arg(failed));
     });
     
-    // Queue the task
     controller->backgroundTaskManager()->queueTask(task);
     
     LOG_INFO("SpectraImport", "Spectra import task queued for background processing");
@@ -1246,23 +1522,23 @@ void SpectraImportPage::queueImportTask(std::vector<SpectrumImportEntry> entries
 
 bool SpectraImportPage::validatePage()
 {
-    // If using mapping mode and haven't processed all rows yet, do it now
+    // If async is still running, tell user to wait
+    if (_asyncBusy) {
+        QMessageBox::information(this, "Processing",
+                                 "Background processing is still running. Please wait for it to finish.");
+        return false;
+    }
+
+    // If using mapping mode and haven't processed all rows yet, kick off async
     if (_mappingRadio->isChecked() && !_mappingRows.empty() && !_fullResultsReady) {
-        LOG_INFO("SpectraImport", "Processing full mapping file...");
-        
-        _fullMatchResults = processMappingWithProgress();
-        
-        if (_fullMatchResults.empty() && !_mappingRows.empty()) {
-            // User cancelled
-            return false;
-        }
-        
-        _fullResultsReady = true;
-        LOG_INFO("SpectraImport", QString("Full processing complete: %1 entries")
-                 .arg(_fullMatchResults.size()));
+        LOG_INFO("SpectraImport", "Processing full mapping file asynchronously...");
+        processFullMappingAsync();
+        QMessageBox::information(this, "Processing",
+                                 "Full mapping is being processed in the background.\n"
+                                 "Click 'Next' again once processing completes.");
+        return false;
     }
     
-    // Use full results if available, otherwise use preview results (for FITS mode)
     const auto& resultsToUse = _fullResultsReady ? _fullMatchResults : _matchResults;
     
     if (resultsToUse.empty()) {
@@ -1277,17 +1553,11 @@ bool SpectraImportPage::validatePage()
     int withWarnings = 0;
     
     for (const auto& result : resultsToUse) {
-        if (result.matchedStar) {
-            matched++;
-        } else {
-            unmatched++;
-        }
-        if (result.hasWarnings) {
-            withWarnings++;
-        }
+        if (result.matchedStar) matched++;
+        else unmatched++;
+        if (result.hasWarnings) withWarnings++;
     }
     
-    // Show confirmation dialog
     QString message = QString("%1 spectra found.\n\n").arg(resultsToUse.size());
     message += QString("• %1 matched to stars (will be imported)\n").arg(matched);
     
@@ -1302,11 +1572,8 @@ bool SpectraImportPage::validatePage()
     
     QMessageBox::StandardButton reply = QMessageBox::question(this, "Confirm Import", message,
                                                                QMessageBox::Yes | QMessageBox::No);
-    if (reply != QMessageBox::Yes) {
-        return false;
-    }
+    if (reply != QMessageBox::Yes) return false;
     
-    // Create import entries (only matched spectra)
     std::vector<SpectrumImportEntry> entries = createImportEntries(resultsToUse);
     
     if (entries.empty()) {
@@ -1317,10 +1584,8 @@ bool SpectraImportPage::validatePage()
     
     LOG_INFO("SpectraImport", QString("Queueing %1 spectra for background import").arg(entries.size()));
     
-    // Queue the background task
     queueImportTask(std::move(entries));
     
-    // Show confirmation that task was queued
     _statusLabel->setText(QString("Import task queued: %1 spectra will be imported in the background.")
                           .arg(entries.size()));
     

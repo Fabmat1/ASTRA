@@ -79,6 +79,10 @@ private:
     QChartView* _spectraChartView;
     QLabel* _spectraInfoLabel;
     int _currentSpectrumIndex;
+    std::vector<std::shared_ptr<Spectrum>> _sortedSpectra;
+    QMetaObject::Connection _spectraTabConnection;
+
+    QTimer* _spectraResizeTimer = nullptr;
 
     // Splitters for resizable layout
     QSplitter* _mainHSplitter;

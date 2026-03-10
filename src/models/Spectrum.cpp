@@ -1,4 +1,6 @@
 #include "Spectrum.h"
+#include "utils/DataStore.h"
+
 #include <QFile>
 #include <QTextStream>
 #include <QRegularExpression>
@@ -115,145 +117,104 @@ bool Spectrum::loadFromFile(const QString& filepath)
 
 bool Spectrum::saveDataToFile(const QString& filepath)
 {
-    QFile file(filepath);
-    if (!file.open(QIODevice::WriteOnly)) {
-        qDebug() << "Failed to open spectrum data file for writing:" << filepath;
-        return false;
-    }
+    QByteArray buffer;
+    {
+        QDataStream s(&buffer, QIODevice::WriteOnly);
+        s.setVersion(QDataStream::Qt_6_0);
 
-    QDataStream stream(&file);
-    stream.setVersion(QDataStream::Qt_5_0);
-    
-    // Write sizes
-    stream << static_cast<quint32>(_wavelengths.size());
-    stream << static_cast<quint32>(_fluxes.size());
-    stream << static_cast<quint32>(_fluxErrors.size());
-    
-    // Write wavelengths
-    for (const auto& wavelength : _wavelengths) {
-        stream << wavelength;
+        s << static_cast<quint32>(_wavelengths.size());
+        s << static_cast<quint32>(_fluxes.size());
+        s << static_cast<quint32>(_fluxErrors.size());
+
+        for (const auto& v : _wavelengths) s << v;
+        for (const auto& v : _fluxes)      s << v;
+        for (const auto& v : _fluxErrors)  s << v;
     }
-    
-    // Write fluxes
-    for (const auto& flux : _fluxes) {
-        stream << flux;
-    }
-    
-    // Write flux errors
-    for (const auto& error : _fluxErrors) {
-        stream << error;
-    }
-    
-    file.close();
-    return true;
+    return DataStore::writeCompressed(filepath, DataStore::SpectrumData, buffer);
 }
+
 
 bool Spectrum::loadDataFromFile(const QString& filepath)
 {
+    auto parse = [this](QDataStream& s) -> bool {
+        quint32 wlN, fN, eN;
+        s >> wlN >> fN >> eN;
+
+        _wavelengths.clear();  _wavelengths.reserve(wlN);
+        for (quint32 i = 0; i < wlN; ++i) { double v; s >> v; _wavelengths.push_back(v); }
+
+        _fluxes.clear();  _fluxes.reserve(fN);
+        for (quint32 i = 0; i < fN; ++i) { double v; s >> v; _fluxes.push_back(v); }
+
+        _fluxErrors.clear();  _fluxErrors.reserve(eN);
+        for (quint32 i = 0; i < eN; ++i) { double v; s >> v; _fluxErrors.push_back(v); }
+
+        return s.status() == QDataStream::Ok;
+    };
+
+    // Try new compressed format
+    QByteArray buf;
+    if (DataStore::readCompressed(filepath, DataStore::SpectrumData, buf)) {
+        QDataStream s(&buf, QIODevice::ReadOnly);
+        s.setVersion(QDataStream::Qt_6_0);
+        return parse(s);
+    }
+
+    // Legacy uncompressed fallback
     QFile file(filepath);
     if (!file.open(QIODevice::ReadOnly)) {
         qDebug() << "Failed to open spectrum data file for reading:" << filepath;
         return false;
     }
-
-    QDataStream stream(&file);
-    stream.setVersion(QDataStream::Qt_5_0);
-    
-    quint32 wavelengthSize, fluxSize, errorSize;
-    stream >> wavelengthSize >> fluxSize >> errorSize;
-    
-    // Read wavelengths
-    _wavelengths.clear();
-    _wavelengths.reserve(wavelengthSize);
-    for (quint32 i = 0; i < wavelengthSize; ++i) {
-        double wavelength;
-        stream >> wavelength;
-        _wavelengths.push_back(wavelength);
-    }
-    
-    // Read fluxes
-    _fluxes.clear();
-    _fluxes.reserve(fluxSize);
-    for (quint32 i = 0; i < fluxSize; ++i) {
-        double flux;
-        stream >> flux;
-        _fluxes.push_back(flux);
-    }
-    
-    // Read flux errors
-    _fluxErrors.clear();
-    _fluxErrors.reserve(errorSize);
-    for (quint32 i = 0; i < errorSize; ++i) {
-        double error;
-        stream >> error;
-        _fluxErrors.push_back(error);
-    }
-    
-    file.close();
-    return true;
+    QDataStream s(&file);
+    s.setVersion(QDataStream::Qt_5_0);
+    return parse(s);
 }
 
 bool SpectralFit::saveDataToFile(const QString& filepath)
 {
-    QFile file(filepath);
-    if (!file.open(QIODevice::WriteOnly)) {
-        qDebug() << "Failed to open file for writing:" << filepath;
-        return false;
-    }
+    QByteArray buffer;
+    {
+        QDataStream s(&buffer, QIODevice::WriteOnly);
+        s.setVersion(QDataStream::Qt_6_0);
 
-    QDataStream stream(&file);
-    stream.setVersion(QDataStream::Qt_5_0);
-    
-    // Write sizes
-    stream << static_cast<quint32>(modelWavelengths.size());
-    stream << static_cast<quint32>(modelFluxes.size());
-    
-    // Write model wavelengths
-    for (const auto& wavelength : modelWavelengths) {
-        stream << wavelength;
+        s << static_cast<quint32>(modelWavelengths.size());
+        s << static_cast<quint32>(modelFluxes.size());
+
+        for (const auto& v : modelWavelengths) s << v;
+        for (const auto& v : modelFluxes)      s << v;
     }
-    
-    // Write model fluxes
-    for (const auto& flux : modelFluxes) {
-        stream << flux;
-    }
-    
-    file.close();
-    return true;
+    return DataStore::writeCompressed(filepath, DataStore::SpectralFitData, buffer);
 }
 
 bool SpectralFit::loadDataFromFile(const QString& filepath)
 {
+    auto parse = [this](QDataStream& s) -> bool {
+        quint32 wlN, fN;
+        s >> wlN >> fN;
+
+        modelWavelengths.clear();  modelWavelengths.reserve(wlN);
+        for (quint32 i = 0; i < wlN; ++i) { double v; s >> v; modelWavelengths.push_back(v); }
+
+        modelFluxes.clear();  modelFluxes.reserve(fN);
+        for (quint32 i = 0; i < fN; ++i) { double v; s >> v; modelFluxes.push_back(v); }
+
+        return s.status() == QDataStream::Ok;
+    };
+
+    QByteArray buf;
+    if (DataStore::readCompressed(filepath, DataStore::SpectralFitData, buf)) {
+        QDataStream s(&buf, QIODevice::ReadOnly);
+        s.setVersion(QDataStream::Qt_6_0);
+        return parse(s);
+    }
+
     QFile file(filepath);
     if (!file.open(QIODevice::ReadOnly)) {
         qDebug() << "Failed to open file for reading:" << filepath;
         return false;
     }
-
-    QDataStream stream(&file);
-    stream.setVersion(QDataStream::Qt_5_0);
-    
-    quint32 wavelengthSize, fluxSize;
-    stream >> wavelengthSize >> fluxSize;
-    
-    // Read model wavelengths
-    modelWavelengths.clear();
-    modelWavelengths.reserve(wavelengthSize);
-    for (quint32 i = 0; i < wavelengthSize; ++i) {
-        double wavelength;
-        stream >> wavelength;
-        modelWavelengths.push_back(wavelength);
-    }
-    
-    // Read model fluxes
-    modelFluxes.clear();
-    modelFluxes.reserve(fluxSize);
-    for (quint32 i = 0; i < fluxSize; ++i) {
-        double flux;
-        stream >> flux;
-        modelFluxes.push_back(flux);
-    }
-    
-    file.close();
-    return true;
+    QDataStream s(&file);
+    s.setVersion(QDataStream::Qt_5_0);
+    return parse(s);
 }

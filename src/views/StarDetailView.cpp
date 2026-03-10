@@ -420,7 +420,18 @@ QWidget* StarDetailView::createSpectraPanel()
     QVBoxLayout* layout = new QVBoxLayout(group);
     layout->setSpacing(2);
 
-    // Main chart view — takes most of the space
+    // Tab bar at TOP — selector for which spectrum to display
+    _spectraTabBar = new QTabBar;
+    _spectraTabBar->setExpanding(false);
+    _spectraTabBar->setUsesScrollButtons(true);
+    _spectraTabBar->setElideMode(Qt::ElideRight);
+    _spectraTabBar->setDocumentMode(true);
+    _spectraTabBar->setDrawBase(false);
+    _spectraTabBar->setFixedHeight(33);
+    _spectraTabBar->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    layout->addWidget(_spectraTabBar, 0);  // stretch = 0 so it doesn't grow
+
+    // Main chart view
     _spectraChartView = new QChartView;
     _spectraChartView->setRenderHint(QPainter::Antialiasing);
     _spectraChartView->setRubberBand(QChartView::RectangleRubberBand);
@@ -430,7 +441,7 @@ QWidget* StarDetailView::createSpectraPanel()
     _spectraChartView->setChart(placeholder);
     layout->addWidget(_spectraChartView, 1);
 
-    // Info strip below chart — shows metadata for current spectrum
+    // Info strip below chart
     _spectraInfoLabel = new QLabel;
     _spectraInfoLabel->setWordWrap(true);
     _spectraInfoLabel->setTextFormat(Qt::RichText);
@@ -439,15 +450,6 @@ QWidget* StarDetailView::createSpectraPanel()
         "border-top: 1px solid palette(mid); }");
     _spectraInfoLabel->setFixedHeight(36);
     layout->addWidget(_spectraInfoLabel);
-
-    // Tab bar at the bottom — just the selector, no page content
-    _spectraTabBar = new QTabBar;
-    _spectraTabBar->setExpanding(false);
-    _spectraTabBar->setUsesScrollButtons(true);
-    _spectraTabBar->setElideMode(Qt::ElideRight);
-    _spectraTabBar->setDocumentMode(true);
-    _spectraTabBar->setDrawBase(false);
-    layout->addWidget(_spectraTabBar);
 
     _currentSpectrumIndex = -1;
 
@@ -1342,25 +1344,34 @@ void StarDetailView::populateLCPlot()
 
 void StarDetailView::populateSpectraPanel()
 {
-    // Clear existing tabs
+    if (_spectraTabConnection)
+        disconnect(_spectraTabConnection);
+
     while (_spectraTabBar->count() > 0)
         _spectraTabBar->removeTab(0);
 
     _currentSpectrumIndex = -1;
+    _sortedSpectra.clear();
 
     auto spectra = _star->getSpectra();
 
+    qDebug() << "[SpectraPanel] Star:" << _star->getSourceId()
+             << "| getSpectra() returned:" << spectra.size() << "spectra";
+
+    for (size_t i = 0; i < spectra.size(); ++i) {
+        auto& sp = spectra[i];
+        qDebug() << "  [" << i << "] id=" << sp->getId()
+                 << "inst=" << sp->getInstrument()
+                 << "mjd=" << sp->getMJD()
+                 << "hasData=" << sp->hasData()
+                 << "file=" << sp->getFile()
+                 << "dataFile=" << sp->getDataFile();
+    }
+
     if (spectra.empty()) {
-        // Show placeholder in chart
         QChart* chart = new QChart;
         chart->legend()->hide();
-        chart->setTitle("");
-
-        // Centered "no data" text via a dummy series trick:
-        // just set a descriptive title
-        auto* view = _spectraChartView;
-        view->setChart(chart);
-
+        _spectraChartView->setChart(chart);
         _spectraInfoLabel->setText(
             "<span style='color: gray; font-style: italic;'>"
             "No spectra available. Import spectra using the wizard or "
@@ -1368,9 +1379,9 @@ void StarDetailView::populateSpectraPanel()
         return;
     }
 
-    // Sort spectra by MJD (earliest first), then by instrument
-    auto sorted = spectra;
-    std::sort(sorted.begin(), sorted.end(),
+    // Sort spectra by instrument, then MJD
+    _sortedSpectra = spectra;
+    std::sort(_sortedSpectra.begin(), _sortedSpectra.end(),
               [](const std::shared_ptr<Spectrum>& a, const std::shared_ptr<Spectrum>& b) {
                   if (a->getInstrument() != b->getInstrument())
                       return a->getInstrument() < b->getInstrument();
@@ -1380,7 +1391,7 @@ void StarDetailView::populateSpectraPanel()
     // Assign colors by instrument
     QMap<QString, QColor> instrumentColors;
     int colorIdx = 0;
-    for (auto& spec : sorted) {
+    for (auto& spec : _sortedSpectra) {
         QString inst = spec->getInstrument();
         if (!inst.isEmpty() && !instrumentColors.contains(inst)) {
             instrumentColors[inst] = kLCColors[colorIdx % kNumLCColors];
@@ -1390,12 +1401,11 @@ void StarDetailView::populateSpectraPanel()
 
     // Build tabs
     _spectraTabBar->blockSignals(true);
-    for (int i = 0; i < static_cast<int>(sorted.size()); ++i) {
-        auto& spec = sorted[i];
+    for (int i = 0; i < static_cast<int>(_sortedSpectra.size()); ++i) {
+        auto& spec = _sortedSpectra[i];
         QString label = formatSpectrumTabLabel(spec, i);
         int tabIdx = _spectraTabBar->addTab(label);
 
-        // Tooltip with more detail
         QString tooltip;
         if (!spec->getInstrument().isEmpty())
             tooltip += spec->getInstrument();
@@ -1407,40 +1417,35 @@ void StarDetailView::populateSpectraPanel()
             tooltip += "\n✓ Has spectral fit";
         _spectraTabBar->setTabToolTip(tabIdx, tooltip.trimmed());
 
-        // Color the tab text by instrument
         QString inst = spec->getInstrument();
-        if (instrumentColors.contains(inst)) {
+        if (instrumentColors.contains(inst))
             _spectraTabBar->setTabTextColor(tabIdx, instrumentColors[inst]);
-        }
-
-        // Store the spectrum ID so we can look it up later
-        _spectraTabBar->setTabData(tabIdx, spec->getId());
     }
+
     _spectraTabBar->blockSignals(false);
 
-    // Store the sorted list for indexed access during display
-    // We keep a reference to the sorted spectra via the star's own list
-    // but since we re-sorted, let's store the order
-    // We use tab data (spectrum ID) to find the right one.
+    qDebug() << "[SpectraPanel] Built" << _spectraTabBar->count()
+             << "tabs from" << _sortedSpectra.size() << "sorted spectra";
 
-    // Connect tab changes
-    connect(_spectraTabBar, &QTabBar::currentChanged, this, [this, sorted](int index) {
-        if (index < 0 || index >= static_cast<int>(sorted.size()))
-            return;
-        _currentSpectrumIndex = index;
-        displaySpectrum(index);
-    });
-
-    // Also handle double-click on chart to reset zoom
-    // (QChartView rubber band zoom in, double-click zooms out)
-    _spectraChartView->setRubberBand(QChartView::RectangleRubberBand);
+    _spectraTabConnection = connect(_spectraTabBar, &QTabBar::currentChanged,
+                                     this, &StarDetailView::displaySpectrum);
 
     // Show first spectrum
-    if (!sorted.empty()) {
+    if (!_sortedSpectra.empty()) {
         _spectraTabBar->setCurrentIndex(0);
         _currentSpectrumIndex = 0;
         displaySpectrum(0);
     }
+
+    // Debug: verify tab bar geometry
+    qDebug() << "[SpectraPanel] TabBar visible:" << _spectraTabBar->isVisible()
+             << "height:" << _spectraTabBar->height()
+             << "sizeHint:" << _spectraTabBar->sizeHint()
+             << "count:" << _spectraTabBar->count()
+             << "currentIndex:" << _spectraTabBar->currentIndex();
+
+    // Force a geometry update
+    _spectraTabBar->updateGeometry();
 }
 
 QString StarDetailView::formatSpectrumTabLabel(
@@ -1478,26 +1483,11 @@ QString StarDetailView::formatSpectrumTabLabel(
 
 void StarDetailView::displaySpectrum(int index)
 {
-    // Resolve spectrum from tab data (stored ID)
-    if (index < 0 || index >= _spectraTabBar->count())
+    if (index < 0 || index >= static_cast<int>(_sortedSpectra.size()))
         return;
 
-    QString specId = _spectraTabBar->tabData(index).toString();
-
-    auto spectra = _star->getSpectra();
-    std::shared_ptr<Spectrum> spec;
-
-    // Find by sorted order: re-sort the same way as in populate
-    auto sorted = spectra;
-    std::sort(sorted.begin(), sorted.end(),
-              [](const std::shared_ptr<Spectrum>& a, const std::shared_ptr<Spectrum>& b) {
-                  if (a->getInstrument() != b->getInstrument())
-                      return a->getInstrument() < b->getInstrument();
-                  return a->getMJD() < b->getMJD();
-              });
-
-    if (index < static_cast<int>(sorted.size()))
-        spec = sorted[index];
+    _currentSpectrumIndex = index;
+    auto spec = _sortedSpectra[index];
 
     if (!spec) return;
 
@@ -1535,7 +1525,7 @@ void StarDetailView::displaySpectrum(int index)
     double yMin =  std::numeric_limits<double>::max();
     double yMax =  std::numeric_limits<double>::lowest();
 
-    // ── Error band (shaded region via two area-bounding series) ──
+    // ── Error band ──
     bool hasErrors = !errors.empty() && errors.size() == wavelengths.size();
 
     QLineSeries* upperBound = nullptr;
@@ -1565,8 +1555,6 @@ void StarDetailView::displaySpectrum(int index)
         errorArea->setName("1σ Error");
         QColor errFill(180, 180, 180, 50);
         errorArea->setBrush(errFill);
-        errorArea->setPen(QPen(Qt::NoPen));
-        // Border pen must be set to avoid default thick outline
         QPen borderPen(QColor(180, 180, 180, 80), 0.5);
         errorArea->setPen(borderPen);
 
@@ -1577,10 +1565,8 @@ void StarDetailView::displaySpectrum(int index)
     auto* dataSeries = new QLineSeries;
     dataSeries->setName("Observed");
 
-    // Determine color by instrument
     QColor specColor(200, 200, 200);
     if (!spec->getInstrument().isEmpty()) {
-        // Simple hash-based color for consistency
         uint hash = qHash(spec->getInstrument());
         specColor = kLCColors[hash % kNumLCColors];
     }
@@ -1605,10 +1591,8 @@ void StarDetailView::displaySpectrum(int index)
     auto bestFit = spec->getBestFit();
 
     for (auto& fit : fits) {
-        // Lazy-load model data
-        if (fit->modelWavelengths.empty() && !fit->getModelDataFile().isEmpty()) {
+        if (fit->modelWavelengths.empty() && !fit->getModelDataFile().isEmpty())
             fit->loadDataFromFile(fit->getModelDataFile());
-        }
 
         if (fit->modelWavelengths.empty())
             continue;
@@ -1621,23 +1605,17 @@ void StarDetailView::displaySpectrum(int index)
             modelSeries->setName("Best Fit");
             modelSeries->setPen(QPen(kFitCurveColor, 1.5));
         } else {
-            modelSeries->setName(QString("Fit %1").arg(fit->modelId.isEmpty() 
+            modelSeries->setName(QString("Fit %1").arg(fit->modelId.isEmpty()
                                     ? fit->getId().left(6) : fit->modelId));
             QColor dimColor = kFitCurveColor.lighter(160);
             dimColor.setAlpha(150);
             modelSeries->setPen(QPen(dimColor, 1.0, Qt::DashLine));
         }
 
-        for (size_t i = 0; i < fit->modelWavelengths.size(); ++i) {
+        for (size_t i = 0; i < fit->modelWavelengths.size(); ++i)
             modelSeries->append(fit->modelWavelengths[i], fit->modelFluxes[i]);
-        }
-        chart->addSeries(modelSeries);
-    }
 
-    // ── Hide error-area sub-series from legend ──
-    if (errorArea) {
-        // The area series itself shows in legend; upper/lower are internal
-        // That's fine — "1σ Error" label is useful
+        chart->addSeries(modelSeries);
     }
 
     // ── Axes ──
@@ -1667,7 +1645,6 @@ void StarDetailView::displaySpectrum(int index)
     // ── Update info strip ──
     _spectraInfoLabel->setText(formatSpectrumInfo(spec));
 }
-
 
 QString StarDetailView::formatSpectrumInfo(
     const std::shared_ptr<Spectrum>& spec) const

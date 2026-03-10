@@ -52,7 +52,8 @@ public:
 
     // Spectrum operations
     bool saveSpectrum(const QString& starId, std::shared_ptr<Spectrum> spectrum);
-    bool saveSpectralFit(const QString& spectrumId, std::shared_ptr<SpectralFit> fit, const QString& spectrumDir);
+    bool saveSpectralFit(const QString& starId, const QString& spectrumId,
+        std::shared_ptr<SpectralFit> fit);
     std::vector<std::shared_ptr<SpectralFit>> loadSpectralFits(const QString& spectrumId);
 
 
@@ -70,8 +71,11 @@ private:
 
     // Photometry operations
     bool savePhotometry(const QString& starId, std::shared_ptr<Photometry> photometry);
-    bool saveSEDModel(const QString& photometryId, std::shared_ptr<SEDModel> model, const QString& photometryDir);
-    bool saveLightcurveModel(const QString& lightcurveId, std::shared_ptr<LightcurveModel> model, const QString& photometryDir);
+    bool saveSEDModel(const QString& starId, const QString& photometryId,
+                      std::shared_ptr<SEDModel> model);
+    bool saveLightcurveModel(const QString& starId, const QString& photometryId,
+                             const QString& lightcurveId,
+                             std::shared_ptr<LightcurveModel> model);
     std::vector<std::shared_ptr<SEDModel>> loadSEDModels(const QString& photometryId);
     std::vector<std::shared_ptr<LightcurveModel>> loadLightcurveModels(const QString& lightcurveId);
 
