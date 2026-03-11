@@ -43,6 +43,14 @@ public:
     double vsiniError;
     double radialVelocity;
     double radialVelocityError;
+    
+    double chi2;
+    double metallicity;
+    double metallicityError;
+    double macroturbulence;
+    double macroturbulenceError;
+    double microturbulence;
+    double microturbulenceError;
 
 private:
     QString _id;

@@ -1594,5 +1594,5 @@ bool SpectraImportPage::validatePage()
 
 int SpectraImportPage::nextId() const
 {
-    return StarImportWizard::Page_RadialVelocity;
+    return StarImportWizard::Page_SpectralFits;
 }

@@ -41,6 +41,7 @@ public:
     ThemeManager* themeManager() const { return _themeManager.get(); }
 
     BackgroundTaskManager* backgroundTaskManager() const { return _backgroundTaskManager.get(); }
+    DatabaseManager* databaseManager() const { return _databaseManager.get(); }
 
 signals:
     void projectCreated(const QString& projectId);

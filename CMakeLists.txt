@@ -96,6 +96,7 @@ set(SOURCES
     src/utils/CatalogQueryWorkers.cpp
     src/utils/DataStore.cpp
     src/views/StarFilterWidget.cpp
+    src/utils/SpectralFitImportPage.cpp
 )
 
 # Header files
@@ -126,6 +127,7 @@ set(HEADERS
     src/utils/CatalogQueryWorkers.h
     src/utils/DataStore.h
     src/views/StarFilterWidget.h
+    src/utils/SpectralFitImportPage.h
 )
 
 # Create executable

@@ -14,13 +14,12 @@ StarImportWizard::StarImportWizard(ApplicationController* controller,
     setWindowTitle("Star Import Wizard");
     setWizardStyle(QWizard::ModernStyle);
 
-    // Add pages
     setPage(Page_GeneralImport, new GeneralImportPage);
     setPage(Page_Spectra, new SpectraImportPage);
+    setPage(Page_SpectralFits, new SpectralFitImportPage);  
     setPage(Page_RadialVelocity, new RadialVelocityImportPage);
     setPage(Page_Photometry, new PhotometryImportPage);
 
-    // Configure button layout
     setOptions(QWizard::NoBackButtonOnStartPage | 
                QWizard::NoCancelButtonOnLastPage);
 

@@ -20,7 +20,8 @@ public:
                      std::shared_ptr<Project> project,
                      QWidget* parent = nullptr);
 
-    enum { Page_GeneralImport, Page_ColumnMapping, Page_Spectra, Page_RadialVelocity, Page_Photometry };
+    enum { Page_GeneralImport, Page_ColumnMapping, Page_Spectra, 
+           Page_SpectralFits, Page_RadialVelocity, Page_Photometry };
     
     // Public getters for access by wizard pages
     ApplicationController* controller() const { return _controller; }
@@ -42,5 +43,6 @@ private:
 #include "SpectraImportPage.h"
 #include "RVPhotometryPages.h"
 #include "CatalogQueryWorkers.h"
+#include "SpectralFitImportPage.h"
 
 #endif // STARIMPORTWIZARD_H

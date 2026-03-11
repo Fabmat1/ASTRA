@@ -20,6 +20,13 @@ SpectralFit::SpectralFit()
     , vsiniError(0.0)
     , radialVelocity(0.0)
     , radialVelocityError(0.0)
+    , chi2(0.0)
+    , metallicity(0.0)
+    , metallicityError(0.0)
+    , macroturbulence(0.0)
+    , macroturbulenceError(0.0)
+    , microturbulence(0.0)
+    , microturbulenceError(0.0)
 {
     creationDate = QDateTime::currentDateTime();
 }

@@ -60,6 +60,8 @@ bool DatabaseManager::openDatabase(const QString& path)
         return false;
     }
 
+    runMigrations(); 
+
     return createIndexes();
 }
 
@@ -243,6 +245,13 @@ bool DatabaseManager::createTables()
             vsini_error REAL,
             radial_velocity REAL,
             radial_velocity_error REAL,
+            chi2 REAL DEFAULT 0,
+            metallicity REAL DEFAULT 0,
+            metallicity_error REAL DEFAULT 0,
+            macroturbulence REAL DEFAULT 0,
+            macroturbulence_error REAL DEFAULT 0,
+            microturbulence REAL DEFAULT 0,
+            microturbulence_error REAL DEFAULT 0,
             model_data_file TEXT,
             FOREIGN KEY(spectrum_id) REFERENCES spectra(id) ON DELETE CASCADE
         )
@@ -265,6 +274,28 @@ bool DatabaseManager::createTables()
         if (!executeQuery(query)) {
             return false;
         }
+    }
+
+    return true;
+}
+
+
+bool DatabaseManager::runMigrations()
+{
+    // Add new SpectralFit columns — ignore errors if columns already exist
+    QStringList alterQueries = {
+        "ALTER TABLE spectral_fits ADD COLUMN chi2 REAL DEFAULT 0",
+        "ALTER TABLE spectral_fits ADD COLUMN metallicity REAL DEFAULT 0",
+        "ALTER TABLE spectral_fits ADD COLUMN metallicity_error REAL DEFAULT 0",
+        "ALTER TABLE spectral_fits ADD COLUMN macroturbulence REAL DEFAULT 0",
+        "ALTER TABLE spectral_fits ADD COLUMN macroturbulence_error REAL DEFAULT 0",
+        "ALTER TABLE spectral_fits ADD COLUMN microturbulence REAL DEFAULT 0",
+        "ALTER TABLE spectral_fits ADD COLUMN microturbulence_error REAL DEFAULT 0",
+    };
+
+    for (const QString& sql : alterQueries) {
+        QSqlQuery q;
+        q.exec(sql);  // Silently ignore "duplicate column name" errors
     }
 
     return true;
@@ -1093,7 +1124,6 @@ bool DatabaseManager::saveSpectralFit(const QString& starId,
                                                    spectrumId, fit->getId());
     fit->saveDataToFile(modelFile);
 
-    // Clean up old file if path changed
     QString oldFile = fit->getModelDataFile();
     if (!oldFile.isEmpty() && oldFile != modelFile && QFile::exists(oldFile)) {
         QFile::remove(oldFile);
@@ -1105,11 +1135,17 @@ bool DatabaseManager::saveSpectralFit(const QString& starId,
             id, spectrum_id, creation_date, model_id, is_best_fit,
             teff, teff_error, logg, logg_error, he, he_error,
             vsini, vsini_error, radial_velocity, radial_velocity_error,
+            chi2, metallicity, metallicity_error,
+            macroturbulence, macroturbulence_error,
+            microturbulence, microturbulence_error,
             model_data_file
         ) VALUES (
             :id, :spectrum_id, :creation_date, :model_id, :is_best_fit,
             :teff, :teff_error, :logg, :logg_error, :he, :he_error,
             :vsini, :vsini_error, :radial_velocity, :radial_velocity_error,
+            :chi2, :metallicity, :metallicity_error,
+            :macroturbulence, :macroturbulence_error,
+            :microturbulence, :microturbulence_error,
             :model_data_file
         )
     )");
@@ -1129,6 +1165,13 @@ bool DatabaseManager::saveSpectralFit(const QString& starId,
     query.bindValue(":vsini_error", fit->vsiniError);
     query.bindValue(":radial_velocity", fit->radialVelocity);
     query.bindValue(":radial_velocity_error", fit->radialVelocityError);
+    query.bindValue(":chi2", fit->chi2);
+    query.bindValue(":metallicity", fit->metallicity);
+    query.bindValue(":metallicity_error", fit->metallicityError);
+    query.bindValue(":macroturbulence", fit->macroturbulence);
+    query.bindValue(":macroturbulence_error", fit->macroturbulenceError);
+    query.bindValue(":microturbulence", fit->microturbulence);
+    query.bindValue(":microturbulence_error", fit->microturbulenceError);
     query.bindValue(":model_data_file", modelFile);
 
     return query.exec();
@@ -1200,6 +1243,13 @@ std::vector<std::shared_ptr<SpectralFit>> DatabaseManager::loadSpectralFits(cons
         fit->vsiniError = query.value("vsini_error").toDouble();
         fit->radialVelocity = query.value("radial_velocity").toDouble();
         fit->radialVelocityError = query.value("radial_velocity_error").toDouble();
+        fit->chi2 = query.value("chi2").toDouble();
+        fit->metallicity = query.value("metallicity").toDouble();
+        fit->metallicityError = query.value("metallicity_error").toDouble();
+        fit->macroturbulence = query.value("macroturbulence").toDouble();
+        fit->macroturbulenceError = query.value("macroturbulence_error").toDouble();
+        fit->microturbulence = query.value("microturbulence").toDouble();
+        fit->microturbulenceError = query.value("microturbulence_error").toDouble();
         fit->setModelDataFile(query.value("model_data_file").toString());
 
         fits.push_back(fit);

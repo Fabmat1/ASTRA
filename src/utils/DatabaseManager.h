@@ -78,7 +78,9 @@ private:
                              std::shared_ptr<LightcurveModel> model);
     std::vector<std::shared_ptr<SEDModel>> loadSEDModels(const QString& photometryId);
     std::vector<std::shared_ptr<LightcurveModel>> loadLightcurveModels(const QString& lightcurveId);
-
+    // In private section of DatabaseManager class:
+    bool runMigrations();
+    
     QSqlDatabase _database;
     QString _databasePath;
 
