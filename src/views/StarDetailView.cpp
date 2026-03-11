@@ -321,14 +321,19 @@ void StarDetailView::setupUi()
     topLayout->setSpacing(6);
 
     _mainHSplitter = new QSplitter(Qt::Horizontal, this);
+    _mainHSplitter->setOpaqueResize(false);    // ← rubber-band drag
 
     _leftVSplitter = new QSplitter(Qt::Vertical);
+    _leftVSplitter->setOpaqueResize(false);    // ← rubber-band drag
+
     _leftVSplitter->addWidget(createSummaryPanel());
     _leftVSplitter->addWidget(createSpectraPanel());
     _leftVSplitter->setStretchFactor(0, 1);
     _leftVSplitter->setStretchFactor(1, 1);
 
     _rightVSplitter = new QSplitter(Qt::Vertical);
+    _rightVSplitter->setOpaqueResize(false);   // ← rubber-band drag
+
     _rightVSplitter->addWidget(createRVPlotPanel());
     _rightVSplitter->addWidget(createLCPlotPanel());
     _rightVSplitter->setStretchFactor(0, 1);

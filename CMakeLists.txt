@@ -137,6 +137,18 @@ qt_add_executable(ASTRA
     resources/resources.qrc
 )
 
+# Profiling option
+option(ENABLE_PROFILING "Build with profiling support (debug symbols + frame pointers)" OFF)
+
+if(ENABLE_PROFILING)
+    message(STATUS "Profiling enabled: -g -fno-omit-frame-pointer")
+    target_compile_options(ASTRA PRIVATE
+        -O2
+        -g
+        -fno-omit-frame-pointer
+    )
+endif()
+
 # Set up include directories
 target_include_directories(ASTRA PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/src

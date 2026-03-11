@@ -477,6 +477,11 @@ void FilterConditionRow::setCondition(const FilterCondition& condition)
     _enableButton->setChecked(_enabled);
 }
 
+QWidget* StarFilterWidget::advancedPanelWidget() const
+{
+    return _advancedPanel;
+}
+
 // =============================================================================
 // StarFilterWidget
 // =============================================================================
@@ -516,21 +521,23 @@ void StarFilterWidget::setupUi()
 
     mainLayout->addLayout(topBar);
 
-    // --- Advanced filter panel (collapsible) ---
-    _advancedPanel = new QWidget(this);
+    // --- Advanced filter panel (created here but NOT added to this layout) ---
+    // ProjectView will retrieve it via advancedPanelWidget() and place it
+    // below the full-width title bar.
+    _advancedPanel = new QWidget(nullptr);
     _advancedPanel->setVisible(false);
     auto* advLayout = new QVBoxLayout(_advancedPanel);
-    advLayout->setContentsMargins(0, 4, 0, 0);
+    advLayout->setContentsMargins(10, 4, 10, 0);
     advLayout->setSpacing(4);
 
     // Logic mode + buttons row
     auto* controlBar = new QHBoxLayout();
     controlBar->setSpacing(6);
 
-    QLabel* matchLabel = new QLabel("Match:", this);
+    QLabel* matchLabel = new QLabel("Match:", _advancedPanel);
     controlBar->addWidget(matchLabel);
 
-    _logicCombo = new QComboBox(this);
+    _logicCombo = new QComboBox(_advancedPanel);
     _logicCombo->addItems({"All conditions (AND)", "Any condition (OR)"});
     _logicCombo->setFixedWidth(180);
     connect(_logicCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -539,11 +546,11 @@ void StarFilterWidget::setupUi()
 
     controlBar->addStretch();
 
-    _addFilterButton = new QPushButton("+ Add Filter", this);
+    _addFilterButton = new QPushButton("+ Add Filter", _advancedPanel);
     connect(_addFilterButton, &QPushButton::clicked, this, &StarFilterWidget::addFilterRow);
     controlBar->addWidget(_addFilterButton);
 
-    _clearAllButton = new QPushButton("Clear All", this);
+    _clearAllButton = new QPushButton("Clear All", _advancedPanel);
     connect(_clearAllButton, &QPushButton::clicked, this, &StarFilterWidget::clearAllFilters);
     controlBar->addWidget(_clearAllButton);
 
@@ -554,14 +561,12 @@ void StarFilterWidget::setupUi()
     _filterRowsLayout->setSpacing(2);
     advLayout->addLayout(_filterRowsLayout);
 
-    mainLayout->addWidget(_advancedPanel);
-
     // --- Connections ---
 
-    // Debounced search: use a timer so we don't filter on every keystroke
+    // Debounced search
     auto* searchTimer = new QTimer(this);
     searchTimer->setSingleShot(true);
-    searchTimer->setInterval(200);  // 200ms debounce
+    searchTimer->setInterval(200);
     connect(_searchEdit, &QLineEdit::textChanged, this, [searchTimer]() {
         searchTimer->start();
     });

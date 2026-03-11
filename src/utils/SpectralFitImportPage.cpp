@@ -240,47 +240,84 @@ void SpectralFitImportPage::initializePage()
 
 void SpectralFitImportPage::buildSpectrumLookupIndex()
 {
-    if (_indexBuilt) return;
-
+    // Always rebuild — don't cache, since spectra may have been
+    // added to DB between initializePage() and scan time
     LOG_INFO("FitImport", "=== Building spectrum lookup indices ===");
 
     _filenameIndex.clear();
     _sourceIdIndex.clear();
     _starSpectraIndex.clear();
+    _indexBuilt = false;
 
     QRegularExpression numericRe("(\\d{10,})");
 
-    LOG_INFO("FitImport", QString("Total stars to index: %1")
-             .arg(_importedStars.size()));
-
-    // ── Get database access for fallback spectrum loading ────────
+    // ── Get database access ─────────────────────────────────────
     StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
     DatabaseManager* dbManager = nullptr;
     if (importWizard && importWizard->controller()) {
         dbManager = importWizard->controller()->databaseManager();
     }
-    if (!dbManager) {
-        LOG_WARNING("FitImport", "No DatabaseManager available — "
-                    "cannot load spectra from DB as fallback");
+
+    // ── Strategy 1: Use _importedStars from wizard ──────────────
+    LOG_INFO("FitImport", QString("Wizard provided %1 imported stars")
+             .arg(_importedStars.size()));
+
+    // ── Strategy 2: Also load ALL stars from the current project ─
+    //    This catches stars that were saved to DB but whose
+    //    in-memory Star objects don't have spectra attached yet.
+    std::vector<std::shared_ptr<Star>> allStars;
+
+    if (dbManager) {
+        auto project = importWizard->project();
+        if (project) {
+            allStars = dbManager->loadStars(project->getId());
+            LOG_INFO("FitImport", QString("DB returned %1 stars for project '%2'")
+                     .arg(allStars.size()).arg(project->getId()));
+        }
     }
 
-    int starIdx = 0;
+    // Merge: wizard stars + DB stars (DB stars take priority since
+    // they're freshly loaded and we can query their spectra)
+    QHash<QString, std::shared_ptr<Star>> starById;
+
+    // Add wizard stars first
     for (const auto& star : _importedStars) {
+        starById[star->getId()] = star;
+    }
+    // Overwrite with DB stars (they have correct IDs for DB queries)
+    for (const auto& star : allStars) {
+        starById[star->getId()] = star;
+    }
+
+    LOG_INFO("FitImport", QString("Total unique stars to index: %1 "
+             "(wizard=%2, DB=%3)")
+             .arg(starById.size())
+             .arg(_importedStars.size())
+             .arg(allStars.size()));
+
+    int starIdx = 0;
+    int totalSpectraFound = 0;
+
+    for (auto it = starById.cbegin(); it != starById.cend(); ++it) {
         starIdx++;
+        const auto& star = it.value();
         QString starId   = star->getId();
         QString sourceId = star->getSourceId();
         QString alias    = star->getAlias();
 
         LOG_DEBUG("FitImport", QString("Star %1/%2: id='%3' sourceId='%4' alias='%5'")
-                  .arg(starIdx).arg(_importedStars.size())
+                  .arg(starIdx).arg(starById.size())
                   .arg(starId, sourceId, alias));
 
         // ── Source-ID / alias / starId index ────────────────────
         if (!sourceId.isEmpty()) {
             _sourceIdIndex[sourceId] = star;
+            // Also store the pure numeric part (Gaia DR3 → just the number)
             QRegularExpressionMatch m = numericRe.match(sourceId);
             if (m.hasMatch())
                 _sourceIdIndex[m.captured(1)] = star;
+            // Store lowercased version too
+            _sourceIdIndex[sourceId.toLower()] = star;
         }
         if (!alias.isEmpty()) {
             _sourceIdIndex[alias] = star;
@@ -290,21 +327,20 @@ void SpectralFitImportPage::buildSpectrumLookupIndex()
             _sourceIdIndex[starId] = star;
         }
 
-        // ── Load spectra: try in-memory first, then DB fallback ─
+        // ── Load spectra: try in-memory, then DB ────────────────
         auto spectra = star->getSpectra();
-
         LOG_DEBUG("FitImport", QString("  getSpectra() returned %1 spectra")
                   .arg(spectra.size()));
 
-        // DB fallback: if in-memory is empty, query DB directly
+        // DB fallback
         if (spectra.empty() && dbManager) {
-            LOG_DEBUG("FitImport", QString("  Attempting DB fallback for star '%1'")
+            LOG_DEBUG("FitImport", QString("  DB fallback: loadSpectra('%1')")
                       .arg(starId));
             spectra = dbManager->loadSpectra(starId);
             LOG_DEBUG("FitImport", QString("  DB fallback returned %1 spectra")
                       .arg(spectra.size()));
 
-            // Attach to star so future calls also see them
+            // Attach to star
             if (!spectra.empty()) {
                 for (const auto& sp : spectra) {
                     star->addSpectrum(sp);
@@ -315,21 +351,18 @@ void SpectralFitImportPage::buildSpectrumLookupIndex()
         }
 
         if (spectra.empty()) {
-            LOG_WARNING("FitImport", QString("  Star '%1' has 0 spectra "
-                "(both in-memory and DB). Cannot match fits for this star.")
-                .arg(starId));
+            LOG_WARNING("FitImport", QString("  Star '%1' (sourceId='%2') has 0 spectra!")
+                        .arg(starId, sourceId));
             continue;
         }
 
+        totalSpectraFound += static_cast<int>(spectra.size());
         _starSpectraIndex[starId] = spectra;
 
         // ── Filename index ──────────────────────────────────────
         for (const auto& spectrum : spectra) {
             QString rawFile = spectrum->getFile();
             QString specId  = spectrum->getId();
-
-            LOG_DEBUG("FitImport", QString("    Spectrum id='%1' file='%2'")
-                      .arg(specId, rawFile));
 
             if (rawFile.isEmpty()) {
                 LOG_WARNING("FitImport", QString("    Spectrum '%1' has empty file path!")
@@ -343,9 +376,9 @@ void SpectralFitImportPage::buildSpectrumLookupIndex()
             QString fileName         = fi.fileName().toLower();
 
             LOG_DEBUG("FitImport",
-                      QString("    Index keys: completeBaseName='%1' "
-                              "baseName='%2' fileName='%3'")
-                      .arg(completeBaseName, baseName, fileName));
+                      QString("    Spectrum id='%1' file='%2' → keys: "
+                              "complete='%3' base='%4' filename='%5'")
+                      .arg(specId, rawFile, completeBaseName, baseName, fileName));
 
             if (!completeBaseName.isEmpty())
                 _filenameIndex[completeBaseName] = {star, spectrum};
@@ -358,25 +391,35 @@ void SpectralFitImportPage::buildSpectrumLookupIndex()
 
     _indexBuilt = true;
 
-    int totalSpectra = 0;
-    for (auto it = _starSpectraIndex.cbegin(); it != _starSpectraIndex.cend(); ++it)
-        totalSpectra += static_cast<int>(it.value().size());
-
     LOG_INFO("FitImport",
-             QString("=== Index built: %1 sourceId entries, %2 filename entries, "
+             QString("=== Index complete: %1 sourceId entries, %2 filename entries, "
                      "%3 spectra across %4 stars ===")
              .arg(_sourceIdIndex.size())
              .arg(_filenameIndex.size())
-             .arg(totalSpectra)
+             .arg(totalSpectraFound)
              .arg(_starSpectraIndex.size()));
 
-    // Dump filename index for debugging
+    if (_filenameIndex.isEmpty()) {
+        LOG_ERROR("FitImport",
+            "Filename index is EMPTY! No spectra could be loaded from "
+            "any source. Check that spectra were saved to DB before "
+            "reaching this page, and that loadSpectra() works correctly.");
+    }
+
+    // Dump for debugging
     LOG_DEBUG("FitImport", "--- Filename index keys ---");
     for (auto it = _filenameIndex.cbegin(); it != _filenameIndex.cend(); ++it) {
-        LOG_DEBUG("FitImport", QString("  key='%1' → star='%2' spectrum='%3'")
+        LOG_DEBUG("FitImport", QString("  '%1' → star='%2' spectrum='%3' file='%4'")
                   .arg(it.key(),
                        it.value().first->getId(),
-                       it.value().second->getId()));
+                       it.value().second->getId(),
+                       it.value().second->getFile()));
+    }
+
+    LOG_DEBUG("FitImport", "--- SourceId index keys ---");
+    for (auto it = _sourceIdIndex.cbegin(); it != _sourceIdIndex.cend(); ++it) {
+        LOG_DEBUG("FitImport", QString("  '%1' → star='%2'")
+                  .arg(it.key(), it.value()->getId()));
     }
 }
 
@@ -711,8 +754,6 @@ void SpectralFitImportPage::parseDiggaFitParameters(
         if (!okErr) error = 0.0;
 
         parsedCount++;
-        LOG_DEBUG("FitImport", QString("  Param '%1' = %2 ± %3")
-                  .arg(param).arg(value).arg(error));
 
         if      (param == "final_chi2") { dir.chi2 = value; }
         else if (param == "c1_teff")    { dir.teff = value; dir.teffError = error; }
@@ -726,15 +767,12 @@ void SpectralFitImportPage::parseDiggaFitParameters(
             dir.vradTied      = true;
             dir.tiedVrad      = value;
             dir.tiedVradError = error;
-            LOG_DEBUG("FitImport", "  → tied vrad");
         }
         else {
             QRegularExpressionMatch vm = vradUntiedRe.match(param);
             if (vm.hasMatch()) {
                 int specIdx = vm.captured(1).toInt();
                 dir.vradPerSpectrum[specIdx] = {value, error};
-                LOG_DEBUG("FitImport", QString("  → untied vrad for spec %1")
-                          .arg(specIdx));
             }
         }
     }

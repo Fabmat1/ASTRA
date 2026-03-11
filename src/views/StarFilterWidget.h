@@ -155,8 +155,8 @@ public:
 
     void setColumns(const QStringList& allColumns, const QStringList& numericColumns);
     void connectToProxy(StarFilterProxyModel* proxy);
-
     int activeFilterCount() const;
+    QWidget* advancedPanelWidget() const;
 
 signals:
     void filtersChanged();

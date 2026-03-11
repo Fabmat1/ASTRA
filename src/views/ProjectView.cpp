@@ -48,13 +48,18 @@ void ProjectView::setupUi()
     mainLayout->setContentsMargins(0, 0, 0, 0);
     mainLayout->setSpacing(4);
 
-    _projectTitle = new QLabel("Project");
-    _projectTitle->setStyleSheet("font-size: 20px; font-weight: bold; margin: 10px;");
-    mainLayout->addWidget(_projectTitle);
+    // Top bar: project title + filter search on same line
+    QHBoxLayout* topBarLayout = new QHBoxLayout();
+    topBarLayout->setContentsMargins(10, 6, 10, 2);
+    topBarLayout->setSpacing(12);
 
-    // Filter widget
+    _projectTitle = new ScrollingLabel(this);
+    _projectTitle->setText("Project");
+    _projectTitle->setMaxFraction(0.4);
+
+    // Filter widget (only the search bar portion lives here)
     _filterWidget = new StarFilterWidget(this);
-    _filterWidget->setContentsMargins(10, 0, 10, 0);
+    _filterWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     connect(_filterWidget, &StarFilterWidget::filtersChanged,
             this, [this]() {
                 int shown = _proxyModel ? _proxyModel->rowCount() : 0;
@@ -68,7 +73,15 @@ void ProjectView::setupUi()
                     updateStatusBar(QString("Loaded %1 stars").arg(total));
                 }
             });
-    mainLayout->addWidget(_filterWidget);
+
+    topBarLayout->addWidget(_projectTitle, 0);
+    topBarLayout->addWidget(_filterWidget, 1);
+    mainLayout->addLayout(topBarLayout);
+
+    // Advanced filter panel spans full width below the title bar
+    QWidget* advancedPanel = _filterWidget->advancedPanelWidget();
+    advancedPanel->setParent(this);
+    mainLayout->addWidget(advancedPanel);
 
     _starTable = new QTableView(this);
     _starTable->setAlternatingRowColors(false);
@@ -76,15 +89,15 @@ void ProjectView::setupUi()
     _starTable->horizontalHeader()->setStretchLastSection(true);
     _starTable->horizontalHeader()->setSectionsClickable(true);
     _starTable->horizontalHeader()->setSortIndicatorShown(true);
-    
+
     _starTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     _starTable->setSelectionBehavior(QAbstractItemView::SelectItems);
-    
+
     _starTable->setContextMenuPolicy(Qt::CustomContextMenu);
     _starTable->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
     _starTable->verticalHeader()->setVisible(true);
     _starTable->verticalHeader()->setSectionsClickable(true);
-    
+
     mainLayout->addWidget(_starTable, 1);
 
     connect(_starTable, &QTableView::doubleClicked,
