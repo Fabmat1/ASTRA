@@ -6,6 +6,7 @@
 #include "models/Spectrum.h"
 #include "Logger.h"
 #include "utils/DatabaseManager.h"
+#include "BackgroundTaskManager.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -200,227 +201,161 @@ void SpectralFitImportPage::initializePage()
     LOG_INFO("FitImport", QString("Received %1 stars from wizard")
              .arg(_importedStars.size()));
 
-    // Diagnostic: check what we actually have
-    for (size_t i = 0; i < _importedStars.size() && i < 5; ++i) {
-        auto& star = _importedStars[i];
-        LOG_INFO("FitImport", QString("  Star[%1]: id='%2' sourceId='%3' alias='%4'")
-                 .arg(i).arg(star->getId(), star->getSourceId(), star->getAlias()));
-
-        // Force-trigger spectrum loading and check
-        auto spectra = star->getSpectra();
-        LOG_INFO("FitImport", QString("    → %1 spectra").arg(spectra.size()));
-        for (size_t j = 0; j < spectra.size() && j < 3; ++j) {
-            LOG_INFO("FitImport", QString("      Spectrum[%1]: id='%2' file='%3'")
-                     .arg(j).arg(spectra[j]->getId(), spectra[j]->getFile()));
-        }
-        if (spectra.size() > 3)
-            LOG_INFO("FitImport", QString("      ... and %1 more")
-                     .arg(spectra.size() - 3));
-    }
-    if (_importedStars.size() > 5)
-        LOG_INFO("FitImport", QString("  ... and %1 more stars")
-                 .arg(_importedStars.size() - 5));
-
     _asyncBusy  = false;
     _indexBuilt = false;
     _diggaDirs.clear();
     _previewTree->clear();
 
-    buildSpectrumLookupIndex();
+    // If spectra import is still running, tell the user to wait
+    if (isSpectraImportRunning()) {
+        _diggaScanButton->setEnabled(false);
+        _statusLabel->setText(
+            "⏳ Spectra import is still running in the background. "
+            "Please wait for it to finish before scanning for fits.");
 
-    int totalSpectra = 0;
-    for (auto it = _starSpectraIndex.cbegin(); it != _starSpectraIndex.cend(); ++it)
-        totalSpectra += static_cast<int>(it.value().size());
+        // Poll until done
+        auto* pollTimer = new QTimer(this);
+        pollTimer->setInterval(500);
+        connect(pollTimer, &QTimer::timeout, this, [this, pollTimer]() {
+            if (!isSpectraImportRunning()) {
+                pollTimer->stop();
+                pollTimer->deleteLater();
 
-    _statusLabel->setText(
-        QString("Ready to import spectral fits for %1 stars (%2 spectra). "
-                "Select a folder and scan.")
-        .arg(_importedStars.size()).arg(totalSpectra));
-}
-
-void SpectralFitImportPage::buildSpectrumLookupIndex()
-{
-    // Always rebuild — don't cache, since spectra may have been
-    // added to DB between initializePage() and scan time
-    LOG_INFO("FitImport", "=== Building spectrum lookup indices ===");
-
-    _filenameIndex.clear();
-    _sourceIdIndex.clear();
-    _starSpectraIndex.clear();
-    _indexBuilt = false;
-
-    QRegularExpression numericRe("(\\d{10,})");
-
-    // ── Get database access ─────────────────────────────────────
-    StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
-    DatabaseManager* dbManager = nullptr;
-    if (importWizard && importWizard->controller()) {
-        dbManager = importWizard->controller()->databaseManager();
+                // Now build index and enable scan
+                _specIndex = buildSpectrumLookupIndex();
+                _indexBuilt = true;
+                _diggaScanButton->setEnabled(!_diggaFolderEdit->text().trimmed().isEmpty());
+                _statusLabel->setText(
+                    QString("Ready — %1 stars, %2 spectra indexed. "
+                            "Select a folder and scan.")
+                    .arg(_specIndex.sourceIdIndex.size())
+                    .arg(_specIndex.totalSpectra));
+            }
+        });
+        pollTimer->start();
+        return;
     }
 
-    // ── Strategy 1: Use _importedStars from wizard ──────────────
-    LOG_INFO("FitImport", QString("Wizard provided %1 imported stars")
-             .arg(_importedStars.size()));
+    // Spectra import already done — build index immediately
+    _specIndex = buildSpectrumLookupIndex();
+    _indexBuilt = true;
 
-    // ── Strategy 2: Also load ALL stars from the current project ─
-    //    This catches stars that were saved to DB but whose
-    //    in-memory Star objects don't have spectra attached yet.
-    std::vector<std::shared_ptr<Star>> allStars;
+    _statusLabel->setText(
+        QString("Ready — %1 spectra indexed across %2 stars. "
+                "Select a folder and scan.")
+        .arg(_specIndex.totalSpectra)
+        .arg(_specIndex.starSpectraIndex.size()));
+}
+
+
+bool SpectralFitImportPage::isSpectraImportRunning() const
+{
+    StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
+    if (!importWizard || !importWizard->controller())
+        return false;
+
+    auto* taskMgr = importWizard->controller()->backgroundTaskManager();
+    return taskMgr && taskMgr->hasActiveTasks();
+}
+
+
+// ════════════════════════════════════════════════════════════════
+// Index building
+// ════════════════════════════════════════════════════════════════
+
+SpectralFitImportPage::SpectrumIndex SpectralFitImportPage::buildSpectrumLookupIndex()
+{
+    LOG_INFO("FitImport", "=== Building spectrum lookup index ===");
+
+    SpectrumIndex idx;
+    QRegularExpression numericRe("(\\d{10,})");
+
+    StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
+    DatabaseManager* dbManager = nullptr;
+    if (importWizard && importWizard->controller())
+        dbManager = importWizard->controller()->databaseManager();
+
+    // Merge wizard stars + DB stars (DB takes priority)
+    QHash<QString, std::shared_ptr<Star>> starById;
+    for (const auto& star : _importedStars)
+        starById[star->getId()] = star;
 
     if (dbManager) {
         auto project = importWizard->project();
         if (project) {
-            allStars = dbManager->loadStars(project->getId());
-            LOG_INFO("FitImport", QString("DB returned %1 stars for project '%2'")
-                     .arg(allStars.size()).arg(project->getId()));
+            auto dbStars = dbManager->loadStars(project->getId());
+            LOG_INFO("FitImport", QString("DB returned %1 stars").arg(dbStars.size()));
+            for (const auto& star : dbStars)
+                starById[star->getId()] = star;
         }
     }
 
-    // Merge: wizard stars + DB stars (DB stars take priority since
-    // they're freshly loaded and we can query their spectra)
-    QHash<QString, std::shared_ptr<Star>> starById;
-
-    // Add wizard stars first
-    for (const auto& star : _importedStars) {
-        starById[star->getId()] = star;
-    }
-    // Overwrite with DB stars (they have correct IDs for DB queries)
-    for (const auto& star : allStars) {
-        starById[star->getId()] = star;
-    }
-
-    LOG_INFO("FitImport", QString("Total unique stars to index: %1 "
-             "(wizard=%2, DB=%3)")
-             .arg(starById.size())
-             .arg(_importedStars.size())
-             .arg(allStars.size()));
-
-    int starIdx = 0;
-    int totalSpectraFound = 0;
+    LOG_INFO("FitImport", QString("Indexing %1 unique stars").arg(starById.size()));
 
     for (auto it = starById.cbegin(); it != starById.cend(); ++it) {
-        starIdx++;
         const auto& star = it.value();
         QString starId   = star->getId();
         QString sourceId = star->getSourceId();
         QString alias    = star->getAlias();
 
-        LOG_DEBUG("FitImport", QString("Star %1/%2: id='%3' sourceId='%4' alias='%5'")
-                  .arg(starIdx).arg(starById.size())
-                  .arg(starId, sourceId, alias));
-
-        // ── Source-ID / alias / starId index ────────────────────
+        // Source-ID / alias index (multiple keys per star)
         if (!sourceId.isEmpty()) {
-            _sourceIdIndex[sourceId] = star;
-            // Also store the pure numeric part (Gaia DR3 → just the number)
+            idx.sourceIdIndex[sourceId] = star;
+            idx.sourceIdIndex[sourceId.toLower()] = star;
             QRegularExpressionMatch m = numericRe.match(sourceId);
             if (m.hasMatch())
-                _sourceIdIndex[m.captured(1)] = star;
-            // Store lowercased version too
-            _sourceIdIndex[sourceId.toLower()] = star;
+                idx.sourceIdIndex[m.captured(1)] = star;
         }
         if (!alias.isEmpty()) {
-            _sourceIdIndex[alias] = star;
-            _sourceIdIndex[alias.toLower()] = star;
+            idx.sourceIdIndex[alias] = star;
+            idx.sourceIdIndex[alias.toLower()] = star;
         }
-        if (!starId.isEmpty()) {
-            _sourceIdIndex[starId] = star;
-        }
+        if (!starId.isEmpty())
+            idx.sourceIdIndex[starId] = star;
 
-        // ── Load spectra: try in-memory, then DB ────────────────
+        // Load spectra: in-memory first, then DB fallback
         auto spectra = star->getSpectra();
-        LOG_DEBUG("FitImport", QString("  getSpectra() returned %1 spectra")
-                  .arg(spectra.size()));
-
-        // DB fallback
         if (spectra.empty() && dbManager) {
-            LOG_DEBUG("FitImport", QString("  DB fallback: loadSpectra('%1')")
-                      .arg(starId));
             spectra = dbManager->loadSpectra(starId);
-            LOG_DEBUG("FitImport", QString("  DB fallback returned %1 spectra")
-                      .arg(spectra.size()));
-
-            // Attach to star
-            if (!spectra.empty()) {
-                for (const auto& sp : spectra) {
-                    star->addSpectrum(sp);
-                }
-                LOG_INFO("FitImport", QString("  Attached %1 spectra from DB to star '%2'")
-                         .arg(spectra.size()).arg(starId));
-            }
+            for (const auto& sp : spectra)
+                star->addSpectrum(sp);
         }
 
-        if (spectra.empty()) {
-            LOG_WARNING("FitImport", QString("  Star '%1' (sourceId='%2') has 0 spectra!")
-                        .arg(starId, sourceId));
+        if (spectra.empty())
             continue;
-        }
 
-        totalSpectraFound += static_cast<int>(spectra.size());
-        _starSpectraIndex[starId] = spectra;
+        idx.totalSpectra += static_cast<int>(spectra.size());
+        idx.starSpectraIndex[starId] = spectra;
 
-        // ── Filename index ──────────────────────────────────────
+        // Filename index — multiple keys per spectrum
         for (const auto& spectrum : spectra) {
             QString rawFile = spectrum->getFile();
-            QString specId  = spectrum->getId();
-
-            if (rawFile.isEmpty()) {
-                LOG_WARNING("FitImport", QString("    Spectrum '%1' has empty file path!")
-                            .arg(specId));
-                continue;
-            }
+            if (rawFile.isEmpty()) continue;
 
             QFileInfo fi(rawFile);
-            QString completeBaseName = fi.completeBaseName().toLower();
-            QString baseName         = fi.baseName().toLower();
-            QString fileName         = fi.fileName().toLower();
+            QString completeBase = fi.completeBaseName().toLower();
+            QString base         = fi.baseName().toLower();
+            QString fileName     = fi.fileName().toLower();
 
-            LOG_DEBUG("FitImport",
-                      QString("    Spectrum id='%1' file='%2' → keys: "
-                              "complete='%3' base='%4' filename='%5'")
-                      .arg(specId, rawFile, completeBaseName, baseName, fileName));
-
-            if (!completeBaseName.isEmpty())
-                _filenameIndex[completeBaseName] = {star, spectrum};
-            if (!baseName.isEmpty() && baseName != completeBaseName)
-                _filenameIndex[baseName] = {star, spectrum};
-            if (!fileName.isEmpty() && fileName != completeBaseName)
-                _filenameIndex[fileName] = {star, spectrum};
+            auto pair = qMakePair(star, spectrum);
+            if (!completeBase.isEmpty())
+                idx.filenameIndex.insert(completeBase, pair);
+            if (!base.isEmpty() && base != completeBase)
+                idx.filenameIndex.insert(base, pair);
+            if (!fileName.isEmpty() && fileName != completeBase)
+                idx.filenameIndex.insert(fileName, pair);
         }
     }
 
-    _indexBuilt = true;
-
     LOG_INFO("FitImport",
-             QString("=== Index complete: %1 sourceId entries, %2 filename entries, "
+             QString("=== Index complete: %1 sourceId keys, %2 filename keys, "
                      "%3 spectra across %4 stars ===")
-             .arg(_sourceIdIndex.size())
-             .arg(_filenameIndex.size())
-             .arg(totalSpectraFound)
-             .arg(_starSpectraIndex.size()));
+             .arg(idx.sourceIdIndex.size())
+             .arg(idx.filenameIndex.size())
+             .arg(idx.totalSpectra)
+             .arg(idx.starSpectraIndex.size()));
 
-    if (_filenameIndex.isEmpty()) {
-        LOG_ERROR("FitImport",
-            "Filename index is EMPTY! No spectra could be loaded from "
-            "any source. Check that spectra were saved to DB before "
-            "reaching this page, and that loadSpectra() works correctly.");
-    }
-
-    // Dump for debugging
-    LOG_DEBUG("FitImport", "--- Filename index keys ---");
-    for (auto it = _filenameIndex.cbegin(); it != _filenameIndex.cend(); ++it) {
-        LOG_DEBUG("FitImport", QString("  '%1' → star='%2' spectrum='%3' file='%4'")
-                  .arg(it.key(),
-                       it.value().first->getId(),
-                       it.value().second->getId(),
-                       it.value().second->getFile()));
-    }
-
-    LOG_DEBUG("FitImport", "--- SourceId index keys ---");
-    for (auto it = _sourceIdIndex.cbegin(); it != _sourceIdIndex.cend(); ++it) {
-        LOG_DEBUG("FitImport", QString("  '%1' → star='%2'")
-                  .arg(it.key(), it.value()->getId()));
-    }
+    return idx;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -455,12 +390,18 @@ void SpectralFitImportPage::onBrowseDiggaFolder()
 }
 
 // ════════════════════════════════════════════════════════════════
-// DIGGA: async scan
+// DIGGA: async scan — ALL heavy work in background thread
 // ════════════════════════════════════════════════════════════════
 
 void SpectralFitImportPage::onScanDigga()
 {
     if (_asyncBusy) return;
+
+    if (isSpectraImportRunning()) {
+        _statusLabel->setText(
+            "⏳ Spectra import is still running. Please wait for it to finish.");
+        return;
+    }
 
     QString rootFolder = _diggaFolderEdit->text().trimmed();
     if (rootFolder.isEmpty()) return;
@@ -468,121 +409,130 @@ void SpectralFitImportPage::onScanDigga()
     _asyncBusy = true;
     _diggaScanButton->setEnabled(false);
     _diggaProgress->setVisible(true);
-    _diggaProgress->setRange(0, 0);   // indeterminate
+    _diggaProgress->setRange(0, 0);
     _diggaRootFolder = rootFolder;
     _statusLabel->setText("Scanning for DIGGA output directories...");
 
-    // ── Background: recursive filesystem scan + file reading ────
-    auto future = QtConcurrent::run(
-        [rootFolder]() -> std::vector<DiggaScanResult>
-    {
-        std::vector<DiggaScanResult> results;
+    // Capture the index for the background thread (it's a value type with
+    // shared_ptrs inside, so this is a cheap refcount bump).
+    SpectrumIndex indexSnapshot = _specIndex;
 
-        // Collect all directories to check (root + recursive children)
-        QStringList dirsToCheck;
-        dirsToCheck << rootFolder;
+    auto future = QtConcurrent::run(
+        [rootFolder, indexSnapshot]() mutable
+            -> QPair<std::vector<DiggaFitDirectory>, int>
+    {
+        // ── Phase 1: Filesystem scan ────────────────────────────
+        // Collect candidate dirs in one pass
+        std::vector<DiggaScanResult> scanResults;
 
         QDirIterator it(rootFolder,
                         QDir::Dirs | QDir::NoDotAndDotDot,
                         QDirIterator::Subdirectories);
-        while (it.hasNext())
-            dirsToCheck << it.next();
 
-        for (const QString& dirPath : dirsToCheck) {
+        // Also check root itself
+        {
+            QDir rootDir(rootFolder);
+            if (rootDir.exists("fit_parameters.csv") &&
+                rootDir.exists("fit_report.tex"))
+            {
+                DiggaScanResult scan;
+                scan.dirPath = rootFolder;
+                scan.gridName = rootDir.dirName();
+                QDir parent(rootFolder); parent.cdUp();
+                scan.parentDirName = parent.dirName();
+                scanResults.push_back(std::move(scan));
+            }
+        }
+
+        while (it.hasNext()) {
+            QString dirPath = it.next();
             QDir dir(dirPath);
             if (!dir.exists("fit_parameters.csv") ||
                 !dir.exists("fit_report.tex"))
                 continue;
 
             DiggaScanResult scan;
-            scan.dirPath       = dirPath;
-            scan.gridName      = dir.dirName();
+            scan.dirPath   = dirPath;
+            scan.gridName  = dir.dirName();
+            QDir parent(dirPath); parent.cdUp();
+            scan.parentDirName = parent.dirName();
 
-            QDir parentDir(dirPath);
-            parentDir.cdUp();
-            scan.parentDirName = parentDir.dirName();
-
-            // Read fit_report.tex
+            // Read the two small text files
             {
                 QFile f(dir.filePath("fit_report.tex"));
                 if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
                     scan.fitReportContent = QTextStream(&f).readAll();
-                    f.close();
                 } else {
                     scan.valid = false;
                     scan.error = "Cannot read fit_report.tex";
                 }
             }
-
-            // Read fit_parameters.csv
             {
                 QFile f(dir.filePath("fit_parameters.csv"));
                 if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
                     scan.fitParametersContent = QTextStream(&f).readAll();
-                    f.close();
                 } else {
                     scan.valid = false;
                     scan.error = "Cannot read fit_parameters.csv";
                 }
             }
 
-            // Find *_plotdata.csv files
+            // Plotdata files
             const QStringList pdFiles =
                 dir.entryList({"*_plotdata.csv"}, QDir::Files);
             for (const QString& pdf : pdFiles) {
-                // key = basename with _plotdata.csv stripped, lowered
                 QString key = pdf;
-                key.chop(static_cast<int>(
-                    QString("_plotdata.csv").length()));
+                key.chop(static_cast<int>(QString("_plotdata.csv").length()));
                 scan.plotdataFiles[key.toLower()] = dir.filePath(pdf);
             }
 
-            results.push_back(std::move(scan));
+            scanResults.push_back(std::move(scan));
         }
 
-        return results;
+        int scanCount = static_cast<int>(scanResults.size());
+
+        // ── Phase 2: Parse all dirs ─────────────────────────────
+        std::vector<DiggaFitDirectory> dirs;
+        dirs.reserve(scanResults.size());
+        for (const auto& scan : scanResults)
+            dirs.push_back(parseDiggaDirectory(scan));
+
+        // ── Phase 3: Match against index ────────────────────────
+        matchDiggaDirectories(dirs, indexSnapshot);
+
+        return qMakePair(std::move(dirs), scanCount);
     });
 
-    auto* watcher =
-        new QFutureWatcher<std::vector<DiggaScanResult>>(this);
+    auto* watcher = new QFutureWatcher<
+        QPair<std::vector<DiggaFitDirectory>, int>>(this);
 
     connect(watcher,
-            &QFutureWatcher<std::vector<DiggaScanResult>>::finished,
-            this, [this, watcher]() {
-                auto results = watcher->result();
-                watcher->deleteLater();
+            &QFutureWatcher<QPair<std::vector<DiggaFitDirectory>, int>>::finished,
+            this, [this, watcher]()
+    {
+        auto result = watcher->result();
+        watcher->deleteLater();
 
-                // ── Back on main thread: parse + match + display ────
-                _asyncBusy = false;
-                _diggaScanButton->setEnabled(true);
-                _diggaProgress->setVisible(false);
+        _diggaDirs = std::move(result.first);
+        int scanCount = result.second;
 
-                LOG_INFO("FitImport",
-                         QString("Scan found %1 DIGGA output directories")
-                         .arg(results.size()));
+        _asyncBusy = false;
+        _diggaScanButton->setEnabled(true);
+        _diggaProgress->setVisible(false);
 
-                if (results.empty()) {
-                    _statusLabel->setText(
-                        "No DIGGA output directories found. Each directory "
-                        "must contain both fit_parameters.csv and "
-                        "fit_report.tex.");
-                    return;
-                }
+        LOG_INFO("FitImport",
+                 QString("Scan complete: %1 DIGGA directories found")
+                 .arg(scanCount));
 
-                // Parse all scan results
-                _diggaDirs.clear();
-                _diggaDirs.reserve(results.size());
-                for (const auto& scan : results) {
-                    _diggaDirs.push_back(parseDiggaDirectory(scan));
-                }
+        if (_diggaDirs.empty()) {
+            _statusLabel->setText(
+                "No DIGGA output directories found. Each directory must "
+                "contain both fit_parameters.csv and fit_report.tex.");
+            return;
+        }
 
-                // Match spectra to DB
-                buildSpectrumLookupIndex();
-                matchDiggaDirectories();
-
-                // Update UI
-                updateDiggaPreviewTable();
-            });
+        updateDiggaPreviewTable();
+    });
 
     watcher->setFuture(future);
 }
@@ -785,116 +735,63 @@ void SpectralFitImportPage::parseDiggaFitParameters(
 }
 
 // ════════════════════════════════════════════════════════════════
-// DIGGA: matching to DB spectra
+// DIGGA: matching — static, no per-item logging
 // ════════════════════════════════════════════════════════════════
 
-void SpectralFitImportPage::matchDiggaDirectories()
+void SpectralFitImportPage::matchDiggaDirectories(
+    std::vector<DiggaFitDirectory>& dirs,
+    const SpectrumIndex& index)
 {
-    LOG_INFO("FitImport", "=== Matching DIGGA directories to DB spectra ===");
+    LOG_INFO("FitImport", QString("Matching %1 directories against index "
+             "(%2 filename keys, %3 sourceId keys)")
+             .arg(dirs.size())
+             .arg(index.filenameIndex.size())
+             .arg(index.sourceIdIndex.size()));
 
-    for (auto& dir : _diggaDirs) {
+    int totalMatched = 0;
+
+    for (auto& dir : dirs) {
         dir.specMatches.clear();
         dir.matchedSpectra = 0;
 
-        LOG_INFO("FitImport", QString("--- Directory: '%1' (grid='%2' parent='%3') ---")
-                 .arg(dir.dirPath, dir.gridName, dir.parentDirName));
-
-        if (!dir.parseOk) {
-            LOG_WARNING("FitImport", QString("  Skipping: parse error '%1'")
-                        .arg(dir.parseError));
+        if (!dir.parseOk)
             continue;
-        }
-
-        LOG_DEBUG("FitImport", QString("  specIndexToFilename has %1 entries")
-                  .arg(dir.specIndexToFilename.size()));
-        for (auto it = dir.specIndexToFilename.cbegin();
-             it != dir.specIndexToFilename.cend(); ++it) {
-            LOG_DEBUG("FitImport", QString("    spec %1 → '%2'")
-                      .arg(it.key()).arg(it.value()));
-        }
-
-        LOG_DEBUG("FitImport", QString("  plotdataFiles has %1 entries")
-                  .arg(dir.plotdataFiles.size()));
-        for (auto it = dir.plotdataFiles.cbegin();
-             it != dir.plotdataFiles.cend(); ++it) {
-            LOG_DEBUG("FitImport", QString("    key='%1' → '%2'")
-                      .arg(it.key(), it.value()));
-        }
 
         // ── Step 1: identify the star ───────────────────────────
         std::shared_ptr<Star> dirStar;
 
-        // Try parent directory name as source_id
-        LOG_DEBUG("FitImport", QString("  Trying parent dir '%1' as sourceId...")
-                  .arg(dir.parentDirName));
-        {
-            auto it = _sourceIdIndex.find(dir.parentDirName);
-            if (it != _sourceIdIndex.end()) {
+        // Try parent dir as sourceId
+        auto trySourceId = [&](const QString& key) -> bool {
+            auto it = index.sourceIdIndex.find(key);
+            if (it != index.sourceIdIndex.end()) {
                 dirStar = it.value();
-                LOG_INFO("FitImport", QString("  ✓ Star found via parent dir: '%1'")
-                         .arg(dirStar->getId()));
-            } else {
-                LOG_DEBUG("FitImport", "  ✗ Not found in sourceId index");
+                return true;
             }
-        }
+            return false;
+        };
 
-        // Also try lowered parent dir
-        if (!dirStar) {
-            auto it = _sourceIdIndex.find(dir.parentDirName.toLower());
-            if (it != _sourceIdIndex.end()) {
-                dirStar = it.value();
-                LOG_INFO("FitImport", QString("  ✓ Star found via lowered parent dir: '%1'")
-                         .arg(dirStar->getId()));
-            }
-        }
+        trySourceId(dir.parentDirName) ||
+        trySourceId(dir.parentDirName.toLower()) ||
+        trySourceId(dir.gridName) ||
+        trySourceId(dir.gridName.toLower());
 
-        // Also try grid name as star identifier
+        // Probe filenames if star not found yet
         if (!dirStar) {
-            LOG_DEBUG("FitImport", QString("  Trying grid name '%1' as sourceId...")
-                      .arg(dir.gridName));
-            auto it = _sourceIdIndex.find(dir.gridName);
-            if (it != _sourceIdIndex.end()) {
-                dirStar = it.value();
-                LOG_INFO("FitImport", QString("  ✓ Star found via grid name: '%1'")
-                         .arg(dirStar->getId()));
-            }
-        }
-
-        // Probe spectrum filenames to find the star
-        if (!dirStar) {
-            LOG_DEBUG("FitImport", "  Probing spectrum filenames for star match...");
             for (auto it = dir.specIndexToFilename.cbegin();
-                 it != dir.specIndexToFilename.cend(); ++it) {
-
-                QString rawFn = it.value();
-                QFileInfo fi(rawFn);
-                QString completeBase = fi.completeBaseName().toLower();
-                QString base         = fi.baseName().toLower();
-                QString fullName     = fi.fileName().toLower();
-
-                LOG_DEBUG("FitImport",
-                          QString("    Probing spec %1: raw='%2' "
-                                  "completeBase='%3' base='%4' fileName='%5'")
-                          .arg(it.key()).arg(rawFn, completeBase, base, fullName));
-
-                // Try each variant
-                for (const QString& key : {completeBase, base, fullName, rawFn.toLower()}) {
-                    auto fnIt = _filenameIndex.find(key);
-                    if (fnIt != _filenameIndex.end()) {
+                 !dirStar && it != dir.specIndexToFilename.cend(); ++it) {
+                QFileInfo fi(it.value());
+                for (const QString& key : {
+                         fi.completeBaseName().toLower(),
+                         fi.baseName().toLower(),
+                         fi.fileName().toLower(),
+                         it.value().toLower()}) {
+                    auto fnIt = index.filenameIndex.find(key);
+                    if (fnIt != index.filenameIndex.end()) {
                         dirStar = fnIt.value().first;
-                        LOG_INFO("FitImport",
-                                 QString("    ✓ Star found via filename key '%1': star='%2'")
-                                 .arg(key, dirStar->getId()));
                         break;
                     }
                 }
-                if (dirStar) break;
             }
-        }
-
-        if (!dirStar) {
-            LOG_WARNING("FitImport",
-                "  ✗ Could not identify star for this directory by any method!");
         }
 
         // ── Step 2: match each spectrum ─────────────────────────
@@ -903,9 +800,6 @@ void SpectralFitImportPage::matchDiggaDirectories()
         {
             int specIdx      = it.key();
             QString filename = it.value();
-
-            LOG_DEBUG("FitImport", QString("  Matching spec %1: '%2'")
-                      .arg(specIdx).arg(filename));
 
             DiggaFitDirectory::SpecMatch sm;
             sm.specIndex     = specIdx;
@@ -920,97 +814,66 @@ void SpectralFitImportPage::matchDiggaDirectories()
                 sm.vradError = dir.vradPerSpectrum[specIdx].second;
             }
 
-            // Plotdata file
+            // Plotdata file lookup
             QFileInfo fi(filename);
             QString completeBase = fi.completeBaseName().toLower();
             QString base         = fi.baseName().toLower();
             QString fullName     = fi.fileName().toLower();
 
-            // Try plotdata with various key forms
-            if (dir.plotdataFiles.contains(completeBase)) {
+            if (dir.plotdataFiles.contains(completeBase))
                 sm.plotdataFile = dir.plotdataFiles[completeBase];
-            } else if (dir.plotdataFiles.contains(base)) {
+            else if (dir.plotdataFiles.contains(base))
                 sm.plotdataFile = dir.plotdataFiles[base];
-            } else if (dir.plotdataFiles.contains(fullName)) {
+            else if (dir.plotdataFiles.contains(fullName))
                 sm.plotdataFile = dir.plotdataFiles[fullName];
-            }
 
-            LOG_DEBUG("FitImport",
-                      QString("    Keys: completeBase='%1' base='%2' fileName='%3' plotdata='%4'")
-                      .arg(completeBase, base, fullName,
-                           sm.plotdataFile.isEmpty() ? "(none)" : "found"));
-
-            // ── Attempt matching via filename index ─────────────
+            // Filename index match
             bool matched = false;
             for (const QString& key : {completeBase, base, fullName, filename.toLower()}) {
-                auto fnIt = _filenameIndex.find(key);
-                if (fnIt != _filenameIndex.end()) {
+                auto fnIt = index.filenameIndex.find(key);
+                if (fnIt != index.filenameIndex.end()) {
                     sm.matchedStar     = fnIt.value().first;
                     sm.matchedSpectrum = fnIt.value().second;
                     sm.matched         = true;
                     matched            = true;
-                    LOG_INFO("FitImport",
-                             QString("    ✓ Matched via filename key '%1' → "
-                                     "star='%2' spectrum='%3' (file='%4')")
-                             .arg(key,
-                                  sm.matchedStar->getId(),
-                                  sm.matchedSpectrum->getId(),
-                                  sm.matchedSpectrum->getFile()));
                     if (!dirStar) dirStar = sm.matchedStar;
                     break;
                 }
             }
 
-            // ── Fallback: search within the star's spectra ──────
+            // Fallback: search within the star's own spectra
             if (!matched && dirStar) {
-                LOG_DEBUG("FitImport", "    Trying fallback: per-star spectrum search...");
-                auto sIt = _starSpectraIndex.find(dirStar->getId());
-                if (sIt != _starSpectraIndex.end()) {
+                auto sIt = index.starSpectraIndex.find(dirStar->getId());
+                if (sIt != index.starSpectraIndex.end()) {
                     for (const auto& sp : sIt.value()) {
                         QFileInfo spFi(sp->getFile());
-                        QString spCompleteBase = spFi.completeBaseName().toLower();
-                        QString spBase         = spFi.baseName().toLower();
-                        QString spFileName     = spFi.fileName().toLower();
+                        QString spCB = spFi.completeBaseName().toLower();
+                        QString spB  = spFi.baseName().toLower();
+                        QString spFN = spFi.fileName().toLower();
 
-                        LOG_DEBUG("FitImport",
-                                  QString("      Comparing with spectrum '%1': "
-                                          "completeBase='%2' base='%3' fileName='%4'")
-                                  .arg(sp->getId(), spCompleteBase, spBase, spFileName));
-
-                        if (spCompleteBase == completeBase ||
-                            spBase == base ||
-                            spBase == completeBase ||
-                            spCompleteBase == base ||
-                            spFileName == fullName) {
+                        if (spCB == completeBase || spB == base ||
+                            spB == completeBase || spCB == base ||
+                            spFN == fullName)
+                        {
                             sm.matchedStar     = dirStar;
                             sm.matchedSpectrum = sp;
                             sm.matched         = true;
                             matched            = true;
-                            LOG_INFO("FitImport",
-                                     QString("    ✓ Matched via fallback star search → "
-                                             "spectrum='%1' (file='%2')")
-                                     .arg(sp->getId(), sp->getFile()));
                             break;
                         }
                     }
-                } else {
-                    LOG_DEBUG("FitImport", "    Star has no spectra in _starSpectraIndex");
                 }
-            }
-
-            if (!matched) {
-                LOG_WARNING("FitImport",
-                            QString("    ✗ No match for spec %1 '%2'")
-                            .arg(specIdx).arg(filename));
             }
 
             if (sm.matched) dir.matchedSpectra++;
             dir.specMatches.push_back(std::move(sm));
         }
 
-        LOG_INFO("FitImport", QString("  Result: %1/%2 spectra matched")
-                 .arg(dir.matchedSpectra).arg(dir.totalSpectra));
+        totalMatched += dir.matchedSpectra;
     }
+
+    LOG_INFO("FitImport", QString("Matching complete: %1 total spectra matched")
+             .arg(totalMatched));
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1054,25 +917,43 @@ bool SpectralFitImportPage::loadPlotdata(
 }
 
 // ════════════════════════════════════════════════════════════════
-// Preview table
+// Preview table — LIMITED rows, no expandAll on large datasets
 // ════════════════════════════════════════════════════════════════
 
 void SpectralFitImportPage::updateDiggaPreviewTable()
 {
     _previewTree->clear();
+    _previewTree->setUpdatesEnabled(false);
 
-    int totalDirs      = 0;
+    static constexpr int MAX_PREVIEW_DIRS     = 200;
+    static constexpr int MAX_CHILDREN_PER_DIR = 10;
+
+    int totalDirs      = static_cast<int>(_diggaDirs.size());
     int fullyMatched   = 0;
     int partialMatched = 0;
     int unmatched      = 0;
     int totalSpecMatch = 0;
     int totalSpecAll   = 0;
 
+    // First pass: compute totals (cheap, no widget work)
     for (const auto& dir : _diggaDirs) {
-        totalDirs++;
         totalSpecAll += dir.totalSpectra;
+        totalSpecMatch += dir.matchedSpectra;
 
-        // ── Directory-level item ────────────────────────────────
+        if (!dir.parseOk || dir.matchedSpectra == 0)
+            unmatched++;
+        else if (dir.matchedSpectra == dir.totalSpectra)
+            fullyMatched++;
+        else
+            partialMatched++;
+    }
+
+    // Second pass: build limited preview items
+    int dirsShown = 0;
+    for (const auto& dir : _diggaDirs) {
+        if (dirsShown >= MAX_PREVIEW_DIRS) break;
+        dirsShown++;
+
         QTreeWidgetItem* dirItem = new QTreeWidgetItem;
 
         // Column 0: relative path
@@ -1086,7 +967,7 @@ void SpectralFitImportPage::updateDiggaPreviewTable()
         if (relPath.isEmpty()) relPath = dir.gridName;
         dirItem->setText(0, relPath);
 
-        // Column 1: grid name
+        // Column 1: grid
         dirItem->setText(1, dir.gridName);
 
         // Column 2: star
@@ -1107,79 +988,69 @@ void SpectralFitImportPage::updateDiggaPreviewTable()
 
         // Column 3: key parameters
         if (dir.parseOk) {
-            QString params;
+            QStringList params;
             if (dir.teff > 0)
-                params += QString("Teff=%1").arg(dir.teff, 0, 'f', 0);
-            if (dir.logg > 0) {
-                if (!params.isEmpty()) params += ", ";
-                params += QString("logg=%1").arg(dir.logg, 0, 'f', 2);
-            }
-            if (dir.he != 0) {
-                if (!params.isEmpty()) params += ", ";
-                params += QString("He=%1").arg(dir.he, 0, 'f', 2);
-            }
-            dirItem->setText(3, params);
+                params << QString("Teff=%1").arg(dir.teff, 0, 'f', 0);
+            if (dir.logg > 0)
+                params << QString("logg=%1").arg(dir.logg, 0, 'f', 2);
+            if (dir.he != 0)
+                params << QString("He=%1").arg(dir.he, 0, 'f', 2);
+            dirItem->setText(3, params.join(", "));
         }
 
         // Column 4: match status
         if (!dir.parseOk) {
             dirItem->setText(4, dir.parseError);
             dirItem->setForeground(4, QBrush(Qt::red));
-            unmatched++;
         } else if (dir.matchedSpectra == dir.totalSpectra &&
                    dir.totalSpectra > 0) {
-            dirItem->setText(4, QString("%1/%1 spectra matched")
+            dirItem->setText(4, QString("%1/%1 matched")
                                 .arg(dir.totalSpectra));
             dirItem->setForeground(4, QBrush(QColor(0, 150, 0)));
-            fullyMatched++;
         } else if (dir.matchedSpectra > 0) {
-            dirItem->setText(4, QString("%1/%2 spectra matched")
+            dirItem->setText(4, QString("%1/%2 matched")
                                 .arg(dir.matchedSpectra)
                                 .arg(dir.totalSpectra));
             dirItem->setForeground(4, QBrush(QColor(200, 150, 0)));
-            partialMatched++;
         } else {
-            dirItem->setText(4, QString("0/%1 spectra matched")
+            dirItem->setText(4, QString("0/%1 matched")
                                 .arg(dir.totalSpectra));
             dirItem->setForeground(4, QBrush(Qt::red));
-            unmatched++;
         }
 
-        totalSpecMatch += dir.matchedSpectra;
-
-        // ── Child items for each spectrum ───────────────────────
+        // Children: limited count per dir
+        int childrenShown = 0;
         for (const auto& sm : dir.specMatches) {
+            if (childrenShown >= MAX_CHILDREN_PER_DIR) {
+                int remaining = static_cast<int>(dir.specMatches.size()) - childrenShown;
+                QTreeWidgetItem* moreItem = new QTreeWidgetItem;
+                moreItem->setText(0, QString("... and %1 more spectra").arg(remaining));
+                moreItem->setForeground(0, QBrush(Qt::gray));
+                dirItem->addChild(moreItem);
+                break;
+            }
+            childrenShown++;
+
             QTreeWidgetItem* specItem = new QTreeWidgetItem;
-
             specItem->setText(0, QString("spec %1: %2")
-                                 .arg(sm.specIndex)
-                                 .arg(sm.diggaFilename));
+                                 .arg(sm.specIndex).arg(sm.diggaFilename));
 
-            // Column 2: matched spectrum
             if (sm.matched && sm.matchedSpectrum) {
-                QString specName = QFileInfo(
-                    sm.matchedSpectrum->getFile()).fileName();
-                if (specName.isEmpty())
-                    specName = sm.matchedSpectrum->getId();
+                QString specName = QFileInfo(sm.matchedSpectrum->getFile()).fileName();
+                if (specName.isEmpty()) specName = sm.matchedSpectrum->getId();
                 specItem->setText(2, specName);
             } else {
                 specItem->setText(2, "(no match)");
                 specItem->setForeground(2, QBrush(Qt::red));
             }
 
-            // Column 3: per-spectrum vrad
-            specItem->setText(3, QString("vrad = %1 ± %2 km/s")
+            specItem->setText(3, QString("vrad=%1±%2")
                                  .arg(sm.vrad, 0, 'f', 1)
                                  .arg(sm.vradError, 0, 'f', 1));
 
-            // Column 4: status + plotdata
-            QStringList statusParts;
-            statusParts << (sm.matched ? "✓ matched" : "✗ no match");
-            if (!sm.plotdataFile.isEmpty())
-                statusParts << "plotdata ✓";
-            else
-                statusParts << "plotdata ✗";
-            specItem->setText(4, statusParts.join(" | "));
+            QString status = sm.matched ? "✓" : "✗";
+            status += sm.plotdataFile.isEmpty() ? " plotdata ✗" : " plotdata ✓";
+            specItem->setText(4, status);
             if (!sm.matched)
                 specItem->setForeground(4, QBrush(Qt::red));
 
@@ -1189,18 +1060,27 @@ void SpectralFitImportPage::updateDiggaPreviewTable()
         _previewTree->addTopLevelItem(dirItem);
     }
 
-    // Expand all for visibility
-    _previewTree->expandAll();
+    // Only expand top-level items (don't expand children by default)
+    // Users can click to expand individual dirs
+    // DON'T call expandAll() — it's O(n) widget updates
 
+    // Resize columns once with the limited dataset
     for (int i = 0; i < _previewTree->columnCount(); ++i)
         _previewTree->resizeColumnToContents(i);
 
-    _statusLabel->setText(
-        QString("Found %1 DIGGA directories — %2 fully matched, "
-                "%3 partially matched, %4 unmatched. "
-                "(%5/%6 spectra matched total)")
+    _previewTree->setUpdatesEnabled(true);
+
+    // Status with full accurate counts (not limited by preview)
+    QString statusText = QString(
+        "Found %1 DIGGA directories — %2 fully matched, "
+        "%3 partial, %4 unmatched (%5/%6 spectra matched)")
         .arg(totalDirs).arg(fullyMatched).arg(partialMatched)
-        .arg(unmatched).arg(totalSpecMatch).arg(totalSpecAll));
+        .arg(unmatched).arg(totalSpecMatch).arg(totalSpecAll);
+
+    if (totalDirs > MAX_PREVIEW_DIRS)
+        statusText += QString(" — showing first %1 directories").arg(MAX_PREVIEW_DIRS);
+
+    _statusLabel->setText(statusText);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1209,15 +1089,14 @@ void SpectralFitImportPage::updateDiggaPreviewTable()
 
 void SpectralFitImportPage::importDiggaFits()
 {
-    StarImportWizard* importWizard =
-        qobject_cast<StarImportWizard*>(wizard());
-    if (!importWizard) return;
+    StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
+    if (!importWizard || !importWizard->controller()) return;
 
-    auto controller = importWizard->controller();
-    auto project    = importWizard->project();
-    if (!controller || !project) return;
+    auto* controller = importWizard->controller();
+    bool markBest = _markBestFitCheck->isChecked();
 
-    int imported = 0;
+    // Build import entries
+    std::vector<DiggaFitImportEntry> entries;
 
     for (const auto& dir : _diggaDirs) {
         if (!dir.parseOk) continue;
@@ -1227,58 +1106,48 @@ void SpectralFitImportPage::importDiggaFits()
                 continue;
 
             auto fit = std::make_shared<SpectralFit>();
-
-            // Shared (tied) parameters
-            fit->teff               = dir.teff;
-            fit->teffError          = dir.teffError;
-            fit->logg               = dir.logg;
-            fit->loggError          = dir.loggError;
-            fit->he                 = dir.he;
-            fit->heError            = dir.heError;
-            fit->vsini              = dir.vsini;
-            fit->vsiniError         = dir.vsiniError;
+            fit->teff                 = dir.teff;
+            fit->teffError            = dir.teffError;
+            fit->logg                 = dir.logg;
+            fit->loggError            = dir.loggError;
+            fit->he                   = dir.he;
+            fit->heError              = dir.heError;
+            fit->vsini                = dir.vsini;
+            fit->vsiniError           = dir.vsiniError;
             fit->macroturbulence      = dir.zeta;
             fit->macroturbulenceError = dir.zetaError;
             fit->microturbulence      = dir.xi;
             fit->microturbulenceError = dir.xiError;
             fit->metallicity          = dir.z;
             fit->metallicityError     = dir.zError;
-            fit->chi2               = dir.chi2;
+            fit->chi2                 = dir.chi2;
+            fit->radialVelocity       = sm.vrad;
+            fit->radialVelocityError  = sm.vradError;
+            fit->modelId              = dir.gridName;
+            if (markBest) fit->isBestFit = true;
 
-            // Per-spectrum radial velocity
-            fit->radialVelocity      = sm.vrad;
-            fit->radialVelocityError = sm.vradError;
-
-            // Grid / model ID
-            fit->modelId = dir.gridName;
-
-            // Best fit flag
-            if (_markBestFitCheck->isChecked())
-                fit->isBestFit = true;
-
-            // Load model data from plotdata file
-            if (!sm.plotdataFile.isEmpty()) {
-                std::vector<double> wl, mf;
-                if (loadPlotdata(sm.plotdataFile, wl, mf)) {
-                    fit->modelWavelengths = std::move(wl);
-                    fit->modelFluxes      = std::move(mf);
-                }
-            }
-
-            // Add to spectrum object + persist to DB
-            sm.matchedSpectrum->addSpectralFit(fit);
-            controller->databaseManager()->saveSpectralFit(
-                sm.matchedStar->getId(),
-                sm.matchedSpectrum->getId(),
-                fit);
-
-            imported++;
+            DiggaFitImportEntry entry;
+            entry.starId       = sm.matchedStar->getId();
+            entry.spectrumId   = sm.matchedSpectrum->getId();
+            entry.spectrum     = sm.matchedSpectrum;
+            entry.fit          = fit;
+            entry.plotdataPath = sm.plotdataFile;
+            entries.push_back(std::move(entry));
         }
     }
 
-    LOG_INFO("FitImport",
-             QString("Imported %1 DIGGA spectral fits to database")
-             .arg(imported));
+    if (entries.empty()) {
+        _statusLabel->setText("No matched fits to import.");
+        return;
+    }
+
+    int count = static_cast<int>(entries.size());
+    _statusLabel->setText(QString("Queued %1 spectral fits for background import.").arg(count));
+
+    LOG_INFO("FitImport", QString("Queuing %1 fits for background import").arg(count));
+
+    auto* task = new DiggaFitImportTask(std::move(entries), controller);
+    controller->backgroundTaskManager()->queueTask(task);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1293,19 +1162,17 @@ bool SpectralFitImportPage::validatePage()
         return false;
     }
 
-    // ISIS / mapping stubs — just skip
-    if (!_diggaRadio->isChecked()) {
+    if (!_diggaRadio->isChecked())
         return true;
-    }
 
     if (_diggaDirs.empty()) {
-        QMessageBox::information(this, "No Fits",
-            "No spectral fits have been scanned. "
-            "You can skip this step.");
-        return true;
+        auto reply = QMessageBox::question(this, "No Fits Scanned",
+            "No spectral fit directories have been scanned.\n\n"
+            "Do you want to skip this step and continue?",
+            QMessageBox::Yes | QMessageBox::No);
+        return reply == QMessageBox::Yes;
     }
 
-    // Count matches
     int totalMatched = 0, totalUnmatched = 0, totalSpectra = 0;
     for (const auto& dir : _diggaDirs) {
         for (const auto& sm : dir.specMatches) {
@@ -1319,19 +1186,15 @@ bool SpectralFitImportPage::validatePage()
         "%1 DIGGA directories scanned, %2 total spectra.\n\n"
         "• %3 spectra matched (will receive fit data)\n"
         "• %4 spectra unmatched (will be skipped)\n\n"
-        "Continue?")
+        "Import will run in the background. Continue?")
         .arg(_diggaDirs.size()).arg(totalSpectra)
         .arg(totalMatched).arg(totalUnmatched);
 
     if (QMessageBox::question(this, "Confirm Import", msg,
-            QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes) {
+            QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
         return false;
-    }
 
     importDiggaFits();
-
-    _statusLabel->setText(
-        QString("Imported %1 spectral fits.").arg(totalMatched));
     return true;
 }
 

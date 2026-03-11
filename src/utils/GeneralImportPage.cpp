@@ -851,16 +851,42 @@ std::vector<std::shared_ptr<Star>> GeneralImportPage::createStarsFromData()
 
 bool GeneralImportPage::isComplete() const
 {
-    return !_filePathEdit->text().isEmpty() && QFile::exists(_filePathEdit->text()) && !_dataRows.empty();
+    // Allow proceeding if file is loaded with data
+    if (!_filePathEdit->text().isEmpty() && 
+        QFile::exists(_filePathEdit->text()) && 
+        !_dataRows.empty()) {
+        return true;
+    }
+    
+    // Also allow proceeding if there are already stars in the project
+    StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
+    if (importWizard) {
+        auto controller = importWizard->controller();
+        auto project = importWizard->project();
+        if (controller && project && project->getStarCount() > 0) {
+            return true;
+        }
+    }
+    
+    return false;
 }
 
 bool GeneralImportPage::validatePage()
 {
+    
     if (_dataRows.empty()) {
+        StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
+        if (importWizard) {
+            auto controller = importWizard->controller();
+            auto project = importWizard->project();
+            if (controller && project && project->getStarCount() > 0) {
+                return true;  // Skip import, stars already present
+            }
+        }
         QMessageBox::warning(this, "No Data", "No data was loaded from the file.");
         return false;
     }
-    
+
     removeDuplicateRows();
     
     if (!_unmappedColumns.empty()) {

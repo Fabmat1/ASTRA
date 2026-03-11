@@ -13,6 +13,7 @@
 
 class Star;
 class Spectrum;
+class SpectralFit;
 class ApplicationController;
 class QNetworkAccessManager;
 class QLabel;
@@ -209,6 +210,41 @@ signals:
 private:
     std::vector<SpectrumImportEntry> _entries;
     QString _projectId;
+    ApplicationController* _controller;
+};
+
+
+// ============================================================================
+// DiggaFitImportTask - Background task for importing DIGGA spectral fits
+// ============================================================================
+
+struct DiggaFitImportEntry {
+    QString starId;
+    QString spectrumId;
+    std::shared_ptr<Spectrum> spectrum;
+    std::shared_ptr<SpectralFit> fit;
+    QString plotdataPath;
+};
+
+class DiggaFitImportTask : public BackgroundTask
+{
+    Q_OBJECT
+
+public:
+    DiggaFitImportTask(std::vector<DiggaFitImportEntry> entries,
+                       ApplicationController* controller,
+                       QObject* parent = nullptr);
+
+    QString taskName() const override { return "DIGGA Fit Import"; }
+
+public slots:
+    void execute() override;
+
+signals:
+    void importComplete(int imported, int failed);
+
+private:
+    std::vector<DiggaFitImportEntry> _entries;
     ApplicationController* _controller;
 };
 

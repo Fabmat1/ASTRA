@@ -17,17 +17,13 @@
 #include <QJsonArray>
 #include <QSqlRecord>
 
+#include "utils/AppPaths.h"
+
 DatabaseManager::DatabaseManager(QObject *parent)
     : QObject(parent)
 {
-    // Set default database path
-    QString dataPath = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QDir dir(dataPath);
-    if (!dir.exists()) {
-        dir.mkpath(dataPath);
-    }
-    _databasePath = dir.filePath("astra.db");
-
+    _databasePath = AppPaths::database();
+    QDir().mkpath(QFileInfo(_databasePath).absolutePath());
     openDatabase();
 }
 

@@ -484,9 +484,9 @@ QWidget* StarDetailView::createSpectraPanel()
 
     // ── Tab bar — spectrum selector ──
     _spectraTabBar = new QTabBar;
-    _spectraTabBar->setExpanding(false);
-    _spectraTabBar->setUsesScrollButtons(true);
-    _spectraTabBar->setElideMode(Qt::ElideRight);
+    _spectraTabBar->setElideMode(Qt::ElideNone);
+    _spectraTabBar->setExpanding(false); // prevents tabs from stretching to fill width
+    _spectraTabBar->setUsesScrollButtons(true); // enables scroll arrows when tabs overflow
     _spectraTabBar->setDocumentMode(true);
     _spectraTabBar->setDrawBase(false);
     _spectraTabBar->setFixedHeight(33);

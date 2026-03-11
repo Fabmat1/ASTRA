@@ -8,6 +8,7 @@
 #include <iostream>
 #include <algorithm>
 
+#include "utils/AppPaths.h"
 // ============================================================================
 // Static members
 // ============================================================================
@@ -31,15 +32,15 @@ Logger* Logger::instance()
     return _instance;
 }
 
+
 void Logger::initialize(const QString& appName)
 {
     Logger* logger = instance();
     logger->_appName = appName;
-    
-    // Set default log directory
-    QString appDir = QCoreApplication::applicationDirPath();
-    QString logDir = appDir + "/.logs";
-    logger->setLogDirectory(logDir);
+
+    // Use centralized path instead of hardcoded applicationDirPath
+    logger->setLogDirectory(AppPaths::logs());
+
     
     // Start the writer thread
     logger->_writerThread = new QThread();

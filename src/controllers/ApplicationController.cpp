@@ -10,6 +10,7 @@
 #include <QDir>
 #include <chrono>
 #include "utils/Logger.h"
+#include "utils/AppPaths.h"
 
 ApplicationController::ApplicationController(QObject *parent)
     : QObject(parent)
@@ -40,12 +41,11 @@ std::vector<std::shared_ptr<Project>> ApplicationController::getProjects() const
 
 std::shared_ptr<Project> ApplicationController::createProject(const QString& name, const QString& description, const QString& thumbnailPath)
 {
-    const QString dataDir = _databaseManager->getDataDirectory();
     
     QString storedThumbnailPath;
     
     if (!thumbnailPath.isEmpty() && QFile::exists(thumbnailPath)) {
-        QString mediaDir = QDir(dataDir).filePath("media");
+        QString mediaDir = AppPaths::media();
         QDir dir;
         if (!dir.exists(mediaDir)) {
             dir.mkpath(mediaDir);

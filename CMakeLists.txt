@@ -1,6 +1,11 @@
 cmake_minimum_required(VERSION 3.16)
 project(ASTRA VERSION 0.1.0 LANGUAGES CXX)
 
+# Configurable data directory (set at install/build time)
+# Usage: cmake -DASTRA_DATA_DIR=/opt/astra/data ..
+# Default: empty string → falls back to QStandardPaths::AppDataLocation at runtime
+set(ASTRA_DATA_DIR "" CACHE PATH "Compile-time default for data/db/log storage directory")
+
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -128,6 +133,7 @@ set(HEADERS
     src/utils/DataStore.h
     src/views/StarFilterWidget.h
     src/utils/SpectralFitImportPage.h
+    src/utils/AppPaths.h
 )
 
 # Create executable
@@ -135,6 +141,11 @@ qt_add_executable(ASTRA
     ${SOURCES}
     ${HEADERS}
     resources/resources.qrc
+)
+
+# Pass to source as a preprocessor define
+target_compile_definitions(ASTRA PRIVATE
+    ASTRA_DATA_DIR="${ASTRA_DATA_DIR}"
 )
 
 # Profiling option

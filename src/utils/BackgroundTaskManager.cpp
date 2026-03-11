@@ -18,6 +18,8 @@
 #include <QFutureSynchronizer>
 #include "SpectrumReader.h"
 #include "models/Spectrum.h"
+#include "SpectralFitImportPage.h" 
+#include "DatabaseManager.h" 
 
 // ============================================================================
 // TaskStatusWidget Implementation
@@ -1026,4 +1028,65 @@ void SpectraImportTask::execute()
     emit importComplete(totalImported, totalFailed);
     emit finished(true, QString("Spectra Import: %1 imported, %2 failed")
                   .arg(totalImported).arg(totalFailed));
+}
+
+
+
+
+// ════════════════════════════════════════════════════════════════
+// DiggaFitImportTask
+// ════════════════════════════════════════════════════════════════
+
+DiggaFitImportTask::DiggaFitImportTask(
+    std::vector<DiggaFitImportEntry> entries,
+    ApplicationController* controller,
+    QObject* parent)
+    : BackgroundTask(parent)
+    , _entries(std::move(entries))
+    , _controller(controller)
+{}
+
+void DiggaFitImportTask::execute()
+{
+    int total = static_cast<int>(_entries.size());
+    int imported = 0;
+    int failed = 0;
+
+    emit progress(QString("Loading plotdata for %1 fits...").arg(total));
+
+    // Phase 1: Read plotdata files (heavy I/O)
+    for (int i = 0; i < total; ++i) {
+        auto& entry = _entries[i];
+        if (!entry.plotdataPath.isEmpty()) {
+            std::vector<double> wl, mf;
+            if (SpectralFitImportPage::loadPlotdata(entry.plotdataPath, wl, mf)) {
+                entry.fit->modelWavelengths = std::move(wl);
+                entry.fit->modelFluxes      = std::move(mf);
+            }
+        }
+
+        if (i % 500 == 0)
+            emit progress(QString("Read plotdata %1/%2").arg(i).arg(total));
+    }
+
+    // Phase 2: DB writes
+    emit progress(QString("Saving %1 fits to database...").arg(total));
+    auto* dbManager = _controller->databaseManager();
+
+    for (int i = 0; i < total; ++i) {
+        auto& entry = _entries[i];
+        entry.spectrum->addSpectralFit(entry.fit);
+
+        if (dbManager->saveSpectralFit(entry.starId, entry.spectrumId, entry.fit))
+            imported++;
+        else
+            failed++;
+
+        if (i % 500 == 0)
+            emit progress(QString("Saved %1/%2 fits").arg(i).arg(total));
+    }
+
+    emit importComplete(imported, failed);
+    emit finished(failed == 0,
+                  QString("Imported %1 fits (%2 failed)").arg(imported).arg(failed));
 }

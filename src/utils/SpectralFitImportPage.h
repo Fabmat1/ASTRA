@@ -96,6 +96,11 @@ public:
     bool validatePage() override;
     int nextId() const override;
 
+    // Plotdata loading
+    static bool loadPlotdata(const QString& filepath,
+                      std::vector<double>& wavelengths,
+                      std::vector<double>& modelFluxes);
+
 private slots:
     void onImportModeChanged();
     void onBrowseDiggaFolder();
@@ -107,27 +112,35 @@ private:
     void setupIsisPage();
     void setupMappingPage();
 
-    // Index building
-    void buildSpectrumLookupIndex();
+    // Index building (heavy — call from background thread)
+    struct SpectrumIndex {
+        QHash<QString, QPair<std::shared_ptr<Star>, std::shared_ptr<Spectrum>>> filenameIndex;
+        QHash<QString, std::shared_ptr<Star>> sourceIdIndex;
+        QHash<QString, std::vector<std::shared_ptr<Spectrum>>> starSpectraIndex;
+        int totalSpectra = 0;
+    };
 
-    // DIGGA parsing
-    DiggaFitDirectory parseDiggaDirectory(const DiggaScanResult& scan);
-    QMap<int, QString> parseDiggaFitReport(const QString& content);
-    void parseDiggaFitParameters(const QString& content, DiggaFitDirectory& dir);
+    SpectrumIndex buildSpectrumLookupIndex();
 
-    // DIGGA matching
-    void matchDiggaDirectories();
+    // DIGGA parsing (pure — safe for background thread)
+    static DiggaFitDirectory parseDiggaDirectory(const DiggaScanResult& scan);
+    static QMap<int, QString> parseDiggaFitReport(const QString& content);
+    static void parseDiggaFitParameters(const QString& content, DiggaFitDirectory& dir);
 
-    // Plotdata loading
-    bool loadPlotdata(const QString& filepath,
-                      std::vector<double>& wavelengths,
-                      std::vector<double>& modelFluxes);
+    // DIGGA matching (uses index — safe for background thread)
+    static void matchDiggaDirectories(std::vector<DiggaFitDirectory>& dirs,
+                                      const SpectrumIndex& index);
 
-    // Preview
+
+
+    // Preview — only builds limited summary, no widget ops
     void updateDiggaPreviewTable();
 
     // Import
     void importDiggaFits();
+
+    // Check spectra import task
+    bool isSpectraImportRunning() const;
 
     // ── UI: Mode selection ───────────────────────────────────────
     QRadioButton* _diggaRadio;
@@ -158,13 +171,8 @@ private:
     QString _diggaRootFolder;   // for relative-path display
     bool _asyncBusy = false;
 
-    // ── Spectrum lookup indices ─────────────────────────────────
-    // filename basename (no ext, lowercase) → (star, spectrum)
-    QHash<QString, QPair<std::shared_ptr<Star>, std::shared_ptr<Spectrum>>> _filenameIndex;
-    // source_id variants → star
-    QHash<QString, std::shared_ptr<Star>> _sourceIdIndex;
-    // star ID → spectra list
-    QHash<QString, std::vector<std::shared_ptr<Spectrum>>> _starSpectraIndex;
+    // ── Spectrum lookup index ───────────────────────────────────
+    SpectrumIndex _specIndex;
     bool _indexBuilt = false;
 };
 
