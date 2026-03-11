@@ -2,6 +2,9 @@
 #define STARDETAILVIEW_H
 
 #include <QWidget>
+#include <QComboBox>
+#include <QCheckBox>
+#include <QValueAxis>
 #include <memory>
 #include <QtCharts/QChartView>
 
@@ -82,7 +85,26 @@ private:
     std::vector<std::shared_ptr<Spectrum>> _sortedSpectra;
     QMetaObject::Connection _spectraTabConnection;
 
-    QTimer* _spectraResizeTimer = nullptr;
+    QComboBox*   _spectraFitCombo    = nullptr;
+    QCheckBox*   _spectraRenormCheck = nullptr;
+    QChartView*  _spectraResidualView = nullptr;
+    QWidget*     _spectraToolbar     = nullptr;
+    QValueAxis* _spectraMainXAxis     = nullptr;
+    QValueAxis* _spectraResidualXAxis = nullptr;
+    bool _axisSyncInProgress          = false;
+
+    void updateSpectrumDisplay();
+
+    static std::vector<double> interpolateModel(
+        const std::vector<double>& modelWl,
+        const std::vector<double>& modelFlux,
+        const std::vector<double>& targetWl);
+
+    static double computeRenormFactor(
+        const std::vector<double>& data,
+        const std::vector<double>& model);
+
+    QColor dataLineColor() const;
 
     // Splitters for resizable layout
     QSplitter* _mainHSplitter;

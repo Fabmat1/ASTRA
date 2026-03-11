@@ -22,6 +22,7 @@
 #include <QSet>
 #include <QStringList>
 #include <QMap>
+#include <QApplication>
 
 #include <QtCharts/QChart>
 #include <QtCharts/QChartView>
@@ -185,6 +186,62 @@ QPair<double, double> addRVDataToChart(
 }
 
 } // anonymous namespace
+
+
+
+// ============================================================================
+// Helpers for spectrum display
+// ============================================================================
+
+QColor StarDetailView::dataLineColor() const
+{
+    return QColor(30, 30, 30);
+}
+
+std::vector<double> StarDetailView::interpolateModel(
+    const std::vector<double>& modelWl,
+    const std::vector<double>& modelFlux,
+    const std::vector<double>& targetWl)
+{
+    std::vector<double> result(targetWl.size(),
+                               std::numeric_limits<double>::quiet_NaN());
+    if (modelWl.size() < 2) return result;
+
+    for (size_t i = 0; i < targetWl.size(); ++i) {
+        double tw = targetWl[i];
+        if (tw < modelWl.front() || tw > modelWl.back()) continue;
+
+        auto it = std::lower_bound(modelWl.begin(), modelWl.end(), tw);
+        if (it == modelWl.begin()) {
+            result[i] = modelFlux.front();
+            continue;
+        }
+        if (it == modelWl.end()) {
+            result[i] = modelFlux.back();
+            continue;
+        }
+        size_t j = static_cast<size_t>(std::distance(modelWl.begin(), it));
+        double w0 = modelWl[j - 1], w1 = modelWl[j];
+        double f0 = modelFlux[j - 1], f1 = modelFlux[j];
+        double frac = (tw - w0) / (w1 - w0);
+        result[i] = f0 + frac * (f1 - f0);
+    }
+    return result;
+}
+
+double StarDetailView::computeRenormFactor(
+    const std::vector<double>& data,
+    const std::vector<double>& model)
+{
+    // Least-squares: c = Σ(d·m) / Σ(m·m)
+    double num = 0.0, den = 0.0;
+    for (size_t i = 0; i < data.size() && i < model.size(); ++i) {
+        if (std::isnan(data[i]) || std::isnan(model[i])) continue;
+        num += data[i] * model[i];
+        den += model[i] * model[i];
+    }
+    return (den > 0.0) ? (num / den) : 1.0;
+}
 
 // ============================================================================
 // Broken-axis helper widgets (file-local)
@@ -425,7 +482,7 @@ QWidget* StarDetailView::createSpectraPanel()
     QVBoxLayout* layout = new QVBoxLayout(group);
     layout->setSpacing(2);
 
-    // Tab bar at TOP — selector for which spectrum to display
+    // ── Tab bar — spectrum selector ──
     _spectraTabBar = new QTabBar;
     _spectraTabBar->setExpanding(false);
     _spectraTabBar->setUsesScrollButtons(true);
@@ -434,19 +491,54 @@ QWidget* StarDetailView::createSpectraPanel()
     _spectraTabBar->setDrawBase(false);
     _spectraTabBar->setFixedHeight(33);
     _spectraTabBar->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
-    layout->addWidget(_spectraTabBar, 0);  // stretch = 0 so it doesn't grow
+    layout->addWidget(_spectraTabBar, 0);
 
-    // Main chart view
+    // ── Toolbar: fit selector + renorm checkbox ──
+    _spectraToolbar = new QWidget;
+    QHBoxLayout* tbLayout = new QHBoxLayout(_spectraToolbar);
+    tbLayout->setContentsMargins(0, 2, 0, 2);
+    tbLayout->setSpacing(8);
+
+    tbLayout->addWidget(new QLabel("Model:"));
+    _spectraFitCombo = new QComboBox;
+    _spectraFitCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    _spectraFitCombo->setMaximumWidth(350);
+    tbLayout->addWidget(_spectraFitCombo);
+
+    _spectraRenormCheck = new QCheckBox("Re-normalize model");
+    _spectraRenormCheck->setToolTip(
+        "Scale the model by a constant factor to best match\n"
+        "the observed spectrum (least-squares fit of a single\n"
+        "multiplicative constant).");
+    tbLayout->addWidget(_spectraRenormCheck);
+
+    tbLayout->addStretch();
+    _spectraToolbar->setVisible(false);          // hidden until fits exist
+    layout->addWidget(_spectraToolbar, 0);
+
+    // ── Main chart view ──
     _spectraChartView = new QChartView;
     _spectraChartView->setRenderHint(QPainter::Antialiasing);
     _spectraChartView->setRubberBand(QChartView::RectangleRubberBand);
+    {
+        QChart* placeholder = new QChart;
+        placeholder->legend()->hide();
+        _spectraChartView->setChart(placeholder);
+    }
+    layout->addWidget(_spectraChartView, 5);     // main plot gets more stretch
 
-    QChart* placeholder = new QChart;
-    placeholder->legend()->hide();
-    _spectraChartView->setChart(placeholder);
-    layout->addWidget(_spectraChartView, 1);
+    // ── Residual chart view ──
+    _spectraResidualView = new QChartView;
+    _spectraResidualView->setRenderHint(QPainter::Antialiasing);
+    _spectraResidualView->setVisible(false);     // hidden until a fit is selected
+    {
+        QChart* placeholder = new QChart;
+        placeholder->legend()->hide();
+        _spectraResidualView->setChart(placeholder);
+    }
+    layout->addWidget(_spectraResidualView, 2);  // residual is thinner
 
-    // Info strip below chart
+    // ── Info strip ──
     _spectraInfoLabel = new QLabel;
     _spectraInfoLabel->setWordWrap(true);
     _spectraInfoLabel->setTextFormat(Qt::RichText);
@@ -457,6 +549,12 @@ QWidget* StarDetailView::createSpectraPanel()
     layout->addWidget(_spectraInfoLabel);
 
     _currentSpectrumIndex = -1;
+
+    // ── Connections for fit combo and renorm ──
+    connect(_spectraFitCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { updateSpectrumDisplay(); });
+    connect(_spectraRenormCheck, &QCheckBox::toggled,
+            this, [this](bool) { updateSpectrumDisplay(); });
 
     return group;
 }
@@ -1357,21 +1455,10 @@ void StarDetailView::populateSpectraPanel()
 
     _currentSpectrumIndex = -1;
     _sortedSpectra.clear();
+    _spectraToolbar->setVisible(false);
+    _spectraResidualView->setVisible(false);
 
     auto spectra = _star->getSpectra();
-
-    qDebug() << "[SpectraPanel] Star:" << _star->getSourceId()
-             << "| getSpectra() returned:" << spectra.size() << "spectra";
-
-    for (size_t i = 0; i < spectra.size(); ++i) {
-        auto& sp = spectra[i];
-        qDebug() << "  [" << i << "] id=" << sp->getId()
-                 << "inst=" << sp->getInstrument()
-                 << "mjd=" << sp->getMJD()
-                 << "hasData=" << sp->hasData()
-                 << "file=" << sp->getFile()
-                 << "dataFile=" << sp->getDataFile();
-    }
 
     if (spectra.empty()) {
         QChart* chart = new QChart;
@@ -1387,13 +1474,14 @@ void StarDetailView::populateSpectraPanel()
     // Sort spectra by instrument, then MJD
     _sortedSpectra = spectra;
     std::sort(_sortedSpectra.begin(), _sortedSpectra.end(),
-              [](const std::shared_ptr<Spectrum>& a, const std::shared_ptr<Spectrum>& b) {
+              [](const std::shared_ptr<Spectrum>& a,
+                 const std::shared_ptr<Spectrum>& b) {
                   if (a->getInstrument() != b->getInstrument())
                       return a->getInstrument() < b->getInstrument();
                   return a->getMJD() < b->getMJD();
               });
 
-    // Assign colors by instrument
+    // Assign tab colors by instrument
     QMap<QString, QColor> instrumentColors;
     int colorIdx = 0;
     for (auto& spec : _sortedSpectra) {
@@ -1426,11 +1514,7 @@ void StarDetailView::populateSpectraPanel()
         if (instrumentColors.contains(inst))
             _spectraTabBar->setTabTextColor(tabIdx, instrumentColors[inst]);
     }
-
     _spectraTabBar->blockSignals(false);
-
-    qDebug() << "[SpectraPanel] Built" << _spectraTabBar->count()
-             << "tabs from" << _sortedSpectra.size() << "sorted spectra";
 
     _spectraTabConnection = connect(_spectraTabBar, &QTabBar::currentChanged,
                                      this, &StarDetailView::displaySpectrum);
@@ -1442,14 +1526,6 @@ void StarDetailView::populateSpectraPanel()
         displaySpectrum(0);
     }
 
-    // Debug: verify tab bar geometry
-    qDebug() << "[SpectraPanel] TabBar visible:" << _spectraTabBar->isVisible()
-             << "height:" << _spectraTabBar->height()
-             << "sizeHint:" << _spectraTabBar->sizeHint()
-             << "count:" << _spectraTabBar->count()
-             << "currentIndex:" << _spectraTabBar->currentIndex();
-
-    // Force a geometry update
     _spectraTabBar->updateGeometry();
 }
 
@@ -1472,14 +1548,9 @@ QString StarDetailView::formatSpectrumTabLabel(
         }
     }
 
-    // Append short MJD
     if (spec->getMJD() > 0) {
-        // Show fractional MJD as compact as possible
-        double mjd = spec->getMJD();
-        int intPart = static_cast<int>(mjd);
-        // Show last 4 digits of integer part + 1 decimal
-        int shortMjd = intPart % 10000;
-        label += QString(" %1").arg(shortMjd);
+    double mjd = spec->getMJD();
+    label += QString(" %1").arg(mjd, 0, 'f', 4);
     }
 
     return label;
@@ -1493,38 +1564,143 @@ void StarDetailView::displaySpectrum(int index)
 
     _currentSpectrumIndex = index;
     auto spec = _sortedSpectra[index];
-
     if (!spec) return;
 
     // ── Ensure spectral data is loaded ──
     if (!spec->hasData()) {
-        if (!spec->getDataFile().isEmpty()) {
+        if (!spec->getDataFile().isEmpty())
             spec->loadDataFromFile(spec->getDataFile());
-        } else if (!spec->getFile().isEmpty()) {
+        else if (!spec->getFile().isEmpty())
             spec->loadFromFile(spec->getFile());
-        }
     }
+
+    // ── Populate fit combo ──
+    _spectraFitCombo->blockSignals(true);
+    _spectraRenormCheck->blockSignals(true);
+    _spectraFitCombo->clear();
+    _spectraFitCombo->addItem("None", QVariant(-1));
+
+    auto fits = spec->getSpectralFits();
+    auto bestFit = spec->getBestFit();
+    int selectIdx = 0;
+    int bestIdx = -1;
+    int firstValidIdx = -1;
+
+    for (int i = 0; i < static_cast<int>(fits.size()); ++i) {
+        auto& fit = fits[i];
+
+        if (fit->modelWavelengths.empty() && !fit->getModelDataFile().isEmpty())
+            fit->loadDataFromFile(fit->getModelDataFile());
+
+        if (fit->modelWavelengths.empty())
+            continue;
+
+        QString label;
+        if (bestFit && fit->getId() == bestFit->getId())
+            label = "★ ";
+
+        if (!fit->modelId.isEmpty())
+            label += fit->modelId;
+        else
+            label += QString("Fit %1").arg(fit->getId().left(8));
+
+        QStringList params;
+        if (!std::isnan(fit->teff) && fit->teff > 0)
+            params << QString("Teff=%1").arg(fit->teff, 0, 'f', 0);
+        if (!std::isnan(fit->logg) && fit->logg != 0)
+            params << QString("logg=%1").arg(fit->logg, 0, 'f', 2);
+        if (!params.isEmpty())
+            label += " (" + params.join(", ") + ")";
+
+        _spectraFitCombo->addItem(label, QVariant(i));
+
+        int comboPos = _spectraFitCombo->count() - 1;
+
+        if (firstValidIdx < 0)
+            firstValidIdx = comboPos;
+
+        if (bestFit && fit->getId() == bestFit->getId())
+            bestIdx = comboPos;
+    }
+
+    // Auto-select: best fit > first available fit > None
+    if (bestIdx >= 0)
+        selectIdx = bestIdx;
+    else if (firstValidIdx >= 0)
+        selectIdx = firstValidIdx;
+
+    bool hasFits = (_spectraFitCombo->count() > 1);
+    _spectraToolbar->setVisible(hasFits);
+    _spectraFitCombo->setCurrentIndex(selectIdx);
+
+    // ── Auto-detect if renormalization is needed ──
+    if (selectIdx > 0) {
+        int fitArrayIdx = _spectraFitCombo->itemData(selectIdx).toInt();
+        if (fitArrayIdx >= 0 && fitArrayIdx < static_cast<int>(fits.size())) {
+            auto& fit = fits[fitArrayIdx];
+            auto wavelengths = spec->getWavelengths();
+            auto fluxes = spec->getFluxes();
+
+            auto modelOnData = interpolateModel(
+                fit->modelWavelengths, fit->modelFluxes, wavelengths);
+
+            std::vector<double> dValid, mValid;
+            for (size_t j = 0; j < wavelengths.size(); ++j) {
+                if (!std::isnan(modelOnData[j]) && !std::isnan(fluxes[j])) {
+                    dValid.push_back(fluxes[j]);
+                    mValid.push_back(modelOnData[j]);
+                }
+            }
+
+            double c = computeRenormFactor(dValid, mValid);
+            // If renorm factor deviates more than 5% from 1.0, auto-enable
+            bool needsRenorm = (std::abs(c - 1.0) > 0.05);
+            _spectraRenormCheck->setChecked(needsRenorm);
+        }
+    } else {
+        _spectraRenormCheck->setChecked(false);
+    }
+
+    _spectraFitCombo->blockSignals(false);
+    _spectraRenormCheck->blockSignals(false);
+
+    _spectraInfoLabel->setText(formatSpectrumInfo(spec));
+
+    updateSpectrumDisplay();
+}
+
+
+void StarDetailView::updateSpectrumDisplay()
+{
+    if (_currentSpectrumIndex < 0 ||
+        _currentSpectrumIndex >= static_cast<int>(_sortedSpectra.size()))
+        return;
+
+    auto spec = _sortedSpectra[_currentSpectrumIndex];
+    if (!spec) return;
 
     auto wavelengths = spec->getWavelengths();
     auto fluxes      = spec->getFluxes();
     auto errors      = spec->getFluxErrors();
 
-    // ── Build the chart ──
+    // Clear old axis pointers (old charts will be deleted by setChart)
+    _spectraMainXAxis     = nullptr;
+    _spectraResidualXAxis = nullptr;
+
+    // ──────────────────────────────────────────────────────────────
+    // Main chart
+    // ──────────────────────────────────────────────────────────────
     QChart* chart = new QChart;
     chart->setMargins(QMargins(4, 4, 4, 4));
-    chart->legend()->setVisible(true);
-    chart->legend()->setAlignment(Qt::AlignBottom);
+    chart->legend()->hide();
 
     if (wavelengths.empty()) {
         chart->setTitle("No spectral data loaded");
-        chart->legend()->hide();
         _spectraChartView->setChart(chart);
-        _spectraInfoLabel->setText(
-            "<span style='color: gray;'>Data file not found or empty.</span>");
+        _spectraResidualView->setVisible(false);
         return;
     }
 
-    // ── Y-range tracking ──
     double xMin =  std::numeric_limits<double>::max();
     double xMax =  std::numeric_limits<double>::lowest();
     double yMin =  std::numeric_limits<double>::max();
@@ -1533,19 +1709,14 @@ void StarDetailView::displaySpectrum(int index)
     // ── Error band ──
     bool hasErrors = !errors.empty() && errors.size() == wavelengths.size();
 
-    QLineSeries* upperBound = nullptr;
-    QLineSeries* lowerBound = nullptr;
-    QAreaSeries* errorArea  = nullptr;
-
     if (hasErrors) {
-        upperBound = new QLineSeries;
-        lowerBound = new QLineSeries;
+        auto* upperBound = new QLineSeries;
+        auto* lowerBound = new QLineSeries;
 
         for (size_t i = 0; i < wavelengths.size(); ++i) {
             double w = wavelengths[i];
             double f = fluxes[i];
-            double e = errors[i];
-            if (std::isnan(e) || e <= 0) e = 0;
+            double e = (std::isnan(errors[i]) || errors[i] <= 0) ? 0.0 : errors[i];
 
             upperBound->append(w, f + e);
             lowerBound->append(w, f - e);
@@ -1556,26 +1727,18 @@ void StarDetailView::displaySpectrum(int index)
             yMax = std::max(yMax, f + e);
         }
 
-        errorArea = new QAreaSeries(upperBound, lowerBound);
-        errorArea->setName("1σ Error");
+        auto* errorArea = new QAreaSeries(upperBound, lowerBound);
         QColor errFill(180, 180, 180, 50);
         errorArea->setBrush(errFill);
-        QPen borderPen(QColor(180, 180, 180, 80), 0.5);
-        errorArea->setPen(borderPen);
-
+        errorArea->setPen(QPen(QColor(180, 180, 180, 80), 0.5));
         chart->addSeries(errorArea);
     }
 
     // ── Observed spectrum ──
-    auto* dataSeries = new QLineSeries;
-    dataSeries->setName("Observed");
+    QColor dataColor = dataLineColor();
 
-    QColor specColor(200, 200, 200);
-    if (!spec->getInstrument().isEmpty()) {
-        uint hash = qHash(spec->getInstrument());
-        specColor = kLCColors[hash % kNumLCColors];
-    }
-    dataSeries->setPen(QPen(specColor, 1.0));
+    auto* dataSeries = new QLineSeries;
+    dataSeries->setPen(QPen(dataColor, 1.2));
 
     for (size_t i = 0; i < wavelengths.size(); ++i) {
         double w = wavelengths[i];
@@ -1591,46 +1754,67 @@ void StarDetailView::displaySpectrum(int index)
     }
     chart->addSeries(dataSeries);
 
-    // ── Model fit overlays ──
+    // ──────────────────────────────────────────────────────────────
+    // Selected model fit overlay
+    // ──────────────────────────────────────────────────────────────
+    int fitArrayIdx = _spectraFitCombo->currentData().toInt();
+
     auto fits = spec->getSpectralFits();
-    auto bestFit = spec->getBestFit();
+    std::shared_ptr<SpectralFit> selectedFit;
 
-    for (auto& fit : fits) {
-        if (fit->modelWavelengths.empty() && !fit->getModelDataFile().isEmpty())
-            fit->loadDataFromFile(fit->getModelDataFile());
+    if (fitArrayIdx >= 0 && fitArrayIdx < static_cast<int>(fits.size()))
+        selectedFit = fits[fitArrayIdx];
 
-        if (fit->modelWavelengths.empty())
-            continue;
+    std::vector<double> residualWl;
+    std::vector<double> residualVal;
 
-        bool isBest = (bestFit && fit->getId() == bestFit->getId());
+    if (selectedFit && !selectedFit->modelWavelengths.empty()) {
+        const auto& mWl   = selectedFit->modelWavelengths;
+        const auto& mFlux = selectedFit->modelFluxes;
 
-        auto* modelSeries = new QLineSeries;
+        std::vector<double> modelOnDataGrid =
+            interpolateModel(mWl, mFlux, wavelengths);
 
-        if (isBest) {
-            modelSeries->setName("Best Fit");
-            modelSeries->setPen(QPen(kFitCurveColor, 1.5));
-        } else {
-            modelSeries->setName(QString("Fit %1").arg(fit->modelId.isEmpty()
-                                    ? fit->getId().left(6) : fit->modelId));
-            QColor dimColor = kFitCurveColor.lighter(160);
-            dimColor.setAlpha(150);
-            modelSeries->setPen(QPen(dimColor, 1.0, Qt::DashLine));
+        double renormC = 1.0;
+        if (_spectraRenormCheck->isChecked()) {
+            std::vector<double> dValid, mValid;
+            for (size_t i = 0; i < wavelengths.size(); ++i) {
+                if (!std::isnan(modelOnDataGrid[i]) && !std::isnan(fluxes[i])) {
+                    dValid.push_back(fluxes[i]);
+                    mValid.push_back(modelOnDataGrid[i]);
+                }
+            }
+            renormC = computeRenormFactor(dValid, mValid);
         }
 
-        for (size_t i = 0; i < fit->modelWavelengths.size(); ++i)
-            modelSeries->append(fit->modelWavelengths[i], fit->modelFluxes[i]);
+        auto* modelSeries = new QLineSeries;
+        modelSeries->setPen(QPen(kFitCurveColor, 1.5));
 
+        for (size_t i = 0; i < mWl.size(); ++i) {
+            double mf = mFlux[i] * renormC;
+            modelSeries->append(mWl[i], mf);
+            yMin = std::min(yMin, mf);
+            yMax = std::max(yMax, mf);
+        }
         chart->addSeries(modelSeries);
+
+        for (size_t i = 0; i < wavelengths.size(); ++i) {
+            if (std::isnan(modelOnDataGrid[i])) continue;
+            residualWl.push_back(wavelengths[i]);
+            residualVal.push_back(fluxes[i] - modelOnDataGrid[i] * renormC);
+        }
     }
 
-    // ── Axes ──
-    auto* xAxis = new QValueAxis;
-    xAxis->setTitleText("Wavelength [Å]");
+    // ── Main axes ──
     double xSpan = xMax - xMin;
     if (xSpan <= 0) xSpan = 100;
-    xAxis->setRange(xMin - xSpan * 0.01, xMax + xSpan * 0.01);
-    xAxis->setLabelFormat("%.0f");
-    chart->addAxis(xAxis, Qt::AlignBottom);
+    double xLo = xMin - xSpan * 0.01;
+    double xHi = xMax + xSpan * 0.01;
+
+    _spectraMainXAxis = new QValueAxis;
+    _spectraMainXAxis->setRange(xLo, xHi);
+    _spectraMainXAxis->setLabelFormat("%.0f");
+    chart->addAxis(_spectraMainXAxis, Qt::AlignBottom);
 
     auto* yAxis = new QValueAxis;
     yAxis->setTitleText("Normalized Flux");
@@ -1641,15 +1825,94 @@ void StarDetailView::displaySpectrum(int index)
     chart->addAxis(yAxis, Qt::AlignLeft);
 
     for (auto* s : chart->series()) {
-        s->attachAxis(xAxis);
+        s->attachAxis(_spectraMainXAxis);
         s->attachAxis(yAxis);
+    }
+
+    bool showResiduals = !residualWl.empty();
+
+    // Hide X labels/title on main chart when residuals are shown
+    if (showResiduals) {
+        _spectraMainXAxis->setLabelsVisible(false);
+        _spectraMainXAxis->setTitleText("");
+    } else {
+        _spectraMainXAxis->setLabelsVisible(true);
+        _spectraMainXAxis->setTitleText("Wavelength [Å]");
     }
 
     _spectraChartView->setChart(chart);
 
-    // ── Update info strip ──
-    _spectraInfoLabel->setText(formatSpectrumInfo(spec));
+    // ──────────────────────────────────────────────────────────────
+    // Residual chart
+    // ──────────────────────────────────────────────────────────────
+    if (showResiduals) {
+        QChart* resChart = new QChart;
+        resChart->setMargins(QMargins(4, 2, 4, 4));
+        resChart->legend()->hide();
+
+        auto* resSeries = new QLineSeries;
+        resSeries->setPen(QPen(dataColor, 1.0));
+
+        double rMin =  std::numeric_limits<double>::max();
+        double rMax =  std::numeric_limits<double>::lowest();
+        for (size_t i = 0; i < residualWl.size(); ++i) {
+            resSeries->append(residualWl[i], residualVal[i]);
+            rMin = std::min(rMin, residualVal[i]);
+            rMax = std::max(rMax, residualVal[i]);
+        }
+        resChart->addSeries(resSeries);
+
+        auto* zeroLine = new QLineSeries;
+        zeroLine->setPen(QPen(QColor(120, 120, 120), 1.0, Qt::DashLine));
+        zeroLine->append(xLo, 0.0);
+        zeroLine->append(xHi, 0.0);
+        resChart->addSeries(zeroLine);
+
+        _spectraResidualXAxis = new QValueAxis;
+        _spectraResidualXAxis->setTitleText("Wavelength [Å]");
+        _spectraResidualXAxis->setRange(xLo, xHi);
+        _spectraResidualXAxis->setLabelFormat("%.0f");
+        resChart->addAxis(_spectraResidualXAxis, Qt::AlignBottom);
+
+        auto* ryAxis = new QValueAxis;
+        ryAxis->setTitleText("Residual");
+        double rSpan = rMax - rMin;
+        if (rSpan <= 0) rSpan = 0.01;
+        double rMargin = rSpan * 0.15;
+        ryAxis->setRange(rMin - rMargin, rMax + rMargin);
+        ryAxis->setTickCount(3);
+        resChart->addAxis(ryAxis, Qt::AlignLeft);
+
+        for (auto* s : resChart->series()) {
+            s->attachAxis(_spectraResidualXAxis);
+            s->attachAxis(ryAxis);
+        }
+
+        _spectraResidualView->setChart(resChart);
+        _spectraResidualView->setVisible(true);
+
+        // ── Link X axes: main ↔ residual ──
+        connect(_spectraMainXAxis, &QValueAxis::rangeChanged,
+                this, [this](qreal min, qreal max) {
+            if (_axisSyncInProgress || !_spectraResidualXAxis) return;
+            _axisSyncInProgress = true;
+            _spectraResidualXAxis->setRange(min, max);
+            _axisSyncInProgress = false;
+        });
+
+        connect(_spectraResidualXAxis, &QValueAxis::rangeChanged,
+                this, [this](qreal min, qreal max) {
+            if (_axisSyncInProgress || !_spectraMainXAxis) return;
+            _axisSyncInProgress = true;
+            _spectraMainXAxis->setRange(min, max);
+            _axisSyncInProgress = false;
+        });
+
+    } else {
+        _spectraResidualView->setVisible(false);
+    }
 }
+
 
 QString StarDetailView::formatSpectrumInfo(
     const std::shared_ptr<Spectrum>& spec) const
