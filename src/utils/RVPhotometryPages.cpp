@@ -2,56 +2,62 @@
 
 #include "RVPhotometryPages.h"
 #include "StarImportWizard.h"
+#include "controllers/ApplicationController.h"
+#include "models/Project.h"
+#include "models/Star.h"
+#include "models/Spectrum.h"
+#include "models/RadialVelocity.h"
+#include "utils/DatabaseManager.h"
+#include "Logger.h"
+#include "BackgroundTaskManager.h"
 
 #include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QGridLayout>
 #include <QLabel>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QRadioButton>
+#include <QStackedWidget>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
+#include <QProgressBar>
+#include <QButtonGroup>
+#include <QGroupBox>
+#include <QFileDialog>
+#include <QMessageBox>
+#include <QDir>
+#include <QDirIterator>
+#include <QFileInfo>
+#include <QTextStream>
+#include <QApplication>
+#include <QRegularExpression>
+#include <QHeaderView>
+#include <QScrollArea>
+#include <QTimer>
+#include <QUuid>
 
-// ============================================================================
-// RadialVelocityImportPage Implementation
-// ============================================================================
+#include <cmath>
+#include <algorithm>
+#include <numeric>
 
-RadialVelocityImportPage::RadialVelocityImportPage(QWidget* parent)
-    : QWizardPage(parent)
-{
-    setTitle("Import Radial Velocity Data");
-    setSubTitle("Import RV measurements and time series");
-    
-    QVBoxLayout* layout = new QVBoxLayout(this);
-    QLabel* label = new QLabel("Radial velocity import functionality to be implemented.\n\n"
-                               "This page will allow you to:\n"
-                               "• Import RV measurements from tables\n"
-                               "• Import RV time series/curves\n"
-                               "• Associate RV data with imported stars");
-    label->setWordWrap(true);
-    layout->addWidget(label);
-    layout->addStretch();
-}
-
-int RadialVelocityImportPage::nextId() const
-{
-    return StarImportWizard::Page_Photometry;
-}
-
-// ============================================================================
-// PhotometryImportPage Implementation
-// ============================================================================
+// ════════════════════════════════════════════════════════════════
+// PhotometryImportPage — keep existing implementation unchanged
+// ════════════════════════════════════════════════════════════════
 
 PhotometryImportPage::PhotometryImportPage(QWidget* parent)
     : QWizardPage(parent)
 {
     setTitle("Import Photometry");
-    setSubTitle("Import lightcurves and photometric measurements");
-    setFinalPage(true);
-    
+    setSubTitle("Import photometric light curves (future feature)");
+
     QVBoxLayout* layout = new QVBoxLayout(this);
-    QLabel* label = new QLabel("Photometry import functionality to be implemented.\n\n"
-                               "This page will allow you to:\n"
-                               "• Import photometric measurements\n"
-                               "• Import lightcurve data (TESS, Kepler, etc.)\n"
-                               "• Associate photometry with imported stars");
+    QLabel* label = new QLabel(
+        "Photometry import is not yet implemented. Click Finish to complete.");
     label->setWordWrap(true);
     layout->addWidget(label);
-    layout->addStretch();
 }
 
 int PhotometryImportPage::nextId() const

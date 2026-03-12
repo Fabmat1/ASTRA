@@ -3,6 +3,8 @@
 
 #include <QObject>
 #include <QSqlDatabase>
+#include <QMutex>
+#include <QThread>
 #include <memory>
 #include <vector>
 
@@ -13,6 +15,9 @@ class Spectrum;
 class SpectralFit;
 class SEDModel;
 class LightcurveModel;
+class RadialVelocityCurve;
+class RadialVelocityPoint;
+class RVFit;
 
 class DatabaseManager : public QObject
 {
@@ -38,6 +43,7 @@ public:
     void populateProjectStars(const QString& projectId);
 
     // Star operations
+    bool saveStar(const QString& projectId, std::shared_ptr<Star> star);
     bool saveStars(const QString& projectId, const std::vector<std::shared_ptr<Star>>& stars);
     std::vector<std::shared_ptr<Star>> loadStars(const QString& projectId);
     bool updateStar(const QString& projectId, std::shared_ptr<Star> star);
@@ -56,6 +62,22 @@ public:
         std::shared_ptr<SpectralFit> fit);
     std::vector<std::shared_ptr<SpectralFit>> loadSpectralFits(const QString& spectrumId);
 
+    // ── Radial Velocity persistence ────────────────────────────────
+    bool saveRadialVelocityCurve(std::shared_ptr<RadialVelocityCurve> curve,
+                                const QString& starId);
+    bool saveRadialVelocityPoint(std::shared_ptr<RadialVelocityPoint> point,
+                                const QString& curveId);
+    bool saveRVFit(std::shared_ptr<RVFit> fit, const QString& curveId);
+
+    std::shared_ptr<RadialVelocityCurve> loadRadialVelocityCurve(
+        const QString& starId);
+    std::vector<std::shared_ptr<RadialVelocityPoint>> loadRadialVelocityPoints(
+        const QString& curveId);
+    std::shared_ptr<RVFit> loadRVFit(const QString& curveId);
+    std::vector<std::shared_ptr<RVFit>> loadRVFits(const QString& curveId);
+
+    bool deleteRadialVelocityCurve(const QString& curveId);
+
 
 private:
     bool createTables();
@@ -64,7 +86,6 @@ private:
     QString generateUUID();
 
     // Star operations
-    bool saveStar(const QString& projectId, std::shared_ptr<Star> star);
 
     void loadPhotometryBatch(std::vector<std::shared_ptr<Star>>& stars);
     void loadSpectraBatch(std::vector<std::shared_ptr<Star>>& stars);
@@ -84,6 +105,8 @@ private:
     QSqlDatabase _database;
     QString _databasePath;
 
+    QSqlDatabase threadConnection();
+    QMutex _connectionMutex;
 
 };
 

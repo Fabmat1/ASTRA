@@ -41,8 +41,9 @@ private:
 // Include all sub-components so users only need to include StarImportWizard.h
 #include "GeneralImportPage.h"
 #include "SpectraImportPage.h"
+#include "SpectralFitImportPage.h"
+#include "RadialVelocityImportPage.h"
 #include "RVPhotometryPages.h"
 #include "CatalogQueryWorkers.h"
-#include "SpectralFitImportPage.h"
 
 #endif // STARIMPORTWIZARD_H

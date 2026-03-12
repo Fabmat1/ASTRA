@@ -146,11 +146,9 @@ public:
     // Generic field access for table display
     QVariant getFieldValue(const QString& fieldName) const;
 
-    // Radial velocity curve management
+    // In Star.h public section, add:
     std::shared_ptr<RadialVelocityCurve> getRVCurve() const { return _rvCurve; }
-    void setRVCurve(std::shared_ptr<RadialVelocityCurve> rvCurve) { _rvCurve = rvCurve; }
-    
-    // Update RV metrics from curve
+    void setRVCurve(std::shared_ptr<RadialVelocityCurve> curve) { _rvCurve = curve; }
     void updateRVMetricsFromCurve();
 
 private:

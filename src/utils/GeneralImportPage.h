@@ -58,7 +58,16 @@ private:
     SimbadWorker* _simbadWorker;
     QThread* _gaiaThread;
     GaiaWorker* _gaiaWorker;
-    
+
+    QString generateIdentityKey(const DataRow& row) const;
+    bool areRowsCompatible(const DataRow& a, const DataRow& b) const;
+    bool areNumericValuesCompatible(double a, double b, const QString& fieldName) const;
+    DataRow mergeRows(const DataRow& existing, const DataRow& incoming) const;
+    int numericPrecision(const QVariant& value) const;
+    double toleranceForField(const QString& fieldName) const;
+    QString fieldForColumn(const QString& columnName) const;
+    QLabel* _deduplicationLabel;
+
     void queryGaiaData(std::vector<std::shared_ptr<Star>>& stars);
     void removeDuplicateRows();
     QString generateRowKey(const DataRow& row) const;

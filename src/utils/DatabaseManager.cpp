@@ -18,6 +18,7 @@
 #include <QSqlRecord>
 
 #include "utils/AppPaths.h"
+#include "models/RadialVelocity.h"
 
 DatabaseManager::DatabaseManager(QObject *parent)
     : QObject(parent)
@@ -253,6 +254,68 @@ bool DatabaseManager::createTables()
         )
     )";
 
+    // RV Curves table
+    QString createRVCurvesTable = R"(
+        CREATE TABLE IF NOT EXISTS rv_curves (
+          id TEXT PRIMARY KEY,
+          star_id TEXT NOT NULL,
+          num_points INTEGER DEFAULT 0,
+          mean_rv REAL DEFAULT 0,
+          std_rv REAL DEFAULT 0,
+          min_rv REAL DEFAULT 0,
+          max_rv REAL DEFAULT 0,
+          time_baseline REAL DEFAULT 0,
+          log_p REAL DEFAULT 0,
+          created_at TEXT DEFAULT (datetime('now')),
+          FOREIGN KEY (star_id) REFERENCES stars(id) ON DELETE CASCADE
+        )
+    )";
+
+    // RV Points table
+    QString createRVPointsTable = R"(
+        CREATE TABLE IF NOT EXISTS rv_points (
+          id TEXT PRIMARY KEY,
+          curve_id TEXT NOT NULL,
+          mjd REAL DEFAULT 0,
+          bjd REAL DEFAULT 0,
+          radial_velocity REAL NOT NULL,
+          rv_error REAL DEFAULT 0,
+          source TEXT,
+          spectrum_id TEXT,
+          spectral_fit_id TEXT,
+          created_at TEXT DEFAULT (datetime('now')),
+          FOREIGN KEY (curve_id) REFERENCES rv_curves(id) ON DELETE CASCADE
+        )
+    )";
+
+    // RV Fits table
+    QString createRVFitsTable = R"(
+        CREATE TABLE IF NOT EXISTS rv_fits (
+          id TEXT PRIMARY KEY,
+          curve_id TEXT NOT NULL,
+          k REAL DEFAULT 0,
+          k_error REAL DEFAULT 0,
+          gamma REAL DEFAULT 0,
+          gamma_error REAL DEFAULT 0,
+          period REAL DEFAULT 0,
+          period_error REAL DEFAULT 0,
+          phi REAL DEFAULT 0,
+          phi_error REAL DEFAULT 0,
+          t0 REAL DEFAULT 0,
+          t0_error REAL DEFAULT 0,
+          eccentricity REAL DEFAULT 0,
+          eccentricity_error REAL DEFAULT 0,
+          omega REAL DEFAULT 0,
+          omega_error REAL DEFAULT 0,
+          is_best_fit INTEGER DEFAULT 0,
+          fit_method TEXT,
+          chi2 REAL DEFAULT 0,
+          rms REAL DEFAULT 0,
+          created_at TEXT DEFAULT (datetime('now')),
+          FOREIGN KEY (curve_id) REFERENCES rv_curves(id) ON DELETE CASCADE
+        )
+    )";
+
     // Execute all table creation queries
     QStringList queries = {
         createProjectsTable,
@@ -263,7 +326,10 @@ bool DatabaseManager::createTables()
         createSEDModelsTable,
         createLightcurveModelsTable,
         createSpectraTable,
-        createSpectralFitsTable
+        createSpectralFitsTable,
+        createRVCurvesTable,
+        createRVFitsTable,
+        createRVPointsTable,
     };
 
     for (const QString& query : queries) {
@@ -290,8 +356,8 @@ bool DatabaseManager::runMigrations()
     };
 
     for (const QString& sql : alterQueries) {
-        QSqlQuery q;
-        q.exec(sql);  // Silently ignore "duplicate column name" errors
+        QSqlQuery q(threadConnection());            
+        q.exec(sql);
     }
 
     return true;
@@ -307,7 +373,11 @@ bool DatabaseManager::createIndexes()
         "CREATE INDEX IF NOT EXISTS idx_photometric_points_photometry_id ON photometric_points(photometry_id)",
         "CREATE INDEX IF NOT EXISTS idx_lightcurves_photometry_id ON lightcurves(photometry_id)",
         "CREATE INDEX IF NOT EXISTS idx_sed_models_photometry_id ON sed_models(photometry_id)",
-        "CREATE INDEX IF NOT EXISTS idx_spectral_fits_spectrum_id ON spectral_fits(spectrum_id)"
+        "CREATE INDEX IF NOT EXISTS idx_spectral_fits_spectrum_id ON spectral_fits(spectrum_id)",
+        "CREATE INDEX IF NOT EXISTS idx_rv_curves_star ON rv_curves(star_id)",
+        "CREATE INDEX IF NOT EXISTS idx_rv_points_curve ON rv_points(curve_id)",
+        "CREATE INDEX IF NOT EXISTS idx_rv_points_mjd ON rv_points(mjd)",
+        "CREATE INDEX IF NOT EXISTS idx_rv_fits_curve ON rv_fits(curve_id)",
     };
 
     for (const QString& query : indexQueries) {
@@ -321,7 +391,7 @@ bool DatabaseManager::createIndexes()
 
 bool DatabaseManager::executeQuery(const QString& query)
 {
-    QSqlQuery sqlQuery;
+    QSqlQuery sqlQuery(threadConnection());
     if (!sqlQuery.exec(query)) {
         qDebug() << "Query execution failed:" << sqlQuery.lastError();
         qDebug() << "Query was:" << query;
@@ -334,7 +404,9 @@ std::vector<std::shared_ptr<Project>> DatabaseManager::loadProjects()
 {
     std::vector<std::shared_ptr<Project>> projects;
 
-    QSqlQuery query("SELECT * FROM projects");
+    QSqlQuery query(threadConnection()); 
+    query.prepare("SELECT * FROM projects");
+    if (!query.exec()) return projects;        
     while (query.next()) {
         auto project = std::make_shared<Project>(
             query.value("name").toString(),
@@ -370,7 +442,7 @@ std::vector<std::shared_ptr<Project>> DatabaseManager::loadProjects()
 
 size_t DatabaseManager::getStarCountForProject(const QString& projectId)
 {
-    QSqlQuery query;
+    QSqlQuery query(threadConnection());
     query.prepare("SELECT COUNT(*) FROM stars WHERE project_id = :project_id");
     query.bindValue(":project_id", projectId);
     
@@ -386,7 +458,7 @@ bool DatabaseManager::saveProject(std::shared_ptr<Project> project)
 {
     if (!project) return false;
 
-    QSqlQuery query;
+    QSqlQuery query(threadConnection());
     query.prepare(R"(
         INSERT INTO projects (id, name, description, image_path, created_date, modified_date, visible_columns)
         VALUES (:id, :name, :description, :image_path, :created, :modified, :columns)
@@ -418,7 +490,7 @@ bool DatabaseManager::updateProject(std::shared_ptr<Project> project)
 {
     if (!project) return false;
 
-    QSqlQuery query;
+    QSqlQuery query(threadConnection());
     query.prepare(R"(
         UPDATE projects
         SET name = :name, description = :description, image_path = :image_path, modified_date = :modified, visible_columns = :columns
@@ -443,7 +515,7 @@ bool DatabaseManager::updateProject(std::shared_ptr<Project> project)
 bool DatabaseManager::deleteProject(const QString& projectId)
 {
     // Clean up all star data directories first
-    QSqlQuery starQuery;
+    QSqlQuery starQuery(threadConnection());
     starQuery.prepare("SELECT id FROM stars WHERE project_id = :pid");
     starQuery.bindValue(":pid", projectId);
     if (starQuery.exec()) {
@@ -453,7 +525,7 @@ bool DatabaseManager::deleteProject(const QString& projectId)
         }
     }
 
-    QSqlQuery query;
+    QSqlQuery query(threadConnection());
     query.prepare("DELETE FROM projects WHERE id = :id");
     query.bindValue(":id", projectId);
     return query.exec();
@@ -473,19 +545,20 @@ QString DatabaseManager::getDataDirectory() const
 
 bool DatabaseManager::saveStars(const QString& projectId, const std::vector<std::shared_ptr<Star>>& stars)
 {
-    QSqlDatabase::database().transaction();
-    
+    QSqlDatabase db = threadConnection();      
+    db.transaction();
+
     try {
         for (const auto& star : stars) {
             if (!saveStar(projectId, star)) {
-                QSqlDatabase::database().rollback();
+                db.rollback();
                 return false;
             }
         }
-        QSqlDatabase::database().commit();
+        db.commit();
         return true;
     } catch (...) {
-        QSqlDatabase::database().rollback();
+        db.rollback();
         return false;
     }
 }
@@ -497,7 +570,7 @@ bool DatabaseManager::saveStar(const QString& projectId, std::shared_ptr<Star> s
         star->setId(generateUUID());
     }
 
-    QSqlQuery query;
+    QSqlQuery query(threadConnection());
     query.prepare(R"(
         INSERT OR REPLACE INTO stars (
             id, project_id, alias, source_id, tic, jname,
@@ -592,7 +665,7 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
 {
     std::vector<std::shared_ptr<Star>> stars;
 
-    QSqlQuery query;
+    QSqlQuery query(threadConnection());
     query.prepare("SELECT * FROM stars WHERE project_id = :project_id");
     query.bindValue(":project_id", projectId);
 
@@ -726,19 +799,19 @@ bool DatabaseManager::deleteStar(const QString& projectId, const QString& starId
     DataStore::removeStarData(getDataDirectory(), starId);
 
     // Delete photometry and related data
-    QSqlQuery photometryQuery;
+    QSqlQuery photometryQuery(threadConnection());
     photometryQuery.prepare("SELECT id FROM photometry WHERE star_id = :star_id");
     photometryQuery.bindValue(":star_id", starId);
     if (photometryQuery.exec()) {
         while (photometryQuery.next()) {
             QString photometryId = photometryQuery.value(0).toString();
 
-            QSqlQuery sedQuery;
+            QSqlQuery sedQuery(threadConnection());
             sedQuery.prepare("DELETE FROM sed_models WHERE photometry_id = :id");
             sedQuery.bindValue(":id", photometryId);
             sedQuery.exec();
 
-            QSqlQuery lcQuery;
+            QSqlQuery lcQuery(threadConnection());
             lcQuery.prepare("SELECT id FROM lightcurves WHERE photometry_id = :id");
             lcQuery.bindValue(":id", photometryId);
             if (lcQuery.exec()) {
@@ -750,24 +823,24 @@ bool DatabaseManager::deleteStar(const QString& projectId, const QString& starId
                 }
             }
 
-            QSqlQuery deleteLcQuery;
+            QSqlQuery deleteLcQuery(threadConnection());
             deleteLcQuery.prepare("DELETE FROM lightcurves WHERE photometry_id = :id");
             deleteLcQuery.bindValue(":id", photometryId);
             deleteLcQuery.exec();
 
-            QSqlQuery pointsQuery;
+            QSqlQuery pointsQuery(threadConnection());
             pointsQuery.prepare("DELETE FROM photometric_points WHERE photometry_id = :id");
             pointsQuery.bindValue(":id", photometryId);
             pointsQuery.exec();
         }
     }
 
-    QSqlQuery deletePhotometry;
+    QSqlQuery deletePhotometry(threadConnection());
     deletePhotometry.prepare("DELETE FROM photometry WHERE star_id = :star_id");
     deletePhotometry.bindValue(":star_id", starId);
     deletePhotometry.exec();
 
-    QSqlQuery spectraQuery;
+    QSqlQuery spectraQuery(threadConnection());
     spectraQuery.prepare("SELECT id FROM spectra WHERE star_id = :star_id");
     spectraQuery.bindValue(":star_id", starId);
     if (spectraQuery.exec()) {
@@ -779,12 +852,12 @@ bool DatabaseManager::deleteStar(const QString& projectId, const QString& starId
         }
     }
 
-    QSqlQuery deleteSpectra;
+    QSqlQuery deleteSpectra(threadConnection());
     deleteSpectra.prepare("DELETE FROM spectra WHERE star_id = :star_id");
     deleteSpectra.bindValue(":star_id", starId);
     deleteSpectra.exec();
 
-    QSqlQuery query;
+    QSqlQuery query(threadConnection());
     query.prepare("DELETE FROM stars WHERE id = :id AND project_id = :project_id");
     query.bindValue(":id", starId);
     query.bindValue(":project_id", projectId);
@@ -810,7 +883,7 @@ bool DatabaseManager::savePhotometry(const QString& starId,
     QString dataDir = getDataDirectory();
 
     // Save main photometry record
-    QSqlQuery query;
+    QSqlQuery query(threadConnection());
     query.prepare(R"(
         INSERT OR REPLACE INTO photometry (id, star_id, photometric_points_file)
         VALUES (:id, :star_id, :points_file)
@@ -835,7 +908,7 @@ bool DatabaseManager::savePhotometry(const QString& starId,
 
     // Save individual photometric points metadata to database
     for (const auto& point : photometry->getPhotometricPoints()) {
-        QSqlQuery pointQuery;
+        QSqlQuery pointQuery(threadConnection());
         pointQuery.prepare(R"(
             INSERT OR REPLACE INTO photometric_points (
                 id, photometry_id, instrument, filter, magnitude, magnitude_error,
@@ -868,7 +941,7 @@ bool DatabaseManager::savePhotometry(const QString& starId,
                                                     photometry->getId(), source);
         photometry->saveLightcurveToFile(source, lcFile);
 
-        QSqlQuery lcQuery;
+        QSqlQuery lcQuery(threadConnection());
         lcQuery.prepare(R"(
             INSERT OR REPLACE INTO lightcurves (id, photometry_id, source, data_file)
             VALUES (:id, :photometry_id, :source, :data_file)
@@ -916,7 +989,7 @@ bool DatabaseManager::saveSEDModel(const QString& starId,
         QFile::remove(oldFile);
     }
 
-    QSqlQuery query;
+    QSqlQuery query(threadConnection());
     query.prepare(R"(
         INSERT OR REPLACE INTO sed_models (
             id, photometry_id, creation_date, model_id, is_best_fit,
@@ -965,7 +1038,7 @@ bool DatabaseManager::saveLightcurveModel(const QString& starId,
         QFile::remove(oldFile);
     }
 
-    QSqlQuery query;
+    QSqlQuery query(threadConnection());
     query.prepare(R"(
         INSERT OR REPLACE INTO lightcurve_models (
             id, lightcurve_id, creation_date, model_id, is_best_fit,
@@ -990,7 +1063,7 @@ bool DatabaseManager::saveLightcurveModel(const QString& starId,
 
 std::shared_ptr<Photometry> DatabaseManager::loadPhotometry(const QString& starId)
 {
-    QSqlQuery query;
+    QSqlQuery query(threadConnection());
     query.prepare("SELECT * FROM photometry WHERE star_id = :star_id");
     query.bindValue(":star_id", starId);
 
@@ -1002,7 +1075,7 @@ std::shared_ptr<Photometry> DatabaseManager::loadPhotometry(const QString& starI
     photometry->setId(query.value("id").toString());
 
     // Load photometric points metadata (actual data loaded on demand)
-    QSqlQuery pointsQuery;
+    QSqlQuery pointsQuery(threadConnection());
     pointsQuery.prepare("SELECT * FROM photometric_points WHERE photometry_id = :photometry_id");
     pointsQuery.bindValue(":photometry_id", photometry->getId());
     
@@ -1027,7 +1100,7 @@ std::shared_ptr<Photometry> DatabaseManager::loadPhotometry(const QString& starI
     }
 
     // Load lightcurve metadata
-    QSqlQuery lcQuery;
+    QSqlQuery lcQuery(threadConnection());
     lcQuery.prepare("SELECT * FROM lightcurves WHERE photometry_id = :photometry_id");
     lcQuery.bindValue(":photometry_id", photometry->getId());
     
@@ -1074,7 +1147,7 @@ bool DatabaseManager::saveSpectrum(const QString& starId, std::shared_ptr<Spectr
     }
     spectrum->setDataFile(dataFile);
 
-    QSqlQuery query;
+    QSqlQuery query(threadConnection());
     query.prepare(R"(
         INSERT OR REPLACE INTO spectra (
             id, star_id, file, instrument, mjd, bjd, exposure_time,
@@ -1125,7 +1198,7 @@ bool DatabaseManager::saveSpectralFit(const QString& starId,
         QFile::remove(oldFile);
     }
 
-    QSqlQuery query;
+    QSqlQuery query(threadConnection());
     query.prepare(R"(
         INSERT OR REPLACE INTO spectral_fits (
             id, spectrum_id, creation_date, model_id, is_best_fit,
@@ -1177,7 +1250,7 @@ std::vector<std::shared_ptr<Spectrum>> DatabaseManager::loadSpectra(const QStrin
 {
     std::vector<std::shared_ptr<Spectrum>> spectra;
 
-    QSqlQuery query;
+    QSqlQuery query(threadConnection());
     query.prepare(R"(
         SELECT * FROM spectra WHERE star_id = :star_id
     )");
@@ -1215,7 +1288,7 @@ std::vector<std::shared_ptr<SpectralFit>> DatabaseManager::loadSpectralFits(cons
 {
     std::vector<std::shared_ptr<SpectralFit>> fits;
 
-    QSqlQuery query;
+    QSqlQuery query(threadConnection());
     query.prepare("SELECT * FROM spectral_fits WHERE spectrum_id = :spectrum_id");
     query.bindValue(":spectrum_id", spectrumId);
 
@@ -1258,7 +1331,7 @@ std::vector<std::shared_ptr<SEDModel>> DatabaseManager::loadSEDModels(const QStr
 {
     std::vector<std::shared_ptr<SEDModel>> models;
 
-    QSqlQuery query;
+    QSqlQuery query(threadConnection());
     query.prepare("SELECT * FROM sed_models WHERE photometry_id = :photometry_id");
     query.bindValue(":photometry_id", photometryId);
 
@@ -1290,7 +1363,7 @@ std::vector<std::shared_ptr<LightcurveModel>> DatabaseManager::loadLightcurveMod
 {
     std::vector<std::shared_ptr<LightcurveModel>> models;
 
-    QSqlQuery query;
+    QSqlQuery query(threadConnection());
     query.prepare("SELECT * FROM lightcurve_models WHERE lightcurve_id = :lightcurve_id");
     query.bindValue(":lightcurve_id", lightcurveId);
 
@@ -1312,4 +1385,280 @@ std::vector<std::shared_ptr<LightcurveModel>> DatabaseManager::loadLightcurveMod
     }
 
     return models;
+}
+
+QSqlDatabase DatabaseManager::threadConnection()
+{
+    // Main thread: reuse the original connection
+    if (QThread::currentThread() == this->thread())
+        return _database;
+
+    // Worker threads: per-thread named connection
+    QString connName = QStringLiteral("worker_%1")
+        .arg(reinterpret_cast<quintptr>(QThread::currentThread()), 0, 16);
+
+    if (QSqlDatabase::contains(connName)) {
+        QSqlDatabase db = QSqlDatabase::database(connName, /*open=*/false);
+        if (db.isOpen())
+            return db;
+    }
+
+    QMutexLocker lock(&_connectionMutex);
+
+    // Double-check after acquiring lock
+    if (QSqlDatabase::contains(connName)) {
+        QSqlDatabase db = QSqlDatabase::database(connName, /*open=*/false);
+        if (db.isOpen())
+            return db;
+    }
+
+    QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", connName);
+    db.setDatabaseName(_databasePath);
+    if (!db.open()) {
+        qWarning() << "Failed to open worker DB connection:" << db.lastError();
+    } else {
+        QSqlQuery walQuery(db);
+        walQuery.exec("PRAGMA journal_mode=WAL");
+        walQuery.exec("PRAGMA synchronous=NORMAL");
+        walQuery.exec("PRAGMA cache_size=10000");
+    }
+    return db;
+}
+
+
+// ════════════════════════════════════════════════════════════════
+// Radial Velocity Persistence
+// ════════════════════════════════════════════════════════════════
+
+bool DatabaseManager::saveRadialVelocityCurve(
+    std::shared_ptr<RadialVelocityCurve> curve, const QString& starId)
+{
+    if (!curve) return false;
+
+    QSqlQuery query(threadConnection());
+    query.prepare(R"(
+        INSERT OR REPLACE INTO rv_curves
+        (id, star_id, num_points, mean_rv, std_rv, min_rv, max_rv,
+         time_baseline, log_p)
+        VALUES (:id, :star_id, :num_points, :mean_rv, :std_rv,
+                :min_rv, :max_rv, :time_baseline, :log_p)
+    )");
+
+    query.bindValue(":id", curve->getId());
+    query.bindValue(":star_id", starId);
+    query.bindValue(":num_points",
+                    static_cast<int>(curve->getNumPoints()));
+    query.bindValue(":mean_rv", curve->getMeanRV());
+    query.bindValue(":std_rv", curve->getStdDevRV());
+    query.bindValue(":min_rv", curve->getMinRV());
+    query.bindValue(":max_rv", curve->getMaxRV());
+    query.bindValue(":time_baseline", curve->getTimeSpan());
+    query.bindValue(":log_p", curve->getLogP());
+
+    if (!query.exec()) {
+        qDebug() << "Failed to save RV curve:" << query.lastError();
+        return false;
+    }
+    return true;
+}
+
+bool DatabaseManager::saveRadialVelocityPoint(
+    std::shared_ptr<RadialVelocityPoint> point, const QString& curveId)
+{
+    if (!point) return false;
+
+    QSqlQuery query(threadConnection());
+    query.prepare(R"(
+        INSERT OR REPLACE INTO rv_points
+        (id, curve_id, mjd, bjd, radial_velocity,
+         rv_error, source, spectrum_id, spectral_fit_id)
+        VALUES (:id, :curve_id, :mjd, :bjd, :rv,
+                :rv_error, :source, :spectrum_id, :fit_id)
+    )");
+
+    query.bindValue(":id", point->getId());
+    query.bindValue(":curve_id", curveId);
+    query.bindValue(":mjd", point->getMJD());
+    query.bindValue(":bjd", point->getBJD());
+    query.bindValue(":rv", point->getRV());
+    query.bindValue(":rv_error", point->getRVError());
+    query.bindValue(":source", point->getSource());
+    query.bindValue(":spectrum_id", point->getSpectrumId());
+    query.bindValue(":fit_id", point->getSpectralFitId());
+
+    if (!query.exec()) {
+        qDebug() << "Failed to save RV point:" << query.lastError();
+        return false;
+    }
+    return true;
+}
+
+bool DatabaseManager::saveRVFit(
+    std::shared_ptr<RVFit> fit, const QString& curveId)
+{
+    if (!fit) return false;
+
+    QSqlQuery query(threadConnection());
+    query.prepare(R"(
+        INSERT OR REPLACE INTO rv_fits
+        (id, curve_id, k, k_error, gamma, gamma_error,
+         period, period_error, phi, phi_error, t0, t0_error,
+         eccentricity, eccentricity_error, omega, omega_error,
+         is_best_fit, fit_method, chi2, rms)
+        VALUES (:id, :curve_id, :k, :k_error, :gamma, :gamma_error,
+                :period, :period_error, :phi, :phi_error, :t0, :t0_error,
+                :ecc, :ecc_error, :omega, :omega_error,
+                :is_best, :method, :chi2, :rms)
+    )");
+
+    query.bindValue(":id", fit->getId());
+    query.bindValue(":curve_id", curveId);
+    query.bindValue(":k", fit->getK());
+    query.bindValue(":k_error", fit->getKError());
+    query.bindValue(":gamma", fit->getGamma());
+    query.bindValue(":gamma_error", fit->getGammaError());
+    query.bindValue(":period", fit->getPeriod());
+    query.bindValue(":period_error", fit->getPeriodError());
+    query.bindValue(":phi", fit->getPhi());
+    query.bindValue(":phi_error", fit->getPhiError());
+    query.bindValue(":t0", fit->getT0());
+    query.bindValue(":t0_error", fit->getT0Error());
+    query.bindValue(":ecc", fit->getEccentricity());
+    query.bindValue(":ecc_error", fit->getEccentricityError());
+    query.bindValue(":omega", fit->getOmega());
+    query.bindValue(":omega_error", fit->getOmegaError());
+    query.bindValue(":is_best", fit->isBestFit() ? 1 : 0);
+    query.bindValue(":method", fit->getFitMethod());
+    query.bindValue(":chi2", fit->getChi2());
+    query.bindValue(":rms", fit->getRms());
+
+    if (!query.exec()) {
+        qDebug() << "Failed to save RV fit:" << query.lastError();
+        return false;
+    }
+    return true;
+}
+
+std::shared_ptr<RadialVelocityCurve> DatabaseManager::loadRadialVelocityCurve(
+    const QString& starId)
+{
+    QSqlQuery query(threadConnection());
+    query.prepare(R"(
+        SELECT * FROM rv_curves WHERE star_id = :star_id
+        ORDER BY created_at DESC LIMIT 1
+    )");
+    query.bindValue(":star_id", starId);
+
+    if (!query.exec() || !query.next()) return nullptr;
+
+    auto curve = std::make_shared<RadialVelocityCurve>();
+    curve->setId(query.value("id").toString());
+    curve->setStarId(starId);
+    curve->setLogP(query.value("log_p").toDouble());
+
+    // Load points
+    auto points = loadRadialVelocityPoints(curve->getId());
+    for (const auto& pt : points)
+        curve->addRVPoint(pt);
+
+    // Load fits
+    auto fits = loadRVFits(curve->getId());
+    for (const auto& fit : fits)
+        curve->addRVFit(fit);
+
+    return curve;
+}
+
+std::vector<std::shared_ptr<RadialVelocityPoint>>
+DatabaseManager::loadRadialVelocityPoints(const QString& curveId)
+{
+    std::vector<std::shared_ptr<RadialVelocityPoint>> result;
+
+    QSqlQuery query(threadConnection());
+    query.prepare(R"(
+        SELECT * FROM rv_points WHERE curve_id = :curve_id
+        ORDER BY mjd ASC, bjd ASC
+    )");
+    query.bindValue(":curve_id", curveId);
+
+    if (!query.exec()) return result;
+
+    while (query.next()) {
+        auto pt = std::make_shared<RadialVelocityPoint>();
+        pt->setId(query.value("id").toString());
+        pt->setCurveId(curveId);
+        pt->setMJD(query.value("mjd").toDouble());
+        pt->setBJD(query.value("bjd").toDouble());
+        pt->setRV(query.value("radial_velocity").toDouble());
+        pt->setRVError(query.value("rv_error").toDouble());
+        pt->setSource(query.value("source").toString());
+        pt->setSpectrumId(query.value("spectrum_id").toString());
+        pt->setSpectralFitId(query.value("spectral_fit_id").toString());
+        result.push_back(pt);
+    }
+    return result;
+}
+
+std::vector<std::shared_ptr<RVFit>> DatabaseManager::loadRVFits(
+    const QString& curveId)
+{
+    std::vector<std::shared_ptr<RVFit>> result;
+
+    QSqlQuery query(threadConnection());
+    query.prepare("SELECT * FROM rv_fits WHERE curve_id = :curve_id");
+    query.bindValue(":curve_id", curveId);
+
+    if (!query.exec()) return result;
+
+    while (query.next()) {
+        auto fit = std::make_shared<RVFit>();
+        fit->setId(query.value("id").toString());
+        fit->setCurveId(curveId);
+        fit->setK(query.value("k").toDouble());
+        fit->setKError(query.value("k_error").toDouble());
+        fit->setGamma(query.value("gamma").toDouble());
+        fit->setGammaError(query.value("gamma_error").toDouble());
+        fit->setPeriod(query.value("period").toDouble());
+        fit->setPeriodError(query.value("period_error").toDouble());
+        fit->setPhi(query.value("phi").toDouble());
+        fit->setPhiError(query.value("phi_error").toDouble());
+        fit->setT0(query.value("t0").toDouble());
+        fit->setT0Error(query.value("t0_error").toDouble());
+        fit->setEccentricity(query.value("eccentricity").toDouble());
+        fit->setEccentricityError(
+            query.value("eccentricity_error").toDouble());
+        fit->setOmega(query.value("omega").toDouble());
+        fit->setOmegaError(query.value("omega_error").toDouble());
+        fit->setBestFit(query.value("is_best_fit").toInt() != 0);
+        fit->setFitMethod(query.value("fit_method").toString());
+        fit->setChi2(query.value("chi2").toDouble());
+        fit->setRms(query.value("rms").toDouble());
+        result.push_back(fit);
+    }
+    return result;
+}
+
+std::shared_ptr<RVFit> DatabaseManager::loadRVFit(const QString& curveId)
+{
+    auto fits = loadRVFits(curveId);
+    for (const auto& f : fits)
+        if (f->isBestFit()) return f;
+    return fits.empty() ? nullptr : fits.front();
+}
+
+bool DatabaseManager::deleteRadialVelocityCurve(const QString& curveId)
+{
+    QSqlQuery query(threadConnection());
+
+    query.prepare("DELETE FROM rv_points WHERE curve_id = :curve_id");
+    query.bindValue(":curve_id", curveId);
+    query.exec();
+
+    query.prepare("DELETE FROM rv_fits WHERE curve_id = :curve_id");
+    query.bindValue(":curve_id", curveId);
+    query.exec();
+
+    query.prepare("DELETE FROM rv_curves WHERE id = :id");
+    query.bindValue(":id", curveId);
+    return query.exec();
 }

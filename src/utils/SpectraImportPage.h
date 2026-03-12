@@ -99,7 +99,6 @@ private slots:
     void onMatchMethodMoveUp();
     void onMatchMethodMoveDown();
     void onMatchMethodItemChanged(QListWidgetItem* item);
-    void onMatchMethodChanged();
 
     // Async completion slots
     void onScanComplete(std::vector<SpectrumMetadata> metadata);
@@ -181,9 +180,6 @@ private:
     QPushButton* _moveDownButton;
     QDoubleSpinBox* _matchRadiusSpin;
     QLabel* _matchRadiusLabel;
-    QRadioButton* _matchPositionRadio;
-    QRadioButton* _matchSourceIdRadio;
-    QRadioButton* _matchObjectNameRadio;
 
     
     // Mapping column combos

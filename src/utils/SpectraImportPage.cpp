@@ -74,7 +74,6 @@ std::shared_ptr<Star> SpatialStarIndex::findNearest(double ra, double dec,
                                                      double* outDistArcsec) const
 {
     double radiusDeg = radiusArcsec / 3600.0;
-    double cosDecFactor = std::cos(dec * M_PI / 180.0);
 
     // How many cells the radius spans
     int cellSpan = static_cast<int>(std::ceil(radiusDeg / _cellSizeDeg)) + 1;
@@ -91,7 +90,10 @@ std::shared_ptr<Star> SpatialStarIndex::findNearest(double ra, double dec,
             if (it == _grid.end()) continue;
 
             for (const auto& star : it->second) {
+                double meanDec = (dec + star->getDec()) * 0.5;
+                double cosDecFactor = std::cos(meanDec * M_PI / 180.0);
                 double dRa  = (ra - star->getRa()) * cosDecFactor;
+
                 double dDec = dec - star->getDec();
                 double dist = std::sqrt(dRa * dRa + dDec * dDec);
 
@@ -107,6 +109,37 @@ std::shared_ptr<Star> SpatialStarIndex::findNearest(double ra, double dec,
         *outDistArcsec = bestDistDeg * 3600.0;
     }
     return bestMatch;
+}
+
+static QStringList normaliseCatalogName(const QString& raw)
+{
+    static const QStringList kPrefixes = {
+        "GAIA DR3", "GAIA DR2", "GAIA DR1", "GAIA",
+        "TYC", "HIP", "HD", "HR", "BD", "CD", "SAO",
+        "2MASS", "UCAC", "GSC"
+    };
+
+    QStringList keys;
+    QString upper = raw.trimmed().toUpper();
+    // Strip all spaces/underscores for a "crushed" key
+    QString crushed = upper;
+    crushed.remove(' ').remove('_').remove('-');
+    keys << crushed;
+
+    // Also try extracting just the numeric suffix after a known prefix
+    for (const QString& prefix : kPrefixes) {
+        QString prefixCrushed = prefix;
+        prefixCrushed.remove(' ');
+        if (crushed.startsWith(prefixCrushed)) {
+            QString suffix = crushed.mid(prefixCrushed.length());
+            if (!suffix.isEmpty()) {
+                keys << (prefixCrushed + suffix); // already there via crushed, but explicit
+            }
+            break;
+        }
+    }
+
+    return keys;
 }
 
 // ============================================================================
@@ -295,38 +328,6 @@ void SpectraImportPage::setupFitsPage()
     filesGroup->setLayout(filesLayout);
     layout->addWidget(filesGroup);
     
-    // Matching options
-    QGroupBox* matchGroup = new QGroupBox("Star Matching");
-    QGridLayout* matchLayout = new QGridLayout;
-    
-    _matchPositionRadio = new QRadioButton("Match by position (RA/DEC from header)");
-    _matchSourceIdRadio = new QRadioButton("Match by Gaia Source ID (from header)");
-    _matchObjectNameRadio = new QRadioButton("Match by object name (from header)");
-    _matchPositionRadio->setChecked(true);
-    
-    QButtonGroup* matchButtonGroup = new QButtonGroup(this);
-    matchButtonGroup->addButton(_matchPositionRadio);
-    matchButtonGroup->addButton(_matchSourceIdRadio);
-    matchButtonGroup->addButton(_matchObjectNameRadio);
-    
-    matchLayout->addWidget(_matchPositionRadio, 0, 0, 1, 2);
-    matchLayout->addWidget(_matchSourceIdRadio, 1, 0, 1, 2);
-    matchLayout->addWidget(_matchObjectNameRadio, 2, 0, 1, 2);
-    
-    QLabel* radiusLabel = new QLabel("Position match radius (arcsec):");
-    _matchRadiusSpin = new QDoubleSpinBox;
-    _matchRadiusSpin->setRange(0.1, 60.0);
-    _matchRadiusSpin->setValue(5.0);
-    _matchRadiusSpin->setDecimals(1);
-    _matchRadiusSpin->setSingleStep(0.5);
-    matchLayout->addWidget(radiusLabel, 3, 0);
-    matchLayout->addWidget(_matchRadiusSpin, 3, 1);
-    
-    connect(_matchPositionRadio, &QRadioButton::toggled, this, &SpectraImportPage::onMatchMethodChanged);
-    
-    matchGroup->setLayout(matchLayout);
-    layout->addWidget(matchGroup);
-    
     // Scan button
     QHBoxLayout* scanLayout = new QHBoxLayout;
     _scanButton = new QPushButton("Scan && Match");
@@ -455,9 +456,30 @@ void SpectraImportPage::initializePage()
     
     StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
     if (importWizard) {
-        _importedStars = importWizard->getImportedStars();
-        LOG_INFO("SpectraImport", QString("Received %1 stars for spectrum matching")
-                 .arg(_importedStars.size()));
+        auto controller = importWizard->controller();
+        auto project = importWizard->project();
+        
+        if (controller && project) {
+            // Ensure stars are loaded from database (openProject does this,
+            // but be safe in case wizard was launched differently)
+            if (!project->starsLoaded()) {
+                controller->openProject(project->getId());
+            }
+            
+            // Get ALL stars from the project — includes both stars that were
+            // already in the database AND any newly imported in GeneralImportPage
+            _importedStars = project->getAllStars();
+            
+            LOG_INFO("SpectraImport", QString("Loaded %1 stars from project for spectrum matching")
+                     .arg(_importedStars.size()));
+        }
+        
+        // Fallback: if project somehow has no stars, try the wizard's imported list
+        if (_importedStars.empty()) {
+            _importedStars = importWizard->getImportedStars();
+            LOG_INFO("SpectraImport", QString("Fallback: using %1 stars from wizard import list")
+                     .arg(_importedStars.size()));
+        }
     }
     
     // Reset state
@@ -478,37 +500,32 @@ void SpectraImportPage::initializePage()
 void SpectraImportPage::buildStarLookupIndex()
 {
     if (_indexBuilt) return;
-    
-    LOG_DEBUG("SpectraImport", "Building star lookup indices");
-    
+
     _sourceIdIndex.clear();
     _aliasIndex.clear();
-    
+
     QRegularExpression re("(\\d{10,})");
-    
+
     for (const auto& star : _importedStars) {
         QString sourceId = star->getSourceId();
         if (!sourceId.isEmpty()) {
             _sourceIdIndex[sourceId] = star;
-            
             QRegularExpressionMatch match = re.match(sourceId);
             if (match.hasMatch()) {
                 _sourceIdIndex[match.captured(1)] = star;
             }
         }
-        
+
         QString alias = star->getAlias();
         if (!alias.isEmpty()) {
-            _aliasIndex[alias.toLower()] = star;
+            for (const QString& key : normaliseCatalogName(alias)) {
+                _aliasIndex[key] = star;
+            }
         }
     }
-    
-    // Build spatial grid index for position matching
+
     _spatialIndex.build(_importedStars);
-    
     _indexBuilt = true;
-    LOG_DEBUG("SpectraImport", QString("Built indices: %1 source IDs, %2 aliases, spatial grid ready")
-              .arg(_sourceIdIndex.size()).arg(_aliasIndex.size()));
 }
 
 void SpectraImportPage::onImportModeChanged()
@@ -679,10 +696,12 @@ std::shared_ptr<Star> SpectraImportPage::findMatchingStarThreadSafe(
 
             case MatchMethod::Alias:
                 if (!alias.isEmpty()) {
-                    auto it = _aliasIndex.find(alias.trimmed().toLower());
-                    if (it != _aliasIndex.end()) {
-                        outMatchMethod = "alias";
-                        return it.value();
+                    for (const QString& key : normaliseCatalogName(alias)) {
+                        auto it = _aliasIndex.find(key);
+                        if (it != _aliasIndex.end()) {
+                            outMatchMethod = "alias";
+                            return it.value();
+                        }
                     }
                 }
                 break;
@@ -819,6 +838,33 @@ void SpectraImportPage::onScanComplete(std::vector<SpectrumMetadata> metadata)
     updatePreviewTable();
 }
 
+
+static QString extractStarNameFromFilename(const QString& filepath)
+{
+    QString base = QFileInfo(filepath).completeBaseName();
+
+    // Try to find known catalog prefixes embedded in the filename
+    // e.g. "20160528_HD180852N200242B01_12_113" → "HD180852"
+    static QRegularExpression catalogRe(
+        "\\b(HD|HR|HIP|BD|CD|SAO|TYC|GSC)\\s*([+\\-]?\\d[\\d\\s\\-]*\\d)",
+        QRegularExpression::CaseInsensitiveOption);
+
+    QRegularExpressionMatch m = catalogRe.match(base);
+    if (m.hasMatch()) {
+        QString prefix = m.captured(1).toUpper();
+        QString number = m.captured(2).remove(' ').remove('-');
+        // For BD/CD, preserve the sign
+        if ((prefix == "BD" || prefix == "CD") && m.captured(2).contains(QRegularExpression("[+\\-]"))) {
+            number = m.captured(2).trimmed();
+            number.remove(' ');
+        }
+        return prefix + number;
+    }
+
+    return {};
+}
+
+
 std::vector<SpectrumMatchResult> SpectraImportPage::matchSpectraToStars()
 {
     buildStarLookupIndex();
@@ -832,12 +878,21 @@ std::vector<SpectrumMatchResult> SpectraImportPage::matchSpectraToStars()
     for (const auto& metadata : _scannedMetadata) {
         SpectrumMatchResult result;
         result.spectrumFile = metadata.filepath;
+        if (!QFileInfo::exists(result.spectrumFile)) {
+            result.warnings << "File not found on disk";
+            result.hasWarnings = true;
+        }
         result.hasWarnings = !metadata.warnings.isEmpty();
         result.warnings = metadata.warnings;
         result.matchDistance = -1.0;
         
         QString sourceId = metadata.sourceId.value_or("");
         QString alias = metadata.objectName.value_or("");
+
+        // Fallback: try to extract a catalog name from the filename
+        if (alias.isEmpty() && sourceId.isEmpty()) {
+            alias = extractStarNameFromFilename(metadata.filepath);
+        }
         double ra = metadata.ra.value_or(0.0);
         double dec = metadata.dec.value_or(0.0);
         bool hasPosition = metadata.ra.has_value() && metadata.dec.has_value();
@@ -867,11 +922,6 @@ void SpectraImportPage::onBrowseMappingFile()
         _mappingBasePath = QFileInfo(file).absolutePath();
         onMappingFileLoaded();
     }
-}
-
-void SpectraImportPage::onMatchMethodChanged()
-{
-    _matchRadiusSpin->setEnabled(_matchPositionRadio->isChecked());
 }
 
 void SpectraImportPage::onMappingFileLoaded()
@@ -1029,86 +1079,6 @@ void SpectraImportPage::onPreviewButtonClicked()
     }
 }
 
-SpectrumMatchResult SpectraImportPage::processOneRow(const QStringList& row, int rowIndex) const
-{
-    SpectrumMatchResult result;
-    result.matchDistance = -1.0;
-    result.hasWarnings = false;
-    result.sourceRowIndex = rowIndex;
-    
-    int fileCol = _filePathColumnCombo->currentIndex() - 1;
-    int aliasCol = _starIdColumnCombo->currentIndex() - 1;
-    int sourceIdCol = _sourceIdColumnCombo->currentIndex() - 1;
-    int raCol = _raColumnCombo->currentIndex() - 1;
-    int decCol = _decColumnCombo->currentIndex() - 1;
-    int mjdCol = _mjdColumnCombo->currentIndex() - 1;
-    int bjdCol = _bjdColumnCombo->currentIndex() - 1;
-    int expCol = _expTimeColumnCombo->currentIndex() - 1;
-    
-    // Get file path
-    if (fileCol >= 0 && fileCol < row.size()) {
-        QString filePath = row[fileCol].trimmed();
-        if (!QFileInfo(filePath).isAbsolute()) {
-            filePath = _mappingBasePath + "/" + filePath;
-        }
-        result.spectrumFile = filePath;
-    } else {
-        result.spectrumFile = "";
-        result.warnings << "No file path";
-        result.hasWarnings = true;
-        return result;
-    }
-    
-    QString sourceId;
-    QString alias;
-    double ra = 0.0, dec = 0.0;
-    bool hasPosition = false;
-    
-    if (sourceIdCol >= 0 && sourceIdCol < row.size()) {
-        sourceId = row[sourceIdCol].trimmed();
-    }
-    if (aliasCol >= 0 && aliasCol < row.size()) {
-        alias = row[aliasCol].trimmed();
-    }
-    if (raCol >= 0 && decCol >= 0 && raCol < row.size() && decCol < row.size()) {
-        bool okRa, okDec;
-        ra = row[raCol].toDouble(&okRa);
-        dec = row[decCol].toDouble(&okDec);
-        hasPosition = okRa && okDec;
-    }
-    
-    // Use thread-safe matching (indices are read-only after build)
-    // Capture current settings — safe because this is only called after
-    // the UI thread has snapshotted them.
-    static thread_local std::vector<MatchMethod> cachedMethods;
-    static thread_local double cachedRadius = 5.0;
-    // These are set by processMapping/processFullMappingAsync before dispatching
-    result.matchedStar = findMatchingStarThreadSafe(
-        sourceId, alias, ra, dec, hasPosition,
-        cachedMethods, cachedRadius,
-        result.matchMethod, result.matchDistance);
-    
-    if (!result.matchedStar) {
-        result.warnings << "No matching star found";
-        result.hasWarnings = true;
-    }
-    
-    bool hasMjd = (mjdCol >= 0 && mjdCol < row.size() && !row[mjdCol].trimmed().isEmpty());
-    bool hasBjd = (bjdCol >= 0 && bjdCol < row.size() && !row[bjdCol].trimmed().isEmpty());
-    bool hasExp = (expCol >= 0 && expCol < row.size() && !row[expCol].trimmed().isEmpty());
-    
-    if (!hasMjd && !hasBjd) {
-        result.warnings << "No observation time (MJD/BJD)";
-        result.hasWarnings = true;
-    }
-    if (!hasExp) {
-        result.warnings << "No exposure time";
-        result.hasWarnings = true;
-    }
-    
-    return result;
-}
-
 std::vector<SpectrumMatchResult> SpectraImportPage::processMapping(int maxRows)
 {
     std::vector<SpectrumMatchResult> results;
@@ -1171,8 +1141,12 @@ std::vector<SpectrumMatchResult> SpectraImportPage::processMapping(int maxRows)
 
         if (sourceIdCol >= 0 && sourceIdCol < row.size())
             sourceId = row[sourceIdCol].trimmed();
-        if (aliasCol >= 0 && aliasCol < row.size())
+        if (aliasCol >= 0 && aliasCol < row.size()){
             alias = row[aliasCol].trimmed();
+            if (alias.isEmpty() && sourceId.isEmpty()) {
+                alias = extractStarNameFromFilename(result.spectrumFile);
+            }
+        }
         if (raCol >= 0 && decCol >= 0 && raCol < row.size() && decCol < row.size()) {
             bool okRa, okDec;
             ra = row[raCol].toDouble(&okRa);
@@ -1322,8 +1296,12 @@ void SpectraImportPage::processFullMappingAsync()
 
             if (params->sourceIdCol >= 0 && params->sourceIdCol < row.size())
                 sourceId = row[params->sourceIdCol].trimmed();
-            if (params->aliasCol >= 0 && params->aliasCol < row.size())
+            if (params->aliasCol >= 0 && params->aliasCol < row.size()){
                 alias = row[params->aliasCol].trimmed();
+                if (alias.isEmpty() && sourceId.isEmpty()) {
+                    alias = extractStarNameFromFilename(result.spectrumFile);
+                }
+            }
             if (params->raCol >= 0 && params->decCol >= 0 &&
                 params->raCol < row.size() && params->decCol < row.size()) {
                 bool okR, okD;

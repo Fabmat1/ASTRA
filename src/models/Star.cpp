@@ -99,24 +99,22 @@ QVariant Star::getFieldValue(const QString& fieldName) const
 
 void Star::updateRVMetricsFromCurve()
 {
-    if (!_rvCurve || _rvCurve->getNumPoints() == 0) {
-        return;
-    }
-    
-    // Update average and median RV
+    if (!_rvCurve || _rvCurve->getNumPoints() == 0) return;
+
+    // Update star's existing RV fields from curve statistics
     _rv_avg = _rvCurve->getWeightedMeanRV();
     _e_rv_avg = _rvCurve->getWeightedStdDevRV();
     _rv_med = _rvCurve->getMedianRV();
     _e_rv_med = _rvCurve->getStdDevRV();
-    
-    // Update delta RV (amplitude)
+
+    // Delta RV = amplitude (max - min)
     _deltaRV = _rvCurve->getRVAmplitude();
-    
-    // If we have an orbital fit, we could update period
-    auto bestFit = _rvCurve->getBestFit();
-    if (bestFit && bestFit->getPeriod() > 0) {
-        _logp = std::log10(bestFit->getPeriod());
-    }
+    _e_deltaRV = 0.0; // Could be computed from errors if needed
+
+    // Compute and store logP (chi-squared variability test)
+    double logP = _rvCurve->computeLogP();
+    _rvCurve->setLogP(logP);
+    _logp = logP;
 }
 
 std::shared_ptr<Photometry> Star::getPhotometry()

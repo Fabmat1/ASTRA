@@ -144,6 +144,12 @@ GeneralImportPage::GeneralImportPage(QWidget* parent)
     queryOptionsGroup->setLayout(queryLayout);
     layout->addWidget(queryOptionsGroup);
     
+    _deduplicationLabel = new QLabel;
+    _deduplicationLabel->setWordWrap(true);
+    _deduplicationLabel->setStyleSheet("QLabel { color: #555; font-style: italic; }");
+    _deduplicationLabel->hide();
+    layout->addWidget(_deduplicationLabel);
+
     // Preview table
     QLabel* previewLabel = new QLabel("Data Preview (first 10 rows):");
     layout->addWidget(previewLabel);
@@ -259,48 +265,316 @@ QString GeneralImportPage::generateRowKey(const DataRow& row) const
     return keyParts.join("|");
 }
 
-void GeneralImportPage::removeDuplicateRows()
+// src/utils/GeneralImportPage.cpp  — replace/add the deduplication methods
+
+QString GeneralImportPage::fieldForColumn(const QString& columnName) const
 {
-    if (_dataRows.empty() || _columnMappings.empty()) return;
-    
-    QSet<QString> seenKeys;
-    std::vector<DataRow> uniqueRows;
-    uniqueRows.reserve(_dataRows.size());
-    
-    int duplicatesRemoved = 0;
-    
-    for (const DataRow& row : _dataRows) {
-        QString key = generateRowKey(row);
-        
-        bool hasAnyValue = false;
-        for (const auto& [columnName, fieldName] : _columnMappings) {
-            auto it = row.values.find(columnName);
-            if (it != row.values.end()) {
-                QString normalized = normalizeValue(it->second);
-                if (!normalized.isEmpty()) {
-                    hasAnyValue = true;
-                    break;
+    auto it = _columnMappings.find(columnName);
+    if (it != _columnMappings.end()) {
+        return it->second;
+    }
+    return QString();
+}
+
+double GeneralImportPage::toleranceForField(const QString& fieldName) const
+{
+    // Relative and absolute tolerances tuned per physical quantity.
+    // These catch rounding differences but reject genuinely different stars.
+    if (fieldName == "ra")       return 1.0e-4;   // ~0.36 arcsec
+    if (fieldName == "dec")      return 1.0e-4;
+    if (fieldName == "pmra")     return 0.05;      // mas/yr
+    if (fieldName == "pmdec")    return 0.05;
+    if (fieldName == "e_pmra")   return 0.05;
+    if (fieldName == "e_pmdec")  return 0.05;
+    if (fieldName == "plx")      return 0.02;      // mas
+    if (fieldName == "e_plx")    return 0.02;
+    if (fieldName == "gmag")     return 0.01;      // mag
+    if (fieldName == "e_gmag")   return 0.01;
+    if (fieldName == "bp")       return 0.01;
+    if (fieldName == "e_bp")     return 0.01;
+    if (fieldName == "rp")       return 0.01;
+    if (fieldName == "e_rp")     return 0.01;
+    if (fieldName == "bp_rp")    return 0.02;
+    if (fieldName == "teff")     return 1.0;       // K
+    if (fieldName == "e_teff")   return 1.0;
+    if (fieldName == "logg")     return 0.01;      // dex
+    if (fieldName == "e_logg")   return 0.01;
+    if (fieldName == "he")       return 0.01;
+    if (fieldName == "e_he")     return 0.01;
+    if (fieldName == "rv_avg")   return 0.1;       // km/s
+    if (fieldName == "e_rv_avg") return 0.1;
+    if (fieldName == "rv_med")   return 0.1;
+    if (fieldName == "e_rv_med") return 0.1;
+    if (fieldName == "deltaRV")  return 0.1;
+    if (fieldName == "e_deltaRV")return 0.1;
+    if (fieldName == "logp")     return 0.01;
+
+    // Correlation coefficients
+    if (fieldName.contains("corr")) return 0.001;
+
+    return 1.0e-6;  // fallback: very tight
+}
+
+int GeneralImportPage::numericPrecision(const QVariant& value) const
+{
+    if (!value.isValid() || value.isNull()) return -1;
+
+    // Count significant digits / decimal places from the string form
+    QString str = value.toString().trimmed();
+
+    // Remove sign
+    if (str.startsWith('-') || str.startsWith('+'))
+        str = str.mid(1);
+
+    // Handle scientific notation: count digits in mantissa
+    int ePos = str.indexOf('e', 0, Qt::CaseInsensitive);
+    if (ePos >= 0) {
+        str = str.left(ePos);
+    }
+
+    int dotPos = str.indexOf('.');
+    if (dotPos < 0) {
+        // Integer — count trailing non-zero significance
+        // e.g. "5778" -> 4 significant digits
+        return str.length();
+    }
+
+    // Count digits after decimal point as proxy for precision
+    QString decimals = str.mid(dotPos + 1);
+    // Total significant digits
+    QString allDigits = str;
+    allDigits.remove('.');
+    allDigits.remove(QRegularExpression("^0+"));  // leading zeros
+    return allDigits.length();
+}
+
+bool GeneralImportPage::areNumericValuesCompatible(double a, double b,
+                                                    const QString& fieldName) const
+{
+    if (std::isnan(a) && std::isnan(b)) return true;
+    if (std::isnan(a) || std::isnan(b)) return true;  // one missing — compatible
+
+    double tol = toleranceForField(fieldName);
+    return std::fabs(a - b) <= tol;
+}
+
+QString GeneralImportPage::generateIdentityKey(const DataRow& row) const
+{
+    // Build a canonical identity from the best available identifier.
+    // Priority: source_id > tic > jname > alias > (ra,dec)
+
+    auto valueFor = [&](const QString& field) -> QString {
+        for (const auto& [col, f] : _columnMappings) {
+            if (f == field) {
+                auto it = row.values.find(col);
+                if (it != row.values.end()) {
+                    QString v = normalizeValue(it->second);
+                    if (!v.isEmpty()) return v;
                 }
             }
         }
-        
-        if (!hasAnyValue) {
-            duplicatesRemoved++;
+        return QString();
+    };
+
+    QString srcId = valueFor("source_id");
+    if (!srcId.isEmpty()) return "srcid:" + srcId;
+
+    QString tic = valueFor("tic");
+    if (!tic.isEmpty()) return "tic:" + tic;
+
+    QString jname = valueFor("jname");
+    if (!jname.isEmpty()) return "jname:" + jname.toLower();
+
+    QString alias = valueFor("alias");
+    if (!alias.isEmpty()) return "alias:" + alias.toLower().trimmed();
+
+    // Fall back to coordinate bin (coarse grid so rounding lands in the same cell)
+    QString raStr = valueFor("ra");
+    QString decStr = valueFor("dec");
+    if (!raStr.isEmpty() && !decStr.isEmpty()) {
+        bool okRa, okDec;
+        double ra  = raStr.toDouble(&okRa);
+        double dec = decStr.toDouble(&okDec);
+        if (okRa && okDec) {
+            // Bin to ~0.36 arcsec (1e-4 deg)
+            long raBin  = std::lround(ra  * 1.0e4);
+            long decBin = std::lround(dec * 1.0e4);
+            return QString("coord:%1:%2").arg(raBin).arg(decBin);
+        }
+    }
+
+    return QString();  // truly unidentifiable
+}
+
+bool GeneralImportPage::areRowsCompatible(const DataRow& a, const DataRow& b) const
+{
+    // Check that every mapped numeric field present in both rows
+    // agrees within the rounding tolerance.
+    for (const auto& [col, field] : _columnMappings) {
+        // Skip identifier / string fields — already matched by identity key
+        static const QSet<QString> stringFields = {
+            "source_id", "alias", "tic", "jname", "spec_class"
+        };
+        if (stringFields.contains(field)) continue;
+
+        auto itA = a.values.find(col);
+        auto itB = b.values.find(col);
+
+        bool hasA = (itA != a.values.end() && !normalizeValue(itA->second).isEmpty());
+        bool hasB = (itB != b.values.end() && !normalizeValue(itB->second).isEmpty());
+
+        if (!hasA || !hasB) continue;  // one side missing — no conflict
+
+        bool okA, okB;
+        double vA = itA->second.toDouble(&okA);
+        double vB = itB->second.toDouble(&okB);
+
+        if (okA && okB) {
+            if (!areNumericValuesCompatible(vA, vB, field)) {
+                return false;  // genuinely different
+            }
+        } else {
+            // Both are strings — must match exactly
+            if (normalizeValue(itA->second) != normalizeValue(itB->second)) {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+DataRow GeneralImportPage::mergeRows(const DataRow& existing, const DataRow& incoming) const
+{
+    DataRow merged = existing;
+
+    for (const auto& [col, field] : _columnMappings) {
+        auto itE = existing.values.find(col);
+        auto itI = incoming.values.find(col);
+
+        bool hasE = (itE != existing.values.end() && !normalizeValue(itE->second).isEmpty());
+        bool hasI = (itI != incoming.values.end() && !normalizeValue(itI->second).isEmpty());
+
+        if (!hasI) continue;           // incoming has nothing to offer
+        if (!hasE) {                   // existing is missing — take incoming
+            merged.values[col] = itI->second;
             continue;
         }
-        
-        if (!seenKeys.contains(key)) {
-            seenKeys.insert(key);
-            uniqueRows.push_back(row);
-        } else {
-            duplicatesRemoved++;
+
+        // Both present — keep the one with higher precision
+        int precE = numericPrecision(itE->second);
+        int precI = numericPrecision(itI->second);
+        if (precI > precE) {
+            merged.values[col] = itI->second;
+        }
+        // else keep existing (same or better precision)
+    }
+
+    // Also carry over any unmapped columns that existing lacks
+    for (const auto& [col, val] : incoming.values) {
+        if (merged.values.find(col) == merged.values.end()) {
+            merged.values[col] = val;
         }
     }
-    
-    if (duplicatesRemoved > 0) {
-        _dataRows = std::move(uniqueRows);
-        qDebug() << "Removed" << duplicatesRemoved << "duplicate/empty rows, kept" << _dataRows.size();
+
+    return merged;
+}
+
+void GeneralImportPage::removeDuplicateRows()
+{
+    if (_dataRows.empty() || _columnMappings.empty()) return;
+
+    // Phase 1: group rows by identity key
+    // Each group may contain rows that are duplicates (rounding variants)
+    // or genuinely different (e.g. two stars that hash to the same coord bin).
+
+    struct Group {
+        std::vector<size_t> indices;   // indices into _dataRows
+    };
+
+    std::unordered_map<QString, Group> groups;
+    std::vector<size_t> unkeyed;       // rows with no usable identity
+
+    for (size_t i = 0; i < _dataRows.size(); ++i) {
+        // Skip entirely empty rows
+        bool hasAnyValue = false;
+        for (const auto& [col, field] : _columnMappings) {
+            auto it = _dataRows[i].values.find(col);
+            if (it != _dataRows[i].values.end() && !normalizeValue(it->second).isEmpty()) {
+                hasAnyValue = true;
+                break;
+            }
+        }
+        if (!hasAnyValue) continue;
+
+        QString key = generateIdentityKey(_dataRows[i]);
+        if (key.isEmpty()) {
+            unkeyed.push_back(i);
+        } else {
+            groups[key].indices.push_back(i);
+        }
     }
+
+    // Phase 2: within each group, merge compatible rows and keep distinct ones
+    std::vector<DataRow> uniqueRows;
+    uniqueRows.reserve(_dataRows.size());
+
+    for (auto& [key, group] : groups) {
+        // Build a list of merged representative rows for this group
+        std::vector<DataRow> representatives;
+
+        for (size_t idx : group.indices) {
+            const DataRow& row = _dataRows[idx];
+            bool mergedInto = false;
+
+            for (DataRow& rep : representatives) {
+                if (areRowsCompatible(rep, row)) {
+                    rep = mergeRows(rep, row);
+                    mergedInto = true;
+                    break;
+                }
+            }
+
+            if (!mergedInto) {
+                representatives.push_back(row);
+            }
+        }
+
+        for (auto& rep : representatives) {
+            uniqueRows.push_back(std::move(rep));
+        }
+    }
+
+    // Unkeyed rows: use O(n²) pairwise check (typically very few)
+    {
+        std::vector<DataRow> unkeyedReps;
+        for (size_t idx : unkeyed) {
+            const DataRow& row = _dataRows[idx];
+            bool mergedInto = false;
+
+            for (DataRow& rep : unkeyedReps) {
+                if (areRowsCompatible(rep, row)) {
+                    rep = mergeRows(rep, row);
+                    mergedInto = true;
+                    break;
+                }
+            }
+            if (!mergedInto) {
+                unkeyedReps.push_back(row);
+            }
+        }
+        for (auto& rep : unkeyedReps) {
+            uniqueRows.push_back(std::move(rep));
+        }
+    }
+
+    int removed = static_cast<int>(_dataRows.size()) - static_cast<int>(uniqueRows.size());
+    if (removed > 0) {
+        qDebug() << "Deduplication: merged" << removed
+                 << "duplicate/empty rows, kept" << uniqueRows.size()
+                 << "(from" << _dataRows.size() << ")";
+    }
+
+    _dataRows = std::move(uniqueRows);
 }
 
 void GeneralImportPage::onBrowseFile()
@@ -353,7 +627,26 @@ bool GeneralImportPage::readFile(const QString& filePath)
     
     if (success) {
         mapColumns();
+        
+        size_t originalCount = _dataRows.size();
+        removeDuplicateRows();
+        size_t finalCount = _dataRows.size();
+        
+        if (originalCount != finalCount) {
+            _deduplicationLabel->setText(
+                QString("%1 duplicate rows were merged into %2 unique stars. "
+                        "Rows representing the same star (matching identifiers, "
+                        "parameters within rounding tolerance) have been unified, "
+                        "keeping the most precise values.")
+                    .arg(originalCount - finalCount)
+                    .arg(finalCount));
+            _deduplicationLabel->show();
+        } else {
+            _deduplicationLabel->hide();
+        }
+        
         updatePreview();
+        updateSimbadWarning();
     }
     
     return success;
@@ -873,26 +1166,28 @@ bool GeneralImportPage::isComplete() const
 
 bool GeneralImportPage::validatePage()
 {
-    
     if (_dataRows.empty()) {
         StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
         if (importWizard) {
             auto controller = importWizard->controller();
             auto project = importWizard->project();
             if (controller && project && project->getStarCount() > 0) {
-                return true;  // Skip import, stars already present
+                return true;
             }
         }
         QMessageBox::warning(this, "No Data", "No data was loaded from the file.");
         return false;
     }
 
-    removeDuplicateRows();
-    
+    // removeDuplicateRows() — already done in readFile(), don't repeat
+
     if (!_unmappedColumns.empty()) {
         QMessageBox::StandardButton reply = QMessageBox::question(this, "Unmapped Columns",
-            QString("There are %1 unmapped columns. Would you like to map them manually?")
-                .arg(_unmappedColumns.size()),
+            QString("There are %1 unmapped columns that were not automatically recognized.\n\n"
+                    "Unmapped columns: %2\n\n"
+                    "Would you like to map them manually?")
+                .arg(_unmappedColumns.size())
+                .arg(QStringList(_unmappedColumns.begin(), _unmappedColumns.end()).join(", ")),
             QMessageBox::Yes | QMessageBox::No);
         
         if (reply == QMessageBox::Yes) {
@@ -911,9 +1206,24 @@ bool GeneralImportPage::validatePage()
                 sampleData.push_back(_dataRows[i]);
             }
             
-            ColumnMappingDialog dialog(_unmappedColumns, _columnMappings, availableFields, sampleData, this);
+            ColumnMappingDialog dialog(_unmappedColumns, _columnMappings, 
+                                       availableFields, sampleData, this);
             if (dialog.exec() == QDialog::Accepted) {
                 _columnMappings = dialog.getMappings();
+                
+                // Re-deduplicate with new mappings — new mapped columns
+                // may reveal additional duplicates
+                size_t beforeRededup = _dataRows.size();
+                removeDuplicateRows();
+                if (_dataRows.size() != beforeRededup) {
+                    _deduplicationLabel->setText(
+                        QString("After remapping: %1 additional duplicates merged, "
+                                "%2 unique stars remain.")
+                            .arg(beforeRededup - _dataRows.size())
+                            .arg(_dataRows.size()));
+                    _deduplicationLabel->show();
+                }
+                
                 updatePreview();
             }
         }
