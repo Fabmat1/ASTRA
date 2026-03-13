@@ -1,6 +1,12 @@
 #include "BackgroundTaskManager.h"
 #include "controllers/ApplicationController.h"
 #include "models/Star.h"
+#include "models/Spectrum.h"
+#include "models/RadialVelocity.h"    
+#include "models/Project.h"        
+#include "Logger.h"
+#include "utils/DatabaseManager.h"
+
 #include "Logger.h"  
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -17,9 +23,7 @@
 #include <QtConcurrent>
 #include <QFutureSynchronizer>
 #include "SpectrumReader.h"
-#include "models/Spectrum.h"
 #include "SpectralFitImportPage.h" 
-#include "DatabaseManager.h" 
 
 // ============================================================================
 // TaskStatusWidget Implementation
@@ -1089,4 +1093,561 @@ void DiggaFitImportTask::execute()
     emit importComplete(imported, failed);
     emit finished(failed == 0,
                   QString("Imported %1 fits (%2 failed)").arg(imported).arg(failed));
+}
+
+// ============================================================================
+// RVExtractionTask Implementation
+// ============================================================================
+
+RVExtractionTask::RVExtractionTask(
+    std::vector<std::shared_ptr<Star>> stars,
+    const QString& projectId,
+    ApplicationController* controller,
+    Mode mode,
+    QObject* parent)
+    : BackgroundTask(parent)
+    , _stars(std::move(stars))
+    , _projectId(projectId)
+    , _controller(controller)
+    , _mode(mode)
+{
+    switch (mode) {
+        case FromFits:    _taskName = "RV Extraction (Fits)";    break;
+        case FromFolders: _taskName = "RV Extraction (Folders)"; break;
+        case FromTable:   _taskName = "RV Extraction (Table)";   break;
+    }
+}
+
+RVExtractionTask* RVExtractionTask::createFromFits(
+    std::vector<std::shared_ptr<Star>> stars,
+    const QString& projectId,
+    ApplicationController* controller,
+    bool bestFitOnly,
+    bool skipZeroRV,
+    QObject* parent)
+{
+    auto* task = new RVExtractionTask(
+        std::move(stars), projectId, controller, FromFits, parent);
+    task->_bestFitOnly = bestFitOnly;
+    task->_skipZeroRV = skipZeroRV;
+    return task;
+}
+
+RVExtractionTask* RVExtractionTask::createFromFolders(
+    std::vector<std::shared_ptr<Star>> stars,
+    const QString& projectId,
+    ApplicationController* controller,
+    const FolderConfig& config,
+    QObject* parent)
+{
+    auto* task = new RVExtractionTask(
+        std::move(stars), projectId, controller, FromFolders, parent);
+    task->_folderConfig = config;
+    return task;
+}
+
+RVExtractionTask* RVExtractionTask::createFromTable(
+    std::vector<std::shared_ptr<Star>> stars,
+    const QString& projectId,
+    ApplicationController* controller,
+    const TableConfig& config,
+    QObject* parent)
+{
+    auto* task = new RVExtractionTask(
+        std::move(stars), projectId, controller, FromTable, parent);
+    task->_tableConfig = config;
+    return task;
+}
+
+void RVExtractionTask::buildStarLookupIndex()
+{
+    _sourceIdIndex.clear();
+    _aliasIndex.clear();
+
+    QRegularExpression numRe("(\\d{10,})");
+
+    for (const auto& star : _stars) {
+        QString sid = star->getSourceId();
+        if (!sid.isEmpty()) {
+            _sourceIdIndex[sid] = star;
+            _sourceIdIndex[sid.trimmed()] = star;
+            QRegularExpressionMatch m = numRe.match(sid);
+            if (m.hasMatch())
+                _sourceIdIndex[m.captured(1)] = star;
+        }
+        QString alias = star->getAlias();
+        if (!alias.isEmpty()) {
+            _aliasIndex[alias.trimmed().toLower()] = star;
+            QString crushed = alias.toUpper().remove(' ').remove('-').remove('_');
+            _aliasIndex[crushed.toLower()] = star;
+        }
+    }
+}
+
+std::shared_ptr<Star> RVExtractionTask::findStarByIdentifier(
+    const QString& id, const QString& idType) const
+{
+    QString clean = id.trimmed();
+    if (clean.isEmpty()) return nullptr;
+
+    if (idType == "source_id" || idType == "Gaia Source ID") {
+        auto it = _sourceIdIndex.find(clean);
+        if (it != _sourceIdIndex.end()) return it.value();
+        QRegularExpression numRe("(\\d{10,})");
+        QRegularExpressionMatch m = numRe.match(clean);
+        if (m.hasMatch()) {
+            it = _sourceIdIndex.find(m.captured(1));
+            if (it != _sourceIdIndex.end()) return it.value();
+        }
+    } else if (idType == "alias" || idType == "Alias/Name") {
+        auto it = _aliasIndex.find(clean.toLower());
+        if (it != _aliasIndex.end()) return it.value();
+        QString crushed = clean.toUpper().remove(' ').remove('-').remove('_').toLower();
+        it = _aliasIndex.find(crushed);
+        if (it != _aliasIndex.end()) return it.value();
+    } else if (idType == "ra_dec" || idType.startsWith("RA")) {
+        QRegularExpression coordRe("([\\d.]+)[_+\\-\\s]([+\\-]?[\\d.]+)");
+        QRegularExpressionMatch m = coordRe.match(clean);
+        if (m.hasMatch()) {
+            bool okRa, okDec;
+            double ra  = m.captured(1).toDouble(&okRa);
+            double dec = m.captured(2).toDouble(&okDec);
+            if (okRa && okDec) {
+                double bestDist = 5.0 / 3600.0;
+                std::shared_ptr<Star> best;
+                for (const auto& star : _stars) {
+                    double dRa = (ra - star->getRa())
+                                 * std::cos(star->getDec() * M_PI / 180.0);
+                    double dDec = dec - star->getDec();
+                    double dist = std::sqrt(dRa * dRa + dDec * dDec);
+                    if (dist < bestDist) {
+                        bestDist = dist;
+                        best = star;
+                    }
+                }
+                return best;
+            }
+        }
+    }
+    return nullptr;
+}
+
+void RVExtractionTask::execute()
+{
+    LOG_SET_THREAD_NAME("RVExtract");
+    LOG_INFO("RVExtract", QString("Starting %1").arg(_taskName));
+
+    buildStarLookupIndex();
+
+    switch (_mode) {
+        case FromFits:    executeFromFits();    break;
+        case FromFolders: executeFromFolders(); break;
+        case FromTable:   executeFromTable();   break;
+    }
+}
+
+void RVExtractionTask::executeFromFits()
+{
+    emit progress("RV Extraction: Loading spectra and fits...");
+
+    DatabaseManager* dbm = _controller->databaseManager();
+
+    int totalPoints = 0;
+    int starsWithRV = 0;
+    int starsProcessed = 0;
+    int total = static_cast<int>(_stars.size());
+
+    int starsWithSpectra = 0, totalSpectra = 0, totalFits = 0;
+    int fitsWithZeroRV = 0, fitsWithNonZeroRV = 0;
+    int bestFitNull = 0, bestFitFound = 0;
+
+    for (const auto& star : _stars) {
+        if (++starsProcessed % 200 == 0) {
+            emit progress(QString("RV Extraction: %1/%2 stars...")
+                .arg(starsProcessed).arg(total));
+        }
+
+        auto spectra = star->getSpectra();
+
+        // Load from DB if not in memory — but don't overwrite the star instance
+        if (spectra.empty() && dbm) {
+            spectra = dbm->loadSpectra(star->getId());
+            // Attach to the SAME star instance so downstream code sees them
+            for (const auto& sp : spectra)
+                star->addSpectrum(sp);
+        }
+
+        if (spectra.empty()) continue;
+
+        starsWithSpectra++;
+        totalSpectra += static_cast<int>(spectra.size());
+
+        auto curve = std::make_shared<RadialVelocityCurve>();
+        curve->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+
+        for (const auto& spectrum : spectra) {
+            auto fits = spectrum->getSpectralFits();
+
+            // Load fits from DB if needed
+            if (fits.empty() && dbm) {
+                fits = dbm->loadSpectralFits(spectrum->getId());
+                for (const auto& f : fits)
+                    spectrum->addSpectralFit(f);
+            }
+
+            totalFits += static_cast<int>(fits.size());
+
+            if (_bestFitOnly) {
+                std::shared_ptr<SpectralFit> best = spectrum->getBestFit();
+
+                if (!best && !fits.empty()) {
+                    double lowestErr = std::numeric_limits<double>::max();
+                    for (const auto& f : fits) {
+                        if (f->radialVelocityError >= 0 &&
+                            f->radialVelocityError < lowestErr) {
+                            lowestErr = f->radialVelocityError;
+                            best = f;
+                        }
+                    }
+                    if (!best) best = fits.front();
+                }
+
+                if (!best) { bestFitNull++; continue; }
+                bestFitFound++;
+
+                if (_skipZeroRV && std::abs(best->radialVelocity) < 1e-10) {
+                    fitsWithZeroRV++;
+                    continue;
+                }
+                fitsWithNonZeroRV++;
+
+                auto rvPt = RadialVelocityPoint::createFromSpectralFit(best, spectrum);
+                if (rvPt) {
+                    rvPt->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+                    curve->addRVPoint(rvPt);
+                }
+            } else {
+                for (const auto& fit : fits) {
+                    if (std::abs(fit->radialVelocity) < 1e-10) {
+                        fitsWithZeroRV++;
+                        if (_skipZeroRV) continue;
+                    }
+                    fitsWithNonZeroRV++;
+
+                    auto rvPt = RadialVelocityPoint::createFromSpectralFit(fit, spectrum);
+                    if (rvPt) {
+                        rvPt->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+                        curve->addRVPoint(rvPt);
+                    }
+                }
+            }
+        }
+
+        if (curve->getNumPoints() > 0) {
+            RVExtractionResult result;
+            result.starId = star->getId();
+            result.curve = curve;
+            _results.push_back(result);
+            totalPoints += static_cast<int>(curve->getNumPoints());
+            starsWithRV++;
+        }
+    }
+
+    LOG_INFO("RVExtract", QString("Diagnostics: %1 stars with spectra, "
+        "%2 total spectra, %3 total fits")
+        .arg(starsWithSpectra).arg(totalSpectra).arg(totalFits));
+    LOG_INFO("RVExtract", QString("Fits: %1 zero RV, %2 non-zero RV, "
+        "bestFitFound=%3, bestFitNull=%4")
+        .arg(fitsWithZeroRV).arg(fitsWithNonZeroRV)
+        .arg(bestFitFound).arg(bestFitNull));
+
+    // ── Phase 2: Save to DB and link to star instances ──
+    emit progress(QString("RV Extraction: Saving %1 curves to database...")
+        .arg(_results.size()));
+
+    saveResultsToDatabase();
+
+    LOG_INFO("RVExtract", QString("Complete: %1 RV points for %2 stars")
+        .arg(totalPoints).arg(starsWithRV));
+
+    emit extractionComplete(starsWithRV, totalPoints);
+    emit finished(true, QString("RV Extraction: %1 points for %2 stars")
+        .arg(totalPoints).arg(starsWithRV));
+}
+
+void RVExtractionTask::executeFromFolders()
+{
+    const auto& cfg = _folderConfig;
+
+    QDir root(cfg.rootPath);
+    QStringList subDirs = root.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+
+    if (subDirs.isEmpty()) {
+        emit finished(true, "RV Extraction: No subdirectories found.");
+        return;
+    }
+
+    int matched = 0, unmatched = 0, totalPoints = 0;
+    int total = subDirs.size();
+
+    for (int i = 0; i < total; ++i) {
+        if (i % 50 == 0) {
+            emit progress(QString("RV Extraction: Scanning folder %1/%2...")
+                .arg(i).arg(total));
+        }
+
+        QString dirName = subDirs[i];
+        QDir sd(root.filePath(dirName));
+
+        auto star = findStarByIdentifier(dirName, cfg.namingType);
+        if (!star) { unmatched++; continue; }
+
+        QStringList files = sd.entryList(
+            {"*.csv", "*.txt", "*.dat", "*.tsv"}, QDir::Files);
+        if (files.isEmpty()) { unmatched++; continue; }
+
+        auto curve = std::make_shared<RadialVelocityCurve>();
+        curve->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+
+        for (const QString& fileName : files) {
+            QFile file(sd.filePath(fileName));
+            if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+                continue;
+
+            QTextStream in(&file);
+            QStringList lines;
+            while (!in.atEnd()) {
+                QString line = in.readLine().trimmed();
+                if (line.isEmpty() || line.startsWith('#')) continue;
+                lines << line;
+            }
+            file.close();
+            if (lines.isEmpty()) continue;
+
+            QChar fileDelim = cfg.delimiter;
+            if (fileDelim == '\0') {
+                // Inline auto-detect
+                int commas = lines.first().count(',');
+                int tabs   = lines.first().count('\t');
+                int semis  = lines.first().count(';');
+                fileDelim = ',';
+                if (tabs > commas)  fileDelim = '\t';
+                if (semis > commas && semis > tabs) fileDelim = ';';
+            }
+
+            int startRow = cfg.hasHeader ? 1 : 0;
+
+            for (int r = startRow; r < lines.size(); ++r) {
+                QStringList fields;
+                if (fileDelim == ' ')
+                    fields = lines[r].split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+                else
+                    fields = lines[r].split(fileDelim);
+
+                if (cfg.timeCol >= fields.size() || cfg.rvCol >= fields.size())
+                    continue;
+
+                bool okTime, okRV;
+                double time = fields[cfg.timeCol].trimmed().toDouble(&okTime);
+                double rv   = fields[cfg.rvCol].trimmed().toDouble(&okRV);
+                if (!okTime || !okRV) continue;
+
+                double rvErr = 0.0;
+                if (cfg.rvErrCol >= 0 && cfg.rvErrCol < fields.size()) {
+                    bool okErr;
+                    rvErr = fields[cfg.rvErrCol].trimmed().toDouble(&okErr);
+                    if (!okErr) rvErr = 0.0;
+                }
+
+                auto rvPt = std::make_shared<RadialVelocityPoint>();
+                rvPt->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+
+                if (cfg.isBJD) {
+                    rvPt->setBJD(time);
+                } else {
+                    rvPt->setMJD(time);
+                }
+                rvPt->setRV(rv);
+                rvPt->setRVError(rvErr);
+                rvPt->setSource(fileName);
+
+                curve->addRVPoint(rvPt);
+            }
+        }
+
+        if (curve->getNumPoints() > 0) {
+            RVExtractionResult result;
+            result.starId = star->getId();
+            result.curve = curve;
+            _results.push_back(result);
+            totalPoints += static_cast<int>(curve->getNumPoints());
+            matched++;
+        } else {
+            unmatched++;
+        }
+    }
+
+    emit progress(QString("RV Extraction: Saving %1 curves...").arg(matched));
+    saveResultsToDatabase();
+
+    LOG_INFO("RVExtract", QString("Folders: %1 matched (%2 pts), %3 unmatched")
+        .arg(matched).arg(totalPoints).arg(unmatched));
+
+    emit extractionComplete(matched, totalPoints);
+    emit finished(true, QString("RV Extraction: %1 stars (%2 points), %3 unmatched")
+        .arg(matched).arg(totalPoints).arg(unmatched));
+}
+
+void RVExtractionTask::executeFromTable()
+{
+    const auto& cfg = _tableConfig;
+
+    // Group rows by star identifier
+    QHash<QString, std::vector<int>> groupedRows;
+    for (int i = 0; i < static_cast<int>(cfg.rows.size()); ++i) {
+        const QStringList& row = cfg.rows[i];
+        if (cfg.idCol >= row.size()) continue;
+        QString key = row[cfg.idCol].trimmed();
+        if (!key.isEmpty())
+            groupedRows[key].push_back(i);
+    }
+
+    int matched = 0, unmatched = 0, totalPoints = 0;
+    int total = groupedRows.size();
+    int processed = 0;
+
+    for (auto it = groupedRows.cbegin(); it != groupedRows.cend(); ++it) {
+        if (++processed % 200 == 0) {
+            emit progress(QString("RV Extraction: %1/%2 identifiers...")
+                .arg(processed).arg(total));
+        }
+
+        auto star = findStarByIdentifier(it.key(), cfg.idType);
+        if (!star) { unmatched++; continue; }
+
+        auto curve = std::make_shared<RadialVelocityCurve>();
+        curve->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+
+        for (int ri : it.value()) {
+            const QStringList& row = cfg.rows[ri];
+            if (cfg.timeCol >= row.size() || cfg.rvCol >= row.size())
+                continue;
+
+            bool okTime, okRV;
+            double time = row[cfg.timeCol].toDouble(&okTime);
+            double rv   = row[cfg.rvCol].toDouble(&okRV);
+            if (!okTime || !okRV) continue;
+
+            double rvErr = 0.0;
+            if (cfg.rvErrCol >= 0 && cfg.rvErrCol < row.size()) {
+                bool okErr;
+                rvErr = row[cfg.rvErrCol].toDouble(&okErr);
+                if (!okErr) rvErr = 0.0;
+            }
+
+            auto rvPt = std::make_shared<RadialVelocityPoint>();
+            rvPt->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+
+            if (cfg.isBJD)
+                rvPt->setBJD(time);
+            else
+                rvPt->setMJD(time);
+
+            rvPt->setRV(rv);
+            rvPt->setRVError(rvErr);
+            rvPt->setSource("table_import");
+
+            curve->addRVPoint(rvPt);
+        }
+
+        if (curve->getNumPoints() > 0) {
+            RVExtractionResult result;
+            result.starId = star->getId();
+            result.curve = curve;
+            _results.push_back(result);
+            totalPoints += static_cast<int>(curve->getNumPoints());
+            matched++;
+        }
+    }
+
+    emit progress(QString("RV Extraction: Saving %1 curves...").arg(matched));
+    saveResultsToDatabase();
+
+    emit extractionComplete(matched, totalPoints);
+    emit finished(true, QString("RV Extraction: %1 stars (%2 points), %3 unmatched")
+        .arg(matched).arg(totalPoints).arg(unmatched));
+}
+
+
+void RVExtractionTask::saveResultsToDatabase()
+{
+    if (_results.empty()) return;
+
+    const int batchSize = 20;  // Save 20 stars per main-thread invocation
+    int totalResults = static_cast<int>(_results.size());
+
+    for (int batchStart = 0; batchStart < totalResults; batchStart += batchSize) {
+        int batchEnd = std::min(batchStart + batchSize, totalResults);
+
+        // Capture just this batch's range
+        int start = batchStart;
+        int end = batchEnd;
+
+        emit progress(QString("RV Extraction: Saving %1/%2...")
+            .arg(batchEnd).arg(totalResults));
+
+        QMetaObject::invokeMethod(_controller, [this, start, end]() {
+            DatabaseManager* dbm = _controller->databaseManager();
+            if (!dbm) return;
+
+            auto project = _controller->getCurrentProject();
+            if (!project) return;
+
+            // Build canonical star lookup (once per batch is fine — it's fast)
+            QHash<QString, std::shared_ptr<Star>> canonicalStars;
+            for (const auto& star : project->getAllStars())
+                canonicalStars[star->getId()] = star;
+
+            for (int i = start; i < end; ++i) {
+                auto& result = _results[i];
+
+                auto canonical = canonicalStars.value(result.starId);
+                if (!canonical) continue;
+
+                auto& curve = result.curve;
+                curve->setStarId(canonical->getId());
+
+                if (!dbm->saveRadialVelocityCurve(curve, canonical->getId()))
+                    continue;
+
+                // Save individual points
+                for (const auto& pt : curve->getRVPoints()) {
+                    pt->setCurveId(curve->getId());
+                    dbm->saveRadialVelocityPoint(pt, curve->getId());
+                }
+
+                // Save orbital fit if present
+                if (result.fit) {
+                    result.fit->setCurveId(curve->getId());
+                    result.fit->setBestFit(true);
+                    curve->addRVFit(result.fit);
+                    dbm->saveRVFit(result.fit, curve->getId());
+                }
+
+                // Compute metadata
+                curve->setLogP(curve->computeLogP());
+
+                // Link to canonical star
+                canonical->setRVCurve(curve);
+                canonical->updateRVMetricsFromCurve();
+
+                dbm->saveStar(_projectId, canonical);
+            }
+        }, Qt::BlockingQueuedConnection);
+        // BlockingQueued so we don't race ahead, but each batch is small
+        // enough (~20 stars) that the UI stays responsive between batches
+    }
+
+    LOG_INFO("RVExtract",
+        QString("Saved %1 curves to database").arg(totalResults));
 }

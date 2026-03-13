@@ -4,6 +4,7 @@
 #include "models/Photometry.h"
 #include "models/RadialVelocity.h"
 #include "models/Instrument.h"
+#include "utils/Logger.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -1010,6 +1011,8 @@ void StarDetailView::populateSummary()
 
 void StarDetailView::populateRVPlot()
 {
+    static const QString CAT = "StarDetailView.RV";
+
     clearLayout(_rvContentLayout);
 
     auto rvCurve = _star->getRVCurve();
@@ -1020,6 +1023,13 @@ void StarDetailView::populateRVPlot()
     if (rvCurve) bestFit = rvCurve->getBestFit();
     bool hasPeriod = bestFit && bestFit->getPeriod() > 0;
 
+    // ── Gate diagnostics ──
+    LOG_DEBUG(CAT, QString("Star %1 — rvCurve=%2, getNumPoints=%3, hasPeriod=%4")
+        .arg(_star->getSourceId())
+        .arg(rvCurve ? "valid" : "NULL")
+        .arg(rvCurve ? QString::number(rvCurve->getNumPoints()) : "N/A")
+        .arg(hasPeriod));
+
     // Enable/disable the toggle button
     _rvToggleButton->setEnabled(hasData && hasPeriod);
     if (!hasPeriod) {
@@ -1029,6 +1039,9 @@ void StarDetailView::populateRVPlot()
     }
 
     if (!hasData) {
+        LOG_WARNING(CAT, QString("Star %1 — no RV data (rvCurve %2)")
+            .arg(_star->getSourceId(),
+                 rvCurve ? "exists but empty" : "is null"));
         _rvContentLayout->addWidget(makePlaceholder("No radial velocity data available yet."));
         return;
     }
@@ -1036,20 +1049,67 @@ void StarDetailView::populateRVPlot()
     // ── Gather data ──
     auto points = rvCurve->getRVPoints();
 
+    LOG_DEBUG(CAT, QString("Star %1 — getRVPoints() returned %2 point(s)")
+        .arg(_star->getSourceId())
+        .arg(points.size()));
+
     struct RVDatum {
         double time; double rv; double err;
     };
     std::vector<RVDatum> data;
     data.reserve(points.size());
 
-    for (auto& pt : points) {
-        double t = pt->getBJD();
-        if (t == 0.0) t = pt->getMJD();
-        if (t == 0.0) continue;
+    int skippedZeroBJD = 0;
+    int skippedZeroMJD = 0;
+    int skippedBoth    = 0;
+    int usedBJD        = 0;
+    int usedMJD        = 0;
+
+    for (size_t i = 0; i < points.size(); ++i) {
+        auto& pt = points[i];
+        double bjd = pt->getBJD();
+        double mjd = pt->getMJD();
+        double t   = bjd;
+
+        if (t == 0.0) {
+            skippedZeroBJD++;
+            t = mjd;
+        }
+
+        if (t == 0.0) {
+            skippedBoth++;
+            // Log first few skipped points in detail
+            if (skippedBoth <= 3) {
+                LOG_WARNING(CAT, QString("  pt[%1]: BJD=%2 MJD=%3 RV=%4 err=%5 → SKIPPED (no timestamp)")
+                    .arg(i)
+                    .arg(bjd, 0, 'g', 12)
+                    .arg(mjd, 0, 'g', 12)
+                    .arg(pt->getRV(), 0, 'f', 4)
+                    .arg(pt->getRVError(), 0, 'f', 4));
+            }
+            continue;
+        }
+
+        if (bjd != 0.0)
+            usedBJD++;
+        else
+            usedMJD++;
+
         data.push_back({t, pt->getRV(), pt->getRVError()});
     }
 
+    LOG_INFO(CAT, QString("Star %1 — timestamp summary: %2 usedBJD, %3 usedMJD, "
+                           "%4 had zero BJD, %5 had BOTH zero → %6 points accepted out of %7")
+        .arg(_star->getSourceId())
+        .arg(usedBJD).arg(usedMJD)
+        .arg(skippedZeroBJD).arg(skippedBoth)
+        .arg(data.size()).arg(points.size()));
+
     if (data.empty()) {
+        LOG_ERROR(CAT, QString("Star %1 — ALL %2 RV points dropped: no valid timestamps. "
+                                "Check that BJD or MJD is populated in RadialVelocity objects.")
+            .arg(_star->getSourceId())
+            .arg(points.size()));
         _rvContentLayout->addWidget(makePlaceholder("RV points have no valid timestamps."));
         return;
     }
@@ -1057,6 +1117,15 @@ void StarDetailView::populateRVPlot()
     // Sort by time
     std::sort(data.begin(), data.end(),
               [](const RVDatum& a, const RVDatum& b) { return a.time < b.time; });
+
+    LOG_DEBUG(CAT, QString("Star %1 — time range: [%2, %3], RV range: [%4, %5]")
+        .arg(_star->getSourceId())
+        .arg(data.front().time, 0, 'f', 4)
+        .arg(data.back().time, 0, 'f', 4)
+        .arg(std::min_element(data.begin(), data.end(),
+             [](const RVDatum& a, const RVDatum& b){ return a.rv < b.rv; })->rv, 0, 'f', 2)
+        .arg(std::max_element(data.begin(), data.end(),
+             [](const RVDatum& a, const RVDatum& b){ return a.rv < b.rv; })->rv, 0, 'f', 2));
 
     // ── Branch: folded or broken-axis ──
 
@@ -1066,6 +1135,10 @@ void StarDetailView::populateRVPlot()
         // =====================================================================
         double P   = bestFit->getPeriod();
         double phi = bestFit->getPhi();
+
+        LOG_DEBUG(CAT, QString("Star %1 — folded view: P=%2 d, phi=%3")
+            .arg(_star->getSourceId())
+            .arg(P, 0, 'f', 6).arg(phi, 0, 'f', 6));
 
         std::vector<double> phases, rvs, errs;
         for (auto& d : data) {
@@ -1115,6 +1188,9 @@ void StarDetailView::populateRVPlot()
         view->setRenderHint(QPainter::Antialiasing);
         _rvContentLayout->addWidget(view);
 
+        LOG_INFO(CAT, QString("Star %1 — folded RV chart created with %2 points")
+            .arg(_star->getSourceId()).arg(data.size()));
+
     } else {
         // =====================================================================
         // BROKEN-AXIS (timeline) VIEW
@@ -1131,6 +1207,12 @@ void StarDetailView::populateRVPlot()
 
         // Detect gaps
         std::vector<int> gapIdx = findGapIndices(times);
+
+        LOG_DEBUG(CAT, QString("Star %1 — timeline view: t0=%2, %3 gap(s) detected in %4 points")
+            .arg(_star->getSourceId())
+            .arg(t0, 0, 'f', 4)
+            .arg(gapIdx.size())
+            .arg(times.size()));
 
         // Compute segment widths
         auto splitTimes = splitAt(times, gapIdx);
@@ -1166,6 +1248,11 @@ void StarDetailView::populateRVPlot()
         yHi += yMargin;
 
         int nSeg = static_cast<int>(splitTimes.size());
+
+        LOG_DEBUG(CAT, QString("Star %1 — %2 segment(s), Y range [%3, %4]")
+            .arg(_star->getSourceId())
+            .arg(nSeg)
+            .arg(yLo, 0, 'f', 2).arg(yHi, 0, 'f', 2));
 
         if (nSeg == 1) {
             // --- Single segment: simple chart ---
@@ -1213,6 +1300,9 @@ void StarDetailView::populateRVPlot()
             view->setRenderHint(QPainter::Antialiasing);
             _rvContentLayout->addWidget(view);
 
+            LOG_INFO(CAT, QString("Star %1 — single-segment RV chart, %2 points, span=%3 d")
+                .arg(_star->getSourceId()).arg(data.size()).arg(span, 0, 'f', 1));
+
         } else {
             // --- Multiple segments: broken-axis widget ---
             auto* brokenAxis = new BrokenAxisWidget;
@@ -1232,6 +1322,11 @@ void StarDetailView::populateRVPlot()
 
                 double xMin = segStart - segSpan * 0.1;
                 double xMax = segEnd   + segSpan * 0.1;
+
+                LOG_DEBUG(CAT, QString("  seg[%1]: %2 pts, range [%3, %4], stretch=%5")
+                    .arg(seg).arg(segTimes.size())
+                    .arg(segStart, 0, 'f', 1).arg(segEnd, 0, 'f', 1)
+                    .arg(stretches[seg]));
 
                 QChart* chart = new QChart;
                 chart->setMargins(QMargins(2, 2, 2, 2));
@@ -1289,6 +1384,9 @@ void StarDetailView::populateRVPlot()
             }
 
             _rvContentLayout->addWidget(brokenAxis);
+
+            LOG_INFO(CAT, QString("Star %1 — broken-axis RV chart: %2 segments, %3 total points")
+                .arg(_star->getSourceId()).arg(nSeg).arg(data.size()));
         }
     }
 }

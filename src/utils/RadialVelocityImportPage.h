@@ -1,36 +1,31 @@
-#ifndef RADIALVELOCITYIMPORTPAGES_H
-#define RADIALVELOCITYIMPORTPAGES_H
+#pragma once
 
 #include <QWizardPage>
 #include <QHash>
+#include <QString>
+#include <QStringList>
+#include <QChar>
+
 #include <memory>
 #include <vector>
 
-class Star;
-class Spectrum;
-class SpectralFit;
-class RadialVelocityCurve;
-class RadialVelocityPoint;
-class RVFit;
-class ApplicationController;
-class DatabaseManager;
-class StarImportWizard;
-
-class QLineEdit;
-class QRadioButton;
+class QVBoxLayout;
 class QStackedWidget;
-class QPushButton;
-class QProgressBar;
-class QTreeWidget;
-class QLabel;
+class QRadioButton;
 class QCheckBox;
 class QComboBox;
+class QLineEdit;
+class QPushButton;
+class QTreeWidget;
+class QLabel;
+class QProgressBar;
 class QGroupBox;
-class QVBoxLayout; 
+class Star;
 
 class RadialVelocityImportPage : public QWizardPage
 {
     Q_OBJECT
+
 public:
     explicit RadialVelocityImportPage(QWidget* parent = nullptr);
 
@@ -49,133 +44,125 @@ private slots:
     void onBrowseFitParamsFile();
 
 private:
+    // UI setup
     void setupUi();
     void setupFromFitsPage();
     void setupFromFoldersPage();
     void setupFromTablePage();
     void setupFitParamsGroup(QVBoxLayout* parentLayout);
 
-    // Star matching
+    // Star lookup
     void buildStarLookupIndex();
-    std::shared_ptr<Star> findStarByIdentifier(const QString& id,
-                                                const QString& idType) const;
+    std::shared_ptr<Star> findStarByIdentifier(
+        const QString& id, const QString& idType) const;
 
     // CSV helpers
     QChar getDelimiter(QComboBox* combo) const;
-    QStringList parseLine(const QString& line, QChar delimiter) const;
     QChar detectDelimiter(const QString& line) const;
+    QStringList parseLine(const QString& line, QChar delimiter) const;
+    bool loadCSVFile(const QString& filepath, QComboBox* delimCombo,
+                     QCheckBox* headerCheck, QStringList& outColumns,
+                     std::vector<QStringList>& outRows);
     void populateColumnCombos(const QStringList& columns,
                               const QList<QPair<QComboBox*, QStringList>>& comboPatterns);
-    bool loadCSVFile(const QString& filepath, QComboBox* delimCombo,
-                     QCheckBox* headerCheck,
-                     QStringList& outColumns, std::vector<QStringList>& outRows);
 
-    // Mode 1: From spectral fits
-    void extractFromSpectralFits();
-
-    // Mode 2: From per-star folders
+    // Folder detection
     void detectFolderColumns();
-    void scanAndParseFolders();
-
-    // Mode 3: From single table
-    void processTableData();
 
     // Fit parameters
     void parseFitParamsFile();
-    void applyFitParams();
+    void applyFitParamsToProject();          // ← NEW (replaces old applyFitParams)
 
-    // Metadata & preview
-    void computeAllMetadata();
-    void updatePreviewTree();
+    // Preview
+    void updatePreviewFromProject();          // ← NEW (replaces old updatePreviewTree)
 
-    // Save
-    bool saveResults();
+    // Helpers
     bool isBackgroundBusy() const;
 
-    // ── Collected result ────────────
-    struct StarRVResult {
-        std::shared_ptr<Star> star;
-        std::shared_ptr<RadialVelocityCurve> curve;
-        std::shared_ptr<RVFit> fit;   // may be null
-    };
-    std::vector<StarRVResult> _results;
+    // ── REMOVED ─────────────────────────────────────
+    // void computeAllMetadata();             // dead
+    // void updatePreviewTree();              // replaced
+    // bool saveResults();                    // dead, had the bug
+    // struct StarRVResult { ... };           // no longer needed
+    // std::vector<StarRVResult> _results;    // no longer needed
+    // ────────────────────────────────────────────────
 
-    // ── UI: Mode ────────────────────
-    QRadioButton* _fromFitsRadio;
-    QRadioButton* _fromFoldersRadio;
-    QRadioButton* _fromTableRadio;
-    QStackedWidget* _modeStack;
+    // State
+    bool _resultsReady = false;
+    bool _asyncBusy = false;
+    bool _indexBuilt = false;
 
-    // ── UI: From Fits ───────────────
-    QWidget* _fromFitsPage;
-    QCheckBox* _bestFitOnlyCheck;
-    QCheckBox* _skipZeroRVCheck;
-    QPushButton* _extractFitsBtn;
-
-    // ── UI: From Folders ────────────
-    QWidget* _fromFoldersPage;
-    QLineEdit* _rootFolderEdit;
-    QComboBox* _folderNamingCombo;
-    QComboBox* _folderDelimCombo;
-    QCheckBox* _folderHeaderCheck;
-    QComboBox* _folderTimeColCombo;
-    QComboBox* _folderTimeTypeCombo;
-    QComboBox* _folderRVColCombo;
-    QComboBox* _folderRVErrColCombo;
-    QPushButton* _scanFoldersBtn;
-    QProgressBar* _folderProgress;
-
-    // ── UI: From Table ──────────────
-    QWidget* _fromTablePage;
-    QLineEdit* _tableFileEdit;
-    QComboBox* _tableDelimCombo;
-    QCheckBox* _tableHeaderCheck;
-    QComboBox* _tableIdColCombo;
-    QComboBox* _tableIdTypeCombo;
-    QComboBox* _tableTimeColCombo;
-    QComboBox* _tableTimeTypeCombo;
-    QComboBox* _tableRVColCombo;
-    QComboBox* _tableRVErrColCombo;
-    QPushButton* _processTableBtn;
-
-    // ── UI: Fit params ──────────────
-    QGroupBox* _fitParamsGroup;
-    QCheckBox* _importFitParamsCheck;
-    QLineEdit* _fitFileEdit;
-    QComboBox* _fitDelimCombo;
-    QCheckBox* _fitHeaderCheck;
-    QComboBox* _fitIdColCombo;
-    QComboBox* _fitIdTypeCombo;
-    QComboBox* _fitKColCombo;
-    QComboBox* _fitGammaColCombo;
-    QComboBox* _fitPeriodColCombo;
-    QComboBox* _fitT0ColCombo;
-    QComboBox* _fitEccColCombo;
-    QComboBox* _fitOmegaColCombo;
-
-    // ── UI: Preview ─────────────────
-    QTreeWidget* _previewTree;
-    QLabel* _statusLabel;
-
-    // ── Data ────────────────────────
+    // Star data
     std::vector<std::shared_ptr<Star>> _importedStars;
     QHash<QString, std::shared_ptr<Star>> _sourceIdIndex;
     QHash<QString, std::shared_ptr<Star>> _aliasIndex;
-    bool _indexBuilt = false;
 
-    // Main table data (mode 3)
+    // Table import data (loaded from file, passed to task)
     QStringList _tableColumns;
     std::vector<QStringList> _tableRows;
 
-    // Folder column names (mode 2, detected from first file)
-    QStringList _folderDetectedColumns;
-
-    // Fit params table data
+    // Fit params file data
     QStringList _fitColumns;
     std::vector<QStringList> _fitRows;
 
-    bool _asyncBusy = false;
-    bool _resultsReady = false;
-};
+    // Folder column detection cache
+    QStringList _folderDetectedColumns;
 
-#endif // RADIALVELOCITYIMPORTPAGES_H
+    // ── UI widgets ──────────────────────────────────
+    // Mode selection
+    QRadioButton* _fromFitsRadio = nullptr;
+    QRadioButton* _fromFoldersRadio = nullptr;
+    QRadioButton* _fromTableRadio = nullptr;
+    QStackedWidget* _modeStack = nullptr;
+
+    // From fits page
+    QWidget* _fromFitsPage = nullptr;
+    QCheckBox* _bestFitOnlyCheck = nullptr;
+    QCheckBox* _skipZeroRVCheck = nullptr;
+    QPushButton* _extractFitsBtn = nullptr;
+
+    // From folders page
+    QWidget* _fromFoldersPage = nullptr;
+    QLineEdit* _rootFolderEdit = nullptr;
+    QComboBox* _folderNamingCombo = nullptr;
+    QComboBox* _folderDelimCombo = nullptr;
+    QCheckBox* _folderHeaderCheck = nullptr;
+    QComboBox* _folderTimeColCombo = nullptr;
+    QComboBox* _folderTimeTypeCombo = nullptr;
+    QComboBox* _folderRVColCombo = nullptr;
+    QComboBox* _folderRVErrColCombo = nullptr;
+    QPushButton* _scanFoldersBtn = nullptr;
+    QProgressBar* _folderProgress = nullptr;
+
+    // From table page
+    QWidget* _fromTablePage = nullptr;
+    QLineEdit* _tableFileEdit = nullptr;
+    QComboBox* _tableDelimCombo = nullptr;
+    QCheckBox* _tableHeaderCheck = nullptr;
+    QComboBox* _tableIdColCombo = nullptr;
+    QComboBox* _tableIdTypeCombo = nullptr;
+    QComboBox* _tableTimeColCombo = nullptr;
+    QComboBox* _tableTimeTypeCombo = nullptr;
+    QComboBox* _tableRVColCombo = nullptr;
+    QComboBox* _tableRVErrColCombo = nullptr;
+    QPushButton* _processTableBtn = nullptr;
+
+    // Fit params group
+    QGroupBox* _fitParamsGroup = nullptr;
+    QCheckBox* _importFitParamsCheck = nullptr;
+    QLineEdit* _fitFileEdit = nullptr;
+    QComboBox* _fitDelimCombo = nullptr;
+    QCheckBox* _fitHeaderCheck = nullptr;
+    QComboBox* _fitIdColCombo = nullptr;
+    QComboBox* _fitIdTypeCombo = nullptr;
+    QComboBox* _fitKColCombo = nullptr;
+    QComboBox* _fitGammaColCombo = nullptr;
+    QComboBox* _fitPeriodColCombo = nullptr;
+    QComboBox* _fitT0ColCombo = nullptr;
+    QComboBox* _fitEccColCombo = nullptr;
+    QComboBox* _fitOmegaColCombo = nullptr;
+
+    // Preview
+    QTreeWidget* _previewTree = nullptr;
+    QLabel* _statusLabel = nullptr;
+};

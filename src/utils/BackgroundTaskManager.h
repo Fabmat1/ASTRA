@@ -1,23 +1,32 @@
 #ifndef BACKGROUNDTASKMANAGER_H
 #define BACKGROUNDTASKMANAGER_H
+#pragma once
 
 #include <QObject>
 #include <QThread>
-#include <QQueue>
 #include <QMutex>
+#include <QQueue>
+#include <QString>
+#include <QStringList>
+#include <QHash>          
 #include <QTimer>
+#include <QLabel>
+
 #include <memory>
 #include <vector>
-#include <functional>
-#include <optional>
+#include <atomic>
 
+// Forward declarations
+class QStatusBar;
+class QNetworkAccessManager;
+class ApplicationController;
 class Star;
 class Spectrum;
 class SpectralFit;
-class ApplicationController;
-class QNetworkAccessManager;
-class QLabel;
-class QStatusBar;
+class RadialVelocityCurve;   
+class RadialVelocityPoint;   
+class RVFit;                 
+class Project;               
 
 // Base class for background tasks
 class BackgroundTask : public QObject
@@ -246,6 +255,116 @@ signals:
 private:
     std::vector<DiggaFitImportEntry> _entries;
     ApplicationController* _controller;
+};
+
+// ============================================================================
+// RVExtractionTask — Extract RV from spectral fits in background
+// ============================================================================
+
+struct RVExtractionResult {
+    QString starId;
+    std::shared_ptr<RadialVelocityCurve> curve;
+    std::shared_ptr<RVFit> fit;  // optional orbital fit
+};
+
+class RVExtractionTask : public BackgroundTask
+{
+    Q_OBJECT
+
+public:
+    // Mode 1: From spectral fits
+    static RVExtractionTask* createFromFits(
+        std::vector<std::shared_ptr<Star>> stars,
+        const QString& projectId,
+        ApplicationController* controller,
+        bool bestFitOnly,
+        bool skipZeroRV,
+        QObject* parent = nullptr);
+
+    // Mode 2: From per-star folders
+    struct FolderConfig {
+        QString rootPath;
+        QString namingType;   // "source_id", "alias", "ra_dec"
+        QChar delimiter;
+        bool hasHeader;
+        int timeCol;
+        int rvCol;
+        int rvErrCol;
+        bool isBJD;
+    };
+
+    static RVExtractionTask* createFromFolders(
+        std::vector<std::shared_ptr<Star>> stars,
+        const QString& projectId,
+        ApplicationController* controller,
+        const FolderConfig& config,
+        QObject* parent = nullptr);
+
+    // Mode 3: From single table
+    struct TableConfig {
+        QStringList columns;
+        std::vector<QStringList> rows;
+        QString idType;
+        int idCol;
+        int timeCol;
+        int rvCol;
+        int rvErrCol;
+        bool isBJD;
+    };
+
+    static RVExtractionTask* createFromTable(
+        std::vector<std::shared_ptr<Star>> stars,
+        const QString& projectId,
+        ApplicationController* controller,
+        const TableConfig& config,
+        QObject* parent = nullptr);
+
+    QString taskName() const override { return _taskName; }
+
+    const std::vector<RVExtractionResult>& results() const { return _results; }
+
+public slots:
+    void execute() override;
+
+signals:
+    void extractionComplete(int numCurves, int numPoints);
+
+private:
+    enum Mode { FromFits, FromFolders, FromTable };
+
+    explicit RVExtractionTask(
+        std::vector<std::shared_ptr<Star>> stars,
+        const QString& projectId,
+        ApplicationController* controller,
+        Mode mode,
+        QObject* parent = nullptr);
+
+    void executeFromFits();
+    void executeFromFolders();
+    void executeFromTable();
+
+    std::shared_ptr<Star> findStarByIdentifier(const QString& id, const QString& idType) const;
+    void buildStarLookupIndex();
+
+    // Shared
+    std::vector<std::shared_ptr<Star>> _stars;
+    QString _projectId;
+    ApplicationController* _controller;
+    Mode _mode;
+    QString _taskName;
+    std::vector<RVExtractionResult> _results;
+
+    // Star lookup
+    QHash<QString, std::shared_ptr<Star>> _sourceIdIndex;
+    QHash<QString, std::shared_ptr<Star>> _aliasIndex;
+
+    // Mode-specific config
+    bool _bestFitOnly = true;
+    bool _skipZeroRV = true;
+    FolderConfig _folderConfig;
+    TableConfig _tableConfig;
+
+    void saveResultsToDatabase();
 };
 
 #endif // BACKGROUNDTASKMANAGER_H

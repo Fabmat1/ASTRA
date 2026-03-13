@@ -417,7 +417,6 @@ void RadialVelocityImportPage::initializePage()
     if (_importedStars.empty())
         _importedStars = wiz->getImportedStars();
 
-    _results.clear();
     _resultsReady = false;
     _asyncBusy = false;
     _indexBuilt = false;
@@ -442,11 +441,16 @@ void RadialVelocityImportPage::initializePage()
                 _statusLabel->setText(
                     QString("Ready — %1 stars available for RV import.")
                     .arg(_importedStars.size()));
+                // Show any curves already linked from prior tasks
+                updatePreviewFromProject();
             }
         });
         timer->start();
         return;
     }
+
+    // Show curves that may already exist from a previous import
+    updatePreviewFromProject();
 
     _statusLabel->setText(
         QString("Ready — %1 stars available. Select a data source.")
@@ -464,14 +468,12 @@ bool RadialVelocityImportPage::isBackgroundBusy() const
 
 void RadialVelocityImportPage::onImportModeChanged()
 {
-    if (_fromFitsRadio->isChecked())        _modeStack->setCurrentIndex(0);
+    if (_fromFitsRadio->isChecked())         _modeStack->setCurrentIndex(0);
     else if (_fromFoldersRadio->isChecked()) _modeStack->setCurrentIndex(1);
     else                                     _modeStack->setCurrentIndex(2);
 
-    // Hide fit params for "from fits" mode (spectral fits ≠ orbital fits)
     _fitParamsGroup->setVisible(!_fromFitsRadio->isChecked());
 
-    _results.clear();
     _resultsReady = false;
     _previewTree->clear();
 }
@@ -687,291 +689,71 @@ void RadialVelocityImportPage::populateColumnCombos(
 }
 
 // ════════════════════════════════════════════════════════════════
-// Mode 1: From Spectral Fits
+// Mode 1: From Spectral Fits — now dispatches a background task
 // ════════════════════════════════════════════════════════════════
 
 void RadialVelocityImportPage::onExtractFromFits()
 {
-    extractFromSpectralFits();
-}
-
-void RadialVelocityImportPage::extractFromSpectralFits()
-{
-    _results.clear();
-
     StarImportWizard* wiz = qobject_cast<StarImportWizard*>(wizard());
     if (!wiz || !wiz->controller()) {
         LOG_WARNING("RVImport", "No wizard or controller available");
         return;
     }
-    DatabaseManager* dbm = wiz->controller()->databaseManager();
+
     auto project = wiz->project();
+    if (!project) return;
 
-    _statusLabel->setText("Extracting RV from spectral fits...");
-    QApplication::processEvents();
+    _extractFitsBtn->setEnabled(false);
+    _statusLabel->setText("Dispatching RV extraction task...");
 
-    bool bestOnly = _bestFitOnlyCheck->isChecked();
-    bool skipZero = _skipZeroRVCheck->isChecked();
+    // Use the CANONICAL stars from the project — not transient copies
+    auto stars = project->getAllStars();
 
-    int totalPoints = 0;
-    int starsWithRV = 0;
+    auto* task = RVExtractionTask::createFromFits(
+        stars,
+        project->getId(),
+        wiz->controller(),
+        _bestFitOnlyCheck->isChecked(),
+        _skipZeroRVCheck->isChecked());
 
-    // ── Merge wizard stars + DB stars ──
-    QHash<QString, std::shared_ptr<Star>> starById;
+    connect(task, &RVExtractionTask::extractionComplete,
+            this, [this](int numCurves, int numPoints) {
+        _resultsReady = (numCurves > 0);
+        _statusLabel->setText(
+            QString("Extracted %1 RV points for %2 stars.")
+            .arg(numPoints).arg(numCurves));
+        _extractFitsBtn->setEnabled(true);
 
-    for (const auto& star : _importedStars)
-        starById[star->getId()] = star;
+        // Refresh preview from canonical stars
+        updatePreviewFromProject();
+    }, Qt::QueuedConnection);
 
-    if (dbm && project) {
-        auto dbStars = dbm->loadStars(project->getId());
-        LOG_INFO("RVImport", QString("DB returned %1 stars").arg(dbStars.size()));
-        for (const auto& star : dbStars)
-            starById[star->getId()] = star;
-    }
-
-    LOG_INFO("RVImport", QString("Processing %1 unique stars").arg(starById.size()));
-
-    // ── Diagnostics counters ──
-    int starsWithSpectra = 0;
-    int totalSpectra = 0;
-    int totalFits = 0;
-    int fitsWithZeroRV = 0;
-    int fitsWithNonZeroRV = 0;
-    int bestFitNull = 0;
-    int bestFitFound = 0;
-
-    int processed = 0;
-    int total = starById.size();
-    bool loggedSample = false;
-
-    for (auto it = starById.cbegin(); it != starById.cend(); ++it) {
-        const auto& star = it.value();
-
-        if (++processed % 500 == 0) {
-            _statusLabel->setText(QString("Extracting RV... %1/%2 stars")
-                .arg(processed).arg(total));
-            QApplication::processEvents();
+    connect(task, &BackgroundTask::finished,
+            this, [this](bool success, const QString& msg) {
+        if (!success) {
+            _statusLabel->setText(msg);
+            _extractFitsBtn->setEnabled(true);
         }
+    }, Qt::QueuedConnection);
 
-        auto spectra = star->getSpectra();
-        if (spectra.empty() && dbm) {
-            spectra = dbm->loadSpectra(star->getId());
-        }
-
-        if (spectra.empty()) continue;
-
-        starsWithSpectra++;
-        totalSpectra += static_cast<int>(spectra.size());
-
-        auto curve = std::make_shared<RadialVelocityCurve>();
-        curve->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
-
-        for (const auto& spectrum : spectra) {
-            auto fits = spectrum->getSpectralFits();
-            totalFits += static_cast<int>(fits.size());
-
-            // Log first star with fits for diagnostics
-            if (!loggedSample && !fits.empty()) {
-                auto& f = fits.front();
-                LOG_INFO("RVImport", QString("Sample fit: RV=%1, isBest=%2, "
-                    "teff=%3, chi2=%4, spectrum=%5")
-                    .arg(f->radialVelocity)
-                    .arg(f->isBestFit)
-                    .arg(f->teff)
-                    .arg(f->chi2)
-                    .arg(spectrum->getFile()));
-
-                auto best = spectrum->getBestFit();
-                LOG_INFO("RVImport", QString("Sample getBestFit(): %1")
-                    .arg(best ? QString("RV=%1").arg(best->radialVelocity) : "nullptr"));
-                loggedSample = true;
-            }
-
-            if (bestOnly) {
-                std::shared_ptr<SpectralFit> best = spectrum->getBestFit();
-                
-                // Fallback: pick fit with lowest RV error
-                if (!best && !fits.empty()) {
-                    double lowestErr = std::numeric_limits<double>::max();
-                    for (const auto& f : fits) {
-                        if (f->radialVelocityError >= 0 && f->radialVelocityError < lowestErr) {
-                            lowestErr = f->radialVelocityError;
-                            best = f;
-                        }
-                    }
-                    // If all errors are 0 or equal, just take the first
-                    if (!best)
-                        best = fits.front();
-                }
-                
-                if (!best) { bestFitNull++; continue; }
-                bestFitFound++;
-                if (skipZero && std::abs(best->radialVelocity) < 1e-10) {
-                    fitsWithZeroRV++;
-                    continue;
-                }
-                fitsWithNonZeroRV++;
-            
-                auto rvPt = RadialVelocityPoint::createFromSpectralFit(
-                    best, spectrum);
-                if (rvPt) {
-                    rvPt->setId(QUuid::createUuid().toString(
-                        QUuid::WithoutBraces));
-                    curve->addRVPoint(rvPt);
-                }
-            } else {
-                for (const auto& fit : fits) {
-                    if (std::abs(fit->radialVelocity) < 1e-10) {
-                        fitsWithZeroRV++;
-                        if (skipZero) continue;
-                    }
-                    fitsWithNonZeroRV++;
-
-                    auto rvPt = RadialVelocityPoint::createFromSpectralFit(
-                        fit, spectrum);
-                    if (rvPt) {
-                        rvPt->setId(QUuid::createUuid().toString(
-                            QUuid::WithoutBraces));
-                        curve->addRVPoint(rvPt);
-                    }
-                }
-            }
-        }
-
-        if (curve->getNumPoints() > 0) {
-            StarRVResult result;
-            result.star = star;
-            result.curve = curve;
-            _results.push_back(result);
-            totalPoints += static_cast<int>(curve->getNumPoints());
-            starsWithRV++;
-        }
-    }
-
-    LOG_INFO("RVImport", QString("Diagnostics: %1 stars with spectra, "
-        "%2 total spectra, %3 total fits")
-        .arg(starsWithSpectra).arg(totalSpectra).arg(totalFits));
-    LOG_INFO("RVImport", QString("Fits: %1 zero RV, %2 non-zero RV, "
-        "bestFitFound=%3, bestFitNull=%4")
-        .arg(fitsWithZeroRV).arg(fitsWithNonZeroRV)
-        .arg(bestFitFound).arg(bestFitNull));
-    LOG_INFO("RVImport", QString("Extraction complete: %1 RV points for %2 stars")
-        .arg(totalPoints).arg(starsWithRV));
-
-    _resultsReady = true;
-    computeAllMetadata();
-    updatePreviewTree();
-
-    _statusLabel->setText(
-        QString("Extracted %1 RV points for %2 stars from spectral fits.")
-        .arg(totalPoints).arg(starsWithRV));
+    wiz->controller()->backgroundTaskManager()->queueTask(task);
 }
 
 // ════════════════════════════════════════════════════════════════
-// Mode 2: From Per-Star Folders
+// Mode 2: From Folders — now dispatches a background task
 // ════════════════════════════════════════════════════════════════
-
-void RadialVelocityImportPage::onBrowseRootFolder()
-{
-    QString folder = QFileDialog::getExistingDirectory(
-        this, "Select Root RV Folder", _rootFolderEdit->text());
-    if (!folder.isEmpty())
-        _rootFolderEdit->setText(folder);
-}
-
-void RadialVelocityImportPage::detectFolderColumns()
-{
-    QString rootPath = _rootFolderEdit->text().trimmed();
-    if (rootPath.isEmpty()) return;
-
-    QDir root(rootPath);
-    QStringList subDirs = root.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
-    if (subDirs.isEmpty()) return;
-
-    // Find first .csv/.txt/.dat file in the first subfolder
-    for (const QString& subDir : subDirs) {
-        QDir sd(root.filePath(subDir));
-        QStringList files = sd.entryList(
-            {"*.csv", "*.txt", "*.dat", "*.tsv"}, QDir::Files);
-        if (files.isEmpty()) continue;
-
-        QString sampleFile = sd.filePath(files.first());
-        QFile file(sampleFile);
-        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
-
-        QTextStream in(&file);
-        QString firstLine;
-        while (!in.atEnd()) {
-            QString line = in.readLine().trimmed();
-            if (!line.isEmpty() && !line.startsWith('#')) {
-                firstLine = line;
-                break;
-            }
-        }
-        file.close();
-
-        if (firstLine.isEmpty()) continue;
-
-        QChar delim = getDelimiter(_folderDelimCombo);
-        if (delim == '\0') delim = detectDelimiter(firstLine);
-
-        QStringList cols;
-        if (_folderHeaderCheck->isChecked()) {
-            cols = parseLine(firstLine, delim);
-        } else {
-            int n = parseLine(firstLine, delim).size();
-            for (int i = 0; i < n; ++i)
-                cols << QString("Column_%1").arg(i);
-        }
-        _folderDetectedColumns = cols;
-
-        populateColumnCombos(cols, {
-            {_folderTimeColCombo,   {"mjd", "bjd", "time", "jd", "timestamp", "epoch"}},
-            {_folderRVColCombo,     {"rv", "vrad", "radial_velocity", "v_rad",
-                                     "radvel", "velocity"}},
-            {_folderRVErrColCombo,  {"rv_err", "rv_error", "e_rv", "vrad_err",
-                                     "vrad_error", "e_vrad", "sigma", "err"}},
-        });
-
-        // Auto-detect BJD vs MJD from column name
-        int timeIdx = _folderTimeColCombo->currentIndex() - 1;
-        if (timeIdx >= 0 && timeIdx < cols.size()) {
-            QString tn = cols[timeIdx].toLower();
-            if (tn.contains("bjd"))
-                _folderTimeTypeCombo->setCurrentIndex(1);
-            else
-                _folderTimeTypeCombo->setCurrentIndex(0);
-        }
-        break;
-    }
-}
 
 void RadialVelocityImportPage::onScanFolders()
 {
-    scanAndParseFolders();
-}
+    StarImportWizard* wiz = qobject_cast<StarImportWizard*>(wizard());
+    if (!wiz || !wiz->controller()) return;
 
-void RadialVelocityImportPage::scanAndParseFolders()
-{
-    _results.clear();
-
-    QString rootPath = _rootFolderEdit->text().trimmed();
-    if (rootPath.isEmpty()) return;
-
-    QDir root(rootPath);
-    QStringList subDirs = root.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
-
-    if (subDirs.isEmpty()) {
-        _statusLabel->setText("No subdirectories found.");
-        return;
-    }
-
-    buildStarLookupIndex();
+    auto project = wiz->project();
+    if (!project) return;
 
     int timeCol  = _folderTimeColCombo->currentIndex() - 1;
     int rvCol    = _folderRVColCombo->currentIndex() - 1;
     int rvErrCol = _folderRVErrColCombo->currentIndex() - 1;
-    bool isBJD   = (_folderTimeTypeCombo->currentIndex() == 1);
 
     if (timeCol < 0 || rvCol < 0) {
         QMessageBox::warning(this, "Missing Columns",
@@ -979,10 +761,6 @@ void RadialVelocityImportPage::scanAndParseFolders()
         return;
     }
 
-    QChar delim = getDelimiter(_folderDelimCombo);
-    bool hasHeader = _folderHeaderCheck->isChecked();
-
-    // Determine folder naming type
     QString namingType;
     switch (_folderNamingCombo->currentIndex()) {
         case 0: namingType = "source_id"; break;
@@ -990,205 +768,56 @@ void RadialVelocityImportPage::scanAndParseFolders()
         case 2: namingType = "ra_dec"; break;
     }
 
+    RVExtractionTask::FolderConfig cfg;
+    cfg.rootPath   = _rootFolderEdit->text().trimmed();
+    cfg.namingType = namingType;
+    cfg.delimiter  = getDelimiter(_folderDelimCombo);
+    cfg.hasHeader  = _folderHeaderCheck->isChecked();
+    cfg.timeCol    = timeCol;
+    cfg.rvCol      = rvCol;
+    cfg.rvErrCol   = rvErrCol;
+    cfg.isBJD      = (_folderTimeTypeCombo->currentIndex() == 1);
+
+    _scanFoldersBtn->setEnabled(false);
     _folderProgress->setVisible(true);
-    _folderProgress->setRange(0, subDirs.size());
-    _statusLabel->setText("Scanning folders...");
+    _folderProgress->setRange(0, 0);  // indeterminate
+    _statusLabel->setText("Scanning folders in background...");
 
-    int matched = 0, unmatched = 0, totalPoints = 0;
+    auto stars = project->getAllStars();
 
-    for (int i = 0; i < subDirs.size(); ++i) {
-        _folderProgress->setValue(i);
-        QApplication::processEvents();
+    auto* task = RVExtractionTask::createFromFolders(
+        stars, project->getId(), wiz->controller(), cfg);
 
-        QString dirName = subDirs[i];
-        QDir sd(root.filePath(dirName));
+    connect(task, &RVExtractionTask::extractionComplete,
+            this, [this](int numCurves, int numPoints) {
+        _resultsReady = (numCurves > 0);
+        _folderProgress->setVisible(false);
+        _scanFoldersBtn->setEnabled(true);
+        _statusLabel->setText(
+            QString("Scanned: %1 stars matched (%2 RV points).")
+            .arg(numCurves).arg(numPoints));
+        updatePreviewFromProject();
+    }, Qt::QueuedConnection);
 
-        // Match folder to star
-        auto star = findStarByIdentifier(dirName, namingType);
-        if (!star) {
-            unmatched++;
-            continue;
-        }
-
-        // Find RV table files in this folder
-        QStringList files = sd.entryList(
-            {"*.csv", "*.txt", "*.dat", "*.tsv"}, QDir::Files);
-        if (files.isEmpty()) {
-            unmatched++;
-            continue;
-        }
-
-        auto curve = std::make_shared<RadialVelocityCurve>();
-        curve->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
-
-        for (const QString& fileName : files) {
-            QFile file(sd.filePath(fileName));
-            if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
-                continue;
-
-            QTextStream in(&file);
-            QStringList lines;
-            while (!in.atEnd()) {
-                QString line = in.readLine().trimmed();
-                if (line.isEmpty() || line.startsWith('#')) continue;
-                lines << line;
-            }
-            file.close();
-
-            if (lines.isEmpty()) continue;
-
-            QChar fileDelim = delim;
-            if (fileDelim == '\0')
-                fileDelim = detectDelimiter(lines.first());
-
-            int startRow = hasHeader ? 1 : 0;
-
-            for (int r = startRow; r < lines.size(); ++r) {
-                QStringList fields = parseLine(lines[r], fileDelim);
-
-                if (timeCol >= fields.size() || rvCol >= fields.size())
-                    continue;
-
-                bool okTime, okRV;
-                double time = fields[timeCol].toDouble(&okTime);
-                double rv   = fields[rvCol].toDouble(&okRV);
-                if (!okTime || !okRV) continue;
-
-                double rvErr = 0.0;
-                if (rvErrCol >= 0 && rvErrCol < fields.size()) {
-                    bool okErr;
-                    rvErr = fields[rvErrCol].toDouble(&okErr);
-                    if (!okErr) rvErr = 0.0;
-                }
-
-                auto rvPt = std::make_shared<RadialVelocityPoint>();
-                rvPt->setId(QUuid::createUuid().toString(
-                    QUuid::WithoutBraces));
-
-                // Store time in the appropriate field
-                if (isBJD) {
-                    rvPt->setBJD(time);
-                    rvPt->setMJD(0.0);
-                } else {
-                    rvPt->setMJD(time);
-                    rvPt->setBJD(0.0);
-                }
-
-                rvPt->setRV(rv);
-                rvPt->setRVError(rvErr);
-                rvPt->setSource(fileName);
-
-                curve->addRVPoint(rvPt);
-            }
-        }
-
-        if (curve->getNumPoints() > 0) {
-            StarRVResult result;
-            result.star = star;
-            result.curve = curve;
-            _results.push_back(result);
-            totalPoints += static_cast<int>(curve->getNumPoints());
-            matched++;
-        } else {
-            unmatched++;
-        }
-    }
-
-    _folderProgress->setValue(subDirs.size());
-    _folderProgress->setVisible(false);
-
-    _resultsReady = true;
-    computeAllMetadata();
-
-    // If fit params file specified, apply
-    if (_importFitParamsCheck->isChecked() && !_fitFileEdit->text().isEmpty())
-        applyFitParams();
-
-    updatePreviewTree();
-
-    _statusLabel->setText(
-        QString("Scanned %1 folders: %2 matched (%3 RV points), "
-                "%4 unmatched.")
-        .arg(subDirs.size()).arg(matched).arg(totalPoints).arg(unmatched));
+    wiz->controller()->backgroundTaskManager()->queueTask(task);
 }
 
 // ════════════════════════════════════════════════════════════════
 // Mode 3: From Single Table
 // ════════════════════════════════════════════════════════════════
 
-void RadialVelocityImportPage::onBrowseTableFile()
-{
-    QString file = QFileDialog::getOpenFileName(
-        this, "Select RV Table File", QString(),
-        "Data Files (*.csv *.txt *.dat *.tsv);;All Files (*)");
-    if (file.isEmpty()) return;
-
-    _tableFileEdit->setText(file);
-
-    // Load & detect columns
-    if (loadCSVFile(file, _tableDelimCombo, _tableHeaderCheck,
-                    _tableColumns, _tableRows)) {
-        populateColumnCombos(_tableColumns, {
-            {_tableIdColCombo,      {"source_id", "star_id", "id", "name",
-                                     "target", "object", "gaia"}},
-            {_tableTimeColCombo,    {"mjd", "bjd", "time", "jd", "timestamp",
-                                     "epoch"}},
-            {_tableRVColCombo,      {"rv", "vrad", "radial_velocity", "v_rad",
-                                     "radvel", "velocity"}},
-            {_tableRVErrColCombo,   {"rv_err", "rv_error", "e_rv", "vrad_err",
-                                     "vrad_error", "e_vrad", "sigma_rv",
-                                     "err"}},
-        });
-
-        // Auto-detect time type from column name
-        int timeIdx = _tableTimeColCombo->currentIndex() - 1;
-        if (timeIdx >= 0 && timeIdx < _tableColumns.size()) {
-            QString tn = _tableColumns[timeIdx].toLower();
-            _tableTimeTypeCombo->setCurrentIndex(
-                tn.contains("bjd") ? 1 : 0);
-        }
-
-        // Auto-detect ID type from column name
-        int idIdx = _tableIdColCombo->currentIndex() - 1;
-        if (idIdx >= 0 && idIdx < _tableColumns.size()) {
-            QString cn = _tableColumns[idIdx].toLower();
-            if (cn.contains("source_id") || cn.contains("gaia"))
-                _tableIdTypeCombo->setCurrentIndex(0);
-            else
-                _tableIdTypeCombo->setCurrentIndex(1);
-        }
-
-        _processTableBtn->setEnabled(true);
-        _statusLabel->setText(
-            QString("Loaded table: %1 columns, %2 data rows.")
-            .arg(_tableColumns.size()).arg(_tableRows.size()));
-    } else {
-        QMessageBox::warning(this, "Load Error",
-            "Could not read or parse the selected file.");
-    }
-}
-
 void RadialVelocityImportPage::onProcessTable()
 {
-    processTableData();
-}
+    StarImportWizard* wiz = qobject_cast<StarImportWizard*>(wizard());
+    if (!wiz || !wiz->controller()) return;
 
-void RadialVelocityImportPage::processTableData()
-{
-    _results.clear();
-
-    if (_tableColumns.isEmpty() || _tableRows.empty()) {
-        _statusLabel->setText("No table data loaded.");
-        return;
-    }
-
-    buildStarLookupIndex();
+    auto project = wiz->project();
+    if (!project) return;
 
     int idCol    = _tableIdColCombo->currentIndex() - 1;
     int timeCol  = _tableTimeColCombo->currentIndex() - 1;
     int rvCol    = _tableRVColCombo->currentIndex() - 1;
     int rvErrCol = _tableRVErrColCombo->currentIndex() - 1;
-    bool isBJD   = (_tableTimeTypeCombo->currentIndex() == 1);
 
     if (idCol < 0 || timeCol < 0 || rvCol < 0) {
         QMessageBox::warning(this, "Missing Columns",
@@ -1196,7 +825,6 @@ void RadialVelocityImportPage::processTableData()
         return;
     }
 
-    // Determine ID type
     QString idType;
     switch (_tableIdTypeCombo->currentIndex()) {
         case 0: idType = "source_id"; break;
@@ -1206,95 +834,99 @@ void RadialVelocityImportPage::processTableData()
         default: idType = "source_id"; break;
     }
 
-    // Group rows by star identifier
-    QHash<QString, std::vector<int>> groupedRows;
-    for (int i = 0; i < static_cast<int>(_tableRows.size()); ++i) {
-        const QStringList& row = _tableRows[i];
-        if (idCol >= row.size()) continue;
-        QString key = row[idCol].trimmed();
-        if (!key.isEmpty())
-            groupedRows[key].push_back(i);
-    }
+    RVExtractionTask::TableConfig cfg;
+    cfg.columns  = _tableColumns;
+    cfg.rows     = _tableRows;
+    cfg.idType   = idType;
+    cfg.idCol    = idCol;
+    cfg.timeCol  = timeCol;
+    cfg.rvCol    = rvCol;
+    cfg.rvErrCol = rvErrCol;
+    cfg.isBJD    = (_tableTimeTypeCombo->currentIndex() == 1);
 
-    _statusLabel->setText(
-        QString("Processing %1 unique identifiers...")
-        .arg(groupedRows.size()));
-    QApplication::processEvents();
+    _processTableBtn->setEnabled(false);
+    _statusLabel->setText("Processing table in background...");
 
-    int matched = 0, unmatched = 0, totalPoints = 0;
+    auto stars = project->getAllStars();
 
-    for (auto it = groupedRows.cbegin(); it != groupedRows.cend(); ++it) {
-        const QString& starId = it.key();
-        const std::vector<int>& rowIndices = it.value();
+    auto* task = RVExtractionTask::createFromTable(
+        stars, project->getId(), wiz->controller(), cfg);
 
-        auto star = findStarByIdentifier(starId, idType);
-        if (!star) {
-            unmatched++;
+    connect(task, &RVExtractionTask::extractionComplete,
+            this, [this](int numCurves, int numPoints) {
+        _resultsReady = (numCurves > 0);
+        _processTableBtn->setEnabled(true);
+        _statusLabel->setText(
+            QString("Processed: %1 stars (%2 RV points).")
+            .arg(numCurves).arg(numPoints));
+        updatePreviewFromProject();
+    }, Qt::QueuedConnection);
+
+    wiz->controller()->backgroundTaskManager()->queueTask(task);
+}
+
+
+void RadialVelocityImportPage::updatePreviewFromProject()
+{
+    _previewTree->clear();
+
+    StarImportWizard* wiz = qobject_cast<StarImportWizard*>(wizard());
+    if (!wiz || !wiz->project()) return;
+
+    auto stars = wiz->project()->getAllStars();
+
+    for (const auto& star : stars) {
+        auto curve = star->getRVCurve();
+        if (!curve || curve->getNumPoints() == 0)
             continue;
+
+        QTreeWidgetItem* item = new QTreeWidgetItem;
+
+        QString name = star->getAlias();
+        if (name.isEmpty()) name = star->getSourceId();
+        item->setText(0, name);
+
+        int nPts = static_cast<int>(curve->getNumPoints());
+        item->setText(1, QString::number(nPts));
+
+        if (nPts > 0) {
+            item->setText(2, QString("μ=%1 σ=%2 [%3, %4] km/s")
+                .arg(curve->getMeanRV(), 0, 'f', 2)
+                .arg(curve->getStdDevRV(), 0, 'f', 2)
+                .arg(curve->getMinRV(), 0, 'f', 2)
+                .arg(curve->getMaxRV(), 0, 'f', 2));
         }
 
-        auto curve = std::make_shared<RadialVelocityCurve>();
-        curve->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        QString status = "Ready";
+        auto bestFit = curve->getBestFit();
+        if (bestFit) status += " + Fit";
+        if (nPts < 3) status += " (few points)";
+        item->setText(3, status);
 
-        for (int ri : rowIndices) {
-            const QStringList& row = _tableRows[ri];
-            if (timeCol >= row.size() || rvCol >= row.size())
-                continue;
-
-            bool okTime, okRV;
-            double time = row[timeCol].toDouble(&okTime);
-            double rv   = row[rvCol].toDouble(&okRV);
-            if (!okTime || !okRV) continue;
-
-            double rvErr = 0.0;
-            if (rvErrCol >= 0 && rvErrCol < row.size()) {
-                bool okErr;
-                rvErr = row[rvErrCol].toDouble(&okErr);
-                if (!okErr) rvErr = 0.0;
-            }
-
-            auto rvPt = std::make_shared<RadialVelocityPoint>();
-            rvPt->setId(QUuid::createUuid().toString(
-                QUuid::WithoutBraces));
-
-            if (isBJD) {
-                rvPt->setBJD(time);
-                rvPt->setMJD(0.0);
-            } else {
-                rvPt->setMJD(time);
-                rvPt->setBJD(0.0);
-            }
-
-            rvPt->setRV(rv);
-            rvPt->setRVError(rvErr);
-            rvPt->setSource("table_import");
-
-            curve->addRVPoint(rvPt);
+        double logP = curve->getLogP();
+        if (!std::isnan(logP)) {
+            QTreeWidgetItem* pItem = new QTreeWidgetItem(item);
+            pItem->setText(0, "  Variability");
+            pItem->setText(2, QString("log₁₀(p) = %1").arg(logP, 0, 'f', 2));
+            if (logP < -4)         pItem->setText(3, "Variable");
+            else if (logP < -1.3)  pItem->setText(3, "Candidate");
+            else                   pItem->setText(3, "Consistent with constant");
         }
 
-        if (curve->getNumPoints() > 0) {
-            StarRVResult result;
-            result.star = star;
-            result.curve = curve;
-            _results.push_back(result);
-            totalPoints += static_cast<int>(curve->getNumPoints());
-            matched++;
+        if (bestFit) {
+            QTreeWidgetItem* fitItem = new QTreeWidgetItem(item);
+            fitItem->setText(0, "  Orbital Fit");
+            fitItem->setText(2, QString("K=%.2f γ=%.2f P=%.3f e=%.4f")
+                .arg(bestFit->getK()).arg(bestFit->getGamma())
+                .arg(bestFit->getPeriod()).arg(bestFit->getEccentricity()));
         }
+
+        _previewTree->addTopLevelItem(item);
     }
 
-    _resultsReady = true;
-    computeAllMetadata();
-
-    // If fit params file specified, apply
-    if (_importFitParamsCheck->isChecked() && !_fitFileEdit->text().isEmpty())
-        applyFitParams();
-
-    updatePreviewTree();
-
-    _statusLabel->setText(
-        QString("Processed table: %1 stars matched (%2 RV points), "
-                "%3 identifiers unmatched.")
-        .arg(matched).arg(totalPoints).arg(unmatched));
+    _previewTree->expandAll();
+    for (int i = 0; i < _previewTree->columnCount(); ++i)
+        _previewTree->resizeColumnToContents(i);
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -1359,10 +991,24 @@ void RadialVelocityImportPage::parseFitParamsFile()
         .arg(_fitColumns.size()).arg(_fitRows.size()));
 }
 
-void RadialVelocityImportPage::applyFitParams()
+
+void RadialVelocityImportPage::applyFitParamsToProject()
 {
-    if (_fitColumns.isEmpty() || _fitRows.empty() || _results.empty())
-        return;
+    // This applies orbital fit parameters to curves that are
+    // already linked to canonical star instances.
+    if (_fitColumns.isEmpty() || _fitRows.empty()) {
+        parseFitParamsFile();
+        if (_fitColumns.isEmpty()) return;
+    }
+
+    StarImportWizard* wiz = qobject_cast<StarImportWizard*>(wizard());
+    if (!wiz || !wiz->controller()) return;
+
+    DatabaseManager* dbm = wiz->controller()->databaseManager();
+    auto project = wiz->project();
+    if (!dbm || !project) return;
+
+    buildStarLookupIndex();
 
     int idCol     = _fitIdColCombo->currentIndex() - 1;
     int kCol      = _fitKColCombo->currentIndex() - 1;
@@ -1374,51 +1020,29 @@ void RadialVelocityImportPage::applyFitParams()
 
     if (idCol < 0) return;
 
-    QString idType;
-    switch (_fitIdTypeCombo->currentIndex()) {
-        case 0: idType = "source_id"; break;
-        case 1: idType = "alias"; break;
-        default: idType = "source_id"; break;
-    }
+    QString idType = (_fitIdTypeCombo->currentIndex() == 0) ? "source_id" : "alias";
 
-    // Helper: find error column by naming convention
+    // Error column finder (same logic as before)
     auto findErrCol = [&](int paramCol) -> int {
         if (paramCol < 0 || paramCol >= _fitColumns.size()) return -1;
         QString base = _fitColumns[paramCol].toLower();
-        QStringList errSuffixes = {
-            "_error", "_err", "_unc", "_sigma"
-        };
-        QStringList errPrefixes = {"e_", "err_", "sigma_"};
-
+        QStringList suffixes = {"_error", "_err", "_unc", "_sigma"};
+        QStringList prefixes = {"e_", "err_", "sigma_"};
         for (int i = 0; i < _fitColumns.size(); ++i) {
             if (i == paramCol) continue;
             QString cn = _fitColumns[i].toLower();
-            for (const QString& suffix : errSuffixes) {
-                if (cn == base + suffix) return i;
-            }
-            for (const QString& prefix : errPrefixes) {
-                if (cn == prefix + base) return i;
-            }
+            for (const auto& s : suffixes) if (cn == base + s) return i;
+            for (const auto& p : prefixes) if (cn == p + base) return i;
         }
         return -1;
     };
 
-    int kErrCol     = findErrCol(kCol);
-    int gammaErrCol = findErrCol(gammaCol);
-    int periodErrCol= findErrCol(periodCol);
-    int t0ErrCol    = findErrCol(t0Col);
-    int eccErrCol   = findErrCol(eccCol);
-    int omegaErrCol = findErrCol(omegaCol);
-
-    // Build a lookup from star to result index
-    QHash<QString, int> resultLookup;
-    for (int i = 0; i < static_cast<int>(_results.size()); ++i) {
-        auto& star = _results[i].star;
-        if (!star->getSourceId().isEmpty())
-            resultLookup[star->getSourceId()] = i;
-        if (!star->getAlias().isEmpty())
-            resultLookup[star->getAlias().trimmed().toLower()] = i;
-    }
+    int kErrCol      = findErrCol(kCol);
+    int gammaErrCol  = findErrCol(gammaCol);
+    int periodErrCol = findErrCol(periodCol);
+    int t0ErrCol     = findErrCol(t0Col);
+    int eccErrCol    = findErrCol(eccCol);
+    int omegaErrCol  = findErrCol(omegaCol);
 
     auto getDouble = [](const QStringList& row, int col) -> double {
         if (col < 0 || col >= row.size()) return 0.0;
@@ -1431,23 +1055,17 @@ void RadialVelocityImportPage::applyFitParams()
 
     for (const auto& row : _fitRows) {
         if (idCol >= row.size()) continue;
-        QString starId = row[idCol].trimmed();
 
-        // Find the matching result
-        auto star = findStarByIdentifier(starId, idType);
+        auto star = findStarByIdentifier(row[idCol].trimmed(), idType);
         if (!star) continue;
 
-        int resultIdx = -1;
-        for (int i = 0; i < static_cast<int>(_results.size()); ++i) {
-            if (_results[i].star == star) {
-                resultIdx = i;
-                break;
-            }
-        }
-        if (resultIdx < 0) continue;
+        auto curve = star->getRVCurve();
+        if (!curve) continue;
 
         auto fit = std::make_shared<RVFit>();
         fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        fit->setCurveId(curve->getId());
+        fit->setBestFit(true);
 
         if (kCol >= 0) {
             fit->setK(getDouble(row, kCol));
@@ -1474,111 +1092,152 @@ void RadialVelocityImportPage::applyFitParams()
             fit->setOmegaError(getDouble(row, omegaErrCol));
         }
 
-        _results[resultIdx].fit = fit;
+        curve->addRVFit(fit);
+        dbm->saveRVFit(fit, curve->getId());
         applied++;
     }
 
     LOG_INFO("RVImport",
-             QString("Applied fit parameters to %1 stars").arg(applied));
+        QString("Applied fit parameters to %1 stars").arg(applied));
 }
 
 // ════════════════════════════════════════════════════════════════
-// Metadata & Preview
+// Browse / detect helpers (were in original, must be restored)
 // ════════════════════════════════════════════════════════════════
 
-void RadialVelocityImportPage::computeAllMetadata()
+void RadialVelocityImportPage::onBrowseRootFolder()
 {
-    for (auto& result : _results) {
-        auto& curve = result.curve;
-        if (!curve || curve->getNumPoints() == 0) continue;
-
-        // Compute logP (chi-squared variability test)
-        double logP = curve->computeLogP();
-        curve->setLogP(logP);
-    }
+    QString folder = QFileDialog::getExistingDirectory(
+        this, "Select Root RV Folder", _rootFolderEdit->text());
+    if (!folder.isEmpty())
+        _rootFolderEdit->setText(folder);
 }
 
-void RadialVelocityImportPage::updatePreviewTree()
+void RadialVelocityImportPage::onBrowseTableFile()
 {
-    _previewTree->clear();
+    QString file = QFileDialog::getOpenFileName(
+        this, "Select RV Table File", QString(),
+        "Data Files (*.csv *.txt *.dat *.tsv);;All Files (*)");
+    if (file.isEmpty()) return;
 
-    for (const auto& result : _results) {
-        auto& star = result.star;
-        auto& curve = result.curve;
+    _tableFileEdit->setText(file);
 
-        QTreeWidgetItem* item = new QTreeWidgetItem;
+    // Load & detect columns
+    if (loadCSVFile(file, _tableDelimCombo, _tableHeaderCheck,
+                    _tableColumns, _tableRows)) {
+        populateColumnCombos(_tableColumns, {
+            {_tableIdColCombo,      {"source_id", "star_id", "id", "name",
+                                     "target", "object", "gaia"}},
+            {_tableTimeColCombo,    {"mjd", "bjd", "time", "jd", "timestamp",
+                                     "epoch"}},
+            {_tableRVColCombo,      {"rv", "vrad", "radial_velocity", "v_rad",
+                                     "radvel", "velocity"}},
+            {_tableRVErrColCombo,   {"rv_err", "rv_error", "e_rv", "vrad_err",
+                                     "vrad_error", "e_vrad", "sigma_rv",
+                                     "err"}},
+        });
 
-        // Star name
-        QString name = star->getAlias();
-        if (name.isEmpty())
-            name = star->getSourceId();
-        item->setText(0, name);
-
-        // # Points
-        int nPts = static_cast<int>(curve->getNumPoints());
-        item->setText(1, QString::number(nPts));
-
-        // RV summary
-        QString summary;
-        if (nPts > 0) {
-            double meanRV = curve->getMeanRV();
-            double stdRV  = curve->getStdDevRV();
-            double minRV  = curve->getMinRV();
-            double maxRV  = curve->getMaxRV();
-            summary = QString("μ=%1 σ=%2 [%3, %4] km/s")
-                    .arg(meanRV, 0, 'f', 2)
-                    .arg(stdRV, 0, 'f', 2)
-                    .arg(minRV, 0, 'f', 2)
-                    .arg(maxRV, 0, 'f', 2);
+        // Auto-detect time type from column name
+        int timeIdx = _tableTimeColCombo->currentIndex() - 1;
+        if (timeIdx >= 0 && timeIdx < _tableColumns.size()) {
+            QString tn = _tableColumns[timeIdx].toLower();
+            _tableTimeTypeCombo->setCurrentIndex(
+                tn.contains("bjd") ? 1 : 0);
         }
-        item->setText(2, summary);
 
-        // Status
-        QString status = "Ready";
-        if (result.fit)
-            status += " + Fit";
-        if (nPts < 3)
-            status += " (few points)";
-        item->setText(3, status);
-
-        double logP = curve->getLogP();
-        if (!std::isnan(logP)) {
-            QTreeWidgetItem* pItem = new QTreeWidgetItem(item);
-            pItem->setText(0, "  Variability");
-            pItem->setText(2, QString("log₁₀(p) = %1").arg(logP, 0, 'f', 2));
-            if (logP < -4)
-                pItem->setText(3, "Variable");
-            else if (logP < -1.3)
-                pItem->setText(3, "Variability Candidate");
+        // Auto-detect ID type from column name
+        int idIdx = _tableIdColCombo->currentIndex() - 1;
+        if (idIdx >= 0 && idIdx < _tableColumns.size()) {
+            QString cn = _tableColumns[idIdx].toLower();
+            if (cn.contains("source_id") || cn.contains("gaia"))
+                _tableIdTypeCombo->setCurrentIndex(0);
             else
-                pItem->setText(3, "Consistent with constant");
+                _tableIdTypeCombo->setCurrentIndex(1);
         }
 
-        // Child: Orbital fit
-        if (result.fit) {
-            QTreeWidgetItem* fitItem = new QTreeWidgetItem(item);
-            fitItem->setText(0, "  Orbital Fit");
-            auto fit = result.fit;
-            fitItem->setText(2, QString("K=%.2f γ=%.2f P=%.3f e=%.4f")
-                .arg(fit->getK()).arg(fit->getGamma())
-                .arg(fit->getPeriod()).arg(fit->getEccentricity()));
-        }
-
-        _previewTree->addTopLevelItem(item);
+        _processTableBtn->setEnabled(true);
+        _statusLabel->setText(
+            QString("Loaded table: %1 columns, %2 data rows.")
+            .arg(_tableColumns.size()).arg(_tableRows.size()));
+    } else {
+        QMessageBox::warning(this, "Load Error",
+            "Could not read or parse the selected file.");
     }
+}
 
-    _previewTree->expandAll();
-    for (int i = 0; i < _previewTree->columnCount(); ++i)
-        _previewTree->resizeColumnToContents(i);
+void RadialVelocityImportPage::detectFolderColumns()
+{
+    QString rootPath = _rootFolderEdit->text().trimmed();
+    if (rootPath.isEmpty()) return;
+
+    QDir root(rootPath);
+    QStringList subDirs = root.entryList(QDir::Dirs | QDir::NoDotAndDotDot);
+    if (subDirs.isEmpty()) return;
+
+    for (const QString& subDir : subDirs) {
+        QDir sd(root.filePath(subDir));
+        QStringList files = sd.entryList(
+            {"*.csv", "*.txt", "*.dat", "*.tsv"}, QDir::Files);
+        if (files.isEmpty()) continue;
+
+        QString sampleFile = sd.filePath(files.first());
+        QFile file(sampleFile);
+        if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
+
+        QTextStream in(&file);
+        QString firstLine;
+        while (!in.atEnd()) {
+            QString line = in.readLine().trimmed();
+            if (!line.isEmpty() && !line.startsWith('#')) {
+                firstLine = line;
+                break;
+            }
+        }
+        file.close();
+
+        if (firstLine.isEmpty()) continue;
+
+        QChar delim = getDelimiter(_folderDelimCombo);
+        if (delim == '\0') delim = detectDelimiter(firstLine);
+
+        QStringList cols;
+        if (_folderHeaderCheck->isChecked()) {
+            cols = parseLine(firstLine, delim);
+        } else {
+            int n = parseLine(firstLine, delim).size();
+            for (int i = 0; i < n; ++i)
+                cols << QString("Column_%1").arg(i);
+        }
+        _folderDetectedColumns = cols;
+
+        populateColumnCombos(cols, {
+            {_folderTimeColCombo,   {"mjd", "bjd", "time", "jd", "timestamp", "epoch"}},
+            {_folderRVColCombo,     {"rv", "vrad", "radial_velocity", "v_rad",
+                                     "radvel", "velocity"}},
+            {_folderRVErrColCombo,  {"rv_err", "rv_error", "e_rv", "vrad_err",
+                                     "vrad_error", "e_vrad", "sigma", "err"}},
+        });
+
+        int timeIdx = _folderTimeColCombo->currentIndex() - 1;
+        if (timeIdx >= 0 && timeIdx < cols.size()) {
+            QString tn = cols[timeIdx].toLower();
+            if (tn.contains("bjd"))
+                _folderTimeTypeCombo->setCurrentIndex(1);
+            else
+                _folderTimeTypeCombo->setCurrentIndex(0);
+        }
+        break;
+    }
 }
 
 // ════════════════════════════════════════════════════════════════
 // Validation & Save
 // ════════════════════════════════════════════════════════════════
 
+
 bool RadialVelocityImportPage::validatePage()
 {
-    if (!_resultsReady || _results.empty()) {
+    if (!_resultsReady) {
         QMessageBox::StandardButton reply = QMessageBox::question(
             this, "No RV Data",
             "No radial velocity data has been imported. "
@@ -1587,86 +1246,16 @@ bool RadialVelocityImportPage::validatePage()
         return (reply == QMessageBox::Yes);
     }
 
-    return saveResults();
-}
-
-bool RadialVelocityImportPage::saveResults()
-{
-    StarImportWizard* wiz = qobject_cast<StarImportWizard*>(wizard());
-    if (!wiz || !wiz->controller()) return false;
-
-    DatabaseManager* dbm = wiz->controller()->databaseManager();
-    if (!dbm) {
-        qWarning() << "RVImport: No DatabaseManager available.";
-        return false;
+    // Fit params are applied inside the task's saveResultsToDatabase().
+    // If the user specified a fit file, re-apply here for results
+    // that were already saved.
+    if (_importFitParamsCheck->isChecked() && !_fitFileEdit->text().isEmpty()) {
+        applyFitParamsToProject();
     }
-
-    // Get project ID for saveStar()
-    QString projectId;
-    auto project = wiz->project();
-    if (project)
-        projectId = project->getId();
-
-    if (projectId.isEmpty()) {
-        qWarning() << "RVImport: No project ID available.";
-        return false;
-    }
-
-    _statusLabel->setText("Saving RV data to database...");
-    QApplication::processEvents();
-
-    int savedCurves = 0;
-    int savedPoints = 0;
-    int savedFits = 0;
-
-    for (auto& result : _results) {
-        auto& star = result.star;
-        auto& curve = result.curve;
-
-        if (!curve || curve->getNumPoints() == 0) continue;
-
-        // Link curve to star
-        curve->setStarId(star->getId());
-
-        // Save RV curve
-        if (dbm->saveRadialVelocityCurve(curve, star->getId())) {
-            savedCurves++;
-
-            // Save individual RV points
-            for (const auto& pt : curve->getRVPoints()) {
-                pt->setCurveId(curve->getId());
-                if (dbm->saveRadialVelocityPoint(pt, curve->getId()))
-                    savedPoints++;
-            }
-
-            // Save fit if present
-            if (result.fit) {
-                result.fit->setCurveId(curve->getId());
-                result.fit->setBestFit(true);
-                curve->addRVFit(result.fit);
-                if (dbm->saveRVFit(result.fit, curve->getId()))
-                    savedFits++;
-            }
-
-            // Attach curve to Star model and update metrics
-            star->setRVCurve(curve);
-            star->updateRVMetricsFromCurve();
-
-            // Save updated star (with correct 2-argument signature)
-            dbm->saveStar(projectId, star);
-        }
-    }
-
-    _statusLabel->setText(
-        QString("Saved %1 RV curves (%2 points, %3 fits) to database.")
-        .arg(savedCurves).arg(savedPoints).arg(savedFits));
-
-    LOG_INFO("RVImport",
-        QString("Saved %1 curves, %2 points, %3 fits")
-        .arg(savedCurves).arg(savedPoints).arg(savedFits));
 
     return true;
 }
+
 
 int RadialVelocityImportPage::nextId() const
 {
