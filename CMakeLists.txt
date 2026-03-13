@@ -103,6 +103,7 @@ set(SOURCES
     src/views/StarFilterWidget.cpp
     src/utils/SpectralFitImportPage.cpp
     src/utils/RadialVelocityImportPage.cpp
+    src/utils/ImportStagingArea.cpp
 )
 
 # Header files
@@ -136,6 +137,7 @@ set(HEADERS
     src/utils/SpectralFitImportPage.h
     src/utils/AppPaths.h
     src/utils/RadialVelocityImportPage.h
+    src/utils/ImportStagingArea.h
 )
 
 # Create executable

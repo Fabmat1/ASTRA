@@ -1662,3 +1662,112 @@ bool DatabaseManager::deleteRadialVelocityCurve(const QString& curveId)
     query.bindValue(":id", curveId);
     return query.exec();
 }
+
+bool DatabaseManager::beginTransaction()
+{
+    QSqlDatabase db = threadConnection();
+    if (!db.transaction()) {
+        qDebug() << "Failed to begin transaction:" << db.lastError();
+        return false;
+    }
+    return true;
+}
+
+bool DatabaseManager::commitTransaction()
+{
+    QSqlDatabase db = threadConnection();
+    if (!db.commit()) {
+        qDebug() << "Failed to commit transaction:" << db.lastError();
+        return false;
+    }
+    return true;
+}
+
+bool DatabaseManager::rollbackTransaction()
+{
+    QSqlDatabase db = threadConnection();
+    if (!db.rollback()) {
+        qDebug() << "Failed to rollback transaction:" << db.lastError();
+        return false;
+    }
+    return true;
+}
+
+bool DatabaseManager::updateStarRow(const QString& projectId, std::shared_ptr<Star> star)
+{
+    if (!star || star->getId().isEmpty()) return false;
+
+    QSqlQuery query(threadConnection());
+    query.prepare(R"(
+        UPDATE stars SET
+            alias = :alias, source_id = :source_id, tic = :tic, jname = :jname,
+            ra = :ra, dec = :dec, pmra = :pmra, pmdec = :pmdec,
+            e_pmra = :e_pmra, e_pmdec = :e_pmdec, plx = :plx, e_plx = :e_plx,
+            pmra_pmdec_corr = :pmra_pmdec_corr, plx_pmdec_corr = :plx_pmdec_corr,
+            plx_pmra_corr = :plx_pmra_corr,
+            gmag = :gmag, e_gmag = :e_gmag, bp = :bp, e_bp = :e_bp,
+            rp = :rp, e_rp = :e_rp, bp_rp = :bp_rp,
+            spec_class = :spec_class, teff = :teff, e_teff = :e_teff,
+            logg = :logg, e_logg = :e_logg, he = :he, e_he = :e_he,
+            logp = :logp, deltaRV = :deltaRV, e_deltaRV = :e_deltaRV,
+            rv_avg = :rv_avg, e_rv_avg = :e_rv_avg, rv_med = :rv_med, e_rv_med = :e_rv_med,
+            bibcodes = :bibcodes
+        WHERE id = :id AND project_id = :project_id
+    )");
+
+    query.bindValue(":id", star->getId());
+    query.bindValue(":project_id", projectId);
+    query.bindValue(":alias", star->getAlias());
+    query.bindValue(":source_id", star->getSourceId());
+    query.bindValue(":tic", star->getTic());
+    query.bindValue(":jname", star->getJName());
+
+    query.bindValue(":ra", star->getRa());
+    query.bindValue(":dec", star->getDec());
+    query.bindValue(":pmra", star->getPmra());
+    query.bindValue(":pmdec", star->getPmdec());
+    query.bindValue(":e_pmra", star->getEPmra());
+    query.bindValue(":e_pmdec", star->getEPmdec());
+    query.bindValue(":plx", star->getPlx());
+    query.bindValue(":e_plx", star->getEPlx());
+    query.bindValue(":pmra_pmdec_corr", star->getPmraPmdecCorr());
+    query.bindValue(":plx_pmdec_corr", star->getPlxPmdecCorr());
+    query.bindValue(":plx_pmra_corr", star->getPlxPmraCorr());
+
+    query.bindValue(":gmag", star->getGmag());
+    query.bindValue(":e_gmag", star->getEGmag());
+    query.bindValue(":bp", star->getBp());
+    query.bindValue(":e_bp", star->getEBp());
+    query.bindValue(":rp", star->getRp());
+    query.bindValue(":e_rp", star->getERp());
+    query.bindValue(":bp_rp", star->getBpRp());
+
+    query.bindValue(":spec_class", star->getSpecClass());
+    query.bindValue(":teff", star->getTeff());
+    query.bindValue(":e_teff", star->getETeff());
+    query.bindValue(":logg", star->getLogg());
+    query.bindValue(":e_logg", star->getELogg());
+    query.bindValue(":he", star->getHe());
+    query.bindValue(":e_he", star->getEHe());
+
+    query.bindValue(":logp", star->getLogP());
+    query.bindValue(":deltaRV", star->getDeltaRV());
+    query.bindValue(":e_deltaRV", star->getEDeltaRV());
+    query.bindValue(":rv_avg", star->getRVAvg());
+    query.bindValue(":e_rv_avg", star->getERVAvg());
+    query.bindValue(":rv_med", star->getRVMed());
+    query.bindValue(":e_rv_med", star->getERVMed());
+
+    QJsonArray bibcodesArray;
+    for (const auto& bibcode : star->getBibcodes()) {
+        bibcodesArray.append(bibcode);
+    }
+    query.bindValue(":bibcodes", QJsonDocument(bibcodesArray).toJson(QJsonDocument::Compact));
+
+    if (!query.exec()) {
+        qDebug() << "Failed to update star row:" << query.lastError();
+        return false;
+    }
+
+    return true;
+}

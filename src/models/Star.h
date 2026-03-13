@@ -131,13 +131,12 @@ public:
     void setSpectraLoader(std::function<std::vector<std::shared_ptr<Spectrum>>(const QString&)> loader) {
         _spectraLoader = loader;
     }
-    
-    // Modified getters that trigger lazy loading
-    std::shared_ptr<Photometry> getPhotometry();  // Remove const, will lazy load
-    std::vector<std::shared_ptr<Spectrum>> getSpectra();  // Remove const, will lazy load
 
-    std::vector<std::shared_ptr<Spectrum>> getSpectra() const { return _spectra; }
-    void addSpectrum(std::shared_ptr<Spectrum> spectrum) { _spectra.push_back(spectrum); }
+    std::shared_ptr<Photometry> getPhotometry();  
+    std::vector<std::shared_ptr<Spectrum>> getSpectra();  
+
+    void addSpectrum(std::shared_ptr<Spectrum> spectrum);
+    void removeSpectrum(const QString& spectrumId);
 
     // Fast field access using function pointers
     using FieldGetter = std::function<QVariant(const Star*)>;
@@ -146,7 +145,6 @@ public:
     // Generic field access for table display
     QVariant getFieldValue(const QString& fieldName) const;
 
-    // In Star.h public section, add:
     std::shared_ptr<RadialVelocityCurve> getRVCurve() const { return _rvCurve; }
     void setRVCurve(std::shared_ptr<RadialVelocityCurve> curve) { _rvCurve = curve; }
     void updateRVMetricsFromCurve();

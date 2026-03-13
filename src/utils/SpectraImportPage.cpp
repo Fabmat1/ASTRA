@@ -1486,15 +1486,16 @@ void SpectraImportPage::queueImportTask(std::vector<SpectrumImportEntry> entries
         return;
     }
     
-    auto task = new SpectraImportTask(std::move(entries), project->getId(), controller);
-    
+    auto* task = new SpectraImportTask(std::move(entries), project->getId(), controller);
+    task->setStagingArea(importWizard->stagingArea());
+
     connect(task, &SpectraImportTask::importComplete, this, [this](int imported, int failed) {
         LOG_INFO("SpectraImport", QString("Background import complete: %1 imported, %2 failed")
                 .arg(imported).arg(failed));
     });
-    
+
     controller->backgroundTaskManager()->queueTask(task);
-    
+
     LOG_INFO("SpectraImport", "Spectra import task queued for background processing");
 }
 

@@ -716,6 +716,8 @@ void RadialVelocityImportPage::onExtractFromFits()
         _bestFitOnlyCheck->isChecked(),
         _skipZeroRVCheck->isChecked());
 
+    task->setStagingArea(wiz->stagingArea());
+
     connect(task, &RVExtractionTask::extractionComplete,
             this, [this](int numCurves, int numPoints) {
         _resultsReady = (numCurves > 0);
@@ -724,7 +726,6 @@ void RadialVelocityImportPage::onExtractFromFits()
             .arg(numPoints).arg(numCurves));
         _extractFitsBtn->setEnabled(true);
 
-        // Refresh preview from canonical stars
         updatePreviewFromProject();
     }, Qt::QueuedConnection);
 
@@ -787,6 +788,8 @@ void RadialVelocityImportPage::onScanFolders()
 
     auto* task = RVExtractionTask::createFromFolders(
         stars, project->getId(), wiz->controller(), cfg);
+
+    task->setStagingArea(wiz->stagingArea());
 
     connect(task, &RVExtractionTask::extractionComplete,
             this, [this](int numCurves, int numPoints) {
@@ -851,6 +854,8 @@ void RadialVelocityImportPage::onProcessTable()
 
     auto* task = RVExtractionTask::createFromTable(
         stars, project->getId(), wiz->controller(), cfg);
+
+    task->setStagingArea(wiz->stagingArea());
 
     connect(task, &RVExtractionTask::extractionComplete,
             this, [this](int numCurves, int numPoints) {
@@ -994,8 +999,6 @@ void RadialVelocityImportPage::parseFitParamsFile()
 
 void RadialVelocityImportPage::applyFitParamsToProject()
 {
-    // This applies orbital fit parameters to curves that are
-    // already linked to canonical star instances.
     if (_fitColumns.isEmpty() || _fitRows.empty()) {
         parseFitParamsFile();
         if (_fitColumns.isEmpty()) return;
@@ -1004,9 +1007,8 @@ void RadialVelocityImportPage::applyFitParamsToProject()
     StarImportWizard* wiz = qobject_cast<StarImportWizard*>(wizard());
     if (!wiz || !wiz->controller()) return;
 
-    DatabaseManager* dbm = wiz->controller()->databaseManager();
     auto project = wiz->project();
-    if (!dbm || !project) return;
+    if (!project) return;
 
     buildStarLookupIndex();
 
@@ -1022,7 +1024,6 @@ void RadialVelocityImportPage::applyFitParamsToProject()
 
     QString idType = (_fitIdTypeCombo->currentIndex() == 0) ? "source_id" : "alias";
 
-    // Error column finder (same logic as before)
     auto findErrCol = [&](int paramCol) -> int {
         if (paramCol < 0 || paramCol >= _fitColumns.size()) return -1;
         QString base = _fitColumns[paramCol].toLower();
@@ -1067,40 +1068,40 @@ void RadialVelocityImportPage::applyFitParamsToProject()
         fit->setCurveId(curve->getId());
         fit->setBestFit(true);
 
-        if (kCol >= 0) {
-            fit->setK(getDouble(row, kCol));
-            fit->setKError(getDouble(row, kErrCol));
-        }
-        if (gammaCol >= 0) {
-            fit->setGamma(getDouble(row, gammaCol));
-            fit->setGammaError(getDouble(row, gammaErrCol));
-        }
-        if (periodCol >= 0) {
-            fit->setPeriod(getDouble(row, periodCol));
-            fit->setPeriodError(getDouble(row, periodErrCol));
-        }
-        if (t0Col >= 0) {
-            fit->setT0(getDouble(row, t0Col));
-            fit->setT0Error(getDouble(row, t0ErrCol));
-        }
-        if (eccCol >= 0) {
-            fit->setEccentricity(getDouble(row, eccCol));
-            fit->setEccentricityError(getDouble(row, eccErrCol));
-        }
-        if (omegaCol >= 0) {
-            fit->setOmega(getDouble(row, omegaCol));
-            fit->setOmegaError(getDouble(row, omegaErrCol));
+        if (kCol >= 0)      { fit->setK(getDouble(row, kCol));              fit->setKError(getDouble(row, kErrCol)); }
+        if (gammaCol >= 0)  { fit->setGamma(getDouble(row, gammaCol));      fit->setGammaError(getDouble(row, gammaErrCol)); }
+        if (periodCol >= 0) { fit->setPeriod(getDouble(row, periodCol));    fit->setPeriodError(getDouble(row, periodErrCol)); }
+        if (t0Col >= 0)     { fit->setT0(getDouble(row, t0Col));            fit->setT0Error(getDouble(row, t0ErrCol)); }
+        if (eccCol >= 0)    { fit->setEccentricity(getDouble(row, eccCol)); fit->setEccentricityError(getDouble(row, eccErrCol)); }
+        if (omegaCol >= 0)  { fit->setOmega(getDouble(row, omegaCol));      fit->setOmegaError(getDouble(row, omegaErrCol)); }
+
+        // In-memory linking
+        curve->addRVFit(fit);
+
+        // ── FIX (Bug E): Stage instead of direct DB write ──
+        // The RV curve is already staged via RVExtractionTask.
+        // The fit gets committed as part of the curve when commitAll runs.
+        // We just need to make sure the staging area knows about the fit.
+        // Since the curve already references this fit in-memory, and
+        // commitAll iterates curve->getRVFits(), it will be saved.
+        // But if the curve was staged by a PREVIOUS wizard run (already in DB),
+        // we need to explicitly stage this fit.
+        //
+        // Safest: always stage via the staging area:
+        ImportStagingArea* staging = wiz->stagingArea();
+        if (staging) {
+            // Stage as a modification — the RV result already links the curve.
+            // If there's no staged RV result for this star yet, we need one.
+            // For simplicity, mark the star as modified so commitAll re-saves it.
+            staging->stageModifiedStar(star->getId());
         }
 
-        curve->addRVFit(fit);
-        dbm->saveRVFit(fit, curve->getId());
         applied++;
     }
 
     LOG_INFO("RVImport",
-        QString("Applied fit parameters to %1 stars").arg(applied));
+        QString("Applied fit parameters to %1 stars (staged)").arg(applied));
 }
-
 // ════════════════════════════════════════════════════════════════
 // Browse / detect helpers (were in original, must be restored)
 // ════════════════════════════════════════════════════════════════

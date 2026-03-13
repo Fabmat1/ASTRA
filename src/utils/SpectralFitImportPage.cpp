@@ -197,8 +197,23 @@ void SpectralFitImportPage::initializePage()
         return;
     }
 
-    _importedStars = importWizard->getImportedStars();
-    LOG_INFO("FitImport", QString("Received %1 stars from wizard")
+    // ── FIX (Bug A): Use the PROJECT's canonical star list, not the
+    //    wizard's import-only list.  project->getAllStars() includes both
+    //    DB-loaded stars AND newly-staged stars, all with their in-memory
+    //    spectra already attached by SpectraImportTask. ──
+    auto controller = importWizard->controller();
+    auto project    = importWizard->project();
+    if (controller && project) {
+        if (!project->starsLoaded())
+            controller->openProject(project->getId());
+        _importedStars = project->getAllStars();
+    }
+
+    // Fallback (e.g. if project has zero stars but wizard has some)
+    if (_importedStars.empty())
+        _importedStars = importWizard->getImportedStars();
+
+    LOG_INFO("FitImport", QString("Using %1 stars for fit matching")
              .arg(_importedStars.size()));
 
     _asyncBusy  = false;
@@ -213,21 +228,17 @@ void SpectralFitImportPage::initializePage()
             "⏳ Spectra import is still running in the background. "
             "Please wait for it to finish before scanning for fits.");
 
-        // Poll until done
         auto* pollTimer = new QTimer(this);
         pollTimer->setInterval(500);
         connect(pollTimer, &QTimer::timeout, this, [this, pollTimer]() {
             if (!isSpectraImportRunning()) {
                 pollTimer->stop();
                 pollTimer->deleteLater();
-
-                // Now build index and enable scan
                 _specIndex = buildSpectrumLookupIndex();
                 _indexBuilt = true;
                 _diggaScanButton->setEnabled(!_diggaFolderEdit->text().trimmed().isEmpty());
                 _statusLabel->setText(
-                    QString("Ready — %1 stars, %2 spectra indexed. "
-                            "Select a folder and scan.")
+                    QString("Ready — %1 stars, %2 spectra indexed.")
                     .arg(_specIndex.sourceIdIndex.size())
                     .arg(_specIndex.totalSpectra));
             }
@@ -236,13 +247,11 @@ void SpectralFitImportPage::initializePage()
         return;
     }
 
-    // Spectra import already done — build index immediately
     _specIndex = buildSpectrumLookupIndex();
     _indexBuilt = true;
 
     _statusLabel->setText(
-        QString("Ready — %1 spectra indexed across %2 stars. "
-                "Select a folder and scan.")
+        QString("Ready — %1 spectra indexed across %2 stars.")
         .arg(_specIndex.totalSpectra)
         .arg(_specIndex.starSpectraIndex.size()));
 }
@@ -275,25 +284,14 @@ SpectralFitImportPage::SpectrumIndex SpectralFitImportPage::buildSpectrumLookupI
     if (importWizard && importWizard->controller())
         dbManager = importWizard->controller()->databaseManager();
 
-    // Merge wizard stars + DB stars (DB takes priority)
-    QHash<QString, std::shared_ptr<Star>> starById;
-    for (const auto& star : _importedStars)
-        starById[star->getId()] = star;
+    // ── FIX (Bug A): Use _importedStars directly.  These are the
+    //    canonical project star objects (set in initializePage from
+    //    project->getAllStars()).  They already have staged spectra
+    //    attached in-memory.  Do NOT re-load from DB — that creates
+    //    fresh objects without staged data. ──
+    LOG_INFO("FitImport", QString("Indexing %1 stars").arg(_importedStars.size()));
 
-    if (dbManager) {
-        auto project = importWizard->project();
-        if (project) {
-            auto dbStars = dbManager->loadStars(project->getId());
-            LOG_INFO("FitImport", QString("DB returned %1 stars").arg(dbStars.size()));
-            for (const auto& star : dbStars)
-                starById[star->getId()] = star;
-        }
-    }
-
-    LOG_INFO("FitImport", QString("Indexing %1 unique stars").arg(starById.size()));
-
-    for (auto it = starById.cbegin(); it != starById.cend(); ++it) {
-        const auto& star = it.value();
+    for (const auto& star : _importedStars) {
         QString starId   = star->getId();
         QString sourceId = star->getSourceId();
         QString alias    = star->getAlias();
@@ -313,7 +311,7 @@ SpectralFitImportPage::SpectrumIndex SpectralFitImportPage::buildSpectrumLookupI
         if (!starId.isEmpty())
             idx.sourceIdIndex[starId] = star;
 
-        // Load spectra: in-memory first, then DB fallback
+        // Get spectra: in-memory first (includes staged), then DB fallback
         auto spectra = star->getSpectra();
         if (spectra.empty() && dbManager) {
             spectra = dbManager->loadSpectra(starId);
@@ -1147,6 +1145,7 @@ void SpectralFitImportPage::importDiggaFits()
     LOG_INFO("FitImport", QString("Queuing %1 fits for background import").arg(count));
 
     auto* task = new DiggaFitImportTask(std::move(entries), controller);
+    task->setStagingArea(importWizard->stagingArea());
     controller->backgroundTaskManager()->queueTask(task);
 }
 

@@ -63,6 +63,16 @@ void Spectrum::addSpectralFit(std::shared_ptr<SpectralFit> fit)
     _spectralFits.push_back(fit);
 }
 
+void Spectrum::removeSpectralFit(const QString& fitId)
+{
+    _spectralFits.erase(
+        std::remove_if(_spectralFits.begin(), _spectralFits.end(),
+            [&fitId](const std::shared_ptr<SpectralFit>& f) {
+                return f && f->getId() == fitId;
+            }),
+        _spectralFits.end());
+}
+
 std::vector<std::shared_ptr<SpectralFit>> Spectrum::getSpectralFits() const
 {
     return _spectralFits;

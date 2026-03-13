@@ -105,6 +105,7 @@ public:
 
     // Model fits
     void addSpectralFit(std::shared_ptr<SpectralFit> fit);
+    void removeSpectralFit(const QString& fitId);
     std::vector<std::shared_ptr<SpectralFit>> getSpectralFits() const;
     std::shared_ptr<SpectralFit> getBestFit() const;
 

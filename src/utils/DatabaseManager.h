@@ -78,6 +78,14 @@ public:
 
     bool deleteRadialVelocityCurve(const QString& curveId);
 
+    // Transaction control for staged commits
+    bool beginTransaction();
+    bool commitTransaction();
+    bool rollbackTransaction();
+
+    // Update star row only (no cascade to spectra/photometry)
+    bool updateStarRow(const QString& projectId, std::shared_ptr<Star> star);
+
 
 private:
     bool createTables();

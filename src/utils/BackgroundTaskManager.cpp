@@ -6,8 +6,9 @@
 #include "models/Project.h"        
 #include "Logger.h"
 #include "utils/DatabaseManager.h"
-
+#include "ImportStagingArea.h"
 #include "Logger.h"  
+
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -383,123 +384,119 @@ void GaiaQueryTask::execute()
 {
     LOG_SET_THREAD_NAME("GaiaQuery");
     LOG_INFO("Gaia", "Starting Gaia DR3 query task");
-    
+
     _networkManager = new QNetworkAccessManager();
-    
+
     emit progress("Gaia: Checking which stars need data...");
-    
+
     int starsNeedingData = 0;
     for (const auto& star : _stars) {
-        if (starNeedsGaiaData(star)) {
+        if (starNeedsGaiaData(star))
             starsNeedingData++;
-        }
     }
-    
-    LOG_DEBUG("Gaia", QString("Found %1 stars needing Gaia data out of %2 total")
-              .arg(starsNeedingData).arg(_stars.size()));
-    
+
     if (starsNeedingData == 0) {
-        LOG_INFO("Gaia", "No stars need Gaia data - task complete");
         emit finished(true, "Gaia: All stars already have complete astrometry data");
         _networkManager->deleteLater();
         return;
     }
-    
+
     emit progress(QString("Gaia: Building query for %1 stars...").arg(starsNeedingData));
-    
+
     QString adqlQuery = buildADQLQuery();
     if (adqlQuery.isEmpty()) {
-        LOG_WARNING("Gaia", "No valid source IDs found for query");
         emit finished(true, "Gaia: No valid source IDs to query");
         _networkManager->deleteLater();
         return;
     }
-    
-    LOG_DEBUG("Gaia", QString("ADQL query length: %1 characters").arg(adqlQuery.length()));
-    
+
     emit progress(QString("Gaia: Querying VizieR for %1 stars...").arg(starsNeedingData));
-    
+
     QUrl url("http://tapvizier.u-strasbg.fr/TAPVizieR/tap/sync");
     QNetworkRequest request(url);
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
     request.setRawHeader("User-Agent", "ASTRA/1.0");
-    
+
     QUrlQuery postParams;
     postParams.addQueryItem("REQUEST", "doQuery");
     postParams.addQueryItem("LANG", "ADQL");
     postParams.addQueryItem("FORMAT", "csv");
     postParams.addQueryItem("QUERY", adqlQuery);
-    
-    QByteArray postData = postParams.toString(QUrl::FullyEncoded).toUtf8();
-    
-    LOG_DEBUG("Gaia", "Sending POST request to VizieR TAP");
-    
-    QNetworkReply* reply = _networkManager->post(request, postData);
-    
+
+    QNetworkReply* reply = _networkManager->post(request, postParams.toString(QUrl::FullyEncoded).toUtf8());
+
     QEventLoop loop;
     QTimer timeoutTimer;
     timeoutTimer.setSingleShot(true);
-    
     connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    
     timeoutTimer.start(300000);
     loop.exec();
-    
+
     if (!timeoutTimer.isActive()) {
         reply->abort();
-        LOG_ERROR("Gaia", "Query timed out after 5 minutes");
         emit finished(false, "Gaia: Query timed out");
         reply->deleteLater();
         _networkManager->deleteLater();
         return;
     }
-    
+
     if (reply->error() != QNetworkReply::NoError) {
-        LOG_ERROR("Gaia", QString("Network error: %1").arg(reply->errorString()));
         emit finished(false, QString("Gaia: Network error - %1").arg(reply->errorString()));
         reply->deleteLater();
         _networkManager->deleteLater();
         return;
     }
-    
+
     emit progress("Gaia: Parsing response...");
-    
     QString response = QString::fromUtf8(reply->readAll());
     reply->deleteLater();
-    
-    LOG_DEBUG("Gaia", QString("Received response: %1 bytes").arg(response.size()));
-    
-    parseVizierResponse(response);
-    
+
+    auto modifiedStars = parseVizierResponse(response);
+
+    if (_stagingArea) {
+        for (const auto& star : modifiedStars)
+            _stagingArea->stageModifiedStar(star->getId());
+        LOG_INFO("Gaia", QString("Staged %1 modified stars").arg(modifiedStars.size()));
+        emit finished(true, QString("Gaia: Updated %1 stars (staged)").arg(modifiedStars.size()));
+    } else {
+        // Legacy: save directly
+        if (!modifiedStars.empty() && _controller) {
+            emit progress(QString("Gaia: Saving %1 updated stars...").arg(modifiedStars.size()));
+            QMetaObject::invokeMethod(_controller, [this, modifiedStars]() {
+                auto project = _controller->getCurrentProject();
+                if (project)
+                    _controller->saveStarsToProject(project, modifiedStars);
+            }, Qt::QueuedConnection);
+        }
+        emit finished(true, QString("Gaia: Updated %1 stars").arg(modifiedStars.size()));
+    }
+
     _networkManager->deleteLater();
 }
 
-void GaiaQueryTask::parseVizierResponse(const QString& response)
+std::vector<std::shared_ptr<Star>> GaiaQueryTask::parseVizierResponse(const QString& response)
 {
+    std::vector<std::shared_ptr<Star>> modifiedStars;
+
     QStringList lines = response.split('\n', Qt::SkipEmptyParts);
-    
-    LOG_DEBUG("Gaia", QString("Parsing %1 lines from response").arg(lines.size()));
-    
+
     if (lines.size() < 2) {
         LOG_WARNING("Gaia", "No matching data found in Gaia DR3");
-        emit finished(true, "Gaia: No matching data found in Gaia DR3");
-        return;
+        return modifiedStars;
     }
-    
-    
+
     QStringList headers = lines[0].split(',');
     QMap<QString, int> colIndex;
     for (int i = 0; i < headers.size(); ++i) {
         QString header = headers[i].trimmed().toLower().remove('"');
         colIndex[header] = i;
     }
-    
+
     QMap<QString, QStringList> gaiaData;
     for (int i = 1; i < lines.size(); ++i) {
         QString line = lines[i].trimmed();
         if (line.isEmpty()) continue;
-        
         QStringList values = line.split(',');
         int sourceIdx = colIndex.value("source", -1);
         if (sourceIdx >= 0 && sourceIdx < values.size()) {
@@ -507,28 +504,20 @@ void GaiaQueryTask::parseVizierResponse(const QString& response)
             gaiaData[sourceId] = values;
         }
     }
-    
-    emit progress("Gaia: Updating star data...");
-    
-    int updatedCount = 0;
-    std::vector<std::shared_ptr<Star>> starsToSave;
-    
+
     for (auto& star : _stars) {
         QString sourceId = star->getSourceId().trimmed();
-        
         if (sourceId.contains("DR3", Qt::CaseInsensitive)) {
             QRegularExpression re("(\\d{10,})");
             QRegularExpressionMatch match = re.match(sourceId);
-            if (match.hasMatch()) {
-                sourceId = match.captured(1);
-            }
+            if (match.hasMatch()) sourceId = match.captured(1);
         }
-        
+
         if (!gaiaData.contains(sourceId)) continue;
-        
+
         const QStringList& values = gaiaData[sourceId];
         bool updated = false;
-        
+
         auto getValue = [&](const QString& col) -> double {
             int idx = colIndex.value(col.toLower(), -1);
             if (idx >= 0 && idx < values.size()) {
@@ -540,101 +529,35 @@ void GaiaQueryTask::parseVizierResponse(const QString& response)
             }
             return 0.0;
         };
-        
-        if (star->getRa() == 0.0) {
-            double val = getValue("ra_icrs");
-            if (val != 0.0) { star->setRa(val); updated = true; }
-        }
-        
-        if (star->getDec() == 0.0) {
-            double val = getValue("de_icrs");
-            if (val != 0.0) { star->setDec(val); updated = true; }
-        }
-        
-        if (star->getPmra() == 0.0) {
-            double val = getValue("pmra");
-            if (val != 0.0) { star->setPmra(val); updated = true; }
-        }
-        
-        if (star->getPmdec() == 0.0) {
-            double val = getValue("pmde");
-            if (val != 0.0) { star->setPmdec(val); updated = true; }
-        }
-        
-        if (star->getEPmra() == 0.0) {
-            double val = getValue("e_pmra");
-            if (val != 0.0) { star->setEPmra(val); updated = true; }
-        }
-        
-        if (star->getEPmdec() == 0.0) {
-            double val = getValue("e_pmde");
-            if (val != 0.0) { star->setEPmdec(val); updated = true; }
-        }
-        
-        if (star->getPlx() == 0.0) {
-            double val = getValue("plx");
-            if (val != 0.0) { star->setPlx(val); updated = true; }
-        }
-        
-        if (star->getEPlx() == 0.0) {
-            double val = getValue("e_plx");
-            if (val != 0.0) { star->setEPlx(val); updated = true; }
-        }
-        
-        if (star->getGmag() == 0.0) {
-            double val = getValue("gmag");
-            if (val != 0.0) { star->setGmag(val); updated = true; }
-        }
-        
-        if (star->getBp() == 0.0) {
-            double val = getValue("bpmag");
-            if (val != 0.0) { star->setBp(val); updated = true; }
-        }
-        
-        if (star->getRp() == 0.0) {
-            double val = getValue("rpmag");
-            if (val != 0.0) { star->setRp(val); updated = true; }
-        }
-        
-        if (star->getPmraPmdecCorr() == 0.0) {
-            double val = getValue("pmrapmdecor");
-            if (val != 0.0) { star->setPmraPmdecCorr(val); updated = true; }
-        }
-        
-        if (star->getPlxPmraCorr() == 0.0) {
-            double val = getValue("plxpmracor");
-            if (val != 0.0) { star->setPlxPmraCorr(val); updated = true; }
-        }
-        
-        if (star->getPlxPmdecCorr() == 0.0) {
-            double val = getValue("plxpmdecor");
-            if (val != 0.0) { star->setPlxPmdecCorr(val); updated = true; }
-        }
-        
+
+        if (star->getRa() == 0.0)    { double v = getValue("ra_icrs"); if (v != 0.0) { star->setRa(v); updated = true; } }
+        if (star->getDec() == 0.0)   { double v = getValue("de_icrs"); if (v != 0.0) { star->setDec(v); updated = true; } }
+        if (star->getPmra() == 0.0)  { double v = getValue("pmra"); if (v != 0.0) { star->setPmra(v); updated = true; } }
+        if (star->getPmdec() == 0.0) { double v = getValue("pmde"); if (v != 0.0) { star->setPmdec(v); updated = true; } }
+        if (star->getEPmra() == 0.0) { double v = getValue("e_pmra"); if (v != 0.0) { star->setEPmra(v); updated = true; } }
+        if (star->getEPmdec() == 0.0){ double v = getValue("e_pmde"); if (v != 0.0) { star->setEPmdec(v); updated = true; } }
+        if (star->getPlx() == 0.0)   { double v = getValue("plx"); if (v != 0.0) { star->setPlx(v); updated = true; } }
+        if (star->getEPlx() == 0.0)  { double v = getValue("e_plx"); if (v != 0.0) { star->setEPlx(v); updated = true; } }
+        if (star->getGmag() == 0.0)  { double v = getValue("gmag"); if (v != 0.0) { star->setGmag(v); updated = true; } }
+        if (star->getBp() == 0.0)    { double v = getValue("bpmag"); if (v != 0.0) { star->setBp(v); updated = true; } }
+        if (star->getRp() == 0.0)    { double v = getValue("rpmag"); if (v != 0.0) { star->setRp(v); updated = true; } }
+        if (star->getPmraPmdecCorr() == 0.0) { double v = getValue("pmrapmdecor"); if (v != 0.0) { star->setPmraPmdecCorr(v); updated = true; } }
+        if (star->getPlxPmraCorr() == 0.0)   { double v = getValue("plxpmracor"); if (v != 0.0) { star->setPlxPmraCorr(v); updated = true; } }
+        if (star->getPlxPmdecCorr() == 0.0)  { double v = getValue("plxpmdecor"); if (v != 0.0) { star->setPlxPmdecCorr(v); updated = true; } }
+
         if (star->getBpRp() == 0.0 && star->getBp() != 0.0 && star->getRp() != 0.0) {
             star->setBpRp(star->getBp() - star->getRp());
             updated = true;
         }
-        
+
         if (updated) {
-            updatedCount++;
-            starsToSave.push_back(star);
+            modifiedStars.push_back(star);
         }
     }
-    
-    if (!starsToSave.empty() && _controller) {
-        LOG_INFO("Gaia", QString("Saving %1 updated stars to database").arg(starsToSave.size()));
-        emit progress(QString("Gaia: Saving %1 updated stars...").arg(starsToSave.size()));
-        QMetaObject::invokeMethod(_controller, [this, starsToSave]() {
-            auto project = _controller->getCurrentProject();
-            if (project) {
-                _controller->saveStarsToProject(project, starsToSave);
-            }
-        }, Qt::QueuedConnection);
-    }
-    
-    LOG_INFO("Gaia", QString("Task complete: Updated %1 stars").arg(updatedCount));
-    emit finished(true, QString("Gaia: Updated %1 stars with astrometry data").arg(updatedCount));
+
+    LOG_INFO("Gaia", QString("Updated %1 stars from VizieR response").arg(modifiedStars.size()));
+    // ── FIX: NO emit finished() here, NO direct DB save ──
+    return modifiedStars;
 }
 
 // ============================================================================
@@ -875,24 +798,21 @@ void SpectraImportTask::execute()
 {
     LOG_SET_THREAD_NAME("SpectraImport");
     LOG_INFO("SpectraImport", QString("Starting spectra import task with %1 entries").arg(_entries.size()));
-    
+
     const int total = static_cast<int>(_entries.size());
     std::atomic<int> imported{0};
     std::atomic<int> failed{0};
-    
+
     auto& registry = SpectrumReaderRegistry::instance();
-    
+
     // ── Phase 1: Parallel spectrum reading (I/O bound) ──────────
-    //
-    // We read all spectra in parallel using the global thread pool.
-    // Each slot holds the result; nullptr means failure.
-    
+    // (unchanged from original)
+
     struct ReadSlot {
         std::shared_ptr<Spectrum> spectrum;
         int entryIndex;
     };
-    
-    // Build work items (skip entries without stars or missing files up front)
+
     std::vector<int> workIndices;
     workIndices.reserve(total);
     for (int i = 0; i < total; ++i) {
@@ -903,28 +823,21 @@ void SpectraImportTask::execute()
         }
         workIndices.push_back(i);
     }
-    
+
     const int workCount = static_cast<int>(workIndices.size());
-    std::vector<std::shared_ptr<Spectrum>> readResults(total); // indexed by entry index
-    
+    std::vector<std::shared_ptr<Spectrum>> readResults(total);
+
     emit progress(QString("Spectra Import: Reading %1 files...").arg(workCount));
-    
-    // Use QtConcurrent::map for parallel I/O
-    QFutureSynchronizer<void> sync;
-    
-    // Process in chunks to emit progress updates
-    const int chunkSize = std::max(1, workCount / 20); // ~5% increments
-    
+
     auto readFunc = [&](int idx) {
         const auto& entry = _entries[idx];
-        
+
         auto reader = registry.getReaderForFile(entry.spectrumFile);
         if (!reader) {
             failed.fetch_add(1, std::memory_order_relaxed);
             return;
         }
-        
-        // For ASCII files, create a thread-local reader with external metadata
+
         std::shared_ptr<SpectrumReader> localReader = reader;
         if (auto asciiReader = std::dynamic_pointer_cast<AsciiSpectrumReader>(reader)) {
             auto threadLocalReader = std::make_shared<AsciiSpectrumReader>();
@@ -937,16 +850,15 @@ void SpectraImportTask::execute()
             threadLocalReader->setExternalMetadata(meta);
             localReader = threadLocalReader;
         }
-        
+
         SpectrumReadResult readResult = localReader->readSpectrum(entry.spectrumFile);
         if (!readResult.success) {
             failed.fetch_add(1, std::memory_order_relaxed);
             return;
         }
-        
+
         readResult.spectrum->setBarycentricallyCorrected(entry.isBarycentricallyCorrected);
-        
-        // Apply mapping metadata that reader might not have set
+
         if (entry.mjd.has_value() && readResult.spectrum->getMJD() == 0.0) {
             readResult.spectrum->setMJD(entry.mjd.value());
         }
@@ -959,17 +871,14 @@ void SpectraImportTask::execute()
         if (entry.instrument.has_value() && readResult.spectrum->getInstrument().isEmpty()) {
             readResult.spectrum->setInstrument(entry.instrument.value());
         }
-        
+
         readResults[idx] = readResult.spectrum;
     };
-    
-    // Dispatch to thread pool
+
     auto future = QtConcurrent::map(workIndices, readFunc);
-    
-    // Wait with periodic progress updates
+
     while (!future.isFinished()) {
         QThread::msleep(250);
-        int done = imported.load() + failed.load();
         int readSoFar = 0;
         for (int idx : workIndices) {
             if (readResults[idx]) readSoFar++;
@@ -978,60 +887,81 @@ void SpectraImportTask::execute()
         emit progress(QString("Spectra Import: Reading files %1%...").arg(pct));
     }
     future.waitForFinished();
-    
-    // ── Phase 2: Batch database saves (sequential, main thread) ─
-    
-    emit progress("Spectra Import: Saving to database...");
-    
-    // Collect successful reads
+
+    // ── Phase 2: In-memory linking + staging or DB save ─────────
+
+    emit progress("Spectra Import: Processing results...");
+
     struct SaveEntry {
         std::shared_ptr<Star> star;
         std::shared_ptr<Spectrum> spectrum;
     };
     std::vector<SaveEntry> toSave;
     toSave.reserve(workCount);
-    
+
     for (int idx : workIndices) {
         if (readResults[idx]) {
             const auto& entry = _entries[idx];
+            // Always do in-memory linking
             entry.matchedStar->addSpectrum(readResults[idx]);
             toSave.push_back({entry.matchedStar, readResults[idx]});
         }
     }
-    
-    // Send saves in batches to the main thread
-    const int batchSize = 50;
-    int saved = 0;
-    
-    for (size_t batchStart = 0; batchStart < toSave.size(); batchStart += batchSize) {
-        size_t batchEnd = std::min(batchStart + batchSize, toSave.size());
-        
-        // Capture batch
-        std::vector<SaveEntry> batch(toSave.begin() + batchStart,
-                                      toSave.begin() + batchEnd);
-        QString projectId = _projectId;
-        
-        QMetaObject::invokeMethod(_controller, [this, batch, projectId]() {
-            for (const auto& entry : batch) {
-                _controller->saveSpectrumToProject(projectId, entry.star->getId(), entry.spectrum);
-            }
-        }, Qt::BlockingQueuedConnection);  // Block so we don't flood the queue
-        
-        saved += static_cast<int>(batch.size());
-        int pct = toSave.size() > 0 ? (saved * 100 / static_cast<int>(toSave.size())) : 100;
-        emit progress(QString("Spectra Import: Saving %1/%2 (%3%)")
-                     .arg(saved).arg(toSave.size()).arg(pct));
+
+    if (_stagingArea) {
+        // ── Staging mode: no DB writes ──────────────────────────
+        std::vector<StagedSpectrum> staged;
+        staged.reserve(toSave.size());
+        for (const auto& entry : toSave) {
+            staged.push_back({entry.star->getId(), entry.star, entry.spectrum});
+        }
+        _stagingArea->stageSpectra(staged);
+
+        int totalImported = static_cast<int>(toSave.size());
+        int totalFailed = total - totalImported;
+
+        LOG_INFO("SpectraImport", QString("Staged %1 spectra (%2 failed)")
+                 .arg(totalImported).arg(totalFailed));
+
+        emit importComplete(totalImported, totalFailed);
+        emit finished(true, QString("Spectra Import: %1 staged, %2 failed")
+                      .arg(totalImported).arg(totalFailed));
+    } else {
+        // ── Legacy mode: direct DB writes (original behavior) ───
+        emit progress("Spectra Import: Saving to database...");
+
+        const int batchSize = 50;
+        int saved = 0;
+
+        for (size_t batchStart = 0; batchStart < toSave.size(); batchStart += batchSize) {
+            size_t batchEnd = std::min(batchStart + batchSize, toSave.size());
+
+            std::vector<SaveEntry> batch(toSave.begin() + batchStart,
+                                          toSave.begin() + batchEnd);
+            QString projectId = _projectId;
+
+            QMetaObject::invokeMethod(_controller, [this, batch, projectId]() {
+                for (const auto& entry : batch) {
+                    _controller->saveSpectrumToProject(projectId, entry.star->getId(), entry.spectrum);
+                }
+            }, Qt::BlockingQueuedConnection);
+
+            saved += static_cast<int>(batch.size());
+            int pct = toSave.size() > 0 ? (saved * 100 / static_cast<int>(toSave.size())) : 100;
+            emit progress(QString("Spectra Import: Saving %1/%2 (%3%)")
+                         .arg(saved).arg(toSave.size()).arg(pct));
+        }
+
+        int totalImported = static_cast<int>(toSave.size());
+        int totalFailed = total - totalImported;
+
+        LOG_INFO("SpectraImport", QString("Import complete: %1 imported, %2 failed")
+                 .arg(totalImported).arg(totalFailed));
+
+        emit importComplete(totalImported, totalFailed);
+        emit finished(true, QString("Spectra Import: %1 imported, %2 failed")
+                      .arg(totalImported).arg(totalFailed));
     }
-    
-    int totalImported = static_cast<int>(toSave.size());
-    int totalFailed = total - totalImported;
-    
-    LOG_INFO("SpectraImport", QString("Import complete: %1 imported, %2 failed")
-             .arg(totalImported).arg(totalFailed));
-    
-    emit importComplete(totalImported, totalFailed);
-    emit finished(true, QString("Spectra Import: %1 imported, %2 failed")
-                  .arg(totalImported).arg(totalFailed));
 }
 
 
@@ -1058,7 +988,7 @@ void DiggaFitImportTask::execute()
 
     emit progress(QString("Loading plotdata for %1 fits...").arg(total));
 
-    // Phase 1: Read plotdata files (heavy I/O)
+    // Phase 1: Read plotdata files (heavy I/O) — unchanged
     for (int i = 0; i < total; ++i) {
         auto& entry = _entries[i];
         if (!entry.plotdataPath.isEmpty()) {
@@ -1073,26 +1003,54 @@ void DiggaFitImportTask::execute()
             emit progress(QString("Read plotdata %1/%2").arg(i).arg(total));
     }
 
-    // Phase 2: DB writes
-    emit progress(QString("Saving %1 fits to database...").arg(total));
-    auto* dbManager = _controller->databaseManager();
+    // Phase 2: In-memory linking + staging or DB save
+    emit progress(QString("Processing %1 fits...").arg(total));
 
-    for (int i = 0; i < total; ++i) {
-        auto& entry = _entries[i];
-        entry.spectrum->addSpectralFit(entry.fit);
+    if (_stagingArea) {
+        // ── Staging mode ────────────────────────────────────────
+        std::vector<StagedFit> staged;
+        staged.reserve(total);
 
-        if (dbManager->saveSpectralFit(entry.starId, entry.spectrumId, entry.fit))
+        for (int i = 0; i < total; ++i) {
+            auto& entry = _entries[i];
+            // In-memory linking
+            entry.spectrum->addSpectralFit(entry.fit);
+
+            staged.push_back({entry.starId, entry.spectrumId,
+                              entry.spectrum, entry.fit});
             imported++;
-        else
-            failed++;
 
-        if (i % 500 == 0)
-            emit progress(QString("Saved %1/%2 fits").arg(i).arg(total));
+            if (i % 500 == 0)
+                emit progress(QString("Staged %1/%2 fits").arg(i).arg(total));
+        }
+
+        _stagingArea->stageFits(staged);
+
+        emit importComplete(imported, failed);
+        emit finished(true, QString("Staged %1 fits (%2 failed)").arg(imported).arg(failed));
+
+    } else {
+        // ── Legacy mode: direct DB writes ───────────────────────
+        emit progress(QString("Saving %1 fits to database...").arg(total));
+        auto* dbManager = _controller->databaseManager();
+
+        for (int i = 0; i < total; ++i) {
+            auto& entry = _entries[i];
+            entry.spectrum->addSpectralFit(entry.fit);
+
+            if (dbManager->saveSpectralFit(entry.starId, entry.spectrumId, entry.fit))
+                imported++;
+            else
+                failed++;
+
+            if (i % 500 == 0)
+                emit progress(QString("Saved %1/%2 fits").arg(i).arg(total));
+        }
+
+        emit importComplete(imported, failed);
+        emit finished(failed == 0,
+                      QString("Imported %1 fits (%2 failed)").arg(imported).arg(failed));
     }
-
-    emit importComplete(imported, failed);
-    emit finished(failed == 0,
-                  QString("Imported %1 fits (%2 failed)").arg(imported).arg(failed));
 }
 
 // ============================================================================
@@ -1251,6 +1209,67 @@ void RVExtractionTask::executeFromFits()
     emit progress("RV Extraction: Loading spectra and fits...");
 
     DatabaseManager* dbm = _controller->databaseManager();
+
+    // ── FIX: Merge staged spectra and fits onto our star objects ─────
+    // SpectraImportTask and DiggaFitImportTask may have attached data to
+    // different Star/Spectrum instances than what project->getAllStars()
+    // gave us.  For stars already in the DB the DB-fallback below works,
+    // but for newly-staged stars nothing is in the DB yet.  Pull staged
+    // entries and ensure every spectrum/fit is reachable from our _stars.
+    if (_stagingArea) {
+        QHash<QString, std::shared_ptr<Star>> starById;
+        for (const auto& star : _stars)
+            starById[star->getId()] = star;
+
+        // Merge staged spectra
+        for (const auto& staged : _stagingArea->stagedSpectra()) {
+            if (staged.starId.isEmpty() || !staged.spectrum) continue;
+
+            auto it = starById.find(staged.starId);
+            if (it == starById.end()) continue;
+
+            auto& star = it.value();
+            bool alreadyAttached = false;
+            for (const auto& existing : star->getSpectra()) {
+                if (existing->getId() == staged.spectrum->getId()) {
+                    alreadyAttached = true;
+                    break;
+                }
+            }
+            if (!alreadyAttached) {
+                star->addSpectrum(staged.spectrum);
+            }
+        }
+
+        // Merge staged fits — need to find the right spectrum on the right star
+        for (const auto& staged : _stagingArea->stagedFits()) {
+            if (staged.starId.isEmpty() || staged.spectrumId.isEmpty() || !staged.fit)
+                continue;
+
+            auto it = starById.find(staged.starId);
+            if (it == starById.end()) continue;
+
+            auto& star = it.value();
+            for (const auto& spectrum : star->getSpectra()) {
+                if (spectrum->getId() != staged.spectrumId) continue;
+
+                bool alreadyAttached = false;
+                for (const auto& existing : spectrum->getSpectralFits()) {
+                    if (existing->getId() == staged.fit->getId()) {
+                        alreadyAttached = true;
+                        break;
+                    }
+                }
+                if (!alreadyAttached) {
+                    spectrum->addSpectralFit(staged.fit);
+                }
+                break;
+            }
+        }
+
+        LOG_INFO("RVExtract", "Merged staged spectra/fits onto star objects");
+    }
+    // ── END FIX ─────────────────────────────────────────────────────
 
     int totalPoints = 0;
     int starsWithRV = 0;
@@ -1583,13 +1602,54 @@ void RVExtractionTask::saveResultsToDatabase()
 {
     if (_results.empty()) return;
 
-    const int batchSize = 20;  // Save 20 stars per main-thread invocation
+    if (_stagingArea) {
+        // ── Staging mode: convert results and stage them ────────
+        std::vector<StagedRVResult> staged;
+        staged.reserve(_results.size());
+
+        // Build canonical star lookup from the project
+        QHash<QString, std::shared_ptr<Star>> canonicalStars;
+        // We need to get stars on the main thread
+        QMetaObject::invokeMethod(_controller, [this, &canonicalStars]() {
+            auto project = _controller->getCurrentProject();
+            if (project) {
+                for (const auto& star : project->getAllStars())
+                    canonicalStars[star->getId()] = star;
+            }
+        }, Qt::BlockingQueuedConnection);
+
+        for (auto& result : _results) {
+            auto canonical = canonicalStars.value(result.starId);
+            if (!canonical) continue;
+
+            auto& curve = result.curve;
+            curve->setStarId(canonical->getId());
+            curve->setLogP(curve->computeLogP());
+
+            // In-memory linking
+            if (result.fit) {
+                result.fit->setCurveId(curve->getId());
+                result.fit->setBestFit(true);
+                curve->addRVFit(result.fit);
+            }
+            canonical->setRVCurve(curve);
+            canonical->updateRVMetricsFromCurve();
+
+            staged.push_back({result.starId, canonical, curve, result.fit});
+        }
+
+        _stagingArea->stageRVResults(staged);
+
+        LOG_INFO("RVExtract", QString("Staged %1 RV curves").arg(staged.size()));
+        return;
+    }
+
+    // ── Legacy mode: direct DB writes (original behavior) ───────
+    const int batchSize = 20;
     int totalResults = static_cast<int>(_results.size());
 
     for (int batchStart = 0; batchStart < totalResults; batchStart += batchSize) {
         int batchEnd = std::min(batchStart + batchSize, totalResults);
-
-        // Capture just this batch's range
         int start = batchStart;
         int end = batchEnd;
 
@@ -1603,7 +1663,6 @@ void RVExtractionTask::saveResultsToDatabase()
             auto project = _controller->getCurrentProject();
             if (!project) return;
 
-            // Build canonical star lookup (once per batch is fine — it's fast)
             QHash<QString, std::shared_ptr<Star>> canonicalStars;
             for (const auto& star : project->getAllStars())
                 canonicalStars[star->getId()] = star;
@@ -1620,13 +1679,11 @@ void RVExtractionTask::saveResultsToDatabase()
                 if (!dbm->saveRadialVelocityCurve(curve, canonical->getId()))
                     continue;
 
-                // Save individual points
                 for (const auto& pt : curve->getRVPoints()) {
                     pt->setCurveId(curve->getId());
                     dbm->saveRadialVelocityPoint(pt, curve->getId());
                 }
 
-                // Save orbital fit if present
                 if (result.fit) {
                     result.fit->setCurveId(curve->getId());
                     result.fit->setBestFit(true);
@@ -1634,18 +1691,12 @@ void RVExtractionTask::saveResultsToDatabase()
                     dbm->saveRVFit(result.fit, curve->getId());
                 }
 
-                // Compute metadata
                 curve->setLogP(curve->computeLogP());
-
-                // Link to canonical star
                 canonical->setRVCurve(curve);
                 canonical->updateRVMetricsFromCurve();
-
                 dbm->saveStar(_projectId, canonical);
             }
         }, Qt::BlockingQueuedConnection);
-        // BlockingQueued so we don't race ahead, but each batch is small
-        // enough (~20 stars) that the UI stays responsive between batches
     }
 
     LOG_INFO("RVExtract",

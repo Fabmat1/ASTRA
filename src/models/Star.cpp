@@ -134,3 +134,22 @@ std::vector<std::shared_ptr<Spectrum>> Star::getSpectra()
     }
     return _spectra;
 }
+
+void Star::addSpectrum(std::shared_ptr<Spectrum> spectrum)
+{
+    if (!_spectraLoaded && _spectraLoader && !_id.isEmpty()) {
+        _spectra = _spectraLoader(_id);
+        _spectraLoaded = true;
+    }
+    _spectra.push_back(spectrum);
+}
+
+void Star::removeSpectrum(const QString& spectrumId)
+{
+    _spectra.erase(
+        std::remove_if(_spectra.begin(), _spectra.end(),
+            [&spectrumId](const std::shared_ptr<Spectrum>& s) {
+                return s && s->getId() == spectrumId;
+            }),
+        _spectra.end());
+}

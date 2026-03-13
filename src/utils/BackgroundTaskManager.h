@@ -27,6 +27,7 @@ class RadialVelocityCurve;
 class RadialVelocityPoint;   
 class RVFit;                 
 class Project;               
+class ImportStagingArea;
 
 // Base class for background tasks
 class BackgroundTask : public QObject
@@ -38,6 +39,10 @@ public:
     virtual ~BackgroundTask() = default;
     
     virtual QString taskName() const = 0;
+
+    // Staging area support — when set, tasks stage instead of DB-writing
+    void setStagingArea(ImportStagingArea* staging) { _stagingArea = staging; }
+    ImportStagingArea* stagingArea() const { return _stagingArea; }
     
 public slots:
     virtual void execute() = 0;
@@ -45,6 +50,10 @@ public slots:
 signals:
     void progress(const QString& message);
     void finished(bool success, const QString& message);
+
+protected:
+    ImportStagingArea* _stagingArea = nullptr;
+
 };
 
 // Gaia query task
@@ -71,7 +80,7 @@ private:
     
     bool starNeedsGaiaData(const std::shared_ptr<Star>& star) const;
     QString buildADQLQuery();
-    void parseVizierResponse(const QString& response);
+    std::vector<std::shared_ptr<Star>> parseVizierResponse(const QString& response);
 };
 
 // SIMBAD query task
