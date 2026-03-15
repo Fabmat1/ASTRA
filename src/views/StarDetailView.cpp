@@ -6,6 +6,13 @@
 #include "models/Instrument.h"
 #include "utils/Logger.h"
 
+#include "views/tools/RVInspectorDialog.h"
+#include "views/tools/SpectraFitDialog.h"
+#include "views/tools/LightcurveFetchDialog.h"
+#include "views/tools/SEDFitDialog.h"
+#include "views/tools/CMDDialog.h"
+#include "views/tools/GalacticOrbitDialog.h"
+
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QSplitter>
@@ -17,15 +24,15 @@
 #include <QMessageBox>
 #include <QDesktopServices>
 #include <QUrl>
+#include <QPainter>
+#include <QPen>
 #include <QTimer>
 #include <QSet>
 #include <QStringList>
 #include <QMap>
 #include <QApplication>
-#include <QJsonObject>
-#include <QJsonArray>
 
-// REMOVED: All QtCharts includes — no longer needed
+#include "qcustomplot.h"
 
 #include <algorithm>
 #include <numeric>
@@ -38,6 +45,10 @@
 
 namespace {
 
+const QColor kPointColor(86, 156, 214);
+const QColor kErrorBarColor(200, 120, 120);
+const QColor kFitCurveColor(220, 50, 50);
+
 const QColor kLCColors[] = {
     QColor(86, 156, 214),
     QColor(214, 157, 86),
@@ -49,6 +60,24 @@ const QColor kLCColors[] = {
 };
 constexpr int kNumLCColors = sizeof(kLCColors) / sizeof(kLCColors[0]);
 
+// -------------------------------------------------------------------
+void clearLayout(QLayout* layout)
+{
+    if (!layout) return;
+    QLayoutItem* item;
+    while ((item = layout->takeAt(0)) != nullptr) {
+        if (QWidget* w = item->widget()) {
+            w->setParent(nullptr);
+            delete w;
+        }
+        if (QLayout* child = item->layout()) {
+            clearLayout(child);
+            delete child;
+        }
+        delete item;
+    }
+}
+
 QLabel* makePlaceholder(const QString& text)
 {
     auto* label = new QLabel(text);
@@ -57,18 +86,373 @@ QLabel* makePlaceholder(const QString& text)
     return label;
 }
 
-// REMOVED: clearLayout() — no longer needed, plots are single widgets
-// REMOVED: findGapIndices() — gap logic now in Python script
-// REMOVED: splitAt() — same
-// REMOVED: addRVDataToChart() — QtCharts helper, dead code
-// REMOVED: BreakMarkOverlay — QtCharts helper widget, dead code
-// REMOVED: BrokenAxisWidget — QtCharts helper widget, dead code
+// Compute a robust Y range using the central `fraction` of sorted values.
+// E.g. fraction=0.95 clips the bottom 2.5% and top 2.5% as outliers.
+// Returns {lo, hi} with `marginFrac` padding added.
+QPair<double, double> robustRange(const std::vector<double>& values,
+                                   double fraction = 0.95,
+                                   double marginFrac = 0.08)
+{
+    if (values.empty())
+        return {0.0, 1.0};
+
+    std::vector<double> sorted;
+    sorted.reserve(values.size());
+    for (double v : values) {
+        if (!std::isnan(v))
+            sorted.push_back(v);
+    }
+
+    if (sorted.empty())
+        return {0.0, 1.0};
+
+    std::sort(sorted.begin(), sorted.end());
+
+    double clip = (1.0 - fraction) / 2.0;
+    size_t loIdx = static_cast<size_t>(std::floor(clip * (sorted.size() - 1)));
+    size_t hiIdx = static_cast<size_t>(std::ceil((1.0 - clip) * (sorted.size() - 1)));
+    loIdx = std::min(loIdx, sorted.size() - 1);
+    hiIdx = std::min(hiIdx, sorted.size() - 1);
+
+    double lo = sorted[loIdx];
+    double hi = sorted[hiIdx];
+
+    double span = hi - lo;
+    if (span <= 0) span = std::abs(hi) * 0.1;
+    if (span <= 0) span = 0.1;
+
+    double margin = span * marginFrac;
+    return {lo - margin, hi + margin};
+}
+
+// -------------------------------------------------------------------
+// Configure a QCustomPlot with sensible defaults for this application
+// -------------------------------------------------------------------
+
+void stylePlot(QCustomPlot* plot)
+{
+    // Read the authoritative dark/light flag set by ThemeManager
+    bool isDark = qApp->property("isDarkTheme").toBool();
+
+    QColor bgColor, plotBg, textColor, gridColor, subGridColor;
+
+    if (isDark) {
+        bgColor      = QColor(42, 42, 42);
+        plotBg       = QColor(30, 30, 30);
+        textColor    = QColor(210, 210, 210);
+        gridColor    = QColor(80, 80, 80);
+        subGridColor = QColor(55, 55, 55);
+    } else {
+        bgColor      = QColor(240, 240, 240);
+        plotBg       = QColor(255, 255, 255);
+        textColor    = QColor(30, 30, 30);
+        gridColor    = QColor(180, 180, 180);
+        subGridColor = QColor(210, 210, 210);
+    }
+
+    plot->setStyleSheet("");
+    plot->setBackground(QBrush(bgColor));
+    plot->axisRect()->setBackground(QBrush(plotBg));
+
+    for (auto* axis : {plot->xAxis, plot->xAxis2, plot->yAxis, plot->yAxis2}) {
+        axis->setBasePen(QPen(textColor, 1));
+        axis->setTickPen(QPen(textColor, 1));
+        axis->setSubTickPen(QPen(gridColor, 1));
+        axis->setLabelColor(textColor);
+        axis->setTickLabelColor(textColor);
+        axis->grid()->setPen(QPen(gridColor, 0.5, Qt::DotLine));
+        axis->grid()->setSubGridPen(QPen(subGridColor, 0.3, Qt::DotLine));
+        axis->grid()->setZeroLinePen(QPen(gridColor, 0.8));
+        axis->grid()->setSubGridVisible(false);
+    }
+
+    plot->legend->setBorderPen(QPen(gridColor));
+    plot->legend->setBrush(QBrush(plotBg));
+    plot->legend->setTextColor(textColor);
+}
+
+// -------------------------------------------------------------------
+// Gap detection — mirrors the Python gap_inds() logic
+// -------------------------------------------------------------------
+std::vector<int> findGapIndices(const std::vector<double>& times)
+{
+    if (times.size() < 3) return {};
+
+    std::vector<double> diffs;
+    diffs.reserve(times.size() - 1);
+    for (size_t i = 1; i < times.size(); ++i)
+        diffs.push_back(times[i] - times[i - 1]);
+
+    std::vector<double> sorted = diffs;
+    std::sort(sorted.begin(), sorted.end());
+    double median = sorted[sorted.size() / 2];
+
+    double threshold = std::max(median * 5.0, 1.0);
+
+    std::vector<int> indices;
+    for (size_t i = 0; i < diffs.size(); ++i) {
+        if (diffs[i] > threshold)
+            indices.push_back(static_cast<int>(i + 1));
+    }
+    return indices;
+}
+
+// Split a vector at a set of indices
+template <typename T>
+std::vector<std::vector<T>> splitAt(const std::vector<T>& v,
+                                     const std::vector<int>& idx)
+{
+    std::vector<std::vector<T>> out;
+    int start = 0;
+    for (int i : idx) {
+        out.emplace_back(v.begin() + start, v.begin() + i);
+        start = i;
+    }
+    out.emplace_back(v.begin() + start, v.end());
+    return out;
+}
+
+// -------------------------------------------------------------------
+// Convert std::vector<double> → QVector<double>
+// -------------------------------------------------------------------
+QVector<double> toQVec(const std::vector<double>& v)
+{
+    return QVector<double>(v.begin(), v.end());
+}
+
+// -------------------------------------------------------------------
+// Add RV scatter + error-bars to a QCustomPlot.
+// Returns the data Y-range (including errors).
+// -------------------------------------------------------------------
+QPair<double, double> addRVDataToPlot(
+    QCustomPlot* plot,
+    const std::vector<double>& xs,
+    const std::vector<double>& ys,
+    const std::vector<double>& errs,
+    double xMin, double xMax,
+    const QColor& ptCol,
+    const QColor& errCol)
+{
+    double yLo =  std::numeric_limits<double>::max();
+    double yHi =  std::numeric_limits<double>::lowest();
+
+    // Filter to visible range
+    QVector<double> px, py, pe;
+    for (size_t i = 0; i < xs.size(); ++i) {
+        double x = xs[i], y = ys[i], e = errs[i];
+        if (x < xMin || x > xMax) continue;
+        px.append(x);
+        py.append(y);
+        pe.append(e);
+        yLo = std::min(yLo, y - e);
+        yHi = std::max(yHi, y + e);
+    }
+
+    // Scatter points
+    QCPGraph* scatter = plot->addGraph();
+    scatter->setLineStyle(QCPGraph::lsNone);
+    scatter->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle, ptCol, ptCol, 7));
+    scatter->setData(px, py);
+    scatter->removeFromLegend();
+
+    // Error bars
+    QCPErrorBars* errorBars = new QCPErrorBars(plot->xAxis, plot->yAxis);
+    errorBars->removeFromLegend();
+    errorBars->setDataPlottable(scatter);
+    errorBars->setErrorType(QCPErrorBars::etValueError);
+    errorBars->setPen(QPen(errCol, 1.0));
+    errorBars->setSymbolGap(1);
+    errorBars->setData(pe);
+
+    return {yLo, yHi};
+}
 
 } // anonymous namespace
 
-// REMOVED: interpolateModel() — now in Python
-// REMOVED: computeRenormFactor() — now in Python
-// REMOVED: dataLineColor() — now in Python
+
+// ============================================================================
+// Helpers for spectrum display
+// ============================================================================
+
+QColor StarDetailView::dataLineColor() const
+{
+    bool isDark = qApp->property("isDarkTheme").toBool();
+    return isDark ? QColor(210, 210, 210) : QColor(30, 30, 30);
+}
+
+std::vector<double> StarDetailView::interpolateModel(
+    const std::vector<double>& modelWl,
+    const std::vector<double>& modelFlux,
+    const std::vector<double>& targetWl)
+{
+    std::vector<double> result(targetWl.size(),
+                               std::numeric_limits<double>::quiet_NaN());
+    if (modelWl.size() < 2) return result;
+
+    for (size_t i = 0; i < targetWl.size(); ++i) {
+        double tw = targetWl[i];
+        if (tw < modelWl.front() || tw > modelWl.back()) continue;
+
+        auto it = std::lower_bound(modelWl.begin(), modelWl.end(), tw);
+        if (it == modelWl.begin()) {
+            result[i] = modelFlux.front();
+            continue;
+        }
+        if (it == modelWl.end()) {
+            result[i] = modelFlux.back();
+            continue;
+        }
+        size_t j = static_cast<size_t>(std::distance(modelWl.begin(), it));
+        double w0 = modelWl[j - 1], w1 = modelWl[j];
+        double f0 = modelFlux[j - 1], f1 = modelFlux[j];
+        double frac = (tw - w0) / (w1 - w0);
+        result[i] = f0 + frac * (f1 - f0);
+    }
+    return result;
+}
+
+double StarDetailView::computeRenormFactor(
+    const std::vector<double>& data,
+    const std::vector<double>& model)
+{
+    double num = 0.0, den = 0.0;
+    for (size_t i = 0; i < data.size() && i < model.size(); ++i) {
+        if (std::isnan(data[i]) || std::isnan(model[i])) continue;
+        num += data[i] * model[i];
+        den += model[i] * model[i];
+    }
+    return (den > 0.0) ? (num / den) : 1.0;
+}
+
+void StarDetailView::refreshPlotTheme(QCustomPlot* plot)
+{
+    if (!plot) return;
+    stylePlot(plot);
+    plot->replot();
+}
+
+void StarDetailView::refreshAllPlotThemes()
+{
+    refreshPlotTheme(_spectraMainPlot);
+    refreshPlotTheme(_spectraResidualPlot);
+
+    auto refreshLayout = [this](QLayout* layout) {
+        if (!layout) return;
+        for (int i = 0; i < layout->count(); ++i) {
+            QWidget* w = layout->itemAt(i)->widget();
+            if (!w) continue;
+            if (auto* plot = qobject_cast<QCustomPlot*>(w)) {
+                refreshPlotTheme(plot);
+            }
+            for (auto* child : w->findChildren<QCustomPlot*>()) {
+                refreshPlotTheme(child);
+            }
+        }
+    };
+
+    refreshLayout(_rvContentLayout);
+    refreshLayout(_lcContentLayout);
+
+    // Rebuild spectrum display so data line color updates
+    if (_currentSpectrumIndex >= 0)
+        updateSpectrumDisplay();
+}
+
+// ============================================================================
+// Broken-axis helper widgets (file-local)
+// ============================================================================
+
+class BreakMarkOverlay : public QWidget
+{
+public:
+    explicit BreakMarkOverlay(QWidget* parent)
+        : QWidget(parent)
+    {
+        setAttribute(Qt::WA_TransparentForMouseEvents);
+        setAttribute(Qt::WA_NoSystemBackground);
+    }
+
+    void setPlots(const QVector<QCustomPlot*>& v) { _plots = v; }
+
+protected:
+    void paintEvent(QPaintEvent*) override
+    {
+        if (_plots.size() <= 1) return;
+
+        QPainter p(this);
+        p.setRenderHint(QPainter::Antialiasing);
+        p.setPen(QPen(palette().color(QPalette::WindowText), 1.5));
+
+        const int d = 6;
+
+        for (int i = 0; i < _plots.size() - 1; ++i) {
+            QCustomPlot* L = _plots[i];
+            QCustomPlot* R = _plots[i + 1];
+
+            QRect lp = L->axisRect()->rect();
+            QRect rp = R->axisRect()->rect();
+
+            // Right edge of left segment
+            QPoint ltr = L->mapTo(parentWidget(), lp.topRight());
+            QPoint lbr = L->mapTo(parentWidget(), lp.bottomRight());
+            p.drawLine(ltr.x() - d, ltr.y() - d, ltr.x() + d, ltr.y() + d);
+            p.drawLine(lbr.x() - d, lbr.y() - d, lbr.x() + d, lbr.y() + d);
+
+            // Left edge of right segment
+            QPoint rtl = R->mapTo(parentWidget(), rp.topLeft());
+            QPoint rbl = R->mapTo(parentWidget(), rp.bottomLeft());
+            p.drawLine(rtl.x() - d, rtl.y() - d, rtl.x() + d, rtl.y() + d);
+            p.drawLine(rbl.x() - d, rbl.y() - d, rbl.x() + d, rbl.y() + d);
+        }
+    }
+
+private:
+    QVector<QCustomPlot*> _plots;
+};
+
+// Container that holds multiple QCustomPlots proportionally and draws break marks
+class BrokenAxisWidget : public QWidget
+{
+public:
+    explicit BrokenAxisWidget(QWidget* parent = nullptr)
+        : QWidget(parent)
+        , _layout(new QHBoxLayout(this))
+        , _overlay(new BreakMarkOverlay(this))
+    {
+        _layout->setContentsMargins(0, 0, 0, 0);
+        _layout->setSpacing(2);
+    }
+
+    QCustomPlot* addSegment(int stretch)
+    {
+        auto* plot = new QCustomPlot(this);
+        stylePlot(plot);
+        plot->setMinimumHeight(100);
+        _layout->addWidget(plot, std::max(stretch, 1));
+        _plots.append(plot);
+        _overlay->setPlots(_plots);
+        return plot;
+    }
+
+protected:
+    void resizeEvent(QResizeEvent* e) override
+    {
+        QWidget::resizeEvent(e);
+        _overlay->setGeometry(rect());
+        _overlay->raise();
+    }
+
+    void showEvent(QShowEvent* e) override
+    {
+        QWidget::showEvent(e);
+        QTimer::singleShot(0, _overlay, QOverload<>::of(&QWidget::update));
+    }
+
+private:
+    QHBoxLayout*          _layout;
+    BreakMarkOverlay*     _overlay;
+    QVector<QCustomPlot*> _plots;
+};
 
 // ============================================================================
 // StarDetailView — construction
@@ -79,6 +463,9 @@ StarDetailView::StarDetailView(std::shared_ptr<Star> star, QWidget* parent)
     , _star(star)
     , _rvFolded(false)
     , _lcFolded(false)
+    , _spectraMainPlot(nullptr)
+    , _spectraResidualPlot(nullptr)
+    , _axisSyncInProgress(false)
 {
     setupUi();
     populateSummary();
@@ -136,6 +523,15 @@ void StarDetailView::setupUi()
     topLayout->addWidget(createButtonSidebar());
 }
 
+bool StarDetailView::event(QEvent* e)
+{
+    if (e->type() == QEvent::ApplicationPaletteChange ||
+        e->type() == QEvent::StyleChange) {
+        QTimer::singleShot(0, this, &StarDetailView::refreshAllPlotThemes);
+    }
+    return QWidget::event(e);
+}
+
 // ============================================================================
 // Panel Factories
 // ============================================================================
@@ -148,31 +544,12 @@ QWidget* StarDetailView::createSummaryPanel()
     _summaryScroll = new QScrollArea;
     _summaryScroll->setWidgetResizable(true);
     _summaryScroll->setFrameShape(QFrame::NoFrame);
+    _summaryScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
-    _summaryContent = new QLabel("Loading...");
-    _summaryContent->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-    _summaryContent->setWordWrap(true);
-    _summaryContent->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    _summaryScroll->setWidget(_summaryContent);
-
+    _summaryContent = new QLabel;
     layout->addWidget(_summaryScroll);
     return group;
 }
-
-// ============================================================================
-// JSON helper
-// ============================================================================
-
-QJsonArray StarDetailView::toJsonArray(const std::vector<double>& v)
-{
-    QJsonArray arr;
-    for (double x : v) arr.append(x);
-    return arr;
-}
-
-// ============================================================================
-// RV Plot Panel
-// ============================================================================
 
 QWidget* StarDetailView::createRVPlotPanel()
 {
@@ -182,142 +559,20 @@ QWidget* StarDetailView::createRVPlotPanel()
     _rvToggleButton = new QPushButton("Show Folded");
     _rvToggleButton->setCheckable(true);
     _rvToggleButton->setMaximumWidth(140);
-    connect(_rvToggleButton, &QPushButton::clicked,
-            this, &StarDetailView::onToggleRVFolded);
+    connect(_rvToggleButton, &QPushButton::clicked, this, &StarDetailView::onToggleRVFolded);
 
     QHBoxLayout* toolbar = new QHBoxLayout;
     toolbar->addStretch();
     toolbar->addWidget(_rvToggleButton);
     layout->addLayout(toolbar);
 
-    _rvPlotWidget = new MatplotlibPlotWidget;
-    _rvPlotWidget->setAutoRerender(true);
-    layout->addWidget(_rvPlotWidget, 1);
-
-    connect(_rvPlotWidget, &MatplotlibPlotWidget::plotFailed,
-            this, [](const QString& msg) {
-        LOG_WARNING("StarDetailView.RV", "Plot render failed: " + msg);
-    });
+    _rvContent = new QWidget;
+    _rvContentLayout = new QVBoxLayout(_rvContent);
+    _rvContentLayout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(_rvContent, 1);
 
     return group;
 }
-
-PlotRequest StarDetailView::buildRVPlotRequest()
-{
-    PlotRequest req;
-    req.scriptName = "rv_plot.py";
-
-    auto rvCurve = _star->getRVCurve();
-    auto points = rvCurve->getRVPoints();
-
-    struct RVDatum { double time, rv, err; };
-    std::vector<RVDatum> data;
-    for (auto& pt : points) {
-        double t = pt->getBJD();
-        if (t == 0.0) t = pt->getMJD();
-        if (t == 0.0) continue;
-        data.push_back({t, pt->getRV(), pt->getRVError()});
-    }
-    std::sort(data.begin(), data.end(),
-              [](const RVDatum& a, const RVDatum& b) { return a.time < b.time; });
-
-    if (data.empty()) {
-        // Defensive: caller should have checked, but avoid UB on .front()
-        req.payload = QJsonObject();
-        return req;
-    }
-
-    double t0 = data.front().time;
-    std::vector<double> times, rvs, errs;
-    for (auto& d : data) {
-        times.push_back(d.time - t0);
-        rvs.push_back(d.rv);
-        errs.push_back(d.err);
-    }
-
-    QJsonObject payload;
-    payload["times"]     = toJsonArray(times);
-    payload["rvs"]       = toJsonArray(rvs);
-    payload["errors"]    = toJsonArray(errs);
-    payload["t0_offset"] = t0;
-    payload["folded"]    = _rvFolded;
-
-    std::shared_ptr<RVFit> bestFit;
-    if (rvCurve) bestFit = rvCurve->getBestFit();
-
-    if (bestFit && bestFit->getPeriod() > 0) {
-        QJsonObject fitObj;
-        fitObj["period"] = bestFit->getPeriod();
-        fitObj["phi"]    = bestFit->getPhi();
-        fitObj["K"]      = bestFit->getK();
-        fitObj["gamma"]  = bestFit->getGamma();
-
-        if (bestFit->isEccentric()) {
-            fitObj["eccentricity"] = bestFit->getEccentricity();
-            fitObj["omega"]        = bestFit->getOmega();
-        }
-
-        if (_rvFolded) {
-            std::vector<double> fitX, fitY;
-            for (int i = 0; i <= 200; ++i) {
-                double ph = static_cast<double>(i) / 200.0;
-                double t  = bestFit->getPhi() + ph * bestFit->getPeriod();
-                fitX.push_back(ph);
-                fitY.push_back(bestFit->calculateRV(t));
-            }
-            fitObj["fit_times"] = toJsonArray(fitX);
-            fitObj["fit_rvs"]   = toJsonArray(fitY);
-        } else {
-            double xMin = times.front();
-            double xMax = times.back();
-            std::vector<double> fitX, fitY;
-            for (int i = 0; i <= 500; ++i) {
-                double t = xMin + (xMax - xMin) * i / 500.0;
-                fitX.push_back(t);
-                fitY.push_back(bestFit->calculateRV(t + t0));
-            }
-            fitObj["fit_times"] = toJsonArray(fitX);
-            fitObj["fit_rvs"]   = toJsonArray(fitY);
-        }
-
-        payload["fit"] = fitObj;
-    }
-
-    req.payload = payload;
-    return req;
-}
-
-void StarDetailView::populateRVPlot()
-{
-    auto rvCurve = _star->getRVCurve();
-    bool hasData = rvCurve && rvCurve->getNumPoints() > 0;
-
-    LOG_DEBUG("StarDetailView.RV",
-              QString("populateRVPlot: rvCurve=%1, numPoints=%2")
-                  .arg(rvCurve ? "yes" : "null")
-                  .arg(rvCurve ? QString::number(rvCurve->getNumPoints()) : "n/a"));
-
-    std::shared_ptr<RVFit> bestFit;
-    if (rvCurve) bestFit = rvCurve->getBestFit();
-    bool hasPeriod = bestFit && bestFit->getPeriod() > 0;
-
-    _rvToggleButton->setEnabled(hasData && hasPeriod);
-    if (!hasPeriod) {
-        _rvToggleButton->setChecked(false);
-        _rvFolded = false;
-    }
-
-    if (!hasData) {
-        _rvPlotWidget->showPlaceholder("No radial velocity data available yet.");
-        return;
-    }
-
-    _rvPlotWidget->requestPlot(buildRVPlotRequest());
-}
-
-// ============================================================================
-// LC Plot Panel
-// ============================================================================
 
 QWidget* StarDetailView::createLCPlotPanel()
 {
@@ -327,123 +582,20 @@ QWidget* StarDetailView::createLCPlotPanel()
     _lcToggleButton = new QPushButton("Show Folded");
     _lcToggleButton->setCheckable(true);
     _lcToggleButton->setMaximumWidth(140);
-    connect(_lcToggleButton, &QPushButton::clicked,
-            this, &StarDetailView::onToggleLCFolded);
+    connect(_lcToggleButton, &QPushButton::clicked, this, &StarDetailView::onToggleLCFolded);
 
     QHBoxLayout* toolbar = new QHBoxLayout;
     toolbar->addStretch();
     toolbar->addWidget(_lcToggleButton);
     layout->addLayout(toolbar);
 
-    _lcPlotWidget = new MatplotlibPlotWidget;
-    _lcPlotWidget->setAutoRerender(true);
-    layout->addWidget(_lcPlotWidget, 1);
-
-    connect(_lcPlotWidget, &MatplotlibPlotWidget::plotFailed,
-            this, [](const QString& msg) {
-        LOG_WARNING("StarDetailView.LC", "Plot render failed: " + msg);
-    });
+    _lcContent = new QWidget;
+    _lcContentLayout = new QVBoxLayout(_lcContent);
+    _lcContentLayout->setContentsMargins(0, 0, 0, 0);
+    layout->addWidget(_lcContent, 1);
 
     return group;
 }
-
-PlotRequest StarDetailView::buildLCPlotRequest()
-{
-    PlotRequest req;
-    req.scriptName = "lc_plot.py";
-
-    auto phot = _star->getPhotometry();
-    auto sources = phot->getLightcurveSources();
-
-    double foldPeriod = 0, foldT0 = 0;
-
-    for (auto& src : sources) {
-        auto bestModel = phot->getBestLightcurveModel(src);
-        if (bestModel && bestModel->period > 0) {
-            foldPeriod = bestModel->period;
-            foldT0 = bestModel->phase;
-            break;
-        }
-    }
-    if (foldPeriod <= 0) {
-        auto rvCurve = _star->getRVCurve();
-        if (rvCurve) {
-            auto bestFit = rvCurve->getBestFit();
-            if (bestFit && bestFit->getPeriod() > 0) {
-                foldPeriod = bestFit->getPeriod();
-                foldT0 = bestFit->getPhi();
-            }
-        }
-    }
-
-    QJsonObject payload;
-    QJsonArray sourcesArr;
-
-    for (auto& src : sources) {
-        auto lcPoints = phot->getLightcurve(src);
-        if (lcPoints.empty()) continue;
-
-        std::vector<double> bjd, flux, fluxErr;
-        for (auto& pt : lcPoints) {
-            bjd.push_back(pt.bjd);
-            flux.push_back(pt.flux);
-            fluxErr.push_back(pt.fluxError);
-        }
-
-        QJsonObject srcObj;
-        srcObj["name"]       = src;
-        srcObj["bjd"]        = toJsonArray(bjd);
-        srcObj["flux"]       = toJsonArray(flux);
-        srcObj["flux_error"] = toJsonArray(fluxErr);
-        sourcesArr.append(srcObj);
-    }
-
-    payload["sources"]     = sourcesArr;
-    payload["folded"]      = _lcFolded;
-    payload["fold_period"] = foldPeriod;
-    payload["fold_t0"]     = foldT0;
-
-    req.payload = payload;
-    return req;
-}
-
-void StarDetailView::populateLCPlot()
-{
-    auto phot = _star->getPhotometry();
-
-    LOG_DEBUG("StarDetailView.LC",
-              QString("populateLCPlot: phot=%1, sources=%2")
-                  .arg(phot ? "yes" : "null")
-                  .arg(phot ? QString::number(phot->getLightcurveSources().size()) : "n/a"));
-
-    if (!phot || phot->getLightcurveSources().empty()) {
-        _lcToggleButton->setEnabled(false);
-        _lcPlotWidget->showPlaceholder("No light curve data available yet.");
-        return;
-    }
-
-    double foldPeriod = 0;
-    for (auto& src : phot->getLightcurveSources()) {
-        auto m = phot->getBestLightcurveModel(src);
-        if (m && m->period > 0) { foldPeriod = m->period; break; }
-    }
-    if (foldPeriod <= 0) {
-        auto rvCurve = _star->getRVCurve();
-        if (rvCurve) {
-            auto bf = rvCurve->getBestFit();
-            if (bf && bf->getPeriod() > 0) foldPeriod = bf->getPeriod();
-        }
-    }
-
-    _lcToggleButton->setEnabled(foldPeriod > 0);
-    if (foldPeriod <= 0) { _lcFolded = false; _lcToggleButton->setChecked(false); }
-
-    _lcPlotWidget->requestPlot(buildLCPlotRequest());
-}
-
-// ============================================================================
-// Spectra Panel
-// ============================================================================
 
 QWidget* StarDetailView::createSpectraPanel()
 {
@@ -451,6 +603,7 @@ QWidget* StarDetailView::createSpectraPanel()
     QVBoxLayout* layout = new QVBoxLayout(group);
     layout->setSpacing(2);
 
+    // ── Tab bar — spectrum selector ──
     _spectraTabBar = new QTabBar;
     _spectraTabBar->setElideMode(Qt::ElideNone);
     _spectraTabBar->setExpanding(false);
@@ -461,29 +614,63 @@ QWidget* StarDetailView::createSpectraPanel()
     _spectraTabBar->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     layout->addWidget(_spectraTabBar, 0);
 
+    // ── Toolbar: fit selector + renorm checkbox ──
     _spectraToolbar = new QWidget;
     QHBoxLayout* tbLayout = new QHBoxLayout(_spectraToolbar);
     tbLayout->setContentsMargins(0, 2, 0, 2);
     tbLayout->setSpacing(8);
+
     tbLayout->addWidget(new QLabel("Model:"));
     _spectraFitCombo = new QComboBox;
     _spectraFitCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     _spectraFitCombo->setMaximumWidth(350);
     tbLayout->addWidget(_spectraFitCombo);
+
     _spectraRenormCheck = new QCheckBox("Re-normalize model");
     _spectraRenormCheck->setToolTip(
         "Scale the model by a constant factor to best match\n"
         "the observed spectrum (least-squares fit of a single\n"
         "multiplicative constant).");
     tbLayout->addWidget(_spectraRenormCheck);
+
     tbLayout->addStretch();
     _spectraToolbar->setVisible(false);
     layout->addWidget(_spectraToolbar, 0);
 
-    _spectraPlotWidget = new MatplotlibPlotWidget;
-    _spectraPlotWidget->setAutoRerender(true);
-    layout->addWidget(_spectraPlotWidget, 5);
+    // ── Main spectrum plot (QCustomPlot) ──
+    _spectraMainPlot = new QCustomPlot;
+    stylePlot(_spectraMainPlot);
+    _spectraMainPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables);
+    _spectraMainPlot->axisRect()->setRangeDrag(Qt::Horizontal | Qt::Vertical);
+    _spectraMainPlot->axisRect()->setRangeZoom(Qt::Horizontal | Qt::Vertical);
+    layout->addWidget(_spectraMainPlot, 5);
 
+    // ── Residual plot (QCustomPlot) ──
+    _spectraResidualPlot = new QCustomPlot;
+    stylePlot(_spectraResidualPlot);
+    _spectraResidualPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
+    _spectraResidualPlot->axisRect()->setRangeDrag(Qt::Horizontal);
+    _spectraResidualPlot->axisRect()->setRangeZoom(Qt::Horizontal);
+    _spectraResidualPlot->setVisible(false);
+    layout->addWidget(_spectraResidualPlot, 2);
+
+    // Debounce timer for axis synchronization
+    _axisSyncTimer = new QTimer(this);
+    _axisSyncTimer->setSingleShot(true);
+    _axisSyncTimer->setInterval(30);
+    connect(_axisSyncTimer, &QTimer::timeout, this, [this]() {
+        _axisSyncInProgress = true;
+        if (_syncFromMain) {
+            _spectraResidualPlot->xAxis->setRange(_pendingSyncRangeMin, _pendingSyncRangeMax);
+            _spectraResidualPlot->replot(QCustomPlot::rpQueuedReplot);
+        } else {
+            _spectraMainPlot->xAxis->setRange(_pendingSyncRangeMin, _pendingSyncRangeMax);
+            _spectraMainPlot->replot(QCustomPlot::rpQueuedReplot);
+        }
+        _axisSyncInProgress = false;
+    });
+    
+    // ── Info strip ──
     _spectraInfoLabel = new QLabel;
     _spectraInfoLabel->setWordWrap(true);
     _spectraInfoLabel->setTextFormat(Qt::RichText);
@@ -495,21 +682,1278 @@ QWidget* StarDetailView::createSpectraPanel()
 
     _currentSpectrumIndex = -1;
 
+    // ── Connections for fit combo and renorm ──
     connect(_spectraFitCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { updateSpectrumDisplay(); });
     connect(_spectraRenormCheck, &QCheckBox::toggled,
             this, [this](bool) { updateSpectrumDisplay(); });
 
-    connect(_spectraPlotWidget, &MatplotlibPlotWidget::plotFailed,
-            this, [](const QString& msg) {
-        LOG_WARNING("StarDetailView.Spectra", "Plot render failed: " + msg);
-    });
-
     return group;
 }
 
+QWidget* StarDetailView::createButtonSidebar()
+{
+    QWidget* sidebar = new QWidget;
+    sidebar->setFixedWidth(180);
+    QVBoxLayout* layout = new QVBoxLayout(sidebar);
+    layout->setContentsMargins(2, 0, 2, 0);
+    layout->setSpacing(8);
+
+    auto makeButton = [&](const QString& text, const QString& tooltip) -> QPushButton* {
+        QPushButton* btn = new QPushButton(text);
+        btn->setToolTip(tooltip);
+        btn->setMinimumHeight(36);
+        layout->addWidget(btn);
+        return btn;
+    };
+
+    _simbadButton = makeButton("Show in SIMBAD", "Open SIMBAD page for this star");
+    connect(_simbadButton, &QPushButton::clicked, this, &StarDetailView::onShowInSimbad);
+
+    layout->addSpacing(8);
+
+    _viewAdjustRVButton = makeButton("View / Adjust RV", "View and adjust radial velocity data");
+    connect(_viewAdjustRVButton, &QPushButton::clicked, this, &StarDetailView::onViewAdjustRV);
+
+    _viewFitSpectraButton = makeButton("View / Fit Spectra", "View and fit spectra");
+    connect(_viewFitSpectraButton, &QPushButton::clicked, this, &StarDetailView::onViewFitSpectra);
+
+    _fetchLCButton = makeButton("Fetch / Fit LC", "Fetch and fit light curves");
+    connect(_fetchLCButton, &QPushButton::clicked, this, &StarDetailView::onFetchLightcurves);
+
+    _viewFitSEDButton = makeButton("View / Fit SED", "View and fit SED");
+    connect(_viewFitSEDButton, &QPushButton::clicked, this, &StarDetailView::onViewFitSED);
+
+    layout->addSpacing(8);
+
+    _cmdButton = makeButton("Show CMD", "Show colour–magnitude diagram");
+    connect(_cmdButton, &QPushButton::clicked, this, &StarDetailView::onShowCMD);
+
+    _calcOrbitButton = makeButton("Galactic Orbit", "Calculate galactic orbit");
+    connect(_calcOrbitButton, &QPushButton::clicked, this, &StarDetailView::onCalculateOrbit);
+
+    layout->addStretch();
+    return sidebar;
+}
+
 // ============================================================================
-// populateSpectraPanel — WAS MISSING ENTIRELY
+// Theme-aware helpers
+// ============================================================================
+
+bool StarDetailView::isDarkTheme() const
+{
+    return qApp->property("isDarkTheme").toBool();
+}
+
+QColor StarDetailView::logPColor(double logP) const
+{
+    // Very negative = highly variable = important
+    if (std::isnan(logP) || logP == 0.0)
+        return isDarkTheme() ? QColor(100, 100, 100) : QColor(180, 180, 180);
+    if (logP < -10.0)
+        return QColor(220, 50, 50);    // Red — extremely significant
+    if (logP < -5.0)
+        return QColor(230, 150, 30);   // Orange — significant
+    if (logP < -2.0)
+        return QColor(200, 200, 50);   // Yellow — marginal
+    return QColor(80, 180, 80);        // Green — consistent with constant
+}
+
+QColor StarDetailView::deltaRVColor(double deltaRV) const
+{
+    if (std::isnan(deltaRV) || deltaRV == 0.0)
+        return isDarkTheme() ? QColor(100, 100, 100) : QColor(180, 180, 180);
+    if (deltaRV > 100.0)
+        return QColor(220, 50, 50);
+    if (deltaRV > 30.0)
+        return QColor(230, 150, 30);
+    if (deltaRV > 10.0)
+        return QColor(200, 200, 50);
+    return QColor(80, 180, 80);
+}
+
+QColor StarDetailView::specClassColor(const QString& specClass) const
+{
+    if (specClass.isEmpty()) return isDarkTheme() ? QColor(140, 140, 140) : QColor(120, 120, 120);
+    QChar first = specClass.at(0).toUpper();
+    if (first == 'O') return QColor(100, 140, 255);
+    if (first == 'B') return QColor(130, 170, 255);
+    if (first == 'A') return QColor(180, 200, 255);
+    if (first == 'F') return QColor(255, 255, 200);
+    if (first == 'G') return QColor(255, 230, 140);
+    if (first == 'K') return QColor(255, 180, 100);
+    if (first == 'M') return QColor(255, 120, 80);
+    // Subdwarf / white dwarf prefixes
+    if (specClass.startsWith("sd", Qt::CaseInsensitive))
+        return QColor(130, 170, 255);
+    return isDarkTheme() ? QColor(170, 170, 170) : QColor(100, 100, 100);
+}
+
+QColor StarDetailView::accentTextColor(const QColor& accent) const
+{
+    // Return white or black text depending on accent luminance
+    return (accent.lightnessF() > 0.55) ? QColor(20, 20, 20) : QColor(240, 240, 240);
+}
+
+// ============================================================================
+// Dashboard assembly
+// ============================================================================
+
+void StarDetailView::populateSummary()
+{
+    if (!_star) return;
+    QWidget* dashboard = buildDashboard();
+    _summaryScroll->setWidget(dashboard);
+}
+
+QWidget* StarDetailView::buildDashboard()
+{
+    QWidget* container = new QWidget;
+    QVBoxLayout* layout = new QVBoxLayout(container);
+    layout->setContentsMargins(8, 8, 8, 8);
+    layout->setSpacing(10);
+
+    layout->addWidget(createNameHeader());
+    layout->addWidget(createMetricCardsRow());
+    layout->addWidget(createPropertiesSection());
+
+    // Orbital fit — only if we have one
+    auto rvCurve = _star->getRVCurve();
+    std::shared_ptr<RVFit> bestFit;
+    if (rvCurve) bestFit = rvCurve->getBestFit();
+    if (bestFit && bestFit->getPeriod() > 0)
+        layout->addWidget(createOrbitalFitSection());
+
+    layout->addWidget(createDataInventorySection());
+
+    auto bibcodes = _star->getBibcodes();
+    if (!bibcodes.empty())
+        layout->addWidget(createReferencesSection());
+
+    layout->addStretch();
+    return container;
+}
+
+// ============================================================================
+// Section frame — consistent card look
+// ============================================================================
+
+QFrame* StarDetailView::createSectionFrame(const QString& title, QWidget* content)
+{
+    bool dark = isDarkTheme();
+    QColor cardBg  = dark ? QColor(50, 50, 55) : QColor(248, 248, 250);
+    QColor border  = dark ? QColor(70, 70, 75)  : QColor(210, 210, 215);
+    QColor titleCol = dark ? QColor(180, 180, 185) : QColor(90, 90, 95);
+
+    QFrame* frame = new QFrame;
+    frame->setFrameShape(QFrame::NoFrame);
+    frame->setStyleSheet(QString(
+        "QFrame#sectionCard { background: %1; border: 1px solid %2; border-radius: 6px; }"
+    ).arg(cardBg.name(), border.name()));
+    frame->setObjectName("sectionCard");
+
+    QVBoxLayout* layout = new QVBoxLayout(frame);
+    layout->setContentsMargins(10, 8, 10, 10);
+    layout->setSpacing(6);
+
+    if (!title.isEmpty()) {
+        QLabel* titleLabel = new QLabel(title);
+        titleLabel->setStyleSheet(QString(
+            "font-size: 11px; font-weight: 600; color: %1; "
+            "text-transform: uppercase; letter-spacing: 1px; "
+            "padding-bottom: 4px; border: none; background: transparent;"
+        ).arg(titleCol.name()));
+        layout->addWidget(titleLabel);
+    }
+
+    layout->addWidget(content);
+    return frame;
+}
+
+// ============================================================================
+// Name header
+// ============================================================================
+
+QWidget* StarDetailView::createNameHeader()
+{
+    bool dark = isDarkTheme();
+
+    QWidget* header = new QWidget;
+    QHBoxLayout* hLayout = new QHBoxLayout(header);
+    hLayout->setContentsMargins(4, 0, 4, 0);
+    hLayout->setSpacing(12);
+
+    // Left side: name + source ID
+    QVBoxLayout* nameCol = new QVBoxLayout;
+    nameCol->setSpacing(2);
+
+    QString displayName = _star->getAlias().isEmpty() ? _star->getSourceId() : _star->getAlias();
+
+    QLabel* nameLabel = new QLabel(displayName);
+    nameLabel->setStyleSheet(QString("font-size: 20px; font-weight: 700; color: %1; background: transparent;")
+        .arg(dark ? "white" : "#1a1a1a"));
+    nameLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    nameCol->addWidget(nameLabel);
+
+    // Gaia source ID line
+    QString subText;
+    if (!_star->getAlias().isEmpty() && !_star->getSourceId().isEmpty())
+        subText = QString("Gaia DR3 %1").arg(_star->getSourceId());
+    if (!_star->getTic().isEmpty()) {
+        if (!subText.isEmpty()) subText += "  ·  ";
+        subText += QString("TIC %1").arg(_star->getTic());
+    }
+    if (!_star->getJName().isEmpty()) {
+        if (!subText.isEmpty()) subText += "  ·  ";
+        subText += _star->getJName();
+    }
+
+    if (!subText.isEmpty()) {
+        QLabel* subLabel = new QLabel(subText);
+        subLabel->setStyleSheet(QString("font-size: 12px; color: %1; background: transparent;")
+            .arg(dark ? "#999" : "#666"));
+        subLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        nameCol->addWidget(subLabel);
+    }
+
+    hLayout->addLayout(nameCol, 1);
+
+    // Right side: spectral class badge (if available)
+    QString specClass = _star->getSpecClass();
+    if (!specClass.isEmpty()) {
+        QColor badgeColor = specClassColor(specClass);
+        QColor badgeText = accentTextColor(badgeColor);
+
+        QLabel* badge = new QLabel(specClass);
+        badge->setAlignment(Qt::AlignCenter);
+        badge->setFixedHeight(30);
+        badge->setMinimumWidth(60);
+        badge->setStyleSheet(QString(
+            "font-size: 13px; font-weight: 700; color: %1; "
+            "background: %2; border-radius: 6px; "
+            "padding: 2px 12px; border: none;"
+        ).arg(badgeText.name(), badgeColor.name()));
+        hLayout->addWidget(badge, 0, Qt::AlignRight | Qt::AlignVCenter);
+    }
+
+    return header;
+}
+
+// ============================================================================
+// Metric cards row (logP, ΔRV, N_spectra, N_RV)
+// ============================================================================
+
+QWidget* StarDetailView::createMetricCardsRow()
+{
+    QWidget* row = new QWidget;
+    QHBoxLayout* layout = new QHBoxLayout(row);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(8);
+
+    auto has = [](double v) { return !std::isnan(v) && v != 0.0; };
+
+    // ── log(p)
+    {
+        double logP = 0.0;
+        int nSpectra = 0;
+        QString subtitle;
+
+        auto rvCurve = _star->getRVCurve();
+        if (rvCurve && rvCurve->getNumPoints() >= 2) {
+            logP = rvCurve->getLogP();
+            nSpectra = static_cast<int>(rvCurve->getNumPoints());
+            subtitle = QString("from %1 points").arg(nSpectra);
+        } else if (has(_star->getLogP())) {
+            logP = _star->getLogP();
+            auto spectra = _star->getSpectra();
+            nSpectra = static_cast<int>(spectra.size());
+            if (nSpectra > 0)
+                subtitle = QString("from %1 spectra").arg(nSpectra);
+        }
+
+        QString value = has(logP) ? QString::number(logP, 'f', 2) : "—";
+        QColor accent = logPColor(logP);
+        layout->addWidget(createMetricCard(value, "log(p)", subtitle, accent));
+    }
+
+    // ── ΔRV_max
+    {
+        double drv = 0.0;
+        QString subtitle;
+
+        auto rvCurve = _star->getRVCurve();
+        if (rvCurve && rvCurve->getNumPoints() >= 2) {
+            drv = rvCurve->getRVAmplitude();
+        } else if (has(_star->getDeltaRV())) {
+            drv = _star->getDeltaRV();
+        }
+
+        QString value;
+        if (has(drv)) {
+            value = QString::number(drv, 'f', 1);
+            subtitle = "km/s";
+            if (has(_star->getEDeltaRV()))
+                subtitle = QString("± %1 km/s").arg(_star->getEDeltaRV(), 0, 'f', 1);
+        } else {
+            value = "—";
+        }
+
+        QColor accent = deltaRVColor(drv);
+        layout->addWidget(createMetricCard(value, "ΔRV_max", subtitle, accent));
+    }
+
+    // ── N spectra
+    {
+        auto spectra = _star->getSpectra();
+        int n = static_cast<int>(spectra.size());
+
+        // Count instruments
+        QSet<QString> instruments;
+        for (auto& sp : spectra)
+            if (!sp->getInstrument().isEmpty())
+                instruments.insert(sp->getInstrument());
+
+        QString subtitle;
+        if (instruments.size() == 1)
+            subtitle = *instruments.begin();
+        else if (instruments.size() > 1)
+            subtitle = QString("%1 instruments").arg(instruments.size());
+
+        bool dark = isDarkTheme();
+        QColor accent = (n > 0) ? QColor(86, 156, 214) :
+                         (dark ? QColor(100, 100, 100) : QColor(180, 180, 180));
+
+        layout->addWidget(createMetricCard(
+            QString::number(n), "Spectra", subtitle, accent));
+    }
+
+    // ── N RV points
+    {
+        auto rvCurve = _star->getRVCurve();
+        int n = rvCurve ? static_cast<int>(rvCurve->getNumPoints()) : 0;
+
+        QString subtitle;
+        if (rvCurve && n > 0) {
+            double span = rvCurve->getTimeSpan();
+            if (span > 0)
+                subtitle = QString("%1 d span").arg(span, 0, 'f', 0);
+        }
+
+        bool dark = isDarkTheme();
+        QColor accent = (n > 0) ? QColor(86, 180, 120) :
+                         (dark ? QColor(100, 100, 100) : QColor(180, 180, 180));
+
+        layout->addWidget(createMetricCard(
+            QString::number(n), "RV Points", subtitle, accent));
+    }
+
+    return row;
+}
+
+QWidget* StarDetailView::createMetricCard(const QString& value, const QString& label,
+                                           const QString& subtitle, const QColor& accentColor)
+{
+    bool dark = isDarkTheme();
+    QColor cardBg   = dark ? QColor(50, 50, 55)   : QColor(248, 248, 250);
+    QColor border   = dark ? QColor(70, 70, 75)    : QColor(210, 210, 215);
+    QColor labelCol = dark ? QColor(160, 160, 165) : QColor(110, 110, 115);
+    QColor subCol   = dark ? QColor(130, 130, 135) : QColor(140, 140, 145);
+
+    QFrame* card = new QFrame;
+    card->setObjectName("metricCard");
+    card->setStyleSheet(QString(
+        "QFrame#metricCard { background: %1; border: 1px solid %2; "
+        "border-left: 4px solid %3; border-radius: 6px; }"
+    ).arg(cardBg.name(), border.name(), accentColor.name()));
+
+    QVBoxLayout* layout = new QVBoxLayout(card);
+    layout->setContentsMargins(12, 10, 12, 10);
+    layout->setSpacing(2);
+
+    QLabel* valueLabel = new QLabel(value);
+    valueLabel->setStyleSheet(QString(
+        "font-size: 22px; font-weight: 700; color: %1; border: none; background: transparent;"
+    ).arg(accentColor.name()));
+    valueLabel->setAlignment(Qt::AlignLeft);
+    layout->addWidget(valueLabel);
+
+    QLabel* labelWidget = new QLabel(label);
+    labelWidget->setStyleSheet(QString(
+        "font-size: 11px; font-weight: 600; color: %1; border: none; background: transparent;"
+    ).arg(labelCol.name()));
+    layout->addWidget(labelWidget);
+
+    if (!subtitle.isEmpty()) {
+        QLabel* subLabel = new QLabel(subtitle);
+        subLabel->setStyleSheet(QString(
+            "font-size: 10px; color: %1; border: none; background: transparent;"
+        ).arg(subCol.name()));
+        layout->addWidget(subLabel);
+    }
+
+    layout->addStretch();
+    card->setMinimumWidth(100);
+    card->setMinimumHeight(80);
+    return card;
+}
+
+// ============================================================================
+// Properties section — astrometry, photometry, atmospheric
+// ============================================================================
+
+QWidget* StarDetailView::createPropertiesSection()
+{
+    auto has = [](double v) { return !std::isnan(v) && v != 0.0; };
+    auto valErr = [](double val, double err, int prec, const QString& unit = "") -> QString {
+        QString s = QString::number(val, 'f', prec);
+        if (!std::isnan(err) && err > 0.0)
+            s += QString(" ± %1").arg(err, 0, 'f', prec);
+        if (!unit.isEmpty())
+            s += " " + unit;
+        return s;
+    };
+
+    bool dark = isDarkTheme();
+    QColor valCol   = dark ? QColor(220, 220, 225) : QColor(30, 30, 35);
+    QColor labelCol = dark ? QColor(140, 140, 145) : QColor(100, 100, 105);
+
+    // Collect rows: (label, value) pairs grouped into columns
+    struct PropRow { QString label; QString value; };
+    std::vector<PropRow> astroRows, photoRows, atmosRows;
+
+    // Astrometry
+    if (has(_star->getRa()) && has(_star->getDec())) {
+        astroRows.push_back({"RA",  QString::number(_star->getRa(), 'f', 6) + "°"});
+        astroRows.push_back({"Dec", QString::number(_star->getDec(), 'f', 6) + "°"});
+    }
+    if (has(_star->getPlx()))
+        astroRows.push_back({"Parallax", valErr(_star->getPlx(), _star->getEPlx(), 3, "mas")});
+    if (has(_star->getPmra()))
+        astroRows.push_back({"μ_RA", valErr(_star->getPmra(), _star->getEPmra(), 3, "mas/yr")});
+    if (has(_star->getPmdec()))
+        astroRows.push_back({"μ_Dec", valErr(_star->getPmdec(), _star->getEPmdec(), 3, "mas/yr")});
+
+    // Photometry
+    if (has(_star->getGmag()))
+        photoRows.push_back({"G", valErr(_star->getGmag(), _star->getEGmag(), 3, "mag")});
+    if (has(_star->getBpRp()))
+        photoRows.push_back({"BP−RP", QString::number(_star->getBpRp(), 'f', 3) + " mag"});
+    if (has(_star->getBp()))
+        photoRows.push_back({"BP", valErr(_star->getBp(), _star->getEBp(), 3, "mag")});
+    if (has(_star->getRp()))
+        photoRows.push_back({"RP", valErr(_star->getRp(), _star->getERp(), 3, "mag")});
+
+    // Atmospheric
+    if (has(_star->getTeff()))
+        atmosRows.push_back({"T_eff", valErr(_star->getTeff(), _star->getETeff(), 0, "K")});
+    if (has(_star->getLogg()))
+        atmosRows.push_back({"log g", valErr(_star->getLogg(), _star->getELogg(), 2, "dex")});
+    if (has(_star->getHe()))
+        atmosRows.push_back({"log(He/H)", valErr(_star->getHe(), _star->getEHe(), 2, "")});
+
+    // RV summary (if no orbital fit)
+    auto rvCurve = _star->getRVCurve();
+    std::shared_ptr<RVFit> bestFit;
+    if (rvCurve) bestFit = rvCurve->getBestFit();
+
+    std::vector<PropRow> rvRows;
+    if (!(bestFit && bestFit->getPeriod() > 0)) {
+        if (has(_star->getRVMed()))
+            rvRows.push_back({"RV_med", valErr(_star->getRVMed(), _star->getERVMed(), 2, "km/s")});
+        else if (has(_star->getRVAvg()))
+            rvRows.push_back({"RV_avg", valErr(_star->getRVAvg(), _star->getERVAvg(), 2, "km/s")});
+
+        if (rvCurve && rvCurve->getNumPoints() > 0) {
+            double minRV = rvCurve->getMinRV();
+            double maxRV = rvCurve->getMaxRV();
+            if (has(minRV) && has(maxRV)) {
+                double mid = minRV + (maxRV - minRV) / 2.0;
+                rvRows.push_back({"RV_mid", QString::number(mid, 'f', 2) + " km/s"});
+            }
+        }
+    }
+
+    // Build grid widget
+    auto buildGrid = [&](const std::vector<PropRow>& rows) -> QWidget* {
+        if (rows.empty()) return nullptr;
+        QWidget* grid = new QWidget;
+        QGridLayout* gl = new QGridLayout(grid);
+        gl->setContentsMargins(0, 0, 0, 0);
+        gl->setHorizontalSpacing(16);
+        gl->setVerticalSpacing(4);
+
+        int maxPerCol = static_cast<int>((rows.size() + 1) / 2);
+
+        for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+            int col = (i < maxPerCol) ? 0 : 2;
+            int row = (i < maxPerCol) ? i : i - maxPerCol;
+
+            QLabel* lbl = new QLabel(rows[i].label);
+            lbl->setStyleSheet(QString(
+                "font-size: 11px; font-weight: 600; color: %1; background: transparent; border: none;"
+            ).arg(labelCol.name()));
+
+            QLabel* val = new QLabel(rows[i].value);
+            val->setStyleSheet(QString(
+                "font-size: 12px; color: %1; background: transparent; border: none;"
+            ).arg(valCol.name()));
+            val->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+            gl->addWidget(lbl, row, col);
+            gl->addWidget(val, row, col + 1);
+        }
+
+        // Add column stretch
+        gl->setColumnStretch(1, 1);
+        if (rows.size() > static_cast<size_t>(maxPerCol))
+            gl->setColumnStretch(3, 1);
+
+        return grid;
+    };
+
+    // Build combined properties widget
+    QWidget* container = new QWidget;
+    QVBoxLayout* vLayout = new QVBoxLayout(container);
+    vLayout->setContentsMargins(0, 0, 0, 0);
+    vLayout->setSpacing(6);
+
+    auto addSubSection = [&](const QString& title, const std::vector<PropRow>& rows) {
+        if (rows.empty()) return;
+        QWidget* grid = buildGrid(rows);
+        if (grid)
+            vLayout->addWidget(createSectionFrame(title, grid));
+    };
+
+    addSubSection("Astrometry", astroRows);
+    addSubSection("Photometry", photoRows);
+    addSubSection("Atmospheric Parameters", atmosRows);
+    addSubSection("Radial Velocity", rvRows);
+
+    if (vLayout->count() == 0) {
+        QLabel* empty = new QLabel("No catalog data available yet.");
+        empty->setStyleSheet("color: gray; font-style: italic; background: transparent;");
+        vLayout->addWidget(empty);
+    }
+
+    return container;
+}
+
+// ============================================================================
+// Orbital fit section
+// ============================================================================
+
+QWidget* StarDetailView::createOrbitalFitSection()
+{
+    bool dark = isDarkTheme();
+    QColor valCol   = dark ? QColor(220, 220, 225) : QColor(30, 30, 35);
+    QColor labelCol = dark ? QColor(140, 140, 145) : QColor(100, 100, 105);
+
+    auto valErr = [](double val, double err, int prec, const QString& unit = "") -> QString {
+        QString s = QString::number(val, 'f', prec);
+        if (!std::isnan(err) && err > 0.0)
+            s += QString(" ± %1").arg(err, 0, 'f', prec);
+        if (!unit.isEmpty())
+            s += " " + unit;
+        return s;
+    };
+    auto has = [](double v) { return !std::isnan(v) && v != 0.0; };
+
+    auto rvCurve = _star->getRVCurve();
+    auto bestFit = rvCurve->getBestFit();
+
+    struct Row { QString label; QString value; };
+    std::vector<Row> rows;
+
+    rows.push_back({"Period", valErr(bestFit->getPeriod(), bestFit->getPeriodError(), 6, "d")});
+    rows.push_back({"K", valErr(bestFit->getK(), bestFit->getKError(), 2, "km/s")});
+    rows.push_back({"γ", valErr(bestFit->getGamma(), bestFit->getGammaError(), 2, "km/s")});
+    rows.push_back({"T₀ (ϕ)", valErr(bestFit->getPhi(), bestFit->getPhiError(), 4, "")});
+
+    if (bestFit->isEccentric()) {
+        rows.push_back({"e", valErr(bestFit->getEccentricity(), bestFit->getEccentricityError(), 4, "")});
+        rows.push_back({"ω", valErr(bestFit->getOmega(), bestFit->getOmegaError(), 1, "°")});
+    }
+
+    if (has(bestFit->getRms()))
+        rows.push_back({"RMS", QString::number(bestFit->getRms(), 'f', 2) + " km/s"});
+    if (!bestFit->getFitMethod().isEmpty())
+        rows.push_back({"Method", bestFit->getFitMethod()});
+
+    // Build grid
+    QWidget* grid = new QWidget;
+    QGridLayout* gl = new QGridLayout(grid);
+    gl->setContentsMargins(0, 0, 0, 0);
+    gl->setHorizontalSpacing(16);
+    gl->setVerticalSpacing(4);
+
+    int maxPerCol = static_cast<int>((rows.size() + 1) / 2);
+    for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+        int col = (i < maxPerCol) ? 0 : 2;
+        int row = (i < maxPerCol) ? i : i - maxPerCol;
+
+        QLabel* lbl = new QLabel(rows[i].label);
+        lbl->setStyleSheet(QString(
+            "font-size: 11px; font-weight: 600; color: %1; background: transparent; border: none;"
+        ).arg(labelCol.name()));
+        QLabel* val = new QLabel(rows[i].value);
+        val->setStyleSheet(QString(
+            "font-size: 12px; color: %1; background: transparent; border: none;"
+        ).arg(valCol.name()));
+        val->setTextInteractionFlags(Qt::TextSelectableByMouse);
+
+        gl->addWidget(lbl, row, col);
+        gl->addWidget(val, row, col + 1);
+    }
+    gl->setColumnStretch(1, 1);
+    if (rows.size() > static_cast<size_t>(maxPerCol))
+        gl->setColumnStretch(3, 1);
+
+    return createSectionFrame("Orbital Solution", grid);
+}
+
+// ============================================================================
+// Data inventory — compact overview of what data exists
+// ============================================================================
+
+QWidget* StarDetailView::createDataInventorySection()
+{
+    bool dark = isDarkTheme();
+    QColor tagBg     = dark ? QColor(60, 65, 70)   : QColor(230, 235, 240);
+    QColor tagBorder = dark ? QColor(80, 85, 90)    : QColor(200, 205, 210);
+    QColor tagText   = dark ? QColor(195, 200, 205) : QColor(50, 55, 60);
+    QColor checkCol  = QColor(80, 180, 100);
+    QColor crossCol  = dark ? QColor(100, 100, 105) : QColor(170, 170, 175);
+
+    auto spectra = _star->getSpectra();
+    auto rvCurve = _star->getRVCurve();
+    auto phot    = _star->getPhotometry();
+
+    struct Inventory {
+        QString label;
+        bool available;
+        QString detail;
+    };
+
+    std::vector<Inventory> items;
+
+    // Spectra
+    {
+        int n = static_cast<int>(spectra.size());
+        int nFitted = 0;
+        QSet<QString> instruments;
+        for (auto& sp : spectra) {
+            if (sp->getBestFit()) nFitted++;
+            if (!sp->getInstrument().isEmpty()) instruments.insert(sp->getInstrument());
+        }
+        QString detail;
+        if (n > 0) {
+            QStringList parts;
+            parts << QString("%1 total").arg(n);
+            if (nFitted > 0) parts << QString("%1 fitted").arg(nFitted);
+            if (!instruments.isEmpty()) {
+                QStringList instList(instruments.begin(), instruments.end());
+                instList.sort();
+                parts << instList.join(", ");
+            }
+            detail = parts.join(" · ");
+        }
+        items.push_back({"Spectra", n > 0, detail});
+    }
+
+    // RV curve
+    {
+        int n = rvCurve ? static_cast<int>(rvCurve->getNumPoints()) : 0;
+        int nFits = rvCurve ? static_cast<int>(rvCurve->getNumFits()) : 0;
+        QString detail;
+        if (n > 0) {
+            QStringList parts;
+            parts << QString("%1 points").arg(n);
+            if (nFits > 0) parts << QString("%1 fit(s)").arg(nFits);
+            if (rvCurve->getTimeSpan() > 0)
+                parts << QString("%1 d span").arg(rvCurve->getTimeSpan(), 0, 'f', 0);
+            detail = parts.join(" · ");
+        }
+        items.push_back({"RV Curve", n > 0, detail});
+    }
+
+    // Light curves
+    {
+        bool hasLC = false;
+        QString detail;
+        if (phot) {
+            auto sources = phot->getLightcurveSources();
+            if (!sources.empty()) {
+                hasLC = true;
+                QStringList srcList;
+                for (auto& s : sources) srcList.append(s);
+                detail = srcList.join(", ");
+            }
+        }
+        items.push_back({"Light Curves", hasLC, detail});
+    }
+
+    // SED
+    {
+        bool hasSED = false;
+        QString detail;
+        if (phot) {
+            auto sed = phot->getBestSEDModel();
+            if (sed) {
+                hasSED = true;
+                QStringList parts;
+                auto has = [](double v) { return !std::isnan(v) && v != 0.0; };
+                if (has(sed->radius))
+                    parts << QString("R=%1 R☉").arg(sed->radius, 0, 'f', 3);
+                if (has(sed->temperature))
+                    parts << QString("T=%1 K").arg(sed->temperature, 0, 'f', 0);
+                detail = parts.join(", ");
+            }
+        }
+        items.push_back({"SED Fit", hasSED, detail});
+    }
+
+    // Photometric points
+    {
+        int n = 0;
+        if (phot) n = static_cast<int>(phot->getPhotometricPoints().size());
+        items.push_back({"Photometric Points", n > 0,
+                          n > 0 ? QString("%1 measurements").arg(n) : ""});
+    }
+
+    // Build tag strip
+    QWidget* content = new QWidget;
+    QVBoxLayout* layout = new QVBoxLayout(content);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(4);
+
+    for (auto& item : items) {
+        QHBoxLayout* row = new QHBoxLayout;
+        row->setSpacing(8);
+
+        // Status indicator
+        QLabel* indicator = new QLabel(item.available ? "●" : "○");
+        indicator->setFixedWidth(16);
+        indicator->setAlignment(Qt::AlignCenter);
+        indicator->setStyleSheet(QString(
+            "font-size: 12px; color: %1; background: transparent; border: none;"
+        ).arg(item.available ? checkCol.name() : crossCol.name()));
+        row->addWidget(indicator);
+
+        // Label
+        QLabel* lbl = new QLabel(item.label);
+        lbl->setFixedWidth(120);
+        lbl->setStyleSheet(QString(
+            "font-size: 12px; font-weight: 600; color: %1; background: transparent; border: none;"
+        ).arg(tagText.name()));
+        row->addWidget(lbl);
+
+        // Detail
+        if (!item.detail.isEmpty()) {
+            QLabel* det = new QLabel(item.detail);
+            det->setStyleSheet(QString(
+                "font-size: 11px; color: %1; background: transparent; border: none;"
+            ).arg(dark ? "#aaa" : "#777"));
+            det->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            row->addWidget(det, 1);
+        } else {
+            row->addStretch();
+        }
+
+        layout->addLayout(row);
+    }
+
+    return createSectionFrame("Data Inventory", content);
+}
+
+// ============================================================================
+// References section — clickable bibcode buttons
+// ============================================================================
+
+QWidget* StarDetailView::createReferencesSection()
+{
+    bool dark = isDarkTheme();
+    QColor chipBg     = dark ? QColor(55, 60, 75)   : QColor(225, 235, 250);
+    QColor chipBorder = dark ? QColor(80, 90, 115)   : QColor(180, 195, 220);
+    QColor chipText   = dark ? QColor(140, 170, 220) : QColor(40, 80, 160);
+    QColor chipHover  = dark ? QColor(70, 80, 100)   : QColor(210, 225, 245);
+
+    QWidget* content = new QWidget;
+    QHBoxLayout* flowLayout = new QHBoxLayout(content);
+    flowLayout->setContentsMargins(0, 0, 0, 0);
+    flowLayout->setSpacing(6);
+
+    auto bibcodes = _star->getBibcodes();
+    for (auto& bib : bibcodes) {
+        QPushButton* chip = new QPushButton(bib);
+        chip->setCursor(Qt::PointingHandCursor);
+        chip->setToolTip(QString("Open %1 on ADS").arg(bib));
+        chip->setStyleSheet(QString(
+            "QPushButton { "
+            "  font-size: 11px; color: %1; background: %2; "
+            "  border: 1px solid %3; border-radius: 4px; "
+            "  padding: 4px 10px; "
+            "} "
+            "QPushButton:hover { background: %4; } "
+            "QPushButton:pressed { background: %3; }"
+        ).arg(chipText.name(), chipBg.name(), chipBorder.name(), chipHover.name()));
+
+        QString url = QString("https://ui.adsabs.harvard.edu/abs/%1/abstract").arg(bib);
+        connect(chip, &QPushButton::clicked, this, [url]() {
+            QDesktopServices::openUrl(QUrl(url));
+        });
+
+        flowLayout->addWidget(chip);
+    }
+    flowLayout->addStretch();
+
+    return createSectionFrame("References", content);
+}
+
+// ============================================================================
+// RV Plot — broken-axis (timeline) or folded (phase)
+// ============================================================================
+
+void StarDetailView::populateRVPlot()
+{
+    static const QString CAT = "StarDetailView.RV";
+
+    clearLayout(_rvContentLayout);
+
+    auto rvCurve = _star->getRVCurve();
+    bool hasData = rvCurve && rvCurve->getNumPoints() > 0;
+
+    std::shared_ptr<RVFit> bestFit;
+    if (rvCurve) bestFit = rvCurve->getBestFit();
+    bool hasPeriod = bestFit && bestFit->getPeriod() > 0;
+
+    LOG_DEBUG(CAT, QString("Star %1 — rvCurve=%2, getNumPoints=%3, hasPeriod=%4")
+        .arg(_star->getSourceId())
+        .arg(rvCurve ? "valid" : "NULL")
+        .arg(rvCurve ? QString::number(rvCurve->getNumPoints()) : "N/A")
+        .arg(hasPeriod));
+
+    _rvToggleButton->setEnabled(hasData && hasPeriod);
+    if (!hasPeriod) {
+        _rvToggleButton->setChecked(false);
+        _rvFolded = false;
+        _rvToggleButton->setText("Show Folded");
+    }
+
+    if (!hasData) {
+        LOG_WARNING(CAT, QString("Star %1 — no RV data (rvCurve %2)")
+            .arg(_star->getSourceId(),
+                 rvCurve ? "exists but empty" : "is null"));
+        _rvContentLayout->addWidget(makePlaceholder("No radial velocity data available yet."));
+        return;
+    }
+
+    // ── Gather data ──
+    auto points = rvCurve->getRVPoints();
+
+    LOG_DEBUG(CAT, QString("Star %1 — getRVPoints() returned %2 point(s)")
+        .arg(_star->getSourceId())
+        .arg(points.size()));
+
+    struct RVDatum {
+        double time; double rv; double err;
+    };
+    std::vector<RVDatum> data;
+    data.reserve(points.size());
+
+    int skippedZeroBJD = 0, skippedBoth = 0, usedBJD = 0, usedMJD = 0;
+
+    for (size_t i = 0; i < points.size(); ++i) {
+        auto& pt = points[i];
+        double bjd = pt->getBJD();
+        double mjd = pt->getMJD();
+        double t = bjd;
+
+        if (t == 0.0) {
+            skippedZeroBJD++;
+            t = mjd;
+        }
+
+        if (t == 0.0) {
+            skippedBoth++;
+            if (skippedBoth <= 3) {
+                LOG_WARNING(CAT, QString("  pt[%1]: BJD=%2 MJD=%3 RV=%4 err=%5 → SKIPPED")
+                    .arg(i).arg(bjd, 0, 'g', 12).arg(mjd, 0, 'g', 12)
+                    .arg(pt->getRV(), 0, 'f', 4).arg(pt->getRVError(), 0, 'f', 4));
+            }
+            continue;
+        }
+
+        if (bjd != 0.0) usedBJD++; else usedMJD++;
+        data.push_back({t, pt->getRV(), pt->getRVError()});
+    }
+
+    LOG_INFO(CAT, QString("Star %1 — %2 usedBJD, %3 usedMJD, %4 zeroBJD, %5 bothZero → %6/%7 accepted")
+        .arg(_star->getSourceId())
+        .arg(usedBJD).arg(usedMJD).arg(skippedZeroBJD).arg(skippedBoth)
+        .arg(data.size()).arg(points.size()));
+
+    if (data.empty()) {
+        LOG_ERROR(CAT, QString("Star %1 — ALL %2 RV points dropped")
+            .arg(_star->getSourceId()).arg(points.size()));
+        _rvContentLayout->addWidget(makePlaceholder("RV points have no valid timestamps."));
+        return;
+    }
+
+    std::sort(data.begin(), data.end(),
+              [](const RVDatum& a, const RVDatum& b) { return a.time < b.time; });
+
+    // ── Branch: folded or broken-axis ──
+
+    if (_rvFolded && hasPeriod) {
+        // =====================================================================
+        // FOLDED (phase) VIEW
+        // =====================================================================
+        double P   = bestFit->getPeriod();
+        double phi = bestFit->getPhi();
+
+        std::vector<double> phases, rvs, errs;
+        for (auto& d : data) {
+            double phase = std::fmod((d.time - phi) / P, 1.0);
+            if (phase < 0.0) phase += 1.0;
+            phases.push_back(phase);
+            rvs.push_back(d.rv);
+            errs.push_back(d.err);
+        }
+
+        QCustomPlot* plot = new QCustomPlot;
+        stylePlot(plot);
+        plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
+        plot->legend->setVisible(false);
+
+        auto yRange = addRVDataToPlot(plot, phases, rvs, errs,
+                                       -0.05, 1.05, kPointColor, kErrorBarColor);
+
+        // Fit curve overlay
+        QVector<double> fitX(201), fitY(201);
+        for (int i = 0; i <= 200; ++i) {
+            double ph = static_cast<double>(i) / 200.0;
+            fitX[i] = ph;
+            fitY[i] = bestFit->calculateRV(phi + ph * P);
+        }
+        QCPGraph* fitGraph = plot->addGraph();
+        fitGraph->setPen(QPen(kFitCurveColor, 2.0));
+        fitGraph->setData(fitX, fitY);
+        fitGraph->removeFromLegend();
+
+        plot->xAxis->setLabel("Phase");
+        plot->xAxis->setRange(-0.05, 1.05);
+        plot->yAxis->setLabel("RV [km/s]");
+        double margin = (yRange.second - yRange.first) * 0.1;
+        if (margin < 1.0) margin = 1.0;
+        plot->yAxis->setRange(yRange.first - margin, yRange.second + margin);
+
+        plot->replot();
+        _rvContentLayout->addWidget(plot);
+
+        LOG_INFO(CAT, QString("Star %1 — folded RV chart created with %2 points")
+            .arg(_star->getSourceId()).arg(data.size()));
+
+    } else {
+        // =====================================================================
+        // BROKEN-AXIS (timeline) VIEW
+        // =====================================================================
+
+        double t0 = data.front().time;
+        std::vector<double> times, rvs, errs;
+        for (auto& d : data) {
+            times.push_back(d.time - t0);
+            rvs.push_back(d.rv);
+            errs.push_back(d.err);
+        }
+
+        std::vector<int> gapIdx = findGapIndices(times);
+
+        LOG_DEBUG(CAT, QString("Star %1 — timeline: t0=%2, %3 gap(s), %4 points")
+            .arg(_star->getSourceId()).arg(t0, 0, 'f', 4)
+            .arg(gapIdx.size()).arg(times.size()));
+
+        auto splitTimes = splitAt(times, gapIdx);
+        std::vector<double> widths;
+        for (auto& seg : splitTimes) {
+            double w = seg.back() - seg.front();
+            widths.push_back(w);
+        }
+
+        double maxW = *std::max_element(widths.begin(), widths.end());
+        if (maxW <= 0) maxW = 1.0;
+        double minW = 0.05 * maxW;
+        for (auto& w : widths)
+            if (w < minW) w = minW;
+
+        double sumW = std::accumulate(widths.begin(), widths.end(), 0.0);
+        std::vector<int> stretches;
+        for (auto& w : widths)
+            stretches.push_back(std::max(1, static_cast<int>(std::round(w / sumW * 100))));
+
+        // Global Y range
+        double yLo =  std::numeric_limits<double>::max();
+        double yHi =  std::numeric_limits<double>::lowest();
+        for (size_t i = 0; i < rvs.size(); ++i) {
+            yLo = std::min(yLo, rvs[i] - errs[i]);
+            yHi = std::max(yHi, rvs[i] + errs[i]);
+        }
+        double yMargin = (yHi - yLo) * 0.1;
+        if (yMargin < 1.0) yMargin = 1.0;
+        yLo -= yMargin;
+        yHi += yMargin;
+
+        int nSeg = static_cast<int>(splitTimes.size());
+
+        if (nSeg == 1) {
+            // --- Single segment ---
+            QCustomPlot* plot = new QCustomPlot;
+            stylePlot(plot);
+            plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
+            plot->legend->setVisible(false);
+
+            double xMin = times.front();
+            double xMax = times.back();
+            double span = xMax - xMin;
+            if (span <= 0) span = 1.0;
+
+            addRVDataToPlot(plot, times, rvs, errs,
+                            xMin - span * 0.05, xMax + span * 0.05,
+                            kPointColor, kErrorBarColor);
+
+            if (bestFit && bestFit->getPeriod() > 0) {
+                QVector<double> fitX(501), fitY(501);
+                for (int i = 0; i <= 500; ++i) {
+                    double t = xMin + (xMax - xMin) * i / 500.0;
+                    fitX[i] = t;
+                    fitY[i] = bestFit->calculateRV(t + t0);
+                }
+                QCPGraph* fitGraph = plot->addGraph();
+                fitGraph->setPen(QPen(kFitCurveColor, 2.0));
+                fitGraph->setData(fitX, fitY);
+                fitGraph->removeFromLegend();
+            }
+
+            plot->xAxis->setLabel("Days from first observation");
+            plot->xAxis->setRange(xMin - span * 0.05, xMax + span * 0.05);
+            plot->yAxis->setLabel("RV [km/s]");
+            plot->yAxis->setRange(yLo, yHi);
+
+            plot->replot();
+            _rvContentLayout->addWidget(plot);
+
+            LOG_INFO(CAT, QString("Star %1 — single-segment RV, %2 pts, span=%3 d")
+                .arg(_star->getSourceId()).arg(data.size()).arg(span, 0, 'f', 1));
+
+        } else {
+            // --- Multiple segments: broken-axis widget ---
+            auto* brokenAxis = new BrokenAxisWidget;
+
+            auto splitRV  = splitAt(rvs,  gapIdx);
+            auto splitErr = splitAt(errs, gapIdx);
+
+            for (int seg = 0; seg < nSeg; ++seg) {
+                auto& segTimes = splitTimes[seg];
+                auto& segRV    = splitRV[seg];
+                auto& segErr   = splitErr[seg];
+
+                double segStart = segTimes.front();
+                double segEnd   = segTimes.back();
+                double segSpan  = segEnd - segStart;
+                if (segSpan <= 0) segSpan = minW;
+
+                double xMin = segStart - segSpan * 0.1;
+                double xMax = segEnd   + segSpan * 0.1;
+
+                LOG_DEBUG(CAT, QString("  seg[%1]: %2 pts, [%3, %4], stretch=%5")
+                    .arg(seg).arg(segTimes.size())
+                    .arg(segStart, 0, 'f', 1).arg(segEnd, 0, 'f', 1)
+                    .arg(stretches[seg]));
+
+                QCustomPlot* plot = brokenAxis->addSegment(stretches[seg]);
+                plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
+                plot->legend->setVisible(false);
+
+                addRVDataToPlot(plot, segTimes, segRV, segErr,
+                                xMin, xMax, kPointColor, kErrorBarColor);
+
+                // Fit overlay
+                if (bestFit && bestFit->getPeriod() > 0) {
+                    QVector<double> fitX(201), fitY(201);
+                    for (int i = 0; i <= 200; ++i) {
+                        double t = xMin + (xMax - xMin) * i / 200.0;
+                        fitX[i] = t;
+                        fitY[i] = bestFit->calculateRV(t + t0);
+                    }
+                    QCPGraph* fitGraph = plot->addGraph();
+                    fitGraph->setPen(QPen(kFitCurveColor, 2.0));
+                    fitGraph->setData(fitX, fitY);
+                    fitGraph->removeFromLegend();
+                }
+
+                plot->xAxis->setRange(xMin, xMax);
+
+                // Tick count depends on relative width
+                double normW = widths[seg] / maxW;
+                if (normW < 0.20)
+                    plot->xAxis->ticker()->setTickCount(2);
+                else if (normW < 0.50)
+                    plot->xAxis->ticker()->setTickCount(3);
+                else
+                    plot->xAxis->ticker()->setTickCount(5);
+
+                plot->yAxis->setRange(yLo, yHi);
+
+                if (seg == 0) {
+                    plot->yAxis->setLabel("RV [km/s]");
+                    plot->yAxis->setTickLabels(true);
+                } else {
+                    plot->yAxis->setTickLabels(false);
+                    plot->yAxis->setLabel("");
+                }
+
+                plot->replot();
+            }
+
+            _rvContentLayout->addWidget(brokenAxis);
+
+            LOG_INFO(CAT, QString("Star %1 — broken-axis RV: %2 segments, %3 total points")
+                .arg(_star->getSourceId()).arg(nSeg).arg(data.size()));
+        }
+    }
+}
+
+// ============================================================================
+// Light Curve Plot — timeline or folded
+// ============================================================================
+
+void StarDetailView::populateLCPlot()
+{
+    clearLayout(_lcContentLayout);
+
+    auto phot = _star->getPhotometry();
+    if (!phot) {
+        _lcToggleButton->setEnabled(false);
+        _lcContentLayout->addWidget(makePlaceholder("No photometry data available yet."));
+        return;
+    }
+
+    auto sources = phot->getLightcurveSources();
+    if (sources.empty()) {
+        _lcToggleButton->setEnabled(false);
+        _lcContentLayout->addWidget(makePlaceholder("No light curve data available yet."));
+        return;
+    }
+
+    // Determine fold period
+    double foldPeriod = 0.0;
+    double foldT0     = 0.0;
+
+    for (auto& src : sources) {
+        auto bestModel = phot->getBestLightcurveModel(src);
+        if (bestModel && bestModel->period > 0) {
+            foldPeriod = bestModel->period;
+            foldT0     = bestModel->phase;
+            break;
+        }
+    }
+
+    if (foldPeriod <= 0) {
+        auto rvCurve = _star->getRVCurve();
+        if (rvCurve) {
+            auto bestFit = rvCurve->getBestFit();
+            if (bestFit && bestFit->getPeriod() > 0) {
+                foldPeriod = bestFit->getPeriod();
+                foldT0     = bestFit->getPhi();
+            }
+        }
+    }
+
+    bool canFold = foldPeriod > 0;
+    _lcToggleButton->setEnabled(canFold);
+    if (!canFold) {
+        _lcToggleButton->setChecked(false);
+        _lcFolded = false;
+        _lcToggleButton->setText("Show Folded");
+    }
+
+    QCustomPlot* plot = new QCustomPlot;
+    stylePlot(plot);
+    plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables);
+    plot->legend->setVisible(true);
+    plot->axisRect()->insetLayout()->setInsetAlignment(0, Qt::AlignBottom | Qt::AlignRight);
+
+    double globalXMin =  std::numeric_limits<double>::max();
+    double globalXMax =  std::numeric_limits<double>::lowest();
+    double globalYMin =  std::numeric_limits<double>::max();
+    double globalYMax =  std::numeric_limits<double>::lowest();
+
+    int colorIdx = 0;
+    for (auto& src : sources) {
+        auto lcPoints = phot->getLightcurve(src);
+        if (lcPoints.empty()) continue;
+
+        QColor col = kLCColors[colorIdx % kNumLCColors];
+        colorIdx++;
+
+        QVector<double> px, py, pe;
+        for (auto& pt : lcPoints) {
+            double x;
+            if (_lcFolded && canFold) {
+                x = std::fmod((pt.bjd - foldT0) / foldPeriod, 1.0);
+                if (x < 0.0) x += 1.0;
+            } else {
+                x = pt.bjd;
+            }
+
+            px.append(x);
+            py.append(pt.flux);
+            pe.append(pt.fluxError);
+
+            globalXMin = std::min(globalXMin, x);
+            globalXMax = std::max(globalXMax, x);
+            globalYMin = std::min(globalYMin, pt.flux - pt.fluxError);
+            globalYMax = std::max(globalYMax, pt.flux + pt.fluxError);
+        }
+
+        // Scatter graph for data points
+        QCPGraph* scatter = plot->addGraph();
+        scatter->setName(src);
+        scatter->setLineStyle(QCPGraph::lsNone);
+        scatter->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle, col, col, 5));
+        scatter->setData(px, py);
+
+        // Error bars
+        QCPErrorBars* errBars = new QCPErrorBars(plot->xAxis, plot->yAxis);
+        errBars->removeFromLegend();
+        errBars->setDataPlottable(scatter);
+        errBars->setErrorType(QCPErrorBars::etValueError);
+        errBars->setPen(QPen(col.lighter(150), 0.8));
+        errBars->setSymbolGap(0);
+        errBars->setData(pe);
+    }
+
+    // Axes
+    if (_lcFolded && canFold) {
+        plot->xAxis->setLabel("Phase");
+        plot->xAxis->setRange(-0.05, 1.05);
+    } else {
+        plot->xAxis->setLabel("BJD");
+        double span = globalXMax - globalXMin;
+        if (span <= 0) span = 1.0;
+        plot->xAxis->setRange(globalXMin - span * 0.02, globalXMax + span * 0.02);
+    }
+
+    plot->yAxis->setLabel("Flux");
+    double yMargin = (globalYMax - globalYMin) * 0.08;
+    if (yMargin <= 0) yMargin = 1.0;
+    plot->yAxis->setRange(globalYMin - yMargin, globalYMax + yMargin);
+
+    plot->replot();
+    _lcContentLayout->addWidget(plot);
+}
+
+// ============================================================================
+// Spectra Panel
 // ============================================================================
 
 void StarDetailView::populateSpectraPanel()
@@ -523,16 +1967,17 @@ void StarDetailView::populateSpectraPanel()
     _currentSpectrumIndex = -1;
     _sortedSpectra.clear();
     _spectraToolbar->setVisible(false);
+    _spectraResidualPlot->setVisible(false);
 
     auto spectra = _star->getSpectra();
 
     if (spectra.empty()) {
-        _spectraPlotWidget->showPlaceholder(
-            "No spectra available. Import spectra using the wizard or "
-            "the \"View / Fit Spectra\" button.");
+        _spectraMainPlot->clearPlottables();
+        _spectraMainPlot->replot();
         _spectraInfoLabel->setText(
             "<span style='color: gray; font-style: italic;'>"
-            "No spectra loaded.</span>");
+            "No spectra available. Import spectra using the wizard or "
+            "the \"View / Fit Spectra\" button.</span>");
         return;
     }
 
@@ -584,7 +2029,6 @@ void StarDetailView::populateSpectraPanel()
     _spectraTabConnection = connect(_spectraTabBar, &QTabBar::currentChanged,
                                      this, &StarDetailView::displaySpectrum);
 
-    // Show first spectrum
     if (!_sortedSpectra.empty()) {
         _spectraTabBar->setCurrentIndex(0);
         _currentSpectrumIndex = 0;
@@ -594,15 +2038,10 @@ void StarDetailView::populateSpectraPanel()
     _spectraTabBar->updateGeometry();
 }
 
-// ============================================================================
-// formatSpectrumTabLabel — WAS MISSING
-// ============================================================================
-
 QString StarDetailView::formatSpectrumTabLabel(
     const std::shared_ptr<Spectrum>& spec, int index) const
 {
     QString label;
-
     QString inst = spec->getInstrument();
     if (inst.isEmpty()) {
         label = QString("#%1").arg(index + 1);
@@ -612,18 +2051,12 @@ QString StarDetailView::formatSpectrumTabLabel(
         else
             label = inst;
     }
-
     if (spec->getMJD() > 0) {
         double mjd = spec->getMJD();
         label += QString(" %1").arg(mjd, 0, 'f', 4);
     }
-
     return label;
 }
-
-// ============================================================================
-// displaySpectrum — WAS MISSING
-// ============================================================================
 
 void StarDetailView::displaySpectrum(int index)
 {
@@ -683,10 +2116,8 @@ void StarDetailView::displaySpectrum(int index)
         _spectraFitCombo->addItem(label, QVariant(i));
 
         int comboPos = _spectraFitCombo->count() - 1;
-
         if (firstValidIdx < 0)
             firstValidIdx = comboPos;
-
         if (bestFit && fit->getId() == bestFit->getId())
             bestIdx = comboPos;
     }
@@ -700,10 +2131,7 @@ void StarDetailView::displaySpectrum(int index)
     _spectraToolbar->setVisible(hasFits);
     _spectraFitCombo->setCurrentIndex(selectIdx);
 
-    // ── Auto-detect renormalization need ──
-    // Default off; the Python script handles renorm if checked
-    _spectraRenormCheck->setChecked(false);
-
+    // ── Auto-detect renormalization ──
     if (selectIdx > 0) {
         int fitArrayIdx = _spectraFitCombo->itemData(selectIdx).toInt();
         if (fitArrayIdx >= 0 && fitArrayIdx < static_cast<int>(fits.size())) {
@@ -711,32 +2139,23 @@ void StarDetailView::displaySpectrum(int index)
             auto wavelengths = spec->getWavelengths();
             auto fluxes = spec->getFluxes();
 
-            // Quick heuristic: compare median flux levels to decide
-            // if renormalization is needed. Full computation is in Python.
-            if (!fit->modelWavelengths.empty() && !wavelengths.empty()) {
-                // Sample a few points to estimate scale difference
-                double dataMedian = 0, modelMedian = 0;
-                std::vector<double> dSample, mSample;
-                size_t step = std::max<size_t>(1, wavelengths.size() / 20);
-                for (size_t j = 0; j < wavelengths.size() && j < fit->modelWavelengths.size(); j += step) {
-                    if (!std::isnan(fluxes[j]))
-                        dSample.push_back(std::abs(fluxes[j]));
-                    if (j < fit->modelFluxes.size() && !std::isnan(fit->modelFluxes[j]))
-                        mSample.push_back(std::abs(fit->modelFluxes[j]));
-                }
-                if (!dSample.empty() && !mSample.empty()) {
-                    std::sort(dSample.begin(), dSample.end());
-                    std::sort(mSample.begin(), mSample.end());
-                    dataMedian = dSample[dSample.size() / 2];
-                    modelMedian = mSample[mSample.size() / 2];
-                    if (modelMedian > 0) {
-                        double ratio = dataMedian / modelMedian;
-                        bool needsRenorm = (std::abs(ratio - 1.0) > 0.05);
-                        _spectraRenormCheck->setChecked(needsRenorm);
-                    }
+            auto modelOnData = interpolateModel(
+                fit->modelWavelengths, fit->modelFluxes, wavelengths);
+
+            std::vector<double> dValid, mValid;
+            for (size_t j = 0; j < wavelengths.size(); ++j) {
+                if (!std::isnan(modelOnData[j]) && !std::isnan(fluxes[j])) {
+                    dValid.push_back(fluxes[j]);
+                    mValid.push_back(modelOnData[j]);
                 }
             }
+
+            double c = computeRenormFactor(dValid, mValid);
+            bool needsRenorm = (std::abs(c - 1.0) > 0.05);
+            _spectraRenormCheck->setChecked(needsRenorm);
         }
+    } else {
+        _spectraRenormCheck->setChecked(false);
     }
 
     _spectraFitCombo->blockSignals(false);
@@ -747,428 +2166,266 @@ void StarDetailView::displaySpectrum(int index)
     updateSpectrumDisplay();
 }
 
-// ============================================================================
-// Spectrum plot request builder & display
-// ============================================================================
-
-PlotRequest StarDetailView::buildSpectrumPlotRequest()
-{
-    PlotRequest req;
-    req.scriptName = "spectrum_plot.py";
-
-    auto spec = _sortedSpectra[_currentSpectrumIndex];
-    auto wavelengths = spec->getWavelengths();
-    auto fluxes      = spec->getFluxes();
-    auto errors      = spec->getFluxErrors();
-
-    QJsonObject payload;
-    payload["wavelengths"] = toJsonArray(wavelengths);
-    payload["fluxes"]      = toJsonArray(fluxes);
-
-    if (!errors.empty() && errors.size() == wavelengths.size())
-        payload["errors"] = toJsonArray(errors);
-
-    payload["renormalize"] = _spectraRenormCheck->isChecked();
-
-    int fitArrayIdx = _spectraFitCombo->currentData().toInt();
-    auto fits = spec->getSpectralFits();
-
-    if (fitArrayIdx >= 0 && fitArrayIdx < static_cast<int>(fits.size())) {
-        auto& fit = fits[fitArrayIdx];
-        if (!fit->modelWavelengths.empty()) {
-            QJsonObject modelObj;
-            modelObj["wavelengths"] = toJsonArray(fit->modelWavelengths);
-            modelObj["fluxes"]      = toJsonArray(fit->modelFluxes);
-            payload["model"] = modelObj;
-            payload["show_residuals"] = true;
-        }
-    }
-
-    req.payload = payload;
-    return req;
-}
-
 void StarDetailView::updateSpectrumDisplay()
 {
     if (_currentSpectrumIndex < 0 ||
         _currentSpectrumIndex >= static_cast<int>(_sortedSpectra.size()))
         return;
 
+    // Stop any pending sync before rebuilding
+    _axisSyncTimer->stop();
+
     auto spec = _sortedSpectra[_currentSpectrumIndex];
-    if (!spec || spec->getWavelengths().empty()) {
-        _spectraPlotWidget->showPlaceholder("No spectral data loaded for this spectrum.");
+    if (!spec) return;
+
+    auto wavelengths = spec->getWavelengths();
+    auto fluxes      = spec->getFluxes();
+    auto errors      = spec->getFluxErrors();
+
+    // Disconnect old axis sync before rebuilding
+    _spectraMainPlot->disconnect(this);
+    _spectraResidualPlot->disconnect(this);
+
+    // ──────────────────────────────────────────────────────────────
+    // Main chart
+    // ──────────────────────────────────────────────────────────────
+    _spectraMainPlot->clearPlottables();
+    _spectraMainPlot->legend->setVisible(false);
+
+    if (wavelengths.empty()) {
+        _spectraMainPlot->xAxis->setLabel("Wavelength [Å]");
+        _spectraMainPlot->yAxis->setLabel("Normalized Flux");
+        _spectraMainPlot->replot();
+        _spectraResidualPlot->setVisible(false);
         return;
     }
 
-    _spectraPlotWidget->requestPlot(buildSpectrumPlotRequest());
+    QVector<double> wlVec = toQVec(wavelengths);
+    QVector<double> flVec = toQVec(fluxes);
+
+    double xMin =  std::numeric_limits<double>::max();
+    double xMax =  std::numeric_limits<double>::lowest();
+    double yMin =  std::numeric_limits<double>::max();
+    double yMax =  std::numeric_limits<double>::lowest();
+
+    // ── Error band (filled area between upper and lower bounds) ──
+    bool hasErrors = !errors.empty() && errors.size() == wavelengths.size();
+
+    if (hasErrors) {
+        QVector<double> upper(wlVec.size()), lower(wlVec.size());
+        for (int i = 0; i < wlVec.size(); ++i) {
+            double e = (std::isnan(errors[i]) || errors[i] <= 0) ? 0.0 : errors[i];
+            upper[i] = fluxes[i] + e;
+            lower[i] = fluxes[i] - e;
+            xMin = std::min(xMin, wlVec[i]);
+            xMax = std::max(xMax, wlVec[i]);
+            yMin = std::min(yMin, lower[i]);
+            yMax = std::max(yMax, upper[i]);
+        }
+
+        QCPGraph* upperGraph = _spectraMainPlot->addGraph();
+        upperGraph->setData(wlVec, upper);
+        upperGraph->setPen(Qt::NoPen);
+        upperGraph->removeFromLegend();
+
+        QCPGraph* lowerGraph = _spectraMainPlot->addGraph();
+        lowerGraph->setData(wlVec, lower);
+        lowerGraph->setPen(Qt::NoPen);
+        lowerGraph->removeFromLegend();
+
+        // Fill the region between upper and lower
+        upperGraph->setBrush(QBrush(QColor(180, 180, 180, 50)));
+        upperGraph->setChannelFillGraph(lowerGraph);
+    }
+
+    // ── Observed spectrum line ──
+    QColor dataColor = dataLineColor();
+
+    QCPGraph* dataGraph = _spectraMainPlot->addGraph();
+    dataGraph->setPen(QPen(dataColor, 1.2));
+    dataGraph->setData(wlVec, flVec);
+    dataGraph->removeFromLegend();
+
+    if (!hasErrors) {
+        for (int i = 0; i < wlVec.size(); ++i) {
+            xMin = std::min(xMin, wlVec[i]);
+            xMax = std::max(xMax, wlVec[i]);
+            yMin = std::min(yMin, flVec[i]);
+            yMax = std::max(yMax, flVec[i]);
+        }
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    // Selected model fit overlay
+    // ──────────────────────────────────────────────────────────────
+    int fitArrayIdx = _spectraFitCombo->currentData().toInt();
+    auto fits = spec->getSpectralFits();
+    std::shared_ptr<SpectralFit> selectedFit;
+
+    if (fitArrayIdx >= 0 && fitArrayIdx < static_cast<int>(fits.size()))
+        selectedFit = fits[fitArrayIdx];
+
+    std::vector<double> residualWl;
+    std::vector<double> residualVal;
+
+    if (selectedFit && !selectedFit->modelWavelengths.empty()) {
+        const auto& mWl   = selectedFit->modelWavelengths;
+        const auto& mFlux = selectedFit->modelFluxes;
+
+        std::vector<double> modelOnDataGrid =
+            interpolateModel(mWl, mFlux, wavelengths);
+
+        double renormC = 1.0;
+        if (_spectraRenormCheck->isChecked()) {
+            std::vector<double> dValid, mValid;
+            for (size_t i = 0; i < wavelengths.size(); ++i) {
+                if (!std::isnan(modelOnDataGrid[i]) && !std::isnan(fluxes[i])) {
+                    dValid.push_back(fluxes[i]);
+                    mValid.push_back(modelOnDataGrid[i]);
+                }
+            }
+            renormC = computeRenormFactor(dValid, mValid);
+        }
+
+        QVector<double> mWlVec = toQVec(mWl);
+        QVector<double> mFlVec(mWl.size());
+        for (size_t i = 0; i < mWl.size(); ++i) {
+            mFlVec[i] = mFlux[i] * renormC;
+            yMin = std::min(yMin, mFlVec[i]);
+            yMax = std::max(yMax, mFlVec[i]);
+        }
+
+        QCPGraph* modelGraph = _spectraMainPlot->addGraph();
+        modelGraph->setPen(QPen(kFitCurveColor, 1.5));
+        modelGraph->setData(mWlVec, mFlVec);
+        modelGraph->removeFromLegend();
+
+        for (size_t i = 0; i < wavelengths.size(); ++i) {
+            if (std::isnan(modelOnDataGrid[i])) continue;
+            residualWl.push_back(wavelengths[i]);
+            residualVal.push_back(fluxes[i] - modelOnDataGrid[i] * renormC);
+        }
+    }
+
+    // ── Main axes ──
+    double xSpan = xMax - xMin;
+    if (xSpan <= 0) xSpan = 100;
+    double xLo = xMin - xSpan * 0.01;
+    double xHi = xMax + xSpan * 0.01;
+
+    bool showResiduals = !residualWl.empty();
+
+    _spectraMainPlot->xAxis->setRange(xLo, xHi);
+    if (showResiduals) {
+        _spectraMainPlot->xAxis->setTickLabels(false);
+        _spectraMainPlot->xAxis->setLabel("");
+    } else {
+        _spectraMainPlot->xAxis->setTickLabels(true);
+        _spectraMainPlot->xAxis->setLabel("Wavelength [Å]");
+    }
+
+    // Robust Y range — clip cosmic rays (use middle 95% of flux values)
+    std::vector<double> allMainY;
+    allMainY.reserve(fluxes.size());
+    for (size_t i = 0; i < fluxes.size(); ++i) {
+        if (!std::isnan(fluxes[i]))
+            allMainY.push_back(fluxes[i]);
+    }
+    // Also include model fluxes if present so the model isn't clipped
+    if (selectedFit && !selectedFit->modelWavelengths.empty()) {
+        double renormC = 1.0;
+        if (_spectraRenormCheck->isChecked()) {
+            std::vector<double> dV, mV;
+            auto modelInterp = interpolateModel(
+                selectedFit->modelWavelengths, selectedFit->modelFluxes, wavelengths);
+            for (size_t i = 0; i < wavelengths.size(); ++i) {
+                if (!std::isnan(modelInterp[i]) && !std::isnan(fluxes[i])) {
+                    dV.push_back(fluxes[i]);
+                    mV.push_back(modelInterp[i]);
+                }
+            }
+            renormC = computeRenormFactor(dV, mV);
+        }
+        for (double mf : selectedFit->modelFluxes) {
+            if (!std::isnan(mf))
+                allMainY.push_back(mf * renormC);
+        }
+    }
+
+    auto [mainYLo, mainYHi] = robustRange(allMainY, 0.95, 0.15);
+
+    _spectraMainPlot->yAxis->setLabel("Normalized Flux");
+    _spectraMainPlot->yAxis->setRange(mainYLo, mainYHi);
+
+    _spectraMainPlot->replot();
+
+    // ──────────────────────────────────────────────────────────────
+    // Residual chart
+    // ──────────────────────────────────────────────────────────────
+    if (showResiduals) {
+        _spectraResidualPlot->clearPlottables();
+
+        QVector<double> rWlVec = toQVec(residualWl);
+        QVector<double> rValVec = toQVec(residualVal);
+
+        QCPGraph* resGraph = _spectraResidualPlot->addGraph();
+        resGraph->setPen(QPen(dataColor, 1.0));
+        resGraph->setData(rWlVec, rValVec);
+
+        // Zero line
+        QCPGraph* zeroLine = _spectraResidualPlot->addGraph();
+        zeroLine->setPen(QPen(QColor(120, 120, 120), 1.0, Qt::DashLine));
+        zeroLine->setData(QVector<double>{xLo, xHi}, QVector<double>{0.0, 0.0});
+
+        // X axis
+        _spectraResidualPlot->xAxis->setLabel("Wavelength [Å]");
+        _spectraResidualPlot->xAxis->setRange(xLo, xHi);
+
+        QSharedPointer<QCPAxisTicker> xResTicker(new QCPAxisTicker);
+        xResTicker->setTickCount(6);
+        _spectraResidualPlot->xAxis->setTicker(xResTicker);
+
+        // Robust Y range for residuals — clip outlier residuals
+        auto [resYLo, resYHi] = robustRange(residualVal, 0.95, 0.15);
+
+        _spectraResidualPlot->yAxis->setLabel("Residual");
+        _spectraResidualPlot->yAxis->setRange(resYLo, resYHi);
+
+        QSharedPointer<QCPAxisTicker> yResTicker(new QCPAxisTicker);
+        yResTicker->setTickCount(3);
+        yResTicker->setTickStepStrategy(QCPAxisTicker::tssReadability);
+        _spectraResidualPlot->yAxis->setTicker(yResTicker);
+        _spectraResidualPlot->yAxis->setSubTicks(false);
+
+        stylePlot(_spectraResidualPlot);
+        _spectraResidualPlot->setVisible(true);
+        _spectraResidualPlot->replot();
+
+        // ── Link X axes: main ↔ residual (debounced) ──
+        connect(_spectraMainPlot->xAxis,
+                QOverload<const QCPRange&>::of(&QCPAxis::rangeChanged),
+                this, [this](const QCPRange& range) {
+            if (_axisSyncInProgress) return;
+            _pendingSyncRangeMin = range.lower;
+            _pendingSyncRangeMax = range.upper;
+            _syncFromMain = true;
+            _axisSyncTimer->start();
+        });
+
+        connect(_spectraResidualPlot->xAxis,
+                QOverload<const QCPRange&>::of(&QCPAxis::rangeChanged),
+                this, [this](const QCPRange& range) {
+            if (_axisSyncInProgress) return;
+            _pendingSyncRangeMin = range.lower;
+            _pendingSyncRangeMax = range.upper;
+            _syncFromMain = false;
+            _axisSyncTimer->start();
+        });
+
+    } else {
+        _spectraResidualPlot->setVisible(false);
+    }
 }
-
-// ============================================================================
-// Button Sidebar
-// ============================================================================
-
-QWidget* StarDetailView::createButtonSidebar()
-{
-    QWidget* sidebar = new QWidget;
-    sidebar->setFixedWidth(180);
-    QVBoxLayout* layout = new QVBoxLayout(sidebar);
-    layout->setContentsMargins(2, 0, 2, 0);
-    layout->setSpacing(8);
-
-    auto makeButton = [&](const QString& text, const QString& tooltip) -> QPushButton* {
-        QPushButton* btn = new QPushButton(text);
-        btn->setToolTip(tooltip);
-        btn->setMinimumHeight(36);
-        layout->addWidget(btn);
-        return btn;
-    };
-
-    _simbadButton = makeButton("Show in SIMBAD", "Open SIMBAD page for this star");
-    connect(_simbadButton, &QPushButton::clicked, this, &StarDetailView::onShowInSimbad);
-
-    layout->addSpacing(8);
-
-    _viewAdjustRVButton = makeButton("View / Adjust RV", "View and adjust radial velocity data");
-    connect(_viewAdjustRVButton, &QPushButton::clicked, this, &StarDetailView::onViewAdjustRV);
-
-    _viewFitSpectraButton = makeButton("View / Fit Spectra", "View and fit spectra");
-    connect(_viewFitSpectraButton, &QPushButton::clicked, this, &StarDetailView::onViewFitSpectra);
-
-    _fetchLCButton = makeButton("Fetch / Fit LC", "Fetch and fit light curves");
-    connect(_fetchLCButton, &QPushButton::clicked, this, &StarDetailView::onFetchLightcurves);
-
-    _viewFitSEDButton = makeButton("View / Fit SED", "View and fit SED");
-    connect(_viewFitSEDButton, &QPushButton::clicked, this, &StarDetailView::onViewFitSED);
-
-    layout->addSpacing(8);
-
-    _cmdButton = makeButton("Show CMD", "Show colour–magnitude diagram");
-    connect(_cmdButton, &QPushButton::clicked, this, &StarDetailView::onShowCMD);
-
-    _calcOrbitButton = makeButton("Galactic Orbit", "Calculate galactic orbit");
-    connect(_calcOrbitButton, &QPushButton::clicked, this, &StarDetailView::onCalculateOrbit);
-
-    layout->addStretch();
-    return sidebar;
-}
-
-// ============================================================================
-// Summary — unchanged from your version (verified correct)
-// ============================================================================
-
-void StarDetailView::populateSummary()
-{
-    if (!_star) return;
-
-    auto valErr = [](double val, double err, int prec = 2, const QString& unit = "") -> QString {
-        if (std::isnan(val) || val == 0.0) return QString();
-        QString s = QString::number(val, 'f', prec);
-        if (!std::isnan(err) && err > 0.0)
-            s += QString(" ± %1").arg(QString::number(err, 'f', prec));
-        if (!unit.isEmpty())
-            s += " " + unit;
-        return s;
-    };
-
-    auto has = [](double v) -> bool {
-        return !std::isnan(v) && v != 0.0;
-    };
-
-    struct Row { QString label; QString value; };
-    struct Section { QString title; std::vector<Row> rows; };
-    std::vector<Section> sections;
-
-    // 1. IDENTITY
-    {
-        Section sec;
-        sec.title = "Identity";
-        QString name = _star->getAlias();
-        if (!name.isEmpty())
-            sec.rows.push_back({"Name", name});
-        sec.rows.push_back({"Gaia DR3", _star->getSourceId()});
-        QString specClass = _star->getSpecClass();
-        if (!specClass.isEmpty())
-            sec.rows.push_back({"Spectral Class", specClass});
-        QString tic = _star->getTic();
-        if (!tic.isEmpty())
-            sec.rows.push_back({"TIC", tic});
-        QString jname = _star->getJName();
-        if (!jname.isEmpty())
-            sec.rows.push_back({"J-Name", jname});
-        sections.push_back(sec);
-    }
-
-    // 2. ASTROMETRY
-    {
-        Section sec;
-        sec.title = "Astrometry";
-        if (has(_star->getGmag())) {
-            QString v = valErr(_star->getGmag(), _star->getEGmag(), 3, "mag");
-            sec.rows.push_back({"G", v});
-        }
-        if (has(_star->getBpRp()))
-            sec.rows.push_back({"BP−RP", QString::number(_star->getBpRp(), 'f', 3) + " mag"});
-        if (has(_star->getPlx())) {
-            QString v = valErr(_star->getPlx(), _star->getEPlx(), 3, "mas");
-            sec.rows.push_back({"Parallax", v});
-        }
-        if (has(_star->getRa()) && has(_star->getDec())) {
-            sec.rows.push_back({"RA", QString::number(_star->getRa(), 'f', 6) + "°"});
-            sec.rows.push_back({"Dec", QString::number(_star->getDec(), 'f', 6) + "°"});
-        }
-        if (has(_star->getPmra())) {
-            QString v = valErr(_star->getPmra(), _star->getEPmra(), 3, "mas/yr");
-            sec.rows.push_back({"μ_RA", v});
-        }
-        if (has(_star->getPmdec())) {
-            QString v = valErr(_star->getPmdec(), _star->getEPmdec(), 3, "mas/yr");
-            sec.rows.push_back({"μ_Dec", v});
-        }
-        if (!sec.rows.empty())
-            sections.push_back(sec);
-    }
-
-    // 3. RADIAL VELOCITY
-    {
-        Section sec;
-        auto rvCurve = _star->getRVCurve();
-        std::shared_ptr<RVFit> bestFit;
-        if (rvCurve) bestFit = rvCurve->getBestFit();
-        bool hasFit = bestFit && bestFit->getPeriod() > 0;
-
-        if (hasFit) {
-            sec.title = "Radial Velocity (Orbital Fit)";
-            sec.rows.push_back({"P",
-                valErr(bestFit->getPeriod(), bestFit->getPeriodError(), 4, "d")});
-            sec.rows.push_back({"K",
-                valErr(bestFit->getK(), bestFit->getKError(), 2, "km/s")});
-            sec.rows.push_back({"γ",
-                valErr(bestFit->getGamma(), bestFit->getGammaError(), 2, "km/s")});
-            sec.rows.push_back({"T₀ (ϕ)",
-                valErr(bestFit->getPhi(), bestFit->getPhiError(), 4, "")});
-            if (bestFit->isEccentric()) {
-                sec.rows.push_back({"e",
-                    valErr(bestFit->getEccentricity(), bestFit->getEccentricityError(), 4, "")});
-                sec.rows.push_back({"ω",
-                    valErr(bestFit->getOmega(), bestFit->getOmegaError(), 1, "°")});
-            }
-            if (has(bestFit->getRms()))
-                sec.rows.push_back({"RMS", QString::number(bestFit->getRms(), 'f', 2) + " km/s"});
-            if (!bestFit->getFitMethod().isEmpty())
-                sec.rows.push_back({"Method", bestFit->getFitMethod()});
-        } else {
-            bool hasRVData = false;
-            double deltaRV = 0, medRV = 0, minRV = 0, maxRV = 0;
-            size_t nPts = 0;
-            double timeSpan = 0;
-
-            if (rvCurve && rvCurve->getNumPoints() > 0) {
-                deltaRV  = rvCurve->getRVAmplitude();
-                medRV    = rvCurve->getMedianRV();
-                minRV    = rvCurve->getMinRV();
-                maxRV    = rvCurve->getMaxRV();
-                nPts     = rvCurve->getNumPoints();
-                timeSpan = rvCurve->getTimeSpan();
-                hasRVData = true;
-            } else if (has(_star->getDeltaRV())) {
-                deltaRV = _star->getDeltaRV();
-                medRV   = _star->getRVMed();
-                hasRVData = true;
-            }
-
-            if (hasRVData) {
-                sec.title = "Radial Velocity";
-                QString drv = valErr(deltaRV, _star->getEDeltaRV(), 2, "km/s");
-                if (!drv.isEmpty())
-                    sec.rows.push_back({"ΔRV_max", drv});
-                if (has(medRV)) {
-                    QString mrv = valErr(medRV, _star->getERVMed(), 2, "km/s");
-                    sec.rows.push_back({"RV_median", mrv});
-                }
-                if (has(minRV) && has(maxRV)) {
-                    double rvMid = minRV + (maxRV - minRV) / 2.0;
-                    sec.rows.push_back({"RV_mid", QString::number(rvMid, 'f', 2) + " km/s"});
-                }
-                if (nPts > 0)
-                    sec.rows.push_back({"N_points", QString::number(nPts)});
-                if (has(timeSpan))
-                    sec.rows.push_back({"Time span", QString::number(timeSpan, 'f', 1) + " d"});
-                if (has(_star->getLogP()))
-                    sec.rows.push_back({"log P (false alarm)", QString::number(_star->getLogP(), 'f', 2)});
-            }
-        }
-
-        if (!sec.rows.empty())
-            sections.push_back(sec);
-    }
-
-    // 4. SPECTROSCOPY
-    {
-        Section sec;
-        auto spectra = _star->getSpectra();
-        bool hasAtmospheric = has(_star->getTeff()) || has(_star->getLogg()) || has(_star->getHe());
-
-        if (hasAtmospheric) {
-            sec.title = "Atmospheric Parameters";
-            if (has(_star->getTeff()))
-                sec.rows.push_back({"T_eff", valErr(_star->getTeff(), _star->getETeff(), 0, "K")});
-            if (has(_star->getLogg()))
-                sec.rows.push_back({"log g", valErr(_star->getLogg(), _star->getELogg(), 2, "dex")});
-            if (has(_star->getHe()))
-                sec.rows.push_back({"log(He/H)", valErr(_star->getHe(), _star->getEHe(), 2, "")});
-            if (!spectra.empty()) {
-                sec.rows.push_back({"N_spectra", QString::number(spectra.size())});
-                QSet<QString> instruments;
-                for (auto& sp : spectra) {
-                    if (!sp->getInstrument().isEmpty())
-                        instruments.insert(sp->getInstrument());
-                }
-                if (!instruments.isEmpty()) {
-                    QStringList instList(instruments.begin(), instruments.end());
-                    instList.sort();
-                    sec.rows.push_back({"Instruments", instList.join(", ")});
-                }
-            }
-        } else if (!spectra.empty()) {
-            sec.title = "Spectra";
-            sec.rows.push_back({"N_spectra", QString::number(spectra.size())});
-            QSet<QString> instruments;
-            for (auto& sp : spectra) {
-                if (!sp->getInstrument().isEmpty())
-                    instruments.insert(sp->getInstrument());
-            }
-            if (!instruments.isEmpty()) {
-                QStringList instList(instruments.begin(), instruments.end());
-                instList.sort();
-                sec.rows.push_back({"Instruments", instList.join(", ")});
-            }
-        }
-        if (!sec.rows.empty())
-            sections.push_back(sec);
-    }
-
-    // 5. LIGHT CURVES
-    {
-        Section sec;
-        auto phot = _star->getPhotometry();
-        if (phot) {
-            auto sources = phot->getLightcurveSources();
-            if (!sources.empty()) {
-                bool hasFit = false;
-                double bestPeriod = 0;
-                for (auto& src : sources) {
-                    auto model = phot->getBestLightcurveModel(src);
-                    if (model && model->period > 0) {
-                        hasFit = true;
-                        if (bestPeriod <= 0) bestPeriod = model->period;
-                    }
-                }
-                if (hasFit) {
-                    sec.title = "Light Curves (Fit)";
-                    if (has(bestPeriod))
-                        sec.rows.push_back({"Period", QString::number(bestPeriod, 'f', 6) + " d"});
-                    QStringList srcList;
-                    for (auto& s : sources) srcList.append(s);
-                    sec.rows.push_back({"Sources", srcList.join(", ")});
-                } else {
-                    sec.title = "Light Curves";
-                    QStringList srcList;
-                    for (auto& s : sources) srcList.append(s);
-                    sec.rows.push_back({"Available from", srcList.join(", ")});
-                }
-            }
-        }
-        if (!sec.rows.empty())
-            sections.push_back(sec);
-    }
-
-    // 6. SED
-    {
-        Section sec;
-        auto phot = _star->getPhotometry();
-        if (phot) {
-            auto bestSED = phot->getBestSEDModel();
-            if (bestSED) {
-                sec.title = "SED Fit";
-                if (has(bestSED->radius))
-                    sec.rows.push_back({"Radius",
-                        valErr(bestSED->radius, bestSED->radiusError, 3, "R☉")});
-                if (has(bestSED->temperature))
-                    sec.rows.push_back({"T_eff (SED)",
-                        valErr(bestSED->temperature, bestSED->temperatureError, 0, "K")});
-                if (has(bestSED->angularSize))
-                    sec.rows.push_back({"Angular size",
-                        valErr(bestSED->angularSize, bestSED->angularSizeError, 4, "mas")});
-            }
-        }
-        if (!sec.rows.empty())
-            sections.push_back(sec);
-    }
-
-    // 7. REFERENCES
-    {
-        Section sec;
-        auto bibcodes = _star->getBibcodes();
-        if (!bibcodes.empty()) {
-            sec.title = "References";
-            for (auto& bib : bibcodes) {
-                QString link = QString("<a href=\"https://ui.adsabs.harvard.edu/abs/%1/abstract\">%1</a>")
-                                   .arg(bib);
-                sec.rows.push_back({"", link});
-            }
-        }
-        if (!sec.rows.empty())
-            sections.push_back(sec);
-    }
-
-    // BUILD HTML
-    QString html;
-    html += "<style>"
-            "table { border-collapse: collapse; width: 100%; margin-bottom: 8px; }"
-            "td { padding: 2px 6px; vertical-align: top; }"
-            "td.label { font-weight: bold; white-space: nowrap; color: palette(text); width: 1%; }"
-            "td.value { color: palette(text); }"
-            "h4 { margin: 10px 0 4px 0; padding-bottom: 2px; "
-            "     border-bottom: 1px solid palette(mid); color: palette(text); }"
-            "a { color: palette(link); }"
-            "</style>";
-
-    QString displayName = _star->getAlias().isEmpty() ? _star->getSourceId() : _star->getAlias();
-    html += QString("<h3 style='margin-top: 4px;'>%1</h3>").arg(displayName);
-
-    if (!_star->getAlias().isEmpty() && !_star->getSourceId().isEmpty()) {
-        html += QString("<p style='margin-top: -8px; color: gray;'>Gaia DR3 %1</p>")
-                    .arg(_star->getSourceId());
-    }
-
-    for (auto& sec : sections) {
-        html += QString("<h4>%1</h4>").arg(sec.title);
-        html += "<table>";
-        for (auto& row : sec.rows) {
-            if (row.label.isEmpty()) {
-                html += QString("<tr><td colspan='2' class='value'>%1</td></tr>").arg(row.value);
-            } else {
-                html += QString("<tr><td class='label'>%1</td><td class='value'>%2</td></tr>")
-                            .arg(row.label, row.value);
-            }
-        }
-        html += "</table>";
-    }
-
-    if (sections.size() <= 1) {
-        html += "<p style='color: gray; font-style: italic;'>"
-                "No additional data available. Import spectra, radial velocities, "
-                "or light curves to see more.</p>";
-    }
-
-    _summaryContent->setTextFormat(Qt::RichText);
-    _summaryContent->setOpenExternalLinks(true);
-    _summaryContent->setText(html);
-}
-
-// ============================================================================
-// Spectrum info strip
-// ============================================================================
 
 QString StarDetailView::formatSpectrumInfo(
     const std::shared_ptr<Spectrum>& spec) const
@@ -1177,16 +2434,12 @@ QString StarDetailView::formatSpectrumInfo(
 
     if (!spec->getInstrument().isEmpty())
         parts << QString("<b>%1</b>").arg(spec->getInstrument());
-
     if (spec->getMJD() > 0)
         parts << QString("MJD %1").arg(spec->getMJD(), 0, 'f', 4);
-
     if (spec->getBJD() > 0)
         parts << QString("BJD %1").arg(spec->getBJD(), 0, 'f', 4);
-
     if (spec->getExposureTime() > 0)
         parts << QString("Exp: %1 s").arg(spec->getExposureTime(), 0, 'f', 0);
-
     if (spec->isBarycentricallyCorrected())
         parts << "Bary. corr.";
 
@@ -1246,34 +2499,48 @@ void StarDetailView::onToggleLCFolded()
 // Button slots — stubs
 // ============================================================================
 
-void StarDetailView::onFetchLightcurves()
-{
-    QMessageBox::information(this, "Fetch / Fit Light Curves", "To be implemented.");
-}
+// Replace all the stub slots:
 
-void StarDetailView::onCalculateOrbit()
+void StarDetailView::onViewAdjustRV()
 {
-    QMessageBox::information(this, "Galactic Orbit", "To be implemented.");
-}
-
-void StarDetailView::onShowCMD()
-{
-    QMessageBox::information(this, "CMD", "To be implemented.");
+    auto* dialog = new RVInspectorDialog(_star, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
 }
 
 void StarDetailView::onViewFitSpectra()
 {
-    QMessageBox::information(this, "View / Fit Spectra", "To be implemented.");
+    auto* dialog = new SpectraFitDialog(_star, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
 }
 
-void StarDetailView::onViewAdjustRV()
+void StarDetailView::onFetchLightcurves()
 {
-    QMessageBox::information(this, "View / Adjust RV", "To be implemented.");
+    auto* dialog = new LightcurveFetchDialog(_star, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
 }
 
 void StarDetailView::onViewFitSED()
 {
-    QMessageBox::information(this, "View / Fit SED", "To be implemented.");
+    auto* dialog = new SEDFitDialog(_star, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
+}
+
+void StarDetailView::onShowCMD()
+{
+    auto* dialog = new CMDDialog(_star, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
+}
+
+void StarDetailView::onCalculateOrbit()
+{
+    auto* dialog = new GalacticOrbitDialog(_star, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
 }
 
 void StarDetailView::onShowInSimbad()

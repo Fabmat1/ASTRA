@@ -88,11 +88,12 @@ bool ThemeManager::applyTheme(const QString& themeId)
     qApp->setStyleSheet(styleSheet);
     _currentThemeId = themeId;
     
+    qApp->setProperty("isDarkTheme", theme.isDark);
+
     saveCurrentTheme();
-    
+
     emit themeChanged(themeId);
     emit themeApplied(theme);
-    
     return true;
 }
 

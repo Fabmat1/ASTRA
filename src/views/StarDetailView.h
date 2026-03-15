@@ -1,26 +1,20 @@
-#ifndef STARDETAILVIEW_H
-#define STARDETAILVIEW_H
+#pragma once
 
 #include <QWidget>
-#include <QComboBox>
-#include <QCheckBox>
-// REMOVE: #include <QValueAxis>  ← QtCharts dependency, no longer needed
+#include <QMetaObject>
 #include <memory>
+#include <vector>
 
-#include "plotting/MatplotlibPlotWidget.h"
-
-#include <QJsonObject>
-#include <QJsonArray>
-
-QT_BEGIN_NAMESPACE
-class QLabel;
-class QTabBar;
-class QPushButton;
 class QSplitter;
-class QVBoxLayout;
 class QScrollArea;
-QT_END_NAMESPACE
-
+class QLabel;
+class QPushButton;
+class QTabBar;
+class QVBoxLayout;
+class QComboBox;
+class QCheckBox;
+class QCustomPlot;
+class QFrame;     
 class Star;
 class Spectrum;
 
@@ -30,9 +24,11 @@ class StarDetailView : public QWidget
 
 public:
     explicit StarDetailView(std::shared_ptr<Star> star, QWidget* parent = nullptr);
-    ~StarDetailView();
+    ~StarDetailView() override;
 
 private slots:
+    void onToggleRVFolded();
+    void onToggleLCFolded();
     void onFetchLightcurves();
     void onCalculateOrbit();
     void onShowCMD();
@@ -41,88 +37,110 @@ private slots:
     void onViewFitSED();
     void onShowInSimbad();
 
-    void onToggleRVFolded();
-    void onToggleLCFolded();
-
 private:
+    // ── UI setup ──
     void setupUi();
-    void populateSummary();
-    void populateRVPlot();
-    void populateLCPlot();
-    void populateSpectraPanel();
-    void displaySpectrum(int index);
-    void updateSpectrumDisplay();
-    QString formatSpectrumTabLabel(const std::shared_ptr<Spectrum>& spec, int index) const;
-    QString formatSpectrumInfo(const std::shared_ptr<Spectrum>& spec) const;
-
-    // Layout builders
     QWidget* createSummaryPanel();
     QWidget* createRVPlotPanel();
     QWidget* createLCPlotPanel();
     QWidget* createSpectraPanel();
     QWidget* createButtonSidebar();
 
-    // ── MISSING: Plot request builders ──
-    PlotRequest buildRVPlotRequest();
-    PlotRequest buildLCPlotRequest();
-    PlotRequest buildSpectrumPlotRequest();
+    // ── Theme support ──
+    void refreshAllPlotThemes();
+    void refreshPlotTheme(QCustomPlot* plot);
 
-    // ── MISSING: JSON helper ──
-    static QJsonArray toJsonArray(const std::vector<double>& v);
+    // ── Data population ──
+    void populateSummary();
+    void populateRVPlot();
+    void populateLCPlot();
+    void populateSpectraPanel();
 
-    // ── REMOVE: These belong to the old QtCharts spectrum code ──
-    // static std::vector<double> interpolateModel(...);
-    // static double computeRenormFactor(...);
-    // QColor dataLineColor() const;
-    // QValueAxis* _spectraMainXAxis = nullptr;
-    // QValueAxis* _spectraResidualXAxis = nullptr;
-    // bool _axisSyncInProgress = false;
+    // ── Spectrum helpers ──
+    void displaySpectrum(int index);
+    void updateSpectrumDisplay();
+    QString formatSpectrumTabLabel(const std::shared_ptr<Spectrum>& spec, int index) const;
+    QString formatSpectrumInfo(const std::shared_ptr<Spectrum>& spec) const;
+    QColor dataLineColor() const;
+    std::vector<double> interpolateModel(
+        const std::vector<double>& modelWl,
+        const std::vector<double>& modelFlux,
+        const std::vector<double>& targetWl);
+    double computeRenormFactor(
+        const std::vector<double>& data,
+        const std::vector<double>& model);
 
+    // ── Data ──
     std::shared_ptr<Star> _star;
 
-    // Summary panel
-    QScrollArea* _summaryScroll;
-    QLabel* _summaryContent;
+    // ── Layout splitters ──
+    QSplitter* _mainHSplitter  = nullptr;
+    QSplitter* _leftVSplitter  = nullptr;
+    QSplitter* _rightVSplitter = nullptr;
 
-    // RV plot
-    // REMOVE: QWidget* _rvContent;        ← never created/used anymore
-    // REMOVE: QVBoxLayout* _rvContentLayout; ← never created/used anymore
-    QPushButton* _rvToggleButton;
-    bool _rvFolded;
-    MatplotlibPlotWidget* _rvPlotWidget = nullptr;
+    // ── Summary panel ──
+    QScrollArea* _summaryScroll  = nullptr;
+    QLabel*      _summaryContent = nullptr;
 
-    // LC plot
-    // REMOVE: QWidget* _lcContent;        ← never created/used anymore
-    // REMOVE: QVBoxLayout* _lcContentLayout; ← never created/used anymore
-    QPushButton* _lcToggleButton;
-    bool _lcFolded;
-    MatplotlibPlotWidget* _lcPlotWidget = nullptr;
+    // ── RV plot panel ──
+    QPushButton* _rvToggleButton  = nullptr;
+    QWidget*     _rvContent       = nullptr;
+    QVBoxLayout* _rvContentLayout = nullptr;
+    bool         _rvFolded        = false;
 
-    // Spectra panel
-    QTabBar* _spectraTabBar;
-    QLabel* _spectraInfoLabel;
-    int _currentSpectrumIndex;
+    // ── LC plot panel ──
+    QPushButton* _lcToggleButton  = nullptr;
+    QWidget*     _lcContent       = nullptr;
+    QVBoxLayout* _lcContentLayout = nullptr;
+    bool         _lcFolded        = false;
+
+    // ── Spectra panel ──
+    QTabBar*     _spectraTabBar        = nullptr;
+    QWidget*     _spectraToolbar       = nullptr;
+    QComboBox*   _spectraFitCombo      = nullptr;
+    QCheckBox*   _spectraRenormCheck   = nullptr;
+    QCustomPlot* _spectraMainPlot      = nullptr;
+    QCustomPlot* _spectraResidualPlot  = nullptr;
+    QLabel*      _spectraInfoLabel     = nullptr;
+    bool         _axisSyncInProgress   = false;
+    QTimer* _axisSyncTimer = nullptr;
+    double _pendingSyncRangeMin = 0.0;
+    double _pendingSyncRangeMax = 1.0;
+    bool _syncFromMain = false;
+
+    int _currentSpectrumIndex = -1;
     std::vector<std::shared_ptr<Spectrum>> _sortedSpectra;
     QMetaObject::Connection _spectraTabConnection;
-    MatplotlibPlotWidget* _spectraPlotWidget = nullptr;
 
-    QComboBox*   _spectraFitCombo    = nullptr;
-    QCheckBox*   _spectraRenormCheck = nullptr;
-    QWidget*     _spectraToolbar     = nullptr;
+    // ── Sidebar buttons ──
+    QPushButton* _simbadButton        = nullptr;
+    QPushButton* _viewAdjustRVButton  = nullptr;
+    QPushButton* _viewFitSpectraButton = nullptr;
+    QPushButton* _fetchLCButton       = nullptr;
+    QPushButton* _viewFitSEDButton    = nullptr;
+    QPushButton* _cmdButton           = nullptr;
+    QPushButton* _calcOrbitButton     = nullptr;
 
-    // Splitters
-    QSplitter* _mainHSplitter;
-    QSplitter* _leftVSplitter;
-    QSplitter* _rightVSplitter;
 
-    // Sidebar buttons
-    QPushButton* _fetchLCButton;
-    QPushButton* _calcOrbitButton;
-    QPushButton* _cmdButton;
-    QPushButton* _viewFitSpectraButton;
-    QPushButton* _viewAdjustRVButton;
-    QPushButton* _viewFitSEDButton;
-    QPushButton* _simbadButton;
+    // ── Summary dashboard helpers ──
+    QWidget* buildDashboard();
+    QWidget* createNameHeader();
+    QWidget* createMetricCardsRow();
+    QWidget* createMetricCard(const QString& value, const QString& label,
+                              const QString& subtitle, const QColor& accentColor);
+    QWidget* createPropertiesSection();
+    QWidget* createOrbitalFitSection();
+    QWidget* createDataInventorySection();
+    QWidget* createReferencesSection();
+    QFrame*  createSectionFrame(const QString& title, QWidget* content);
+
+    // Color helpers
+    QColor logPColor(double logP) const;
+    QColor deltaRVColor(double deltaRV) const;
+    QColor specClassColor(const QString& specClass) const;
+    QColor accentTextColor(const QColor& accent) const;
+    bool   isDarkTheme() const;
+
+protected:
+    bool event(QEvent* e) override;
 };
-
-#endif // STARDETAILVIEW_H
