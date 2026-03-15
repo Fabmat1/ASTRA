@@ -97,7 +97,8 @@ private:
 
     void loadPhotometryBatch(std::vector<std::shared_ptr<Star>>& stars);
     void loadSpectraBatch(std::vector<std::shared_ptr<Star>>& stars);
-
+    void loadRVCurveBatch(std::vector<std::shared_ptr<Star>>& stars);
+    
     // Photometry operations
     bool savePhotometry(const QString& starId, std::shared_ptr<Photometry> photometry);
     bool saveSEDModel(const QString& starId, const QString& photometryId,

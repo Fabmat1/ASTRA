@@ -1210,67 +1210,6 @@ void RVExtractionTask::executeFromFits()
 
     DatabaseManager* dbm = _controller->databaseManager();
 
-    // ── FIX: Merge staged spectra and fits onto our star objects ─────
-    // SpectraImportTask and DiggaFitImportTask may have attached data to
-    // different Star/Spectrum instances than what project->getAllStars()
-    // gave us.  For stars already in the DB the DB-fallback below works,
-    // but for newly-staged stars nothing is in the DB yet.  Pull staged
-    // entries and ensure every spectrum/fit is reachable from our _stars.
-    if (_stagingArea) {
-        QHash<QString, std::shared_ptr<Star>> starById;
-        for (const auto& star : _stars)
-            starById[star->getId()] = star;
-
-        // Merge staged spectra
-        for (const auto& staged : _stagingArea->stagedSpectra()) {
-            if (staged.starId.isEmpty() || !staged.spectrum) continue;
-
-            auto it = starById.find(staged.starId);
-            if (it == starById.end()) continue;
-
-            auto& star = it.value();
-            bool alreadyAttached = false;
-            for (const auto& existing : star->getSpectra()) {
-                if (existing->getId() == staged.spectrum->getId()) {
-                    alreadyAttached = true;
-                    break;
-                }
-            }
-            if (!alreadyAttached) {
-                star->addSpectrum(staged.spectrum);
-            }
-        }
-
-        // Merge staged fits — need to find the right spectrum on the right star
-        for (const auto& staged : _stagingArea->stagedFits()) {
-            if (staged.starId.isEmpty() || staged.spectrumId.isEmpty() || !staged.fit)
-                continue;
-
-            auto it = starById.find(staged.starId);
-            if (it == starById.end()) continue;
-
-            auto& star = it.value();
-            for (const auto& spectrum : star->getSpectra()) {
-                if (spectrum->getId() != staged.spectrumId) continue;
-
-                bool alreadyAttached = false;
-                for (const auto& existing : spectrum->getSpectralFits()) {
-                    if (existing->getId() == staged.fit->getId()) {
-                        alreadyAttached = true;
-                        break;
-                    }
-                }
-                if (!alreadyAttached) {
-                    spectrum->addSpectralFit(staged.fit);
-                }
-                break;
-            }
-        }
-
-        LOG_INFO("RVExtract", "Merged staged spectra/fits onto star objects");
-    }
-    // ── END FIX ─────────────────────────────────────────────────────
-
     int totalPoints = 0;
     int starsWithRV = 0;
     int starsProcessed = 0;
@@ -1603,30 +1542,33 @@ void RVExtractionTask::saveResultsToDatabase()
     if (_results.empty()) return;
 
     if (_stagingArea) {
-        // ── Staging mode: convert results and stage them ────────
         std::vector<StagedRVResult> staged;
         staged.reserve(_results.size());
 
-        // Build canonical star lookup from the project
+        // ── Use _stars directly — same objects, no cross-thread needed ──
         QHash<QString, std::shared_ptr<Star>> canonicalStars;
-        // We need to get stars on the main thread
-        QMetaObject::invokeMethod(_controller, [this, &canonicalStars]() {
-            auto project = _controller->getCurrentProject();
-            if (project) {
-                for (const auto& star : project->getAllStars())
-                    canonicalStars[star->getId()] = star;
-            }
-        }, Qt::BlockingQueuedConnection);
+        for (const auto& star : _stars)
+            canonicalStars[star->getId()] = star;
 
         for (auto& result : _results) {
+            // Find canonical star — try by ID first, fall back to pointer match
             auto canonical = canonicalStars.value(result.starId);
+            if (!canonical) {
+                // ID might be empty — find by matching the star object used during extraction
+                for (const auto& star : _stars) {
+                    if (star->getId() == result.starId ||
+                        (!result.starId.isEmpty() && star->getSourceId() == result.starId)) {
+                        canonical = star;
+                        break;
+                    }
+                }
+            }
             if (!canonical) continue;
 
             auto& curve = result.curve;
-            curve->setStarId(canonical->getId());
+            curve->setStarId(canonical->getId());  // might still be empty — commitAll resolves it
             curve->setLogP(curve->computeLogP());
 
-            // In-memory linking
             if (result.fit) {
                 result.fit->setCurveId(curve->getId());
                 result.fit->setBestFit(true);
@@ -1635,7 +1577,8 @@ void RVExtractionTask::saveResultsToDatabase()
             canonical->setRVCurve(curve);
             canonical->updateRVMetricsFromCurve();
 
-            staged.push_back({result.starId, canonical, curve, result.fit});
+            // Stage with the star OBJECT — commitAll will resolve the ID after saveStar
+            staged.push_back({canonical->getId(), canonical, curve, result.fit});
         }
 
         _stagingArea->stageRVResults(staged);
@@ -1643,6 +1586,7 @@ void RVExtractionTask::saveResultsToDatabase()
         LOG_INFO("RVExtract", QString("Staged %1 RV curves").arg(staged.size()));
         return;
     }
+
 
     // ── Legacy mode: direct DB writes (original behavior) ───────
     const int batchSize = 20;

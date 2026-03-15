@@ -131,6 +131,9 @@ public:
     void setSpectraLoader(std::function<std::vector<std::shared_ptr<Spectrum>>(const QString&)> loader) {
         _spectraLoader = loader;
     }
+    void setRVLoader(std::function<std::shared_ptr<RadialVelocityCurve>(const QString&)> loader) {
+        _RVLoader = loader;
+    }
 
     std::shared_ptr<Photometry> getPhotometry();  
     std::vector<std::shared_ptr<Spectrum>> getSpectra();  
@@ -145,7 +148,7 @@ public:
     // Generic field access for table display
     QVariant getFieldValue(const QString& fieldName) const;
 
-    std::shared_ptr<RadialVelocityCurve> getRVCurve() const { return _rvCurve; }
+    std::shared_ptr<RadialVelocityCurve> getRVCurve();
     void setRVCurve(std::shared_ptr<RadialVelocityCurve> curve) { _rvCurve = curve; }
     void updateRVMetricsFromCurve();
 
@@ -208,8 +211,10 @@ private:
     // Lazy loading state
     bool _photometryLoaded = false;
     bool _spectraLoaded = false;
+    bool _RVLoaded = false;
     std::function<std::shared_ptr<Photometry>(const QString&)> _photometryLoader;
     std::function<std::vector<std::shared_ptr<Spectrum>>(const QString&)> _spectraLoader;
+    std::function<std::shared_ptr<RadialVelocityCurve>(const QString&)> _RVLoader;
 };
 
 #endif // STAR_H

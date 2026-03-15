@@ -92,11 +92,15 @@ std::shared_ptr<Project> ApplicationController::openProject(const QString& proje
                 auto spectraLoader = [dbMgr](const QString& starId) {
                     return dbMgr->loadSpectra(starId);
                 };
+                auto rvLoader = [dbMgr](const QString& starId) {
+                    return dbMgr->loadRadialVelocityCurve(starId);
+                };
                 
                 // Set the same loader instances on all stars
                 for (auto& star : stars) {
                     star->setPhotometryLoader(photometryLoader);
                     star->setSpectraLoader(spectraLoader);
+                    star->setRVLoader(rvLoader);
                 }
                 
                 project->setStars(std::move(stars), false);

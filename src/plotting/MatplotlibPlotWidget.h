@@ -82,22 +82,36 @@ class ScalableImageLabel : public QWidget
     Q_OBJECT
 public:
     explicit ScalableImageLabel(QWidget* parent = nullptr)
-        : QWidget(parent) {}
+        : QWidget(parent)
+    {
+        setMouseTracking(true);
+        setCursor(Qt::CrossCursor);
+    }
 
     void setPixmap(const QPixmap& pm)
     {
         _original = pm;
+        resetView();
         update();
     }
 
     void clear()
     {
         _original = QPixmap();
+        _zoom = 1.0;
+        _pan = QPointF(0, 0);
         update();
     }
 
     bool hasPixmap() const { return !_original.isNull(); }
     const QPixmap& originalPixmap() const { return _original; }
+
+    void resetView()
+    {
+        _zoom = 1.0;
+        _pan = QPointF(0, 0);
+        update();
+    }
 
 protected:
     void paintEvent(QPaintEvent*) override
@@ -107,15 +121,104 @@ protected:
         QPainter p(this);
         p.setRenderHint(QPainter::SmoothPixmapTransform);
 
-        QSize scaled = _original.size().scaled(size(), Qt::KeepAspectRatio);
-        int x = (width()  - scaled.width())  / 2;
-        int y = (height() - scaled.height()) / 2;
+        // Fit-to-widget base size
+        QSizeF base = _original.size().scaled(size(), Qt::KeepAspectRatio);
+        double w = base.width()  * _zoom;
+        double h = base.height() * _zoom;
 
-        p.drawPixmap(x, y, scaled.width(), scaled.height(), _original);
+        // Center + pan offset
+        double x = (width()  - w) / 2.0 + _pan.x();
+        double y = (height() - h) / 2.0 + _pan.y();
+
+        p.drawPixmap(QRectF(x, y, w, h), _original, QRectF(QPointF(0,0), _original.size()));
+
+        // Zoom indicator when zoomed
+        if (std::abs(_zoom - 1.0) > 0.01) {
+            QString label = QString("%1%").arg(static_cast<int>(_zoom * 100));
+            QFont f = font();
+            f.setPointSize(9);
+            p.setFont(f);
+
+            QFontMetrics fm(f);
+            QRect textRect = fm.boundingRect(label);
+            textRect.adjust(-4, -2, 4, 2);
+            textRect.moveBottomRight(QPoint(width() - 6, height() - 6));
+
+            p.setPen(Qt::NoPen);
+            p.setBrush(QColor(0, 0, 0, 120));
+            p.drawRoundedRect(textRect, 3, 3);
+
+            p.setPen(QColor(220, 220, 220));
+            p.drawText(textRect, Qt::AlignCenter, label);
+        }
+    }
+
+    void wheelEvent(QWheelEvent* event) override
+    {
+        if (_original.isNull()) return;
+
+        double oldZoom = _zoom;
+        double delta = event->angleDelta().y() / 120.0;
+        double factor = std::pow(1.15, delta);
+        _zoom = std::clamp(_zoom * factor, 0.25, 20.0);
+
+        // Zoom toward cursor position
+        QPointF cursorPos = event->position();
+        QPointF center(width() / 2.0 + _pan.x(), height() / 2.0 + _pan.y());
+        QPointF diff = cursorPos - center;
+        _pan += diff * (1.0 - _zoom / oldZoom);
+
+        update();
+        event->accept();
+    }
+
+    void mousePressEvent(QMouseEvent* event) override
+    {
+        if (_original.isNull()) return;
+
+        if (event->button() == Qt::MiddleButton ||
+            event->button() == Qt::LeftButton) {
+            _dragging = true;
+            _dragStart = event->pos();
+            _panStart = _pan;
+            setCursor(Qt::ClosedHandCursor);
+            event->accept();
+        }
+    }
+
+    void mouseMoveEvent(QMouseEvent* event) override
+    {
+        if (_dragging) {
+            _pan = _panStart + (event->pos() - _dragStart);
+            update();
+            event->accept();
+        }
+    }
+
+    void mouseReleaseEvent(QMouseEvent* event) override
+    {
+        if (_dragging) {
+            _dragging = false;
+            setCursor(Qt::CrossCursor);
+            event->accept();
+        }
+    }
+
+    void mouseDoubleClickEvent(QMouseEvent* event) override
+    {
+        if (_original.isNull()) return;
+        resetView();
+        event->accept();
     }
 
 private:
     QPixmap _original;
+    double  _zoom = 1.0;
+    QPointF _pan{0, 0};
+
+    bool    _dragging = false;
+    QPoint  _dragStart;
+    QPointF _panStart;
 };
 
 // ============================================================================

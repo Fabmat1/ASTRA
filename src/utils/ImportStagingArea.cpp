@@ -120,6 +120,7 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm,
 
     try {
         // ── Build a set of new-star IDs so we can skip duplicates in steps 2/3 ──
+        // NOTE: star IDs may be empty at this point — they get assigned during saveStar
         QSet<QString> newStarIds;
         for (const auto& star : _newStars) {
             if (!star->getId().isEmpty())
@@ -135,22 +136,34 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm,
             }
         }
 
+        // ── After step 1, star objects now have IDs assigned by saveStar. ──
+        // ── Rebuild the newStarIds set with the real IDs.                 ──
+        newStarIds.clear();
+        for (const auto& star : _newStars) {
+            if (!star->getId().isEmpty())
+                newStarIds.insert(star->getId());
+        }
+
         // 2. Save spectra attached to EXISTING stars only.
         //    Spectra for new stars were already saved by saveStar's cascade in step 1.
         for (const auto& entry : _newSpectra) {
-            if (entry.starId.isEmpty()) {
-                LOG_WARNING("Staging", QString("Skipping spectrum with empty starId (spectrum=%1)")
+            // Resolve starId from the live star object (it now has an ID after step 1)
+            QString resolvedStarId = entry.starId;
+            if (resolvedStarId.isEmpty() && entry.star)
+                resolvedStarId = entry.star->getId();
+
+            if (resolvedStarId.isEmpty()) {
+                LOG_WARNING("Staging", QString("Skipping spectrum with unresolvable starId (spectrum=%1)")
                             .arg(entry.spectrum ? entry.spectrum->getId() : "null"));
                 continue;
             }
 
             // Skip if this spectrum belongs to a newly-created star — already saved in step 1
-            if (newStarIds.contains(entry.starId)) {
+            if (newStarIds.contains(resolvedStarId))
                 continue;
-            }
 
-            if (!dbm->saveSpectrum(entry.starId, entry.spectrum)) {
-                LOG_ERROR("Staging", QString("Failed to save spectrum for star %1").arg(entry.starId));
+            if (!dbm->saveSpectrum(resolvedStarId, entry.spectrum)) {
+                LOG_ERROR("Staging", QString("Failed to save spectrum for star %1").arg(resolvedStarId));
                 dbm->rollbackTransaction();
                 return false;
             }
@@ -158,19 +171,37 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm,
 
         // 3. Save fits attached to existing spectra (skip those on new stars)
         for (const auto& entry : _newFits) {
-            if (entry.starId.isEmpty() || entry.spectrumId.isEmpty()) {
-                LOG_WARNING("Staging", QString("Skipping fit with empty starId/spectrumId (star=%1, spectrum=%2)")
-                            .arg(entry.starId, entry.spectrumId));
+            // Resolve starId from the live star object
+            QString resolvedStarId = entry.starId;
+            if (resolvedStarId.isEmpty() && entry.spectrum) {
+                // Try to find the star that owns this spectrum
+                for (const auto& star : _newStars) {
+                    for (const auto& sp : star->getSpectra()) {
+                        if (sp == entry.spectrum || sp->getId() == entry.spectrumId) {
+                            resolvedStarId = star->getId();
+                            break;
+                        }
+                    }
+                    if (!resolvedStarId.isEmpty()) break;
+                }
+            }
+
+            QString resolvedSpectrumId = entry.spectrumId;
+            if (resolvedSpectrumId.isEmpty() && entry.spectrum)
+                resolvedSpectrumId = entry.spectrum->getId();
+
+            if (resolvedStarId.isEmpty() || resolvedSpectrumId.isEmpty()) {
+                LOG_WARNING("Staging", QString("Skipping fit with unresolvable IDs (star=%1, spectrum=%2)")
+                            .arg(resolvedStarId, resolvedSpectrumId));
                 continue;
             }
 
             // Skip if this fit belongs to a newly-created star — already saved in step 1
-            if (newStarIds.contains(entry.starId)) {
+            if (newStarIds.contains(resolvedStarId))
                 continue;
-            }
 
-            if (!dbm->saveSpectralFit(entry.starId, entry.spectrumId, entry.fit)) {
-                LOG_ERROR("Staging", QString("Failed to save fit for spectrum %1").arg(entry.spectrumId));
+            if (!dbm->saveSpectralFit(resolvedStarId, resolvedSpectrumId, entry.fit)) {
+                LOG_ERROR("Staging", QString("Failed to save fit for spectrum %1").arg(resolvedSpectrumId));
                 dbm->rollbackTransaction();
                 return false;
             }
@@ -178,16 +209,21 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm,
 
         // 4. Save RV curves, points, and fits
         for (const auto& result : _rvResults) {
-            if (result.starId.isEmpty()) {
-                LOG_WARNING("Staging", "Skipping RV result with empty starId");
+            // Resolve starId from the live star object (now has ID after step 1)
+            QString resolvedStarId = result.starId;
+            if (resolvedStarId.isEmpty() && result.star)
+                resolvedStarId = result.star->getId();
+
+            if (resolvedStarId.isEmpty()) {
+                LOG_WARNING("Staging", "Skipping RV result with unresolvable starId");
                 continue;
             }
 
             auto& curve = result.curve;
-            curve->setStarId(result.starId);
+            curve->setStarId(resolvedStarId);
 
-            if (!dbm->saveRadialVelocityCurve(curve, result.starId)) {
-                LOG_ERROR("Staging", QString("Failed to save RV curve for star %1").arg(result.starId));
+            if (!dbm->saveRadialVelocityCurve(curve, resolvedStarId)) {
+                LOG_ERROR("Staging", QString("Failed to save RV curve for star %1").arg(resolvedStarId));
                 dbm->rollbackTransaction();
                 return false;
             }
@@ -201,7 +237,17 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm,
                 }
             }
 
-            if (result.fit) {
+            // Save ALL fits on the curve
+            for (const auto& fit : curve->getRVFits()) {
+                fit->setCurveId(curve->getId());
+                if (!dbm->saveRVFit(fit, curve->getId())) {
+                    LOG_ERROR("Staging", QString("Failed to save RV fit for curve %1").arg(curve->getId()));
+                    dbm->rollbackTransaction();
+                    return false;
+                }
+            }
+
+            if (result.fit && curve->getRVFits().empty()) {
                 result.fit->setCurveId(curve->getId());
                 if (!dbm->saveRVFit(result.fit, curve->getId())) {
                     LOG_ERROR("Staging", QString("Failed to save RV fit for curve %1").arg(curve->getId()));
@@ -213,10 +259,9 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm,
             // Update the star's RV metrics
             if (result.star) {
                 result.star->updateRVMetricsFromCurve();
-                // Only update the row if the star isn't brand new (new stars get full save in step 1)
-                if (!newStarIds.contains(result.starId)) {
+                if (!newStarIds.contains(resolvedStarId)) {
                     if (!dbm->updateStarRow(projectId, result.star)) {
-                        LOG_ERROR("Staging", QString("Failed to update star RV metrics for %1").arg(result.starId));
+                        LOG_ERROR("Staging", QString("Failed to update star RV metrics for %1").arg(resolvedStarId));
                         dbm->rollbackTransaction();
                         return false;
                     }
@@ -224,9 +269,8 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm,
             }
         }
 
-        // 5. Update modified existing stars (Gaia/SIMBAD enrichment) — row only, no cascade
+        // 5. Update modified existing stars — row only, no cascade
         for (const QString& starId : _modifiedExistingStarIds) {
-            // Skip new stars — they're fully saved in step 1
             if (newStarIds.contains(starId))
                 continue;
 
@@ -247,7 +291,6 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm,
 
         LOG_INFO("Staging", "Commit successful");
 
-        // Clear staging area after successful commit
         _newStars.clear();
         _newSpectra.clear();
         _newFits.clear();
@@ -316,16 +359,4 @@ void ImportStagingArea::rollbackAll(std::shared_ptr<Project> project)
     _newFits.clear();
     _rvResults.clear();
     _modifiedExistingStarIds.clear();
-}
-
-std::vector<StagedSpectrum> ImportStagingArea::stagedSpectra() const
-{
-    QMutexLocker lock(&_mutex);
-    return _newSpectra;
-}
-
-std::vector<StagedFit> ImportStagingArea::stagedFits() const
-{
-    QMutexLocker lock(&_mutex);
-    return _newFits;
 }

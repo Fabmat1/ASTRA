@@ -14,14 +14,29 @@ from pathlib import Path
 #   - "__FULL__" → dumps the entire file (for small files)
 
 EXTRACTIONS = [
-    # ── Staging area (the core of #4) ──
+    # ── StarImportWizard (likely small, get it all) ──
     ("src/utils/ImportStagingArea.h", ["__FULL__"]),
     ("src/utils/ImportStagingArea.cpp", ["__FULL__"]),
 
-    # ── BackgroundTaskManager (threading + save tasks) ──
+    # ── BackgroundTaskManager (task classes) ──
     ("src/utils/BackgroundTaskManager.h", ["__FULL__"]),
-    ("src/utils/BackgroundTaskManager.cpp", ["__FULL__"]),
+    ("src/utils/BackgroundTaskManager.cpp", [
+        "__FULL__"
+    ]),
+
+    # ── Project ──
+    ("src/utils/StarImportWizard.h", ["__FULL__"]),
+    ("src/utils/StarImportWizard.cpp", ["__FULL__"]),
+
+    # ── RadialVelocity (all model classes) ──
+    ("src/models/RadialVelocity.h", ["__FULL__"]),
+    ("src/models/RadialVelocity.cpp", ["__FULL__"]),
+
+    # ── DataStore (if it exists as intermediary) ──
+    ("src/utils/DatabaseManager.h", ["__FULL__"]),
+    ("src/utils/DatabaseManager.cpp", ["__FULL__"]),
 ]
+
 
 def find_brace_block(text: str, start: int) -> int:
     """Find the closing brace matching the first '{' at or after `start`.

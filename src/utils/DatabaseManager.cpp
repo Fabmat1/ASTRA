@@ -1771,3 +1771,14 @@ bool DatabaseManager::updateStarRow(const QString& projectId, std::shared_ptr<St
 
     return true;
 }
+
+// New method in DatabaseManager:
+void DatabaseManager::loadRVCurveBatch(std::vector<std::shared_ptr<Star>>& stars)
+{
+    for (auto& star : stars) {
+        auto curve = loadRadialVelocityCurve(star->getId());
+        if (curve) {
+            star->setRVCurve(curve);
+        }
+    }
+}

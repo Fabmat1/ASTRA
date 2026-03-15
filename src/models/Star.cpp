@@ -38,6 +38,7 @@ Star::Star()
     , _e_rv_med(0.0)
     , _photometryLoaded(false)
     , _spectraLoaded(false)
+    , _RVLoaded(false)
 {
 }
 
@@ -133,6 +134,15 @@ std::vector<std::shared_ptr<Spectrum>> Star::getSpectra()
         _spectraLoaded = true;
     }
     return _spectra;
+}
+
+std::shared_ptr<RadialVelocityCurve> Star::getRVCurve()
+{
+    if (!_RVLoaded && _RVLoader && !_id.isEmpty()) {
+        _rvCurve = _RVLoader(_id);
+        _RVLoaded = true;
+    }
+    return _rvCurve;
 }
 
 void Star::addSpectrum(std::shared_ptr<Spectrum> spectrum)

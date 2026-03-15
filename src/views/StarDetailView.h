@@ -4,9 +4,13 @@
 #include <QWidget>
 #include <QComboBox>
 #include <QCheckBox>
-#include <QValueAxis>
+// REMOVE: #include <QValueAxis>  ← QtCharts dependency, no longer needed
 #include <memory>
-#include <QtCharts/QChartView>
+
+#include "plotting/MatplotlibPlotWidget.h"
+
+#include <QJsonObject>
+#include <QJsonArray>
 
 QT_BEGIN_NAMESPACE
 class QLabel;
@@ -25,11 +29,10 @@ class StarDetailView : public QWidget
     Q_OBJECT
 
 public:
-    explicit StarDetailView(std::shared_ptr<Star> star, QWidget *parent = nullptr);
+    explicit StarDetailView(std::shared_ptr<Star> star, QWidget* parent = nullptr);
     ~StarDetailView();
 
 private slots:
-    // Button actions
     void onFetchLightcurves();
     void onCalculateOrbit();
     void onShowCMD();
@@ -38,7 +41,6 @@ private slots:
     void onViewFitSED();
     void onShowInSimbad();
 
-    // Plot toggle slots
     void onToggleRVFolded();
     void onToggleLCFolded();
 
@@ -49,6 +51,7 @@ private:
     void populateLCPlot();
     void populateSpectraPanel();
     void displaySpectrum(int index);
+    void updateSpectrumDisplay();
     QString formatSpectrumTabLabel(const std::shared_ptr<Spectrum>& spec, int index) const;
     QString formatSpectrumInfo(const std::shared_ptr<Spectrum>& spec) const;
 
@@ -59,6 +62,22 @@ private:
     QWidget* createSpectraPanel();
     QWidget* createButtonSidebar();
 
+    // ── MISSING: Plot request builders ──
+    PlotRequest buildRVPlotRequest();
+    PlotRequest buildLCPlotRequest();
+    PlotRequest buildSpectrumPlotRequest();
+
+    // ── MISSING: JSON helper ──
+    static QJsonArray toJsonArray(const std::vector<double>& v);
+
+    // ── REMOVE: These belong to the old QtCharts spectrum code ──
+    // static std::vector<double> interpolateModel(...);
+    // static double computeRenormFactor(...);
+    // QColor dataLineColor() const;
+    // QValueAxis* _spectraMainXAxis = nullptr;
+    // QValueAxis* _spectraResidualXAxis = nullptr;
+    // bool _axisSyncInProgress = false;
+
     std::shared_ptr<Star> _star;
 
     // Summary panel
@@ -66,47 +85,32 @@ private:
     QLabel* _summaryContent;
 
     // RV plot
-    QWidget* _rvContent;
-    QVBoxLayout* _rvContentLayout;
+    // REMOVE: QWidget* _rvContent;        ← never created/used anymore
+    // REMOVE: QVBoxLayout* _rvContentLayout; ← never created/used anymore
     QPushButton* _rvToggleButton;
     bool _rvFolded;
+    MatplotlibPlotWidget* _rvPlotWidget = nullptr;
 
     // LC plot
-    QWidget* _lcContent;
-    QVBoxLayout* _lcContentLayout;
+    // REMOVE: QWidget* _lcContent;        ← never created/used anymore
+    // REMOVE: QVBoxLayout* _lcContentLayout; ← never created/used anymore
     QPushButton* _lcToggleButton;
     bool _lcFolded;
+    MatplotlibPlotWidget* _lcPlotWidget = nullptr;
 
     // Spectra panel
     QTabBar* _spectraTabBar;
-    QChartView* _spectraChartView;
     QLabel* _spectraInfoLabel;
     int _currentSpectrumIndex;
     std::vector<std::shared_ptr<Spectrum>> _sortedSpectra;
     QMetaObject::Connection _spectraTabConnection;
+    MatplotlibPlotWidget* _spectraPlotWidget = nullptr;
 
     QComboBox*   _spectraFitCombo    = nullptr;
     QCheckBox*   _spectraRenormCheck = nullptr;
-    QChartView*  _spectraResidualView = nullptr;
     QWidget*     _spectraToolbar     = nullptr;
-    QValueAxis* _spectraMainXAxis     = nullptr;
-    QValueAxis* _spectraResidualXAxis = nullptr;
-    bool _axisSyncInProgress          = false;
 
-    void updateSpectrumDisplay();
-
-    static std::vector<double> interpolateModel(
-        const std::vector<double>& modelWl,
-        const std::vector<double>& modelFlux,
-        const std::vector<double>& targetWl);
-
-    static double computeRenormFactor(
-        const std::vector<double>& data,
-        const std::vector<double>& model);
-
-    QColor dataLineColor() const;
-
-    // Splitters for resizable layout
+    // Splitters
     QSplitter* _mainHSplitter;
     QSplitter* _leftVSplitter;
     QSplitter* _rightVSplitter;

@@ -136,9 +136,12 @@ void MatplotlibPlotWidget::resizeEvent(QResizeEvent* event)
     _loadingLabel->setGeometry(0, center.y() + _spinner->height() + 5,
                                width(), 25);
 
-    // Debounced re-render
-    if (_autoRerender && _hasLastRequest)
+    // Only re-render if not zoomed/panned (user is examining the plot)
+    if (_autoRerender && _hasLastRequest) {
+        // Check if user has zoomed — if so, don't re-render
+        // (double-click resets zoom, which triggers a normal resize repaint)
         _resizeDebounce->start();
+    }
 }
 
 // ============================================================================
@@ -358,22 +361,40 @@ QString MatplotlibPlotWidget::findPython() const
 
 QString MatplotlibPlotWidget::findScript(const QString& scriptName) const
 {
-    // Search order:
-    // 1. _scriptDir / scriptName
-    // 2. app_dir / scripts / plotting / scriptName
-    // 3. app_dir / scriptName
-    // 4. source tree (for development): ../scripts/plotting/scriptName
+    QString appDir = QCoreApplication::applicationDirPath();
 
     QStringList searchPaths = {
+        // 1. Explicitly configured script directory
         _scriptDir + "/" + scriptName,
-        QCoreApplication::applicationDirPath() + "/scripts/plotting/" + scriptName,
-        QCoreApplication::applicationDirPath() + "/" + scriptName,
-        QCoreApplication::applicationDirPath() + "/../scripts/plotting/" + scriptName,
+
+        // 2. Installed layout: <bin>/scripts/plotting/
+        appDir + "/scripts/plotting/" + scriptName,
+
+        // 3. Script right next to binary (flat install)
+        appDir + "/" + scriptName,
+
+        // 4. Development: build dir has scripts/ copied by CMake
+        appDir + "/../scripts/plotting/" + scriptName,
+
+        // 5. Development: source tree relative to build dir
+        appDir + "/../src/plotting/" + scriptName,
+
+        // 6. Source tree two levels up (common with build/ subdirectory)
+        appDir + "/../../src/plotting/" + scriptName,
     };
 
     for (const auto& p : searchPaths) {
-        if (QFileInfo::exists(p))
-            return QFileInfo(p).absoluteFilePath();
+        QString canonical = QFileInfo(p).absoluteFilePath();
+        if (QFileInfo::exists(canonical)) {
+            LOG_DEBUG(CAT, QString("Found script: %1 → %2").arg(scriptName, canonical));
+            return canonical;
+        }
+    }
+
+    // Log all searched paths for debugging
+    LOG_WARNING(CAT, QString("Script '%1' not found. Searched:").arg(scriptName));
+    for (const auto& p : searchPaths) {
+        LOG_WARNING(CAT, QString("  %1").arg(QFileInfo(p).absoluteFilePath()));
     }
 
     return {};

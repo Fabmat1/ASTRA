@@ -12,7 +12,7 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Find required Qt6 components
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Charts Sql Network Concurrent)
+find_package(Qt6 REQUIRED COMPONENTS Core Widgets Sql Network Concurrent)
 qt_standard_project_setup()
 
 # Set automatic MOC, UIC and RCC for Qt
@@ -104,6 +104,7 @@ set(SOURCES
     src/utils/SpectralFitImportPage.cpp
     src/utils/RadialVelocityImportPage.cpp
     src/utils/ImportStagingArea.cpp
+    src/plotting/MatplotlibPlotWidget.cpp
 )
 
 # Header files
@@ -138,6 +139,7 @@ set(HEADERS
     src/utils/AppPaths.h
     src/utils/RadialVelocityImportPage.h
     src/utils/ImportStagingArea.h
+    src/plotting/MatplotlibPlotWidget.h
 )
 
 # Create executable
@@ -173,7 +175,6 @@ target_include_directories(ASTRA PRIVATE
 target_link_libraries(ASTRA PRIVATE
     Qt6::Core
     Qt6::Widgets
-    Qt6::Charts
     Qt6::Sql
     Qt6::Network
     Qt6::Concurrent
@@ -219,6 +220,17 @@ elseif(APPLE)
         )
     endif()
 endif()
+
+# Install Python scripts next to the binary under scripts/plotting/
+install(DIRECTORY src/plotting/
+    DESTINATION ${CMAKE_INSTALL_BINDIR}/scripts/plotting
+    FILES_MATCHING PATTERN "*.py"
+)
+
+# For development builds: copy scripts so they're findable from build dir
+file(GLOB _PLOT_SCRIPTS src/plotting/*.py)
+file(MAKE_DIRECTORY ${CMAKE_BINARY_DIR}/scripts/plotting)
+file(COPY ${_PLOT_SCRIPTS} DESTINATION ${CMAKE_BINARY_DIR}/scripts/plotting/)
 
 # Install targets
 install(TARGETS ASTRA
