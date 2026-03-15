@@ -111,6 +111,7 @@ set(SOURCES
     src/utils/StarImportWizard.cpp
     src/utils/GeneralImportPage.cpp
     src/utils/SpectraImportPage.cpp
+    src/utils/SEDImportPage.cpp
     src/utils/RVPhotometryPages.cpp
     src/utils/CatalogQueryWorkers.cpp
     src/utils/DataStore.cpp
@@ -118,6 +119,7 @@ set(SOURCES
     src/utils/SpectralFitImportPage.cpp
     src/utils/RadialVelocityImportPage.cpp
     src/utils/ImportStagingArea.cpp
+    src/utils/ExtractSED.cpp
     src/views/tools/RVInspectorDialog.cpp
     src/views/tools/SpectraFitDialog.cpp
     src/views/tools/LightcurveFetchDialog.cpp
@@ -150,6 +152,7 @@ set(HEADERS
     src/utils/StarImportWizard.h
     src/utils/GeneralImportPage.h
     src/utils/SpectraImportPage.h
+    src/utils/SEDImportPage.h
     src/utils/RVPhotometryPages.h
     src/utils/CatalogQueryWorkers.h
     src/utils/DataStore.h
@@ -158,6 +161,7 @@ set(HEADERS
     src/utils/AppPaths.h
     src/utils/RadialVelocityImportPage.h
     src/utils/ImportStagingArea.h
+    src/utils/ExtractSED.h
     src/views/tools/RVInspectorDialog.h
     src/views/tools/SpectraFitDialog.h
     src/views/tools/LightcurveFetchDialog.h

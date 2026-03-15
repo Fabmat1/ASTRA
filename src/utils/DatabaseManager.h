@@ -96,6 +96,12 @@ public:
                                const QString& jname,
                                double ra, double dec);
 
+    // Save a single SED model for a star, creating the photometry record
+    // if it doesn't exist yet.  This avoids the CASCADE DELETE that
+    // INSERT OR REPLACE on the photometry table would trigger.
+    bool saveSEDModelForStar(const QString& starId,
+                            std::shared_ptr<SEDModel> model);
+
 
 private:
     bool createTables();

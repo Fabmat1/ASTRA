@@ -14,17 +14,12 @@ from pathlib import Path
 #   - "__FULL__" → dumps the entire file (for small files)
 
 EXTRACTIONS = [
-    ("src/models/RadialVelocity.h", ["__FULL__"]),
     ("src/utils/ImportStagingArea.h", ["__FULL__"]),
     ("src/utils/ImportStagingArea.cpp", ["__FULL__"]),
-    ("src/utils/BackgroundTaskManager.h", ["__FULL__"]),
-    ("src/utils/BackgroundTaskManager.cpp", ["__FULL__"]),
-    ("src/utils/StarImportWizard.cpp", ["__FULL__"]),
-    ("src/utils/StarImportWizard.h", ["__FULL__"]),
-    ("src/utils/GeneralImportPage.cpp", ["__FULL__"]),
-    ("src/utils/DatabaseManager.h", ["__FULL__"]),
-    ("src/utils/DatabaseManager.cpp", ["__FULL__"]),
-    ("src/models/Star.h", ["__FULL__"]),
+    ("src/utils/RadialvelocityImportPage.h", ["__FULL__"]),
+    ("src/utils/RadialvelocityImportPage.cpp", ["__FULL__"]),
+    ("src/utils/RVPhotometryPages.h", ["__FULL__"]),
+    ("src/utils/RVPhotometryPages.cpp", ["__FULL__"]),
 ]
 
 

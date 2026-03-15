@@ -23,7 +23,7 @@ public:
                      QWidget* parent = nullptr);
 
     enum { Page_GeneralImport, Page_ColumnMapping, Page_Spectra,
-           Page_SpectralFits, Page_RadialVelocity, Page_Photometry };
+           Page_SpectralFits, Page_RadialVelocity, Page_SED, Page_Photometry };
 
     // Public getters for access by wizard pages
     ApplicationController* controller() const { return _controller; }
@@ -52,6 +52,7 @@ signals:
 #include "SpectraImportPage.h"
 #include "SpectralFitImportPage.h"
 #include "RadialVelocityImportPage.h"
+#include "SEDImportPage.h"
 #include "RVPhotometryPages.h"
 #include "CatalogQueryWorkers.h"
 

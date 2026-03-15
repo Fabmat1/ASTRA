@@ -5,6 +5,7 @@
 #include "models/Spectrum.h"
 #include "models/RadialVelocity.h"
 #include "utils/Logger.h"
+#include "models/Photometry.h"
 
 // ── Working set management ──────────────────────────────────────
 
@@ -100,6 +101,25 @@ void ImportStagingArea::pullRVFromDB(DatabaseManager* dbm)
     }
 }
 
+
+void ImportStagingArea::pullPhotometryFromDB(DatabaseManager* dbm)
+{
+    if (!dbm) return;
+
+    QMutexLocker lock(&_mutex);
+    for (auto it = _workingStars.begin(); it != _workingStars.end(); ++it) {
+        auto& star = it.value();
+
+        // Skip if photometry already loaded
+        if (star->getPhotometry()) continue;
+
+        auto phot = dbm->loadPhotometry(star->getId());
+        if (phot)
+            star->setPhotometry(phot);
+    }
+}
+
+
 // ── Queries ─────────────────────────────────────────────────────
 
 std::shared_ptr<Star> ImportStagingArea::getStar(const QString& starId) const
@@ -159,6 +179,12 @@ void ImportStagingArea::markRVCurveNew(const QString& curveId)
     _newRVCurveIds.insert(curveId);
 }
 
+void ImportStagingArea::markSEDModelNew(const QString& modelId)
+{
+    QMutexLocker lock(&_mutex);
+    _newSEDModelIds.insert(modelId);
+}
+
 // ── Counts ──────────────────────────────────────────────────────
 
 int ImportStagingArea::totalStarCount() const
@@ -191,6 +217,12 @@ int ImportStagingArea::newRVCurveCount() const
     return _newRVCurveIds.size();
 }
 
+int ImportStagingArea::newSEDModelCount() const
+{
+    QMutexLocker lock(&_mutex);
+    return _newSEDModelIds.size();
+}
+
 // ── Clear ───────────────────────────────────────────────────────
 
 void ImportStagingArea::clear()
@@ -208,6 +240,7 @@ void ImportStagingArea::clear()
     _newSpectrumIds.clear();
     _newFitIds.clear();
     _newRVCurveIds.clear();
+    _newSEDModelIds.clear();
 }
 
 // ── Commit ──────────────────────────────────────────────────────
@@ -221,13 +254,14 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm, const QString& projectId
 
     // Log summary (tracking sets used for informational counts only)
     LOG_INFO("Staging", QString("Committing: %1 total stars (%2 new, %3 dirty), "
-             "%4 new spectra, %5 new fits, %6 new RV curves")
+             "%4 new spectra, %5 new fits, %6 new RV curves, %7 new SED models")
              .arg(_workingStars.size())
              .arg(_newStarIds.size())
              .arg(_dirtyStarIds.size())
              .arg(_newSpectrumIds.size())
              .arg(_newFitIds.size())
-             .arg(_newRVCurveIds.size()));
+             .arg(_newRVCurveIds.size())
+             .arg(_newSEDModelIds.size()));
 
     // Cross-check: count actual in-memory data
     int actualSpectra = 0, actualFits = 0, actualRV = 0;
@@ -309,6 +343,27 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm, const QString& projectId
                 }
             }
 
+            // ── B2. SED models (existing stars only) ────────
+            // For new stars, saveStar() already cascaded to photometry/SED.
+            // For existing stars, save new SED models surgically to avoid
+            // the CASCADE DELETE that INSERT OR REPLACE on photometry causes.
+            if (!isNew) {
+                auto phot = star->getPhotometry();
+                if (phot) {
+                    for (const auto& sedModel : phot->getSEDModels()) {
+                        if (_newSEDModelIds.contains(sedModel->getId())) {
+                            if (!dbm->saveSEDModelForStar(starId, sedModel)) {
+                                LOG_ERROR("Staging",
+                                    QString("Failed to save SED model %1 for star %2")
+                                        .arg(sedModel->getId(), starId));
+                                dbm->rollbackTransaction();
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+
             // ── C. RV curve + points + fits (ALL stars) ─────────
             // This is the critical fix: never skip RV based on star newness.
             // saveStar() does NOT cascade to RV, so we always handle it here.
@@ -356,6 +411,7 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm, const QString& projectId
         _newSpectrumIds.clear();
         _newFitIds.clear();
         _newRVCurveIds.clear();
+        _newSEDModelIds.clear();
 
         return true;
 

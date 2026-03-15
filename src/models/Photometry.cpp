@@ -3,31 +3,236 @@
 #include <QFile>
 #include <QDataStream>
 #include <QDebug>
+#include <QJsonDocument>
+#include <QJsonArray>
+#include <QJsonObject>
 
+// ══════════════════════════════════════════════════════════════
+// SEDComponentParams JSON
+// ══════════════════════════════════════════════════════════════
 
-// SEDModel implementation
+QJsonObject SEDComponentParams::toJson() const
+{
+    QJsonObject o;
+    o["idx"] = componentIndex;
+
+    o["teff"]    = teff;
+    o["teff_eu"] = teffErrUp;
+    o["teff_ed"] = teffErrDown;
+    o["teff_st"] = static_cast<int>(teffStatus);
+
+    o["logg"]    = logg;
+    o["logg_eu"] = loggErrUp;
+    o["logg_ed"] = loggErrDown;
+    o["logg_st"] = static_cast<int>(loggStatus);
+
+    o["xi"]    = microturbulence;
+    o["xi_st"] = static_cast<int>(microturbulenceStatus);
+
+    o["z"]    = metallicity;
+    o["z_st"] = static_cast<int>(metallicityStatus);
+
+    o["he"]    = heAbundance;
+    o["he_eu"] = heAbundanceErrUp;
+    o["he_ed"] = heAbundanceErrDown;
+    o["he_st"] = static_cast<int>(heAbundanceStatus);
+
+    o["sr"]    = surfaceRatio;
+    o["sr_eu"] = surfaceRatioErrUp;
+    o["sr_ed"] = surfaceRatioErrDown;
+
+    o["R"]      = radius.toJson();
+    o["R_med"]  = radiusMedian.toJson();
+    o["M"]      = mass.toJson();
+    o["M_med"]  = massMedian.toJson();
+    o["L"]      = luminosity.toJson();
+    o["L_med"]  = luminosityMedian.toJson();
+    o["vg"]     = vGrav.toJson();
+    o["ve"]     = vEsc.toJson();
+
+    return o;
+}
+
+SEDComponentParams SEDComponentParams::fromJson(const QJsonObject& o)
+{
+    SEDComponentParams p;
+    p.componentIndex = o["idx"].toInt();
+
+    p.teff       = o["teff"].toDouble();
+    p.teffErrUp  = o["teff_eu"].toDouble();
+    p.teffErrDown = o["teff_ed"].toDouble();
+    p.teffStatus = static_cast<SEDParamStatus>(o["teff_st"].toInt());
+
+    p.logg       = o["logg"].toDouble();
+    p.loggErrUp  = o["logg_eu"].toDouble();
+    p.loggErrDown = o["logg_ed"].toDouble();
+    p.loggStatus = static_cast<SEDParamStatus>(o["logg_st"].toInt());
+
+    p.microturbulence       = o["xi"].toDouble();
+    p.microturbulenceStatus = static_cast<SEDParamStatus>(o["xi_st"].toInt());
+
+    p.metallicity       = o["z"].toDouble();
+    p.metallicityStatus = static_cast<SEDParamStatus>(o["z_st"].toInt());
+
+    p.heAbundance       = o["he"].toDouble();
+    p.heAbundanceErrUp  = o["he_eu"].toDouble();
+    p.heAbundanceErrDown = o["he_ed"].toDouble();
+    p.heAbundanceStatus = static_cast<SEDParamStatus>(o["he_st"].toInt());
+
+    p.surfaceRatio       = o["sr"].toDouble();
+    p.surfaceRatioErrUp  = o["sr_eu"].toDouble();
+    p.surfaceRatioErrDown = o["sr_ed"].toDouble();
+
+    p.radius          = AsymmetricValue::fromJson(o["R"].toObject());
+    p.radiusMedian    = AsymmetricValue::fromJson(o["R_med"].toObject());
+    p.mass            = AsymmetricValue::fromJson(o["M"].toObject());
+    p.massMedian      = AsymmetricValue::fromJson(o["M_med"].toObject());
+    p.luminosity      = AsymmetricValue::fromJson(o["L"].toObject());
+    p.luminosityMedian = AsymmetricValue::fromJson(o["L_med"].toObject());
+    p.vGrav           = AsymmetricValue::fromJson(o["vg"].toObject());
+    p.vEsc            = AsymmetricValue::fromJson(o["ve"].toObject());
+
+    return p;
+}
+
+// ══════════════════════════════════════════════════════════════
+// SEDModel
+// ══════════════════════════════════════════════════════════════
+
 SEDModel::SEDModel()
-    : isBestFit(false)
-    , angularSize(0.0)
-    , angularSizeError(0.0)
-    , radius(0.0)
-    , radiusError(0.0)
-    , temperature(0.0)
-    , temperatureError(0.0)
 {
     creationDate = QDateTime::currentDateTime();
 }
 
-// LightcurveModel implementation
-LightcurveModel::LightcurveModel()
-    : isBestFit(false)
-    , period(0.0)
-    , phase(0.0)
+QString SEDModel::componentParamsToJson() const
 {
-    creationDate = QDateTime::currentDateTime();
+    QJsonArray arr;
+    for (const auto& c : components)
+        arr.append(c.toJson());
+    return QJsonDocument(arr).toJson(QJsonDocument::Compact);
 }
 
-// Photometry implementation
+bool SEDModel::componentParamsFromJson(const QString& json)
+{
+    if (json.isEmpty()) return true;
+
+    QJsonDocument doc = QJsonDocument::fromJson(json.toUtf8());
+    if (!doc.isArray()) return false;
+
+    components.clear();
+    const QJsonArray arr = doc.array();
+    components.reserve(arr.size());
+    for (const auto& val : arr)
+        components.push_back(SEDComponentParams::fromJson(val.toObject()));
+    return true;
+}
+
+// ── Compressed data file (version 2 format) ─────────────────
+// Layout:
+//   quint16  sedDataVersion  (= 2)
+//   quint32  numComponents
+//   quint32  numWavelengths
+//   double[] modelWavelengths
+//   double[] modelFluxes          (total combined)
+//   for each component:
+//     double[] componentFluxes[i]
+//   quint32  numObservedPoints
+//   for each observed point:
+//     double  lambdaMin, lambda, lambdaMax
+//     double  fluxMin, flux, fluxMax
+//     double  diff, diffErr
+//     QString passband, system
+//     qint32  flag
+//     QString vizierCatalog
+
+bool SEDModel::saveDataToFile(const QString& filepath)
+{
+    QByteArray buffer;
+    {
+        QDataStream s(&buffer, QIODevice::WriteOnly);
+        s.setVersion(QDataStream::Qt_6_0);
+
+        s << static_cast<quint16>(2);   // SED data format version
+
+        quint32 nc = static_cast<quint32>(componentFluxes.size());
+        quint32 nw = static_cast<quint32>(modelWavelengths.size());
+        s << nc << nw;
+
+        for (const auto& v : modelWavelengths) s << v;
+        for (const auto& v : modelFluxes)      s << v;
+
+        for (const auto& cf : componentFluxes) {
+            for (const auto& v : cf) s << v;
+        }
+
+        // Observed photometry
+        quint32 nobs = static_cast<quint32>(observedPoints.size());
+        s << nobs;
+        for (const auto& p : observedPoints) {
+            s << p.lambdaMin << p.lambda << p.lambdaMax
+              << p.fluxMin   << p.flux   << p.fluxMax
+              << p.diff      << p.diffErr
+              << p.passband  << p.system
+              << static_cast<qint32>(p.flag)
+              << p.vizierCatalog;
+        }
+    }
+    return DataStore::writeCompressed(filepath, DataStore::SEDModelData, buffer);
+}
+
+bool SEDModel::loadDataFromFile(const QString& filepath)
+{
+    QByteArray buf;
+    if (!DataStore::readCompressed(filepath, DataStore::SEDModelData, buf))
+        return false;
+
+    QDataStream s(&buf, QIODevice::ReadOnly);
+    s.setVersion(QDataStream::Qt_6_0);
+
+    quint16 version;
+    s >> version;
+    if (version != 2) {
+        qWarning() << "SEDModel: unsupported data version" << version;
+        return false;
+    }
+
+    quint32 nc, nw;
+    s >> nc >> nw;
+
+    modelWavelengths.resize(nw);
+    for (quint32 i = 0; i < nw; ++i) s >> modelWavelengths[i];
+
+    modelFluxes.resize(nw);
+    for (quint32 i = 0; i < nw; ++i) s >> modelFluxes[i];
+
+    componentFluxes.resize(nc);
+    for (quint32 c = 0; c < nc; ++c) {
+        componentFluxes[c].resize(nw);
+        for (quint32 i = 0; i < nw; ++i) s >> componentFluxes[c][i];
+    }
+
+    quint32 nobs;
+    s >> nobs;
+    observedPoints.resize(nobs);
+    for (quint32 i = 0; i < nobs; ++i) {
+        auto& p = observedPoints[i];
+        qint32 flag;
+        s >> p.lambdaMin >> p.lambda >> p.lambdaMax
+          >> p.fluxMin   >> p.flux   >> p.fluxMax
+          >> p.diff      >> p.diffErr
+          >> p.passband  >> p.system
+          >> flag
+          >> p.vizierCatalog;
+        p.flag = flag;
+    }
+
+    return s.status() == QDataStream::Ok;
+}
+
+// ══════════════════════════════════════════════════════════════
+// Photometry
+// ══════════════════════════════════════════════════════════════
+
 Photometry::Photometry()
 {
 }
@@ -71,7 +276,6 @@ std::vector<QString> Photometry::getLightcurveSources() const
 
 void Photometry::addSEDModel(std::shared_ptr<SEDModel> model)
 {
-    // If this is set as best fit, unset others
     if (model->isBestFit) {
         for (auto& existing : _sedModels) {
             existing->isBestFit = false;
@@ -126,45 +330,19 @@ std::shared_ptr<LightcurveModel> Photometry::getBestLightcurveModel(const QStrin
     return nullptr;
 }
 
+// ══════════════════════════════════════════════════════════════
+// LightcurveModel
+// ══════════════════════════════════════════════════════════════
 
-
-bool SEDModel::saveDataToFile(const QString& filepath)
+LightcurveModel::LightcurveModel()
+    : isBestFit(false)
+    , period(0.0)
+    , phase(0.0)
+    , inclination(0.0)
+    , massRatio(0.0)
+    , separation(0.0)
 {
-    QByteArray buffer;
-    {
-        QDataStream s(&buffer, QIODevice::WriteOnly);
-        s.setVersion(QDataStream::Qt_6_0);
-        s << static_cast<quint32>(modelWavelengths.size());
-        s << static_cast<quint32>(modelFluxes.size());
-        for (const auto& v : modelWavelengths) s << v;
-        for (const auto& v : modelFluxes)      s << v;
-    }
-    return DataStore::writeCompressed(filepath, DataStore::SEDModelData, buffer);
-}
-
-bool SEDModel::loadDataFromFile(const QString& filepath)
-{
-    auto parse = [this](QDataStream& s) -> bool {
-        quint32 wlN, fN;
-        s >> wlN >> fN;
-        modelWavelengths.clear(); modelWavelengths.reserve(wlN);
-        for (quint32 i = 0; i < wlN; ++i) { double v; s >> v; modelWavelengths.push_back(v); }
-        modelFluxes.clear(); modelFluxes.reserve(fN);
-        for (quint32 i = 0; i < fN; ++i) { double v; s >> v; modelFluxes.push_back(v); }
-        return s.status() == QDataStream::Ok;
-    };
-
-    QByteArray buf;
-    if (DataStore::readCompressed(filepath, DataStore::SEDModelData, buf)) {
-        QDataStream s(&buf, QIODevice::ReadOnly);
-        s.setVersion(QDataStream::Qt_6_0);
-        return parse(s);
-    }
-    QFile file(filepath);
-    if (!file.open(QIODevice::ReadOnly)) return false;
-    QDataStream s(&file);
-    s.setVersion(QDataStream::Qt_5_0);
-    return parse(s);
+    creationDate = QDateTime::currentDateTime();
 }
 
 bool LightcurveModel::saveDataToFile(const QString& filepath)

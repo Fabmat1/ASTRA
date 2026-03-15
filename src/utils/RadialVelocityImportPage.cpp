@@ -1237,5 +1237,5 @@ bool RadialVelocityImportPage::validatePage()
 
 int RadialVelocityImportPage::nextId() const
 {
-    return StarImportWizard::Page_Photometry;
+    return StarImportWizard::Page_SED;
 }

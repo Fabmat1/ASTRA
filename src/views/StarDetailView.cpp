@@ -1401,12 +1401,34 @@ QWidget* StarDetailView::createDataInventorySection()
             if (sed) {
                 hasSED = true;
                 QStringList parts;
-                auto has = [](double v) { return !std::isnan(v) && v != 0.0; };
-                if (has(sed->radius))
-                    parts << QString("R=%1 R☉").arg(sed->radius, 0, 'f', 3);
-                if (has(sed->temperature))
-                    parts << QString("T=%1 K").arg(sed->temperature, 0, 'f', 0);
-                detail = parts.join(", ");
+
+                parts << QString("%1-comp").arg(sed->numComponents);
+
+                // Show primary component Teff and radius
+                if (!sed->components.empty()) {
+                    const auto& c1 = sed->components[0];
+                    if (c1.teff > 0)
+                        parts << QString("T₁=%1 K").arg(c1.teff, 0, 'f', 0);
+                    if (c1.radius.value > 0)
+                        parts << QString("R₁=%1 R☉").arg(c1.radius.value, 0, 'f', 3);
+                }
+
+                // Show companion Teff if 2-component
+                if (sed->numComponents >= 2 && sed->components.size() >= 2) {
+                    const auto& c2 = sed->components[1];
+                    if (c2.teff > 0)
+                        parts << QString("T₂=%1 K").arg(c2.teff, 0, 'f', 0);
+                    if (c2.radius.value > 0)
+                        parts << QString("R₂=%1 R☉").arg(c2.radius.value, 0, 'f', 3);
+                }
+
+                if (sed->distanceMode > 0)
+                    parts << QString("d=%1 pc").arg(sed->distanceMode, 0, 'f', 0);
+
+                if (sed->chi2Reduced > 0)
+                    parts << QString("χ²=%1").arg(sed->chi2Reduced, 0, 'f', 2);
+
+                detail = parts.join(" · ");
             }
         }
         items.push_back({"SED Fit", hasSED, detail});

@@ -46,6 +46,10 @@ public:
     void markFitNew(const QString& fitId);
     void markRVCurveNew(const QString& curveId);
 
+    void markSEDModelNew(const QString& modelId);
+    int  newSEDModelCount() const;
+    void pullPhotometryFromDB(DatabaseManager* dbm);
+
     // ── Counts ──────────────────────────────────────────────────
     int totalStarCount() const;
     int newStarCount() const;
@@ -70,6 +74,8 @@ private:
     QSet<QString> _newSpectrumIds;   // spectra created during this wizard run
     QSet<QString> _newFitIds;        // spectral fits created during this wizard run
     QSet<QString> _newRVCurveIds;    // RV curves created during this wizard run
+    QSet<QString> _newSEDModelIds;
+
 };
 
 #endif // IMPORTSTAGINGAREA_H

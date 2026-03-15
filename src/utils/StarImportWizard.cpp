@@ -23,6 +23,9 @@ StarImportWizard::StarImportWizard(ApplicationController* controller,
     setPage(Page_Spectra, new SpectraImportPage);
     setPage(Page_SpectralFits, new SpectralFitImportPage);
     setPage(Page_RadialVelocity, new RadialVelocityImportPage);
+    auto* sedPage = new SEDImportPage;
+    sedPage->setStagingArea(&_staging);
+    setPage(Page_SED, sedPage);
     setPage(Page_Photometry, new PhotometryImportPage);
 
     setOptions(QWizard::NoBackButtonOnStartPage |
@@ -68,6 +71,7 @@ void StarImportWizard::accept()
     const int nSpectra = _staging.newSpectrumCount();
     const int nFits    = _staging.newFitCount();
     const int nRV      = _staging.newRVCurveCount();
+    const int nSED     = _staging.newSEDModelCount();
 
     LOG_INFO("ImportWizard", QString("Committing staged data: %1 stars, %2 spectra, %3 fits, %4 RV results")
              .arg(nStars).arg(nSpectra).arg(nFits).arg(nRV));
@@ -111,8 +115,9 @@ void StarImportWizard::accept()
                     "• %1 stars\n"
                     "• %2 spectra\n"
                     "• %3 spectral fits\n"
-                    "• %4 RV curves")
-                .arg(nStars).arg(nSpectra).arg(nFits).arg(nRV));
+                    "• %4 RV curves"
+                    "• %5 SED fits")
+                .arg(nStars).arg(nSpectra).arg(nFits).arg(nRV).arg(nSED));
 
         emit importCompleted(_project->getId());
         QWizard::accept();

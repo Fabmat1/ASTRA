@@ -176,20 +176,36 @@ bool DatabaseManager::createTables()
         )
     )";
 
-    // Create SED models table
+    // Replace the old createSEDModelsTable string with:
     QString createSEDModelsTable = R"(
         CREATE TABLE IF NOT EXISTS sed_models (
             id TEXT PRIMARY KEY,
             photometry_id TEXT NOT NULL,
             creation_date TEXT,
             model_id TEXT,
-            is_best_fit INTEGER,
-            angular_size REAL,
-            angular_size_error REAL,
-            radius REAL,
-            radius_error REAL,
-            temperature REAL,
-            temperature_error REAL,
+            object_name TEXT,
+            is_best_fit INTEGER DEFAULT 0,
+            num_components INTEGER DEFAULT 1,
+            ebv_sfd REAL DEFAULT 0,
+            ebv_sfd_error REAL DEFAULT 0,
+            ebv_sf REAL DEFAULT 0,
+            ebv_sf_error REAL DEFAULT 0,
+            e_44_55 REAL DEFAULT 0,
+            e_44_55_error REAL DEFAULT 0,
+            r_55 REAL DEFAULT 0,
+            log_theta REAL DEFAULT 0,
+            log_theta_error REAL DEFAULT 0,
+            parallax REAL DEFAULT 0,
+            parallax_error REAL DEFAULT 0,
+            parallax_ruwe REAL DEFAULT 0,
+            parallax_zpo REAL DEFAULT 0,
+            distance_mode REAL DEFAULT 0,
+            distance_mode_error REAL DEFAULT 0,
+            distance_median REAL DEFAULT 0,
+            distance_median_error REAL DEFAULT 0,
+            chi2_reduced REAL DEFAULT 0,
+            excess_noise REAL DEFAULT 0,
+            component_params TEXT,
             model_data_file TEXT,
             FOREIGN KEY(photometry_id) REFERENCES photometry(id) ON DELETE CASCADE
         )
@@ -347,8 +363,8 @@ bool DatabaseManager::createTables()
 
 bool DatabaseManager::runMigrations()
 {
-    // Add new SpectralFit columns — ignore errors if columns already exist
     QStringList alterQueries = {
+        // Existing SpectralFit migrations
         "ALTER TABLE spectral_fits ADD COLUMN chi2 REAL DEFAULT 0",
         "ALTER TABLE spectral_fits ADD COLUMN metallicity REAL DEFAULT 0",
         "ALTER TABLE spectral_fits ADD COLUMN metallicity_error REAL DEFAULT 0",
@@ -356,6 +372,30 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE spectral_fits ADD COLUMN macroturbulence_error REAL DEFAULT 0",
         "ALTER TABLE spectral_fits ADD COLUMN microturbulence REAL DEFAULT 0",
         "ALTER TABLE spectral_fits ADD COLUMN microturbulence_error REAL DEFAULT 0",
+
+        // SED model v2 migrations (for databases created before this version)
+        "ALTER TABLE sed_models ADD COLUMN object_name TEXT",
+        "ALTER TABLE sed_models ADD COLUMN num_components INTEGER DEFAULT 1",
+        "ALTER TABLE sed_models ADD COLUMN ebv_sfd REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN ebv_sfd_error REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN ebv_sf REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN ebv_sf_error REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN e_44_55 REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN e_44_55_error REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN r_55 REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN log_theta REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN log_theta_error REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN parallax REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN parallax_error REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN parallax_ruwe REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN parallax_zpo REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN distance_mode REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN distance_mode_error REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN distance_median REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN distance_median_error REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN chi2_reduced REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN excess_noise REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN component_params TEXT",
     };
 
     for (const QString& sql : alterQueries) {
@@ -1003,9 +1043,8 @@ bool DatabaseManager::saveSEDModel(const QString& starId,
                                    const QString& photometryId,
                                    std::shared_ptr<SEDModel> model)
 {
-    if (model->getId().isEmpty()) {
+    if (model->getId().isEmpty())
         model->setId(generateUUID());
-    }
 
     QString dataDir   = getDataDirectory();
     QString modelFile = DataStore::sedModelPath(dataDir, starId,
@@ -1013,37 +1052,113 @@ bool DatabaseManager::saveSEDModel(const QString& starId,
     model->saveDataToFile(modelFile);
 
     QString oldFile = model->getModelDataFile();
-    if (!oldFile.isEmpty() && oldFile != modelFile && QFile::exists(oldFile)) {
+    if (!oldFile.isEmpty() && oldFile != modelFile && QFile::exists(oldFile))
         QFile::remove(oldFile);
-    }
 
     QSqlQuery query(threadConnection());
     query.prepare(R"(
         INSERT OR REPLACE INTO sed_models (
-            id, photometry_id, creation_date, model_id, is_best_fit,
-            angular_size, angular_size_error, radius, radius_error,
-            temperature, temperature_error, model_data_file
+            id, photometry_id, creation_date, model_id, object_name,
+            is_best_fit, num_components,
+            ebv_sfd, ebv_sfd_error, ebv_sf, ebv_sf_error,
+            e_44_55, e_44_55_error, r_55,
+            log_theta, log_theta_error,
+            parallax, parallax_error, parallax_ruwe, parallax_zpo,
+            distance_mode, distance_mode_error,
+            distance_median, distance_median_error,
+            chi2_reduced, excess_noise,
+            component_params, model_data_file
         ) VALUES (
-            :id, :photometry_id, :creation_date, :model_id, :is_best_fit,
-            :angular_size, :angular_size_error, :radius, :radius_error,
-            :temperature, :temperature_error, :model_data_file
+            :id, :photometry_id, :creation_date, :model_id, :object_name,
+            :is_best_fit, :num_components,
+            :ebv_sfd, :ebv_sfd_error, :ebv_sf, :ebv_sf_error,
+            :e_44_55, :e_44_55_error, :r_55,
+            :log_theta, :log_theta_error,
+            :parallax, :parallax_error, :parallax_ruwe, :parallax_zpo,
+            :distance_mode, :distance_mode_error,
+            :distance_median, :distance_median_error,
+            :chi2_reduced, :excess_noise,
+            :component_params, :model_data_file
         )
     )");
 
-    query.bindValue(":id", model->getId());
-    query.bindValue(":photometry_id", photometryId);
-    query.bindValue(":creation_date", model->creationDate.toString(Qt::ISODate));
-    query.bindValue(":model_id", model->modelId);
-    query.bindValue(":is_best_fit", model->isBestFit ? 1 : 0);
-    query.bindValue(":angular_size", model->angularSize);
-    query.bindValue(":angular_size_error", model->angularSizeError);
-    query.bindValue(":radius", model->radius);
-    query.bindValue(":radius_error", model->radiusError);
-    query.bindValue(":temperature", model->temperature);
-    query.bindValue(":temperature_error", model->temperatureError);
-    query.bindValue(":model_data_file", modelFile);
+    query.bindValue(":id",             model->getId());
+    query.bindValue(":photometry_id",  photometryId);
+    query.bindValue(":creation_date",  model->creationDate.toString(Qt::ISODate));
+    query.bindValue(":model_id",       model->modelId);
+    query.bindValue(":object_name",    model->objectName);
+    query.bindValue(":is_best_fit",    model->isBestFit ? 1 : 0);
+    query.bindValue(":num_components", model->numComponents);
 
-    return query.exec();
+    query.bindValue(":ebv_sfd",        model->ebvSFD);
+    query.bindValue(":ebv_sfd_error",  model->ebvSFDError);
+    query.bindValue(":ebv_sf",         model->ebvSF);
+    query.bindValue(":ebv_sf_error",   model->ebvSFError);
+    query.bindValue(":e_44_55",        model->e4455);
+    query.bindValue(":e_44_55_error",  model->e4455Error);
+    query.bindValue(":r_55",           model->r55);
+
+    query.bindValue(":log_theta",       model->logTheta);
+    query.bindValue(":log_theta_error", model->logThetaError);
+
+    query.bindValue(":parallax",        model->parallax);
+    query.bindValue(":parallax_error",  model->parallaxError);
+    query.bindValue(":parallax_ruwe",   model->parallaxRuwe);
+    query.bindValue(":parallax_zpo",    model->parallaxZpo);
+    query.bindValue(":distance_mode",       model->distanceMode);
+    query.bindValue(":distance_mode_error", model->distanceModeError);
+    query.bindValue(":distance_median",       model->distanceMedian);
+    query.bindValue(":distance_median_error", model->distanceMedianError);
+
+    query.bindValue(":chi2_reduced",  model->chi2Reduced);
+    query.bindValue(":excess_noise",  model->excessNoise);
+
+    query.bindValue(":component_params", model->componentParamsToJson());
+    query.bindValue(":model_data_file",  modelFile);
+
+    if (!query.exec()) {
+        qDebug() << "Failed to save SED model:" << query.lastError();
+        return false;
+    }
+    return true;
+}
+
+
+bool DatabaseManager::saveSEDModelForStar(const QString& starId,
+                                          std::shared_ptr<SEDModel> model)
+{
+    if (!model) return false;
+
+    QSqlDatabase db = threadConnection();
+
+    // ── Ensure a photometry record exists for this star ──────
+    QString photometryId;
+    {
+        QSqlQuery q(db);
+        q.prepare("SELECT id FROM photometry WHERE star_id = :star_id");
+        q.bindValue(":star_id", starId);
+        if (q.exec() && q.next()) {
+            photometryId = q.value(0).toString();
+        }
+    }
+
+    if (photometryId.isEmpty()) {
+        photometryId = generateUUID();
+        QSqlQuery ins(db);
+        ins.prepare(R"(
+            INSERT INTO photometry (id, star_id, photometric_points_file)
+            VALUES (:id, :star_id, '')
+        )");
+        ins.bindValue(":id",      photometryId);
+        ins.bindValue(":star_id", starId);
+        if (!ins.exec()) {
+            qDebug() << "Failed to create photometry record:" << ins.lastError();
+            return false;
+        }
+    }
+
+    // ── Save the SED model into that photometry ──────────────
+    return saveSEDModel(starId, photometryId, model);
 }
 
 
@@ -1355,7 +1470,8 @@ std::vector<std::shared_ptr<SpectralFit>> DatabaseManager::loadSpectralFits(cons
     return fits;
 }
 
-std::vector<std::shared_ptr<SEDModel>> DatabaseManager::loadSEDModels(const QString& photometryId)
+std::vector<std::shared_ptr<SEDModel>> DatabaseManager::loadSEDModels(
+    const QString& photometryId)
 {
     std::vector<std::shared_ptr<SEDModel>> models;
 
@@ -1363,25 +1479,46 @@ std::vector<std::shared_ptr<SEDModel>> DatabaseManager::loadSEDModels(const QStr
     query.prepare("SELECT * FROM sed_models WHERE photometry_id = :photometry_id");
     query.bindValue(":photometry_id", photometryId);
 
-    if (!query.exec()) {
-        return models;
-    }
+    if (!query.exec()) return models;
 
     while (query.next()) {
-        auto model = std::make_shared<SEDModel>();
-        model->setId(query.value("id").toString());
-        model->creationDate = QDateTime::fromString(query.value("creation_date").toString(), Qt::ISODate);
-        model->modelId = query.value("model_id").toString();
-        model->isBestFit = query.value("is_best_fit").toInt() == 1;
-        model->angularSize = query.value("angular_size").toDouble();
-        model->angularSizeError = query.value("angular_size_error").toDouble();
-        model->radius = query.value("radius").toDouble();
-        model->radiusError = query.value("radius_error").toDouble();
-        model->temperature = query.value("temperature").toDouble();
-        model->temperatureError = query.value("temperature_error").toDouble();
-        model->setModelDataFile(query.value("model_data_file").toString());
+        auto m = std::make_shared<SEDModel>();
+        m->setId(query.value("id").toString());
+        m->creationDate = QDateTime::fromString(
+            query.value("creation_date").toString(), Qt::ISODate);
+        m->modelId       = query.value("model_id").toString();
+        m->objectName    = query.value("object_name").toString();
+        m->isBestFit     = query.value("is_best_fit").toInt() == 1;
+        m->numComponents = query.value("num_components").toInt();
 
-        models.push_back(model);
+        m->ebvSFD       = query.value("ebv_sfd").toDouble();
+        m->ebvSFDError  = query.value("ebv_sfd_error").toDouble();
+        m->ebvSF        = query.value("ebv_sf").toDouble();
+        m->ebvSFError   = query.value("ebv_sf_error").toDouble();
+        m->e4455        = query.value("e_44_55").toDouble();
+        m->e4455Error   = query.value("e_44_55_error").toDouble();
+        m->r55          = query.value("r_55").toDouble();
+
+        m->logTheta      = query.value("log_theta").toDouble();
+        m->logThetaError = query.value("log_theta_error").toDouble();
+
+        m->parallax      = query.value("parallax").toDouble();
+        m->parallaxError = query.value("parallax_error").toDouble();
+        m->parallaxRuwe  = query.value("parallax_ruwe").toDouble();
+        m->parallaxZpo   = query.value("parallax_zpo").toDouble();
+        m->distanceMode       = query.value("distance_mode").toDouble();
+        m->distanceModeError  = query.value("distance_mode_error").toDouble();
+        m->distanceMedian      = query.value("distance_median").toDouble();
+        m->distanceMedianError = query.value("distance_median_error").toDouble();
+
+        m->chi2Reduced  = query.value("chi2_reduced").toDouble();
+        m->excessNoise  = query.value("excess_noise").toDouble();
+
+        m->componentParamsFromJson(query.value("component_params").toString());
+
+        m->setModelDataFile(query.value("model_data_file").toString());
+
+        models.push_back(m);
     }
 
     return models;

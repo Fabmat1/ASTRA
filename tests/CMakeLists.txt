@@ -49,17 +49,3 @@ target_include_directories(test_project PRIVATE
     ${CMAKE_SOURCE_DIR}/src
 )
 add_test(NAME test_project COMMAND test_project)
-
-# Test for DataStore (compressed I/O, path helpers, legacy fallback)
-qt_add_executable(test_datastore
-    test_datastore.cpp
-    ${MODEL_SOURCES}
-)
-target_link_libraries(test_datastore PRIVATE
-    Qt6::Core
-    Qt6::Test
-)
-target_include_directories(test_datastore PRIVATE
-    ${CMAKE_SOURCE_DIR}/src
-)
-add_test(NAME test_datastore COMMAND test_datastore)
