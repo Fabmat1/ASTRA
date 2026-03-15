@@ -151,6 +151,8 @@ public:
     std::shared_ptr<RadialVelocityCurve> getRVCurve();
     void setRVCurve(std::shared_ptr<RadialVelocityCurve> curve) { _rvCurve = curve; }
     void updateRVMetricsFromCurve();
+    // In Star.h, public section:
+    static bool isSet(double v) { return !std::isnan(v); }
 
 private:
     // Identifying fields

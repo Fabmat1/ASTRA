@@ -197,21 +197,20 @@ void SpectralFitImportPage::initializePage()
         return;
     }
 
-    // ── FIX (Bug A): Use the PROJECT's canonical star list, not the
-    //    wizard's import-only list.  project->getAllStars() includes both
-    //    DB-loaded stars AND newly-staged stars, all with their in-memory
-    //    spectra already attached by SpectraImportTask. ──
     auto controller = importWizard->controller();
-    auto project    = importWizard->project();
-    if (controller && project) {
-        if (!project->starsLoaded())
-            controller->openProject(project->getId());
-        _importedStars = project->getAllStars();
-    }
+    ImportStagingArea* staging = importWizard->stagingArea();
+    DatabaseManager* dbm = controller->databaseManager();
 
-    // Fallback (e.g. if project has zero stars but wizard has some)
-    if (_importedStars.empty())
-        _importedStars = importWizard->getImportedStars();
+    // Pull spectra from DB for any stars that don't have them yet.
+    // Stars that already got spectra from SpectraImportPage will be skipped
+    // inside pullSpectraFromDB (it checks hasSpectraLoaded).
+    staging->pullSpectraFromDB(dbm);
+
+    // Pull existing fits from DB for spectra that don't have them yet.
+    staging->pullFitsFromDB(dbm);
+
+    // Single source of truth
+    _importedStars = staging->allStars();
 
     LOG_INFO("FitImport", QString("Using %1 stars for fit matching")
              .arg(_importedStars.size()));
@@ -279,16 +278,6 @@ SpectralFitImportPage::SpectrumIndex SpectralFitImportPage::buildSpectrumLookupI
     SpectrumIndex idx;
     QRegularExpression numericRe("(\\d{10,})");
 
-    StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
-    DatabaseManager* dbManager = nullptr;
-    if (importWizard && importWizard->controller())
-        dbManager = importWizard->controller()->databaseManager();
-
-    // ── FIX (Bug A): Use _importedStars directly.  These are the
-    //    canonical project star objects (set in initializePage from
-    //    project->getAllStars()).  They already have staged spectra
-    //    attached in-memory.  Do NOT re-load from DB — that creates
-    //    fresh objects without staged data. ──
     LOG_INFO("FitImport", QString("Indexing %1 stars").arg(_importedStars.size()));
 
     for (const auto& star : _importedStars) {
@@ -311,14 +300,8 @@ SpectralFitImportPage::SpectrumIndex SpectralFitImportPage::buildSpectrumLookupI
         if (!starId.isEmpty())
             idx.sourceIdIndex[starId] = star;
 
-        // Get spectra: in-memory first (includes staged), then DB fallback
+        // Spectra are already on the star objects (loaded by staging)
         auto spectra = star->getSpectra();
-        if (spectra.empty() && dbManager) {
-            spectra = dbManager->loadSpectra(starId);
-            for (const auto& sp : spectra)
-                star->addSpectrum(sp);
-        }
-
         if (spectra.empty())
             continue;
 

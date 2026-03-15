@@ -372,15 +372,17 @@ void ProjectView::onImportStars()
         QMessageBox::warning(this, "No Project", "Please open a project first.");
         return;
     }
-    
+
     StarImportWizard wizard(_controller, _currentProject, this);
-    if (wizard.exec() == QDialog::Accepted) {
-        // Refresh the table
-        if (_tableModel) {
-            _tableModel->refresh();
-        }
-        updateStatusBar(QString("Loaded %1 stars").arg(_currentProject->getStarCount()));
-    }
+
+    connect(&wizard, &StarImportWizard::importCompleted,
+            this, [this](const QString& projectId) {
+        Q_UNUSED(projectId);
+        // Force project to reload stars from DB
+        loadProject(_currentProject->getId());
+    });
+
+    wizard.exec();
 }
 
 void ProjectView::onRemoveStar()

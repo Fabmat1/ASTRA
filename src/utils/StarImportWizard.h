@@ -29,11 +29,6 @@ public:
     ApplicationController* controller() const { return _controller; }
     std::shared_ptr<Project> project() const { return _project; }
 
-    // Store imported stars for later steps
-    void setImportedStars(const std::vector<std::shared_ptr<Star>>& stars) { _importedStars = stars; }
-    std::vector<std::shared_ptr<Star>> importedStars() const { return _importedStars; }
-    std::vector<std::shared_ptr<Star>> getImportedStars() const { return _importedStars; }
-
     // Staging area access
     ImportStagingArea* stagingArea() { return &_staging; }
 
@@ -46,8 +41,10 @@ private:
 
     ApplicationController* _controller;
     std::shared_ptr<Project> _project;
-    std::vector<std::shared_ptr<Star>> _importedStars;
     ImportStagingArea _staging;
+
+signals:
+    void importCompleted(const QString& projectId);
 };
 
 // Include all sub-components so users only need to include StarImportWizard.h

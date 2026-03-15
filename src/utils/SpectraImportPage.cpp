@@ -453,45 +453,33 @@ void SpectraImportPage::setupMappingPage()
 void SpectraImportPage::initializePage()
 {
     LOG_DEBUG("SpectraImport", "Initializing SpectraImportPage");
-    
+
     StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
-    if (importWizard) {
-        auto controller = importWizard->controller();
-        auto project = importWizard->project();
-        
-        if (controller && project) {
-            // Ensure stars are loaded from database (openProject does this,
-            // but be safe in case wizard was launched differently)
-            if (!project->starsLoaded()) {
-                controller->openProject(project->getId());
-            }
-            
-            // Get ALL stars from the project — includes both stars that were
-            // already in the database AND any newly imported in GeneralImportPage
-            _importedStars = project->getAllStars();
-            
-            LOG_INFO("SpectraImport", QString("Loaded %1 stars from project for spectrum matching")
-                     .arg(_importedStars.size()));
-        }
-        
-        // Fallback: if project somehow has no stars, try the wizard's imported list
-        if (_importedStars.empty()) {
-            _importedStars = importWizard->getImportedStars();
-            LOG_INFO("SpectraImport", QString("Fallback: using %1 stars from wizard import list")
-                     .arg(_importedStars.size()));
-        }
-    }
-    
+    if (!importWizard) return;
+
+    auto controller = importWizard->controller();
+    ImportStagingArea* staging = importWizard->stagingArea();
+    DatabaseManager* dbm = controller->databaseManager();
+
+    // Pull existing spectra from DB for all stars in the working set.
+    // This makes the staging area the single source of truth.
+    staging->pullSpectraFromDB(dbm);
+
+    // Read stars from staging — this is the ONLY source of stars for this page
+    _importedStars = staging->allStars();
+
+    LOG_INFO("SpectraImport", QString("Working set: %1 stars for spectrum matching")
+             .arg(_importedStars.size()));
+
     // Reset state
     _fullResultsReady = false;
     _asyncBusy = false;
     _indexBuilt = false;
     _matchResults.clear();
     _fullMatchResults.clear();
-    
-    // Pre-build indices immediately — this is fast even for 10k stars
+
     buildStarLookupIndex();
-    
+
     _statusLabel->setText(QString("Ready to import spectra for %1 stars. "
                                   "Select FITS files to scan or load a mapping file.")
                           .arg(_importedStars.size()));
@@ -1473,20 +1461,12 @@ std::vector<SpectrumImportEntry> SpectraImportPage::createImportEntries(const st
 void SpectraImportPage::queueImportTask(std::vector<SpectrumImportEntry> entries)
 {
     StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
-    if (!importWizard) {
-        LOG_ERROR("SpectraImport", "Could not access wizard");
-        return;
-    }
-    
-    auto controller = importWizard->controller();
-    auto project = importWizard->project();
-    
-    if (!controller || !project) {
-        LOG_ERROR("SpectraImport", "Controller or project not available");
-        return;
-    }
-    
-    auto* task = new SpectraImportTask(std::move(entries), project->getId(), controller);
+    if (!importWizard || !importWizard->controller()) return;
+
+    auto* controller = importWizard->controller();
+    QString projectId = importWizard->project()->getId();
+
+    auto* task = new SpectraImportTask(std::move(entries), projectId, controller);
     task->setStagingArea(importWizard->stagingArea());
 
     connect(task, &SpectraImportTask::importComplete, this, [this](int imported, int failed) {
@@ -1495,8 +1475,6 @@ void SpectraImportPage::queueImportTask(std::vector<SpectrumImportEntry> entries
     });
 
     controller->backgroundTaskManager()->queueTask(task);
-
-    LOG_INFO("SpectraImport", "Spectra import task queued for background processing");
 }
 
 bool SpectraImportPage::validatePage()

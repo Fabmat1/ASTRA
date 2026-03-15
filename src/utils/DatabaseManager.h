@@ -86,6 +86,16 @@ public:
     // Update star row only (no cascade to spectra/photometry)
     bool updateStarRow(const QString& projectId, std::shared_ptr<Star> star);
 
+    // Find an existing star in the project by matching identifiers.
+    // Returns the star's UUID if found, empty string otherwise.
+    // Priority: source_id > tic > jname > alias > positional (ra/dec).
+    QString findMatchingStarId(const QString& projectId,
+                               const QString& sourceId,
+                               const QString& alias,
+                               const QString& tic,
+                               const QString& jname,
+                               double ra, double dec);
+
 
 private:
     bool createTables();

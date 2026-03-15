@@ -1,267 +1,340 @@
 #include "ImportStagingArea.h"
 
 #include "DatabaseManager.h"
-#include "models/Project.h"
 #include "models/Star.h"
 #include "models/Spectrum.h"
 #include "models/RadialVelocity.h"
 #include "utils/Logger.h"
 
-// ── Staging methods ─────────────────────────────────────────────
+// ── Working set management ──────────────────────────────────────
 
-void ImportStagingArea::stageNewStars(const std::vector<std::shared_ptr<Star>>& stars)
+void ImportStagingArea::addStar(std::shared_ptr<Star> star, bool isNew)
 {
     QMutexLocker lock(&_mutex);
-    _newStars.insert(_newStars.end(), stars.begin(), stars.end());
+    if (!star) return;
+
+    const QString id = star->getId();
+    _workingStars[id] = star;
+    if (isNew) {
+        _newStarIds.insert(id);
+    }
 }
 
-void ImportStagingArea::stageSpectrum(const StagedSpectrum& entry)
+void ImportStagingArea::pullStarsFromDB(DatabaseManager* dbm, const QString& projectId,
+                                         const QStringList& starIds)
 {
+    if (!dbm) return;
+
+    // Load stars one by one, skip if already in working set
+    // (You may want a batch load method on DatabaseManager — for now, individual)
+    auto allDbStars = dbm->loadStars(projectId);
+
     QMutexLocker lock(&_mutex);
-    _newSpectra.push_back(entry);
+    for (const auto& star : allDbStars) {
+        if (starIds.contains(star->getId()) && !_workingStars.contains(star->getId())) {
+            _workingStars[star->getId()] = star;
+        }
+    }
 }
 
-void ImportStagingArea::stageSpectra(const std::vector<StagedSpectrum>& entries)
+void ImportStagingArea::pullSpectraFromDB(DatabaseManager* dbm)
 {
+    if (!dbm) return;
+
     QMutexLocker lock(&_mutex);
-    _newSpectra.insert(_newSpectra.end(), entries.begin(), entries.end());
+    for (auto it = _workingStars.begin(); it != _workingStars.end(); ++it) {
+        auto& star = it.value();
+
+        // Skip if spectra already loaded (either from a previous page or lazy load)
+        if (star->hasSpectraLoaded()) continue;
+
+        auto spectra = dbm->loadSpectra(star->getId());
+        for (const auto& sp : spectra) {
+            star->addSpectrum(sp);
+        }
+    }
 }
 
-void ImportStagingArea::stageFit(const StagedFit& entry)
+void ImportStagingArea::pullFitsFromDB(DatabaseManager* dbm)
 {
+    if (!dbm) return;
+
     QMutexLocker lock(&_mutex);
-    _newFits.push_back(entry);
+    for (auto it = _workingStars.begin(); it != _workingStars.end(); ++it) {
+        auto& star = it.value();
+        for (const auto& spectrum : star->getSpectra()) {
+            // Skip if fits already loaded
+            if (!spectrum->getSpectralFits().empty()) continue;
+
+            auto fits = dbm->loadSpectralFits(spectrum->getId());
+            for (const auto& fit : fits) {
+                spectrum->addSpectralFit(fit);
+            }
+        }
+    }
 }
 
-void ImportStagingArea::stageFits(const std::vector<StagedFit>& entries)
+void ImportStagingArea::pullRVFromDB(DatabaseManager* dbm)
 {
-    QMutexLocker lock(&_mutex);
-    _newFits.insert(_newFits.end(), entries.begin(), entries.end());
-}
+    if (!dbm) return;
 
-void ImportStagingArea::stageRVResult(const StagedRVResult& result)
-{
     QMutexLocker lock(&_mutex);
-    _rvResults.push_back(result);
-}
+    for (auto it = _workingStars.begin(); it != _workingStars.end(); ++it) {
+        auto& star = it.value();
 
-void ImportStagingArea::stageRVResults(const std::vector<StagedRVResult>& results)
-{
-    QMutexLocker lock(&_mutex);
-    _rvResults.insert(_rvResults.end(), results.begin(), results.end());
-}
+        // Skip if RV already loaded
+        if (star->getRVCurve()) continue;
 
-void ImportStagingArea::stageModifiedStar(const QString& starId)
-{
-    QMutexLocker lock(&_mutex);
-    _modifiedExistingStarIds.insert(starId);
+        auto curve = dbm->loadRadialVelocityCurve(star->getId());
+        if (curve) {
+            auto points = dbm->loadRadialVelocityPoints(curve->getId());
+            for (const auto& pt : points) {
+                curve->addRVPoint(pt);
+            }
+            auto fits = dbm->loadRVFits(curve->getId());
+            for (const auto& fit : fits) {
+                curve->addRVFit(fit);
+            }
+            star->setRVCurve(curve);
+        }
+    }
 }
 
 // ── Queries ─────────────────────────────────────────────────────
 
+std::shared_ptr<Star> ImportStagingArea::getStar(const QString& starId) const
+{
+    QMutexLocker lock(&_mutex);
+    return _workingStars.value(starId);
+}
+
+std::vector<std::shared_ptr<Star>> ImportStagingArea::allStars() const
+{
+    QMutexLocker lock(&_mutex);
+    std::vector<std::shared_ptr<Star>> result;
+    result.reserve(_workingStars.size());
+    for (auto it = _workingStars.cbegin(); it != _workingStars.cend(); ++it) {
+        result.push_back(it.value());
+    }
+    return result;
+}
+
+bool ImportStagingArea::hasStar(const QString& starId) const
+{
+    QMutexLocker lock(&_mutex);
+    return _workingStars.contains(starId);
+}
+
 bool ImportStagingArea::isEmpty() const
 {
     QMutexLocker lock(&_mutex);
-    return _newStars.empty() && _newSpectra.empty() &&
-           _newFits.empty() && _rvResults.empty() &&
-           _modifiedExistingStarIds.isEmpty();
+    return _workingStars.isEmpty();
+}
+
+// ── Tracking ────────────────────────────────────────────────────
+
+void ImportStagingArea::markStarDirty(const QString& starId)
+{
+    QMutexLocker lock(&_mutex);
+    if (_workingStars.contains(starId) && !_newStarIds.contains(starId)) {
+        _dirtyStarIds.insert(starId);
+    }
+}
+
+void ImportStagingArea::markSpectrumNew(const QString& spectrumId)
+{
+    QMutexLocker lock(&_mutex);
+    _newSpectrumIds.insert(spectrumId);
+}
+
+void ImportStagingArea::markFitNew(const QString& fitId)
+{
+    QMutexLocker lock(&_mutex);
+    _newFitIds.insert(fitId);
+}
+
+void ImportStagingArea::markRVCurveNew(const QString& curveId)
+{
+    QMutexLocker lock(&_mutex);
+    _newRVCurveIds.insert(curveId);
+}
+
+// ── Counts ──────────────────────────────────────────────────────
+
+int ImportStagingArea::totalStarCount() const
+{
+    QMutexLocker lock(&_mutex);
+    return _workingStars.size();
 }
 
 int ImportStagingArea::newStarCount() const
 {
     QMutexLocker lock(&_mutex);
-    return static_cast<int>(_newStars.size());
+    return _newStarIds.size();
 }
 
-int ImportStagingArea::newSpectraCount() const
+int ImportStagingArea::newSpectrumCount() const
 {
     QMutexLocker lock(&_mutex);
-    return static_cast<int>(_newSpectra.size());
+    return _newSpectrumIds.size();
 }
 
 int ImportStagingArea::newFitCount() const
 {
     QMutexLocker lock(&_mutex);
-    return static_cast<int>(_newFits.size());
+    return _newFitIds.size();
 }
 
-int ImportStagingArea::rvResultCount() const
+int ImportStagingArea::newRVCurveCount() const
 {
     QMutexLocker lock(&_mutex);
-    return static_cast<int>(_rvResults.size());
+    return _newRVCurveIds.size();
 }
 
-std::vector<std::shared_ptr<Star>> ImportStagingArea::stagedNewStars() const
+// ── Clear ───────────────────────────────────────────────────────
+
+void ImportStagingArea::clear()
 {
     QMutexLocker lock(&_mutex);
-    return _newStars;
+
+    LOG_INFO("Staging", QString("Clearing: %1 stars (%2 new), %3 spectra, %4 fits, %5 RV curves")
+             .arg(_workingStars.size()).arg(_newStarIds.size())
+             .arg(_newSpectrumIds.size()).arg(_newFitIds.size())
+             .arg(_newRVCurveIds.size()));
+
+    _workingStars.clear();
+    _newStarIds.clear();
+    _dirtyStarIds.clear();
+    _newSpectrumIds.clear();
+    _newFitIds.clear();
+    _newRVCurveIds.clear();
 }
 
 // ── Commit ──────────────────────────────────────────────────────
 
-bool ImportStagingArea::commitAll(DatabaseManager* dbm,
-                                  std::shared_ptr<Project> project)
+bool ImportStagingArea::commitAll(DatabaseManager* dbm, const QString& projectId)
 {
     QMutexLocker lock(&_mutex);
 
-    if (!dbm || !project) return false;
+    // ── Dedup before anything else ──────────────────────────────
+    deduplicateStars();
 
-    const QString projectId = project->getId();
+    // Log summary (tracking sets used for informational counts only)
+    LOG_INFO("Staging", QString("Committing: %1 total stars (%2 new, %3 dirty), "
+             "%4 new spectra, %5 new fits, %6 new RV curves")
+             .arg(_workingStars.size())
+             .arg(_newStarIds.size())
+             .arg(_dirtyStarIds.size())
+             .arg(_newSpectrumIds.size())
+             .arg(_newFitIds.size())
+             .arg(_newRVCurveIds.size()));
 
-    LOG_INFO("Staging", QString("Committing: %1 stars, %2 spectra, %3 fits, %4 RV results, %5 modified stars")
-             .arg(_newStars.size()).arg(_newSpectra.size())
-             .arg(_newFits.size()).arg(_rvResults.size())
-             .arg(_modifiedExistingStarIds.size()));
+    // Cross-check: count actual in-memory data
+    int actualSpectra = 0, actualFits = 0, actualRV = 0;
+    for (auto it = _workingStars.cbegin(); it != _workingStars.cend(); ++it) {
+        const auto& star = it.value();
+        for (const auto& sp : star->getSpectra()) {
+            actualSpectra++;
+            actualFits += static_cast<int>(sp->getSpectralFits().size());
+        }
+        if (star->getRVCurve()) actualRV++;
+    }
+    LOG_INFO("Staging", QString("Actual in-memory: %1 spectra, %2 fits, %3 RV curves")
+             .arg(actualSpectra).arg(actualFits).arg(actualRV));
 
+    if (!dbm) return false;
     if (!dbm->beginTransaction()) {
         LOG_ERROR("Staging", "Failed to begin transaction");
         return false;
     }
 
     try {
-        // ── Build a set of new-star IDs so we can skip duplicates in steps 2/3 ──
-        // NOTE: star IDs may be empty at this point — they get assigned during saveStar
-        QSet<QString> newStarIds;
-        for (const auto& star : _newStars) {
-            if (!star->getId().isEmpty())
-                newStarIds.insert(star->getId());
-        }
+        // ── Single pass over all stars ──────────────────────────
+        for (auto it = _workingStars.cbegin(); it != _workingStars.cend(); ++it) {
+            const QString& starId = it.key();
+            const auto& star = it.value();
+            if (!star) continue;
 
-        // 1. Save new stars (saveStar cascades to their spectra and fits)
-        for (const auto& star : _newStars) {
-            if (!dbm->saveStar(projectId, star)) {
-                LOG_ERROR("Staging", QString("Failed to save star %1").arg(star->getId()));
-                dbm->rollbackTransaction();
-                return false;
-            }
-        }
+            const bool isNew = _newStarIds.contains(starId);
+            const bool isDirty = _dirtyStarIds.contains(starId);
 
-        // ── After step 1, star objects now have IDs assigned by saveStar. ──
-        // ── Rebuild the newStarIds set with the real IDs.                 ──
-        newStarIds.clear();
-        for (const auto& star : _newStars) {
-            if (!star->getId().isEmpty())
-                newStarIds.insert(star->getId());
-        }
-
-        // 2. Save spectra attached to EXISTING stars only.
-        //    Spectra for new stars were already saved by saveStar's cascade in step 1.
-        for (const auto& entry : _newSpectra) {
-            // Resolve starId from the live star object (it now has an ID after step 1)
-            QString resolvedStarId = entry.starId;
-            if (resolvedStarId.isEmpty() && entry.star)
-                resolvedStarId = entry.star->getId();
-
-            if (resolvedStarId.isEmpty()) {
-                LOG_WARNING("Staging", QString("Skipping spectrum with unresolvable starId (spectrum=%1)")
-                            .arg(entry.spectrum ? entry.spectrum->getId() : "null"));
-                continue;
+            // ── A. Star row ─────────────────────────────────────
+            if (isNew) {
+                // INSERT star row ONLY (no cascade — we handle children below)
+                // Use saveStar which does INSERT OR REPLACE + cascades to
+                // spectra/fits. We still need to handle RV separately.
+                //
+                // However, saveStar() will also save all spectra and their
+                // fits via its own cascade. To avoid double-saving, we let
+                // saveStar handle spectra/fits for new stars and only
+                // supplement with RV below.
+                if (!dbm->saveStar(projectId, star)) {
+                    LOG_ERROR("Staging", QString("Failed to save new star %1").arg(starId));
+                    dbm->rollbackTransaction();
+                    return false;
+                }
+            } else if (isDirty) {
+                // UPDATE existing star row (no cascade)
+                if (!dbm->updateStarRow(projectId, star)) {
+                    LOG_ERROR("Staging", QString("Failed to update star %1").arg(starId));
+                    dbm->rollbackTransaction();
+                    return false;
+                }
             }
 
-            // Skip if this spectrum belongs to a newly-created star — already saved in step 1
-            if (newStarIds.contains(resolvedStarId))
-                continue;
-
-            if (!dbm->saveSpectrum(resolvedStarId, entry.spectrum)) {
-                LOG_ERROR("Staging", QString("Failed to save spectrum for star %1").arg(resolvedStarId));
-                dbm->rollbackTransaction();
-                return false;
-            }
-        }
-
-        // 3. Save fits attached to existing spectra (skip those on new stars)
-        for (const auto& entry : _newFits) {
-            // Resolve starId from the live star object
-            QString resolvedStarId = entry.starId;
-            if (resolvedStarId.isEmpty() && entry.spectrum) {
-                // Try to find the star that owns this spectrum
-                for (const auto& star : _newStars) {
-                    for (const auto& sp : star->getSpectra()) {
-                        if (sp == entry.spectrum || sp->getId() == entry.spectrumId) {
-                            resolvedStarId = star->getId();
-                            break;
+            // ── B. Spectra + fits (existing stars only) ─────────
+            // For new stars, saveStar() already cascaded to all spectra/fits.
+            // For existing stars, save new spectra and new fits on old spectra.
+            if (!isNew) {
+                for (const auto& sp : star->getSpectra()) {
+                    if (_newSpectrumIds.contains(sp->getId())) {
+                        // New spectrum — saveSpectrum cascades to its fits
+                        if (!dbm->saveSpectrum(starId, sp)) {
+                            LOG_ERROR("Staging", QString("Failed to save spectrum %1").arg(sp->getId()));
+                            dbm->rollbackTransaction();
+                            return false;
+                        }
+                    } else {
+                        // Existing spectrum — check for new fits only
+                        for (const auto& fit : sp->getSpectralFits()) {
+                            if (_newFitIds.contains(fit->getId())) {
+                                if (!dbm->saveSpectralFit(starId, sp->getId(), fit)) {
+                                    LOG_ERROR("Staging", QString("Failed to save fit %1").arg(fit->getId()));
+                                    dbm->rollbackTransaction();
+                                    return false;
+                                }
+                            }
                         }
                     }
-                    if (!resolvedStarId.isEmpty()) break;
                 }
             }
 
-            QString resolvedSpectrumId = entry.spectrumId;
-            if (resolvedSpectrumId.isEmpty() && entry.spectrum)
-                resolvedSpectrumId = entry.spectrum->getId();
-
-            if (resolvedStarId.isEmpty() || resolvedSpectrumId.isEmpty()) {
-                LOG_WARNING("Staging", QString("Skipping fit with unresolvable IDs (star=%1, spectrum=%2)")
-                            .arg(resolvedStarId, resolvedSpectrumId));
-                continue;
-            }
-
-            // Skip if this fit belongs to a newly-created star — already saved in step 1
-            if (newStarIds.contains(resolvedStarId))
-                continue;
-
-            if (!dbm->saveSpectralFit(resolvedStarId, resolvedSpectrumId, entry.fit)) {
-                LOG_ERROR("Staging", QString("Failed to save fit for spectrum %1").arg(resolvedSpectrumId));
-                dbm->rollbackTransaction();
-                return false;
-            }
-        }
-
-        // 4. Save RV curves, points, and fits
-        for (const auto& result : _rvResults) {
-            // Resolve starId from the live star object (now has ID after step 1)
-            QString resolvedStarId = result.starId;
-            if (resolvedStarId.isEmpty() && result.star)
-                resolvedStarId = result.star->getId();
-
-            if (resolvedStarId.isEmpty()) {
-                LOG_WARNING("Staging", "Skipping RV result with unresolvable starId");
-                continue;
-            }
-
-            auto& curve = result.curve;
-            curve->setStarId(resolvedStarId);
-
-            if (!dbm->saveRadialVelocityCurve(curve, resolvedStarId)) {
-                LOG_ERROR("Staging", QString("Failed to save RV curve for star %1").arg(resolvedStarId));
-                dbm->rollbackTransaction();
-                return false;
-            }
-
-            for (const auto& pt : curve->getRVPoints()) {
-                pt->setCurveId(curve->getId());
-                if (!dbm->saveRadialVelocityPoint(pt, curve->getId())) {
-                    LOG_ERROR("Staging", QString("Failed to save RV point for curve %1").arg(curve->getId()));
+            // ── C. RV curve + points + fits (ALL stars) ─────────
+            // This is the critical fix: never skip RV based on star newness.
+            // saveStar() does NOT cascade to RV, so we always handle it here.
+            auto curve = star->getRVCurve();
+            if (curve && _newRVCurveIds.contains(curve->getId())) {
+                if (!dbm->saveRadialVelocityCurve(curve, starId)) {
+                    LOG_ERROR("Staging", QString("Failed to save RV curve %1").arg(curve->getId()));
                     dbm->rollbackTransaction();
                     return false;
                 }
-            }
 
-            // Save ALL fits on the curve
-            for (const auto& fit : curve->getRVFits()) {
-                fit->setCurveId(curve->getId());
-                if (!dbm->saveRVFit(fit, curve->getId())) {
-                    LOG_ERROR("Staging", QString("Failed to save RV fit for curve %1").arg(curve->getId()));
-                    dbm->rollbackTransaction();
-                    return false;
+                for (const auto& pt : curve->getRVPoints()) {
+                    pt->setCurveId(curve->getId());
+                    if (!dbm->saveRadialVelocityPoint(pt, curve->getId())) {
+                        LOG_ERROR("Staging", QString("Failed to save RV point for curve %1")
+                                  .arg(curve->getId()));
+                        dbm->rollbackTransaction();
+                        return false;
+                    }
                 }
-            }
 
-            if (result.fit && curve->getRVFits().empty()) {
-                result.fit->setCurveId(curve->getId());
-                if (!dbm->saveRVFit(result.fit, curve->getId())) {
-                    LOG_ERROR("Staging", QString("Failed to save RV fit for curve %1").arg(curve->getId()));
-                    dbm->rollbackTransaction();
-                    return false;
-                }
-            }
-
-            // Update the star's RV metrics
-            if (result.star) {
-                result.star->updateRVMetricsFromCurve();
-                if (!newStarIds.contains(resolvedStarId)) {
-                    if (!dbm->updateStarRow(projectId, result.star)) {
-                        LOG_ERROR("Staging", QString("Failed to update star RV metrics for %1").arg(resolvedStarId));
+                for (const auto& fit : curve->getRVFits()) {
+                    fit->setCurveId(curve->getId());
+                    if (!dbm->saveRVFit(fit, curve->getId())) {
+                        LOG_ERROR("Staging", QString("Failed to save RV fit for curve %1")
+                                  .arg(curve->getId()));
                         dbm->rollbackTransaction();
                         return false;
                     }
@@ -269,21 +342,7 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm,
             }
         }
 
-        // 5. Update modified existing stars — row only, no cascade
-        for (const QString& starId : _modifiedExistingStarIds) {
-            if (newStarIds.contains(starId))
-                continue;
-
-            auto star = project->getStar(starId);
-            if (star) {
-                if (!dbm->updateStarRow(projectId, star)) {
-                    LOG_ERROR("Staging", QString("Failed to update modified star %1").arg(starId));
-                    dbm->rollbackTransaction();
-                    return false;
-                }
-            }
-        }
-
+        // ── D. Commit ───────────────────────────────────────────
         if (!dbm->commitTransaction()) {
             LOG_ERROR("Staging", "Failed to commit transaction");
             return false;
@@ -291,11 +350,12 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm,
 
         LOG_INFO("Staging", "Commit successful");
 
-        _newStars.clear();
-        _newSpectra.clear();
-        _newFits.clear();
-        _rvResults.clear();
-        _modifiedExistingStarIds.clear();
+        _workingStars.clear();
+        _newStarIds.clear();
+        _dirtyStarIds.clear();
+        _newSpectrumIds.clear();
+        _newFitIds.clear();
+        _newRVCurveIds.clear();
 
         return true;
 
@@ -303,60 +363,183 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm,
         LOG_ERROR("Staging", QString("Exception during commit: %1").arg(e.what()));
         dbm->rollbackTransaction();
         return false;
-    } catch (...) {
-        LOG_ERROR("Staging", "Unknown exception during commit");
-        dbm->rollbackTransaction();
-        return false;
     }
 }
 
-// ── Rollback ────────────────────────────────────────────────────
-
-void ImportStagingArea::rollbackAll(std::shared_ptr<Project> project)
+void ImportStagingArea::deduplicateStars()
 {
-    QMutexLocker lock(&_mutex);
+    // Group stars by source_id (primary key for dedup)
+    // Stars without source_id are left as-is
+    QHash<QString, QList<QString>> sourceIdToStarIds;  // source_id → list of star UUIDs
 
-    LOG_INFO("Staging", QString("Rolling back: %1 stars, %2 spectra, %3 fits, %4 RV results")
-             .arg(_newStars.size()).arg(_newSpectra.size())
-             .arg(_newFits.size()).arg(_rvResults.size()));
-
-    // Reverse order: RV → Fits → Spectra → Stars
-
-    // 4. Remove RV curves from stars
-    for (const auto& result : _rvResults) {
-        if (result.star && result.star->getRVCurve() == result.curve) {
-            result.star->setRVCurve(nullptr);
+    for (auto it = _workingStars.cbegin(); it != _workingStars.cend(); ++it) {
+        QString sourceId = it.value()->getSourceId().trimmed();
+        if (!sourceId.isEmpty()) {
+            sourceIdToStarIds[sourceId].append(it.key());
         }
     }
 
-    // 3. Remove staged fits from their spectra
-    for (const auto& entry : _newFits) {
-        if (entry.spectrum && entry.fit) {
-            entry.spectrum->removeSpectralFit(entry.fit->getId());
+    int mergedCount = 0;
+
+    for (auto it = sourceIdToStarIds.cbegin(); it != sourceIdToStarIds.cend(); ++it) {
+        const QList<QString>& starIds = it.value();
+        if (starIds.size() <= 1) continue;
+
+        // Pick the "best" keeper: prefer one that has children, or is marked dirty
+        // (meaning it existed in DB already), or just the first one
+        QString keeperId;
+        int bestScore = -1;
+
+        for (const QString& sid : starIds) {
+            auto star = _workingStars.value(sid);
+            if (!star) continue;
+
+            int score = 0;
+            score += static_cast<int>(star->getSpectra().size()) * 10;
+            if (star->getRVCurve()) score += 100;
+            if (_dirtyStarIds.contains(sid)) score += 50;  // existed in DB
+            if (!_newStarIds.contains(sid)) score += 200;   // definitely existed in DB
+
+            if (score > bestScore) {
+                bestScore = score;
+                keeperId = sid;
+            }
         }
+
+        if (keeperId.isEmpty()) keeperId = starIds.first();
+
+        auto keeper = _workingStars.value(keeperId);
+        if (!keeper) continue;
+
+        // Merge all others into keeper
+        for (const QString& sid : starIds) {
+            if (sid == keeperId) continue;
+
+            auto donor = _workingStars.value(sid);
+            if (!donor) continue;
+
+            // Merge scalar fields: fill blanks on keeper from donor
+            if (keeper->getAlias().isEmpty() && !donor->getAlias().isEmpty())
+                keeper->setAlias(donor->getAlias());
+            if (keeper->getTic().isEmpty() && !donor->getTic().isEmpty())
+                keeper->setTic(donor->getTic());
+            if (keeper->getJName().isEmpty() && !donor->getJName().isEmpty())
+                keeper->setJName(donor->getJName());
+            if (!Star::isSet(keeper->getRa()) && Star::isSet(donor->getRa()))
+                keeper->setRa(donor->getRa());
+            if (!Star::isSet(keeper->getDec()) && Star::isSet(donor->getDec()))
+                keeper->setDec(donor->getDec());
+            if (!Star::isSet(keeper->getPmra()) && Star::isSet(donor->getPmra()))
+                keeper->setPmra(donor->getPmra());
+            if (!Star::isSet(keeper->getPmdec()) && Star::isSet(donor->getPmdec()))
+                keeper->setPmdec(donor->getPmdec());
+            if (!Star::isSet(keeper->getPlx()) && Star::isSet(donor->getPlx()))
+                keeper->setPlx(donor->getPlx());
+            if (!Star::isSet(keeper->getEPmra()) && Star::isSet(donor->getEPmra()))
+                keeper->setEPmra(donor->getEPmra());
+            if (!Star::isSet(keeper->getEPmdec()) && Star::isSet(donor->getEPmdec()))
+                keeper->setEPmdec(donor->getEPmdec());
+            if (!Star::isSet(keeper->getEPlx()) && Star::isSet(donor->getEPlx()))
+                keeper->setEPlx(donor->getEPlx());
+            if (!Star::isSet(keeper->getGmag()) && Star::isSet(donor->getGmag()))
+                keeper->setGmag(donor->getGmag());
+            if (!Star::isSet(keeper->getBp()) && Star::isSet(donor->getBp()))
+                keeper->setBp(donor->getBp());
+            if (!Star::isSet(keeper->getRp()) && Star::isSet(donor->getRp()))
+                keeper->setRp(donor->getRp());
+            if (!Star::isSet(keeper->getBpRp()) && Star::isSet(donor->getBpRp()))
+                keeper->setBpRp(donor->getBpRp());
+            if (!Star::isSet(keeper->getTeff()) && Star::isSet(donor->getTeff()))
+                keeper->setTeff(donor->getTeff());
+            if (!Star::isSet(keeper->getLogg()) && Star::isSet(donor->getLogg()))
+                keeper->setLogg(donor->getLogg());
+
+            // Merge spectra: transfer all spectra from donor to keeper
+            // Use a set to avoid duplicating spectra that are already on keeper
+            QSet<QString> keeperSpecIds;
+            for (const auto& sp : keeper->getSpectra())
+                keeperSpecIds.insert(sp->getId());
+
+            for (const auto& sp : donor->getSpectra()) {
+                if (!keeperSpecIds.contains(sp->getId())) {
+                    keeper->addSpectrum(sp);
+                    // Transfer tracking
+                    if (_newSpectrumIds.contains(sp->getId()))
+                        _newSpectrumIds.insert(sp->getId());  // already there, no-op
+                    for (const auto& fit : sp->getSpectralFits()) {
+                        if (_newFitIds.contains(fit->getId()))
+                            _newFitIds.insert(fit->getId());   // already there, no-op
+                    }
+                }
+            }
+
+            // Merge RV curve: keeper wins if it has one, else take donor's
+            if (!keeper->getRVCurve() && donor->getRVCurve()) {
+                auto curve = donor->getRVCurve();
+                curve->setStarId(keeperId);
+                keeper->setRVCurve(curve);
+                if (_newRVCurveIds.contains(curve->getId()))
+                    _newRVCurveIds.insert(curve->getId());
+                } else if (keeper->getRVCurve() && donor->getRVCurve()) {
+                    // Both have RV curves — merge points into keeper's curve
+                    auto keeperCurve = keeper->getRVCurve();
+                    auto donorCurve = donor->getRVCurve();
+    
+                    QSet<QString> existingPointIds;
+                    for (const auto& pt : keeperCurve->getRVPoints())
+                        existingPointIds.insert(pt->getId());
+    
+                    for (const auto& pt : donorCurve->getRVPoints()) {
+                        if (!existingPointIds.contains(pt->getId())) {
+                            pt->setCurveId(keeperCurve->getId());
+                            keeperCurve->addRVPoint(pt);
+                        }
+                    }
+    
+                    // Merge RV fits from donor into keeper
+                    QSet<QString> existingFitIds;
+                    for (const auto& f : keeperCurve->getRVFits())
+                        existingFitIds.insert(f->getId());
+                    for (const auto& f : donorCurve->getRVFits()) {
+                        if (!existingFitIds.contains(f->getId())) {
+                            f->setCurveId(keeperCurve->getId());
+                            keeperCurve->addRVFit(f);
+                        }
+                    }
+    
+                    // Remove donor curve from tracking (won't be saved)
+                    _newRVCurveIds.remove(donorCurve->getId());
+    
+                    // FIX: Ensure keeper's curve IS tracked for saving,
+                    // even if it was originally loaded from DB (not new).
+                    // After merging new points into it, it must be persisted.
+                    _newRVCurveIds.insert(keeperCurve->getId());
+                }
+
+            // Merge bibcodes
+            for (const auto& bib : donor->getBibcodes()) {
+                bool found = false;
+                for (const auto& existing : keeper->getBibcodes()) {
+                    if (existing == bib) { found = true; break; }
+                }
+                if (!found) keeper->addBibcode(bib);
+            }
+
+            // Remove donor from working set and tracking
+            _workingStars.remove(sid);
+            _newStarIds.remove(sid);
+            _dirtyStarIds.remove(sid);
+
+            mergedCount++;
+        }
+
+        // Keeper is always dirty after a merge
+        _dirtyStarIds.insert(keeperId);
     }
 
-    // 2. Remove staged spectra from their stars
-    for (const auto& entry : _newSpectra) {
-        if (entry.star && entry.spectrum) {
-            entry.star->removeSpectrum(entry.spectrum->getId());
-        }
+    if (mergedCount > 0) {
+        LOG_INFO("Staging", QString("Deduplication: merged %1 duplicate stars, "
+                 "%2 unique stars remain")
+                 .arg(mergedCount).arg(_workingStars.size()));
     }
-
-    // 1. Remove new stars from the project
-    if (project) {
-        for (const auto& star : _newStars) {
-            project->removeStar(star);
-        }
-    }
-
-    // Note: We do NOT revert Gaia/SIMBAD in-memory enrichment on
-    // _modifiedExistingStarIds — that data is still correct, it just
-    // won't be persisted. The next project open will reload from DB.
-
-    _newStars.clear();
-    _newSpectra.clear();
-    _newFits.clear();
-    _rvResults.clear();
-    _modifiedExistingStarIds.clear();
 }

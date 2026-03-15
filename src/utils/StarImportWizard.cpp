@@ -65,9 +65,9 @@ void StarImportWizard::accept()
 
     // Capture counts BEFORE commitAll clears them
     const int nStars   = _staging.newStarCount();
-    const int nSpectra = _staging.newSpectraCount();
+    const int nSpectra = _staging.newSpectrumCount();
     const int nFits    = _staging.newFitCount();
-    const int nRV      = _staging.rvResultCount();
+    const int nRV      = _staging.newRVCurveCount();
 
     LOG_INFO("ImportWizard", QString("Committing staged data: %1 stars, %2 spectra, %3 fits, %4 RV results")
              .arg(nStars).arg(nSpectra).arg(nFits).arg(nRV));
@@ -85,8 +85,9 @@ void StarImportWizard::accept()
     std::shared_ptr<Project> project = _project;
     ImportStagingArea* staging = &_staging;
 
-    auto future = QtConcurrent::run([dbm, project, staging]() -> bool {
-        return staging->commitAll(dbm, project);
+    QString projectId = _project->getId();
+    auto future = QtConcurrent::run([dbm, projectId, staging]() -> bool {
+        return staging->commitAll(dbm, projectId);
     });
 
     QFutureWatcher<bool>* watcher = new QFutureWatcher<bool>(this);
@@ -113,6 +114,7 @@ void StarImportWizard::accept()
                     "• %4 RV curves")
                 .arg(nStars).arg(nSpectra).arg(nFits).arg(nRV));
 
+        emit importCompleted(_project->getId());
         QWizard::accept();
     });
 
@@ -121,7 +123,6 @@ void StarImportWizard::accept()
 
 void StarImportWizard::reject()
 {
-    // If there's staged data, confirm cancellation
     if (!_staging.isEmpty()) {
         auto answer = QMessageBox::question(this, "Cancel Import",
             "You have unsaved import data. Are you sure you want to cancel?\n"
@@ -133,7 +134,7 @@ void StarImportWizard::reject()
     }
 
     waitForBackgroundTasks();
-    _staging.rollbackAll(_project);
+    _staging.clear();
 
     QWizard::reject();
 }

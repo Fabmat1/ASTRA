@@ -407,15 +407,17 @@ void RadialVelocityImportPage::initializePage()
     if (!wiz) return;
 
     auto controller = wiz->controller();
-    auto project = wiz->project();
+    ImportStagingArea* staging = wiz->stagingArea();
+    DatabaseManager* dbm = controller->databaseManager();
 
-    if (controller && project) {
-        if (!project->starsLoaded())
-            controller->openProject(project->getId());
-        _importedStars = project->getAllStars();
-    }
-    if (_importedStars.empty())
-        _importedStars = wiz->getImportedStars();
+    // Pull spectra and fits from DB (needed for "From Fits" mode).
+    // Stars that already have them loaded will be skipped.
+    staging->pullSpectraFromDB(dbm);
+    staging->pullFitsFromDB(dbm);
+    staging->pullRVFromDB(dbm);
+
+    // Single source of truth
+    _importedStars = staging->allStars();
 
     _resultsReady = false;
     _asyncBusy = false;
@@ -441,7 +443,6 @@ void RadialVelocityImportPage::initializePage()
                 _statusLabel->setText(
                     QString("Ready — %1 stars available for RV import.")
                     .arg(_importedStars.size()));
-                // Show any curves already linked from prior tasks
                 updatePreviewFromProject();
             }
         });
@@ -449,7 +450,6 @@ void RadialVelocityImportPage::initializePage()
         return;
     }
 
-    // Show curves that may already exist from a previous import
     updatePreviewFromProject();
 
     _statusLabel->setText(
@@ -695,10 +695,7 @@ void RadialVelocityImportPage::populateColumnCombos(
 void RadialVelocityImportPage::onExtractFromFits()
 {
     StarImportWizard* wiz = qobject_cast<StarImportWizard*>(wizard());
-    if (!wiz || !wiz->controller()) {
-        LOG_WARNING("RVImport", "No wizard or controller available");
-        return;
-    }
+    if (!wiz || !wiz->controller()) return;
 
     auto project = wiz->project();
     if (!project) return;
@@ -706,8 +703,8 @@ void RadialVelocityImportPage::onExtractFromFits()
     _extractFitsBtn->setEnabled(false);
     _statusLabel->setText("Dispatching RV extraction task...");
 
-    // Use the CANONICAL stars from the project — not transient copies
-    auto stars = project->getAllStars();
+    // Use the working set stars — same objects the task will modify
+    auto stars = _importedStars;
 
     auto* task = RVExtractionTask::createFromFits(
         stars,
@@ -725,7 +722,6 @@ void RadialVelocityImportPage::onExtractFromFits()
             QString("Extracted %1 RV points for %2 stars.")
             .arg(numPoints).arg(numCurves));
         _extractFitsBtn->setEnabled(true);
-
         updatePreviewFromProject();
     }, Qt::QueuedConnection);
 
@@ -784,7 +780,7 @@ void RadialVelocityImportPage::onScanFolders()
     _folderProgress->setRange(0, 0);  // indeterminate
     _statusLabel->setText("Scanning folders in background...");
 
-    auto stars = project->getAllStars();
+    auto stars = _importedStars;
 
     auto* task = RVExtractionTask::createFromFolders(
         stars, project->getId(), wiz->controller(), cfg);
@@ -850,7 +846,7 @@ void RadialVelocityImportPage::onProcessTable()
     _processTableBtn->setEnabled(false);
     _statusLabel->setText("Processing table in background...");
 
-    auto stars = project->getAllStars();
+    auto stars = _importedStars;
 
     auto* task = RVExtractionTask::createFromTable(
         stars, project->getId(), wiz->controller(), cfg);
@@ -875,12 +871,8 @@ void RadialVelocityImportPage::updatePreviewFromProject()
 {
     _previewTree->clear();
 
-    StarImportWizard* wiz = qobject_cast<StarImportWizard*>(wizard());
-    if (!wiz || !wiz->project()) return;
-
-    auto stars = wiz->project()->getAllStars();
-
-    for (const auto& star : stars) {
+    // Use working set stars — they have RV curves attached in-memory
+    for (const auto& star : _importedStars) {
         auto curve = star->getRVCurve();
         if (!curve || curve->getNumPoints() == 0)
             continue;
@@ -1007,9 +999,6 @@ void RadialVelocityImportPage::applyFitParamsToProject()
     StarImportWizard* wiz = qobject_cast<StarImportWizard*>(wizard());
     if (!wiz || !wiz->controller()) return;
 
-    auto project = wiz->project();
-    if (!project) return;
-
     buildStarLookupIndex();
 
     int idCol     = _fitIdColCombo->currentIndex() - 1;
@@ -1052,6 +1041,7 @@ void RadialVelocityImportPage::applyFitParamsToProject()
         return ok ? v : 0.0;
     };
 
+    ImportStagingArea* staging = wiz->stagingArea();
     int applied = 0;
 
     for (const auto& row : _fitRows) {
@@ -1078,29 +1068,16 @@ void RadialVelocityImportPage::applyFitParamsToProject()
         // In-memory linking
         curve->addRVFit(fit);
 
-        // ── FIX (Bug E): Stage instead of direct DB write ──
-        // The RV curve is already staged via RVExtractionTask.
-        // The fit gets committed as part of the curve when commitAll runs.
-        // We just need to make sure the staging area knows about the fit.
-        // Since the curve already references this fit in-memory, and
-        // commitAll iterates curve->getRVFits(), it will be saved.
-        // But if the curve was staged by a PREVIOUS wizard run (already in DB),
-        // we need to explicitly stage this fit.
-        //
-        // Safest: always stage via the staging area:
-        ImportStagingArea* staging = wiz->stagingArea();
+        // Mark dirty — commitAll will re-save the curve and its fits
         if (staging) {
-            // Stage as a modification — the RV result already links the curve.
-            // If there's no staged RV result for this star yet, we need one.
-            // For simplicity, mark the star as modified so commitAll re-saves it.
-            staging->stageModifiedStar(star->getId());
+            staging->markStarDirty(star->getId());
         }
 
         applied++;
     }
 
     LOG_INFO("RVImport",
-        QString("Applied fit parameters to %1 stars (staged)").arg(applied));
+        QString("Applied fit parameters to %1 stars").arg(applied));
 }
 // ════════════════════════════════════════════════════════════════
 // Browse / detect helpers (were in original, must be restored)

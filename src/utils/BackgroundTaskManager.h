@@ -56,57 +56,71 @@ protected:
 
 };
 
-// Gaia query task
 class GaiaQueryTask : public BackgroundTask
 {
     Q_OBJECT
-
 public:
+    // From staging (wizard path)
+    GaiaQueryTask(ImportStagingArea* staging,
+                  const QString& projectId,
+                  ApplicationController* controller,
+                  QObject* parent = nullptr);
+
+    // Standalone (no staging)
     GaiaQueryTask(std::vector<std::shared_ptr<Star>> stars,
                   const QString& projectId,
                   ApplicationController* controller,
                   QObject* parent = nullptr);
-    
-    QString taskName() const override { return "Gaia DR3 Query"; }
-    
-public slots:
+
     void execute() override;
-    
+    QString taskName() const override { return "Gaia Query"; }
+
+signals:
+    void queryComplete(int updated, int failed);
+
 private:
-    std::vector<std::shared_ptr<Star>> _stars;
-    QString _projectId;
-    ApplicationController* _controller;
-    QNetworkAccessManager* _networkManager;
-    
     bool starNeedsGaiaData(const std::shared_ptr<Star>& star) const;
     QString buildADQLQuery();
     std::vector<std::shared_ptr<Star>> parseVizierResponse(const QString& response);
+
+    std::vector<std::shared_ptr<Star>> _stars;
+    ImportStagingArea* _stagingArea = nullptr;
+    QString _projectId;
+    ApplicationController* _controller;
+    QNetworkAccessManager* _networkManager = nullptr;
 };
 
-// SIMBAD query task
 class SimbadQueryTask : public BackgroundTask
 {
     Q_OBJECT
-
 public:
+    // From staging (wizard path)
+    SimbadQueryTask(ImportStagingArea* staging,
+                    const QString& projectId,
+                    ApplicationController* controller,
+                    QObject* parent = nullptr);
+
+    // Standalone (no staging)
     SimbadQueryTask(std::vector<std::shared_ptr<Star>> stars,
                     const QString& projectId,
                     ApplicationController* controller,
                     QObject* parent = nullptr);
-    
-    QString taskName() const override { return "SIMBAD Bibliography Query"; }
-    
-public slots:
+
     void execute() override;
-    
+    QString taskName() const override { return "SIMBAD Query"; }
+
+signals:
+    void queryComplete(int updated, int failed);
+
 private:
-    std::vector<std::shared_ptr<Star>> _stars;
-    QString _projectId;
-    ApplicationController* _controller;
-    QNetworkAccessManager* _networkManager;
-    
     QString generateSimbadScript();
     QMap<QString, QStringList> parseSimbadResponse(const QString& response);
+
+    std::vector<std::shared_ptr<Star>> _stars;
+    ImportStagingArea* _stagingArea = nullptr;
+    QString _projectId;
+    ApplicationController* _controller;
+    QNetworkAccessManager* _networkManager = nullptr;
 };
 
 // Status bar widget with spinner

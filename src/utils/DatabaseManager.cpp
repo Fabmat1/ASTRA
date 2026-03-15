@@ -16,7 +16,10 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QSqlRecord>
+#include <QRegularExpression>
+#include <cmath>
 
+#include "utils/Logger.h"
 #include "utils/AppPaths.h"
 #include "models/RadialVelocity.h"
 
@@ -378,6 +381,11 @@ bool DatabaseManager::createIndexes()
         "CREATE INDEX IF NOT EXISTS idx_rv_points_curve ON rv_points(curve_id)",
         "CREATE INDEX IF NOT EXISTS idx_rv_points_mjd ON rv_points(mjd)",
         "CREATE INDEX IF NOT EXISTS idx_rv_fits_curve ON rv_fits(curve_id)",
+        "CREATE INDEX IF NOT EXISTS idx_stars_source_id ON stars(project_id, source_id)",
+        "CREATE INDEX IF NOT EXISTS idx_stars_tic ON stars(project_id, tic)",
+        "CREATE INDEX IF NOT EXISTS idx_stars_jname ON stars(project_id, jname)",
+        "CREATE INDEX IF NOT EXISTS idx_stars_alias ON stars(project_id, alias)",
+        "CREATE INDEX IF NOT EXISTS idx_stars_radec ON stars(project_id, dec, ra)",
     };
 
     for (const QString& query : indexQueries) {
@@ -657,9 +665,29 @@ bool DatabaseManager::saveStar(const QString& projectId, std::shared_ptr<Star> s
             return false;
         }
     }
+    
+    // ── THIS WAS MISSING ──
+    if (auto curve = star->getRVCurve()) {
+        if (!saveRadialVelocityCurve(curve, star->getId())) {
+            LOG_ERROR("DB", QString("Failed to save RV curve for star %1")
+                      .arg(star->getId()));
+            return false;
+        }
+        for (const auto& pt : curve->getRVPoints()) {
+            pt->setCurveId(curve->getId());
+            if (!saveRadialVelocityPoint(pt, curve->getId()))
+                return false;
+        }
+        for (const auto& fit : curve->getRVFits()) {
+            fit->setCurveId(curve->getId());
+            if (!saveRVFit(fit, curve->getId()))
+                return false;
+        }
+    }
 
     return true;
 }
+
 
 std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& projectId)
 {
@@ -1781,4 +1809,167 @@ void DatabaseManager::loadRVCurveBatch(std::vector<std::shared_ptr<Star>>& stars
             star->setRVCurve(curve);
         }
     }
+}
+
+QString DatabaseManager::findMatchingStarId(const QString& projectId,
+                                             const QString& sourceId,
+                                             const QString& alias,
+                                             const QString& tic,
+                                             const QString& jname,
+                                             double ra, double dec)
+{
+    QSqlDatabase db = threadConnection();
+
+    // ── 1. Exact source_id match (most reliable) ────────────────
+    if (!sourceId.isEmpty()) {
+        QSqlQuery q(db);
+        q.prepare(R"(
+            SELECT id FROM stars
+            WHERE project_id = :pid AND source_id = :sid
+            LIMIT 1
+        )");
+        q.bindValue(":pid", projectId);
+        q.bindValue(":sid", sourceId);
+        if (q.exec() && q.next())
+            return q.value(0).toString();
+
+        // Try numeric extraction: "Gaia DR3 1234567890" → "1234567890"
+        // Match against DB rows that may or may not have the prefix.
+        QRegularExpression numRe("(\\d{10,})");
+        QRegularExpressionMatch m = numRe.match(sourceId);
+        if (m.hasMatch()) {
+            QString numericPart = m.captured(1);
+            q.prepare(R"(
+                SELECT id FROM stars
+                WHERE project_id = :pid
+                  AND (source_id = :num
+                       OR source_id LIKE '%' || :num2)
+                LIMIT 1
+            )");
+            q.bindValue(":pid", projectId);
+            q.bindValue(":num", numericPart);
+            q.bindValue(":num2", numericPart);
+            if (q.exec() && q.next())
+                return q.value(0).toString();
+        }
+    }
+
+    // ── 2. Exact TIC match ──────────────────────────────────────
+    if (!tic.isEmpty()) {
+        QSqlQuery q(db);
+        q.prepare(R"(
+            SELECT id FROM stars
+            WHERE project_id = :pid AND tic = :tic
+            LIMIT 1
+        )");
+        q.bindValue(":pid", projectId);
+        q.bindValue(":tic", tic);
+        if (q.exec() && q.next())
+            return q.value(0).toString();
+    }
+
+    // ── 3. Exact J-name match ───────────────────────────────────
+    if (!jname.isEmpty()) {
+        QSqlQuery q(db);
+        q.prepare(R"(
+            SELECT id FROM stars
+            WHERE project_id = :pid AND jname = :jname
+            LIMIT 1
+        )");
+        q.bindValue(":pid", projectId);
+        q.bindValue(":jname", jname);
+        if (q.exec() && q.next())
+            return q.value(0).toString();
+    }
+
+    // ── 4. Alias match (case-insensitive) ───────────────────────
+    if (!alias.isEmpty()) {
+        QSqlQuery q(db);
+        q.prepare(R"(
+            SELECT id FROM stars
+            WHERE project_id = :pid AND LOWER(alias) = LOWER(:alias)
+            LIMIT 1
+        )");
+        q.bindValue(":pid", projectId);
+        q.bindValue(":alias", alias);
+        if (q.exec() && q.next())
+            return q.value(0).toString();
+    }
+
+    // ── 5. Positional match (ra/dec within 2 arcsec) ────────────
+    //    Only if we have valid coordinates.
+    if (!std::isnan(ra) && !std::isnan(dec)) {
+        // 2 arcsec in degrees
+        static constexpr double TOLERANCE_DEG = 2.0 / 3600.0;
+
+        // Use a bounding box for the SQL filter (fast), then refine with
+        // proper spherical distance. The cos(dec) factor for RA is applied
+        // in the app-side check.
+        double decLo = dec - TOLERANCE_DEG;
+        double decHi = dec + TOLERANCE_DEG;
+        // RA box is wider near poles; use a generous factor
+        double cosDec = std::cos(dec * M_PI / 180.0);
+        double raMargin = (cosDec > 0.01) ? TOLERANCE_DEG / cosDec : 360.0;
+        double raLo = ra - raMargin;
+        double raHi = ra + raMargin;
+
+        QSqlQuery q(db);
+
+        // Handle RA wraparound at 0/360
+        if (raLo < 0.0 || raHi > 360.0) {
+            // Wraparound — use OR
+            double raLoW = (raLo < 0.0) ? raLo + 360.0 : raLo;
+            double raHiW = (raHi > 360.0) ? raHi - 360.0 : raHi;
+            q.prepare(R"(
+                SELECT id, ra, dec FROM stars
+                WHERE project_id = :pid
+                  AND dec BETWEEN :decLo AND :decHi
+                  AND (ra >= :raLoW OR ra <= :raHiW)
+                  AND ra IS NOT NULL AND dec IS NOT NULL
+            )");
+            q.bindValue(":pid", projectId);
+            q.bindValue(":decLo", decLo);
+            q.bindValue(":decHi", decHi);
+            q.bindValue(":raLoW", raLoW);
+            q.bindValue(":raHiW", raHiW);
+        } else {
+            q.prepare(R"(
+                SELECT id, ra, dec FROM stars
+                WHERE project_id = :pid
+                  AND dec BETWEEN :decLo AND :decHi
+                  AND ra BETWEEN :raLo AND :raHi
+                  AND ra IS NOT NULL AND dec IS NOT NULL
+            )");
+            q.bindValue(":pid", projectId);
+            q.bindValue(":decLo", decLo);
+            q.bindValue(":decHi", decHi);
+            q.bindValue(":raLo", raLo);
+            q.bindValue(":raHi", raHi);
+        }
+
+        if (q.exec()) {
+            QString bestId;
+            double bestDist = TOLERANCE_DEG;
+
+            while (q.next()) {
+                double dbRa  = q.value("ra").toDouble();
+                double dbDec = q.value("dec").toDouble();
+
+                // Simple small-angle distance
+                double dRa  = (ra - dbRa) * cosDec;
+                double dDec = dec - dbDec;
+                double dist = std::sqrt(dRa * dRa + dDec * dDec);
+
+                if (dist < bestDist) {
+                    bestDist = dist;
+                    bestId   = q.value("id").toString();
+                }
+            }
+
+            if (!bestId.isEmpty())
+                return bestId;
+        }
+    }
+
+    return QString();  // no match found
 }

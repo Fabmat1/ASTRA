@@ -7,6 +7,8 @@
 #include "models/Project.h"
 #include "models/Star.h"
 #include "utils/BackgroundTaskManager.h"
+#include "utils/DatabaseManager.h"
+#include <QUuid>
 #include "Logger.h"
 
 #include <QVBoxLayout>
@@ -1227,10 +1229,10 @@ bool GeneralImportPage::validatePage()
         }
     }
     
-    std::vector<std::shared_ptr<Star>> stars = createStarsFromData();
+    std::vector<std::shared_ptr<Star>> parsedStars = createStarsFromData();
 
-    if (stars.empty()) {
-        QMessageBox::warning(this, "Error", "No stars could be created from the data.");
+    if (parsedStars.empty()) {
+        QMessageBox::warning(this, "No Data", "No stars could be created from the data.");
         return false;
     }
 
@@ -1242,52 +1244,111 @@ bool GeneralImportPage::validatePage()
 
     auto controller = importWizard->controller();
     auto project = importWizard->project();
+    ImportStagingArea* staging = importWizard->stagingArea();
+    DatabaseManager* dbm = controller->databaseManager();
+    const QString projectId = project->getId();
 
-    // ── FIX (Bug F): Guard against re-entry (back-navigation) ──
-    // If we already staged stars, remove the old ones first
-    auto previousStars = importWizard->importedStars();
-    if (!previousStars.empty()) {
-        LOG_INFO("GeneralImport", "Re-entry detected, rolling back previous star import");
-        for (const auto& star : previousStars) {
-            project->removeStar(star);
+    // Clear working set on re-entry (user went back and re-imported)
+    staging->clear();
+
+    // Match each parsed star against the DB, or create new
+    int matchedCount = 0;
+    int newCount = 0;
+
+    for (const auto& star : parsedStars) {
+        QString existingId = dbm->findMatchingStarId(
+            projectId,
+            star->getSourceId(),
+            star->getAlias(),
+            star->getTic(),
+            star->getJName(),
+            star->getRa(),
+            star->getDec());
+    
+        if (!existingId.isEmpty()) {
+            if (!staging->hasStar(existingId)) {
+                staging->pullStarsFromDB(dbm, projectId, {existingId});
+            }
+            auto existing = staging->getStar(existingId);
+            updateStarFromParsed(existing, star);
+            staging->markStarDirty(existingId);
+        } else {
+            star->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+            staging->addStar(star, /*isNew=*/true);
         }
-        // Note: we can't easily un-stage from the staging area without
-        // a dedicated method, but since commitAll hasn't run yet and we're
-        // replacing, we need to clear and re-stage.  For safety, the staging
-        // area could track "new stars from GeneralImportPage" separately.
-        // For now, the simplest approach: clear _newStars in staging area.
-        // This requires adding a clearNewStars() method, or we accept that
-        // the duplicates get deduplicated at commit time by the DB's
-        // unique constraints on (project_id, source_id).
     }
 
-    importWizard->setImportedStars(stars);
+    LOG_INFO("GeneralImport", QString("Staged %1 new stars, matched %2 existing stars")
+             .arg(newCount).arg(matchedCount));
 
-    for (const auto& star : stars) {
-        project->addStar(star);
-    }
-
-    importWizard->stagingArea()->stageNewStars(stars);
-
+    // Fire background tasks — they work on staging->allStars()
     BackgroundTaskManager* taskManager = controller->backgroundTaskManager();
 
     if (_gaiaCheckBox->isChecked()) {
-        std::vector<std::shared_ptr<Star>> starsCopy = stars;
-        auto* gaiaTask = new GaiaQueryTask(std::move(starsCopy), project->getId(), controller);
-        gaiaTask->setStagingArea(importWizard->stagingArea());
+        auto* gaiaTask = new GaiaQueryTask(staging, projectId, controller);
         taskManager->queueTask(gaiaTask);
     }
 
     if (_simbadCheckBox->isChecked()) {
-        std::vector<std::shared_ptr<Star>> starsCopy = stars;
-        auto* simbadTask = new SimbadQueryTask(std::move(starsCopy), project->getId(), controller);
-        simbadTask->setStagingArea(importWizard->stagingArea());
+        auto* simbadTask = new SimbadQueryTask(staging, projectId, controller);
         taskManager->queueTask(simbadTask);
     }
 
-    LOG_INFO("GeneralImport", QString("Staged %1 stars for import").arg(stars.size()));
-
     return true;
+}
+
+
+void GeneralImportPage::updateStarFromParsed(std::shared_ptr<Star> existing,
+                                              std::shared_ptr<Star> parsed)
+{
+    if (!parsed->getAlias().isEmpty())     existing->setAlias(parsed->getAlias());
+    if (!parsed->getSourceId().isEmpty())  existing->setSourceId(parsed->getSourceId());
+    if (!parsed->getTic().isEmpty())       existing->setTic(parsed->getTic());
+    if (!parsed->getJName().isEmpty())     existing->setJName(parsed->getJName());
+    if (!parsed->getSpecClass().isEmpty()) existing->setSpecClass(parsed->getSpecClass());
+
+    auto applyIfSet = [](double src, std::shared_ptr<Star> target, void (Star::*setter)(double)) {
+        if (Star::isSet(src)) (target.get()->*setter)(src);
+    };
+
+    applyIfSet(parsed->getRa(),    existing, &Star::setRa);
+    applyIfSet(parsed->getDec(),   existing, &Star::setDec);
+    applyIfSet(parsed->getPmra(),  existing, &Star::setPmra);
+    applyIfSet(parsed->getPmdec(), existing, &Star::setPmdec);
+    applyIfSet(parsed->getEPmra(), existing, &Star::setEPmra);
+    applyIfSet(parsed->getEPmdec(),existing, &Star::setEPmdec);
+    applyIfSet(parsed->getPlx(),   existing, &Star::setPlx);
+    applyIfSet(parsed->getEPlx(),  existing, &Star::setEPlx);
+    applyIfSet(parsed->getGmag(),  existing, &Star::setGmag);
+    applyIfSet(parsed->getEGmag(), existing, &Star::setEGmag);
+    applyIfSet(parsed->getBp(),    existing, &Star::setBp);
+    applyIfSet(parsed->getEBp(),   existing, &Star::setEBp);
+    applyIfSet(parsed->getRp(),    existing, &Star::setRp);
+    applyIfSet(parsed->getERp(),   existing, &Star::setERp);
+    applyIfSet(parsed->getBpRp(),  existing, &Star::setBpRp);
+    applyIfSet(parsed->getTeff(),  existing, &Star::setTeff);
+    applyIfSet(parsed->getETeff(), existing, &Star::setETeff);
+    applyIfSet(parsed->getLogg(),  existing, &Star::setLogg);
+    applyIfSet(parsed->getELogg(), existing, &Star::setELogg);
+    applyIfSet(parsed->getHe(),    existing, &Star::setHe);
+    applyIfSet(parsed->getEHe(),   existing, &Star::setEHe);
+    applyIfSet(parsed->getLogP(),  existing, &Star::setLogP);
+    applyIfSet(parsed->getDeltaRV(),  existing, &Star::setDeltaRV);
+    applyIfSet(parsed->getEDeltaRV(), existing, &Star::setEDeltaRV);
+    applyIfSet(parsed->getRVAvg(),    existing, &Star::setRVAvg);
+    applyIfSet(parsed->getERVAvg(),   existing, &Star::setERVAvg);
+    applyIfSet(parsed->getRVMed(),    existing, &Star::setRVMed);
+    applyIfSet(parsed->getERVMed(),   existing, &Star::setERVMed);
+    applyIfSet(parsed->getPmraPmdecCorr(), existing, &Star::setPmraPmdecCorr);
+    applyIfSet(parsed->getPlxPmdecCorr(),  existing, &Star::setPlxPmdecCorr);
+    applyIfSet(parsed->getPlxPmraCorr(),   existing, &Star::setPlxPmraCorr);
+
+    // Metadata: merge bibcodes (append without duplicates)
+    for (const auto& bib : parsed->getBibcodes()) {
+        const auto& existing_bibs = existing->getBibcodes();
+        if (std::find(existing_bibs.begin(), existing_bibs.end(), bib) == existing_bibs.end())
+            existing->addBibcode(bib);
+    }
 }
 
 void GeneralImportPage::queryGaiaData(std::vector<std::shared_ptr<Star>>& stars)

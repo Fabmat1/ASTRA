@@ -1,90 +1,75 @@
 #ifndef IMPORTSTAGINGAREA_H
 #define IMPORTSTAGINGAREA_H
+#pragma once
 
-#include <QMutex>
-#include <QMutexLocker>
+#include <QHash>
 #include <QSet>
 #include <QString>
+#include <QMutex>
+
 #include <memory>
 #include <vector>
 
 class Star;
-class Spectrum;
-class SpectralFit;
-class RadialVelocityCurve;
-class RadialVelocityPoint;
-class RVFit;
 class DatabaseManager;
-class Project;
-
-struct StagedSpectrum {
-    QString starId;
-    std::shared_ptr<Star> star;           // in-memory star that already has the spectrum added
-    std::shared_ptr<Spectrum> spectrum;
-};
-
-struct StagedFit {
-    QString starId;
-    QString spectrumId;
-    std::shared_ptr<Spectrum> spectrum;   // in-memory spectrum that already has the fit added
-    std::shared_ptr<SpectralFit> fit;
-};
-
-struct StagedRVResult {
-    QString starId;
-    std::shared_ptr<Star> star;
-    std::shared_ptr<RadialVelocityCurve> curve;
-    std::shared_ptr<RVFit> fit;           // may be nullptr
-};
 
 class ImportStagingArea
 {
 public:
     ImportStagingArea() = default;
+    ~ImportStagingArea() = default;
 
-    // ── Staging methods (called from tasks / wizard pages) ──────
+    // Non-copyable (mutex)
+    ImportStagingArea(const ImportStagingArea&) = delete;
+    ImportStagingArea& operator=(const ImportStagingArea&) = delete;
 
-    void stageNewStars(const std::vector<std::shared_ptr<Star>>& stars);
-    std::vector<StagedSpectrum> stagedSpectra() const;
-    std::vector<StagedFit> stagedFits() const;
-    void stageSpectrum(const StagedSpectrum& entry);
-    void stageSpectra(const std::vector<StagedSpectrum>& entries);
-    void stageFit(const StagedFit& entry);
-    void stageFits(const std::vector<StagedFit>& entries);
-    void stageRVResult(const StagedRVResult& result);
-    void stageRVResults(const std::vector<StagedRVResult>& results);
-    void stageModifiedStar(const QString& starId);
+    // ── Working set management ──────────────────────────────────
+    void addStar(std::shared_ptr<Star> star, bool isNew);
 
-    // ── Commit / Rollback ───────────────────────────────────────
-
-    /// Write everything to the database inside a single transaction.
-    /// Returns true on success.
-    bool commitAll(DatabaseManager* dbm,
-                   std::shared_ptr<Project> project);
-
-    /// Undo all in-memory mutations that were made during staging.
-    void rollbackAll(std::shared_ptr<Project> project);
+    // Pull child data from DB for stars already in the working set.
+    // Each method skips stars that already have the data loaded.
+    void pullStarsFromDB(DatabaseManager* dbm, const QString& projectId,
+                         const QStringList& starIds);
+    void pullSpectraFromDB(DatabaseManager* dbm);
+    void pullFitsFromDB(DatabaseManager* dbm);
+    void pullRVFromDB(DatabaseManager* dbm);
 
     // ── Queries ─────────────────────────────────────────────────
-
+    std::shared_ptr<Star> getStar(const QString& starId) const;
+    std::vector<std::shared_ptr<Star>> allStars() const;
+    bool hasStar(const QString& starId) const;
     bool isEmpty() const;
-    int newStarCount() const;
-    int newSpectraCount() const;
-    int newFitCount() const;
-    int rvResultCount() const;
 
-    // Access staged new stars (needed by wizard pages to treat them
-    // as part of the project's star list before commit)
-    std::vector<std::shared_ptr<Star>> stagedNewStars() const;
+    // ── Tracking: call these when tasks create new child objects ─
+    void markStarDirty(const QString& starId);
+    void markSpectrumNew(const QString& spectrumId);
+    void markFitNew(const QString& fitId);
+    void markRVCurveNew(const QString& curveId);
+
+    // ── Counts ──────────────────────────────────────────────────
+    int totalStarCount() const;
+    int newStarCount() const;
+    int newSpectrumCount() const;
+    int newFitCount() const;
+    int newRVCurveCount() const;
+
+    // ── Lifecycle ───────────────────────────────────────────────
+    void clear();
+    bool commitAll(DatabaseManager* dbm, const QString& projectId);
 
 private:
+    void deduplicateStars();
     mutable QMutex _mutex;
 
-    std::vector<std::shared_ptr<Star>> _newStars;
-    std::vector<StagedSpectrum>        _newSpectra;
-    std::vector<StagedFit>             _newFits;
-    std::vector<StagedRVResult>        _rvResults;
-    QSet<QString>                      _modifiedExistingStarIds;
+    // The working set: starId → Star object (shared_ptr)
+    QHash<QString, std::shared_ptr<Star>> _workingStars;
+
+    // Tracking sets
+    QSet<QString> _newStarIds;       // stars that don't exist in DB yet
+    QSet<QString> _dirtyStarIds;     // existing stars whose row fields changed
+    QSet<QString> _newSpectrumIds;   // spectra created during this wizard run
+    QSet<QString> _newFitIds;        // spectral fits created during this wizard run
+    QSet<QString> _newRVCurveIds;    // RV curves created during this wizard run
 };
 
 #endif // IMPORTSTAGINGAREA_H

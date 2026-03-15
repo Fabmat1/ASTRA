@@ -92,6 +92,8 @@ private:
     QVariant convertValue(const QString& value) const;
     void updateSimbadWarning();
     void querySimbadBibcodes(const std::vector<std::shared_ptr<Star>>& stars);
+
+    void updateStarFromParsed(std::shared_ptr<Star> existing, std::shared_ptr<Star> parsed);
     
     // Column name aliases (case-insensitive matching)
     std::unordered_map<QString, std::vector<QString>> _columnAliases;

@@ -311,6 +311,18 @@ void BackgroundTaskManager::onTaskFinished(bool success, const QString& message)
 // ============================================================================
 // GaiaQueryTask Implementation
 // ============================================================================
+GaiaQueryTask::GaiaQueryTask(ImportStagingArea* staging,
+                             const QString& projectId,
+                             ApplicationController* controller,
+                             QObject* parent)
+    : BackgroundTask(parent)
+    , _stagingArea(staging)
+    , _projectId(projectId)
+    , _controller(controller)
+{
+    if (_stagingArea)
+        _stars = _stagingArea->allStars();
+}
 
 GaiaQueryTask::GaiaQueryTask(std::vector<std::shared_ptr<Star>> stars,
                              const QString& projectId,
@@ -318,29 +330,27 @@ GaiaQueryTask::GaiaQueryTask(std::vector<std::shared_ptr<Star>> stars,
                              QObject* parent)
     : BackgroundTask(parent)
     , _stars(std::move(stars))
+    , _stagingArea(nullptr)
     , _projectId(projectId)
     , _controller(controller)
-    , _networkManager(nullptr)
 {
 }
 
 bool GaiaQueryTask::starNeedsGaiaData(const std::shared_ptr<Star>& star) const
 {
-    if (star->getSourceId().isEmpty()) {
-        return false;
-    }
-    
-    return star->getRa() == 0.0 ||
-           star->getDec() == 0.0 ||
-           star->getPmra() == 0.0 ||
-           star->getPmdec() == 0.0 ||
-           star->getPlx() == 0.0 ||
-           star->getGmag() == 0.0 ||
-           star->getBp() == 0.0 ||
-           star->getRp() == 0.0 ||
-           star->getEPmra() == 0.0 ||
-           star->getEPmdec() == 0.0 ||
-           star->getEPlx() == 0.0;
+    if (star->getSourceId().isEmpty()) return false;
+
+    return !Star::isSet(star->getRa()) ||
+           !Star::isSet(star->getDec()) ||
+           !Star::isSet(star->getPmra()) ||
+           !Star::isSet(star->getPmdec()) ||
+           !Star::isSet(star->getPlx()) ||
+           !Star::isSet(star->getGmag()) ||
+           !Star::isSet(star->getBp()) ||
+           !Star::isSet(star->getRp()) ||
+           !Star::isSet(star->getEPmra()) ||
+           !Star::isSet(star->getEPmdec()) ||
+           !Star::isSet(star->getEPlx());
 }
 
 QString GaiaQueryTask::buildADQLQuery()
@@ -456,8 +466,8 @@ void GaiaQueryTask::execute()
 
     if (_stagingArea) {
         for (const auto& star : modifiedStars)
-            _stagingArea->stageModifiedStar(star->getId());
-        LOG_INFO("Gaia", QString("Staged %1 modified stars").arg(modifiedStars.size()));
+            _stagingArea->markStarDirty(star->getId());
+        LOG_INFO("Gaia", QString("Marked %1 stars dirty").arg(modifiedStars.size()));
         emit finished(true, QString("Gaia: Updated %1 stars (staged)").arg(modifiedStars.size()));
     } else {
         // Legacy: save directly
@@ -530,22 +540,22 @@ std::vector<std::shared_ptr<Star>> GaiaQueryTask::parseVizierResponse(const QStr
             return 0.0;
         };
 
-        if (star->getRa() == 0.0)    { double v = getValue("ra_icrs"); if (v != 0.0) { star->setRa(v); updated = true; } }
-        if (star->getDec() == 0.0)   { double v = getValue("de_icrs"); if (v != 0.0) { star->setDec(v); updated = true; } }
-        if (star->getPmra() == 0.0)  { double v = getValue("pmra"); if (v != 0.0) { star->setPmra(v); updated = true; } }
-        if (star->getPmdec() == 0.0) { double v = getValue("pmde"); if (v != 0.0) { star->setPmdec(v); updated = true; } }
-        if (star->getEPmra() == 0.0) { double v = getValue("e_pmra"); if (v != 0.0) { star->setEPmra(v); updated = true; } }
-        if (star->getEPmdec() == 0.0){ double v = getValue("e_pmde"); if (v != 0.0) { star->setEPmdec(v); updated = true; } }
-        if (star->getPlx() == 0.0)   { double v = getValue("plx"); if (v != 0.0) { star->setPlx(v); updated = true; } }
-        if (star->getEPlx() == 0.0)  { double v = getValue("e_plx"); if (v != 0.0) { star->setEPlx(v); updated = true; } }
-        if (star->getGmag() == 0.0)  { double v = getValue("gmag"); if (v != 0.0) { star->setGmag(v); updated = true; } }
-        if (star->getBp() == 0.0)    { double v = getValue("bpmag"); if (v != 0.0) { star->setBp(v); updated = true; } }
-        if (star->getRp() == 0.0)    { double v = getValue("rpmag"); if (v != 0.0) { star->setRp(v); updated = true; } }
-        if (star->getPmraPmdecCorr() == 0.0) { double v = getValue("pmrapmdecor"); if (v != 0.0) { star->setPmraPmdecCorr(v); updated = true; } }
-        if (star->getPlxPmraCorr() == 0.0)   { double v = getValue("plxpmracor"); if (v != 0.0) { star->setPlxPmraCorr(v); updated = true; } }
-        if (star->getPlxPmdecCorr() == 0.0)  { double v = getValue("plxpmdecor"); if (v != 0.0) { star->setPlxPmdecCorr(v); updated = true; } }
+        if (!Star::isSet(star->getRa()))            { double v = getValue("ra_icrs");     if (v != 0.0) { star->setRa(v);            updated = true; } }
+        if (!Star::isSet(star->getDec()))           { double v = getValue("de_icrs");     if (v != 0.0) { star->setDec(v);           updated = true; } }
+        if (!Star::isSet(star->getPmra()))          { double v = getValue("pmra");        if (v != 0.0) { star->setPmra(v);          updated = true; } }
+        if (!Star::isSet(star->getPmdec()))         { double v = getValue("pmde");        if (v != 0.0) { star->setPmdec(v);         updated = true; } }
+        if (!Star::isSet(star->getEPmra()))         { double v = getValue("e_pmra");      if (v != 0.0) { star->setEPmra(v);         updated = true; } }
+        if (!Star::isSet(star->getEPmdec()))        { double v = getValue("e_pmde");      if (v != 0.0) { star->setEPmdec(v);        updated = true; } }
+        if (!Star::isSet(star->getPlx()))           { double v = getValue("plx");         if (v != 0.0) { star->setPlx(v);           updated = true; } }
+        if (!Star::isSet(star->getEPlx()))          { double v = getValue("e_plx");       if (v != 0.0) { star->setEPlx(v);          updated = true; } }
+        if (!Star::isSet(star->getGmag()))          { double v = getValue("gmag");        if (v != 0.0) { star->setGmag(v);          updated = true; } }
+        if (!Star::isSet(star->getBp()))            { double v = getValue("bpmag");       if (v != 0.0) { star->setBp(v);            updated = true; } }
+        if (!Star::isSet(star->getRp()))            { double v = getValue("rpmag");       if (v != 0.0) { star->setRp(v);            updated = true; } }
+        if (!Star::isSet(star->getPmraPmdecCorr())) { double v = getValue("pmrapmdecor"); if (v != 0.0) { star->setPmraPmdecCorr(v); updated = true; } }
+        if (!Star::isSet(star->getPlxPmraCorr()))   { double v = getValue("plxpmracor");  if (v != 0.0) { star->setPlxPmraCorr(v);  updated = true; } }
+        if (!Star::isSet(star->getPlxPmdecCorr()))  { double v = getValue("plxpmdecor");  if (v != 0.0) { star->setPlxPmdecCorr(v); updated = true; } }
 
-        if (star->getBpRp() == 0.0 && star->getBp() != 0.0 && star->getRp() != 0.0) {
+        if (!Star::isSet(star->getBpRp()) && Star::isSet(star->getBp()) && Star::isSet(star->getRp())) {
             star->setBpRp(star->getBp() - star->getRp());
             updated = true;
         }
@@ -564,15 +574,28 @@ std::vector<std::shared_ptr<Star>> GaiaQueryTask::parseVizierResponse(const QStr
 // SimbadQueryTask Implementation
 // ============================================================================
 
+SimbadQueryTask::SimbadQueryTask(ImportStagingArea* staging,
+                                 const QString& projectId,
+                                 ApplicationController* controller,
+                                 QObject* parent)
+    : BackgroundTask(parent)
+    , _stagingArea(staging)
+    , _projectId(projectId)
+    , _controller(controller)
+{
+    if (_stagingArea)
+        _stars = _stagingArea->allStars();
+}
+
 SimbadQueryTask::SimbadQueryTask(std::vector<std::shared_ptr<Star>> stars,
                                  const QString& projectId,
                                  ApplicationController* controller,
                                  QObject* parent)
     : BackgroundTask(parent)
     , _stars(std::move(stars))
+    , _stagingArea(nullptr)
     , _projectId(projectId)
     , _controller(controller)
-    , _networkManager(nullptr)
 {
 }
 
@@ -764,14 +787,20 @@ void SimbadQueryTask::execute()
         }
     }
     
-    if (!starsToSave.empty() && _controller) {
-        emit progress(QString("SIMBAD: Saving %1 updated stars...").arg(starsToSave.size()));
-        QMetaObject::invokeMethod(_controller, [this, starsToSave]() {
-            auto project = _controller->getCurrentProject();
-            if (project) {
-                _controller->saveStarsToProject(project, starsToSave);
-            }
-        }, Qt::QueuedConnection);
+    if (_stagingArea) {
+        for (const auto& star : starsToSave)
+            _stagingArea->markStarDirty(star->getId());
+        LOG_INFO("SIMBAD", QString("Marked %1 stars dirty").arg(starsToSave.size()));
+    } else {
+        // Legacy: save directly
+        if (!starsToSave.empty() && _controller) {
+            emit progress(QString("SIMBAD: Saving %1 updated stars...").arg(starsToSave.size()));
+            QMetaObject::invokeMethod(_controller, [this, starsToSave]() {
+                auto project = _controller->getCurrentProject();
+                if (project)
+                    _controller->saveStarsToProject(project, starsToSave);
+            }, Qt::QueuedConnection);
+        }
     }
     
     LOG_INFO("SIMBAD", QString("Task complete: Added bibcodes for %1 stars").arg(updatedCount));
@@ -909,20 +938,19 @@ void SpectraImportTask::execute()
     }
 
     if (_stagingArea) {
-        // ── Staging mode: no DB writes ──────────────────────────
-        std::vector<StagedSpectrum> staged;
-        staged.reserve(toSave.size());
         for (const auto& entry : toSave) {
-            staged.push_back({entry.star->getId(), entry.star, entry.spectrum});
+            // Ensure spectrum has a UUID before tracking
+            if (entry.spectrum->getId().isEmpty())
+                entry.spectrum->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+            _stagingArea->markSpectrumNew(entry.spectrum->getId());
         }
-        _stagingArea->stageSpectra(staged);
-
+    
         int totalImported = static_cast<int>(toSave.size());
         int totalFailed = total - totalImported;
-
+    
         LOG_INFO("SpectraImport", QString("Staged %1 spectra (%2 failed)")
                  .arg(totalImported).arg(totalFailed));
-
+    
         emit importComplete(totalImported, totalFailed);
         emit finished(true, QString("Spectra Import: %1 staged, %2 failed")
                       .arg(totalImported).arg(totalFailed));
@@ -1007,28 +1035,21 @@ void DiggaFitImportTask::execute()
     emit progress(QString("Processing %1 fits...").arg(total));
 
     if (_stagingArea) {
-        // ── Staging mode ────────────────────────────────────────
-        std::vector<StagedFit> staged;
-        staged.reserve(total);
-
         for (int i = 0; i < total; ++i) {
             auto& entry = _entries[i];
-            // In-memory linking
+            // Ensure fit has a UUID before tracking
+            if (entry.fit->getId().isEmpty())
+                entry.fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
             entry.spectrum->addSpectralFit(entry.fit);
-
-            staged.push_back({entry.starId, entry.spectrumId,
-                              entry.spectrum, entry.fit});
+            _stagingArea->markFitNew(entry.fit->getId());
             imported++;
-
+    
             if (i % 500 == 0)
                 emit progress(QString("Staged %1/%2 fits").arg(i).arg(total));
         }
-
-        _stagingArea->stageFits(staged);
-
+    
         emit importComplete(imported, failed);
         emit finished(true, QString("Staged %1 fits (%2 failed)").arg(imported).arg(failed));
-
     } else {
         // ── Legacy mode: direct DB writes ───────────────────────
         emit progress(QString("Saving %1 fits to database...").arg(total));
@@ -1206,9 +1227,7 @@ void RVExtractionTask::execute()
 
 void RVExtractionTask::executeFromFits()
 {
-    emit progress("RV Extraction: Loading spectra and fits...");
-
-    DatabaseManager* dbm = _controller->databaseManager();
+    emit progress("RV Extraction: Processing spectra and fits...");
 
     int totalPoints = 0;
     int starsWithRV = 0;
@@ -1219,6 +1238,9 @@ void RVExtractionTask::executeFromFits()
     int fitsWithZeroRV = 0, fitsWithNonZeroRV = 0;
     int bestFitNull = 0, bestFitFound = 0;
 
+    // Only use DB fallback in legacy (non-staging) mode
+    DatabaseManager* dbm = _stagingArea ? nullptr : _controller->databaseManager();
+
     for (const auto& star : _stars) {
         if (++starsProcessed % 200 == 0) {
             emit progress(QString("RV Extraction: %1/%2 stars...")
@@ -1227,10 +1249,9 @@ void RVExtractionTask::executeFromFits()
 
         auto spectra = star->getSpectra();
 
-        // Load from DB if not in memory — but don't overwrite the star instance
+        // Legacy mode only: load from DB if not in memory
         if (spectra.empty() && dbm) {
             spectra = dbm->loadSpectra(star->getId());
-            // Attach to the SAME star instance so downstream code sees them
             for (const auto& sp : spectra)
                 star->addSpectrum(sp);
         }
@@ -1246,7 +1267,7 @@ void RVExtractionTask::executeFromFits()
         for (const auto& spectrum : spectra) {
             auto fits = spectrum->getSpectralFits();
 
-            // Load fits from DB if needed
+            // Legacy mode only: load fits from DB if not in memory
             if (fits.empty() && dbm) {
                 fits = dbm->loadSpectralFits(spectrum->getId());
                 for (const auto& f : fits)
@@ -1319,8 +1340,7 @@ void RVExtractionTask::executeFromFits()
         .arg(fitsWithZeroRV).arg(fitsWithNonZeroRV)
         .arg(bestFitFound).arg(bestFitNull));
 
-    // ── Phase 2: Save to DB and link to star instances ──
-    emit progress(QString("RV Extraction: Saving %1 curves to database...")
+    emit progress(QString("RV Extraction: Linking %1 curves...")
         .arg(_results.size()));
 
     saveResultsToDatabase();
@@ -1542,48 +1562,32 @@ void RVExtractionTask::saveResultsToDatabase()
     if (_results.empty()) return;
 
     if (_stagingArea) {
-        std::vector<StagedRVResult> staged;
-        staged.reserve(_results.size());
-
-        // ── Use _stars directly — same objects, no cross-thread needed ──
         QHash<QString, std::shared_ptr<Star>> canonicalStars;
         for (const auto& star : _stars)
             canonicalStars[star->getId()] = star;
-
+    
         for (auto& result : _results) {
-            // Find canonical star — try by ID first, fall back to pointer match
             auto canonical = canonicalStars.value(result.starId);
-            if (!canonical) {
-                // ID might be empty — find by matching the star object used during extraction
-                for (const auto& star : _stars) {
-                    if (star->getId() == result.starId ||
-                        (!result.starId.isEmpty() && star->getSourceId() == result.starId)) {
-                        canonical = star;
-                        break;
-                    }
-                }
-            }
             if (!canonical) continue;
-
+    
             auto& curve = result.curve;
-            curve->setStarId(canonical->getId());  // might still be empty — commitAll resolves it
+            curve->setStarId(canonical->getId());
             curve->setLogP(curve->computeLogP());
-
+    
             if (result.fit) {
                 result.fit->setCurveId(curve->getId());
                 result.fit->setBestFit(true);
                 curve->addRVFit(result.fit);
             }
+    
             canonical->setRVCurve(curve);
             canonical->updateRVMetricsFromCurve();
-
-            // Stage with the star OBJECT — commitAll will resolve the ID after saveStar
-            staged.push_back({canonical->getId(), canonical, curve, result.fit});
+    
+            _stagingArea->markRVCurveNew(curve->getId());
+            _stagingArea->markStarDirty(canonical->getId());
         }
-
-        _stagingArea->stageRVResults(staged);
-
-        LOG_INFO("RVExtract", QString("Staged %1 RV curves").arg(staged.size()));
+    
+        LOG_INFO("RVExtract", QString("Staged %1 RV curves").arg(_results.size()));
         return;
     }
 
