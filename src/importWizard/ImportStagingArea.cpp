@@ -185,6 +185,18 @@ void ImportStagingArea::markSEDModelNew(const QString& modelId)
     _newSEDModelIds.insert(modelId);
 }
 
+void ImportStagingArea::markLightcurveDirty(const QString& starId)
+{
+    QMutexLocker lock(&_mutex);
+    _dirtyLightcurveStarIds.insert(starId);
+}
+
+int ImportStagingArea::dirtyLightcurveStarCount() const
+{
+    QMutexLocker lock(&_mutex);
+    return _dirtyLightcurveStarIds.size();
+}
+
 // ── Counts ──────────────────────────────────────────────────────
 
 int ImportStagingArea::totalStarCount() const
@@ -241,6 +253,7 @@ void ImportStagingArea::clear()
     _newFitIds.clear();
     _newRVCurveIds.clear();
     _newSEDModelIds.clear();
+    _dirtyLightcurveStarIds.clear();
 }
 
 // ── Commit ──────────────────────────────────────────────────────
@@ -254,14 +267,16 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm, const QString& projectId
 
     // Log summary (tracking sets used for informational counts only)
     LOG_INFO("Staging", QString("Committing: %1 total stars (%2 new, %3 dirty), "
-             "%4 new spectra, %5 new fits, %6 new RV curves, %7 new SED models")
+             "%4 new spectra, %5 new fits, %6 new RV curves, %7 new SED models, "
+             "%8 stars with new lightcurves")
              .arg(_workingStars.size())
              .arg(_newStarIds.size())
              .arg(_dirtyStarIds.size())
              .arg(_newSpectrumIds.size())
              .arg(_newFitIds.size())
              .arg(_newRVCurveIds.size())
-             .arg(_newSEDModelIds.size()));
+             .arg(_newSEDModelIds.size())
+             .arg(_dirtyLightcurveStarIds.size()));
 
     // Cross-check: count actual in-memory data
     int actualSpectra = 0, actualFits = 0, actualRV = 0;
@@ -364,6 +379,22 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm, const QString& projectId
                 }
             }
 
+            // ── B3. Lightcurve data (stars with new LC data) ────
+            if (_dirtyLightcurveStarIds.contains(starId)) {
+                auto phot = star->getPhotometry();
+                if (phot) {
+                    for (const QString& source : phot->getLightcurveSources()) {
+                        if (!dbm->saveLightcurveForStar(starId, source, phot.get())) {
+                            LOG_ERROR("Staging",
+                                      QString("Failed to save lightcurve '%1' for star %2")
+                                          .arg(source, starId));
+                            dbm->rollbackTransaction();
+                            return false;
+                        }
+                    }
+                }
+            }
+
             // ── C. RV curve + points + fits (ALL stars) ─────────
             // This is the critical fix: never skip RV based on star newness.
             // saveStar() does NOT cascade to RV, so we always handle it here.
@@ -412,6 +443,7 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm, const QString& projectId
         _newFitIds.clear();
         _newRVCurveIds.clear();
         _newSEDModelIds.clear();
+        _dirtyLightcurveStarIds.clear();
 
         return true;
 

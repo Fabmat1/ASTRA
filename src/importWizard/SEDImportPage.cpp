@@ -150,8 +150,6 @@ void SEDImportPage::initializePage()
 
 bool SEDImportPage::validatePage()
 {
-    if (!_scanned) return false;
-
     // Count how many are selected
     int selectedCount = 0;
     for (const auto& e : _entries) {
@@ -166,7 +164,7 @@ bool SEDImportPage::validatePage()
 
 bool SEDImportPage::isComplete() const
 {
-    return _scanned;
+    return true;
 }
 
 
@@ -684,5 +682,5 @@ void SEDImportPage::stageSelectedSEDs()
 
 int SEDImportPage::nextId() const
 {
-    return StarImportWizard::Page_Photometry;
+    return StarImportWizard::Page_LightcurveImport;
 }

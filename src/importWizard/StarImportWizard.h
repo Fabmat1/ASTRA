@@ -23,7 +23,7 @@ public:
                      QWidget* parent = nullptr);
 
     enum { Page_GeneralImport, Page_ColumnMapping, Page_Spectra,
-           Page_SpectralFits, Page_RadialVelocity, Page_SED, Page_Photometry };
+           Page_SpectralFits, Page_RadialVelocity, Page_SED, Page_LightcurveImport, Page_Photometry };
 
     // Public getters for access by wizard pages
     ApplicationController* controller() const { return _controller; }
@@ -48,12 +48,13 @@ signals:
 };
 
 // Include all sub-components so users only need to include StarImportWizard.h
-#include "../importWizard/GeneralImportPage.h"
-#include "../importWizard/SpectraImportPage.h"
-#include "../importWizard/SpectralFitImportPage.h"
-#include "../importWizard/RadialVelocityImportPage.h"
-#include "../importWizard/SEDImportPage.h"
-#include "../importWizard/RVPhotometryPages.h"
+#include "GeneralImportPage.h"
+#include "SpectraImportPage.h"
+#include "SpectralFitImportPage.h"
+#include "RadialVelocityImportPage.h"
+#include "SEDImportPage.h"
+#include "LightcurveImportPage.h"
+#include "RVPhotometryPages.h"
 #include "../utils/CatalogQueryWorkers.h"
 
 #endif // STARIMPORTWIZARD_H

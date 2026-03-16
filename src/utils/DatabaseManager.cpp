@@ -1161,6 +1161,88 @@ bool DatabaseManager::saveSEDModelForStar(const QString& starId,
     return saveSEDModel(starId, photometryId, model);
 }
 
+bool DatabaseManager::saveLightcurveForStar(const QString& starId,
+                                            const QString& source,
+                                            Photometry* photometry)
+{
+    if (!photometry || source.isEmpty()) return false;
+
+    QSqlDatabase db = threadConnection();
+    QString dataDir = getDataDirectory();
+
+    // ── Ensure a photometry record exists ────────────────────
+    QString photometryId;
+    {
+        QSqlQuery q(db);
+        q.prepare("SELECT id FROM photometry WHERE star_id = :star_id");
+        q.bindValue(":star_id", starId);
+        if (q.exec() && q.next()) {
+            photometryId = q.value(0).toString();
+        }
+    }
+
+    if (photometryId.isEmpty()) {
+        photometryId = photometry->getId();
+        if (photometryId.isEmpty())
+            photometryId = generateUUID();
+
+        QSqlQuery ins(db);
+        ins.prepare(R"(
+            INSERT INTO photometry (id, star_id, photometric_points_file)
+            VALUES (:id, :star_id, '')
+        )");
+        ins.bindValue(":id", photometryId);
+        ins.bindValue(":star_id", starId);
+        if (!ins.exec()) {
+            qDebug() << "Failed to create photometry record:" << ins.lastError();
+            return false;
+        }
+    }
+
+    // ── Check if this source already exists ──────────────────
+    QString existingLcId;
+    {
+        QSqlQuery q(db);
+        q.prepare(R"(
+            SELECT id FROM lightcurves
+            WHERE photometry_id = :pid AND source = :source
+        )");
+        q.bindValue(":pid", photometryId);
+        q.bindValue(":source", source);
+        if (q.exec() && q.next()) {
+            existingLcId = q.value(0).toString();
+        }
+    }
+
+    QString lightcurveId = existingLcId.isEmpty() ? generateUUID() : existingLcId;
+
+    // ── Save the data file ───────────────────────────────────
+    QString lcFile = DataStore::lightcurvePath(dataDir, starId,
+                                               photometryId, source);
+    if (!photometry->saveLightcurveToFile(source, lcFile)) {
+        qDebug() << "Failed to save lightcurve data file for source:" << source;
+        return false;
+    }
+
+    // ── Insert or replace the lightcurve row ─────────────────
+    QSqlQuery lcQuery(db);
+    lcQuery.prepare(R"(
+        INSERT OR REPLACE INTO lightcurves (id, photometry_id, source, data_file)
+        VALUES (:id, :photometry_id, :source, :data_file)
+    )");
+    lcQuery.bindValue(":id", lightcurveId);
+    lcQuery.bindValue(":photometry_id", photometryId);
+    lcQuery.bindValue(":source", source);
+    lcQuery.bindValue(":data_file", lcFile);
+
+    if (!lcQuery.exec()) {
+        qDebug() << "Failed to save lightcurve record:" << lcQuery.lastError();
+        return false;
+    }
+
+    return true;
+}
+
 
 bool DatabaseManager::saveLightcurveModel(const QString& starId,
                                           const QString& photometryId,

@@ -26,6 +26,9 @@ StarImportWizard::StarImportWizard(ApplicationController* controller,
     auto* sedPage = new SEDImportPage;
     sedPage->setStagingArea(&_staging);
     setPage(Page_SED, sedPage);
+    auto* lcPage = new LightcurveImportPage;
+    lcPage->setStagingArea(&_staging);
+    setPage(Page_LightcurveImport, lcPage);
     setPage(Page_Photometry, new PhotometryImportPage);
 
     setOptions(QWizard::NoBackButtonOnStartPage |
@@ -72,6 +75,7 @@ void StarImportWizard::accept()
     const int nFits    = _staging.newFitCount();
     const int nRV      = _staging.newRVCurveCount();
     const int nSED     = _staging.newSEDModelCount();
+    const int nLC      = _staging.dirtyLightcurveStarCount();
 
     LOG_INFO("ImportWizard", QString("Committing staged data: %1 stars, %2 spectra, %3 fits, %4 RV results")
              .arg(nStars).arg(nSpectra).arg(nFits).arg(nRV));
@@ -96,7 +100,7 @@ void StarImportWizard::accept()
 
     QFutureWatcher<bool>* watcher = new QFutureWatcher<bool>(this);
     connect(watcher, &QFutureWatcher<bool>::finished, this,
-            [this, watcher, progress, nStars, nSpectra, nFits, nRV, nSED]()
+            [this, watcher, progress, nStars, nSpectra, nFits, nRV, nSED, nLC]()
     {
         bool ok = watcher->result();
         watcher->deleteLater();
@@ -116,8 +120,9 @@ void StarImportWizard::accept()
                     "• %2 spectra\n"
                     "• %3 spectral fits\n"
                     "• %4 RV curves"
-                    "• %5 SED fits")
-                .arg(nStars).arg(nSpectra).arg(nFits).arg(nRV).arg(nSED));
+                    "• %5 SED fits"
+                    "• %6 Lightcurves")
+                .arg(nStars).arg(nSpectra).arg(nFits).arg(nRV).arg(nSED).arg(nLC));
 
         emit importCompleted(_project->getId());
         QWizard::accept();

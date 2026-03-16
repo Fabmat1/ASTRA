@@ -2,6 +2,8 @@
 
 #include <QWidget>
 #include <QMetaObject>
+#include <QSpinBox>
+#include <QMap>
 #include <memory>
 #include <vector>
 
@@ -93,6 +95,9 @@ private:
     QWidget*     _lcContent       = nullptr;
     QVBoxLayout* _lcContentLayout = nullptr;
     bool         _lcFolded        = false;
+    QMap<QString, int>  _lcBinsUnfolded;
+    QMap<QString, int>  _lcBinsFolded;
+    QFrame*             _lcBurgerMenu = nullptr;
 
     // ── Spectra panel ──
     QTabBar*     _spectraTabBar        = nullptr;
@@ -140,6 +145,8 @@ private:
     QColor specClassColor(const QString& specClass) const;
     QColor accentTextColor(const QColor& accent) const;
     bool   isDarkTheme() const;
+
+    bool eventFilter(QObject* obj, QEvent* ev) override;
 
 protected:
     bool event(QEvent* e) override;

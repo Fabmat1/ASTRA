@@ -26,8 +26,6 @@ public:
     // ── Working set management ──────────────────────────────────
     void addStar(std::shared_ptr<Star> star, bool isNew);
 
-    // Pull child data from DB for stars already in the working set.
-    // Each method skips stars that already have the data loaded.
     void pullStarsFromDB(DatabaseManager* dbm, const QString& projectId,
                          const QStringList& starIds);
     void pullSpectraFromDB(DatabaseManager* dbm);
@@ -50,12 +48,15 @@ public:
     int  newSEDModelCount() const;
     void pullPhotometryFromDB(DatabaseManager* dbm);
 
+    void markLightcurveDirty(const QString& starId);       // ← NEW
+
     // ── Counts ──────────────────────────────────────────────────
     int totalStarCount() const;
     int newStarCount() const;
     int newSpectrumCount() const;
     int newFitCount() const;
     int newRVCurveCount() const;
+    int dirtyLightcurveStarCount() const;                   // ← NEW
 
     // ── Lifecycle ───────────────────────────────────────────────
     void clear();
@@ -65,17 +66,15 @@ private:
     void deduplicateStars();
     mutable QMutex _mutex;
 
-    // The working set: starId → Star object (shared_ptr)
     QHash<QString, std::shared_ptr<Star>> _workingStars;
 
-    // Tracking sets
-    QSet<QString> _newStarIds;       // stars that don't exist in DB yet
-    QSet<QString> _dirtyStarIds;     // existing stars whose row fields changed
-    QSet<QString> _newSpectrumIds;   // spectra created during this wizard run
-    QSet<QString> _newFitIds;        // spectral fits created during this wizard run
-    QSet<QString> _newRVCurveIds;    // RV curves created during this wizard run
+    QSet<QString> _newStarIds;
+    QSet<QString> _dirtyStarIds;
+    QSet<QString> _newSpectrumIds;
+    QSet<QString> _newFitIds;
+    QSet<QString> _newRVCurveIds;
     QSet<QString> _newSEDModelIds;
-
+    QSet<QString> _dirtyLightcurveStarIds;                  // ← NEW
 };
 
 #endif // IMPORTSTAGINGAREA_H

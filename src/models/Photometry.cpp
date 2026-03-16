@@ -256,22 +256,40 @@ void Photometry::addLightcurve(const QString& source, const std::vector<Lightcur
     _lightcurves[source] = points;
 }
 
+std::vector<QString> Photometry::getLightcurveSources() const
+{
+    // Merge keys from both maps
+    std::map<QString, bool> seen;
+    for (const auto& pair : _lightcurves)
+        seen[pair.first] = true;
+    for (const auto& pair : _lightcurveFiles)
+        seen[pair.first] = true;
+
+    std::vector<QString> sources;
+    sources.reserve(seen.size());
+    for (const auto& pair : seen)
+        sources.push_back(pair.first);
+    return sources;
+}
+
 std::vector<LightcurvePoint> Photometry::getLightcurve(const QString& source) const
 {
     auto it = _lightcurves.find(source);
     if (it != _lightcurves.end()) {
         return it->second;
     }
-    return std::vector<LightcurvePoint>();
-}
 
-std::vector<QString> Photometry::getLightcurveSources() const
-{
-    std::vector<QString> sources;
-    for (const auto& pair : _lightcurves) {
-        sources.push_back(pair.first);
+    // Lazy-load from file
+    auto fileIt = _lightcurveFiles.find(source);
+    if (fileIt != _lightcurveFiles.end() && !fileIt->second.isEmpty()) {
+        // const_cast is needed because lazy loading mutates the cache
+        auto* self = const_cast<Photometry*>(this);
+        if (self->loadLightcurveFromFile(source, fileIt->second)) {
+            return self->_lightcurves[source];
+        }
     }
-    return sources;
+
+    return std::vector<LightcurvePoint>();
 }
 
 void Photometry::addSEDModel(std::shared_ptr<SEDModel> model)

@@ -532,6 +532,17 @@ bool StarDetailView::event(QEvent* e)
     return QWidget::event(e);
 }
 
+bool StarDetailView::eventFilter(QObject* obj, QEvent* ev)
+{
+    if (ev->type() == QEvent::Resize && _lcBurgerMenu) {
+        QWidget* w = qobject_cast<QWidget*>(obj);
+        if (w && _lcBurgerMenu->parent() == w) {
+            _lcBurgerMenu->move(w->width() - _lcBurgerMenu->width() - 8, 8);
+        }
+    }
+    return QObject::eventFilter(obj, ev);  // must pass through
+}
+
 // ============================================================================
 // Panel Factories
 // ============================================================================
@@ -1844,9 +1855,45 @@ void StarDetailView::populateRVPlot()
 }
 
 // ============================================================================
-// Light Curve Plot — timeline or folded
+// Light Curve Plot — timeline or folded, per-source×filter binning
 // ============================================================================
 
+// ── Binning helper ───────────────────────────────────────────────────────────
+static QVector<std::tuple<double,double,double>>
+binLightcurve(const QVector<double>& px,
+              const QVector<double>& py,
+              const QVector<double>& pe,
+              int nBins,
+              double xMin, double xMax)
+{
+    QVector<std::tuple<double,double,double>> result;
+    if (px.isEmpty() || nBins <= 0 || xMax <= xMin) return result;
+
+    double binWidth = (xMax - xMin) / nBins;
+    struct Acc { double sumW = 0; double sumWY = 0; int n = 0; };
+    QVector<Acc> bins(nBins);
+
+    for (int i = 0; i < px.size(); ++i) {
+        if (pe[i] <= 0.0) continue;
+        int b = static_cast<int>((px[i] - xMin) / binWidth);
+        b = std::clamp(b, 0, nBins - 1);
+        double w    = 1.0 / (pe[i] * pe[i]);
+        bins[b].sumW  += w;
+        bins[b].sumWY += w * py[i];
+        bins[b].n++;
+    }
+
+    for (int b = 0; b < nBins; ++b) {
+        if (bins[b].n == 0 || bins[b].sumW <= 0.0) continue;
+        double xc  = xMin + (b + 0.5) * binWidth;
+        double yMn = bins[b].sumWY / bins[b].sumW;
+        double yEr = 1.0 / std::sqrt(bins[b].sumW);
+        result.append({xc, yMn, yEr});
+    }
+    return result;
+}
+
+// ── Main function ────────────────────────────────────────────────────────────
 void StarDetailView::populateLCPlot()
 {
     clearLayout(_lcContentLayout);
@@ -1857,7 +1904,6 @@ void StarDetailView::populateLCPlot()
         _lcContentLayout->addWidget(makePlaceholder("No photometry data available yet."));
         return;
     }
-
     auto sources = phot->getLightcurveSources();
     if (sources.empty()) {
         _lcToggleButton->setEnabled(false);
@@ -1865,39 +1911,79 @@ void StarDetailView::populateLCPlot()
         return;
     }
 
-    // Determine fold period
-    double foldPeriod = 0.0;
-    double foldT0     = 0.0;
-
+    // ── Fold period ───────────────────────────────────────────────────────
+    double foldPeriod = 0.0, foldT0 = 0.0;
     for (auto& src : sources) {
-        auto bestModel = phot->getBestLightcurveModel(src);
-        if (bestModel && bestModel->period > 0) {
-            foldPeriod = bestModel->period;
-            foldT0     = bestModel->phase;
-            break;
-        }
+        auto m = phot->getBestLightcurveModel(src);
+        if (m && m->period > 0) { foldPeriod = m->period; foldT0 = m->phase; break; }
     }
-
     if (foldPeriod <= 0) {
-        auto rvCurve = _star->getRVCurve();
-        if (rvCurve) {
-            auto bestFit = rvCurve->getBestFit();
-            if (bestFit && bestFit->getPeriod() > 0) {
-                foldPeriod = bestFit->getPeriod();
-                foldT0     = bestFit->getPhi();
+        if (auto rv = _star->getRVCurve()) {
+            if (auto bf = rv->getBestFit(); bf && bf->getPeriod() > 0) {
+                foldPeriod = bf->getPeriod();
+                foldT0     = bf->getPhi();
             }
         }
     }
-
     bool canFold = foldPeriod > 0;
     _lcToggleButton->setEnabled(canFold);
-    if (!canFold) {
-        _lcToggleButton->setChecked(false);
-        _lcFolded = false;
-        _lcToggleButton->setText("Show Folded");
+    if (!canFold) { _lcToggleButton->setChecked(false); _lcFolded = false; _lcToggleButton->setText("Show Folded"); }
+
+    // ── Collect raw points split by source×filter ─────────────────────────
+    struct SeriesKey { QString source; QString filter; };
+    struct RawSeries  { SeriesKey key; QVector<double> px, py, pe; };
+
+    // preserve insertion order
+    QList<SeriesKey>              keyOrder;
+    QMap<QString, RawSeries>      seriesMap;   // key = "source::filter"
+
+    auto makeKey = [](const QString& src, const QString& filt) {
+        return src + "::" + filt;
+    };
+
+    for (auto& src : sources) {
+        for (auto& pt : phot->getLightcurve(src)) {
+            QString k = makeKey(src, pt.filter);
+            if (!seriesMap.contains(k)) {
+                seriesMap[k] = RawSeries{ {src, pt.filter}, {}, {}, {} };
+                keyOrder.append({src, pt.filter});
+            }
+            double x;
+            if (_lcFolded && canFold) {
+                x = std::fmod((pt.bjd - foldT0) / foldPeriod, 1.0);
+                if (x < 0.0) x += 1.0;
+            } else {
+                x = pt.bjd;
+            }
+            seriesMap[k].px.append(x);
+            seriesMap[k].py.append(pt.flux);
+            seriesMap[k].pe.append(pt.fluxError);
+        }
+    }
+    if (seriesMap.isEmpty()) {
+        _lcContentLayout->addWidget(makePlaceholder("No light curve data available yet."));
+        return;
     }
 
-    QCustomPlot* plot = new QCustomPlot;
+    // ── Ensure every series×fold combination has a bin count entry ────────
+    for (auto& sk : keyOrder) {
+        QString k = makeKey(sk.source, sk.filter);
+        if (_lcFolded) {
+            if (!_lcBinsFolded.contains(k))   _lcBinsFolded[k]   = 200;
+        } else {
+            if (!_lcBinsUnfolded.contains(k)) _lcBinsUnfolded[k] = 1000;
+        }
+    }
+
+    // ── Outer container: relative so the burger overlay can anchor to it ──
+    QWidget*     outer    = new QWidget;
+    QVBoxLayout* outerLay = new QVBoxLayout(outer);
+    outerLay->setContentsMargins(0, 0, 0, 0);
+    outerLay->setSpacing(0);
+    outer->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
+
+    // ── QCustomPlot ───────────────────────────────────────────────────────
+    QCustomPlot* plot = new QCustomPlot(outer);
     stylePlot(plot);
     plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables);
     plot->legend->setVisible(true);
@@ -1908,49 +1994,50 @@ void StarDetailView::populateLCPlot()
     double globalYMin =  std::numeric_limits<double>::max();
     double globalYMax =  std::numeric_limits<double>::lowest();
 
+    // global x range for bin edges
+    for (auto& sk : keyOrder) {
+        auto& rs = seriesMap[makeKey(sk.source, sk.filter)];
+        for (double x : rs.px) { globalXMin = std::min(globalXMin, x); globalXMax = std::max(globalXMax, x); }
+    }
+    double xBinMin = _lcFolded ? 0.0 : globalXMin;
+    double xBinMax = _lcFolded ? 1.0 : globalXMax;
+
     int colorIdx = 0;
-    for (auto& src : sources) {
-        auto lcPoints = phot->getLightcurve(src);
-        if (lcPoints.empty()) continue;
+    for (auto& sk : keyOrder) {
+        QString k  = makeKey(sk.source, sk.filter);
+        auto&   rs = seriesMap[k];
+        if (rs.px.isEmpty()) continue;
+
+        int nBins = _lcFolded ? _lcBinsFolded.value(k, 200)
+                               : _lcBinsUnfolded.value(k, 1000);
 
         QColor col = kLCColors[colorIdx % kNumLCColors];
         colorIdx++;
 
-        QVector<double> px, py, pe;
-        for (auto& pt : lcPoints) {
-            double x;
-            if (_lcFolded && canFold) {
-                x = std::fmod((pt.bjd - foldT0) / foldPeriod, 1.0);
-                if (x < 0.0) x += 1.0;
-            } else {
-                x = pt.bjd;
-            }
+        auto binned = binLightcurve(rs.px, rs.py, rs.pe, nBins, xBinMin, xBinMax);
 
-            px.append(x);
-            py.append(pt.flux);
-            pe.append(pt.fluxError);
-
-            globalXMin = std::min(globalXMin, x);
-            globalXMax = std::max(globalXMax, x);
-            globalYMin = std::min(globalYMin, pt.flux - pt.fluxError);
-            globalYMax = std::max(globalYMax, pt.flux + pt.fluxError);
+        QVector<double> bx, by, be;
+        for (auto& [x, y, e] : binned) {
+            bx.append(x); by.append(y); be.append(e);
+            globalYMin = std::min(globalYMin, y - e);
+            globalYMax = std::max(globalYMax, y + e);
         }
 
-        // Scatter graph for data points
+        QString label = sk.filter.isEmpty() ? sk.source
+                                             : sk.source + " · " + sk.filter;
         QCPGraph* scatter = plot->addGraph();
-        scatter->setName(src);
+        scatter->setName(label);
         scatter->setLineStyle(QCPGraph::lsNone);
         scatter->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle, col, col, 5));
-        scatter->setData(px, py);
+        scatter->setData(bx, by);
 
-        // Error bars
         QCPErrorBars* errBars = new QCPErrorBars(plot->xAxis, plot->yAxis);
         errBars->removeFromLegend();
         errBars->setDataPlottable(scatter);
         errBars->setErrorType(QCPErrorBars::etValueError);
         errBars->setPen(QPen(col.lighter(150), 0.8));
         errBars->setSymbolGap(0);
-        errBars->setData(pe);
+        errBars->setData(be);
     }
 
     // Axes
@@ -1959,19 +2046,140 @@ void StarDetailView::populateLCPlot()
         plot->xAxis->setRange(-0.05, 1.05);
     } else {
         plot->xAxis->setLabel("BJD");
-        double span = globalXMax - globalXMin;
+        double span = xBinMax - xBinMin;
         if (span <= 0) span = 1.0;
-        plot->xAxis->setRange(globalXMin - span * 0.02, globalXMax + span * 0.02);
+        plot->xAxis->setRange(xBinMin - span * 0.02, xBinMax + span * 0.02);
     }
-
-    plot->yAxis->setLabel("Flux");
     double yMargin = (globalYMax - globalYMin) * 0.08;
     if (yMargin <= 0) yMargin = 1.0;
+    plot->yAxis->setLabel("Flux");
     plot->yAxis->setRange(globalYMin - yMargin, globalYMax + yMargin);
-
     plot->replot();
-    _lcContentLayout->addWidget(plot);
+
+    outerLay->addWidget(plot);
+    _lcContentLayout->addWidget(outer);
+
+    // ── Floating burger menu (QFrame child of outer, positioned top-right) ─
+    QFrame* burger = new QFrame(outer);
+    burger->setFrameShape(QFrame::StyledPanel);
+    burger->setStyleSheet(
+        "QFrame { background: palette(window); border: 1px solid palette(mid); border-radius: 6px; }"
+    );
+    burger->setFixedWidth(220);
+    burger->setAttribute(Qt::WA_TransparentForMouseEvents, false);
+    burger->raise();
+
+    QVBoxLayout* burgerLay = new QVBoxLayout(burger);
+    burgerLay->setContentsMargins(8, 6, 8, 8);
+    burgerLay->setSpacing(6);
+
+    // Header row: ≡ button + title
+    QWidget*     headerRow = new QWidget;
+    QHBoxLayout* headerLay = new QHBoxLayout(headerRow);
+    headerLay->setContentsMargins(0, 0, 0, 0);
+    headerLay->setSpacing(6);
+
+    QPushButton* burgerBtn = new QPushButton("≡");
+    burgerBtn->setFlat(true);
+    burgerBtn->setFixedSize(24, 24);
+    burgerBtn->setCursor(Qt::PointingHandCursor);
+    burgerBtn->setToolTip("Binning settings");
+
+    QLabel* burgerTitle = new QLabel("Bins per series");
+    burgerTitle->setStyleSheet("font-size: 11px; font-weight: 600;");
+    burgerTitle->setVisible(false);
+
+    headerLay->addWidget(burgerBtn);
+    headerLay->addWidget(burgerTitle);
+    headerLay->addStretch();
+    burgerLay->addWidget(headerRow);
+
+    // Content widget (hidden by default)
+    QWidget*     content    = new QWidget;
+    QVBoxLayout* contentLay = new QVBoxLayout(content);
+    contentLay->setContentsMargins(0, 0, 0, 0);
+    contentLay->setSpacing(4);
+    content->setVisible(false);
+
+    // One row per series
+    colorIdx = 0;
+    for (auto& sk : keyOrder) {
+        QString k  = makeKey(sk.source, sk.filter);
+        auto&   rs = seriesMap[k];
+        if (rs.px.isEmpty()) continue;
+
+        QColor col = kLCColors[colorIdx % kNumLCColors];
+        colorIdx++;
+
+        QWidget*     row    = new QWidget;
+        QHBoxLayout* rowLay = new QHBoxLayout(row);
+        rowLay->setContentsMargins(0, 0, 0, 0);
+        rowLay->setSpacing(4);
+
+        // Colored swatch
+        QLabel* swatch = new QLabel;
+        swatch->setFixedSize(12, 12);
+        swatch->setStyleSheet(QString("background: %1; border-radius: 2px;").arg(col.name()));
+
+        // Series label
+        QString label = sk.filter.isEmpty() ? sk.source : sk.source + " · " + sk.filter;
+        QLabel* lbl   = new QLabel(label);
+        lbl->setStyleSheet("font-size: 11px;");
+        lbl->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
+
+        // SpinBox
+        QSpinBox* sb = new QSpinBox;
+        sb->setRange(10, 100000);
+        sb->setSingleStep(50);
+        sb->setFixedWidth(72);
+        sb->setStyleSheet("font-size: 11px;");
+        sb->setValue(_lcFolded ? _lcBinsFolded.value(k, 200)
+                                : _lcBinsUnfolded.value(k, 1000));
+
+        connect(sb, &QSpinBox::valueChanged, this, [this, k](int v) {
+            if (_lcFolded) _lcBinsFolded[k]   = v;
+            else           _lcBinsUnfolded[k] = v;
+            populateLCPlot();
+        });
+
+        rowLay->addWidget(swatch);
+        rowLay->addWidget(lbl);
+        rowLay->addWidget(sb);
+        contentLay->addWidget(row);
+    }
+
+    burgerLay->addWidget(content);
+    burger->adjustSize();
+
+    // Initially collapsed — just show the ≡ button
+    burger->setFixedWidth(40);
+    burger->setFixedHeight(36);
+
+    // Toggle expand/collapse
+    connect(burgerBtn, &QPushButton::clicked, this, [=]() mutable {
+        bool expanding = !content->isVisible();
+        content->setVisible(expanding);
+        burgerTitle->setVisible(expanding);
+        if (expanding) {
+            burger->setFixedWidth(220);
+            burger->adjustSize();
+        } else {
+            burger->setFixedWidth(40);
+            burger->setFixedHeight(36);
+        }
+        // Re-position (anchor stays top-right)
+        burger->move(outer->width() - burger->width() - 8, 8);
+    });
+
+    // Position top-right; reposition on plot resize
+    burger->move(outer->width() - burger->width() - 8, 8);
+
+    // Keep anchored top-right when the outer widget resizes
+    outer->installEventFilter(this);   // see eventFilter below
+    // store pointer so eventFilter can reposition it
+    _lcBurgerMenu = burger;
 }
+
 
 // ============================================================================
 // Spectra Panel

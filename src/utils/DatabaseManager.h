@@ -102,6 +102,10 @@ public:
     bool saveSEDModelForStar(const QString& starId,
                             std::shared_ptr<SEDModel> model);
 
+    bool saveLightcurveForStar(const QString& starId,
+                               const QString& source,
+                               Photometry* photometry);
+
 
 private:
     bool createTables();

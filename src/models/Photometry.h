@@ -2,6 +2,7 @@
 #define PHOTOMETRY_H
 
 #include <QString>
+#include <QStringList>
 #include <QDateTime>
 #include <QJsonArray>
 #include <QJsonObject>
@@ -9,6 +10,159 @@
 #include <vector>
 #include <memory>
 #include <map>
+#include <cmath>
+
+// ── Time-scale enumeration ───────────────────────────────────
+
+enum class LightcurveTimeScale {
+    Unknown = 0,
+    BJD,        // Barycentric Julian Date
+    MJD,        // Modified Julian Date
+    BTJD,       // TESS Barycentric Julian Date (BJD - 2457000.0)
+    BKJD,       // Kepler Barycentric Julian Date (BJD - 2454833.0)
+    GaiaTCB,    // Gaia TCB (approx BJD - 2455197.5)
+    HJD,        // Heliocentric Julian Date
+    JD,         // Julian Date
+};
+
+// ── Individual lightcurve point ──────────────────────────────
+
+struct LightcurvePoint
+{
+    double originalTime   = 0.0;
+    double bjd            = 0.0;
+    double mjd            = 0.0;
+    double flux           = 0.0;
+    double fluxError      = 0.0;
+    double magnitude      = std::nan("");
+    double magnitudeError = std::nan("");
+    QString filter;
+    int    qualityFlag    = 0;
+};
+
+// ── Time conversion utilities ────────────────────────────────
+
+class LightcurveTime
+{
+public:
+    static constexpr double MJD_OFFSET  = 2400000.5;
+    static constexpr double BTJD_OFFSET = 2457000.0;
+    static constexpr double BKJD_OFFSET = 2454833.0;
+    static constexpr double GAIA_OFFSET = 2455197.5;
+
+    static double toBJD(double time, LightcurveTimeScale scale)
+    {
+        switch (scale) {
+        case LightcurveTimeScale::BJD:      return time;
+        case LightcurveTimeScale::MJD:      return time + MJD_OFFSET;
+        case LightcurveTimeScale::BTJD:     return time + BTJD_OFFSET;
+        case LightcurveTimeScale::BKJD:     return time + BKJD_OFFSET;
+        case LightcurveTimeScale::GaiaTCB:  return time + GAIA_OFFSET;
+        case LightcurveTimeScale::HJD:      return time;  // approximate
+        case LightcurveTimeScale::JD:       return time;   // approximate
+        case LightcurveTimeScale::Unknown:  return time;
+        }
+        return time;
+    }
+
+    static double toMJD(double time, LightcurveTimeScale scale)
+    {
+        double bjd = toBJD(time, scale);
+        return bjd - MJD_OFFSET;
+    }
+
+    static LightcurveTimeScale guessFromInstrument(const QString& instrument)
+    {
+        QString lower = instrument.toLower().trimmed();
+        if (lower == "tess")                     return LightcurveTimeScale::BTJD;
+        if (lower == "kepler" || lower == "k2")  return LightcurveTimeScale::BKJD;
+        if (lower == "gaia")                     return LightcurveTimeScale::GaiaTCB;
+        if (lower == "atlas" || lower == "ztf"
+            || lower == "asas-sn" || lower == "css"
+            || lower == "ogle")                  return LightcurveTimeScale::MJD;
+        if (lower == "hipparcos")                return LightcurveTimeScale::BJD;
+        if (lower == "aavso")                    return LightcurveTimeScale::BJD;
+        return LightcurveTimeScale::Unknown;
+    }
+
+    static LightcurveTimeScale guessFromTimeValues(double firstTime)
+    {
+        // Heuristic based on magnitude of the time value
+        if (firstTime > 2400000.0)  return LightcurveTimeScale::BJD;
+        if (firstTime > 40000.0 && firstTime < 100000.0)
+            return LightcurveTimeScale::MJD;
+        if (firstTime > 0.0 && firstTime < 5000.0)
+            return LightcurveTimeScale::BTJD;  // likely TESS or Kepler offset
+        return LightcurveTimeScale::Unknown;
+    }
+
+    static QString timeScaleLabel(LightcurveTimeScale ts)
+    {
+        switch (ts) {
+        case LightcurveTimeScale::Unknown:  return "Unknown";
+        case LightcurveTimeScale::BJD:      return "BJD";
+        case LightcurveTimeScale::MJD:      return "MJD";
+        case LightcurveTimeScale::BTJD:     return "BTJD (TESS)";
+        case LightcurveTimeScale::BKJD:     return "BKJD (Kepler)";
+        case LightcurveTimeScale::GaiaTCB:  return "Gaia TCB";
+        case LightcurveTimeScale::HJD:      return "HJD";
+        case LightcurveTimeScale::JD:       return "JD";
+        }
+        return "Unknown";
+    }
+};
+
+// ── Lightcurve container ─────────────────────────────────────
+
+class Lightcurve
+{
+public:
+    Lightcurve() = default;
+
+    QString id() const { return _id; }
+    void setId(const QString& id) { _id = id; }
+
+    QString starId() const { return _starId; }
+    void setStarId(const QString& id) { _starId = id; }
+
+    QString instrument() const { return _instrument; }
+    void setInstrument(const QString& inst) { _instrument = inst; }
+
+    QString sourceFile() const { return _sourceFile; }
+    void setSourceFile(const QString& path) { _sourceFile = path; }
+
+    LightcurveTimeScale timeScale() const { return _timeScale; }
+    void setTimeScale(LightcurveTimeScale ts) { _timeScale = ts; }
+
+    QStringList filters() const { return _filters; }
+    void setFilters(const QStringList& f) { _filters = f; }
+
+    const std::vector<LightcurvePoint>& points() const { return _points; }
+    void setPoints(std::vector<LightcurvePoint>&& pts) { _points = std::move(pts); }
+    void setPoints(const std::vector<LightcurvePoint>& pts) { _points = pts; }
+
+    int numPoints() const { return static_cast<int>(_points.size()); }
+
+    // Time range
+    double minBJD() const {
+        if (_points.empty()) return 0.0;
+        return _points.front().bjd;
+    }
+    double maxBJD() const {
+        if (_points.empty()) return 0.0;
+        return _points.back().bjd;
+    }
+    double timeSpanDays() const { return maxBJD() - minBJD(); }
+
+private:
+    QString _id;
+    QString _starId;
+    QString _instrument;
+    QString _sourceFile;
+    LightcurveTimeScale _timeScale = LightcurveTimeScale::Unknown;
+    QStringList _filters;
+    std::vector<LightcurvePoint> _points;
+};
 
 // ── General-purpose photometric point (unchanged) ───────────
 
@@ -21,16 +175,6 @@ struct PhotometricPoint
     double flux;
     double fluxError;
     double wavelength;
-};
-
-// ── Lightcurve point (unchanged) ────────────────────────────
-
-struct LightcurvePoint
-{
-    double bjd;
-    double flux;
-    double fluxError;
-    QString filter;
 };
 
 // ══════════════════════════════════════════════════════════════

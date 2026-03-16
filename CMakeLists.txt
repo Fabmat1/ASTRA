@@ -119,6 +119,7 @@ set(SOURCES
     src/importWizard/SpectralFitImportPage.cpp
     src/importWizard/RadialVelocityImportPage.cpp
     src/importWizard/ImportStagingArea.cpp
+    src/importWizard/LightcurveImportPage.cpp
     src/utils/ExtractSED.cpp
     src/views/tools/RVInspectorDialog.cpp
     src/views/tools/SpectraFitDialog.cpp
@@ -161,6 +162,7 @@ set(HEADERS
     src/utils/AppPaths.h
     src/importWizard/RadialVelocityImportPage.h
     src/importWizard/ImportStagingArea.h
+    src/importWizard/LightcurveImportPage.h
     src/utils/ExtractSED.h
     src/views/tools/RVInspectorDialog.h
     src/views/tools/SpectraFitDialog.h

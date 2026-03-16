@@ -13,13 +13,19 @@ from pathlib import Path
 #   - "struct StructName" → extracts full struct declaration
 #   - "__FULL__" → dumps the entire file (for small files)
 
+
 EXTRACTIONS = [
-    ("src/utils/ImportStagingArea.h", ["__FULL__"]),
-    ("src/utils/ImportStagingArea.cpp", ["__FULL__"]),
-    ("src/utils/RadialvelocityImportPage.h", ["__FULL__"]),
-    ("src/utils/RadialvelocityImportPage.cpp", ["__FULL__"]),
-    ("src/utils/RVPhotometryPages.h", ["__FULL__"]),
-    ("src/utils/RVPhotometryPages.cpp", ["__FULL__"]),
+    # Star public API - I got every method name wrong
+    ("src/models/Star.h", ["class Star"]),
+    
+    # How does the wizard currently get the project/star list?
+    ("src/importWizard/StarImportWizard.cpp", ["__FULL__"]),
+    
+    # Current ImportStagingArea.cpp so I can see what old junk remains
+    ("src/importWizard/ImportStagingArea.cpp", ["__FULL__"]),
+    
+    # DatabaseManager::savePhotometry signature
+    ("src/utils/DatabaseManager.h", ["DatabaseManager::savePhotometry"]),
 ]
 
 
