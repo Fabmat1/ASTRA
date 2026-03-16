@@ -1401,45 +1401,43 @@ QWidget* StarDetailView::createDataInventorySection()
             if (sed) {
                 hasSED = true;
                 QStringList parts;
-
                 parts << QString("%1-comp").arg(sed->numComponents);
 
-                // Show primary component Teff and radius
+                auto fmtAsym = [](double val, double up, double down, int prec) -> QString {
+                    return QString("%1<sup><small>+%2</small></sup><sub><small>-%3</small></sub>")
+                        .arg(val,  0, 'f', prec)
+                        .arg(up,   0, 'f', prec)
+                        .arg(down, 0, 'f', prec);
+                };
+
+                // Show primary component Teff, radius, mass
                 if (!sed->components.empty()) {
                     const auto& c1 = sed->components[0];
                     if (c1.teff > 0)
                         parts << QString("T₁=%1 K").arg(c1.teff, 0, 'f', 0);
                     if (c1.radius.value > 0)
-                        parts << QString("R₁=%1 R☉").arg(c1.radius.value, 0, 'f', 3);
+                        parts << QString("R₁=%1 R☉").arg(fmtAsym(c1.radius.value, c1.radius.errUp, c1.radius.errDown, 3));
+                    if (c1.mass.value > 0)
+                        parts << QString("M₁=%1 M☉").arg(fmtAsym(c1.mass.value, c1.mass.errUp, c1.mass.errDown, 3));
                 }
-
-                // Show companion Teff if 2-component
+                // Show companion Teff, radius, mass if 2-component
                 if (sed->numComponents >= 2 && sed->components.size() >= 2) {
                     const auto& c2 = sed->components[1];
                     if (c2.teff > 0)
                         parts << QString("T₂=%1 K").arg(c2.teff, 0, 'f', 0);
                     if (c2.radius.value > 0)
-                        parts << QString("R₂=%1 R☉").arg(c2.radius.value, 0, 'f', 3);
+                        parts << QString("R₂=%1 R☉").arg(fmtAsym(c2.radius.value, c2.radius.errUp, c2.radius.errDown, 3));
+                    if (c2.mass.value > 0)
+                        parts << QString("M₂=%1 M☉").arg(fmtAsym(c2.mass.value, c2.mass.errUp, c2.mass.errDown, 3));
                 }
-
                 if (sed->distanceMode > 0)
                     parts << QString("d=%1 pc").arg(sed->distanceMode, 0, 'f', 0);
-
                 if (sed->chi2Reduced > 0)
                     parts << QString("χ²=%1").arg(sed->chi2Reduced, 0, 'f', 2);
-
                 detail = parts.join(" · ");
             }
         }
         items.push_back({"SED Fit", hasSED, detail});
-    }
-
-    // Photometric points
-    {
-        int n = 0;
-        if (phot) n = static_cast<int>(phot->getPhotometricPoints().size());
-        items.push_back({"Photometric Points", n > 0,
-                          n > 0 ? QString("%1 measurements").arg(n) : ""});
     }
 
     // Build tag strip
@@ -1472,6 +1470,7 @@ QWidget* StarDetailView::createDataInventorySection()
         // Detail
         if (!item.detail.isEmpty()) {
             QLabel* det = new QLabel(item.detail);
+            det->setTextFormat(Qt::RichText); 
             det->setStyleSheet(QString(
                 "font-size: 11px; color: %1; background: transparent; border: none;"
             ).arg(dark ? "#aaa" : "#777"));
