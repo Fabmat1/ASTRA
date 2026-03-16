@@ -6,7 +6,7 @@
 #include "models/Project.h"        
 #include "Logger.h"
 #include "utils/DatabaseManager.h"
-#include "../importWizard/ImportStagingArea.h"
+#include "ImportStagingArea.h"
 #include "Logger.h"  
 
 #include <QNetworkAccessManager>
@@ -24,7 +24,7 @@
 #include <QtConcurrent>
 #include <QFutureSynchronizer>
 #include "SpectrumReader.h"
-#include "../importWizard/SpectralFitImportPage.h" 
+#include "SpectralFitImportPage.h" 
 
 // ============================================================================
 // TaskStatusWidget Implementation

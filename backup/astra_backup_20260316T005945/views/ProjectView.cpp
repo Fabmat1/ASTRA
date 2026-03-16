@@ -4,7 +4,7 @@
 #include "controllers/ApplicationController.h"
 #include "models/Project.h"
 #include "models/Star.h"
-#include "../importWizard/StarImportWizard.h"
+#include "utils/StarImportWizard.h"
 #include "utils/Logger.h"
 #include "views/StarDetailView.h"
 #include "StarFilterWidget.h"

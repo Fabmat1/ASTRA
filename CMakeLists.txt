@@ -102,23 +102,23 @@ set(SOURCES
     src/views/StarDetailView.cpp
     src/dialogs/NewProjectDialog.cpp
     src/dialogs/EditProjectDialog.cpp
-    src/utils/StarImportWizard.cpp
+    src/importWizard/StarImportWizard.cpp
     src/utils/DatabaseManager.cpp
     src/utils/ThemeManager.cpp
     src/utils/BackgroundTaskManager.cpp
     src/utils/Logger.cpp
     src/utils/SpectrumReader.cpp
-    src/utils/StarImportWizard.cpp
-    src/utils/GeneralImportPage.cpp
-    src/utils/SpectraImportPage.cpp
-    src/utils/SEDImportPage.cpp
-    src/utils/RVPhotometryPages.cpp
+    src/importWizard/StarImportWizard.cpp
+    src/importWizard/GeneralImportPage.cpp
+    src/importWizard/SpectraImportPage.cpp
+    src/importWizard/SEDImportPage.cpp
+    src/importWizard/RVPhotometryPages.cpp
     src/utils/CatalogQueryWorkers.cpp
     src/utils/DataStore.cpp
     src/views/StarFilterWidget.cpp
-    src/utils/SpectralFitImportPage.cpp
-    src/utils/RadialVelocityImportPage.cpp
-    src/utils/ImportStagingArea.cpp
+    src/importWizard/SpectralFitImportPage.cpp
+    src/importWizard/RadialVelocityImportPage.cpp
+    src/importWizard/ImportStagingArea.cpp
     src/utils/ExtractSED.cpp
     src/views/tools/RVInspectorDialog.cpp
     src/views/tools/SpectraFitDialog.cpp
@@ -143,24 +143,24 @@ set(HEADERS
     src/views/StarDetailView.h
     src/dialogs/NewProjectDialog.h
     src/dialogs/EditProjectDialog.h
-    src/utils/StarImportWizard.h
+    src/importWizard/StarImportWizard.h
     src/utils/DatabaseManager.h
     src/utils/ThemeManager.h
     src/utils/BackgroundTaskManager.h
     src/utils/Logger.h
     src/utils/SpectrumReader.h
-    src/utils/StarImportWizard.h
-    src/utils/GeneralImportPage.h
-    src/utils/SpectraImportPage.h
-    src/utils/SEDImportPage.h
-    src/utils/RVPhotometryPages.h
+    src/importWizard/StarImportWizard.h
+    src/importWizard/GeneralImportPage.h
+    src/importWizard/SpectraImportPage.h
+    src/importWizard/SEDImportPage.h
+    src/importWizard/RVPhotometryPages.h
     src/utils/CatalogQueryWorkers.h
     src/utils/DataStore.h
     src/views/StarFilterWidget.h
-    src/utils/SpectralFitImportPage.h
+    src/importWizard/SpectralFitImportPage.h
     src/utils/AppPaths.h
-    src/utils/RadialVelocityImportPage.h
-    src/utils/ImportStagingArea.h
+    src/importWizard/RadialVelocityImportPage.h
+    src/importWizard/ImportStagingArea.h
     src/utils/ExtractSED.h
     src/views/tools/RVInspectorDialog.h
     src/views/tools/SpectraFitDialog.h
