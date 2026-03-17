@@ -1020,10 +1020,15 @@ void DiggaFitImportTask::execute()
     for (int i = 0; i < total; ++i) {
         auto& entry = _entries[i];
         if (!entry.plotdataPath.isEmpty()) {
-            std::vector<double> wl, mf;
-            if (SpectralFitImportPage::loadPlotdata(entry.plotdataPath, wl, mf)) {
+            std::vector<double> wl, mf, rbf, rbs, spl;
+            std::vector<uint8_t> ign;
+            if (SpectralFitImportPage::loadPlotdata(entry.plotdataPath, wl, mf, rbf, rbs, spl, ign)) {
                 entry.fit->modelWavelengths = std::move(wl);
                 entry.fit->modelFluxes      = std::move(mf);
+                entry.fit->rebinnedFluxes   = std::move(rbf);
+                entry.fit->rebinnedSigmas   = std::move(rbs);
+                entry.fit->modelSplines     = std::move(spl);
+                entry.fit->modelIgnore      = std::move(ign);
             }
         }
 

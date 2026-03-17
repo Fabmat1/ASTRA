@@ -98,8 +98,12 @@ public:
 
     // Plotdata loading
     static bool loadPlotdata(const QString& filepath,
-                      std::vector<double>& wavelengths,
-                      std::vector<double>& modelFluxes);
+                             std::vector<double>& wavelengths,
+                             std::vector<double>& modelFluxes,
+                             std::vector<double>& rebinnedFluxes,
+                             std::vector<double>& rebinnedSigmas,
+                             std::vector<double>& modelSplines,
+                             std::vector<uint8_t>& modelIgnore);
 
 private slots:
     void onImportModeChanged();

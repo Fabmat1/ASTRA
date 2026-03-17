@@ -31,6 +31,10 @@ public:
     // Model data - not loaded by default
     std::vector<double> modelWavelengths;
     std::vector<double> modelFluxes;
+    std::vector<double> rebinnedFluxes;
+    std::vector<double> rebinnedSigmas;      // rebinned spectrum sigma
+    std::vector<double> modelSplines;     // continuum spline flux
+    std::vector<uint8_t> modelIgnore;     // per-point ignore flag (0/1)
 
     // Fitted parameters
     double teff;

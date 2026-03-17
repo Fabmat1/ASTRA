@@ -637,12 +637,16 @@ QWidget* StarDetailView::createSpectraPanel()
     _spectraFitCombo->setMaximumWidth(350);
     tbLayout->addWidget(_spectraFitCombo);
 
-    _spectraRenormCheck = new QCheckBox("Re-normalize model");
-    _spectraRenormCheck->setToolTip(
-        "Scale the model by a constant factor to best match\n"
-        "the observed spectrum (least-squares fit of a single\n"
-        "multiplicative constant).");
-    tbLayout->addWidget(_spectraRenormCheck);
+    // Replace the _spectraRenormCheck block with:
+    _spectraDisplayMode = new QComboBox;
+    _spectraDisplayMode->addItem("Normalized",  DisplayNormalized);
+    _spectraDisplayMode->addItem("Rebinned",    DisplayRebinned);
+    _spectraDisplayMode->addItem("Raw + renorm",DisplayRaw);
+    _spectraDisplayMode->setToolTip(
+        "Normalized: rebinned flux / spline vs model / spline\n"
+        "Rebinned:   rebinned flux vs model flux (no spline division)\n"
+        "Raw + renorm: instrument spectrum with model scaled to match");
+    tbLayout->addWidget(_spectraDisplayMode);
 
     tbLayout->addStretch();
     _spectraToolbar->setVisible(false);
@@ -696,8 +700,8 @@ QWidget* StarDetailView::createSpectraPanel()
     // ── Connections for fit combo and renorm ──
     connect(_spectraFitCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { updateSpectrumDisplay(); });
-    connect(_spectraRenormCheck, &QCheckBox::toggled,
-            this, [this](bool) { updateSpectrumDisplay(); });
+    connect(_spectraDisplayMode, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { updateSpectrumDisplay(); });
 
     return group;
 }
@@ -2306,7 +2310,6 @@ void StarDetailView::displaySpectrum(int index)
 
     // ── Populate fit combo ──
     _spectraFitCombo->blockSignals(true);
-    _spectraRenormCheck->blockSignals(true);
     _spectraFitCombo->clear();
     _spectraFitCombo->addItem("None", QVariant(-1));
 
@@ -2360,35 +2363,19 @@ void StarDetailView::displaySpectrum(int index)
     _spectraToolbar->setVisible(hasFits);
     _spectraFitCombo->setCurrentIndex(selectIdx);
 
-    // ── Auto-detect renormalization ──
+    // ── Set default display mode based on what data is available ──
+    _spectraDisplayMode->blockSignals(true);
     if (selectIdx > 0) {
         int fitArrayIdx = _spectraFitCombo->itemData(selectIdx).toInt();
-        if (fitArrayIdx >= 0 && fitArrayIdx < static_cast<int>(fits.size())) {
-            auto& fit = fits[fitArrayIdx];
-            auto wavelengths = spec->getWavelengths();
-            auto fluxes = spec->getFluxes();
-
-            auto modelOnData = interpolateModel(
-                fit->modelWavelengths, fit->modelFluxes, wavelengths);
-
-            std::vector<double> dValid, mValid;
-            for (size_t j = 0; j < wavelengths.size(); ++j) {
-                if (!std::isnan(modelOnData[j]) && !std::isnan(fluxes[j])) {
-                    dValid.push_back(fluxes[j]);
-                    mValid.push_back(modelOnData[j]);
-                }
-            }
-
-            double c = computeRenormFactor(dValid, mValid);
-            bool needsRenorm = (std::abs(c - 1.0) > 0.05);
-            _spectraRenormCheck->setChecked(needsRenorm);
-        }
+        bool hasRebinned = (fitArrayIdx >= 0 &&
+                            fitArrayIdx < static_cast<int>(fits.size()) &&
+                            !fits[fitArrayIdx]->rebinnedFluxes.empty() &&
+                            !fits[fitArrayIdx]->modelSplines.empty());
+        _spectraDisplayMode->setCurrentIndex(hasRebinned ? DisplayNormalized : DisplayRaw);
     } else {
-        _spectraRenormCheck->setChecked(false);
+        _spectraDisplayMode->setCurrentIndex(DisplayRaw);
     }
-
-    _spectraFitCombo->blockSignals(false);
-    _spectraRenormCheck->blockSignals(false);
+    _spectraDisplayMode->blockSignals(false);
 
     _spectraInfoLabel->setText(formatSpectrumInfo(spec));
 
@@ -2490,22 +2477,152 @@ void StarDetailView::updateSpectrumDisplay()
     int fitArrayIdx = _spectraFitCombo->currentData().toInt();
     auto fits = spec->getSpectralFits();
     std::shared_ptr<SpectralFit> selectedFit;
-
     if (fitArrayIdx >= 0 && fitArrayIdx < static_cast<int>(fits.size()))
         selectedFit = fits[fitArrayIdx];
+
+    int displayMode = _spectraDisplayMode->currentData().toInt();
+    // Fall back to Raw if fit lacks rebinned data
+    if (displayMode != DisplayRaw && selectedFit &&
+        (selectedFit->rebinnedFluxes.empty() || selectedFit->modelSplines.empty()))
+        displayMode = DisplayRaw;
 
     std::vector<double> residualWl;
     std::vector<double> residualVal;
 
     if (selectedFit && !selectedFit->modelWavelengths.empty()) {
-        const auto& mWl   = selectedFit->modelWavelengths;
-        const auto& mFlux = selectedFit->modelFluxes;
 
-        std::vector<double> modelOnDataGrid =
-            interpolateModel(mWl, mFlux, wavelengths);
+        if (displayMode == DisplayNormalized || displayMode == DisplayRebinned) {
+            // ── Normalized / Rebinned modes ──
+            // Data comes from the fit's pre-computed rebinned arrays —
+            // no interpolation needed since they share the model wavelength grid.
+            const auto& mWl  = selectedFit->modelWavelengths;
+            const size_t N   = mWl.size();
+            const auto& mF   = selectedFit->modelFluxes;
+            const auto& rbF  = selectedFit->rebinnedFluxes;
+            const auto& rbS  = selectedFit->rebinnedSigmas;
+            const auto& spl  = selectedFit->modelSplines;
+            const auto& ign  = selectedFit->modelIgnore;
 
-        double renormC = 1.0;
-        if (_spectraRenormCheck->isChecked()) {
+            // Replace the raw-spectrum error band + data line already drawn
+            // with the rebinned spectrum, then overlay model.
+            // (We clear and redraw so the raw data drawn above is replaced.)
+            _spectraMainPlot->clearPlottables();
+
+            QVector<double> mWlVec = toQVec(mWl);
+            QVector<double> dataVec(N), modelVec(N), upperVec(N), lowerVec(N);
+
+            xMin =  std::numeric_limits<double>::max();
+            xMax =  std::numeric_limits<double>::lowest();
+
+            for (size_t i = 0; i < N; ++i) {
+                double divisor = (displayMode == DisplayNormalized && spl[i] != 0.0)
+                                 ? spl[i] : 1.0;
+                dataVec[i]  = rbF[i]  / divisor;
+                modelVec[i] = mF[i]   / divisor;
+                double sig  = (rbS.size() == N) ? rbS[i] / divisor : 0.0;
+                upperVec[i] = dataVec[i] + sig;
+                lowerVec[i] = dataVec[i] - sig;
+                xMin = std::min(xMin, mWl[i]);
+                xMax = std::max(xMax, mWl[i]);
+            }
+
+            // Error band
+            if (rbS.size() == N) {
+                QCPGraph* upper = _spectraMainPlot->addGraph();
+                upper->setData(mWlVec, upperVec);
+                upper->setPen(Qt::NoPen);
+                upper->removeFromLegend();
+
+                QCPGraph* lower = _spectraMainPlot->addGraph();
+                lower->setData(mWlVec, lowerVec);
+                lower->setPen(Qt::NoPen);
+                lower->removeFromLegend();
+
+                upper->setBrush(QBrush(QColor(180, 180, 180, 50)));
+                upper->setChannelFillGraph(lower);
+            }
+
+            // Rebinned spectrum — split into ignored / active segments
+            // so ignored points are shown dimmed
+            QVector<double> activeWl, activeD;
+
+            if (ign.empty()) {
+                activeWl = mWlVec;
+                activeD  = QVector<double>(dataVec.begin(), dataVec.end());
+            } else {
+                // Active series: valid key everywhere, NaN value over ignored points
+                for (size_t i = 0; i < N; ++i) {
+                    activeWl.push_back(mWl[i]);
+                    activeD.push_back(ign[i] != 0 ? dataVec[i] : qQNaN());
+                }
+
+                // One graph per contiguous ignored run, each bracketed by its neighbors
+                size_t i = 0;
+                while (i < N) {
+                    if (ign[i] == 0) {
+                        QVector<double> segWl, segD;
+
+                        if (i > 0) {                          // left active neighbor
+                            segWl.push_back(mWl[i - 1]);
+                            segD.push_back(dataVec[i - 1]);
+                        }
+                        while (i < N && ign[i] == 0) {        // ignored run
+                            segWl.push_back(mWl[i]);
+                            segD.push_back(dataVec[i]);
+                            ++i;
+                        }
+                        if (i < N) {                          // right active neighbor
+                            segWl.push_back(mWl[i]);
+                            segD.push_back(dataVec[i]);
+                        }
+
+                        QCPGraph* ignSeg = _spectraMainPlot->addGraph();
+                        QPen ignPen(dataColor, 1.0);
+                        ignPen.setStyle(Qt::DotLine);
+                        ignSeg->setPen(ignPen);
+                        ignSeg->setData(segWl, segD);
+                        ignSeg->removeFromLegend();
+                    } else {
+                        ++i;
+                    }
+                }
+            }
+
+            QCPGraph* dataGraph2 = _spectraMainPlot->addGraph();
+            dataGraph2->setData(activeWl, activeD);
+            dataGraph2->setPen(QPen(dataColor, 1.2));
+            dataGraph2->removeFromLegend();
+
+            // Model line
+            QCPGraph* modelGraph = _spectraMainPlot->addGraph();
+            modelGraph->setData(mWlVec, modelVec);
+            modelGraph->setPen(QPen(kFitCurveColor, 1.5));
+            modelGraph->removeFromLegend();
+
+            // Residuals — only over non-ignored points
+            for (size_t i = 0; i < N; ++i) {
+                if (!ign.empty() && ign[i] == 0) continue;
+                residualWl.push_back(mWl[i]);
+                residualVal.push_back(dataVec[i] - modelVec[i]);
+            }
+
+            // Y range from active data + model
+            std::vector<double> allY;
+            allY.insert(allY.end(), activeD.begin(), activeD.end());
+            for (double v : modelVec) allY.push_back(v);
+            auto [mainYLo, mainYHi] = robustRange(allY, 0.95, 0.15);
+            _spectraMainPlot->yAxis->setLabel(
+                displayMode == DisplayNormalized ? "Normalized Flux" : "Flux");
+            _spectraMainPlot->yAxis->setRange(mainYLo, mainYHi);
+
+        } else {
+            // ── Raw + renorm mode — existing behaviour ──
+            const auto& mWl   = selectedFit->modelWavelengths;
+            const auto& mFlux = selectedFit->modelFluxes;
+
+            std::vector<double> modelOnDataGrid =
+                interpolateModel(mWl, mFlux, wavelengths);
+
             std::vector<double> dValid, mValid;
             for (size_t i = 0; i < wavelengths.size(); ++i) {
                 if (!std::isnan(modelOnDataGrid[i]) && !std::isnan(fluxes[i])) {
@@ -2513,27 +2630,44 @@ void StarDetailView::updateSpectrumDisplay()
                     mValid.push_back(modelOnDataGrid[i]);
                 }
             }
-            renormC = computeRenormFactor(dValid, mValid);
-        }
+            double renormC = computeRenormFactor(dValid, mValid);
 
-        QVector<double> mWlVec = toQVec(mWl);
-        QVector<double> mFlVec(mWl.size());
-        for (size_t i = 0; i < mWl.size(); ++i) {
-            mFlVec[i] = mFlux[i] * renormC;
-            yMin = std::min(yMin, mFlVec[i]);
-            yMax = std::max(yMax, mFlVec[i]);
-        }
+            QVector<double> mWlVec = toQVec(mWl);
+            QVector<double> mFlVec(mWl.size());
+            for (size_t i = 0; i < mWl.size(); ++i) {
+                mFlVec[i] = mFlux[i] * renormC;
+                yMin = std::min(yMin, mFlVec[i]);
+                yMax = std::max(yMax, mFlVec[i]);
+            }
 
-        QCPGraph* modelGraph = _spectraMainPlot->addGraph();
-        modelGraph->setPen(QPen(kFitCurveColor, 1.5));
-        modelGraph->setData(mWlVec, mFlVec);
-        modelGraph->removeFromLegend();
+            QCPGraph* modelGraph = _spectraMainPlot->addGraph();
+            modelGraph->setPen(QPen(kFitCurveColor, 1.5));
+            modelGraph->setData(mWlVec, mFlVec);
+            modelGraph->removeFromLegend();
 
-        for (size_t i = 0; i < wavelengths.size(); ++i) {
-            if (std::isnan(modelOnDataGrid[i])) continue;
-            residualWl.push_back(wavelengths[i]);
-            residualVal.push_back(fluxes[i] - modelOnDataGrid[i] * renormC);
+            for (size_t i = 0; i < wavelengths.size(); ++i) {
+                if (std::isnan(modelOnDataGrid[i])) continue;
+                residualWl.push_back(wavelengths[i]);
+                residualVal.push_back(fluxes[i] - modelOnDataGrid[i] * renormC);
+            }
+
+            // Y range
+            std::vector<double> allMainY;
+            for (size_t i = 0; i < fluxes.size(); ++i)
+                if (!std::isnan(fluxes[i])) allMainY.push_back(fluxes[i]);
+            for (double mf : mFlVec) if (!std::isnan(mf)) allMainY.push_back(mf);
+            auto [mainYLo, mainYHi] = robustRange(allMainY, 0.95, 0.15);
+            _spectraMainPlot->yAxis->setLabel("Normalized Flux");
+            _spectraMainPlot->yAxis->setRange(mainYLo, mainYHi);
         }
+    } else {
+        // No fit — just set Y range from raw data
+        std::vector<double> allMainY;
+        for (size_t i = 0; i < fluxes.size(); ++i)
+            if (!std::isnan(fluxes[i])) allMainY.push_back(fluxes[i]);
+        auto [mainYLo, mainYHi] = robustRange(allMainY, 0.95, 0.15);
+        _spectraMainPlot->yAxis->setLabel("Normalized Flux");
+        _spectraMainPlot->yAxis->setRange(mainYLo, mainYHi);
     }
 
     // ── Main axes ──
@@ -2559,26 +2693,6 @@ void StarDetailView::updateSpectrumDisplay()
     for (size_t i = 0; i < fluxes.size(); ++i) {
         if (!std::isnan(fluxes[i]))
             allMainY.push_back(fluxes[i]);
-    }
-    // Also include model fluxes if present so the model isn't clipped
-    if (selectedFit && !selectedFit->modelWavelengths.empty()) {
-        double renormC = 1.0;
-        if (_spectraRenormCheck->isChecked()) {
-            std::vector<double> dV, mV;
-            auto modelInterp = interpolateModel(
-                selectedFit->modelWavelengths, selectedFit->modelFluxes, wavelengths);
-            for (size_t i = 0; i < wavelengths.size(); ++i) {
-                if (!std::isnan(modelInterp[i]) && !std::isnan(fluxes[i])) {
-                    dV.push_back(fluxes[i]);
-                    mV.push_back(modelInterp[i]);
-                }
-            }
-            renormC = computeRenormFactor(dV, mV);
-        }
-        for (double mf : selectedFit->modelFluxes) {
-            if (!std::isnan(mf))
-                allMainY.push_back(mf * renormC);
-        }
     }
 
     auto [mainYLo, mainYHi] = robustRange(allMainY, 0.95, 0.15);

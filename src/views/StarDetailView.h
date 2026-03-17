@@ -103,7 +103,13 @@ private:
     QTabBar*     _spectraTabBar        = nullptr;
     QWidget*     _spectraToolbar       = nullptr;
     QComboBox*   _spectraFitCombo      = nullptr;
-    QCheckBox*   _spectraRenormCheck   = nullptr;
+    QComboBox*   _spectraDisplayMode  = nullptr;
+
+    enum SpectraDisplayMode {
+        DisplayNormalized = 0,  // rebinnedFlux/spline  vs  modelFlux/spline
+        DisplayRebinned   = 1,  // rebinnedFlux          vs  modelFlux
+        DisplayRaw        = 2,  // raw instrument spectrum, model renorm'd
+    };
     QCustomPlot* _spectraMainPlot      = nullptr;
     QCustomPlot* _spectraResidualPlot  = nullptr;
     QLabel*      _spectraInfoLabel     = nullptr;

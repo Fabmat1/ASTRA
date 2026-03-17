@@ -864,32 +864,48 @@ void SpectralFitImportPage::matchDiggaDirectories(
 bool SpectralFitImportPage::loadPlotdata(
     const QString& filepath,
     std::vector<double>& wavelengths,
-    std::vector<double>& modelFluxes)
+    std::vector<double>& modelFluxes,
+    std::vector<double>& rebinnedFluxes,
+    std::vector<double>& rebinnedSigmas,
+    std::vector<double>& modelSplines,
+    std::vector<uint8_t>& modelIgnore)
 {
     QFile file(filepath);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
         return false;
 
     QTextStream in(&file);
-    in.readLine();   // skip header: lambda,flux,sigma,model,spline,ignore
+    in.readLine();  // skip header: lambda,flux,sigma,model,spline,ignore
 
     wavelengths.clear();
     modelFluxes.clear();
+    rebinnedFluxes.clear();
+    rebinnedSigmas.clear();
+    modelSplines.clear();
+    modelIgnore.clear();
 
     while (!in.atEnd()) {
         QString line = in.readLine().trimmed();
         if (line.isEmpty()) continue;
 
         QStringList parts = line.split(',');
-        if (parts.size() < 4) continue;
+        if (parts.size() < 6) continue;
 
-        bool okL, okM;
-        double lambda = parts[0].toDouble(&okL);
-        double model  = parts[3].toDouble(&okM);   // "model" column
+        bool okL, okF, okS, okM, okSp, okI;
+        double lambda  = parts[0].toDouble(&okL);
+        double flux    = parts[1].toDouble(&okF);
+        double sigma   = parts[2].toDouble(&okS);
+        double model   = parts[3].toDouble(&okM);
+        double spline  = parts[4].toDouble(&okSp);
+        int    ignore  = parts[5].toInt(&okI);
 
-        if (okL && okM) {
+        if (okL && okF && okS && okM && okSp && okI) {
             wavelengths.push_back(lambda);
+            rebinnedFluxes.push_back(flux);
+            rebinnedSigmas.push_back(sigma);
             modelFluxes.push_back(model);
+            modelSplines.push_back(spline);
+            modelIgnore.push_back(static_cast<uint8_t>(ignore));
         }
     }
 

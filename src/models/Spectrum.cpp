@@ -197,24 +197,41 @@ bool SpectralFit::saveDataToFile(const QString& filepath)
 
         s << static_cast<quint32>(modelWavelengths.size());
         s << static_cast<quint32>(modelFluxes.size());
+        s << static_cast<quint32>(rebinnedFluxes.size());
+        s << static_cast<quint32>(rebinnedSigmas.size());
+        s << static_cast<quint32>(modelSplines.size());
+        s << static_cast<quint32>(modelIgnore.size());
 
         for (const auto& v : modelWavelengths) s << v;
         for (const auto& v : modelFluxes)      s << v;
+        for (const auto& v : rebinnedFluxes)   s << v;
+        for (const auto& v : rebinnedSigmas)   s << v;
+        for (const auto& v : modelSplines)     s << v;
+        for (const auto& v : modelIgnore)      s << static_cast<quint8>(v);
     }
     return DataStore::writeCompressed(filepath, DataStore::SpectralFitData, buffer);
 }
 
 bool SpectralFit::loadDataFromFile(const QString& filepath)
 {
-    auto parse = [this](QDataStream& s) -> bool {
-        quint32 wlN, fN;
+    auto readDoubles = [](QDataStream& s, std::vector<double>& vec, quint32 n) {
+        vec.clear(); vec.reserve(n);
+        for (quint32 i = 0; i < n; ++i) { double v; s >> v; vec.push_back(v); }
+    };
+
+    auto parse = [this, &readDoubles](QDataStream& s, bool legacy = false) -> bool {
+        quint32 wlN, fN, rbfN = 0, rbsN = 0, splN = 0, ignN = 0;
         s >> wlN >> fN;
+        if (!legacy) s >> rbfN >> rbsN >> splN >> ignN;
 
-        modelWavelengths.clear();  modelWavelengths.reserve(wlN);
-        for (quint32 i = 0; i < wlN; ++i) { double v; s >> v; modelWavelengths.push_back(v); }
+        readDoubles(s, modelWavelengths, wlN);
+        readDoubles(s, modelFluxes,      fN);
+        readDoubles(s, rebinnedFluxes,   rbfN);
+        readDoubles(s, rebinnedSigmas,   rbsN);
+        readDoubles(s, modelSplines,     splN);
 
-        modelFluxes.clear();  modelFluxes.reserve(fN);
-        for (quint32 i = 0; i < fN; ++i) { double v; s >> v; modelFluxes.push_back(v); }
+        modelIgnore.clear(); modelIgnore.reserve(ignN);
+        for (quint32 i = 0; i < ignN; ++i) { quint8 v; s >> v; modelIgnore.push_back(v); }
 
         return s.status() == QDataStream::Ok;
     };
@@ -223,7 +240,7 @@ bool SpectralFit::loadDataFromFile(const QString& filepath)
     if (DataStore::readCompressed(filepath, DataStore::SpectralFitData, buf)) {
         QDataStream s(&buf, QIODevice::ReadOnly);
         s.setVersion(QDataStream::Qt_6_0);
-        return parse(s);
+        return parse(s);           // new format: reads all 6 size headers
     }
 
     QFile file(filepath);
@@ -233,5 +250,5 @@ bool SpectralFit::loadDataFromFile(const QString& filepath)
     }
     QDataStream s(&file);
     s.setVersion(QDataStream::Qt_5_0);
-    return parse(s);
+    return parse(s, /*legacy=*/true);  
 }
