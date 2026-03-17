@@ -97,6 +97,7 @@ set(SOURCES
     src/models/Instrument.cpp
     src/models/RadialVelocity.cpp
     src/models/Time.cpp
+    src/models/BarycentricCorrection.cpp
     src/views/MainWindow.cpp
     src/views/ProjectSelectionView.cpp
     src/views/ProjectView.cpp
@@ -140,6 +141,7 @@ set(HEADERS
     src/models/Instrument.h
     src/models/RadialVelocity.h
     src/models/Time.h
+    src/models/BarycentricCorrection.h
     src/views/MainWindow.h
     src/views/ProjectSelectionView.h
     src/views/ProjectView.h
@@ -260,3 +262,96 @@ install(TARGETS ASTRA
     BUNDLE DESTINATION .
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Tests
+# ═════════════════════════════════════════════════════════════════════════════
+option(BUILD_TESTING "Build test suite" ON)
+
+if(BUILD_TESTING)
+    enable_testing()
+
+    # ── Core library (model sources needed by tests, without GUI) ────────
+    # Avoids linking the entire application + all Qt Widgets dependencies.
+    add_library(astra_core STATIC
+        src/models/BarycentricCorrection.cpp
+        src/models/Instrument.cpp
+        src/models/Time.cpp
+    )
+    target_include_directories(astra_core PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(astra_core PUBLIC
+        Qt6::Core
+    )
+    set_target_properties(astra_core PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        AUTOMOC ON
+    )
+
+    # ── Reference data generation ────────────────────────────────────────
+    find_package(Python3 COMPONENTS Interpreter)
+
+    set(REFERENCE_JSON "${CMAKE_CURRENT_SOURCE_DIR}/tests/reference_bjd.json")
+    set(GENERATE_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/tests/generate_reference_bjd.py")
+
+    if(Python3_FOUND)
+        # Custom target so you can run:  cmake --build build --target generate_reference
+        add_custom_command(
+            OUTPUT  "${REFERENCE_JSON}"
+            COMMAND "${Python3_EXECUTABLE}" "${GENERATE_SCRIPT}" "${REFERENCE_JSON}"
+            DEPENDS "${GENERATE_SCRIPT}"
+            COMMENT "Generating BJD reference data with astropy..."
+            VERBATIM
+        )
+        add_custom_target(generate_reference
+            DEPENDS "${REFERENCE_JSON}"
+        )
+    else()
+        message(WARNING "Python3 not found – cannot auto-generate reference_bjd.json. "
+                        "Run manually: python3 tests/generate_reference_bjd.py")
+    endif()
+
+    # ── Barycentric correction test ──────────────────────────────────────
+    add_executable(test_barycentric
+        tests/test_barycentric.cpp
+    )
+    target_link_libraries(test_barycentric PRIVATE
+        astra_core
+        Qt6::Core
+    )
+    # Tell the test where to find the JSON at compile time
+    target_compile_definitions(test_barycentric PRIVATE
+        REFERENCE_BJD_PATH="${REFERENCE_JSON}"
+    )
+    set_target_properties(test_barycentric PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+    )
+
+    # Ensure reference data is generated before the test runs
+    if(TARGET generate_reference)
+        add_dependencies(test_barycentric generate_reference)
+    endif()
+
+    # Register with CTest
+    add_test(
+        NAME    barycentric_correction
+        COMMAND test_barycentric "${REFERENCE_JSON}"
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(barycentric_correction PROPERTIES
+        LABELS "models;astronomy"
+        TIMEOUT 30
+    )
+
+    # ── Convenience target ───────────────────────────────────────────────
+    # `cmake --build build --target check` builds and runs all tests
+    add_custom_target(check
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure --test-dir "${CMAKE_CURRENT_BINARY_DIR}"
+        DEPENDS test_barycentric
+        COMMENT "Running all tests..."
+    )
+endif()

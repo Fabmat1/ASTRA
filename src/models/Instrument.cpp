@@ -1,12 +1,10 @@
 #include "Instrument.h"
-#include <QDebug>
+#include "BarycentricCorrection.h"
 
-Instrument::Instrument()
-    : _latitude(0.0)
-    , _longitude(0.0)
-    , _altitude(0.0)
-{
-}
+#include <QDebug>
+#include <cmath>
+
+Instrument::Instrument()  = default;
 
 Instrument::Instrument(const QString& name, double latitude, double longitude, double altitude)
     : _name(name)
@@ -16,46 +14,98 @@ Instrument::Instrument(const QString& name, double latitude, double longitude, d
 {
 }
 
-Instrument::~Instrument()
-{
-}
+Instrument::~Instrument() = default;
 
 void Instrument::setLocation(double lat, double lon, double alt)
 {
-    _latitude = lat;
+    _latitude  = lat;
     _longitude = lon;
-    _altitude = alt;
+    _altitude  = alt;
 }
+
+bool Instrument::hasLocation() const
+{
+    // Space‑based instruments don't need a ground location –
+    // they still "have a location" for purposes of allowing conversion.
+    if (_spaceBased) return true;
+    // Ground‑based: at least lat/lon must be non‑zero
+    return !(_latitude == 0.0 && _longitude == 0.0);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MJD(UTC) → BJD(TDB)
+// ═════════════════════════════════════════════════════════════════════════════
 
 double Instrument::mjdToBjd(double mjd, double ra, double dec) const
 {
-    // Placeholder implementation
-    // TODO: Implement actual MJD to BJD conversion
-    // This would involve:
-    // 1. Convert MJD to JD
-    // 2. Calculate Earth's position relative to barycenter
-    // 3. Calculate light travel time correction
-    // 4. Apply correction to get BJD
-    
-    qDebug() << "mjdToBjd placeholder called for MJD:" << mjd 
-             << "RA:" << ra << "Dec:" << dec;
-    
-    // For now, return a simple offset (typical corrections are < 0.01 days)
-    return mjd + 0.005; // Placeholder offset
+    if (_spaceBased) {
+        // Space‑based: topocentric correction is negligible.
+        // Pass geocentre (0, 0, 0) so observerGeocentricPosition returns ~0.
+        return BarycentricCorrection::mjdUtcToBjdTdb(
+            mjd, ra, dec, 0.0, 0.0, 0.0);
+    }
+
+    if (!hasLocation()) {
+        qWarning() << "Instrument::mjdToBjd:" << _name
+                    << "has no location – using geocentre.";
+        return BarycentricCorrection::mjdUtcToBjdTdb(
+            mjd, ra, dec, 0.0, 0.0, 0.0);
+    }
+
+    return BarycentricCorrection::mjdUtcToBjdTdb(
+        mjd, ra, dec, _longitude, _latitude, _altitude);
 }
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Heliocentric velocity correction
+// ═════════════════════════════════════════════════════════════════════════════
 
 double Instrument::heliocentricCorrection(double mjd, double ra, double dec) const
 {
-    // Placeholder implementation
-    // TODO: Implement actual heliocentric velocity correction
-    // This would involve:
-    // 1. Calculate Earth's velocity vector relative to Sun
-    // 2. Project onto line of sight to target (RA/Dec)
-    // 3. Return radial velocity correction in km/s
-    
-    qDebug() << "heliocentricCorrection placeholder called for MJD:" << mjd 
-             << "RA:" << ra << "Dec:" << dec;
-    
-    // For now, return a typical correction value (Earth's orbital velocity ~30 km/s)
-    return 15.0 * std::cos((mjd - 51544.5) * 2.0 * 3.14159 / 365.25); // Simple sinusoidal placeholder
+    // Full implementation would differentiate Earth's position numerically
+    // and project onto line of sight.  For now, use a simple analytical model.
+
+    constexpr double DEG2RAD = 3.14159265358979323846 / 180.0;
+
+    // Julian centuries from J2000
+    double T = (mjd - 51544.5) / 36525.0;
+
+    // Mean anomaly of Earth (rad)
+    double M = (357.5277233 + 35999.050340 * T) * DEG2RAD;
+    M = std::fmod(M, 2.0 * 3.14159265358979323846);
+
+    // Earth's mean orbital velocity (km/s)
+    constexpr double V_ORB = 29.7859;
+
+    // Eccentricity
+    double ecc = 0.016708634 - 0.000042037 * T;
+
+    // Longitude of perihelion
+    double pomega = (102.93735 + 1.71946 * T) * DEG2RAD;
+
+    // Sun's ecliptic longitude (approximate)
+    double L0  = (280.46646 + 36000.76983 * T) * DEG2RAD;
+    double C   = (1.914602 - 0.004817 * T) * std::sin(M) * DEG2RAD
+               + 0.019993 * std::sin(2.0 * M) * DEG2RAD;
+    double sunLon = L0 + C;
+
+    // Convert target RA/Dec to ecliptic longitude/latitude
+    double raRad  = ra  * DEG2RAD;
+    double decRad = dec * DEG2RAD;
+    double obliq  = 23.4393 * DEG2RAD;
+
+    double sinBeta = std::sin(decRad) * std::cos(obliq)
+                   - std::cos(decRad) * std::sin(obliq) * std::sin(raRad);
+    double beta = std::asin(sinBeta);
+
+    double y = std::sin(raRad) * std::cos(obliq) + std::tan(decRad) * std::sin(obliq);
+    double x = std::cos(raRad);
+    double lambda = std::atan2(y, x);
+
+    // Projected velocity (Wright & Eastman 2014, Eq. 1)
+    double vCorr = -V_ORB * std::cos(beta) *
+                   (std::sin(sunLon - lambda)
+                    + ecc * std::sin(pomega - lambda));
+
+    return vCorr;
 }

@@ -16,17 +16,11 @@ from pathlib import Path
 
 EXTRACTIONS = [
     # Star public API - I got every method name wrong
-    ("src/models/Star.h", ["class Star"]),
-    
-    # How does the wizard currently get the project/star list?
-    ("src/importWizard/StarImportWizard.cpp", ["__FULL__"]),
-    
-    # Current ImportStagingArea.cpp so I can see what old junk remains
-    ("src/importWizard/ImportStagingArea.cpp", ["__FULL__"]),
-    
-    # DatabaseManager::savePhotometry signature
-    ("src/utils/DatabaseManager.h", ["DatabaseManager::savePhotometry"]),
-]
+    ("src/models/Time.h", ["__FULL__"]),
+    ("src/models/Time.cpp", ["__FULL__"]),
+    ("src/models/Instrument.h", ["__FULL__"]),
+    ("src/models/Instrument.cpp", ["__FULL__"]),
+    ]
 
 
 def find_brace_block(text: str, start: int) -> int:

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <optional>
+#include <memory>
 #include <QString>
 #include <QDataStream>
 
@@ -14,7 +15,7 @@ enum class TimeScale
     BJD,        // Barycentric Julian Date (TDB)
     HJD,        // Heliocentric Julian Date
     BTJD,       // TESS Barycentric JD   (BJD − 2 457 000.0)
-    BKJD,       // Kepler Barycentric JD (BJD − 2 454 833.0)       // ← NEW
+    BKJD,       // Kepler Barycentric JD (BJD − 2 454 833.0)
     GaiaTCB,    // Gaia TCB              (BJD − 2 455 197.5)
     Unknown
 };
@@ -40,19 +41,41 @@ public:
     // ── Direct accessors (return std::nullopt if not yet available) ─────────
     std::optional<double> jd()  const { return _jd;  }
     std::optional<double> mjd() const { return _mjd; }
-    std::optional<double> bjd() const { return _bjd; }
     std::optional<double> hjd() const { return _hjd; }
+
+    /// BJD accessor with lazy auto‑conversion.
+    /// If BJD has not been set but an instrument link + coordinates are
+    /// available, the conversion is performed transparently on first access.
+    std::optional<double> bjd() const;
+
+    /// Returns true if a BJD value has been explicitly set or already computed.
+    bool hasBjd() const { return _bjd.has_value(); }
 
     // ── Convenience accessors that fall back ────────────────────────────────
     double mjdOr(double fallback = 0.0) const { return _mjd.value_or(fallback); }
-    double bjdOr(double fallback = 0.0) const { return _bjd.value_or(fallback); }
+    double bjdOr(double fallback = 0.0) const {
+        auto v = bjd();  // triggers lazy computation
+        return v.value_or(fallback);
+    }
 
     // ── Setters ─────────────────────────────────────────────────────────────
     void setMJD(double v);
     void setBJD(double v);
     void setHJD(double v);
 
-    // ── Coordinate‑dependent conversions ────────────────────────────────────
+    // ── Lazy conversion link ────────────────────────────────────────────────
+    /// Store the instrument and target coordinates so that BJD can be
+    /// computed on demand when bjd() is called.
+    void setAutoConvertInfo(std::shared_ptr<const Instrument> inst,
+                            double raDeg, double decDeg);
+
+    /// Forget the auto‑convert link (e.g. when coordinates change).
+    void clearAutoConvertInfo();
+
+    /// Whether an auto‑convert link is configured.
+    bool hasAutoConvertInfo() const { return _autoInst != nullptr; }
+
+    // ── Explicit coordinate‑dependent conversions ───────────────────────────
     void computeBJD(const Instrument& inst, double raDeg, double decDeg);
     void computeHJD(const Instrument& inst, double raDeg, double decDeg);
 
@@ -76,17 +99,14 @@ public:
     static QString    scaleToString(TimeScale ts);
     static TimeScale  stringToScale(const QString& str);
 
-    // ── Scale‑guessing helpers (moved from LightcurveTime) ──────────────── // ← NEW
-    /// Guess the time scale from an instrument name (e.g. "TESS" → BTJD).
+    // ── Scale‑guessing helpers ──────────────────────────────────────────────
     static TimeScale guessScaleFromInstrument(const QString& instrument);
-
-    /// Guess the time scale from the magnitude of a raw time value.
     static TimeScale guessScaleFromValue(double firstTime);
 
     // ── Offset constants ────────────────────────────────────────────────────
     static constexpr double MJD_OFFSET  = 2400000.5;
     static constexpr double BTJD_OFFSET = 2457000.0;
-    static constexpr double BKJD_OFFSET = 2454833.0;    // ← NEW
+    static constexpr double BKJD_OFFSET = 2454833.0;
     static constexpr double GAIA_OFFSET = 2455197.5;
 
 private:
@@ -97,8 +117,13 @@ private:
 
     std::optional<double> _jd;
     std::optional<double> _mjd;
-    std::optional<double> _bjd;
+    mutable std::optional<double> _bjd;     // ← mutable for lazy computation
     std::optional<double> _hjd;
 
     double _exposureSec = -1.0;
+
+    // ── Lazy BJD conversion link ────────────────────────────────────────────
+    std::shared_ptr<const Instrument> _autoInst;
+    double _autoRA  = 0.0;    // degrees, J2000
+    double _autoDec = 0.0;    // degrees, J2000
 };

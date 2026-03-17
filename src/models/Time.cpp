@@ -23,7 +23,7 @@ Time::Time(double value, TimeScale scale)
     case TimeScale::BJD:      _bjd = value;                    break;
     case TimeScale::HJD:      _hjd = value;                    break;
     case TimeScale::BTJD:     _bjd = value + BTJD_OFFSET;     break;
-    case TimeScale::BKJD:     _bjd = value + BKJD_OFFSET;     break;   // ← NEW
+    case TimeScale::BKJD:     _bjd = value + BKJD_OFFSET;     break;
     case TimeScale::GaiaTCB:  _bjd = value + GAIA_OFFSET;     break;
     case TimeScale::Unknown:  break;
     }
@@ -73,7 +73,7 @@ void Time::propagateOffsets()
         _jd = *_mjd + MJD_OFFSET;
 
     // BJD → MJD is NOT done here (needs barycentric correction in reverse).
-    // MJD → BJD is NOT done here (needs sky coordinates).
+    // MJD → BJD is NOT done here (needs sky coordinates → see lazy bjd()).
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -84,6 +84,10 @@ void Time::setMJD(double v)
 {
     _mjd = v;
     _jd  = v + MJD_OFFSET;
+    // Invalidate cached BJD – the MJD changed, so any previously
+    // lazily‑computed BJD is stale.  Explicit setBJD() values are also
+    // overridden; the caller should re‑set BJD if they know it.
+    _bjd.reset();
 }
 
 void Time::setBJD(double v)
@@ -97,7 +101,44 @@ void Time::setHJD(double v)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Coordinate‑dependent conversions
+// Lazy conversion link
+// ═════════════════════════════════════════════════════════════════════════════
+
+void Time::setAutoConvertInfo(std::shared_ptr<const Instrument> inst,
+                              double raDeg, double decDeg)
+{
+    _autoInst = std::move(inst);
+    _autoRA   = raDeg;
+    _autoDec  = decDeg;
+}
+
+void Time::clearAutoConvertInfo()
+{
+    _autoInst.reset();
+    _autoRA  = 0.0;
+    _autoDec = 0.0;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// BJD accessor with lazy auto‑conversion
+// ═════════════════════════════════════════════════════════════════════════════
+
+std::optional<double> Time::bjd() const
+{
+    if (_bjd.has_value())
+        return _bjd;
+
+    // Attempt lazy conversion: need MJD + instrument + coordinates
+    if (!_mjd.has_value() || !_autoInst)
+        return std::nullopt;
+
+    // Perform the conversion and cache the result
+    _bjd = _autoInst->mjdToBjd(*_mjd, _autoRA, _autoDec);
+    return _bjd;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Coordinate‑dependent conversions (explicit)
 // ═════════════════════════════════════════════════════════════════════════════
 
 void Time::computeBJD(const Instrument& inst, double raDeg, double decDeg)
@@ -127,9 +168,11 @@ void Time::computeHJD(const Instrument& inst, double raDeg, double decDeg)
 
 double Time::sortValue() const
 {
-    if (_bjd.has_value()) return *_bjd;
-    if (_mjd.has_value()) return *_mjd + MJD_OFFSET;
-    if (_jd.has_value())  return *_jd;
+    // Use bjd() (not _bjd) so lazy computation kicks in
+    auto b = bjd();
+    if (b.has_value())         return *b;
+    if (_mjd.has_value())      return *_mjd + MJD_OFFSET;
+    if (_jd.has_value())       return *_jd;
     return _nativeValue;
 }
 
@@ -158,6 +201,15 @@ QDataStream& operator<<(QDataStream& s, const Time& t)
     writeOpt(t._hjd);
 
     s << t._exposureSec;
+
+    // Persist auto‑convert coordinates (but not the instrument pointer –
+    // that is re‑linked on load by the owning object).
+    bool hasAuto = (t._autoInst != nullptr);
+    s << hasAuto;
+    if (hasAuto) {
+        s << t._autoRA << t._autoDec;
+    }
+
     return s;
 }
 
@@ -179,6 +231,14 @@ QDataStream& operator>>(QDataStream& s, Time& t)
     readOpt(t._hjd);
 
     s >> t._exposureSec;
+
+    // Read auto‑convert coordinates (instrument pointer re‑linked externally)
+    bool hasAuto = false;
+    s >> hasAuto;
+    if (hasAuto) {
+        s >> t._autoRA >> t._autoDec;
+    }
+
     return s;
 }
 
@@ -195,6 +255,8 @@ QString Time::toString() const
                     .arg(scaleToString(_nativeScale));
     if (_exposureSec >= 0.0)
         s += QStringLiteral(", exp=%1s").arg(_exposureSec, 0, 'f', 1);
+    if (_autoInst)
+        s += QStringLiteral(", auto‑BJD");
     s += ')';
     return s;
 }
@@ -228,7 +290,7 @@ TimeScale Time::stringToScale(const QString& str)
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// Scale‑guessing helpers  (formerly in LightcurveTime)
+// Scale‑guessing helpers
 // ═════════════════════════════════════════════════════════════════════════════
 
 TimeScale Time::guessScaleFromInstrument(const QString& instrument)
@@ -252,6 +314,6 @@ TimeScale Time::guessScaleFromValue(double firstTime)
     if (firstTime > 40000.0 && firstTime < 100000.0)
         return TimeScale::MJD;
     if (firstTime > 0.0 && firstTime < 5000.0)
-        return TimeScale::BTJD;     // likely TESS or Kepler offset
+        return TimeScale::BTJD;
     return TimeScale::Unknown;
 }

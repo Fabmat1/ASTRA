@@ -23,26 +23,36 @@ public:
     double getLatitude() const { return _latitude; }
     double getLongitude() const { return _longitude; }
     double getAltitude() const { return _altitude; }
-    
+
     void setLatitude(double lat) { _latitude = lat; }
     void setLongitude(double lon) { _longitude = lon; }
     void setAltitude(double alt) { _altitude = alt; }
-    
+
     void setLocation(double lat, double lon, double alt);
 
-    // Time and velocity corrections (placeholders for now)
-    // Convert Modified Julian Date to Barycentric Julian Date for given RA/Dec
+    /// Whether this instrument is space‑based (no topocentric correction needed).
+    bool isSpaceBased() const { return _spaceBased; }
+    void setSpaceBased(bool sb) { _spaceBased = sb; }
+
+    // ── Time and velocity corrections ───────────────────────────────────────
+
+    /// Convert Modified Julian Date (UTC) to Barycentric Julian Date (TDB)
+    /// for the given target coordinates (J2000 degrees).
     double mjdToBjd(double mjd, double ra, double dec) const;
-    
-    // Calculate heliocentric velocity correction for given MJD, RA/Dec
+
+    /// Calculate heliocentric velocity correction (km/s) for given MJD, RA/Dec.
     double heliocentricCorrection(double mjd, double ra, double dec) const;
+
+    /// Whether the instrument has valid location data for corrections.
+    bool hasLocation() const;
 
 private:
     QString _id;
     QString _name;
-    double _latitude;   // degrees
-    double _longitude;  // degrees
-    double _altitude;   // meters
+    double _latitude  = 0.0;  // degrees
+    double _longitude = 0.0;  // degrees
+    double _altitude  = 0.0;  // meters
+    bool   _spaceBased = false;
 };
 
 #endif // INSTRUMENT_H
