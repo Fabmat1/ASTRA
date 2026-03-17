@@ -21,6 +21,7 @@
 
 #include "utils/Logger.h"
 #include "utils/AppPaths.h"
+#include "models/Time.h"
 #include "models/RadialVelocity.h"
 
 DatabaseManager::DatabaseManager(QObject *parent)
@@ -1491,9 +1492,11 @@ std::vector<std::shared_ptr<Spectrum>> DatabaseManager::loadSpectra(const QStrin
         spectrum->setId(query.value("id").toString());
         spectrum->setFile(query.value("file").toString());
         spectrum->setInstrument(query.value("instrument").toString());
-        spectrum->setMJD(query.value("mjd").toDouble());
-        spectrum->setBJD(query.value("bjd").toDouble());
-        spectrum->setExposureTime(query.value("exposure_time").toDouble());
+        double expTime = query.value("exposure_time").toDouble();
+        spectrum->setTime(Time::fromMjdBjd(
+            query.value("mjd").toDouble(),
+            query.value("bjd").toDouble(),
+            expTime > 0.0 ? expTime : -1.0));
         spectrum->setDataFile(query.value("data_file").toString());
         spectrum->setBarycentricallyCorrected(query.value("barycentric_corrected").toInt() != 0);
 
@@ -1834,8 +1837,9 @@ DatabaseManager::loadRadialVelocityPoints(const QString& curveId)
         auto pt = std::make_shared<RadialVelocityPoint>();
         pt->setId(query.value("id").toString());
         pt->setCurveId(curveId);
-        pt->setMJD(query.value("mjd").toDouble());
-        pt->setBJD(query.value("bjd").toDouble());
+        pt->setTime(Time::fromMjdBjd(
+            query.value("mjd").toDouble(),
+            query.value("bjd").toDouble()));
         pt->setRV(query.value("radial_velocity").toDouble());
         pt->setRVError(query.value("rv_error").toDouble());
         pt->setSource(query.value("source").toString());

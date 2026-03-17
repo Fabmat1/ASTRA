@@ -5,6 +5,7 @@
 #include <memory>
 #include <vector>
 #include "models/Photometry.h"
+#include "models/Time.h"
 
 class QListWidget;
 class QPushButton;
@@ -32,7 +33,7 @@ struct LightcurveScanEntry
     QString starIdentifier;
     QString filePath;
     QString instrument;
-    LightcurveTimeScale detectedTimeScale = LightcurveTimeScale::Unknown;
+    TimeScale detectedTimeScale = TimeScale::Unknown;
     int     numPoints   = 0;
     QStringList filters;
 
@@ -79,7 +80,7 @@ private:
     void scanFolderStructure(const QString& rootPath);
     void scanCSVManifest(const QString& csvPath);
     bool parseLightcurveFile(const QString& filePath,
-                             LightcurveTimeScale scale,
+                             TimeScale scale,
                              std::vector<LightcurvePoint>& outPoints,
                              QStringList& outFilters,
                              QString& outError);
@@ -114,7 +115,7 @@ private:
     QLabel*       _summaryLabel  = nullptr;
 
     std::vector<LightcurveScanEntry> _entries;
-    QHash<QString, LightcurveTimeScale> _instrumentTimeScales;
+    QHash<QString, TimeScale> _instrumentTimeScales;
     QHash<QString, QComboBox*>          _timeScaleCombos;
     bool _scanned = false;
     bool _staged  = false;

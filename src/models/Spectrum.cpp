@@ -32,9 +32,7 @@ SpectralFit::SpectralFit()
 }
 
 Spectrum::Spectrum()
-    : _mjd(0.0)
-    , _bjd(0.0)
-    , _exposureTime(0.0)
+    : _time()                          
     , _isBarycentricallyCorrected(false)
 {
 }

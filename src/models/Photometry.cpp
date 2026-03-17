@@ -464,7 +464,7 @@ bool Photometry::saveLightcurveToFile(const QString& source, const QString& file
         s.setVersion(QDataStream::Qt_6_0);
         s << static_cast<quint32>(lc.size());
         for (const auto& p : lc) {
-            s << p.bjd << p.flux << p.fluxError << p.filter;
+            s << p.time << p.flux << p.fluxError << p.filter;
         }
     }
     return DataStore::writeCompressed(filepath, DataStore::LightcurveData, buffer);
@@ -479,7 +479,7 @@ bool Photometry::loadLightcurveFromFile(const QString& source, const QString& fi
         lc.reserve(n);
         for (quint32 i = 0; i < n; ++i) {
             LightcurvePoint p;
-            s >> p.bjd >> p.flux >> p.fluxError >> p.filter;
+            s >> p.time >> p.flux >> p.fluxError >> p.filter;
             lc.push_back(p);
         }
         _lightcurves[source] = std::move(lc);

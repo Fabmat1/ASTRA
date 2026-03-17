@@ -6,16 +6,21 @@
 #include <vector>
 #include <memory>
 
+#include "Time.h"
+
 class Spectrum;
 class SpectralFit;
 class Instrument;
 
+// ─────────────────────────────────────────────────────────────────────────────
 // Individual radial velocity measurement point
+// ─────────────────────────────────────────────────────────────────────────────
 class RadialVelocityPoint
 {
 public:
     RadialVelocityPoint();
     RadialVelocityPoint(double rv, double rvError, double mjd, double bjd);
+    RadialVelocityPoint(double rv, double rvError, const Time& time);
     ~RadialVelocityPoint();
 
     // UUID for database
@@ -32,13 +37,18 @@ public:
     void setRV(double rv) { _rv = rv; }
     void setRVError(double error) { _rvError = error; }
 
-    // Time stamps
-    double getMJD() const { return _mjd; }
-    double getBJD() const { return _bjd; }
-    void setMJD(double mjd) { _mjd = mjd; }
-    void setBJD(double bjd) { _bjd = bjd; }
+    // ── Time (new API) ──────────────────────────────────────────────────────
+    const Time& time() const           { return _time; }
+    Time&       time()                 { return _time; }
+    void        setTime(const Time& t) { _time = t; }
 
-    // Heliocentric correction
+    // ── Time (legacy wrappers) ──────────────────────────────────────────────
+    double getMJD() const   { return _time.mjdOr(0.0); }
+    double getBJD() const   { return _time.bjdOr(0.0); }
+    void   setMJD(double v) { _time.setMJD(v); }
+    void   setBJD(double v) { _time.setBJD(v); }
+
+    // Heliocentric correction (km/s applied to RV, not a time shift)
     double getHeliocentricCorrection() const { return _helioCorrection; }
     void setHeliocentricCorrection(double correction) { _helioCorrection = correction; }
     bool isHeliocentricCorrectionApplied() const { return _helioCorrectionApplied; }
@@ -75,8 +85,9 @@ private:
     QString _curveId;
     double _rv;                    // km/s
     double _rvError;               // km/s
-    double _mjd;
-    double _bjd;
+
+    Time _time;                    // replaces _mjd, _bjd
+
     double _helioCorrection;       // km/s
     bool _helioCorrectionApplied;
 
@@ -90,7 +101,10 @@ private:
     QString _source;
 };
 
+
+// ─────────────────────────────────────────────────────────────────────────────
 // RV orbital fit parameters
+// ─────────────────────────────────────────────────────────────────────────────
 class RVFit
 {
 public:
@@ -116,28 +130,26 @@ public:
     void setFitMethod(const QString& method) { _fitMethod = method; }
 
     // Orbital parameters
-    double getK() const { return _K; }                    // Half-amplitude (km/s)
+    double getK() const { return _K; }
     double getKError() const { return _KError; }
     void setK(double k) { _K = k; }
     void setKError(double error) { _KError = error; }
 
-    double getGamma() const { return _gamma; }            // Systemic velocity (km/s)
+    double getGamma() const { return _gamma; }
     double getGammaError() const { return _gammaError; }
     void setGamma(double gamma) { _gamma = gamma; }
     void setGammaError(double error) { _gammaError = error; }
 
-    double getPeriod() const { return _period; }          // Days
+    double getPeriod() const { return _period; }
     double getPeriodError() const { return _periodError; }
     void setPeriod(double period) { _period = period; }
     void setPeriodError(double error) { _periodError = error; }
 
-    double getPhi() const { return _phi; }                // Phase offset (0-1)
+    double getPhi() const { return _phi; }
     double getPhiError() const { return _phiError; }
     void setPhi(double phi) { _phi = phi; }
     void setPhiError(double error) { _phiError = error; }
 
-    // T0 — periastron epoch (days). Stored separately from phi.
-    // If only T0 is known, phi can be derived from T0 and period.
     double getT0() const { return _t0; }
     double getT0Error() const { return _t0Error; }
     void setT0(double t0) { _t0 = t0; }
@@ -152,13 +164,14 @@ public:
     void setEccentricity(double e) { _eccentricity = e; _isEccentric = (e > 0); }
     void setEccentricityError(double error) { _eccentricityError = error; }
 
-    double getOmega() const { return _omega; }            // Argument of periastron (degrees)
+    double getOmega() const { return _omega; }
     double getOmegaError() const { return _omegaError; }
     void setOmega(double omega) { _omega = omega; }
     void setOmegaError(double error) { _omegaError = error; }
 
     // Calculate RV at given time
     double calculateRV(double bjd) const;
+    double calculateRV(const Time& t) const;      // convenience overload
 
     // Fit quality metrics
     double getChi2() const { return _chi2; }
@@ -174,7 +187,6 @@ private:
     bool _isBestFit;
     QString _fitMethod;
 
-    // Orbital parameters
     double _K;
     double _KError;
     double _gamma;
@@ -186,19 +198,20 @@ private:
     double _t0;
     double _t0Error;
 
-    // Eccentric parameters
     bool _isEccentric;
     double _eccentricity;
     double _eccentricityError;
     double _omega;
     double _omegaError;
 
-    // Fit quality
     double _chi2;
     double _rms;
 };
 
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Collection of RV points and fits for a star
+// ─────────────────────────────────────────────────────────────────────────────
 class RadialVelocityCurve
 {
 public:
@@ -221,7 +234,7 @@ public:
     std::vector<std::shared_ptr<RadialVelocityPoint>> getRVPoints() const { return _rvPoints; }
     std::shared_ptr<RadialVelocityPoint> getRVPoint(const QString& pointId) const;
 
-    // Populate from spectra (useful for auto-population)
+    // Populate from spectra
     void populateFromSpectra(const std::vector<std::shared_ptr<Spectrum>>& spectra);
     void updateFromSpectra(const std::vector<std::shared_ptr<Spectrum>>& spectra);
 
@@ -235,33 +248,28 @@ public:
     std::shared_ptr<RVFit> getBestFit() const;
     void setBestFit(const QString& fitId);
 
-    // Statistical metrics (computed on the fly from points)
+    // Statistical metrics
     double getMinRV() const;
     double getMaxRV() const;
     double getMeanRV() const;
     double getMedianRV() const;
     double getStdDevRV() const;
-    double getRVAmplitude() const;  // Max - Min
+    double getRVAmplitude() const;
 
-    // Get weighted averages (using errors)
     double getWeightedMeanRV() const;
     double getWeightedStdDevRV() const;
 
-    // Time range
+    // ── Time range (legacy — delegates to Time inside each point) ───────────
     double getMinMJD() const;
     double getMaxMJD() const;
-    double getTimeSpan() const;  // Max MJD - Min MJD
+    double getTimeSpan() const;   // Max MJD − Min MJD
 
-    // Number of measurements
     size_t getNumPoints() const { return _rvPoints.size(); }
     size_t getNumFits() const { return _rvFits.size(); }
 
-    // ── Log-p variability metric ────────────────────────────────
-    // Chi-squared test against constant (weighted-mean) model.
-    // Very negative = highly variable. Returns NaN if < 2 points.
+    // ── Log-p variability metric ────────────────────────────────────────────
     double computeLogP() const;
 
-    // Cached value (set after computeLogP or loaded from DB)
     double getLogP() const { return _logP; }
     void setLogP(double logP) { _logP = logP; }
 
@@ -272,7 +280,6 @@ private:
     std::vector<std::shared_ptr<RVFit>> _rvFits;
     double _logP;
 
-    // Helper function for median calculation
     double calculateMedian(std::vector<double> values) const;
 };
 

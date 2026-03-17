@@ -7,7 +7,7 @@
 #include "Logger.h"
 #include "utils/DatabaseManager.h"
 #include "../importWizard/ImportStagingArea.h"
-#include "Logger.h"  
+#include "models/Time.h"
 
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -888,15 +888,22 @@ void SpectraImportTask::execute()
 
         readResult.spectrum->setBarycentricallyCorrected(entry.isBarycentricallyCorrected);
 
-        if (entry.mjd.has_value() && readResult.spectrum->getMJD() == 0.0) {
-            readResult.spectrum->setMJD(entry.mjd.value());
+        Time t = readResult.spectrum->time();
+        bool changed = false;
+        if (entry.mjd.has_value() && t.mjdOr(0.0) == 0.0) {
+            t.setMJD(entry.mjd.value());
+            changed = true;
         }
-        if (entry.bjd.has_value() && readResult.spectrum->getBJD() == 0.0) {
-            readResult.spectrum->setBJD(entry.bjd.value());
+        if (entry.bjd.has_value() && t.bjdOr(0.0) == 0.0) {
+            t.setBJD(entry.bjd.value());
+            changed = true;
         }
-        if (entry.exposureTime.has_value() && readResult.spectrum->getExposureTime() == 0.0) {
-            readResult.spectrum->setExposureTime(entry.exposureTime.value());
+        if (entry.exposureTime.has_value() && !t.hasExposureTime()) {
+            t.setExposureTime(entry.exposureTime.value());
+            changed = true;
         }
+        if (changed)
+            readResult.spectrum->setTime(t);
         if (entry.instrument.has_value() && readResult.spectrum->getInstrument().isEmpty()) {
             readResult.spectrum->setInstrument(entry.instrument.value());
         }

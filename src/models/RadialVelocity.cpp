@@ -117,18 +117,27 @@ double chi2SurvivalFunction(double x, int k)
 RadialVelocityPoint::RadialVelocityPoint()
     : _rv(0.0)
     , _rvError(0.0)
-    , _mjd(0.0)
-    , _bjd(0.0)
+    , _time()
     , _helioCorrection(0.0)
     , _helioCorrectionApplied(false)
 {
 }
 
-RadialVelocityPoint::RadialVelocityPoint(double rv, double rvError, double mjd, double bjd)
+RadialVelocityPoint::RadialVelocityPoint(double rv, double rvError,
+                                         double mjd, double bjd)
     : _rv(rv)
     , _rvError(rvError)
-    , _mjd(mjd)
-    , _bjd(bjd)
+    , _time(Time::fromMjdBjd(mjd, bjd))
+    , _helioCorrection(0.0)
+    , _helioCorrectionApplied(false)
+{
+}
+
+RadialVelocityPoint::RadialVelocityPoint(double rv, double rvError,
+                                         const Time& time)
+    : _rv(rv)
+    , _rvError(rvError)
+    , _time(time)
     , _helioCorrection(0.0)
     , _helioCorrectionApplied(false)
 {
@@ -201,11 +210,15 @@ RVFit::~RVFit()
 {
 }
 
-double RVFit::calculateRV(double bjd) const
+double RVFit::calculateRV(const Time& t) const
 {
     if (_period <= 0.0) {
         return _gamma;  // Return systemic velocity if no period
     }
+    
+    double bjd = t.bjdOr(0.0);
+    if (bjd == 0.0)
+        bjd = t.mjdOr(0.0) + Time::MJD_OFFSET;   // rough fallback
     
     // Calculate phase
     double phase = std::fmod((bjd - _phi) / _period, 1.0);

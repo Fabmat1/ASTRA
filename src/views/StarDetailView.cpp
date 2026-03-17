@@ -4,6 +4,7 @@
 #include "models/Photometry.h"
 #include "models/RadialVelocity.h"
 #include "models/Instrument.h"
+#include "models/Time.h"
 #include "utils/Logger.h"
 
 #include "views/tools/RVInspectorDialog.h"
@@ -1596,37 +1597,28 @@ void StarDetailView::populateRVPlot()
     std::vector<RVDatum> data;
     data.reserve(points.size());
 
-    int skippedZeroBJD = 0, skippedBoth = 0, usedBJD = 0, usedMJD = 0;
+    int skipped = 0;
 
     for (size_t i = 0; i < points.size(); ++i) {
         auto& pt = points[i];
-        double bjd = pt->getBJD();
-        double mjd = pt->getMJD();
-        double t = bjd;
+        const Time& tm = pt->time();
 
-        if (t == 0.0) {
-            skippedZeroBJD++;
-            t = mjd;
-        }
-
-        if (t == 0.0) {
-            skippedBoth++;
-            if (skippedBoth <= 3) {
-                LOG_WARNING(CAT, QString("  pt[%1]: BJD=%2 MJD=%3 RV=%4 err=%5 → SKIPPED")
-                    .arg(i).arg(bjd, 0, 'g', 12).arg(mjd, 0, 'g', 12)
+        if (!tm.isValid()) {
+            ++skipped;
+            if (skipped <= 3) {
+                LOG_WARNING(CAT, QString("  pt[%1]: %2 RV=%3 err=%4 → SKIPPED (invalid time)")
+                    .arg(i).arg(tm.toString())
                     .arg(pt->getRV(), 0, 'f', 4).arg(pt->getRVError(), 0, 'f', 4));
             }
             continue;
         }
 
-        if (bjd != 0.0) usedBJD++; else usedMJD++;
-        data.push_back({t, pt->getRV(), pt->getRVError()});
+        data.push_back({tm.sortValue(), pt->getRV(), pt->getRVError()});
     }
 
-    LOG_INFO(CAT, QString("Star %1 — %2 usedBJD, %3 usedMJD, %4 zeroBJD, %5 bothZero → %6/%7 accepted")
+    LOG_INFO(CAT, QString("Star %1 — %2 skipped, %3/%4 accepted")
         .arg(_star->getSourceId())
-        .arg(usedBJD).arg(usedMJD).arg(skippedZeroBJD).arg(skippedBoth)
-        .arg(data.size()).arg(points.size()));
+        .arg(skipped).arg(data.size()).arg(points.size()));
 
     if (data.empty()) {
         LOG_ERROR(CAT, QString("Star %1 — ALL %2 RV points dropped")
@@ -1669,7 +1661,7 @@ void StarDetailView::populateRVPlot()
         for (int i = 0; i <= 200; ++i) {
             double ph = static_cast<double>(i) / 200.0;
             fitX[i] = ph;
-            fitY[i] = bestFit->calculateRV(phi + ph * P);
+            fitY[i] = bestFit->calculateRV(Time(phi + ph * P, TimeScale::BJD));
         }
         QCPGraph* fitGraph = plot->addGraph();
         fitGraph->setPen(QPen(kFitCurveColor, 2.0));
@@ -1761,7 +1753,7 @@ void StarDetailView::populateRVPlot()
                 for (int i = 0; i <= 500; ++i) {
                     double t = xMin + (xMax - xMin) * i / 500.0;
                     fitX[i] = t;
-                    fitY[i] = bestFit->calculateRV(t + t0);
+                    fitY[i] = bestFit->calculateRV(Time(t + t0, TimeScale::BJD));
                 }
                 QCPGraph* fitGraph = plot->addGraph();
                 fitGraph->setPen(QPen(kFitCurveColor, 2.0));
@@ -1818,7 +1810,7 @@ void StarDetailView::populateRVPlot()
                     for (int i = 0; i <= 200; ++i) {
                         double t = xMin + (xMax - xMin) * i / 200.0;
                         fitX[i] = t;
-                        fitY[i] = bestFit->calculateRV(t + t0);
+                        fitY[i] = bestFit->calculateRV(Time(t + t0, TimeScale::BJD));
                     }
                     QCPGraph* fitGraph = plot->addGraph();
                     fitGraph->setPen(QPen(kFitCurveColor, 2.0));
@@ -1954,10 +1946,10 @@ void StarDetailView::populateLCPlot()
             }
             double x;
             if (_lcFolded && canFold) {
-                x = std::fmod((pt.bjd - foldT0) / foldPeriod, 1.0);
+                x = std::fmod((pt.bjd() - foldT0) / foldPeriod, 1.0);
                 if (x < 0.0) x += 1.0;
             } else {
-                x = pt.bjd;
+                x = pt.bjd();
             }
             seriesMap[k].px.append(x);
             seriesMap[k].py.append(pt.flux);

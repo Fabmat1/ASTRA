@@ -8,6 +8,7 @@
 #include "models/Photometry.h"
 #include "../utils/DatabaseManager.h"
 #include "../utils/Logger.h"
+#include "models/Time.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -42,21 +43,21 @@
 // ── Helpers for the timescale combo ─────────────────────────
 
 static void populateTimeScaleCombo(QComboBox* combo,
-                                   LightcurveTimeScale selected)
+                                   TimeScale selected)
 {
     combo->blockSignals(true);
     combo->clear();
 
-    struct Entry { LightcurveTimeScale ts; QString label; };
+    struct Entry { TimeScale ts; QString label; };
     static const Entry entries[] = {
-        { LightcurveTimeScale::Unknown,  "Auto / Unknown" },
-        { LightcurveTimeScale::BJD,      "BJD"            },
-        { LightcurveTimeScale::MJD,      "MJD"            },
-        { LightcurveTimeScale::BTJD,     "BTJD (TESS)"   },
-        { LightcurveTimeScale::BKJD,     "BKJD (Kepler)" },
-        { LightcurveTimeScale::GaiaTCB,  "Gaia TCB"       },
-        { LightcurveTimeScale::HJD,      "HJD"            },
-        { LightcurveTimeScale::JD,       "JD"             },
+        { TimeScale::Unknown,  "Auto / Unknown" },
+        { TimeScale::BJD,      "BJD"            },
+        { TimeScale::MJD,      "MJD"            },
+        { TimeScale::BTJD,     "BTJD (TESS)"   },
+        { TimeScale::BKJD,     "BKJD (Kepler)" },
+        { TimeScale::GaiaTCB,  "Gaia TCB"       },
+        { TimeScale::HJD,      "HJD"            },
+        { TimeScale::JD,       "JD"             },
     };
 
     int selIdx = 0;
@@ -69,9 +70,9 @@ static void populateTimeScaleCombo(QComboBox* combo,
     combo->blockSignals(false);
 }
 
-static LightcurveTimeScale comboTimeScale(QComboBox* combo)
+static TimeScale comboTimeScale(QComboBox* combo)
 {
-    return static_cast<LightcurveTimeScale>(
+    return static_cast<TimeScale>(
         combo->currentData().toInt());
 }
 
@@ -377,13 +378,12 @@ void LightcurveImportPage::scanFolderStructure(const QString& rootPath)
             entry.starIdentifier = dirName;
             entry.filePath       = fullPath;
             entry.instrument     = instrument;
-            entry.detectedTimeScale =
-                LightcurveTime::guessFromInstrument(instrument);
+            entry.detectedTimeScale = Time::guessScaleFromInstrument(instrument);
 
-            LightcurveTimeScale parseScale =
-                (entry.detectedTimeScale != LightcurveTimeScale::Unknown)
+            TimeScale parseScale =
+                (entry.detectedTimeScale != TimeScale::Unknown)
                     ? entry.detectedTimeScale
-                    : LightcurveTimeScale::MJD;   // fallback
+                    : TimeScale::MJD;
 
             QString parseErr;
             if (parseLightcurveFile(fullPath, parseScale,
@@ -393,24 +393,20 @@ void LightcurveImportPage::scanFolderStructure(const QString& rootPath)
                 entry.numPoints = static_cast<int>(entry.points.size());
 
                 // If timescale was unknown, try to guess from first time value
-                if (entry.detectedTimeScale == LightcurveTimeScale::Unknown
+                if (entry.detectedTimeScale == TimeScale::Unknown
                     && !entry.points.empty())
                 {
                     entry.detectedTimeScale =
-                        LightcurveTime::guessFromTimeValues(
-                            entry.points.front().originalTime);
-                    // Recompute with better guess
-                    if (entry.detectedTimeScale != LightcurveTimeScale::Unknown
+                        Time::guessScaleFromValue(
+                            entry.points.front().originalTime());
+                    if (entry.detectedTimeScale != TimeScale::Unknown
                         && entry.detectedTimeScale != parseScale)
                     {
                         for (auto& pt : entry.points) {
-                            pt.bjd = LightcurveTime::toBJD(
-                                pt.originalTime, entry.detectedTimeScale);
-                            pt.mjd = LightcurveTime::toMJD(
-                                pt.originalTime, entry.detectedTimeScale);
+                            pt.time = Time(pt.time.nativeValue(), entry.detectedTimeScale);
                         }
                     }
-                }
+                }                
 
                 if (entry.numPoints == 0) {
                     entry.hasError     = true;
@@ -542,12 +538,12 @@ void LightcurveImportPage::scanCSVManifest(const QString& csvPath)
         entry.starIdentifier = starId;
         entry.filePath       = fullPath;
         entry.instrument     = instrument;
-        entry.detectedTimeScale =
-            LightcurveTime::guessFromInstrument(instrument);
+        entry.detectedTimeScale = Time::guessScaleFromInstrument(instrument);
 
-        LightcurveTimeScale parseScale =
-            (entry.detectedTimeScale != LightcurveTimeScale::Unknown)
-                ? entry.detectedTimeScale : LightcurveTimeScale::MJD;
+        TimeScale parseScale =
+            (entry.detectedTimeScale != TimeScale::Unknown)
+                ? entry.detectedTimeScale : TimeScale::MJD;
+
 
         QString parseErr;
         if (parseLightcurveFile(fullPath, parseScale,
@@ -555,23 +551,20 @@ void LightcurveImportPage::scanCSVManifest(const QString& csvPath)
         {
             entry.numPoints = static_cast<int>(entry.points.size());
 
-            if (entry.detectedTimeScale == LightcurveTimeScale::Unknown
+            if (entry.detectedTimeScale == TimeScale::Unknown
                 && !entry.points.empty())
             {
                 entry.detectedTimeScale =
-                    LightcurveTime::guessFromTimeValues(
-                        entry.points.front().originalTime);
-                if (entry.detectedTimeScale != LightcurveTimeScale::Unknown
+                    Time::guessScaleFromValue(
+                        entry.points.front().originalTime());
+                if (entry.detectedTimeScale != TimeScale::Unknown
                     && entry.detectedTimeScale != parseScale)
                 {
                     for (auto& pt : entry.points) {
-                        pt.bjd = LightcurveTime::toBJD(
-                            pt.originalTime, entry.detectedTimeScale);
-                        pt.mjd = LightcurveTime::toMJD(
-                            pt.originalTime, entry.detectedTimeScale);
+                        pt.time = Time(pt.time.nativeValue(), entry.detectedTimeScale);
                     }
                 }
-            }
+            }            
 
             if (entry.numPoints == 0) {
                 entry.hasError     = true;
@@ -596,7 +589,7 @@ void LightcurveImportPage::scanCSVManifest(const QString& csvPath)
 
 bool LightcurveImportPage::parseLightcurveFile(
     const QString& filePath,
-    LightcurveTimeScale scale,
+    TimeScale scale,
     std::vector<LightcurvePoint>& outPoints,
     QStringList& outFilters,
     QString& outError)
@@ -663,10 +656,8 @@ bool LightcurveImportPage::parseLightcurveFile(
             continue;
 
         LightcurvePoint pt;
-        pt.originalTime = time;
-        pt.bjd   = LightcurveTime::toBJD(time, scale);
-        pt.mjd   = LightcurveTime::toMJD(time, scale);
-        pt.flux  = flux;
+        pt.time      = Time(time, scale);
+        pt.flux      = flux;
         pt.fluxError = std::isnan(error) ? 0.0 : error;
 
         // Optional filter column (index 3)
@@ -702,7 +693,7 @@ bool LightcurveImportPage::parseLightcurveFile(
     // Sort by time
     std::sort(outPoints.begin(), outPoints.end(),
               [](const LightcurvePoint& a, const LightcurvePoint& b) {
-                  return a.bjd < b.bjd;
+                return a.time < b.time; 
               });
 
     outFilters = filterSet.values();
@@ -916,7 +907,7 @@ void LightcurveImportPage::populateTree()
         item->setText(1, e.starIdentifier);
         item->setText(2, QFileInfo(e.filePath).fileName());
         item->setText(3, e.instrument);
-        item->setText(4, LightcurveTime::timeScaleLabel(e.detectedTimeScale));
+        item->setText(4, Time::scaleToString(e.detectedTimeScale));
         item->setText(5, QString::number(e.numPoints));
         item->setText(6, e.filters.join(", "));
         item->setText(7, e.matchedStarDisplay);
@@ -971,10 +962,10 @@ void LightcurveImportPage::buildTimeScaleOverrides()
         auto* combo = new QComboBox;
 
         // Find the most common detected timescale for this instrument
-        LightcurveTimeScale detected = LightcurveTimeScale::Unknown;
+        TimeScale detected = TimeScale::Unknown;
         for (const auto& e : _entries) {
             if (e.instrument == inst
-                && e.detectedTimeScale != LightcurveTimeScale::Unknown) {
+                && e.detectedTimeScale != TimeScale::Unknown) {
                 detected = e.detectedTimeScale;
                 break;
             }
@@ -998,10 +989,10 @@ void LightcurveImportPage::onTimeScaleOverrideChanged()
          it != _timeScaleCombos.constEnd(); ++it)
     {
         QString inst = it.key();
-        LightcurveTimeScale newScale = comboTimeScale(it.value());
+        TimeScale newScale = comboTimeScale(it.value());
         _instrumentTimeScales[inst] = newScale;
 
-        if (newScale == LightcurveTimeScale::Unknown)
+        if (newScale == TimeScale::Unknown)
             continue;
 
         for (auto& entry : _entries) {
@@ -1010,8 +1001,7 @@ void LightcurveImportPage::onTimeScaleOverrideChanged()
 
             entry.detectedTimeScale = newScale;
             for (auto& pt : entry.points) {
-                pt.bjd = LightcurveTime::toBJD(pt.originalTime, newScale);
-                pt.mjd = LightcurveTime::toMJD(pt.originalTime, newScale);
+                pt.time = Time(pt.time.nativeValue(), newScale);
             }
         }
     }
@@ -1021,8 +1011,8 @@ void LightcurveImportPage::onTimeScaleOverrideChanged()
         auto* item = _resultsTree->topLevelItem(i);
         int idx = item->data(0, Qt::UserRole).toInt();
         if (idx >= 0 && idx < static_cast<int>(_entries.size())) {
-            item->setText(4, LightcurveTime::timeScaleLabel(
-                                 _entries[idx].detectedTimeScale));
+            item->setText(4, Time::scaleToString(
+                _entries[idx].detectedTimeScale));
         }
     }
 }

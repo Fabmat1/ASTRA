@@ -1,6 +1,8 @@
 #include "SpectrumReader.h"
 #include "Logger.h"
 #include "models/Spectrum.h"
+#include "models/Time.h"
+
 #include <fitsio.h>
 #include <QFile>
 #include <QFileInfo>
@@ -123,7 +125,7 @@ SpectrumMetadata DefaultFitsSpectrumReader::readMetadata(const QString& filepath
                 QDateTime j2000(QDate(2000, 1, 1), QTime(12, 0, 0), QTimeZone::utc());
                 double daysSinceJ2000 = j2000.msecsTo(dt) / 86400000.0;
                 double jd = 2451545.0 + daysSinceJ2000;
-                metadata.mjd = jd - 2400000.5;
+                metadata.mjd = jd - Time::MJD_OFFSET;
             }
         }
     }
@@ -350,15 +352,12 @@ SpectrumReadResult DefaultFitsSpectrumReader::readSpectrum(const QString& filepa
     }
     
     // Apply metadata to spectrum
-    if (result.metadata.mjd.has_value()) {
-        result.spectrum->setMJD(result.metadata.mjd.value());
-    }
-    if (result.metadata.bjd.has_value()) {
-        result.spectrum->setBJD(result.metadata.bjd.value());
-    }
-    if (result.metadata.exposureTime.has_value()) {
-        result.spectrum->setExposureTime(result.metadata.exposureTime.value());
-    }
+
+    double mjd = result.metadata.mjd.value_or(0.0);
+    double bjd = result.metadata.bjd.value_or(0.0);
+    double exp = result.metadata.exposureTime.value_or(0.0);
+    result.spectrum->setTime(Time::fromMjdBjd(mjd, bjd,
+                                            exp > 0.0 ? exp : -1.0));
     if (result.metadata.instrument.has_value()) {
         result.spectrum->setInstrument(result.metadata.instrument.value());
     }

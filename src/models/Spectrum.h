@@ -7,7 +7,11 @@
 #include <vector>
 #include <memory>
 
+#include "Time.h"
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Spectral model fit
+// ─────────────────────────────────────────────────────────────────────────────
 class SpectralFit
 {
 public:
@@ -23,18 +27,17 @@ public:
     bool saveDataToFile(const QString& filepath);
     bool loadDataFromFile(const QString& filepath);
 
-    // [Rest of existing members remain the same]
     QDateTime creationDate;
     QString modelId;
     bool isBestFit;
-    
+
     // Model data - not loaded by default
     std::vector<double> modelWavelengths;
     std::vector<double> modelFluxes;
     std::vector<double> rebinnedFluxes;
-    std::vector<double> rebinnedSigmas;      // rebinned spectrum sigma
-    std::vector<double> modelSplines;     // continuum spline flux
-    std::vector<uint8_t> modelIgnore;     // per-point ignore flag (0/1)
+    std::vector<double> rebinnedSigmas;
+    std::vector<double> modelSplines;
+    std::vector<uint8_t> modelIgnore;
 
     // Fitted parameters
     double teff;
@@ -47,7 +50,7 @@ public:
     double vsiniError;
     double radialVelocity;
     double radialVelocityError;
-    
+
     double chi2;
     double metallicity;
     double metallicityError;
@@ -62,7 +65,9 @@ private:
 };
 
 
+// ─────────────────────────────────────────────────────────────────────────────
 // Main spectrum class
+// ─────────────────────────────────────────────────────────────────────────────
 class Spectrum
 {
 public:
@@ -82,15 +87,25 @@ public:
     QString getFile() const { return _file; }
     void setFile(const QString& file) { _file = file; }
 
-    double getMJD() const { return _mjd; }
-    void setMJD(double mjd) { _mjd = mjd; }
+    // ── Time (new API) ──────────────────────────────────────────────────────
+    const Time& time() const        { return _time; }
+    Time&       time()              { return _time; }
+    void        setTime(const Time& t) { _time = t; }
 
-    double getBJD() const { return _bjd; }
-    void setBJD(double bjd) { _bjd = bjd; }
+    // ── Time (legacy wrappers — delegate to Time) ───────────────────────────
+    // These keep every existing call-site compiling.  Migrate at leisure,
+    // then remove.
+    double getMJD() const           { return _time.mjdOr(0.0); }
+    void   setMJD(double mjd)      { _time.setMJD(mjd); }
 
-    double getExposureTime() const { return _exposureTime; }
-    void setExposureTime(double expTime) { _exposureTime = expTime; }
+    double getBJD() const           { return _time.bjdOr(0.0); }
+    void   setBJD(double bjd)      { _time.setBJD(bjd); }
 
+    double getExposureTime() const  { return _time.hasExposureTime()
+                                             ? _time.exposureTimeSec() : 0.0; }
+    void   setExposureTime(double s){ _time.setExposureTime(s); }
+
+    // ── Instrument ──────────────────────────────────────────────────────────
     QString getInstrument() const { return _instrument; }
     void setInstrument(const QString& instrument) { _instrument = instrument; }
 
@@ -98,7 +113,7 @@ public:
     bool isBarycentricallyCorrected() const { return _isBarycentricallyCorrected; }
     void setBarycentricallyCorrected(bool corrected) { _isBarycentricallyCorrected = corrected; }
 
-    // Spectral data
+    // ── Spectral data ───────────────────────────────────────────────────────
     void setData(const std::vector<double>& wavelengths,
                  const std::vector<double>& fluxes,
                  const std::vector<double>& errors);
@@ -107,13 +122,13 @@ public:
     std::vector<double> getFluxes() const { return _fluxes; }
     std::vector<double> getFluxErrors() const { return _fluxErrors; }
 
-    // Model fits
+    // ── Model fits ──────────────────────────────────────────────────────────
     void addSpectralFit(std::shared_ptr<SpectralFit> fit);
     void removeSpectralFit(const QString& fitId);
     std::vector<std::shared_ptr<SpectralFit>> getSpectralFits() const;
     std::shared_ptr<SpectralFit> getBestFit() const;
 
-    // Utilities
+    // ── Utilities ───────────────────────────────────────────────────────────
     bool loadFromFile(const QString& filepath);
     bool hasData() const { return !_wavelengths.empty(); }
 
@@ -123,10 +138,10 @@ private:
     QString _dataFile;
     QString _file;
     QString _instrument;
-    double _mjd;  // Modified Julian Date
-    double _bjd;  // Barycentric Julian Date
-    double _exposureTime;
-    bool _isBarycentricallyCorrected;  // Whether wavelengths are barycentric corrected
+
+    Time _time;   // replaces _mjd, _bjd, _exposureTime
+
+    bool _isBarycentricallyCorrected;
 
     // Spectral data
     std::vector<double> _wavelengths;  // in Angstroms

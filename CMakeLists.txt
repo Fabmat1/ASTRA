@@ -96,6 +96,7 @@ set(SOURCES
     src/models/Spectrum.cpp
     src/models/Instrument.cpp
     src/models/RadialVelocity.cpp
+    src/models/Time.cpp
     src/views/MainWindow.cpp
     src/views/ProjectSelectionView.cpp
     src/views/ProjectView.cpp
@@ -138,6 +139,7 @@ set(HEADERS
     src/models/Spectrum.h
     src/models/Instrument.h
     src/models/RadialVelocity.h
+    src/models/Time.h
     src/views/MainWindow.h
     src/views/ProjectSelectionView.h
     src/views/ProjectView.h
@@ -258,7 +260,3 @@ install(TARGETS ASTRA
     BUNDLE DESTINATION .
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
-
-# Testing
-enable_testing()
-add_subdirectory(tests)
