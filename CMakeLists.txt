@@ -129,6 +129,9 @@ set(SOURCES
     src/views/tools/SEDFitDialog.cpp
     src/views/tools/CMDDialog.cpp
     src/views/tools/GalacticOrbitDialog.cpp
+    src/views/BooleanColumnDelegate.cpp
+    src/views/ColumnConfigDialog.cpp
+    src/models/ColumnPreset.cpp
     )
 
 # Header files
@@ -174,6 +177,9 @@ set(HEADERS
     src/views/tools/SEDFitDialog.h
     src/views/tools/CMDDialog.h
     src/views/tools/GalacticOrbitDialog.h
+    src/views/BooleanColumnDelegate.h
+    src/views/ColumnConfigDialog.h
+    src/models/ColumnPreset.h
 )
 
 # Create executable

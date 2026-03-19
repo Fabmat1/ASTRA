@@ -1,6 +1,7 @@
 #include "StarFilterWidget.h"
 #include "ProjectView.h"
 #include "models/Star.h"
+#include "models/ColumnPreset.h"
 
 #include <QLineEdit>
 #include <QComboBox>
@@ -31,6 +32,17 @@ bool FilterCondition::evaluate(const QVariant& cellValue) const
     if (op == IsNotEmpty) {
         return !cellValue.isNull() && !cellValue.toString().trimmed().isEmpty()
             && !(cellValue.canConvert<double>() && cellValue.toDouble() == 0.0);
+    }
+    if (op == IsTrue) {
+        if (cellValue.typeId() == QMetaType::Bool) return cellValue.toBool();
+        if (cellValue.canConvert<int>()) return cellValue.toInt() != 0;
+        return cellValue.toString().toLower() == "true" || cellValue.toString() == "1";
+    }
+    if (op == IsFalse) {
+        if (cellValue.typeId() == QMetaType::Bool) return !cellValue.toBool();
+        if (cellValue.canConvert<int>()) return cellValue.toInt() == 0;
+        QString s = cellValue.toString().toLower();
+        return s.isEmpty() || s == "false" || s == "0";
     }
 
     QString cellStr = cellValue.toString();
@@ -101,6 +113,11 @@ QStringList FilterCondition::numericOperatorNames()
     return {">", ">=", "<", "<=", "between"};
 }
 
+QStringList FilterCondition::booleanOperatorNames()
+{
+    return {"is true", "is false"};
+}
+
 QStringList FilterCondition::universalOperatorNames()
 {
     return {"is empty", "is not empty"};
@@ -120,6 +137,8 @@ FilterCondition::Operator FilterCondition::operatorFromName(const QString& name)
     if (name == "<")               return LessThan;
     if (name == "<=")              return LessEqual;
     if (name == "between")         return Between;
+    if (name == "is true")         return IsTrue;
+    if (name == "is false")        return IsFalse;
     if (name == "is empty")        return IsEmpty;
     if (name == "is not empty")    return IsNotEmpty;
     return Contains;
@@ -158,45 +177,45 @@ StarFilterProxyModel::StarFilterProxyModel(QObject* parent)
 void StarFilterProxyModel::setQuickSearchText(const QString& text)
 {
     _quickSearchText = text.trimmed();
-    beginFilterChange();
-endFilterChange();
+    beginBatchFilter();
+endBatchFilter();
 }
 
 void StarFilterProxyModel::setQuickSearchColumns(const QStringList& columns)
 {
     _quickSearchColumns = columns;
-    beginFilterChange();
-endFilterChange();
+    beginBatchFilter();
+endBatchFilter();
 }
 
 void StarFilterProxyModel::setFilterConditions(const QVector<FilterCondition>& conditions)
 {
     _conditions = conditions;
-    beginFilterChange();
-endFilterChange();
+    beginBatchFilter();
+endBatchFilter();
 }
 
 void StarFilterProxyModel::addFilterCondition(const FilterCondition& condition)
 {
     _conditions.append(condition);
-    beginFilterChange();
-endFilterChange();
+    beginBatchFilter();
+endBatchFilter();
 }
 
 void StarFilterProxyModel::removeFilterCondition(int index)
 {
     if (index >= 0 && index < _conditions.size()) {
         _conditions.remove(index);
-        beginFilterChange();
-endFilterChange();
+        beginBatchFilter();
+endBatchFilter();
     }
 }
 
 void StarFilterProxyModel::clearFilterConditions()
 {
     _conditions.clear();
-    beginFilterChange();
-endFilterChange();
+    beginBatchFilter();
+endBatchFilter();
 }
 
 QVector<FilterCondition> StarFilterProxyModel::getFilterConditions() const
@@ -217,8 +236,8 @@ int StarFilterProxyModel::activeFilterCount() const
 void StarFilterProxyModel::setLogicMode(LogicMode mode)
 {
     _logicMode = mode;
-    beginFilterChange();
-endFilterChange();
+    beginBatchFilter();
+endBatchFilter();
 }
 
 bool StarFilterProxyModel::filterAcceptsRow(int sourceRow, const QModelIndex& sourceParent) const
@@ -325,9 +344,11 @@ int StarFilterProxyModel::columnIndexForName(const QString& columnName) const
 
 FilterConditionRow::FilterConditionRow(const QStringList& columnNames,
                                        const QStringList& numericColumns,
+                                       const QStringList& booleanColumns,
                                        QWidget* parent)
     : QFrame(parent)
     , _numericColumns(numericColumns)
+    , _booleanColumns(booleanColumns)
 {
     setFrameShape(QFrame::StyledPanel);
     setObjectName("filterConditionRow");
@@ -410,15 +431,19 @@ void FilterConditionRow::populateOperators()
 {
     QString col = _columnCombo->currentText();
     _isCurrentColumnNumeric = _numericColumns.contains(col);
+    _isCurrentColumnBoolean = _booleanColumns.contains(col);
 
     _operatorCombo->blockSignals(true);
     _operatorCombo->clear();
 
-    if (_isCurrentColumnNumeric) {
+    if (_isCurrentColumnBoolean) {
+        _operatorCombo->addItems(FilterCondition::booleanOperatorNames());
+    } else if (_isCurrentColumnNumeric) {
         _operatorCombo->addItems(FilterCondition::numericOperatorNames());
     } else {
         _operatorCombo->addItems(FilterCondition::textOperatorNames());
     }
+
     // Always add universal operators at the end
     _operatorCombo->insertSeparator(_operatorCombo->count());
     _operatorCombo->addItems(FilterCondition::universalOperatorNames());
@@ -433,7 +458,8 @@ void FilterConditionRow::onOperatorChanged(int index)
     QString opName = _operatorCombo->currentText();
     FilterCondition::Operator op = FilterCondition::operatorFromName(opName);
 
-    bool showValue = (op != FilterCondition::IsEmpty && op != FilterCondition::IsNotEmpty);
+    bool showValue = (op != FilterCondition::IsEmpty && op != FilterCondition::IsNotEmpty
+                      && op != FilterCondition::IsTrue && op != FilterCondition::IsFalse);
     bool showSecondValue = (op == FilterCondition::Between);
 
     _valueEdit1->setVisible(showValue);
@@ -443,7 +469,7 @@ void FilterConditionRow::onOperatorChanged(int index)
     if (_isCurrentColumnNumeric && showValue) {
         _valueEdit1->setPlaceholderText("Number...");
         _valueEdit2->setPlaceholderText("Number...");
-    } else {
+    } else if (showValue) {
         _valueEdit1->setPlaceholderText("Value...");
     }
 
@@ -582,10 +608,13 @@ void StarFilterWidget::setupUi()
     updateFilterCountLabel();
 }
 
-void StarFilterWidget::setColumns(const QStringList& allColumns, const QStringList& numericColumns)
+void StarFilterWidget::setColumns(const QStringList& allColumns,
+                                   const QStringList& numericColumns,
+                                   const QStringList& booleanColumns)
 {
     _allColumns = allColumns;
     _numericColumns = numericColumns;
+    _booleanColumns = booleanColumns;
 }
 
 void StarFilterWidget::connectToProxy(StarFilterProxyModel* proxy)
@@ -611,7 +640,8 @@ void StarFilterWidget::addFilterRow()
 {
     if (_allColumns.isEmpty()) return;
 
-    auto* row = new FilterConditionRow(_allColumns, _numericColumns, this);
+    auto* row = new FilterConditionRow(_allColumns, _numericColumns,
+                                        _booleanColumns, this);
     _filterRows.append(row);
     _filterRowsLayout->addWidget(row);
 
@@ -699,5 +729,19 @@ void StarFilterWidget::updateFilterCountLabel()
         int totalRows = (_proxy && _proxy->sourceModel()) ?
             _proxy->sourceModel()->rowCount() : 0;
         _filterCountLabel->setText(QString("%1 stars").arg(totalRows));
+    }
+}
+
+void StarFilterProxyModel::beginBatchFilter()
+{
+    ++_batchDepth;
+}
+
+void StarFilterProxyModel::endBatchFilter()
+{
+    if (--_batchDepth <= 0) {
+        _batchDepth = 0;
+        QSortFilterProxyModel::beginFilterChange();
+        QSortFilterProxyModel::endFilterChange();
     }
 }

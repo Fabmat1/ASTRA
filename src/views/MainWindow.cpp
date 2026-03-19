@@ -255,7 +255,6 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             connect(_removeStarAction, &QAction::triggered, _projectView, &ProjectView::onRemoveStar);
             connect(_detailWindowAction, &QAction::triggered, _projectView, &ProjectView::onShowDetailWindow);
             
-            // Insert after View menu
             QAction* helpAction = _helpMenu->menuAction();
             menuBar->insertMenu(helpAction, _starsMenu);
         }
@@ -275,8 +274,10 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
         // Add Configure Columns to View menu
         if (!_configureColumnsAction) {
             _viewMenu->addSeparator();
-            _configureColumnsAction = _viewMenu->addAction("&Configure Columns...");
-            connect(_configureColumnsAction, &QAction::triggered, _projectView, &ProjectView::onConfigureColumns);
+            _configureColumnsAction = _viewMenu->addAction("Configure Columns...");
+            _configureColumnsAction->setShortcut(QKeySequence("Ctrl+Shift+C"));
+            connect(_configureColumnsAction, &QAction::triggered,
+                    _projectView, &ProjectView::onConfigureColumns);
         }
     } else {
         // Remove project-specific menus

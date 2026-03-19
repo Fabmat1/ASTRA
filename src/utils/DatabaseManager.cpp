@@ -136,6 +136,44 @@ bool DatabaseManager::createTables()
             rv_med REAL,
             e_rv_med REAL,
             bibcodes TEXT,
+            n_spectra INTEGER DEFAULT 0,
+            n_fit_spectra INTEGER DEFAULT 0,
+            rv_timespan REAL DEFAULT 0,
+            rv_npoints INTEGER DEFAULT 0,
+            rv_k REAL DEFAULT 0,
+            rv_e_k REAL DEFAULT 0,
+            rv_period REAL DEFAULT 0,
+            rv_e_period REAL DEFAULT 0,
+            rv_gamma REAL DEFAULT 0,
+            rv_e_gamma REAL DEFAULT 0,
+            rv_ecc REAL DEFAULT 0,
+            rv_phi REAL DEFAULT 0,
+            rv_t0 REAL DEFAULT 0,
+            rv_chi2 REAL DEFAULT 0,
+            rv_rms REAL DEFAULT 0,
+            sed_mass1 REAL DEFAULT 0,
+            sed_e_mass1 REAL DEFAULT 0,
+            sed_radius1 REAL DEFAULT 0,
+            sed_e_radius1 REAL DEFAULT 0,
+            sed_lum1 REAL DEFAULT 0,
+            sed_e_lum1 REAL DEFAULT 0,
+            sed_mass2 REAL DEFAULT 0,
+            sed_e_mass2 REAL DEFAULT 0,
+            sed_radius2 REAL DEFAULT 0,
+            sed_e_radius2 REAL DEFAULT 0,
+            sed_lum2 REAL DEFAULT 0,
+            sed_e_lum2 REAL DEFAULT 0,
+            phot_period REAL DEFAULT 0,
+            phot_e_period REAL DEFAULT 0,
+            phot_incl REAL DEFAULT 0,
+            phot_e_incl REAL DEFAULT 0,
+            phot_q REAL DEFAULT 0,
+            phot_e_q REAL DEFAULT 0,
+            has_tess INTEGER DEFAULT 0,
+            has_gaia INTEGER DEFAULT 0,
+            has_ztf INTEGER DEFAULT 0,
+            has_atlas INTEGER DEFAULT 0,
+            has_blackgem INTEGER DEFAULT 0,
             FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
         )
     )";
@@ -397,6 +435,46 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE sed_models ADD COLUMN chi2_reduced REAL DEFAULT 0",
         "ALTER TABLE sed_models ADD COLUMN excess_noise REAL DEFAULT 0",
         "ALTER TABLE sed_models ADD COLUMN component_params TEXT",
+
+        // Star summary field migrations
+        "ALTER TABLE stars ADD COLUMN n_spectra INTEGER DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN n_fit_spectra INTEGER DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN rv_timespan REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN rv_npoints INTEGER DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN rv_k REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN rv_e_k REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN rv_period REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN rv_e_period REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN rv_gamma REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN rv_e_gamma REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN rv_ecc REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN rv_phi REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN rv_t0 REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN rv_chi2 REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN rv_rms REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN sed_mass1 REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN sed_e_mass1 REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN sed_radius1 REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN sed_e_radius1 REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN sed_lum1 REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN sed_e_lum1 REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN sed_mass2 REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN sed_e_mass2 REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN sed_radius2 REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN sed_e_radius2 REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN sed_lum2 REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN sed_e_lum2 REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN phot_period REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN phot_e_period REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN phot_incl REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN phot_e_incl REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN phot_q REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN phot_e_q REAL DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN has_tess INTEGER DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN has_gaia INTEGER DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN has_ztf INTEGER DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN has_atlas INTEGER DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN has_blackgem INTEGER DEFAULT 0",
     };
 
     for (const QString& sql : alterQueries) {
@@ -627,14 +705,38 @@ bool DatabaseManager::saveStar(const QString& projectId, std::shared_ptr<Star> s
             pmra_pmdec_corr, plx_pmdec_corr, plx_pmra_corr,
             gmag, e_gmag, bp, e_bp, rp, e_rp, bp_rp,
             spec_class, teff, e_teff, logg, e_logg, he, e_he,
-            logp, deltaRV, e_deltaRV, rv_avg, e_rv_avg, rv_med, e_rv_med, bibcodes
+            logp, deltaRV, e_deltaRV, rv_avg, e_rv_avg, rv_med, e_rv_med,
+            n_spectra, n_fit_spectra,
+            rv_timespan, rv_npoints, rv_k, rv_e_k,
+            rv_period, rv_e_period, rv_gamma, rv_e_gamma,
+            rv_ecc, rv_phi, rv_t0, rv_chi2, rv_rms,
+            sed_mass1, sed_e_mass1, sed_radius1, sed_e_radius1,
+            sed_lum1, sed_e_lum1,
+            sed_mass2, sed_e_mass2, sed_radius2, sed_e_radius2,
+            sed_lum2, sed_e_lum2,
+            phot_period, phot_e_period, phot_incl, phot_e_incl,
+            phot_q, phot_e_q,
+            has_tess, has_gaia, has_ztf, has_atlas, has_blackgem,
+            bibcodes
         ) VALUES (
             :id, :project_id, :alias, :source_id, :tic, :jname,
             :ra, :dec, :pmra, :pmdec, :e_pmra, :e_pmdec, :plx, :e_plx,
             :pmra_pmdec_corr, :plx_pmdec_corr, :plx_pmra_corr,
             :gmag, :e_gmag, :bp, :e_bp, :rp, :e_rp, :bp_rp,
             :spec_class, :teff, :e_teff, :logg, :e_logg, :he, :e_he,
-            :logp, :deltaRV, :e_deltaRV, :rv_avg, :e_rv_avg, :rv_med, :e_rv_med, :bibcodes
+            :logp, :deltaRV, :e_deltaRV, :rv_avg, :e_rv_avg, :rv_med, :e_rv_med,
+            :n_spectra, :n_fit_spectra,
+            :rv_timespan, :rv_npoints, :rv_k, :rv_e_k,
+            :rv_period, :rv_e_period, :rv_gamma, :rv_e_gamma,
+            :rv_ecc, :rv_phi, :rv_t0, :rv_chi2, :rv_rms,
+            :sed_mass1, :sed_e_mass1, :sed_radius1, :sed_e_radius1,
+            :sed_lum1, :sed_e_lum1,
+            :sed_mass2, :sed_e_mass2, :sed_radius2, :sed_e_radius2,
+            :sed_lum2, :sed_e_lum2,
+            :phot_period, :phot_e_period, :phot_incl, :phot_e_incl,
+            :phot_q, :phot_e_q,
+            :has_tess, :has_gaia, :has_ztf, :has_atlas, :has_blackgem,
+            :bibcodes
         )
     )");
 
@@ -680,6 +782,49 @@ bool DatabaseManager::saveStar(const QString& projectId, std::shared_ptr<Star> s
     query.bindValue(":e_rv_avg", star->getERVAvg());
     query.bindValue(":rv_med", star->getRVMed());
     query.bindValue(":e_rv_med", star->getERVMed());
+
+    query.bindValue(":n_spectra", star->getNSpectra());
+    query.bindValue(":n_fit_spectra", star->getNFitSpectra());
+
+    query.bindValue(":rv_timespan", star->getRVTimespan());
+    query.bindValue(":rv_npoints", star->getRVNPoints());
+    query.bindValue(":rv_k", star->getRVK());
+    query.bindValue(":rv_e_k", star->getRVEK());
+    query.bindValue(":rv_period", star->getRVPeriod());
+    query.bindValue(":rv_e_period", star->getRVEPeriod());
+    query.bindValue(":rv_gamma", star->getRVGamma());
+    query.bindValue(":rv_e_gamma", star->getRVEGamma());
+    query.bindValue(":rv_ecc", star->getRVEcc());
+    query.bindValue(":rv_phi", star->getRVPhi());
+    query.bindValue(":rv_t0", star->getRVT0());
+    query.bindValue(":rv_chi2", star->getRVChi2());
+    query.bindValue(":rv_rms", star->getRVRms());
+
+    query.bindValue(":sed_mass1", star->getSedMass1());
+    query.bindValue(":sed_e_mass1", star->getSedEMass1());
+    query.bindValue(":sed_radius1", star->getSedRadius1());
+    query.bindValue(":sed_e_radius1", star->getSedERadius1());
+    query.bindValue(":sed_lum1", star->getSedLum1());
+    query.bindValue(":sed_e_lum1", star->getSedELum1());
+    query.bindValue(":sed_mass2", star->getSedMass2());
+    query.bindValue(":sed_e_mass2", star->getSedEMass2());
+    query.bindValue(":sed_radius2", star->getSedRadius2());
+    query.bindValue(":sed_e_radius2", star->getSedERadius2());
+    query.bindValue(":sed_lum2", star->getSedLum2());
+    query.bindValue(":sed_e_lum2", star->getSedELum2());
+
+    query.bindValue(":phot_period", star->getPhotPeriod());
+    query.bindValue(":phot_e_period", star->getPhotEPeriod());
+    query.bindValue(":phot_incl", star->getPhotIncl());
+    query.bindValue(":phot_e_incl", star->getPhotEIncl());
+    query.bindValue(":phot_q", star->getPhotQ());
+    query.bindValue(":phot_e_q", star->getPhotEQ());
+
+    query.bindValue(":has_tess", star->getHasTess() ? 1 : 0);
+    query.bindValue(":has_gaia", star->getHasGaia() ? 1 : 0);
+    query.bindValue(":has_ztf", star->getHasZtf() ? 1 : 0);
+    query.bindValue(":has_atlas", star->getHasAtlas() ? 1 : 0);
+    query.bindValue(":has_blackgem", star->getHasBlackgem() ? 1 : 0);
     
     // Convert bibcodes to JSON array
     QJsonArray bibcodesArray;
@@ -783,6 +928,44 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
     const int idxRvMed = rec.indexOf("rv_med");
     const int idxERvMed = rec.indexOf("e_rv_med");
     const int idxBibcodes = rec.indexOf("bibcodes");
+    const int idxNSpectra = rec.indexOf("n_spectra");
+    const int idxNFitSpectra = rec.indexOf("n_fit_spectra");
+    const int idxRvTimespan = rec.indexOf("rv_timespan");
+    const int idxRvNpoints = rec.indexOf("rv_npoints");
+    const int idxRvK = rec.indexOf("rv_k");
+    const int idxRvEK = rec.indexOf("rv_e_k");
+    const int idxRvPeriod = rec.indexOf("rv_period");
+    const int idxRvEPeriod = rec.indexOf("rv_e_period");
+    const int idxRvGamma = rec.indexOf("rv_gamma");
+    const int idxRvEGamma = rec.indexOf("rv_e_gamma");
+    const int idxRvEcc = rec.indexOf("rv_ecc");
+    const int idxRvPhi = rec.indexOf("rv_phi");
+    const int idxRvT0 = rec.indexOf("rv_t0");
+    const int idxRvChi2 = rec.indexOf("rv_chi2");
+    const int idxRvRms = rec.indexOf("rv_rms");
+    const int idxSedMass1 = rec.indexOf("sed_mass1");
+    const int idxSedEMass1 = rec.indexOf("sed_e_mass1");
+    const int idxSedRadius1 = rec.indexOf("sed_radius1");
+    const int idxSedERadius1 = rec.indexOf("sed_e_radius1");
+    const int idxSedLum1 = rec.indexOf("sed_lum1");
+    const int idxSedELum1 = rec.indexOf("sed_e_lum1");
+    const int idxSedMass2 = rec.indexOf("sed_mass2");
+    const int idxSedEMass2 = rec.indexOf("sed_e_mass2");
+    const int idxSedRadius2 = rec.indexOf("sed_radius2");
+    const int idxSedERadius2 = rec.indexOf("sed_e_radius2");
+    const int idxSedLum2 = rec.indexOf("sed_lum2");
+    const int idxSedELum2 = rec.indexOf("sed_e_lum2");
+    const int idxPhotPeriod = rec.indexOf("phot_period");
+    const int idxPhotEPeriod = rec.indexOf("phot_e_period");
+    const int idxPhotIncl = rec.indexOf("phot_incl");
+    const int idxPhotEIncl = rec.indexOf("phot_e_incl");
+    const int idxPhotQ = rec.indexOf("phot_q");
+    const int idxPhotEQ = rec.indexOf("phot_e_q");
+    const int idxHasTess = rec.indexOf("has_tess");
+    const int idxHasGaia = rec.indexOf("has_gaia");
+    const int idxHasZtf = rec.indexOf("has_ztf");
+    const int idxHasAtlas = rec.indexOf("has_atlas");
+    const int idxHasBlackgem = rec.indexOf("has_blackgem");
 
     // Pre-allocate
     const size_t estimatedCount = getStarCountForProject(projectId);
@@ -849,6 +1032,50 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
                 }
             }
         }
+
+        // Summary fields — gracefully handle missing columns (idx == -1)
+        if (idxNSpectra >= 0)    star->setNSpectra(query.value(idxNSpectra).toInt());
+        if (idxNFitSpectra >= 0) star->setNFitSpectra(query.value(idxNFitSpectra).toInt());
+
+        if (idxRvTimespan >= 0)  star->setRVTimespan(query.value(idxRvTimespan).toDouble());
+        if (idxRvNpoints >= 0)   star->setRVNPoints(query.value(idxRvNpoints).toInt());
+        if (idxRvK >= 0)         star->setRVK(query.value(idxRvK).toDouble());
+        if (idxRvEK >= 0)        star->setRVEK(query.value(idxRvEK).toDouble());
+        if (idxRvPeriod >= 0)    star->setRVPeriod(query.value(idxRvPeriod).toDouble());
+        if (idxRvEPeriod >= 0)   star->setRVEPeriod(query.value(idxRvEPeriod).toDouble());
+        if (idxRvGamma >= 0)     star->setRVGamma(query.value(idxRvGamma).toDouble());
+        if (idxRvEGamma >= 0)    star->setRVEGamma(query.value(idxRvEGamma).toDouble());
+        if (idxRvEcc >= 0)       star->setRVEcc(query.value(idxRvEcc).toDouble());
+        if (idxRvPhi >= 0)       star->setRVPhi(query.value(idxRvPhi).toDouble());
+        if (idxRvT0 >= 0)        star->setRVT0(query.value(idxRvT0).toDouble());
+        if (idxRvChi2 >= 0)      star->setRVChi2(query.value(idxRvChi2).toDouble());
+        if (idxRvRms >= 0)       star->setRVRms(query.value(idxRvRms).toDouble());
+
+        if (idxSedMass1 >= 0)    star->setSedMass1(query.value(idxSedMass1).toDouble());
+        if (idxSedEMass1 >= 0)   star->setSedEMass1(query.value(idxSedEMass1).toDouble());
+        if (idxSedRadius1 >= 0)  star->setSedRadius1(query.value(idxSedRadius1).toDouble());
+        if (idxSedERadius1 >= 0) star->setSedERadius1(query.value(idxSedERadius1).toDouble());
+        if (idxSedLum1 >= 0)     star->setSedLum1(query.value(idxSedLum1).toDouble());
+        if (idxSedELum1 >= 0)    star->setSedELum1(query.value(idxSedELum1).toDouble());
+        if (idxSedMass2 >= 0)    star->setSedMass2(query.value(idxSedMass2).toDouble());
+        if (idxSedEMass2 >= 0)   star->setSedEMass2(query.value(idxSedEMass2).toDouble());
+        if (idxSedRadius2 >= 0)  star->setSedRadius2(query.value(idxSedRadius2).toDouble());
+        if (idxSedERadius2 >= 0) star->setSedERadius2(query.value(idxSedERadius2).toDouble());
+        if (idxSedLum2 >= 0)     star->setSedLum2(query.value(idxSedLum2).toDouble());
+        if (idxSedELum2 >= 0)    star->setSedELum2(query.value(idxSedELum2).toDouble());
+
+        if (idxPhotPeriod >= 0)  star->setPhotPeriod(query.value(idxPhotPeriod).toDouble());
+        if (idxPhotEPeriod >= 0) star->setPhotEPeriod(query.value(idxPhotEPeriod).toDouble());
+        if (idxPhotIncl >= 0)    star->setPhotIncl(query.value(idxPhotIncl).toDouble());
+        if (idxPhotEIncl >= 0)   star->setPhotEIncl(query.value(idxPhotEIncl).toDouble());
+        if (idxPhotQ >= 0)       star->setPhotQ(query.value(idxPhotQ).toDouble());
+        if (idxPhotEQ >= 0)      star->setPhotEQ(query.value(idxPhotEQ).toDouble());
+
+        if (idxHasTess >= 0)     star->setHasTess(query.value(idxHasTess).toInt() != 0);
+        if (idxHasGaia >= 0)     star->setHasGaia(query.value(idxHasGaia).toInt() != 0);
+        if (idxHasZtf >= 0)      star->setHasZtf(query.value(idxHasZtf).toInt() != 0);
+        if (idxHasAtlas >= 0)    star->setHasAtlas(query.value(idxHasAtlas).toInt() != 0);
+        if (idxHasBlackgem >= 0) star->setHasBlackgem(query.value(idxHasBlackgem).toInt() != 0);
 
         stars.push_back(std::move(star));
     }

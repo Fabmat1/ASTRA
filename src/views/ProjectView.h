@@ -7,6 +7,7 @@
 #include <QPainter>
 #include <memory>
 #include <functional>
+#include "BooleanColumnDelegate.h"
 
 QT_BEGIN_NAMESPACE
 class QTableView;
@@ -22,6 +23,7 @@ class StarTableModel;
 class StarFilterProxyModel;
 class StarFilterWidget;
 class Star;
+class BooleanColumnDelegate;
 
 
 class ScrollingLabel : public QWidget {
@@ -207,7 +209,10 @@ protected:
     QAction* _configureColumnsAction;
     
     QModelIndex _rightClickedIndex;
+    BooleanColumnDelegate* _boolDelegate = nullptr;
 
+    void applyColumns(const std::vector<QString>& columns);
+    void updateBoolDelegate();
     void updateStatusBar(const QString& message);
     void setupFilterColumns();
 };
@@ -235,6 +240,9 @@ public:
     
     // Removal support
     bool removeStars(const std::vector<int>& rows);
+
+    // Returns the set of column indices that are boolean flags
+    QSet<int> boolColumnIndices() const;
     
 private:
     std::shared_ptr<Project> _project;
@@ -248,4 +256,9 @@ private:
     
     void cacheData();
     void buildColumnGetters();
+
+    BooleanColumnDelegate* _boolDelegate = nullptr;
+
+    void applyColumns(const std::vector<QString>& columns);
+    void updateBoolDelegate();
 };

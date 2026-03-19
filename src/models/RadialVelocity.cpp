@@ -261,6 +261,7 @@ void RadialVelocityCurve::addRVPoint(std::shared_ptr<RadialVelocityPoint> point)
     if (point) {
         _rvPoints.push_back(point);
     }
+    notifyChanged();
 }
 
 void RadialVelocityCurve::removeRVPoint(const QString& pointId)
@@ -272,6 +273,7 @@ void RadialVelocityCurve::removeRVPoint(const QString& pointId)
             }),
         _rvPoints.end()
     );
+    notifyChanged();
 }
 
 void RadialVelocityCurve::clearRVPoints()
@@ -398,6 +400,7 @@ void RadialVelocityCurve::setBestFit(const QString& fitId)
     for (auto& fit : _rvFits) {
         fit->setBestFit(fit->getId() == fitId);
     }
+    notifyChanged();
 }
 
 double RadialVelocityCurve::getMinRV() const

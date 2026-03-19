@@ -35,7 +35,9 @@ struct FilterCondition
         // Numeric operators
         GreaterThan, GreaterEqual, LessThan, LessEqual, Between,
         // Universal
-        IsEmpty, IsNotEmpty
+        IsEmpty, IsNotEmpty,
+        // Boolean operators
+        IsTrue, IsFalse
     };
 
     QString columnName;
@@ -49,10 +51,15 @@ struct FilterCondition
             || op == LessEqual || op == Between;
     }
 
+    bool isBooleanOperator() const {
+        return op == IsTrue || op == IsFalse;
+    }
+
     bool evaluate(const QVariant& cellValue) const;
 
     static QStringList textOperatorNames();
     static QStringList numericOperatorNames();
+    static QStringList booleanOperatorNames();
     static QStringList universalOperatorNames();
     static Operator operatorFromName(const QString& name);
     static QString operatorToName(Operator op);
@@ -95,10 +102,15 @@ private:
     bool matchesAdvancedFilters(int sourceRow, const QModelIndex& sourceParent) const;
     int columnIndexForName(const QString& columnName) const;
 
+    void beginBatchFilter();
+    void endBatchFilter();
+    int _batchDepth = 0;
+
     QString _quickSearchText;
     QStringList _quickSearchColumns;  // Empty = search all columns
     QVector<FilterCondition> _conditions;
     LogicMode _logicMode = And;
+    
 };
 
 // =============================================================================
@@ -112,6 +124,7 @@ class FilterConditionRow : public QFrame
 public:
     explicit FilterConditionRow(const QStringList& columnNames,
                                 const QStringList& numericColumns,
+                                const QStringList& booleanColumns,
                                 QWidget* parent = nullptr);
 
     FilterCondition getCondition() const;
@@ -137,6 +150,8 @@ private:
     QToolButton* _enableButton;
     QToolButton* _removeButton;
 
+    QStringList _booleanColumns;
+    bool _isCurrentColumnBoolean = false;
     QStringList _numericColumns;
     bool _isCurrentColumnNumeric = false;
     bool _enabled = true;
@@ -153,7 +168,9 @@ class StarFilterWidget : public QWidget
 public:
     explicit StarFilterWidget(QWidget* parent = nullptr);
 
-    void setColumns(const QStringList& allColumns, const QStringList& numericColumns);
+    void setColumns(const QStringList& allColumns,
+        const QStringList& numericColumns,
+        const QStringList& booleanColumns);
     void connectToProxy(StarFilterProxyModel* proxy);
     int activeFilterCount() const;
     QWidget* advancedPanelWidget() const;
@@ -190,6 +207,7 @@ private:
 
     QStringList _allColumns;
     QStringList _numericColumns;
+    QStringList _booleanColumns;
 };
 
 #endif // STARFILTERWIDGET_H

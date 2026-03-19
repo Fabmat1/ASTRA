@@ -273,7 +273,15 @@ public:
     double getLogP() const { return _logP; }
     void setLogP(double logP) { _logP = logP; }
 
+    using ChangeCallback = std::function<void()>;
+    void setChangeCallback(ChangeCallback cb) { _onChange = cb; }
+
+
+protected:
+    void notifyChanged() { if (_onChange) _onChange(); }
+
 private:
+    ChangeCallback _onChange;
     QString _id;
     QString _starId;
     std::vector<std::shared_ptr<RadialVelocityPoint>> _rvPoints;

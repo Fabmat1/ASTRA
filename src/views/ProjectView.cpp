@@ -6,8 +6,13 @@
 #include "models/Star.h"
 #include "../importWizard/StarImportWizard.h"
 #include "utils/Logger.h"
+#include "utils/DatabaseManager.h"
 #include "views/StarDetailView.h"
 #include "StarFilterWidget.h"
+#include "models/ColumnPreset.h"
+#include "BooleanColumnDelegate.h"
+#include "ColumnConfigDialog.h"
+
 #include <QTableView>
 #include <QVBoxLayout>
 #include <QLabel>
@@ -23,6 +28,7 @@
 #include <QSet>
 #include <algorithm>
 #include <QMainWindow>
+#include <QSettings>
 #include <QStatusBar>
 
 ProjectView::ProjectView(ApplicationController* controller, QWidget *parent)
@@ -142,8 +148,16 @@ void ProjectView::loadProject(const QString& projectId)
     updateStatusBar("Loading project...");
     QApplication::processEvents();
     _currentProject = _controller->openProject(projectId);
+
+    
     if (_currentProject) {
         _projectTitle->setText(_currentProject->getName());
+        
+        // Disconnect old selection model before deleting models
+        if (_starTable->selectionModel()) {
+            disconnect(_starTable->selectionModel(), nullptr, this, nullptr);
+        }
+        _starTable->setModel(nullptr);  // detach view from old model first
         
         // Clean up old models
         if (_proxyModel) {
@@ -155,16 +169,35 @@ void ProjectView::loadProject(const QString& projectId)
             _tableModel = nullptr;
         }
         
+        // Ensure columns exist
+        if (_currentProject->getVisibleColumns().empty()) {
+            _currentProject->setVisibleColumns(
+                ColumnPresetManager::instance().defaultColumns());
+        }
+
         // Create source model
         _tableModel = new StarTableModel(_currentProject, this);
         
-        // Create custom filter proxy model
+        // Populate summary metrics for all loaded stars
+        // This uses already-loaded data only — no lazy loading triggered
+        for (auto& star : _currentProject->getAllStars()) {
+            star->computeSummaryMetrics();
+        }
+        
+        // Create proxy — block signals during setup
         _proxyModel = new StarFilterProxyModel(this);
+        _proxyModel->blockSignals(true);
         _proxyModel->setSourceModel(_tableModel);
         _proxyModel->setSortRole(Qt::DisplayRole);
-        _starTable->setModel(_proxyModel);
         
-        // Connect filter widget to proxy
+        // Set up delegate BEFORE attaching model to view
+        updateBoolDelegate();
+        
+        // Now attach to view
+        _starTable->setModel(_proxyModel);
+        _proxyModel->blockSignals(false);
+        
+        // Connect filter widget AFTER model is attached
         _filterWidget->connectToProxy(_proxyModel);
         setupFilterColumns();
         
@@ -181,31 +214,43 @@ void ProjectView::loadProject(const QString& projectId)
         LOG_ERROR("ProjectView", QString("Failed to load project: %1").arg(projectId));
     }
 }
-
 void ProjectView::setupFilterColumns()
 {
     if (!_tableModel || !_filterWidget) return;
 
-    // Build list of all visible column names
+    auto& mgr = ColumnPresetManager::instance();
     QStringList allColumns;
-    for (int i = 0; i < _tableModel->columnCount(); ++i) {
-        allColumns << _tableModel->getColumnName(i);
-    }
-
-    // Determine which columns are numeric
-    // Text columns are the ones with string-type getters
-    static const QSet<QString> textColumns = {
-        "alias", "source_id", "tic", "jname", "spec_class"
-    };
-
     QStringList numericColumns;
-    for (const auto& col : allColumns) {
-        if (!textColumns.contains(col)) {
-            numericColumns << col;
+    QStringList booleanColumns;
+
+    for (int i = 0; i < _tableModel->columnCount(); ++i) {
+        QString key = _tableModel->getColumnName(i);          // internal key
+        QString display = mgr.displayName(key);               // header text
+        allColumns << display;
+
+        const ColumnDef* def = mgr.columnDef(key);
+        if (def) {
+            if (def->isBoolFlag)
+                booleanColumns << display;
+            else if (def->category != "Identification")       // simple heuristic
+                numericColumns << display;
         }
     }
 
-    _filterWidget->setColumns(allColumns, numericColumns);
+    // Refine: text columns are identification + spec_class
+    static const QSet<QString> textKeys = {
+        "alias", "source_id", "tic", "jname", "spec_class"
+    };
+    // Remove text columns from numeric list
+    for (int i = 0; i < _tableModel->columnCount(); ++i) {
+        QString key = _tableModel->getColumnName(i);
+        if (textKeys.contains(key)) {
+            QString display = mgr.displayName(key);
+            numericColumns.removeAll(display);
+        }
+    }
+
+    _filterWidget->setColumns(allColumns, numericColumns, booleanColumns);
 }
 
 void ProjectView::keyPressEvent(QKeyEvent* event)
@@ -491,7 +536,43 @@ void ProjectView::onShowDetailWindow()
 
 void ProjectView::onConfigureColumns()
 {
-    QMessageBox::information(this, "Configure Columns", "Column configuration to be implemented");
+    if (!_currentProject) return;
+
+    auto current = _currentProject->getVisibleColumns();
+    if (current.empty())
+        current = ColumnPresetManager::instance().defaultColumns();
+
+    ColumnConfigDialog dlg(current, this);
+
+    connect(&dlg, &ColumnConfigDialog::columnsChanged,
+            this, &ProjectView::applyColumns);
+
+    dlg.exec();
+}
+
+void ProjectView::applyColumns(const std::vector<QString>& columns)
+{
+    if (!_currentProject || columns.empty()) return;
+
+    _currentProject->setVisibleColumns(columns);
+    _controller->updateProject(_currentProject);
+
+    if (_tableModel) {
+        _tableModel->refresh();
+        updateBoolDelegate();
+        setupFilterColumns();
+        updateStatusBar(QString("Loaded %1 stars").arg(_currentProject->getStarCount()));
+    }
+}
+
+void ProjectView::updateBoolDelegate()
+{
+    if (!_boolDelegate) {
+        _boolDelegate = new BooleanColumnDelegate(_starTable);
+    }
+    _starTable->setItemDelegate(_boolDelegate);
+    if (_tableModel)
+        _boolDelegate->setBoolColumns(_tableModel->boolColumnIndices());
 }
 
 void ProjectView::onCreatePlot()
@@ -599,18 +680,29 @@ QVariant StarTableModel::headerData(int section, Qt::Orientation orientation, in
 {
     if (role != Qt::DisplayRole)
         return QVariant();
-    
+
     if (orientation == Qt::Horizontal) {
         if (section >= 0 && section < static_cast<int>(_cachedColumns.size())) {
-            return _cachedColumns[section];
+            // Use the human-readable display name from the registry
+            return ColumnPresetManager::instance().displayName(_cachedColumns[section]);
         }
     } else if (orientation == Qt::Vertical) {
-        // Row numbers (1-indexed for user display)
         return section + 1;
     }
-
     return QVariant();
 }
+
+QSet<int> StarTableModel::boolColumnIndices() const
+{
+    QSet<int> result;
+    auto& mgr = ColumnPresetManager::instance();
+    for (int i = 0; i < static_cast<int>(_cachedColumns.size()); ++i) {
+        if (mgr.isBoolFlag(_cachedColumns[i]))
+            result.insert(i);
+    }
+    return result;
+}
+
 
 Qt::ItemFlags StarTableModel::flags(const QModelIndex &index) const
 {

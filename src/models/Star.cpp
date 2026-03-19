@@ -4,6 +4,8 @@
 #include "RadialVelocity.h"
 #include <QVariant>
 #include <limits>
+#include <cmath>
+
 
 Star::Star()
     : _ra(std::numeric_limits<double>::quiet_NaN())
@@ -47,55 +49,116 @@ Star::~Star()
 {
 }
 
-// In src/models/Star.cpp - replace getFieldValue() and add getFieldMap()
+// Helper: return QVariant for a double, blank string if NaN
+static inline QVariant dblVar(double v)
+{
+    return std::isnan(v) ? QVariant(QString()) : QVariant(v);
+}
+
+static inline QVariant intVar(int v)
+{
+    return QVariant(v);
+}
 
 const std::unordered_map<QString, Star::FieldGetter>& Star::getFieldMap()
 {
-    static const std::unordered_map<QString, FieldGetter> fieldMap = {
-        {"alias", [](const Star* s) { return QVariant(s->_alias); }},
-        {"source_id", [](const Star* s) { return QVariant(s->_sourceId); }},
-        {"tic", [](const Star* s) { return QVariant(s->_tic); }},
-        {"jname", [](const Star* s) { return QVariant(s->_jname); }},
-        {"ra", [](const Star* s) { return QVariant(s->_ra); }},
-        {"dec", [](const Star* s) { return QVariant(s->_dec); }},
-        {"pmra", [](const Star* s) { return QVariant(s->_pmra); }},
-        {"pmdec", [](const Star* s) { return QVariant(s->_pmdec); }},
-        {"e_pmra", [](const Star* s) { return QVariant(s->_e_pmra); }},
-        {"e_pmdec", [](const Star* s) { return QVariant(s->_e_pmdec); }},
-        {"plx", [](const Star* s) { return QVariant(s->_plx); }},
-        {"e_plx", [](const Star* s) { return QVariant(s->_e_plx); }},
-        {"gmag", [](const Star* s) { return QVariant(s->_gmag); }},
-        {"e_gmag", [](const Star* s) { return QVariant(s->_e_gmag); }},
-        {"bp", [](const Star* s) { return QVariant(s->_bp); }},
-        {"e_bp", [](const Star* s) { return QVariant(s->_e_bp); }},
-        {"rp", [](const Star* s) { return QVariant(s->_rp); }},
-        {"e_rp", [](const Star* s) { return QVariant(s->_e_rp); }},
-        {"bp_rp", [](const Star* s) { return QVariant(s->_bp_rp); }},
-        {"spec_class", [](const Star* s) { return QVariant(s->_spec_class); }},
-        {"teff", [](const Star* s) { return QVariant(s->_teff); }},
-        {"e_teff", [](const Star* s) { return QVariant(s->_e_teff); }},
-        {"logg", [](const Star* s) { return QVariant(s->_logg); }},
-        {"e_logg", [](const Star* s) { return QVariant(s->_e_logg); }},
-        {"he", [](const Star* s) { return QVariant(s->_he); }},
-        {"e_he", [](const Star* s) { return QVariant(s->_e_he); }},
-        {"logp", [](const Star* s) { return QVariant(s->_logp); }},
-        {"deltaRV", [](const Star* s) { return QVariant(s->_deltaRV); }},
-        {"e_deltaRV", [](const Star* s) { return QVariant(s->_e_deltaRV); }},
-        {"rv_avg", [](const Star* s) { return QVariant(s->_rv_avg); }},
-        {"e_rv_avg", [](const Star* s) { return QVariant(s->_e_rv_avg); }},
-        {"rv_med", [](const Star* s) { return QVariant(s->_rv_med); }},
-        {"e_rv_med", [](const Star* s) { return QVariant(s->_e_rv_med); }}
+    static const std::unordered_map<QString, FieldGetter> map = {
+        // ── Identification ──────────────────────────────────────────────────
+        { "alias",        [](const Star* s) { return QVariant(s->getAlias());    } },
+        { "source_id",    [](const Star* s) { return QVariant(s->getSourceId()); } },
+        { "tic",          [](const Star* s) { return QVariant(s->getTic());      } },
+        { "jname",        [](const Star* s) { return QVariant(s->getJName());    } },
+
+        // ── Astrometry ──────────────────────────────────────────────────────
+        { "ra",           [](const Star* s) { return dblVar(s->getRa());   } },
+        { "dec",          [](const Star* s) { return dblVar(s->getDec());  } },
+        { "plx",          [](const Star* s) { return dblVar(s->getPlx()); } },
+        { "e_plx",        [](const Star* s) { return dblVar(s->getEPlx()); } },
+        { "pmra",         [](const Star* s) { return dblVar(s->getPmra()); } },
+        { "pmdec",        [](const Star* s) { return dblVar(s->getPmdec()); } },
+        { "e_pmra",       [](const Star* s) { return dblVar(s->getEPmra()); } },
+        { "e_pmdec",      [](const Star* s) { return dblVar(s->getEPmdec()); } },
+
+        // ── Gaia Photometry ─────────────────────────────────────────────────
+        { "gmag",         [](const Star* s) { return dblVar(s->getGmag()); } },
+        { "e_gmag",       [](const Star* s) { return dblVar(s->getEGmag()); } },
+        { "bp",           [](const Star* s) { return dblVar(s->getBp()); } },
+        { "e_bp",         [](const Star* s) { return dblVar(s->getEBp()); } },
+        { "rp",           [](const Star* s) { return dblVar(s->getRp()); } },
+        { "e_rp",         [](const Star* s) { return dblVar(s->getERp()); } },
+        { "bp_rp",        [](const Star* s) { return dblVar(s->getBpRp()); } },
+
+        // ── Atmospheric ─────────────────────────────────────────────────────
+        { "spec_class",   [](const Star* s) { return QVariant(s->getSpecClass()); } },
+        { "teff",         [](const Star* s) { return dblVar(s->getTeff()); } },
+        { "e_teff",       [](const Star* s) { return dblVar(s->getETeff()); } },
+        { "logg",         [](const Star* s) { return dblVar(s->getLogg()); } },
+        { "e_logg",       [](const Star* s) { return dblVar(s->getELogg()); } },
+        { "he",           [](const Star* s) { return dblVar(s->getHe()); } },
+        { "e_he",         [](const Star* s) { return dblVar(s->getEHe()); } },
+        { "n_spectra",    [](const Star* s) { return intVar(s->getNSpectra()); } },
+        { "n_fit_spectra",[](const Star* s) { return intVar(s->getNFitSpectra()); } },
+
+        // ── Radial Velocity (summary) ───────────────────────────────────────
+        { "logp",         [](const Star* s) { return dblVar(s->getLogP()); } },
+        { "delta_rv",     [](const Star* s) { return dblVar(s->getDeltaRV()); } },
+        { "e_delta_rv",   [](const Star* s) { return dblVar(s->getEDeltaRV()); } },
+        { "rv_avg",       [](const Star* s) { return dblVar(s->getRVAvg()); } },
+        { "e_rv_avg",     [](const Star* s) { return dblVar(s->getERVAvg()); } },
+        { "rv_med",       [](const Star* s) { return dblVar(s->getRVMed()); } },
+        { "e_rv_med",     [](const Star* s) { return dblVar(s->getERVMed()); } },
+        { "rv_timespan",  [](const Star* s) { return dblVar(s->getRVTimespan()); } },
+        { "rv_npoints",   [](const Star* s) { return intVar(s->getRVNPoints()); } },
+        { "rv_k",         [](const Star* s) { return dblVar(s->getRVK()); } },
+        { "rv_e_k",       [](const Star* s) { return dblVar(s->getRVEK()); } },
+        { "rv_period",    [](const Star* s) { return dblVar(s->getRVPeriod()); } },
+        { "rv_e_period",  [](const Star* s) { return dblVar(s->getRVEPeriod()); } },
+        { "rv_gamma",     [](const Star* s) { return dblVar(s->getRVGamma()); } },
+        { "rv_e_gamma",   [](const Star* s) { return dblVar(s->getRVEGamma()); } },
+        { "rv_ecc",       [](const Star* s) { return dblVar(s->getRVEcc()); } },
+        { "rv_phi",       [](const Star* s) { return dblVar(s->getRVPhi()); } },
+        { "rv_t0",        [](const Star* s) { return dblVar(s->getRVT0()); } },
+        { "rv_chi2",      [](const Star* s) { return dblVar(s->getRVChi2()); } },
+        { "rv_rms",       [](const Star* s) { return dblVar(s->getRVRms()); } },
+
+        // ── SED ─────────────────────────────────────────────────────────────
+        { "sed_mass1",      [](const Star* s) { return dblVar(s->getSedMass1()); } },
+        { "sed_e_mass1",    [](const Star* s) { return dblVar(s->getSedEMass1()); } },
+        { "sed_radius1",    [](const Star* s) { return dblVar(s->getSedRadius1()); } },
+        { "sed_e_radius1",  [](const Star* s) { return dblVar(s->getSedERadius1()); } },
+        { "sed_lum1",       [](const Star* s) { return dblVar(s->getSedLum1()); } },
+        { "sed_e_lum1",     [](const Star* s) { return dblVar(s->getSedELum1()); } },
+        { "sed_mass2",      [](const Star* s) { return dblVar(s->getSedMass2()); } },
+        { "sed_e_mass2",    [](const Star* s) { return dblVar(s->getSedEMass2()); } },
+        { "sed_radius2",    [](const Star* s) { return dblVar(s->getSedRadius2()); } },
+        { "sed_e_radius2",  [](const Star* s) { return dblVar(s->getSedERadius2()); } },
+        { "sed_lum2",       [](const Star* s) { return dblVar(s->getSedLum2()); } },
+        { "sed_e_lum2",     [](const Star* s) { return dblVar(s->getSedELum2()); } },
+
+        // ── Photometric LC ──────────────────────────────────────────────────
+        { "phot_period",    [](const Star* s) { return dblVar(s->getPhotPeriod()); } },
+        { "phot_e_period",  [](const Star* s) { return dblVar(s->getPhotEPeriod()); } },
+        { "phot_incl",      [](const Star* s) { return dblVar(s->getPhotIncl()); } },
+        { "phot_e_incl",    [](const Star* s) { return dblVar(s->getPhotEIncl()); } },
+        { "phot_q",         [](const Star* s) { return dblVar(s->getPhotQ()); } },
+        { "phot_e_q",       [](const Star* s) { return dblVar(s->getPhotEQ()); } },
+
+        // ── Dataset availability (boolean → rendered by delegate) ───────────
+        { "has_tess",       [](const Star* s) { return QVariant(s->getHasTess()); } },
+        { "has_gaia",       [](const Star* s) { return QVariant(s->getHasGaia()); } },
+        { "has_ztf",        [](const Star* s) { return QVariant(s->getHasZtf()); } },
+        { "has_atlas",      [](const Star* s) { return QVariant(s->getHasAtlas()); } },
+        { "has_blackgem",   [](const Star* s) { return QVariant(s->getHasBlackgem()); } },
     };
-    return fieldMap;
+    return map;
 }
 
 QVariant Star::getFieldValue(const QString& fieldName) const
 {
-    const auto& fieldMap = getFieldMap();
-    auto it = fieldMap.find(fieldName);
-    if (it != fieldMap.end()) {
+    const auto& map = getFieldMap();
+    auto it = map.find(fieldName);
+    if (it != map.end())
         return it->second(this);
-    }
     return QVariant();
 }
 
@@ -153,6 +216,7 @@ void Star::addSpectrum(std::shared_ptr<Spectrum> spectrum)
         _spectraLoaded = true;
     }
     _spectra.push_back(spectrum);
+    recomputeSpectraMetrics();
 }
 
 void Star::removeSpectrum(const QString& spectrumId)
@@ -163,4 +227,147 @@ void Star::removeSpectrum(const QString& spectrumId)
                 return s && s->getId() == spectrumId;
             }),
         _spectra.end());
+    recomputeSpectraMetrics();
+}
+
+
+void Star::computeSummaryMetrics()
+{
+    recomputeRVMetrics();
+    recomputeSpectraMetrics();
+    recomputePhotometryMetrics();
+}
+
+void Star::recomputeRVMetrics()
+{
+    if (!_rvCurve) return;
+
+    _rvNPoints  = static_cast<int>(_rvCurve->getNumPoints());
+    _rvTimespan = _rvCurve->getTimeSpan();
+    _rv_avg     = _rvCurve->getMeanRV();
+    _rv_med     = _rvCurve->getMedianRV();
+    _logp       = _rvCurve->getLogP();
+    _deltaRV    = _rvCurve->getRVAmplitude();
+
+    // Reset fit fields first
+    _rvK = 0; _rvEK = 0;
+    _rvPeriod = 0; _rvEPeriod = 0;
+    _rvGamma = 0; _rvEGamma = 0;
+    _rvEcc = 0; _rvPhi = 0; _rvT0 = 0;
+    _rvChi2 = 0; _rvRms = 0;
+
+    auto bestFit = _rvCurve->getBestFit();
+    if (bestFit) {
+        _rvK       = bestFit->getK();
+        _rvEK      = bestFit->getKError();
+        _rvPeriod  = bestFit->getPeriod();
+        _rvEPeriod = bestFit->getPeriodError();
+        _rvGamma   = bestFit->getGamma();
+        _rvEGamma  = bestFit->getGammaError();
+        _rvEcc     = bestFit->getEccentricity();
+        _rvPhi     = bestFit->getPhi();
+        _rvT0      = bestFit->getT0();
+        _rvChi2    = bestFit->getChi2();
+        _rvRms     = bestFit->getRms();
+    }
+}
+
+void Star::recomputeSpectraMetrics()
+{
+    _nSpectra = static_cast<int>(_spectra.size());
+    _nFitSpectra = 0;
+
+    // Reset atmospheric — will be set from best fit below
+    _teff = 0; _e_teff = 0;
+    _logg = 0; _e_logg = 0;
+    _he = 0;   _e_he = 0;
+
+    for (const auto& spec : _spectra) {
+        if (!spec) continue;
+        auto fit = spec->getBestFit();
+        if (!fit) continue;
+        ++_nFitSpectra;
+
+        // Use first valid best fit for atmospheric params
+        if (_teff == 0 && fit->teff > 0) {
+            _teff   = fit->teff;
+            _e_teff = fit->teffError;
+            _logg   = fit->logg;
+            _e_logg = fit->loggError;
+            _he     = fit->he;
+            _e_he   = fit->heError;
+        }
+    }
+}
+
+void Star::recomputePhotometryMetrics()
+{
+    _hasTess = false;
+    _hasGaia = false;
+    _hasZtf = false;
+    _hasAtlas = false;
+    _hasBlackgem = false;
+    _sedMass1 = 0; _sedEMass1 = 0;
+    _sedRadius1 = 0; _sedERadius1 = 0;
+    _sedLum1 = 0; _sedELum1 = 0;
+    _sedMass2 = 0; _sedEMass2 = 0;
+    _sedRadius2 = 0; _sedERadius2 = 0;
+    _sedLum2 = 0; _sedELum2 = 0;
+
+    if (!_photometry) return;
+
+    // Dataset availability — uses getLightcurveSources()
+    for (const auto& source : _photometry->getLightcurveSources()) {
+        QString src = source.toLower();
+        if (src.contains("tess"))     _hasTess = true;
+        if (src.contains("gaia"))     _hasGaia = true;
+        if (src.contains("ztf"))      _hasZtf = true;
+        if (src.contains("atlas"))    _hasAtlas = true;
+        if (src.contains("blackgem")) _hasBlackgem = true;
+    }
+
+    // SED best fit — components is a public member
+    auto bestSed = _photometry->getBestSEDModel();
+    if (bestSed) {
+        if (bestSed->components.size() >= 1) {
+            const auto& c = bestSed->components[0];
+            _sedMass1    = c.mass.value;
+            _sedEMass1   = c.mass.symmetricError();
+            _sedRadius1  = c.radius.value;
+            _sedERadius1 = c.radius.symmetricError();
+            _sedLum1     = c.luminosity.value;
+            _sedELum1    = c.luminosity.symmetricError();
+        }
+        if (bestSed->components.size() >= 2) {
+            const auto& c = bestSed->components[1];
+            _sedMass2    = c.mass.value;
+            _sedEMass2   = c.mass.symmetricError();
+            _sedRadius2  = c.radius.value;
+            _sedERadius2 = c.radius.symmetricError();
+            _sedLum2     = c.luminosity.value;
+            _sedELum2    = c.luminosity.symmetricError();
+        }
+    }
+}
+
+void Star::setRVCurve(std::shared_ptr<RadialVelocityCurve> curve)
+{
+    _rvCurve = curve;
+    if (_rvCurve) {
+        _rvCurve->setChangeCallback([this]() { recomputeRVMetrics(); });
+    }
+    recomputeRVMetrics();
+}
+
+void Star::setPhotometry(std::shared_ptr<Photometry> photometry)
+{
+    _photometry = photometry;
+    recomputePhotometryMetrics();
+}
+
+
+void Star::setSpectra(const std::vector<std::shared_ptr<Spectrum>>& spectra)
+{
+    _spectra = spectra;
+    recomputeSpectraMetrics();
 }
