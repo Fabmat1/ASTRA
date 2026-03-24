@@ -15117,6 +15117,13 @@ void QCustomPlot::deselectAll()
 */
 void QCustomPlot::replot(QCustomPlot::RefreshPriority refreshPriority)
 {
+  static QElapsedTimer sinceLastReplot;
+  static bool firstReplot = true;
+  QElapsedTimer replotDuration;
+  replotDuration.start();
+  qint64 intervalUs = firstReplot ? -1 : sinceLastReplot.nsecsElapsed() / 1000;
+  firstReplot = false;
+  sinceLastReplot.start();
   if (refreshPriority == QCustomPlot::rpQueuedReplot)
   {
     if (!mReplotQueued)
@@ -15166,6 +15173,7 @@ void QCustomPlot::replot(QCustomPlot::RefreshPriority refreshPriority)
   
   emit afterReplot();
   mReplotting = false;
+
 }
 
 /*!
@@ -21128,21 +21136,24 @@ void QCPGraph::draw(QCPPainter *painter)
   if (!mKeyAxis || !mValueAxis) { qDebug() << Q_FUNC_INFO << "invalid key or value axis"; return; }
   if (mKeyAxis.data()->range().size() <= 0 || mDataContainer->isEmpty()) return;
   if (mLineStyle == lsNone && mScatterStyle.isNone()) return;
-  
-  QVector<QPointF> lines, scatters; // line and (if necessary) scatter pixel coordinates will be stored here while iterating over segments
-  
-  // loop over and draw segments of unselected/selected data:
+
+  QElapsedTimer perfTotal;
+  perfTotal.start();
+  qint64 perfFillNs = 0, perfLineNs = 0, perfScatterNs = 0;
+  int perfPointCount = 0;
+
+  QVector<QPointF> lines, scatters;
+
   QList<QCPDataRange> selectedSegments, unselectedSegments, allSegments;
   getDataSegments(selectedSegments, unselectedSegments);
   allSegments << unselectedSegments << selectedSegments;
   for (int i=0; i<allSegments.size(); ++i)
   {
     bool isSelectedSegment = i >= unselectedSegments.size();
-    // get line pixel points appropriate to line style:
-    QCPDataRange lineDataRange = isSelectedSegment ? allSegments.at(i) : allSegments.at(i).adjusted(-1, 1); // unselected segments extend lines to bordering selected data point (safe to exceed total data bounds in first/last segment, getLines takes care)
+    QCPDataRange lineDataRange = isSelectedSegment ? allSegments.at(i) : allSegments.at(i).adjusted(-1, 1);
     getLines(&lines, lineDataRange);
-    
-    // check data validity if flag set:
+    perfPointCount += lines.size();
+
 #ifdef QCUSTOMPLOT_CHECK_DATA
     QCPGraphDataContainer::const_iterator it;
     for (it = mDataContainer->constBegin(); it != mDataContainer->constEnd(); ++it)
@@ -21151,16 +21162,18 @@ void QCPGraph::draw(QCPPainter *painter)
         qDebug() << Q_FUNC_INFO << "Data point at" << it->key << "invalid." << "Plottable name:" << name();
     }
 #endif
-    
-    // draw fill of graph:
+
     if (isSelectedSegment && mSelectionDecorator)
       mSelectionDecorator->applyBrush(painter);
     else
       painter->setBrush(mBrush);
     painter->setPen(Qt::NoPen);
+
+    QElapsedTimer perfFill;
+    perfFill.start();
     drawFill(painter, &lines);
-    
-    // draw line:
+    perfFillNs += perfFill.nsecsElapsed();
+
     if (mLineStyle != lsNone)
     {
       if (isSelectedSegment && mSelectionDecorator)
@@ -21168,24 +21181,29 @@ void QCPGraph::draw(QCPPainter *painter)
       else
         painter->setPen(mPen);
       painter->setBrush(Qt::NoBrush);
+
+      QElapsedTimer perfLine;
+      perfLine.start();
       if (mLineStyle == lsImpulse)
         drawImpulsePlot(painter, lines);
       else
-        drawLinePlot(painter, lines); // also step plots can be drawn as a line plot
+        drawLinePlot(painter, lines);
+      perfLineNs += perfLine.nsecsElapsed();
     }
-    
-    // draw scatters:
+
     QCPScatterStyle finalScatterStyle = mScatterStyle;
     if (isSelectedSegment && mSelectionDecorator)
       finalScatterStyle = mSelectionDecorator->getFinalScatterStyle(mScatterStyle);
     if (!finalScatterStyle.isNone())
     {
+      QElapsedTimer perfScatter;
+      perfScatter.start();
       getScatters(&scatters, allSegments.at(i));
       drawScatterPlot(painter, scatters, finalScatterStyle);
+      perfScatterNs += perfScatter.nsecsElapsed();
     }
   }
-  
-  // draw other selection decoration that isn't just line/scatter pens and brushes:
+
   if (mSelectionDecorator)
     mSelectionDecorator->drawDecoration(painter, selection());
 }
@@ -21604,29 +21622,139 @@ QVector<QPointF> QCPGraph::dataToImpulseLines(const QVector<QCPGraphData> &data)
 */
 void QCPGraph::drawFill(QCPPainter *painter, QVector<QPointF> *lines) const
 {
-  if (mLineStyle == lsImpulse) return; // fill doesn't make sense for impulse plot
+  if (mLineStyle == lsImpulse) return;
   if (painter->brush().style() == Qt::NoBrush || painter->brush().color().alpha() == 0) return;
-  
+
   applyFillAntialiasingHint(painter);
   const QVector<QCPDataRange> segments = getNonNanSegments(lines, keyAxis()->orientation());
+  const bool keyIsX = (keyAxis()->orientation() == Qt::Horizontal);
+
+  QElapsedTimer perfTimer;
+  perfTimer.start();
+  int drawCallCount = 0;
+
   if (!mChannelFillGraph)
   {
-    // draw base fill under graph, fill goes all the way to the zero-value-line:
+    const int chunkSize = 32;
     foreach (QCPDataRange segment, segments)
-      painter->drawPolygon(getFillPolygon(lines, segment));
-  } else
-  {
-    // draw fill between this graph and mChannelFillGraph:
-    QVector<QPointF> otherLines;
-    mChannelFillGraph->getLines(&otherLines, QCPDataRange(0, mChannelFillGraph->dataCount()));
-    if (!otherLines.isEmpty())
     {
-      QVector<QCPDataRange> otherSegments = getNonNanSegments(&otherLines, mChannelFillGraph->keyAxis()->orientation());
-      QVector<QPair<QCPDataRange, QCPDataRange> > segmentPairs = getOverlappingSegments(segments, lines, otherSegments, &otherLines);
-      for (int i=0; i<segmentPairs.size(); ++i)
-        painter->drawPolygon(getChannelFillPolygon(lines, segmentPairs.at(i).first, &otherLines, segmentPairs.at(i).second));
+      for (int start = segment.begin(); start < segment.end() - 1;
+           start += chunkSize - 1)
+      {
+        const int end = qMin(start + chunkSize, segment.end());
+        if (end - start < 2) break;
+        painter->drawPolygon(getFillPolygon(lines, QCPDataRange(start, end)));
+        ++drawCallCount;
+      }
     }
   }
+  else
+  {
+    QVector<QPointF> otherLines;
+    mChannelFillGraph->getLines(&otherLines, QCPDataRange(0, mChannelFillGraph->dataCount()));
+    if (otherLines.isEmpty() || lines->isEmpty()) return;
+
+    QVector<QCPDataRange> otherSegments = getNonNanSegments(&otherLines, mChannelFillGraph->keyAxis()->orientation());
+    QVector<QPair<QCPDataRange, QCPDataRange> > segmentPairs = getOverlappingSegments(segments, lines, otherSegments, &otherLines);
+
+    QBrush savedBrush = painter->brush();
+    QPen spanPen(savedBrush.color());
+    spanPen.setCosmetic(true);
+    spanPen.setWidthF(1.0);
+
+    for (int sp = 0; sp < segmentPairs.size(); ++sp)
+    {
+      QPolygonF poly = getChannelFillPolygon(
+          lines, segmentPairs.at(sp).first,
+          &otherLines, segmentPairs.at(sp).second);
+      if (poly.size() < 4) continue;
+
+      if (poly.size() < 64)
+      {
+        painter->drawPolygon(poly);
+        ++drawCallCount;
+        continue;
+      }
+
+      // Find turning point: polygon = curveA (ascending key) + curveB (descending key)
+      int splitIdx = 0;
+      double maxKey = -std::numeric_limits<double>::max();
+      for (int j = 0; j < poly.size(); ++j)
+      {
+        double k = keyIsX ? poly[j].x() : poly[j].y();
+        if (k > maxKey) { maxKey = k; splitIdx = j; }
+      }
+
+      if (splitIdx < 1 || splitIdx >= poly.size() - 2)
+      {
+        painter->drawPolygon(poly);
+        ++drawCallCount;
+        continue;
+      }
+
+      double kMinA = keyIsX ? poly[0].x() : poly[0].y();
+      double kMinB = keyIsX ? poly[poly.size() - 1].x() : poly[poly.size() - 1].y();
+      int pxMin = static_cast<int>(qCeil(qMax(kMinA, kMinB)));
+      int pxMax = static_cast<int>(qFloor(maxKey));
+      if (pxMax < pxMin)
+      {
+        painter->drawPolygon(poly);
+        ++drawCallCount;
+        continue;
+      }
+
+      QVector<QLineF> spans;
+      spans.reserve(pxMax - pxMin + 1);
+
+      int ai = 0;
+      int bi = poly.size() - 1;
+
+      for (int px = pxMin; px <= pxMax; ++px)
+      {
+        double dpx = static_cast<double>(px);
+
+        while (ai < splitIdx - 1)
+        {
+          double nextK = keyIsX ? poly[ai + 1].x() : poly[ai + 1].y();
+          if (nextK >= dpx) break;
+          ++ai;
+        }
+        double kA0 = keyIsX ? poly[ai].x() : poly[ai].y();
+        double kA1 = keyIsX ? poly[ai + 1].x() : poly[ai + 1].y();
+        double tA = qFuzzyCompare(kA0, kA1) ? 0.0 : qBound(0.0, (dpx - kA0) / (kA1 - kA0), 1.0);
+        double vA = keyIsX
+            ? poly[ai].y() + tA * (poly[ai + 1].y() - poly[ai].y())
+            : poly[ai].x() + tA * (poly[ai + 1].x() - poly[ai].x());
+
+        while (bi > splitIdx + 2)
+        {
+          double nextK = keyIsX ? poly[bi - 1].x() : poly[bi - 1].y();
+          if (nextK >= dpx) break;
+          --bi;
+        }
+        double kB0 = keyIsX ? poly[bi].x() : poly[bi].y();
+        double kB1 = keyIsX ? poly[bi - 1].x() : poly[bi - 1].y();
+        double tB = qFuzzyCompare(kB0, kB1) ? 0.0 : qBound(0.0, (dpx - kB0) / (kB1 - kB0), 1.0);
+        double vB = keyIsX
+            ? poly[bi].y() + tB * (poly[bi - 1].y() - poly[bi].y())
+            : poly[bi].x() + tB * (poly[bi - 1].x() - poly[bi].x());
+
+        if (keyIsX)
+          spans.append(QLineF(dpx, vA, dpx, vB));
+        else
+          spans.append(QLineF(vA, dpx, vB, dpx));
+      }
+
+      painter->setPen(spanPen);
+      painter->setBrush(Qt::NoBrush);
+      painter->drawLines(spans);
+      ++drawCallCount;
+
+      painter->setPen(Qt::NoPen);
+      painter->setBrush(savedBrush);
+    }
+  }
+
 }
 
 /*! \internal
@@ -21655,7 +21783,27 @@ void QCPGraph::drawLinePlot(QCPPainter *painter, const QVector<QPointF> &lines) 
   if (painter->pen().style() != Qt::NoPen && painter->pen().color().alpha() != 0)
   {
     applyDefaultAntialiasingHint(painter);
-    drawPolyline(painter, lines);
+    if (lines.size() < 2)
+    {
+      drawPolyline(painter, lines);
+      return;
+    }
+
+    QElapsedTimer perfTimer;
+    perfTimer.start();
+
+    const int n = lines.size();
+    QVector<QLineF> segments;
+    segments.reserve(n - 1);
+    for (int i = 0; i < n - 1; ++i)
+    {
+      const QPointF &p1 = lines[i];
+      const QPointF &p2 = lines[i + 1];
+      if (!qIsNaN(p1.x()) && !qIsNaN(p1.y()) && !qIsInf(p1.y()) &&
+          !qIsNaN(p2.x()) && !qIsNaN(p2.y()) && !qIsInf(p2.y()))
+        segments.append(QLineF(p1, p2));
+    }
+    painter->drawLines(segments);
   }
 }
 

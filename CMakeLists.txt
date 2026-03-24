@@ -199,11 +199,13 @@ option(ENABLE_PROFILING "Build with profiling support (debug symbols + frame poi
 
 if(ENABLE_PROFILING)
     message(STATUS "Profiling enabled: -g -fno-omit-frame-pointer")
-    target_compile_options(ASTRA PRIVATE
-        -O2
-        -g
-        -fno-omit-frame-pointer
-    )
+    set(PROFILING_FLAGS -O2 -g -fno-omit-frame-pointer)
+
+    target_compile_options(ASTRA PRIVATE ${PROFILING_FLAGS})
+    target_compile_options(qcustomplot PRIVATE ${PROFILING_FLAGS})
+
+    # Export all symbol names so perf can resolve them
+    target_link_options(ASTRA PRIVATE -rdynamic)
 endif()
 
 # Set up include directories

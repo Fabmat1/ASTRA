@@ -16,15 +16,8 @@ from pathlib import Path
 
 EXTRACTIONS = [
     # Star public API - I got every method name wrong
-    ("src/models/Photomoetry.h", ["__FULL__"]),
-    ("src/models/Project.h", ["__FULL__"]),
-    ("src/models/RadialVelocity.h", ["__FULL__"]),
-    ("src/models/Spectrum.h", ["__FULL__"]),
-    ("src/models/Star.h", ["__FULL__"]),
-    ("src/controllers/ApplicationController.h", ["__FULL__"]),
-    ("src/views/ProjectView.h", ["__FULL__"]),
-    ("src/views/ProjectView.cpp", ["__FULL__"]),
-    ("src/views/MainWindow.h", ["__FULL__"]),
+    ("src/plotting/qcustomplot.cpp", ["QCPGraph::draw", "QCPGraph::drawFill", "QCPGraph::getFillPolygon",
+                                      "QCPGraph::getLines", "QCPGraph::getOptimizedLineData", "QCPGraph::drawLinePlot", "QCPGraph::getChannelFillPolygon"]),
     ]
 
 
