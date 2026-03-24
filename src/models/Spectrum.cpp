@@ -6,6 +6,7 @@
 #include <QRegularExpression>
 #include <QDataStream>
 #include <QDebug>
+#include "utils/Logger.h"
 
 // SpectralFit implementation
 SpectralFit::SpectralFit()
@@ -212,21 +213,52 @@ bool SpectralFit::saveDataToFile(const QString& filepath)
 
 bool SpectralFit::loadDataFromFile(const QString& filepath)
 {
+    LOG_INFO_F("SpectralFit", QString("loadDataFromFile: %1").arg(filepath));
+
     auto readDoubles = [](QDataStream& s, std::vector<double>& vec, quint32 n) {
         vec.clear(); vec.reserve(n);
         for (quint32 i = 0; i < n; ++i) { double v; s >> v; vec.push_back(v); }
     };
 
-    auto parse = [this, &readDoubles](QDataStream& s, bool legacy = false) -> bool {
+    auto parse = [this, &readDoubles](QDataStream& s, qint64 bufferSize, bool legacy = false) -> bool {
         quint32 wlN, fN, rbfN = 0, rbsN = 0, splN = 0, ignN = 0;
         s >> wlN >> fN;
         if (!legacy) s >> rbfN >> rbsN >> splN >> ignN;
 
+        if (s.status() != QDataStream::Ok) {
+            LOG_ERROR("SpectralFit", "Stream error reading headers");
+            return false;
+        }
+
+        quint64 expectedBytes = (quint64(wlN) + fN + rbfN + rbsN + splN) * sizeof(double)
+                              + ignN * sizeof(quint8);
+        quint64 headerBytes = legacy ? 8 : 24;
+
+        LOG_DEBUG_F("SpectralFit",
+            QString("parse (legacy=%1): wlN=%2, fN=%3, rbfN=%4, rbsN=%5, splN=%6, ignN=%7")
+            .arg(legacy).arg(wlN).arg(fN).arg(rbfN).arg(rbsN).arg(splN).arg(ignN));
+
+        if (bufferSize > 0 && (headerBytes + expectedBytes) > quint64(bufferSize)) {
+            LOG_WARNING_F("SpectralFit",
+                QString("Header counts require %1 bytes but buffer is only %2 bytes; retrying as legacy")
+                .arg(headerBytes + expectedBytes).arg(bufferSize));
+            return false;
+        }
+
         readDoubles(s, modelWavelengths, wlN);
-        readDoubles(s, modelFluxes,      fN);
-        readDoubles(s, rebinnedFluxes,   rbfN);
-        readDoubles(s, rebinnedSigmas,   rbsN);
-        readDoubles(s, modelSplines,     splN);
+        if (s.status() != QDataStream::Ok) return false;
+
+        readDoubles(s, modelFluxes, fN);
+        if (s.status() != QDataStream::Ok) return false;
+
+        readDoubles(s, rebinnedFluxes, rbfN);
+        if (s.status() != QDataStream::Ok) return false;
+
+        readDoubles(s, rebinnedSigmas, rbsN);
+        if (s.status() != QDataStream::Ok) return false;
+
+        readDoubles(s, modelSplines, splN);
+        if (s.status() != QDataStream::Ok) return false;
 
         modelIgnore.clear(); modelIgnore.reserve(ignN);
         for (quint32 i = 0; i < ignN; ++i) { quint8 v; s >> v; modelIgnore.push_back(v); }
@@ -236,17 +268,32 @@ bool SpectralFit::loadDataFromFile(const QString& filepath)
 
     QByteArray buf;
     if (DataStore::readCompressed(filepath, DataStore::SpectralFitData, buf)) {
+        LOG_DEBUG_F("SpectralFit", QString("readCompressed succeeded, buffer size=%1 bytes").arg(buf.size()));
+
+        // Try new 6-header format first
         QDataStream s(&buf, QIODevice::ReadOnly);
         s.setVersion(QDataStream::Qt_6_0);
-        return parse(s);           // new format: reads all 6 size headers
+        if (parse(s, buf.size()))
+            return true;
+
+        // Fall back to 2-header (legacy) format on the same compressed buffer
+        LOG_DEBUG("SpectralFit", "Retrying compressed buffer as legacy format");
+        QDataStream s2(&buf, QIODevice::ReadOnly);
+        s2.setVersion(QDataStream::Qt_6_0);
+        return parse(s2, buf.size(), /*legacy=*/true);
     }
+
+    LOG_DEBUG("SpectralFit", "readCompressed failed, falling back to legacy file path");
 
     QFile file(filepath);
     if (!file.open(QIODevice::ReadOnly)) {
-        qDebug() << "Failed to open file for reading:" << filepath;
+        LOG_ERROR_F("SpectralFit", QString("Failed to open file for reading: %1").arg(filepath));
         return false;
     }
-    QDataStream s(&file);
+    QByteArray legacyBuf = file.readAll();
+    file.close();
+
+    QDataStream s(&legacyBuf, QIODevice::ReadOnly);
     s.setVersion(QDataStream::Qt_5_0);
-    return parse(s, /*legacy=*/true);  
+    return parse(s, legacyBuf.size(), /*legacy=*/true);
 }
