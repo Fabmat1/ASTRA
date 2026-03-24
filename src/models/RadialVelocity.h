@@ -5,6 +5,7 @@
 #include <QDateTime>
 #include <vector>
 #include <memory>
+#include <cmath>
 
 #include "Time.h"
 
@@ -33,9 +34,23 @@ public:
 
     // RV measurement
     double getRV() const { return _rv; }
-    double getRVError() const { return _rvError; }
     void setRV(double rv) { _rv = rv; }
-    void setRVError(double error) { _rvError = error; }
+
+    double getRVErrorFormal() const { return _rvErrorFormal; }
+    void setRVErrorFormal(double error) { _rvErrorFormal = error; _rvErrorDirty = true; }
+
+    double getRVErrorSystematic() const { return _rvErrorSystematic; }
+    void setRVErrorSystematic(double error) { _rvErrorSystematic = error; _rvErrorDirty = true; }
+
+    double getRVError() const {
+        if (_rvErrorDirty) {
+            _rvError = std::sqrt(_rvErrorFormal * _rvErrorFormal
+                               + _rvErrorSystematic * _rvErrorSystematic);
+            _rvErrorDirty = false;
+        }
+        return _rvError;
+    }
+    void setRVError(double error) { _rvError = error; _rvErrorDirty = false; }
 
     // ── Time (new API) ──────────────────────────────────────────────────────
     const Time& time() const           { return _time; }
@@ -84,7 +99,10 @@ private:
     QString _id;
     QString _curveId;
     double _rv;                    // km/s
-    double _rvError;               // km/s
+    mutable double _rvError;       // km/s (cached: may be auto-computed)
+    double _rvErrorFormal;         // km/s
+    double _rvErrorSystematic;     // km/s
+    mutable bool _rvErrorDirty;
 
     Time _time;                    // replaces _mjd, _bjd
 
