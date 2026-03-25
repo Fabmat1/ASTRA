@@ -153,3 +153,9 @@ object_catalogue.csv
 result_parameters.csv
 
 CLAUDE.md
+
+flame.svg
+perf.data
+perf.data*
+
+scripts/
