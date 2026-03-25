@@ -2,6 +2,7 @@
 #include "BarycentricCorrection.h"
 
 #include <QDebug>
+#include <QJsonArray>
 #include <cmath>
 
 Instrument::Instrument()  = default;
@@ -108,4 +109,94 @@ double Instrument::heliocentricCorrection(double mjd, double ra, double dec) con
                     + ecc * std::sin(pomega - lambda));
 
     return vCorr;
+}
+
+// ── Mode management ─────────────────────────────────────────────────────────
+
+void Instrument::addMode(const InstrumentMode& mode)
+{
+    _modes.insert(mode.key(), mode);
+}
+
+bool Instrument::hasMode(const QString& key) const
+{
+    return _modes.contains(key);
+}
+
+const InstrumentMode* Instrument::mode(const QString& key) const
+{
+    auto it = _modes.constFind(key);
+    return (it != _modes.constEnd()) ? &it.value() : nullptr;
+}
+
+QList<InstrumentMode> Instrument::modes() const
+{
+    return _modes.values();
+}
+
+void Instrument::removeMode(const QString& key)
+{
+    _modes.remove(key);
+}
+
+void Instrument::clearModes()
+{
+    _modes.clear();
+}
+
+QList<const InstrumentMode*> Instrument::spectroscopicModes() const
+{
+    QList<const InstrumentMode*> result;
+    for (auto it = _modes.constBegin(); it != _modes.constEnd(); ++it)
+        if (it.value().hasSpectralProperties())
+            result.append(&it.value());
+    return result;
+}
+
+QList<const InstrumentMode*> Instrument::photometricModes() const
+{
+    QList<const InstrumentMode*> result;
+    for (auto it = _modes.constBegin(); it != _modes.constEnd(); ++it)
+        if (it.value().hasPhotometricProperties())
+            result.append(&it.value());
+    return result;
+}
+
+// ── Serialization ───────────────────────────────────────────────────────────
+
+QJsonObject Instrument::toJson() const
+{
+    QJsonObject obj;
+    obj["name"] = _name;
+    if (!_fullName.isEmpty())
+        obj["full_name"] = _fullName;
+    obj["latitude"]  = _latitude;
+    obj["longitude"] = _longitude;
+    obj["altitude"]  = _altitude;
+    if (_spaceBased)
+        obj["space_based"] = true;
+
+    if (!_modes.isEmpty()) {
+        QJsonArray arr;
+        for (const auto& m : _modes)
+            arr.append(m.toJson());
+        obj["modes"] = arr;
+    }
+    return obj;
+}
+
+Instrument Instrument::fromJson(const QJsonObject& obj)
+{
+    Instrument inst;
+    inst._name       = obj["name"].toString();
+    inst._fullName   = obj["full_name"].toString();
+    inst._latitude   = obj["latitude"].toDouble();
+    inst._longitude  = obj["longitude"].toDouble();
+    inst._altitude   = obj["altitude"].toDouble();
+    inst._spaceBased = obj["space_based"].toBool(false);
+
+    for (const auto& v : obj["modes"].toArray())
+        inst.addMode(InstrumentMode::fromJson(v.toObject()));
+
+    return inst;
 }

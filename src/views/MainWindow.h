@@ -16,6 +16,7 @@ QT_END_NAMESPACE
 
 class ApplicationController;
 class ProjectSelectionView;
+class InstrumentConfigView;
 class ProjectView;
 struct ThemeInfo;
 
@@ -38,6 +39,7 @@ public slots:
 private slots:
     void onThemeActionTriggered(QAction* action);
     void onThemeChanged(const QString& themeId);
+    void onShowInstrumentConfig();
 
 private:
     void setupUi();
@@ -80,6 +82,9 @@ private:
 
     // Analysis menu actions
     QAction* _createPlotAction;
+
+    QAction* _instrumentConfigAction = nullptr;
+    InstrumentConfigView* _instrumentConfigView = nullptr;
 };
 
 #endif // MAINWINDOW_H

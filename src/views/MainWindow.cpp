@@ -2,6 +2,7 @@
 
 #include "MainWindow.h"
 #include "ProjectSelectionView.h"
+#include "InstrumentConfigView.h"
 #include "ProjectView.h"
 #include "controllers/ApplicationController.h"
 #include "models/Project.h"
@@ -234,6 +235,20 @@ void MainWindow::showProject(const QString& projectId)
     _closeProjectAction->setEnabled(true);
 }
 
+void MainWindow::onShowInstrumentConfig()
+{
+    if (!_instrumentConfigView) {
+        _instrumentConfigView = new InstrumentConfigView(_controller->databaseManager(), this);
+        _instrumentConfigView->setAttribute(Qt::WA_DeleteOnClose);
+        connect(_instrumentConfigView, &QObject::destroyed, this, [this]() {
+            _instrumentConfigView = nullptr;
+        });
+    }
+    _instrumentConfigView->show();
+    _instrumentConfigView->raise();
+    _instrumentConfigView->activateWindow();
+}
+
 void MainWindow::updateMenuBarForProjectView(bool projectOpen)
 {
     QMenuBar* menuBar = this->menuBar();
@@ -263,10 +278,12 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
         if (!_analysisMenu) {
             _analysisMenu = new QMenu("&Analysis", this);
             _createPlotAction = _analysisMenu->addAction("Create &Plot...");
+            _analysisMenu->addSeparator();
+            _instrumentConfigAction = _analysisMenu->addAction("&Instruments...");
             
             connect(_createPlotAction, &QAction::triggered, _projectView, &ProjectView::onCreatePlot);
+            connect(_instrumentConfigAction, &QAction::triggered, this, &MainWindow::onShowInstrumentConfig);
             
-            // Insert before Help menu
             QAction* helpAction = _helpMenu->menuAction();
             menuBar->insertMenu(helpAction, _analysisMenu);
         }

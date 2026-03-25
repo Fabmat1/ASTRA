@@ -123,6 +123,7 @@ set(SOURCES
     src/importWizard/ImportStagingArea.cpp
     src/importWizard/LightcurveImportPage.cpp
     src/utils/ExtractSED.cpp
+    src/utils/CoastlineData.cpp
     src/views/tools/RVInspectorDialog.cpp
     src/views/tools/SpectraFitDialog.cpp
     src/views/tools/LightcurveFetchDialog.cpp
@@ -131,7 +132,9 @@ set(SOURCES
     src/views/tools/GalacticOrbitDialog.cpp
     src/views/BooleanColumnDelegate.cpp
     src/views/ColumnConfigDialog.cpp
+    src/views/InstrumentConfigView.cpp
     src/models/ColumnPreset.cpp
+    src/models/InstrumentMode.cpp
     )
 
 # Header files
@@ -171,6 +174,7 @@ set(HEADERS
     src/importWizard/ImportStagingArea.h
     src/importWizard/LightcurveImportPage.h
     src/utils/ExtractSED.h
+    src/utils/CoastlineData.h
     src/views/tools/RVInspectorDialog.h
     src/views/tools/SpectraFitDialog.h
     src/views/tools/LightcurveFetchDialog.h
@@ -179,7 +183,9 @@ set(HEADERS
     src/views/tools/GalacticOrbitDialog.h
     src/views/BooleanColumnDelegate.h
     src/views/ColumnConfigDialog.h
+    src/views/InstrumentConfigView.h
     src/models/ColumnPreset.h
+    src/models/InstrumentMode.h
 )
 
 # Create executable

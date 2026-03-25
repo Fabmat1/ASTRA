@@ -1,0 +1,582 @@
+{
+    "version": 1,
+    "instruments": [
+        {
+            "name": "SDSS",
+            "full_name": "Sloan Digital Sky Survey (Apache Point Observatory)",
+            "latitude": 32.7797,
+            "longitude": -105.8203,
+            "altitude": 2788.0,
+            "modes": [
+                {
+                    "key": "BOSS",
+                    "display_name": "BOSS Spectrograph",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "BOSS",
+                        "resolution_coefficients": [2000.0],
+                        "wavelength_min": 3600.0,
+                        "wavelength_max": 10400.0
+                    }
+                },
+                {
+                    "key": "APOGEE",
+                    "display_name": "APOGEE Spectrograph",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "APOGEE_VPH",
+                        "resolution_coefficients": [22500.0],
+                        "wavelength_min": 15100.0,
+                        "wavelength_max": 17000.0
+                    }
+                },
+                {
+                    "key": "imaging",
+                    "display_name": "SDSS Imaging Camera",
+                    "data_type": "photometry",
+                    "photometric": {
+                        "pixel_scale": 0.396,
+                        "filters": ["u", "g", "r", "i", "z"]
+                    }
+                }
+            ]
+        },
+        {
+            "name": "LAMOST",
+            "full_name": "Large Sky Area Multi-Object Fiber Spectroscopic Telescope",
+            "latitude": 40.3958,
+            "longitude": 117.5750,
+            "altitude": 960.0,
+            "modes": [
+                {
+                    "key": "LRS",
+                    "display_name": "Low Resolution Spectrograph",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "LRS",
+                        "resolution_coefficients": [1800.0],
+                        "wavelength_min": 3700.0,
+                        "wavelength_max": 9000.0
+                    }
+                },
+                {
+                    "key": "MRS_blue",
+                    "display_name": "Medium Resolution Spectrograph - Blue",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "MRS_blue",
+                        "resolution_coefficients": [7500.0],
+                        "wavelength_min": 4950.0,
+                        "wavelength_max": 5350.0
+                    }
+                },
+                {
+                    "key": "MRS_red",
+                    "display_name": "Medium Resolution Spectrograph - Red",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "MRS_red",
+                        "resolution_coefficients": [7500.0],
+                        "wavelength_min": 6300.0,
+                        "wavelength_max": 6800.0
+                    }
+                }
+            ]
+        },
+        {
+            "name": "BlackGEM",
+            "full_name": "BlackGEM Array (La Silla Observatory)",
+            "latitude": -29.2563,
+            "longitude": -70.7380,
+            "altitude": 2347.0,
+            "modes": [
+                {
+                    "key": "survey",
+                    "display_name": "BlackGEM Survey Photometry",
+                    "data_type": "photometry",
+                    "photometric": {
+                        "fov": 2.7,
+                        "pixel_scale": 0.564,
+                        "filters": ["u", "g", "r", "i", "z", "q"]
+                    }
+                }
+            ]
+        },
+        {
+            "name": "CAHA",
+            "full_name": "Centro Astronómico Hispano en Andalucía (Calar Alto)",
+            "latitude": 37.2236,
+            "longitude": -2.5461,
+            "altitude": 2168.0,
+            "modes": [
+                {
+                    "key": "ORCA-TWIN",
+                    "display_name": "ORCA-TWIN Two-Channel Photometer",
+                    "data_type": "photometry",
+                    "photometric": {
+                        "fov": 9.0,
+                        "pixel_scale": 0.265,
+                        "filters": ["u", "g", "r", "i", "z"]
+                    }
+                },
+                {
+                    "key": "CAFOS",
+                    "display_name": "CAFOS Faint Object Spectrograph (2.2m)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "CAFOS",
+                        "resolution_coefficients": [1000.0],
+                        "wavelength_min": 3200.0,
+                        "wavelength_max": 11000.0
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Gaia",
+            "full_name": "Gaia Space Observatory (ESA)",
+            "latitude": 0.0,
+            "longitude": 0.0,
+            "altitude": 0.0,
+            "space_based": true,
+            "modes": [
+                {
+                    "key": "photometry",
+                    "display_name": "Gaia Broadband Photometry",
+                    "data_type": "photometry",
+                    "photometric": {
+                        "pixel_scale": 0.059,
+                        "filters": ["G", "BP", "RP"]
+                    }
+                },
+                {
+                    "key": "RVS",
+                    "display_name": "Radial Velocity Spectrometer",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "RVS_grating",
+                        "resolution_coefficients": [11500.0],
+                        "wavelength_min": 8450.0,
+                        "wavelength_max": 8720.0
+                    }
+                },
+                {
+                    "key": "BPRP",
+                    "display_name": "BP/RP Spectrophotometry",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "BP_RP_prism",
+                        "resolution_coefficients": [50.0],
+                        "wavelength_min": 3300.0,
+                        "wavelength_max": 10500.0
+                    }
+                }
+            ]
+        },
+        {
+            "name": "ATLAS",
+            "full_name": "Asteroid Terrestrial-impact Last Alert System (Haleakala)",
+            "latitude": 20.7084,
+            "longitude": -156.2568,
+            "altitude": 3055.0,
+            "modes": [
+                {
+                    "key": "survey",
+                    "display_name": "ATLAS Survey Photometry",
+                    "data_type": "photometry",
+                    "photometric": {
+                        "cadence": 30.0,
+                        "fov": 29.2,
+                        "pixel_scale": 1.86,
+                        "filters": ["c", "o"]
+                    }
+                }
+            ]
+        },
+        {
+            "name": "SOAR",
+            "full_name": "SOAR Goodman High Throughput Spectrograph",
+            "latitude": -30.2381,
+            "longitude": -70.7336,
+            "altitude": 2738.0,
+            "modes": [
+                {
+                    "key": "400",
+                    "display_name": "Goodman 400 l/mm",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "400",
+                        "resolution_coefficients": [840.0],
+                        "wavelength_min": 3000.0,
+                        "wavelength_max": 9000.0
+                    }
+                },
+                {
+                    "key": "600",
+                    "display_name": "Goodman 600 l/mm",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "600",
+                        "resolution_coefficients": [1300.0],
+                        "wavelength_min": 3000.0,
+                        "wavelength_max": 8500.0
+                    }
+                },
+                {
+                    "key": "930",
+                    "display_name": "Goodman 930 l/mm",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "930",
+                        "resolution_coefficients": [0, 0.37037037],
+                        "wavelength_min": 3000.0,
+                        "wavelength_max": 9000.0,
+                        "common_setups": [
+                            {
+                                "label": "blue",
+                                "central_wavelength": 4450.0,
+                                "wavelength_min": 3600.0,
+                                "wavelength_max": 5300.0
+                            },
+                            {
+                                "label": "M1",
+                                "central_wavelength": 5500.0,
+                                "wavelength_min": 4200.0,
+                                "wavelength_max": 6800.0
+                            },
+                            {
+                                "label": "M2",
+                                "central_wavelength": 7000.0,
+                                "wavelength_min": 5700.0,
+                                "wavelength_max": 8300.0
+                            }
+                        ]
+                    }
+                },
+                {
+                    "key": "1200",
+                    "display_name": "Goodman 1200 l/mm",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "1200",
+                        "resolution_coefficients": [2800.0],
+                        "wavelength_min": 3000.0,
+                        "wavelength_max": 7000.0
+                    }
+                },
+                {
+                    "key": "2100",
+                    "display_name": "Goodman 2100 l/mm",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "2100",
+                        "resolution_coefficients": [6000.0],
+                        "wavelength_min": 3500.0,
+                        "wavelength_max": 6000.0
+                    }
+                }
+            ]
+        },
+        {
+            "name": "ZTF",
+            "full_name": "Zwicky Transient Facility (Palomar Observatory)",
+            "latitude": 33.3564,
+            "longitude": -116.8597,
+            "altitude": 1712.0,
+            "modes": [
+                {
+                    "key": "survey",
+                    "display_name": "ZTF Survey Photometry",
+                    "data_type": "photometry",
+                    "photometric": {
+                        "cadence": 30.0,
+                        "fov": 47.0,
+                        "pixel_scale": 1.012,
+                        "filters": ["zg", "zr", "zi"]
+                    }
+                }
+            ]
+        },
+        {
+            "name": "TESS",
+            "full_name": "Transiting Exoplanet Survey Satellite (NASA)",
+            "latitude": 0.0,
+            "longitude": 0.0,
+            "altitude": 0.0,
+            "space_based": true,
+            "modes": [
+                {
+                    "key": "fast",
+                    "display_name": "Fast Cadence (20 s)",
+                    "data_type": "photometry",
+                    "photometric": {
+                        "cadence": 20.0,
+                        "pixel_scale": 21.0,
+                        "filters": ["T"]
+                    }
+                },
+                {
+                    "key": "short_cadence",
+                    "display_name": "Short Cadence (2 min)",
+                    "data_type": "photometry",
+                    "photometric": {
+                        "cadence": 120.0,
+                        "pixel_scale": 21.0,
+                        "filters": ["T"]
+                    }
+                },
+                {
+                    "key": "ffi",
+                    "display_name": "Full Frame Image",
+                    "data_type": "photometry",
+                    "photometric": {
+                        "cadence": 600.0,
+                        "fov": 2304.0,
+                        "pixel_scale": 21.0,
+                        "filters": ["T"]
+                    }
+                }
+            ]
+        },
+        {
+            "name": "UVES",
+            "full_name": "Ultraviolet and Visual Echelle Spectrograph (VLT UT2)",
+            "latitude": -24.6275,
+            "longitude": -70.4044,
+            "altitude": 2635.0,
+            "modes": [
+                {
+                    "key": "blue",
+                    "display_name": "UVES Blue Arm",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "blue_echelle",
+                        "resolution_coefficients": [40000.0],
+                        "wavelength_min": 3000.0,
+                        "wavelength_max": 5000.0,
+                        "common_setups": [
+                            { "label": "346", "central_wavelength": 3460.0, "wavelength_min": 3040.0, "wavelength_max": 3870.0 },
+                            { "label": "390", "central_wavelength": 3900.0, "wavelength_min": 3260.0, "wavelength_max": 4540.0 },
+                            { "label": "437", "central_wavelength": 4370.0, "wavelength_min": 3730.0, "wavelength_max": 5000.0 }
+                        ]
+                    }
+                },
+                {
+                    "key": "red",
+                    "display_name": "UVES Red Arm",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "red_echelle",
+                        "resolution_coefficients": [40000.0],
+                        "wavelength_min": 4200.0,
+                        "wavelength_max": 11000.0,
+                        "common_setups": [
+                            { "label": "520", "central_wavelength": 5200.0, "wavelength_min": 4140.0, "wavelength_max": 6210.0 },
+                            { "label": "580", "central_wavelength": 5800.0, "wavelength_min": 4780.0, "wavelength_max": 6810.0 },
+                            { "label": "860", "central_wavelength": 8600.0, "wavelength_min": 6600.0, "wavelength_max": 10600.0 }
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "name": "ALFOSC",
+            "full_name": "Alhambra Faint Object Spectrograph and Camera (NOT)",
+            "latitude": 28.7572,
+            "longitude": -17.8850,
+            "altitude": 2382.0,
+            "modes": [
+                {
+                    "key": "Gr4",
+                    "display_name": "Grism #4",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "Gr4",
+                        "resolution_coefficients": [360.0],
+                        "wavelength_min": 3200.0,
+                        "wavelength_max": 9100.0
+                    }
+                },
+                {
+                    "key": "Gr7",
+                    "display_name": "Grism #7",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "Gr7",
+                        "resolution_coefficients": [500.0],
+                        "wavelength_min": 3850.0,
+                        "wavelength_max": 6850.0
+                    }
+                },
+                {
+                    "key": "Gr18",
+                    "display_name": "Grism #18",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "Gr18",
+                        "resolution_coefficients": [1000.0],
+                        "wavelength_min": 3500.0,
+                        "wavelength_max": 5050.0
+                    }
+                },
+                {
+                    "key": "Gr20",
+                    "display_name": "Grism #20",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "Gr20",
+                        "resolution_coefficients": [2400.0],
+                        "wavelength_min": 5650.0,
+                        "wavelength_max": 7110.0
+                    }
+                },
+                {
+                    "key": "imaging",
+                    "display_name": "ALFOSC Imaging",
+                    "data_type": "photometry",
+                    "photometric": {
+                        "fov": 6.4,
+                        "pixel_scale": 0.2138,
+                        "filters": ["U", "B", "V", "R", "i"]
+                    }
+                }
+            ]
+        },
+        {
+            "name": "EFOSC2",
+            "full_name": "ESO Faint Object Spectrograph and Camera 2 (NTT)",
+            "latitude": -29.2563,
+            "longitude": -70.7380,
+            "altitude": 2375.0,
+            "modes": [
+                {
+                    "key": "Gr11",
+                    "display_name": "Grism #11",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "Gr11",
+                        "resolution_coefficients": [500.0],
+                        "wavelength_min": 3380.0,
+                        "wavelength_max": 7520.0
+                    }
+                },
+                {
+                    "key": "Gr13",
+                    "display_name": "Grism #13",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "Gr13",
+                        "resolution_coefficients": [360.0],
+                        "wavelength_min": 3685.0,
+                        "wavelength_max": 9315.0
+                    }
+                },
+                {
+                    "key": "Gr16",
+                    "display_name": "Grism #16",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "Gr16",
+                        "resolution_coefficients": [600.0],
+                        "wavelength_min": 6015.0,
+                        "wavelength_max": 10320.0
+                    }
+                },
+                {
+                    "key": "imaging",
+                    "display_name": "EFOSC2 Imaging",
+                    "data_type": "photometry",
+                    "photometric": {
+                        "fov": 4.1,
+                        "pixel_scale": 0.24,
+                        "filters": ["U", "B", "V", "R", "I", "g", "r", "i", "z"]
+                    }
+                }
+            ]
+        },
+        {
+            "name": "X-Shooter",
+            "full_name": "X-Shooter Echelle Spectrograph (VLT UT3)",
+            "latitude": -24.6275,
+            "longitude": -70.4044,
+            "altitude": 2635.0,
+            "modes": [
+                {
+                    "key": "UVB",
+                    "display_name": "UVB Arm",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "UVB_echelle",
+                        "resolution_coefficients": [5400.0],
+                        "wavelength_min": 3000.0,
+                        "wavelength_max": 5595.0
+                    }
+                },
+                {
+                    "key": "VIS",
+                    "display_name": "VIS Arm",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "VIS_echelle",
+                        "resolution_coefficients": [18400.0],
+                        "wavelength_min": 5595.0,
+                        "wavelength_max": 10240.0
+                    }
+                },
+                {
+                    "key": "NIR",
+                    "display_name": "NIR Arm",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "NIR_echelle",
+                        "resolution_coefficients": [5600.0],
+                        "wavelength_min": 10240.0,
+                        "wavelength_max": 24800.0
+                    }
+                }
+            ]
+        },
+        {
+            "name": "KECK",
+            "full_name": "W.M. Keck Observatory (Mauna Kea)",
+            "latitude": 19.8263,
+            "longitude": -155.4747,
+            "altitude": 4145.0,
+            "modes": [
+                {
+                    "key": "HIRES",
+                    "display_name": "HIRES Echelle Spectrograph",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "HIRES_echelle",
+                        "resolution_coefficients": [49000.0],
+                        "wavelength_min": 3000.0,
+                        "wavelength_max": 10000.0
+                    }
+                },
+                {
+                    "key": "DEIMOS",
+                    "display_name": "DEIMOS Multi-Object Spectrograph",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "DEIMOS_600ZD",
+                        "resolution_coefficients": [2000.0],
+                        "wavelength_min": 4000.0,
+                        "wavelength_max": 11000.0
+                    }
+                },
+                {
+                    "key": "LRIS",
+                    "display_name": "LRIS Low-Resolution Spectrograph",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "LRIS",
+                        "resolution_coefficients": [1500.0],
+                        "wavelength_min": 3100.0,
+                        "wavelength_max": 10000.0
+                    }
+                }
+            ]
+        }
+    ]
+}
