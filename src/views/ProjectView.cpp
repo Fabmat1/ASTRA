@@ -30,6 +30,8 @@
 #include <QMainWindow>
 #include <QSettings>
 #include <QStatusBar>
+#include <QWheelEvent>
+#include <QScrollBar>
 
 ProjectView::ProjectView(ApplicationController* controller, QWidget *parent)
     : QWidget(parent)
@@ -103,6 +105,8 @@ void ProjectView::setupUi()
     _starTable->horizontalHeader()->setContextMenuPolicy(Qt::CustomContextMenu);
     _starTable->verticalHeader()->setVisible(true);
     _starTable->verticalHeader()->setSectionsClickable(true);
+
+    _starTable->viewport()->installEventFilter(this);
 
     mainLayout->addWidget(_starTable, 1);
 
@@ -601,6 +605,34 @@ void ProjectView::refreshTable()
         updateStatusBar(QString("Loaded %1 stars")
                         .arg(_currentProject ? _currentProject->getStarCount() : 0));
     }
+}
+
+bool ProjectView::eventFilter(QObject* obj, QEvent* event)
+{
+    // Catch wheel events specifically on the star table's viewport
+    if (obj == _starTable->viewport() && event->type() == QEvent::Wheel) {
+        QWheelEvent* wheelEvent = static_cast<QWheelEvent*>(event);
+        
+        // Check if the Shift key is actively being held
+        if (wheelEvent->modifiers() & Qt::ShiftModifier) {
+            QScrollBar* hBar = _starTable->horizontalScrollBar();
+            
+            // Prioritize high-resolution pixel delta for smooth trackpads/mice
+            if (!wheelEvent->pixelDelta().isNull()) {
+                hBar->setValue(hBar->value() - wheelEvent->pixelDelta().y());
+            } else {
+                // Fallback for standard stepped mouse wheels 
+                // angleDelta().y() is usually 120 per notch. We convert this to ~3 standard scroll steps.
+                int delta = wheelEvent->angleDelta().y();
+                hBar->setValue(hBar->value() - (delta / 120.0) * hBar->singleStep() * 3);
+            }
+            
+            return true; // Consume the event so it doesn't scroll vertically
+        }
+    }
+    
+    // Pass all other events to the base class for normal processing
+    return QWidget::eventFilter(obj, event);
 }
 
 // ============================================================================

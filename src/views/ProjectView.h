@@ -180,9 +180,10 @@ private slots:
     void onSelectionChanged(const QItemSelection& selected, const QItemSelection& deselected);
 
 protected:
+    bool eventFilter(QObject* obj, QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
 
-    private:
+private:
     void setupUi();
     void setupContextMenus();
     std::vector<std::shared_ptr<Star>> getSelectedStars() const;
