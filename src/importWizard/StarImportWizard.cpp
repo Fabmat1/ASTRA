@@ -1,7 +1,7 @@
 #include "../importWizard/StarImportWizard.h"
 #include "controllers/ApplicationController.h"
 #include "../utils/BackgroundTaskManager.h"
-#include "../utils/DatabaseManager.h"
+#include "../db/DatabaseManager.h"
 #include "models/Project.h"
 #include "../utils/Logger.h"
 

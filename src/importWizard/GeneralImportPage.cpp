@@ -7,7 +7,7 @@
 #include "models/Project.h"
 #include "models/Star.h"
 #include "../utils/BackgroundTaskManager.h"
-#include "../utils/DatabaseManager.h"
+#include "../db/DatabaseManager.h"
 #include <QUuid>
 #include "../utils/Logger.h"
 

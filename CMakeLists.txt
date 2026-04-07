@@ -105,8 +105,25 @@ set(SOURCES
     src/dialogs/NewProjectDialog.cpp
     src/dialogs/EditProjectDialog.cpp
     src/importWizard/StarImportWizard.cpp
-    src/utils/DatabaseManager.cpp
+    
     src/utils/ThemeManager.cpp
+    # ── db layer (generated) ──
+    src/db/DatabaseManager.cpp
+    src/db/DatabaseManager.h
+    src/db/DBAccess.cpp
+    src/db/DBAccess.h
+    src/db/ProjectRepository.cpp
+    src/db/ProjectRepository.h
+    src/db/StarRepository.cpp
+    src/db/StarRepository.h
+    src/db/PhotometryRepository.cpp
+    src/db/PhotometryRepository.h
+    src/db/SpectrumRepository.cpp
+    src/db/SpectrumRepository.h
+    src/db/RadialVelocityRepository.cpp
+    src/db/RadialVelocityRepository.h
+    src/db/InstrumentRepository.cpp
+    src/db/InstrumentRepository.h
     src/utils/BackgroundTaskManager.cpp
     src/utils/Logger.cpp
     src/utils/SpectrumReader.cpp
@@ -155,7 +172,7 @@ set(HEADERS
     src/dialogs/NewProjectDialog.h
     src/dialogs/EditProjectDialog.h
     src/importWizard/StarImportWizard.h
-    src/utils/DatabaseManager.h
+    
     src/utils/ThemeManager.h
     src/utils/BackgroundTaskManager.h
     src/utils/Logger.h

@@ -2,7 +2,7 @@
 #include "../importWizard/StarImportWizard.h"
 #include "../importWizard/ImportStagingArea.h"
 #include "../utils/ExtractSED.h"
-#include "../utils/DatabaseManager.h"
+#include "../db/DatabaseManager.h"
 #include "../utils/Logger.h"
 
 #include "controllers/ApplicationController.h"

@@ -6,7 +6,7 @@
 #include "models/Star.h"
 #include "../importWizard/StarImportWizard.h"
 #include "utils/Logger.h"
-#include "utils/DatabaseManager.h"
+#include "db/DatabaseManager.h"
 #include "views/StarDetailView.h"
 #include "StarFilterWidget.h"
 #include "models/ColumnPreset.h"

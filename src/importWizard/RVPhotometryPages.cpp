@@ -7,7 +7,7 @@
 #include "models/Star.h"
 #include "models/Spectrum.h"
 #include "models/RadialVelocity.h"
-#include "../utils/DatabaseManager.h"
+#include "../db/DatabaseManager.h"
 #include "../utils/Logger.h"
 #include "../utils/BackgroundTaskManager.h"
 

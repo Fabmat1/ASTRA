@@ -6,7 +6,7 @@
 #include "models/Project.h"
 #include "models/Star.h"
 #include "models/Photometry.h"
-#include "../utils/DatabaseManager.h"
+#include "../db/DatabaseManager.h"
 #include "../utils/Logger.h"
 #include "models/Time.h"
 

@@ -5,7 +5,7 @@
 #include "models/RadialVelocity.h"    
 #include "models/Project.h"        
 #include "Logger.h"
-#include "utils/DatabaseManager.h"
+#include "db/DatabaseManager.h"
 #include "../importWizard/ImportStagingArea.h"
 #include "models/Time.h"
 

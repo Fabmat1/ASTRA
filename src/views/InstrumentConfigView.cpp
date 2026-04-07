@@ -1,5 +1,5 @@
 #include "InstrumentConfigView.h"
-#include "utils/DatabaseManager.h"
+#include "db/DatabaseManager.h"
 #include "utils/CoastlineData.h"
 
 #include <QPainter>

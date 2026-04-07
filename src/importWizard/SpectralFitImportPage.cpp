@@ -5,7 +5,7 @@
 #include "models/Star.h"
 #include "models/Spectrum.h"
 #include "../utils/Logger.h"
-#include "../utils/DatabaseManager.h"
+#include "../db/DatabaseManager.h"
 #include "../utils/BackgroundTaskManager.h"
 
 #include <QVBoxLayout>

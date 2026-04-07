@@ -1,7 +1,7 @@
 #include "ApplicationController.h"
 #include "models/Project.h"
 #include "models/Star.h"
-#include "utils/DatabaseManager.h"
+#include "db/DatabaseManager.h"
 #include "utils/ThemeManager.h"
 #include "utils/BackgroundTaskManager.h"
 #include <QApplication>

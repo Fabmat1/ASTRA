@@ -1,6 +1,6 @@
 #include "../importWizard/ImportStagingArea.h"
 
-#include "../utils/DatabaseManager.h"
+#include "../db/DatabaseManager.h"
 #include "models/Star.h"
 #include "models/Spectrum.h"
 #include "models/RadialVelocity.h"
