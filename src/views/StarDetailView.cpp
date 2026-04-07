@@ -2602,7 +2602,7 @@ void StarDetailView::updateSpectrumDisplay()
             std::vector<double> allY;
             allY.insert(allY.end(), activeD.begin(), activeD.end());
             for (double v : modelVec) allY.push_back(v);
-            auto [mainYLo, mainYHi] = robustRange(allY, 0.95, 0.15);
+            auto [mainYLo, mainYHi] = robustRange(allY, 0.95, 0.25);
             _spectraMainPlot->yAxis->setLabel(
                 displayMode == DisplayNormalized ? "Normalized Flux" : "Flux");
             _spectraMainPlot->yAxis->setRange(mainYLo, mainYHi);
@@ -2678,19 +2678,6 @@ void StarDetailView::updateSpectrumDisplay()
         _spectraMainPlot->xAxis->setTickLabels(true);
         _spectraMainPlot->xAxis->setLabel("Wavelength [Å]");
     }
-
-    // Robust Y range — clip cosmic rays (use middle 95% of flux values)
-    std::vector<double> allMainY;
-    allMainY.reserve(fluxes.size());
-    for (size_t i = 0; i < fluxes.size(); ++i) {
-        if (!std::isnan(fluxes[i]))
-            allMainY.push_back(fluxes[i]);
-    }
-
-    auto [mainYLo, mainYHi] = robustRange(allMainY, 0.95, 0.15);
-
-    _spectraMainPlot->yAxis->setLabel("Normalized Flux");
-    _spectraMainPlot->yAxis->setRange(mainYLo, mainYHi);
 
     _spectraMainPlot->replot();
 
