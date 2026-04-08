@@ -236,13 +236,11 @@ void LightcurveImportPage::initializePage()
 
 bool LightcurveImportPage::validatePage()
 {
-    if (!_scanned) return false;
-
     int sel = 0;
     for (const auto& e : _entries)
         if (e.selected && !e.hasError) ++sel;
 
-    if (sel == 0) return true;   // nothing to import, allow moving on
+    if (sel == 0) return true;   
 
     stageSelectedLightcurves();
     return true;
@@ -250,7 +248,7 @@ bool LightcurveImportPage::validatePage()
 
 bool LightcurveImportPage::isComplete() const
 {
-    return _scanned;
+    return true;
 }
 
 int LightcurveImportPage::nextId() const
@@ -406,12 +404,6 @@ void LightcurveImportPage::scanFolderStructure(const QString& rootPath)
                             pt.time = Time(pt.time.nativeValue(), entry.detectedTimeScale);
                         }
                     }
-                }                
-
-                if (entry.numPoints == 0) {
-                    entry.hasError     = true;
-                    entry.errorMessage = "File contains no valid data points";
-                    entry.selected     = false;
                 }
             } else {
                 entry.hasError     = true;
@@ -564,12 +556,6 @@ void LightcurveImportPage::scanCSVManifest(const QString& csvPath)
                         pt.time = Time(pt.time.nativeValue(), entry.detectedTimeScale);
                     }
                 }
-            }            
-
-            if (entry.numPoints == 0) {
-                entry.hasError     = true;
-                entry.errorMessage = "No valid data points";
-                entry.selected     = false;
             }
         } else {
             entry.hasError     = true;
@@ -600,46 +586,49 @@ bool LightcurveImportPage::parseLightcurveFile(
         return false;
     }
 
-    QTextStream in(&file);
+    const QString content = QString::fromUtf8(file.readAll());
+    file.close();
+
+    const QStringList allLines = content.split('\n');
+
     QSet<QString> filterSet;
     outPoints.clear();
     outPoints.reserve(4096);
 
+    static const QRegularExpression wsRe("\\s+");
+
     // Detect delimiter from first non-empty, non-comment line
     QChar delim = ',';
-    QString firstDataLine;
-    while (!in.atEnd()) {
-        QString line = in.readLine().trimmed();
+    int firstDataIdx = -1;
+
+    for (int i = 0; i < allLines.size(); ++i) {
+        const QString line = allLines[i].trimmed();
         if (line.isEmpty() || line.startsWith('#') || line.startsWith("//"))
             continue;
-        firstDataLine = line;
+
+        firstDataIdx = i;
+
+        int commas = line.count(',');
+        int tabs   = line.count('\t');
+        int spaces = line.count(wsRe);
+        if (tabs > commas)       delim = '\t';
+        else if (commas == 0 && spaces > 0) delim = ' ';
         break;
     }
 
-    if (firstDataLine.isEmpty()) {
+    if (firstDataIdx < 0) {
         outError = "File is empty or contains only comments";
         return false;
     }
 
-    {
-        int commas = firstDataLine.count(',');
-        int tabs   = firstDataLine.count('\t');
-        int spaces = firstDataLine.count(QRegularExpression("\\s+"));
-        if (tabs > commas)  delim = '\t';
-        else if (commas == 0 && spaces > 0) delim = ' ';
-    }
-
-    // Reset stream to re-process from the beginning
-    in.seek(0);
-
     auto splitLine = [&](const QString& line) -> QStringList {
         if (delim == ' ')
-            return line.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+            return line.split(wsRe, Qt::SkipEmptyParts);
         return line.split(delim);
     };
 
-    while (!in.atEnd()) {
-        QString line = in.readLine().trimmed();
+    for (int i = firstDataIdx; i < allLines.size(); ++i) {
+        const QString line = allLines[i].trimmed();
         if (line.isEmpty() || line.startsWith('#') || line.startsWith("//"))
             continue;
 
@@ -688,16 +677,38 @@ bool LightcurveImportPage::parseLightcurveFile(
         outPoints.push_back(std::move(pt));
     }
 
-    file.close();
-
     // Sort by time
     std::sort(outPoints.begin(), outPoints.end(),
               [](const LightcurvePoint& a, const LightcurvePoint& b) {
-                return a.time < b.time; 
+                  return a.time < b.time;
               });
 
     outFilters = filterSet.values();
     outFilters.sort();
+
+    // Reject files with no valid data points (e.g. all-NaN rows)
+    if (outPoints.empty()) {
+        outError = "No valid data points found";
+        return false;
+    }
+
+    // If every detected filter value parses as a number, the column layout
+    // is almost certainly not time/flux/err/filter — reject as trash
+    if (!outFilters.isEmpty()) {
+        bool allNumeric = true;
+        for (const QString& f : outFilters) {
+            bool ok;
+            f.toDouble(&ok);
+            if (!ok) { allNumeric = false; break; }
+        }
+        if (allNumeric) {
+            outError = "All filter values are numeric — column structure "
+                       "does not match expected lightcurve format";
+            outPoints.clear();
+            outFilters.clear();
+            return false;
+        }
+    }
 
     return true;
 }

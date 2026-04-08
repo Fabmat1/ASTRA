@@ -139,8 +139,8 @@ private:
     QString _file;
     QString _instrument;
 
-    Time _time;   // replaces _mjd, _bjd, _exposureTime
-
+    Time _time;  
+    
     bool _isBarycentricallyCorrected;
 
     // Spectral data
