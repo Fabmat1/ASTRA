@@ -5,6 +5,7 @@ project(ASTRA VERSION 0.1.0 LANGUAGES CXX)
 # Usage: cmake -DASTRA_DATA_DIR=/opt/astra/data ..
 # Default: empty string → falls back to QStandardPaths::AppDataLocation at runtime
 set(ASTRA_DATA_DIR "" CACHE PATH "Compile-time default for data/db/log storage directory")
+message(STATUS "ASTRA data storage location set to: ${ASTRA_DATA_DIR}")
 
 # Set C++ standard
 set(CMAKE_CXX_STANDARD 17)
@@ -152,6 +153,7 @@ set(SOURCES
     src/views/InstrumentConfigView.cpp
     src/models/ColumnPreset.cpp
     src/models/InstrumentMode.cpp
+    src/utils/CrossRefResolver.cpp
     )
 
 # Header files
@@ -203,6 +205,7 @@ set(HEADERS
     src/views/InstrumentConfigView.h
     src/models/ColumnPreset.h
     src/models/InstrumentMode.h
+    src/utils/CrossRefResolver.h
 )
 
 # Create executable

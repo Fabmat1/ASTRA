@@ -6,6 +6,8 @@
 #include "models/Instrument.h"
 #include "models/Time.h"
 #include "utils/Logger.h"
+#include "utils/CrossRefResolver.h"
+#include "utils/AppPaths.h"
 
 #include "views/tools/RVInspectorDialog.h"
 #include "views/tools/SpectraFitDialog.h"
@@ -32,6 +34,8 @@
 #include <QStringList>
 #include <QMap>
 #include <QApplication>
+#include <QClipboard>
+#include <QToolTip>
 
 #include "qcustomplot.h"
 
@@ -132,28 +136,26 @@ QPair<double, double> robustRange(const std::vector<double>& values,
 
 void stylePlot(QCustomPlot* plot)
 {
-    // Read the authoritative dark/light flag set by ThemeManager
     bool isDark = qApp->property("isDarkTheme").toBool();
 
-    QColor bgColor, plotBg, textColor, gridColor, subGridColor;
+    QColor bgColor      = isDark ? QColor(42, 42, 42)   : QColor(255, 255, 255);
+    QColor textColor    = isDark ? QColor(210, 210, 210) : QColor(30, 30, 30);
+    QColor gridColor    = isDark ? QColor(80, 80, 80)    : QColor(200, 200, 200);
+    QColor subGridColor = isDark ? QColor(55, 55, 55)    : QColor(225, 225, 225);
 
-    if (isDark) {
-        bgColor      = QColor(42, 42, 42);
-        plotBg       = QColor(30, 30, 30);
-        textColor    = QColor(210, 210, 210);
-        gridColor    = QColor(80, 80, 80);
-        subGridColor = QColor(55, 55, 55);
-    } else {
-        bgColor      = QColor(240, 240, 240);
-        plotBg       = QColor(255, 255, 255);
-        textColor    = QColor(30, 30, 30);
-        gridColor    = QColor(180, 180, 180);
-        subGridColor = QColor(210, 210, 210);
+    for (QWidget* w = plot->parentWidget(); w; w = w->parentWidget()) {
+        QColor c = w->palette().color(QPalette::Window);
+        bool consistent = isDark ? (c.lightnessF() < 0.45)
+                                 : (c.lightnessF() > 0.55);
+        if (consistent && c.alpha() == 255) {
+            bgColor = c;
+            break;
+        }
     }
 
     plot->setStyleSheet("");
     plot->setBackground(QBrush(bgColor));
-    plot->axisRect()->setBackground(QBrush(plotBg));
+    plot->axisRect()->setBackground(QBrush(bgColor));
 
     for (auto* axis : {plot->xAxis, plot->xAxis2, plot->yAxis, plot->yAxis2}) {
         axis->setBasePen(QPen(textColor, 1));
@@ -168,7 +170,7 @@ void stylePlot(QCustomPlot* plot)
     }
 
     plot->legend->setBorderPen(QPen(gridColor));
-    plot->legend->setBrush(QBrush(plotBg));
+    plot->legend->setBrush(QBrush(bgColor));
     plot->legend->setTextColor(textColor);
 }
 
@@ -268,6 +270,81 @@ QPair<double, double> addRVDataToPlot(
     return {yLo, yHi};
 }
 
+class CopyEventFilter : public QObject
+{
+public:
+    CopyEventFilter(const QString& text, QWidget* target, QObject* parent = nullptr)
+        : QObject(parent), _text(text), _target(target) {}
+
+protected:
+    bool eventFilter(QObject*, QEvent* ev) override
+    {
+        if (ev->type() == QEvent::MouseButtonPress) {
+            QApplication::clipboard()->setText(_text);
+            auto* popup = new QLabel("✓ Copied");
+            popup->setAttribute(Qt::WA_DeleteOnClose);
+            popup->setAttribute(Qt::WA_ShowWithoutActivating);
+            popup->setWindowFlags(Qt::ToolTip | Qt::FramelessWindowHint);
+            popup->setStyleSheet(
+                "QLabel { background: #4CAF50; color: white; font-weight: bold; "
+                "padding: 4px 12px; border-radius: 4px; font-size: 12px; }");
+            popup->adjustSize();
+            popup->move(QCursor::pos() + QPoint(12, 12));
+            popup->show();
+            QTimer::singleShot(1000, popup, &QLabel::close);
+            return true;
+        }
+        return false;
+    }
+
+private:
+    QString _text;
+    QWidget* _target;
+};
+
+void makeCopyable(QLabel* label, const QString& textToCopy)
+{
+    label->setCursor(Qt::PointingHandCursor);
+    label->installEventFilter(new CopyEventFilter(textToCopy, label, label));
+}
+QString bibcodeDisplayJournal(const QString& rawAbbrev)
+{
+    static const QMap<QString, QString> map = {
+        {"Natur", "Nature"}, {"NatAs", "Nat. Astron."},
+        {"Sci..", "Science"},
+    };
+    auto it = map.find(rawAbbrev);
+    if (it != map.end()) return *it;
+    QString c = rawAbbrev;
+    c.remove('.');
+    return c.trimmed();
+}
+
+QString formatBibcodeMeta(const QString& bib)
+{
+    if (bib.length() != 19) return QString();
+    int year = bib.left(4).toInt();
+    QString journal = bibcodeDisplayJournal(bib.mid(4, 5));
+    QString volume = bib.mid(9, 4);
+    volume.remove('.');
+    volume = volume.trimmed();
+    QChar section = bib.at(13);
+    QString page = bib.mid(14, 4);
+    page.remove('.');
+    page = page.trimmed();
+    if (section.isLetter()) page = QString(section) + page;
+
+    QStringList parts;
+    if (year > 0) parts << QString::number(year);
+    if (!journal.isEmpty()) parts << journal;
+    if (!volume.isEmpty()) {
+        if (!page.isEmpty())
+            parts << (volume + ", " + page);
+        else
+            parts << volume;
+    }
+    return parts.join(", ");
+}
 } // anonymous namespace
 
 
@@ -427,7 +504,6 @@ public:
     QCustomPlot* addSegment(int stretch)
     {
         auto* plot = new QCustomPlot(this);
-        stylePlot(plot);
         plot->setMinimumHeight(100);
         _layout->addWidget(plot, std::max(stretch, 1));
         _plots.append(plot);
@@ -468,12 +544,16 @@ StarDetailView::StarDetailView(std::shared_ptr<Star> star, QWidget* parent)
     , _spectraResidualPlot(nullptr)
     , _axisSyncInProgress(false)
 {
+    _refResolver = new CrossRefResolver(AppPaths::database(), this);
+
     setupUi();
     populateSummary();
     populateRVPlot();
     populateLCPlot();
     populateSpectraPanel();
     _star->computeSummaryMetrics();
+
+    QTimer::singleShot(0, this, &StarDetailView::refreshAllPlotThemes);
 }
 
 StarDetailView::~StarDetailView()
@@ -523,6 +603,16 @@ void StarDetailView::setupUi()
 
     topLayout->addWidget(_mainHSplitter, 1);
     topLayout->addWidget(createButtonSidebar());
+
+    // Force equal partition of all four subpanels at startup
+    QTimer::singleShot(0, this, [this]() {
+        int w = _mainHSplitter->width();
+        _mainHSplitter->setSizes({w / 2, w / 2});
+        int lh = _leftVSplitter->height();
+        _leftVSplitter->setSizes({lh / 2, lh / 2});
+        int rh = _rightVSplitter->height();
+        _rightVSplitter->setSizes({rh / 2, rh / 2});
+    });
 }
 
 bool StarDetailView::event(QEvent* e)
@@ -632,14 +722,29 @@ QWidget* StarDetailView::createSpectraPanel()
     QHBoxLayout* tbLayout = new QHBoxLayout(_spectraToolbar);
     tbLayout->setContentsMargins(0, 2, 0, 2);
     tbLayout->setSpacing(8);
+    _spectraResetZoomButton = new QPushButton("⟲ Reset Zoom");
+    _spectraResetZoomButton->setToolTip("Reset zoom to show full spectrum");
+    _spectraResetZoomButton->setMaximumWidth(140);
+    _spectraResetZoomButton->setFlat(true);
+    _spectraResetZoomButton->setCursor(Qt::PointingHandCursor);
+    _spectraResetZoomButton->setVisible(false);
+    connect(_spectraResetZoomButton, &QPushButton::clicked, this, [this]() {
+        _spectraHasCustomZoom = false;
+        _spectraResetZoomButton->setVisible(false);
+        updateSpectrumDisplay();
+    });
+    tbLayout->addWidget(_spectraResetZoomButton);
 
-    tbLayout->addWidget(new QLabel("Model:"));
+    tbLayout->addStretch();
+
+    _spectraModelLabel = new QLabel("Model:");
+    tbLayout->addWidget(_spectraModelLabel);
+
     _spectraFitCombo = new QComboBox;
     _spectraFitCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     _spectraFitCombo->setMaximumWidth(350);
     tbLayout->addWidget(_spectraFitCombo);
 
-    // Replace the _spectraRenormCheck block with:
     _spectraDisplayMode = new QComboBox;
     _spectraDisplayMode->addItem("Normalized",  DisplayNormalized);
     _spectraDisplayMode->addItem("Rebinned",    DisplayRebinned);
@@ -650,8 +755,6 @@ QWidget* StarDetailView::createSpectraPanel()
         "Raw + renorm: instrument spectrum with model scaled to match");
     tbLayout->addWidget(_spectraDisplayMode);
 
-    tbLayout->addStretch();
-    _spectraToolbar->setVisible(false);
     layout->addWidget(_spectraToolbar, 0);
 
     // ── Main spectrum plot (QCustomPlot) ──
@@ -670,6 +773,28 @@ QWidget* StarDetailView::createSpectraPanel()
     _spectraResidualPlot->axisRect()->setRangeZoom(Qt::Horizontal);
     _spectraResidualPlot->setVisible(false);
     layout->addWidget(_spectraResidualPlot, 2);
+
+    // ── Detect user zoom interactions ──
+    connect(_spectraMainPlot, &QCustomPlot::mouseWheel, this, [this]() {
+        _spectraHasCustomZoom = true;
+        if (_spectraResetZoomButton) _spectraResetZoomButton->setVisible(true);
+    });
+    connect(_spectraMainPlot, &QCustomPlot::mouseMove, this, [this](QMouseEvent* ev) {
+        if (ev->buttons() & Qt::LeftButton) {
+            _spectraHasCustomZoom = true;
+            if (_spectraResetZoomButton) _spectraResetZoomButton->setVisible(true);
+        }
+    });
+    connect(_spectraResidualPlot, &QCustomPlot::mouseWheel, this, [this]() {
+        _spectraHasCustomZoom = true;
+        if (_spectraResetZoomButton) _spectraResetZoomButton->setVisible(true);
+    });
+    connect(_spectraResidualPlot, &QCustomPlot::mouseMove, this, [this](QMouseEvent* ev) {
+        if (ev->buttons() & Qt::LeftButton) {
+            _spectraHasCustomZoom = true;
+            if (_spectraResetZoomButton) _spectraResetZoomButton->setVisible(true);
+        }
+    });
 
     // Debounce timer for axis synchronization
     _axisSyncTimer = new QTimer(this);
@@ -1092,12 +1217,16 @@ QWidget* StarDetailView::createMetricCard(const QString& value, const QString& l
         "font-size: 22px; font-weight: 700; color: %1; border: none; background: transparent;"
     ).arg(accentColor.name()));
     valueLabel->setAlignment(Qt::AlignLeft);
+    if (value != "—")
+        makeCopyable(valueLabel, value);
     layout->addWidget(valueLabel);
 
     QLabel* labelWidget = new QLabel(label);
     labelWidget->setStyleSheet(QString(
         "font-size: 11px; font-weight: 600; color: %1; border: none; background: transparent;"
     ).arg(labelCol.name()));
+    if (value != "—")
+        makeCopyable(labelWidget, value);
     layout->addWidget(labelWidget);
 
     if (!subtitle.isEmpty()) {
@@ -1121,52 +1250,76 @@ QWidget* StarDetailView::createMetricCard(const QString& value, const QString& l
 QWidget* StarDetailView::createPropertiesSection()
 {
     auto has = [](double v) { return !std::isnan(v) && v != 0.0; };
-    auto valErr = [](double val, double err, int prec, const QString& unit = "") -> QString {
-        QString s = QString::number(val, 'f', prec);
+
+    struct ValResult { QString display; QString copy; };
+    auto valErr = [](double val, double err, int prec, const QString& unit = "") -> ValResult {
+        QString num = QString::number(val, 'f', prec);
+        QString s = num;
         if (!std::isnan(err) && err > 0.0)
             s += QString(" ± %1").arg(err, 0, 'f', prec);
         if (!unit.isEmpty())
             s += " " + unit;
-        return s;
+        return {s, num};
     };
 
     bool dark = isDarkTheme();
     QColor valCol   = dark ? QColor(220, 220, 225) : QColor(30, 30, 35);
     QColor labelCol = dark ? QColor(140, 140, 145) : QColor(100, 100, 105);
 
-    // Collect rows: (label, value) pairs grouped into columns
-    struct PropRow { QString label; QString value; };
+    struct PropRow { QString label; QString value; QString copyValue; };
     std::vector<PropRow> astroRows, photoRows, atmosRows;
 
     // Astrometry
     if (has(_star->getRa()) && has(_star->getDec())) {
-        astroRows.push_back({"RA",  QString::number(_star->getRa(), 'f', 6) + "°"});
-        astroRows.push_back({"Dec", QString::number(_star->getDec(), 'f', 6) + "°"});
+        QString raNum  = QString::number(_star->getRa(), 'f', 6);
+        QString decNum = QString::number(_star->getDec(), 'f', 6);
+        astroRows.push_back({"RA",  raNum + "°", raNum});
+        astroRows.push_back({"Dec", decNum + "°", decNum});
     }
-    if (has(_star->getPlx()))
-        astroRows.push_back({"Parallax", valErr(_star->getPlx(), _star->getEPlx(), 3, "mas")});
-    if (has(_star->getPmra()))
-        astroRows.push_back({"μ_RA", valErr(_star->getPmra(), _star->getEPmra(), 3, "mas/yr")});
-    if (has(_star->getPmdec()))
-        astroRows.push_back({"μ_Dec", valErr(_star->getPmdec(), _star->getEPmdec(), 3, "mas/yr")});
+    if (has(_star->getPlx())) {
+        auto [d, c] = valErr(_star->getPlx(), _star->getEPlx(), 3, "mas");
+        astroRows.push_back({"Parallax", d, c});
+    }
+    if (has(_star->getPmra())) {
+        auto [d, c] = valErr(_star->getPmra(), _star->getEPmra(), 3, "mas/yr");
+        astroRows.push_back({"μ_RA", d, c});
+    }
+    if (has(_star->getPmdec())) {
+        auto [d, c] = valErr(_star->getPmdec(), _star->getEPmdec(), 3, "mas/yr");
+        astroRows.push_back({"μ_Dec", d, c});
+    }
 
     // Photometry
-    if (has(_star->getGmag()))
-        photoRows.push_back({"G", valErr(_star->getGmag(), _star->getEGmag(), 3, "mag")});
-    if (has(_star->getBpRp()))
-        photoRows.push_back({"BP−RP", QString::number(_star->getBpRp(), 'f', 3) + " mag"});
-    if (has(_star->getBp()))
-        photoRows.push_back({"BP", valErr(_star->getBp(), _star->getEBp(), 3, "mag")});
-    if (has(_star->getRp()))
-        photoRows.push_back({"RP", valErr(_star->getRp(), _star->getERp(), 3, "mag")});
+    if (has(_star->getGmag())) {
+        auto [d, c] = valErr(_star->getGmag(), _star->getEGmag(), 3, "mag");
+        photoRows.push_back({"G", d, c});
+    }
+    if (has(_star->getBpRp())) {
+        QString num = QString::number(_star->getBpRp(), 'f', 3);
+        photoRows.push_back({"BP−RP", num + " mag", num});
+    }
+    if (has(_star->getBp())) {
+        auto [d, c] = valErr(_star->getBp(), _star->getEBp(), 3, "mag");
+        photoRows.push_back({"BP", d, c});
+    }
+    if (has(_star->getRp())) {
+        auto [d, c] = valErr(_star->getRp(), _star->getERp(), 3, "mag");
+        photoRows.push_back({"RP", d, c});
+    }
 
     // Atmospheric
-    if (has(_star->getTeff()))
-        atmosRows.push_back({"T_eff", valErr(_star->getTeff(), _star->getETeff(), 0, "K")});
-    if (has(_star->getLogg()))
-        atmosRows.push_back({"log g", valErr(_star->getLogg(), _star->getELogg(), 2, "dex")});
-    if (has(_star->getHe()))
-        atmosRows.push_back({"log(He/H)", valErr(_star->getHe(), _star->getEHe(), 2, "")});
+    if (has(_star->getTeff())) {
+        auto [d, c] = valErr(_star->getTeff(), _star->getETeff(), 0, "K");
+        atmosRows.push_back({"T_eff", d, c});
+    }
+    if (has(_star->getLogg())) {
+        auto [d, c] = valErr(_star->getLogg(), _star->getELogg(), 2, "dex");
+        atmosRows.push_back({"log g", d, c});
+    }
+    if (has(_star->getHe())) {
+        auto [d, c] = valErr(_star->getHe(), _star->getEHe(), 2, "");
+        atmosRows.push_back({"log(He/H)", d, c});
+    }
 
     // RV summary (if no orbital fit)
     auto rvCurve = _star->getRVCurve();
@@ -1175,22 +1328,26 @@ QWidget* StarDetailView::createPropertiesSection()
 
     std::vector<PropRow> rvRows;
     if (!(bestFit && bestFit->getPeriod() > 0)) {
-        if (has(_star->getRVMed()))
-            rvRows.push_back({"RV_med", valErr(_star->getRVMed(), _star->getERVMed(), 2, "km/s")});
-        else if (has(_star->getRVAvg()))
-            rvRows.push_back({"RV_avg", valErr(_star->getRVAvg(), _star->getERVAvg(), 2, "km/s")});
+        if (has(_star->getRVMed())) {
+            auto [d, c] = valErr(_star->getRVMed(), _star->getERVMed(), 2, "km/s");
+            rvRows.push_back({"RV_med", d, c});
+        } else if (has(_star->getRVAvg())) {
+            auto [d, c] = valErr(_star->getRVAvg(), _star->getERVAvg(), 2, "km/s");
+            rvRows.push_back({"RV_avg", d, c});
+        }
 
         if (rvCurve && rvCurve->getNumPoints() > 0) {
             double minRV = rvCurve->getMinRV();
             double maxRV = rvCurve->getMaxRV();
             if (has(minRV) && has(maxRV)) {
                 double mid = minRV + (maxRV - minRV) / 2.0;
-                rvRows.push_back({"RV_mid", QString::number(mid, 'f', 2) + " km/s"});
+                QString num = QString::number(mid, 'f', 2);
+                rvRows.push_back({"RV_mid", num + " km/s", num});
             }
         }
     }
 
-    // Build grid widget
+    // Build grid widget with click-to-copy
     auto buildGrid = [&](const std::vector<PropRow>& rows) -> QWidget* {
         if (rows.empty()) return nullptr;
         QWidget* grid = new QWidget;
@@ -1205,22 +1362,25 @@ QWidget* StarDetailView::createPropertiesSection()
             int col = (i < maxPerCol) ? 0 : 2;
             int row = (i < maxPerCol) ? i : i - maxPerCol;
 
+            QString copyText = rows[i].copyValue.isEmpty()
+                                   ? rows[i].value : rows[i].copyValue;
+
             QLabel* lbl = new QLabel(rows[i].label);
             lbl->setStyleSheet(QString(
                 "font-size: 11px; font-weight: 600; color: %1; background: transparent; border: none;"
             ).arg(labelCol.name()));
+            makeCopyable(lbl, copyText);
 
             QLabel* val = new QLabel(rows[i].value);
             val->setStyleSheet(QString(
                 "font-size: 12px; color: %1; background: transparent; border: none;"
             ).arg(valCol.name()));
-            val->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            makeCopyable(val, copyText);
 
             gl->addWidget(lbl, row, col);
             gl->addWidget(val, row, col + 1);
         }
 
-        // Add column stretch
         gl->setColumnStretch(1, 1);
         if (rows.size() > static_cast<size_t>(maxPerCol))
             gl->setColumnStretch(3, 1);
@@ -1265,36 +1425,56 @@ QWidget* StarDetailView::createOrbitalFitSection()
     QColor valCol   = dark ? QColor(220, 220, 225) : QColor(30, 30, 35);
     QColor labelCol = dark ? QColor(140, 140, 145) : QColor(100, 100, 105);
 
-    auto valErr = [](double val, double err, int prec, const QString& unit = "") -> QString {
-        QString s = QString::number(val, 'f', prec);
+    struct ValResult { QString display; QString copy; };
+    auto valErr = [](double val, double err, int prec, const QString& unit = "") -> ValResult {
+        QString num = QString::number(val, 'f', prec);
+        QString s = num;
         if (!std::isnan(err) && err > 0.0)
             s += QString(" ± %1").arg(err, 0, 'f', prec);
         if (!unit.isEmpty())
             s += " " + unit;
-        return s;
+        return {s, num};
     };
     auto has = [](double v) { return !std::isnan(v) && v != 0.0; };
 
     auto rvCurve = _star->getRVCurve();
     auto bestFit = rvCurve->getBestFit();
 
-    struct Row { QString label; QString value; };
+    struct Row { QString label; QString value; QString copyValue; };
     std::vector<Row> rows;
 
-    rows.push_back({"Period", valErr(bestFit->getPeriod(), bestFit->getPeriodError(), 6, "d")});
-    rows.push_back({"K", valErr(bestFit->getK(), bestFit->getKError(), 2, "km/s")});
-    rows.push_back({"γ", valErr(bestFit->getGamma(), bestFit->getGammaError(), 2, "km/s")});
-    rows.push_back({"T₀ (ϕ)", valErr(bestFit->getPhi(), bestFit->getPhiError(), 4, "")});
-
-    if (bestFit->isEccentric()) {
-        rows.push_back({"e", valErr(bestFit->getEccentricity(), bestFit->getEccentricityError(), 4, "")});
-        rows.push_back({"ω", valErr(bestFit->getOmega(), bestFit->getOmegaError(), 1, "°")});
+    {
+        auto [d, c] = valErr(bestFit->getPeriod(), bestFit->getPeriodError(), 6, "d");
+        rows.push_back({"Period", d, c});
+    }
+    {
+        auto [d, c] = valErr(bestFit->getK(), bestFit->getKError(), 2, "km/s");
+        rows.push_back({"K", d, c});
+    }
+    {
+        auto [d, c] = valErr(bestFit->getGamma(), bestFit->getGammaError(), 2, "km/s");
+        rows.push_back({"γ", d, c});
+    }
+    {
+        auto [d, c] = valErr(bestFit->getPhi(), bestFit->getPhiError(), 4, "");
+        rows.push_back({"T₀ (ϕ)", d, c});
     }
 
-    if (has(bestFit->getRms()))
-        rows.push_back({"RMS", QString::number(bestFit->getRms(), 'f', 2) + " km/s"});
-    if (!bestFit->getFitMethod().isEmpty())
-        rows.push_back({"Method", bestFit->getFitMethod()});
+    if (bestFit->isEccentric()) {
+        auto [d1, c1] = valErr(bestFit->getEccentricity(), bestFit->getEccentricityError(), 4, "");
+        rows.push_back({"e", d1, c1});
+        auto [d2, c2] = valErr(bestFit->getOmega(), bestFit->getOmegaError(), 1, "°");
+        rows.push_back({"ω", d2, c2});
+    }
+
+    if (has(bestFit->getRms())) {
+        QString num = QString::number(bestFit->getRms(), 'f', 2);
+        rows.push_back({"RMS", num + " km/s", num});
+    }
+    if (!bestFit->getFitMethod().isEmpty()) {
+        QString m = bestFit->getFitMethod();
+        rows.push_back({"Method", m, m});
+    }
 
     // Build grid
     QWidget* grid = new QWidget;
@@ -1308,15 +1488,20 @@ QWidget* StarDetailView::createOrbitalFitSection()
         int col = (i < maxPerCol) ? 0 : 2;
         int row = (i < maxPerCol) ? i : i - maxPerCol;
 
+        QString copyText = rows[i].copyValue.isEmpty()
+                               ? rows[i].value : rows[i].copyValue;
+
         QLabel* lbl = new QLabel(rows[i].label);
         lbl->setStyleSheet(QString(
             "font-size: 11px; font-weight: 600; color: %1; background: transparent; border: none;"
         ).arg(labelCol.name()));
+        makeCopyable(lbl, copyText);
+
         QLabel* val = new QLabel(rows[i].value);
         val->setStyleSheet(QString(
             "font-size: 12px; color: %1; background: transparent; border: none;"
         ).arg(valCol.name()));
-        val->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        makeCopyable(val, copyText);
 
         gl->addWidget(lbl, row, col);
         gl->addWidget(val, row, col + 1);
@@ -1510,39 +1695,179 @@ QWidget* StarDetailView::createDataInventorySection()
 QWidget* StarDetailView::createReferencesSection()
 {
     bool dark = isDarkTheme();
-    QColor chipBg     = dark ? QColor(55, 60, 75)   : QColor(225, 235, 250);
-    QColor chipBorder = dark ? QColor(80, 90, 115)   : QColor(180, 195, 220);
-    QColor chipText   = dark ? QColor(140, 170, 220) : QColor(40, 80, 160);
-    QColor chipHover  = dark ? QColor(70, 80, 100)   : QColor(210, 225, 245);
+    QColor accentColor = dark ? QColor(100, 130, 200) : QColor(60, 100, 180);
+    QColor cardBg      = dark ? QColor(48, 50, 56)    : QColor(250, 250, 252);
+    QColor cardBorder  = dark ? QColor(65, 68, 75)     : QColor(215, 218, 225);
+    QColor titleColor  = dark ? QColor(225, 228, 235)  : QColor(25, 25, 30);
+    QColor subtitleCol = dark ? QColor(145, 150, 160)  : QColor(100, 105, 115);
+    QColor bodyCol     = dark ? QColor(190, 195, 205)  : QColor(55, 60, 70);
+    QColor abstractBg  = dark ? QColor(42, 44, 50)     : QColor(243, 244, 248);
+    QColor linkColor   = dark ? QColor(120, 160, 230)  : QColor(40, 90, 180);
+    QColor loadingCol  = dark ? QColor(110, 115, 125)  : QColor(150, 155, 165);
 
     QWidget* content = new QWidget;
-    QHBoxLayout* flowLayout = new QHBoxLayout(content);
-    flowLayout->setContentsMargins(0, 0, 0, 0);
-    flowLayout->setSpacing(6);
+    QVBoxLayout* layout = new QVBoxLayout(content);
+    layout->setContentsMargins(0, 0, 0, 0);
+    layout->setSpacing(6);
 
     auto bibcodes = _star->getBibcodes();
-    for (auto& bib : bibcodes) {
-        QPushButton* chip = new QPushButton(bib);
-        chip->setCursor(Qt::PointingHandCursor);
-        chip->setToolTip(QString("Open %1 on ADS").arg(bib));
-        chip->setStyleSheet(QString(
-            "QPushButton { "
-            "  font-size: 11px; color: %1; background: %2; "
-            "  border: 1px solid %3; border-radius: 4px; "
-            "  padding: 4px 10px; "
-            "} "
-            "QPushButton:hover { background: %4; } "
-            "QPushButton:pressed { background: %3; }"
-        ).arg(chipText.name(), chipBg.name(), chipBorder.name(), chipHover.name()));
+    std::sort(bibcodes.begin(), bibcodes.end(),
+              [](const QString& a, const QString& b) { return a > b; });
 
-        QString url = QString("https://ui.adsabs.harvard.edu/abs/%1/abstract").arg(bib);
-        connect(chip, &QPushButton::clicked, this, [url]() {
-            QDesktopServices::openUrl(QUrl(url));
+    QStringList toResolve;
+
+    QString cardStyle = QString(
+        "QFrame#refCard { background: %1; border: 1px solid %2; "
+        "border-left: 3px solid %3; border-radius: 5px; }"
+    ).arg(cardBg.name(), cardBorder.name(), accentColor.name());
+
+    QString linkBtnStyle = QString(
+        "QPushButton { font-size: 10px; color: %1; border: none; "
+        "background: transparent; padding: 0 4px; }"
+        "QPushButton:hover { color: %2; }"
+    ).arg(linkColor.name(), titleColor.name());
+
+    for (const auto& bib : bibcodes) {
+        QString adsUrl  = QString("https://ui.adsabs.harvard.edu/abs/%1/abstract").arg(bib);
+        QString metaStr = formatBibcodeMeta(bib);
+
+        QFrame* card = new QFrame;
+        card->setObjectName("refCard");
+        card->setStyleSheet(cardStyle);
+        card->setToolTip(bib);
+
+        QVBoxLayout* cardLayout = new QVBoxLayout(card);
+        cardLayout->setContentsMargins(10, 8, 10, 8);
+        cardLayout->setSpacing(3);
+
+        // Title — initially shows bibcode, replaced when resolved
+        QLabel* titleLabel = new QLabel(bib);
+        titleLabel->setTextFormat(Qt::PlainText);
+        titleLabel->setWordWrap(true);
+        titleLabel->setStyleSheet(QString(
+            "font-size: 12px; font-weight: 600; color: %1; "
+            "background: transparent; border: none;"
+        ).arg(titleColor.name()));
+        cardLayout->addWidget(titleLabel);
+
+        // Subtitle — authors + metadata
+        QLabel* subtitleLabel = new QLabel(metaStr);
+        subtitleLabel->setTextFormat(Qt::PlainText);
+        subtitleLabel->setWordWrap(true);
+        subtitleLabel->setStyleSheet(QString(
+            "font-size: 10px; color: %1; background: transparent; border: none;"
+        ).arg(subtitleCol.name()));
+        cardLayout->addWidget(subtitleLabel);
+
+        // Button row
+        QWidget* btnRow = new QWidget;
+        QHBoxLayout* btnLayout = new QHBoxLayout(btnRow);
+        btnLayout->setContentsMargins(0, 2, 0, 0);
+        btnLayout->setSpacing(8);
+
+        QPushButton* abstractBtn = new QPushButton("▸ Abstract");
+        abstractBtn->setFlat(true);
+        abstractBtn->setFixedHeight(20);
+        abstractBtn->setCursor(Qt::PointingHandCursor);
+        abstractBtn->setStyleSheet(linkBtnStyle);
+        abstractBtn->setVisible(false);
+        btnLayout->addWidget(abstractBtn);
+
+        btnLayout->addStretch();
+
+        QPushButton* adsBtn = new QPushButton("Open on ADS ↗");
+        adsBtn->setFlat(true);
+        adsBtn->setFixedHeight(20);
+        adsBtn->setCursor(Qt::PointingHandCursor);
+        adsBtn->setToolTip(adsUrl);
+        adsBtn->setStyleSheet(linkBtnStyle);
+        connect(adsBtn, &QPushButton::clicked, this, [adsUrl]() {
+            QDesktopServices::openUrl(QUrl(adsUrl));
+        });
+        btnLayout->addWidget(adsBtn);
+
+        cardLayout->addWidget(btnRow);
+
+        // Loading label
+        QLabel* loadingLabel = new QLabel("Resolving…");
+        loadingLabel->setTextFormat(Qt::PlainText);
+        loadingLabel->setStyleSheet(QString(
+            "font-size: 10px; font-style: italic; color: %1; "
+            "background: transparent; border: none;"
+        ).arg(loadingCol.name()));
+        loadingLabel->setVisible(false);
+        cardLayout->addWidget(loadingLabel);
+
+        // Abstract area (hidden until toggled)
+        QLabel* abstractLabel = new QLabel;
+        abstractLabel->setTextFormat(Qt::PlainText);
+        abstractLabel->setWordWrap(true);
+        abstractLabel->setStyleSheet(QString(
+            "font-size: 11px; color: %1; background: %2; "
+            "border: none; border-radius: 3px; padding: 6px 8px;"
+        ).arg(bodyCol.name(), abstractBg.name()));
+        abstractLabel->setVisible(false);
+        cardLayout->addWidget(abstractLabel);
+
+        connect(abstractBtn, &QPushButton::clicked, this,
+                [abstractBtn, abstractLabel]() {
+            bool show = !abstractLabel->isVisible();
+            abstractLabel->setVisible(show);
+            abstractBtn->setText(show ? "▾ Abstract" : "▸ Abstract");
         });
 
-        flowLayout->addWidget(chip);
+        layout->addWidget(card);
+
+        // Populate callback
+        auto populateCard = [titleLabel, subtitleLabel, loadingLabel,
+                             abstractLabel, abstractBtn,
+                             titleColor, subtitleCol, metaStr]
+                            (const BibcodeInfo& info) {
+            titleLabel->setText(info.title);
+            titleLabel->setStyleSheet(QString(
+                "font-size: 12px; font-weight: 600; color: %1; "
+                "background: transparent; border: none;"
+            ).arg(titleColor.name()));
+            titleLabel->setCursor(Qt::PointingHandCursor);
+            makeCopyable(titleLabel, info.title);
+
+            QString meta;
+            if (!info.authors.isEmpty())
+                meta = info.authors + "  ·  " + metaStr;
+            else
+                meta = metaStr;
+            subtitleLabel->setText(meta);
+
+            if (!info.abstract.isEmpty()) {
+                abstractLabel->setText(info.abstract);
+                abstractBtn->setVisible(true);
+            }
+
+            loadingLabel->setVisible(false);
+        };
+
+        BibcodeInfo cached = _refResolver->lookupCache(bib);
+        if (!cached.title.isEmpty()) {
+            populateCard(cached);
+        } else {
+            loadingLabel->setVisible(true);
+            toResolve << bib;
+
+            connect(_refResolver, &CrossRefResolver::resolved,
+                    card, [bib, populateCard](const QString& resolvedBib,
+                                              const BibcodeInfo& info) {
+                if (resolvedBib == bib) populateCard(info);
+            });
+
+            connect(_refResolver, &CrossRefResolver::fetchFailed,
+                    card, [bib, loadingLabel](const QString& failedBib) {
+                if (failedBib == bib) loadingLabel->setVisible(false);
+            });
+        }
     }
-    flowLayout->addStretch();
+
+    if (!toResolve.isEmpty())
+        _refResolver->resolve(toResolve);
 
     return createSectionFrame("References", content);
 }
@@ -2299,7 +2624,6 @@ void StarDetailView::populateSpectraPanel()
 
     _currentSpectrumIndex = -1;
     _sortedSpectra.clear();
-    _spectraToolbar->setVisible(false);
     _spectraResidualPlot->setVisible(false);
 
     auto spectra = _star->getSpectra();
@@ -2460,8 +2784,11 @@ void StarDetailView::displaySpectrum(int index)
         selectIdx = firstValidIdx;
 
     bool hasFits = (_spectraFitCombo->count() > 1);
-    _spectraToolbar->setVisible(hasFits);
+    _spectraModelLabel->setVisible(hasFits);
+    _spectraFitCombo->setVisible(hasFits);
+    _spectraDisplayMode->setVisible(hasFits);
     _spectraFitCombo->setCurrentIndex(selectIdx);
+    _spectraFitCombo->blockSignals(false);
 
     // ── Set default display mode based on what data is available ──
     _spectraDisplayMode->blockSignals(true);
@@ -2488,8 +2815,15 @@ void StarDetailView::updateSpectrumDisplay()
         _currentSpectrumIndex >= static_cast<int>(_sortedSpectra.size()))
         return;
 
-    // Stop any pending sync before rebuilding
     _axisSyncTimer->stop();
+
+    // Save current zoom state before rebuilding
+    QCPRange savedXRange, savedMainYRange;
+    bool restoreZoom = _spectraHasCustomZoom && _spectraMainPlot->graphCount() > 0;
+    if (restoreZoom) {
+        savedXRange     = _spectraMainPlot->xAxis->range();
+        savedMainYRange = _spectraMainPlot->yAxis->range();
+    }
 
     auto spec = _sortedSpectra[_currentSpectrumIndex];
     if (!spec) return;
@@ -2498,9 +2832,9 @@ void StarDetailView::updateSpectrumDisplay()
     auto fluxes      = spec->getFluxes();
     auto errors      = spec->getFluxErrors();
 
-    // Disconnect old axis sync before rebuilding
-    _spectraMainPlot->disconnect(this);
-    _spectraResidualPlot->disconnect(this);
+    // Disconnect only the axis sync connections (preserve zoom detection)
+    disconnect(_axisSyncConn1);
+    disconnect(_axisSyncConn2);
 
     // ──────────────────────────────────────────────────────────────
     // Main chart
@@ -2832,7 +3166,7 @@ void StarDetailView::updateSpectrumDisplay()
         _spectraResidualPlot->replot();
 
         // ── Link X axes: main ↔ residual (debounced) ──
-        connect(_spectraMainPlot->xAxis,
+        _axisSyncConn1 = connect(_spectraMainPlot->xAxis,
                 QOverload<const QCPRange&>::of(&QCPAxis::rangeChanged),
                 this, [this](const QCPRange& range) {
             if (_axisSyncInProgress) return;
@@ -2842,7 +3176,7 @@ void StarDetailView::updateSpectrumDisplay()
             _axisSyncTimer->start();
         });
 
-        connect(_spectraResidualPlot->xAxis,
+        _axisSyncConn2 = connect(_spectraResidualPlot->xAxis,
                 QOverload<const QCPRange&>::of(&QCPAxis::rangeChanged),
                 this, [this](const QCPRange& range) {
             if (_axisSyncInProgress) return;
@@ -2855,7 +3189,22 @@ void StarDetailView::updateSpectrumDisplay()
     } else {
         _spectraResidualPlot->setVisible(false);
     }
+
+    // Restore zoom if user had custom zoom active
+    if (restoreZoom) {
+        _spectraMainPlot->xAxis->setRange(savedXRange);
+        _spectraMainPlot->yAxis->setRange(savedMainYRange);
+        _spectraMainPlot->replot();
+        if (_spectraResidualPlot->isVisible()) {
+            _spectraResidualPlot->xAxis->setRange(savedXRange);
+            _spectraResidualPlot->replot();
+        }
+    }
+
+    if (_spectraResetZoomButton)
+        _spectraResetZoomButton->setVisible(_spectraHasCustomZoom);
 }
+
 
 QString StarDetailView::formatSpectrumInfo(
     const std::shared_ptr<Spectrum>& spec) const

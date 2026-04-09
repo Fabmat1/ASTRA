@@ -7,6 +7,7 @@
 #include <memory>
 #include <vector>
 
+
 class QSplitter;
 class QScrollArea;
 class QLabel;
@@ -19,6 +20,7 @@ class QCustomPlot;
 class QFrame;     
 class Star;
 class Spectrum;
+class CrossRefResolver;
 
 class StarDetailView : public QWidget
 {
@@ -113,6 +115,7 @@ private:
     QCustomPlot* _spectraMainPlot      = nullptr;
     QCustomPlot* _spectraResidualPlot  = nullptr;
     QLabel*      _spectraInfoLabel     = nullptr;
+    QLabel*      _spectraModelLabel    = nullptr;
     bool         _axisSyncInProgress   = false;
     QTimer* _axisSyncTimer = nullptr;
     double _pendingSyncRangeMin = 0.0;
@@ -132,7 +135,8 @@ private:
     QPushButton* _cmdButton           = nullptr;
     QPushButton* _calcOrbitButton     = nullptr;
 
-
+    CrossRefResolver* _refResolver = nullptr;
+    
     // ── Summary dashboard helpers ──
     QWidget* buildDashboard();
     QWidget* createNameHeader();
@@ -153,6 +157,12 @@ private:
     bool   isDarkTheme() const;
 
     bool eventFilter(QObject* obj, QEvent* ev) override;
+
+    // Zoom persistence for spectra
+    bool _spectraHasCustomZoom = false;
+    QPushButton* _spectraResetZoomButton = nullptr;
+    QMetaObject::Connection _axisSyncConn1;
+    QMetaObject::Connection _axisSyncConn2;
 
 protected:
     bool event(QEvent* e) override;
