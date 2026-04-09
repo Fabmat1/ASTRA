@@ -295,6 +295,35 @@ struct RVExtractionResult {
     std::shared_ptr<RVFit> fit;  // optional orbital fit
 };
 
+struct RVSystematicConfig {
+    bool enabled = false;
+
+    struct ResolutionBand {
+        double maxResolution;
+        double systematicKmS;
+    };
+    std::vector<ResolutionBand> resolutionBands;
+
+    QHash<QString, double> instrumentModeOverrides;
+
+    double systematicForResolution(double R) const {
+        for (const auto& band : resolutionBands) {
+            if (R < band.maxResolution)
+                return band.systematicKmS;
+        }
+        return resolutionBands.empty() ? 0.0 : resolutionBands.back().systematicKmS;
+    }
+
+    static RVSystematicConfig defaultConfig() {
+        RVSystematicConfig cfg;
+        cfg.enabled = true;
+        cfg.resolutionBands.push_back({4000.0, 15.0});
+        cfg.resolutionBands.push_back({20000.0, 10.0});
+        cfg.resolutionBands.push_back({1e12, 3.0});
+        return cfg;
+    }
+};
+
 class RVExtractionTask : public BackgroundTask
 {
     Q_OBJECT
@@ -312,12 +341,13 @@ public:
     // Mode 2: From per-star folders
     struct FolderConfig {
         QString rootPath;
-        QString namingType;   // "source_id", "alias", "ra_dec"
+        QString namingType;
         QChar delimiter;
         bool hasHeader;
         int timeCol;
         int rvCol;
         int rvErrCol;
+        int sysErrCol = -1;
         bool isBJD;
     };
 
@@ -337,6 +367,7 @@ public:
         int timeCol;
         int rvCol;
         int rvErrCol;
+        int sysErrCol = -1;
         bool isBJD;
     };
 
@@ -350,6 +381,8 @@ public:
     QString taskName() const override { return _taskName; }
 
     const std::vector<RVExtractionResult>& results() const { return _results; }
+    void setSystematicConfig(const RVSystematicConfig& config,
+                             std::vector<std::shared_ptr<Instrument>> instruments = {});
 
 public slots:
     void execute() override;
@@ -393,6 +426,11 @@ private:
     TableConfig _tableConfig;
 
     void saveResultsToDatabase();
+
+    RVSystematicConfig _systematicConfig;
+    std::vector<std::shared_ptr<Instrument>> _instruments;
+    double resolveResolutionForSpectrum(const std::shared_ptr<Spectrum>& spectrum) const;
+    double determineSystematicForSpectrum(const std::shared_ptr<Spectrum>& spectrum) const;
 };
 
 #endif // BACKGROUNDTASKMANAGER_H

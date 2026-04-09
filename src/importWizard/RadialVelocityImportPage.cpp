@@ -36,6 +36,7 @@
 #include <QScrollArea>
 #include <QTimer>
 #include <QUuid>
+#include <QDoubleSpinBox>
 
 #include <cmath>
 #include <algorithm>
@@ -138,8 +139,9 @@ void RadialVelocityImportPage::setupFromFitsPage()
 
     QLabel* info = new QLabel(
         "Extract radial velocity values from all spectral fits available "
-        "for stars in this project (both newly imported and previously saved). Each spectrum's fit provides one "
-        "RV data point, linked to its source spectrum and timestamp.");
+        "for stars in this project (both newly imported and previously saved). "
+        "Each spectrum's fit provides one RV data point, linked to its "
+        "source spectrum and timestamp.");
     info->setWordWrap(true);
     layout->addWidget(info);
 
@@ -150,6 +152,143 @@ void RadialVelocityImportPage::setupFromFitsPage()
     _skipZeroRVCheck = new QCheckBox("Skip fits with RV = 0 (likely unfitted)");
     _skipZeroRVCheck->setChecked(true);
     layout->addWidget(_skipZeroRVCheck);
+
+    // ── Systematic uncertainties group ──────────────────────────
+    _fitsSystematicGroup = new QGroupBox("Systematic RV Uncertainties");
+    QVBoxLayout* sysLayout = new QVBoxLayout;
+
+    _fitsSystematicCheck = new QCheckBox(
+        "Add systematic uncertainties to RV measurements");
+    _fitsSystematicCheck->setChecked(true);
+    sysLayout->addWidget(_fitsSystematicCheck);
+
+    QHBoxLayout* radioLayout = new QHBoxLayout;
+    _byResolutionRadio = new QRadioButton("Based on spectral resolution");
+    _byInstrumentRadio = new QRadioButton("Per instrument/mode override");
+    _byResolutionRadio->setChecked(true);
+    QButtonGroup* sysBg = new QButtonGroup(this);
+    sysBg->addButton(_byResolutionRadio);
+    sysBg->addButton(_byInstrumentRadio);
+    radioLayout->addWidget(_byResolutionRadio);
+    radioLayout->addWidget(_byInstrumentRadio);
+    radioLayout->addStretch();
+    sysLayout->addLayout(radioLayout);
+
+    _systematicStack = new QStackedWidget;
+
+    // Page 0: Resolution bands
+    QWidget* resPage = new QWidget;
+    QGridLayout* resGrid = new QGridLayout(resPage);
+    resGrid->setContentsMargins(0, 0, 0, 0);
+
+    resGrid->addWidget(new QLabel("Low resolution  R <"), 0, 0);
+    _resThreshold1Spin = new QDoubleSpinBox;
+    _resThreshold1Spin->setRange(100, 100000);
+    _resThreshold1Spin->setValue(4000);
+    _resThreshold1Spin->setDecimals(0);
+    resGrid->addWidget(_resThreshold1Spin, 0, 1);
+    resGrid->addWidget(new QLabel("→  ±"), 0, 2);
+    _sysLowResSpin = new QDoubleSpinBox;
+    _sysLowResSpin->setRange(0, 100);
+    _sysLowResSpin->setValue(15.0);
+    _sysLowResSpin->setDecimals(1);
+    _sysLowResSpin->setSuffix(" km/s");
+    resGrid->addWidget(_sysLowResSpin, 0, 3);
+
+    resGrid->addWidget(new QLabel("Medium resolution  R <"), 1, 0);
+    _resThreshold2Spin = new QDoubleSpinBox;
+    _resThreshold2Spin->setRange(100, 200000);
+    _resThreshold2Spin->setValue(20000);
+    _resThreshold2Spin->setDecimals(0);
+    resGrid->addWidget(_resThreshold2Spin, 1, 1);
+    resGrid->addWidget(new QLabel("→  ±"), 1, 2);
+    _sysMedResSpin = new QDoubleSpinBox;
+    _sysMedResSpin->setRange(0, 100);
+    _sysMedResSpin->setValue(10.0);
+    _sysMedResSpin->setDecimals(1);
+    _sysMedResSpin->setSuffix(" km/s");
+    resGrid->addWidget(_sysMedResSpin, 1, 3);
+
+    resGrid->addWidget(new QLabel("High resolution  R ≥"), 2, 0);
+    QLabel* highResLabel = new QLabel;
+    resGrid->addWidget(highResLabel, 2, 1);
+    resGrid->addWidget(new QLabel("→  ±"), 2, 2);
+    _sysHighResSpin = new QDoubleSpinBox;
+    _sysHighResSpin->setRange(0, 100);
+    _sysHighResSpin->setValue(3.0);
+    _sysHighResSpin->setDecimals(1);
+    _sysHighResSpin->setSuffix(" km/s");
+    resGrid->addWidget(_sysHighResSpin, 2, 3);
+
+    // Keep the "high res ≥" label in sync
+    auto updateHighResLabel = [highResLabel, this]() {
+        highResLabel->setText(QString::number(_resThreshold2Spin->value(), 'f', 0));
+    };
+    connect(_resThreshold2Spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, updateHighResLabel);
+    updateHighResLabel();
+
+    _systematicStack->addWidget(resPage);
+
+    // Page 1: Instrument/mode overrides
+    QWidget* instPage = new QWidget;
+    QVBoxLayout* instLayout = new QVBoxLayout(instPage);
+    instLayout->setContentsMargins(0, 0, 0, 0);
+
+    _instrumentSysTree = new QTreeWidget;
+    _instrumentSysTree->setHeaderLabels({"Instrument/Mode", "Systematic (km/s)"});
+    _instrumentSysTree->setRootIsDecorated(false);
+    _instrumentSysTree->setAlternatingRowColors(true);
+    _instrumentSysTree->setMaximumHeight(120);
+    instLayout->addWidget(_instrumentSysTree);
+
+    QHBoxLayout* instBtnLayout = new QHBoxLayout;
+    QPushButton* addBtn = new QPushButton("Add");
+    QPushButton* removeBtn = new QPushButton("Remove");
+    QPushButton* populateBtn = new QPushButton("Populate from instrument DB");
+
+    connect(addBtn, &QPushButton::clicked, this, [this]() {
+        auto* item = new QTreeWidgetItem({"", "10.0"});
+        item->setFlags(item->flags() | Qt::ItemIsEditable);
+        _instrumentSysTree->addTopLevelItem(item);
+        _instrumentSysTree->editItem(item, 0);
+    });
+    connect(removeBtn, &QPushButton::clicked, this, [this]() {
+        delete _instrumentSysTree->currentItem();
+    });
+    connect(populateBtn, &QPushButton::clicked,
+            this, &RadialVelocityImportPage::onPopulateInstrumentSys);
+
+    instBtnLayout->addWidget(addBtn);
+    instBtnLayout->addWidget(removeBtn);
+    instBtnLayout->addWidget(populateBtn);
+    instBtnLayout->addStretch();
+    instLayout->addLayout(instBtnLayout);
+
+    QLabel* fallbackNote = new QLabel(
+        "<i>Spectra whose instrument is not listed fall back to the "
+        "resolution-based bands above.</i>");
+    fallbackNote->setWordWrap(true);
+    instLayout->addWidget(fallbackNote);
+
+    _systematicStack->addWidget(instPage);
+
+    sysLayout->addWidget(_systematicStack);
+    _fitsSystematicGroup->setLayout(sysLayout);
+    layout->addWidget(_fitsSystematicGroup);
+
+    // Wire enable/disable
+    auto updateSysEnabled = [this]() {
+        bool on = _fitsSystematicCheck->isChecked();
+        _byResolutionRadio->setEnabled(on);
+        _byInstrumentRadio->setEnabled(on);
+        _systematicStack->setEnabled(on);
+    };
+    connect(_fitsSystematicCheck, &QCheckBox::toggled, this, updateSysEnabled);
+    connect(_byResolutionRadio, &QRadioButton::toggled, this, [this](bool checked) {
+        _systematicStack->setCurrentIndex(checked ? 0 : 1);
+    });
+    updateSysEnabled();
 
     _extractFitsBtn = new QPushButton("Extract RV from Spectral Fits");
     connect(_extractFitsBtn, &QPushButton::clicked,
@@ -221,6 +360,10 @@ void RadialVelocityImportPage::setupFromFoldersPage()
     fmtLayout->addWidget(new QLabel("RV error column:"), row, 0);
     _folderRVErrColCombo = new QComboBox;
     fmtLayout->addWidget(_folderRVErrColCombo, row++, 1);
+
+    fmtLayout->addWidget(new QLabel("Systematic RV error column:"), row, 0);
+    _folderSysErrColCombo = new QComboBox;
+    fmtLayout->addWidget(_folderSysErrColCombo, row++, 1);
 
     formatGroup->setLayout(fmtLayout);
     layout->addWidget(formatGroup);
@@ -305,6 +448,10 @@ void RadialVelocityImportPage::setupFromTablePage()
     colLayout->addWidget(new QLabel("RV error column:"), row, 0);
     _tableRVErrColCombo = new QComboBox;
     colLayout->addWidget(_tableRVErrColCombo, row++, 1);
+
+    colLayout->addWidget(new QLabel("Systematic RV error column:"), row, 0);
+    _tableSysErrColCombo = new QComboBox;
+    colLayout->addWidget(_tableSysErrColCombo, row++, 1);
 
     colGroup->setLayout(colLayout);
     layout->addWidget(colGroup);
@@ -703,7 +850,6 @@ void RadialVelocityImportPage::onExtractFromFits()
     _extractFitsBtn->setEnabled(false);
     _statusLabel->setText("Dispatching RV extraction task...");
 
-    // Use the working set stars — same objects the task will modify
     auto stars = _importedStars;
 
     auto* task = RVExtractionTask::createFromFits(
@@ -714,6 +860,29 @@ void RadialVelocityImportPage::onExtractFromFits()
         _skipZeroRVCheck->isChecked());
 
     task->setStagingArea(wiz->stagingArea());
+
+    // Build systematic config
+    if (_fitsSystematicCheck->isChecked()) {
+        RVSystematicConfig sysCfg;
+        sysCfg.enabled = true;
+        sysCfg.resolutionBands.push_back({_resThreshold1Spin->value(), _sysLowResSpin->value()});
+        sysCfg.resolutionBands.push_back({_resThreshold2Spin->value(), _sysMedResSpin->value()});
+        sysCfg.resolutionBands.push_back({1e12,                        _sysHighResSpin->value()});
+
+        if (_byInstrumentRadio->isChecked()) {
+            for (int i = 0; i < _instrumentSysTree->topLevelItemCount(); ++i) {
+                auto* item = _instrumentSysTree->topLevelItem(i);
+                QString key = item->text(0).trimmed();
+                bool ok;
+                double val = item->text(1).toDouble(&ok);
+                if (!key.isEmpty() && ok && val > 0)
+                    sysCfg.instrumentModeOverrides[key] = val;
+            }
+        }
+
+        task->setSystematicConfig(
+            sysCfg, wiz->controller()->databaseManager()->getAllInstruments());
+    }
 
     connect(task, &RVExtractionTask::extractionComplete,
             this, [this](int numCurves, int numPoints) {
@@ -735,7 +904,6 @@ void RadialVelocityImportPage::onExtractFromFits()
 
     wiz->controller()->backgroundTaskManager()->queueTask(task);
 }
-
 // ════════════════════════════════════════════════════════════════
 // Mode 2: From Folders — now dispatches a background task
 // ════════════════════════════════════════════════════════════════
@@ -773,6 +941,7 @@ void RadialVelocityImportPage::onScanFolders()
     cfg.timeCol    = timeCol;
     cfg.rvCol      = rvCol;
     cfg.rvErrCol   = rvErrCol;
+    cfg.sysErrCol  = _folderSysErrColCombo->currentIndex() - 1;
     cfg.isBJD      = (_folderTimeTypeCombo->currentIndex() == 1);
 
     _scanFoldersBtn->setEnabled(false);
@@ -841,6 +1010,7 @@ void RadialVelocityImportPage::onProcessTable()
     cfg.timeCol  = timeCol;
     cfg.rvCol    = rvCol;
     cfg.rvErrCol = rvErrCol;
+    cfg.sysErrCol = _tableSysErrColCombo->currentIndex() - 1;
     cfg.isBJD    = (_tableTimeTypeCombo->currentIndex() == 1);
 
     _processTableBtn->setEnabled(false);
@@ -1113,6 +1283,8 @@ void RadialVelocityImportPage::onBrowseTableFile()
             {_tableRVErrColCombo,   {"rv_err", "rv_error", "e_rv", "vrad_err",
                                      "vrad_error", "e_vrad", "sigma_rv",
                                      "err"}},
+            {_tableSysErrColCombo,  {"sys", "systematic", "sys_err", "sys_error",
+                                     "rv_sys", "sigma_sys"}},
         });
 
         // Auto-detect time type from column name
@@ -1141,6 +1313,44 @@ void RadialVelocityImportPage::onBrowseTableFile()
         QMessageBox::warning(this, "Load Error",
             "Could not read or parse the selected file.");
     }
+}
+
+void RadialVelocityImportPage::onPopulateInstrumentSys()
+{
+    StarImportWizard* wiz = qobject_cast<StarImportWizard*>(wizard());
+    if (!wiz || !wiz->controller()) return;
+
+    auto instruments = wiz->controller()->databaseManager()->getAllInstruments();
+    _instrumentSysTree->clear();
+
+    double thresh1 = _resThreshold1Spin->value();
+    double thresh2 = _resThreshold2Spin->value();
+    double sysLow  = _sysLowResSpin->value();
+    double sysMed  = _sysMedResSpin->value();
+    double sysHigh = _sysHighResSpin->value();
+
+    for (const auto& inst : instruments) {
+        for (const auto& mode : inst->modes()) {
+            if (!mode.hasSpectralProperties()) continue;
+            const auto& sp = mode.spectral();
+            double centralWl = (sp.wavelengthMin + sp.wavelengthMax) / 2.0;
+            double R = sp.resolution.at(centralWl);
+
+            double sys = sysHigh;
+            if (R < thresh1)      sys = sysLow;
+            else if (R < thresh2) sys = sysMed;
+
+            auto* item = new QTreeWidgetItem({
+                inst->getName() + "/" + mode.key(),
+                QString::number(sys, 'f', 1)
+            });
+            item->setFlags(item->flags() | Qt::ItemIsEditable);
+            _instrumentSysTree->addTopLevelItem(item);
+        }
+    }
+
+    for (int i = 0; i < _instrumentSysTree->columnCount(); ++i)
+        _instrumentSysTree->resizeColumnToContents(i);
 }
 
 void RadialVelocityImportPage::detectFolderColumns()
@@ -1194,6 +1404,8 @@ void RadialVelocityImportPage::detectFolderColumns()
                                      "radvel", "velocity"}},
             {_folderRVErrColCombo,  {"rv_err", "rv_error", "e_rv", "vrad_err",
                                      "vrad_error", "e_vrad", "sigma", "err"}},
+            {_folderSysErrColCombo, {"sys", "systematic", "sys_err", "sys_error",
+                                     "rv_sys", "sigma_sys"}},
         });
 
         int timeIdx = _folderTimeColCombo->currentIndex() - 1;

@@ -21,6 +21,9 @@ class QLabel;
 class QProgressBar;
 class QGroupBox;
 class Star;
+class QTableWidget;
+class QDoubleSpinBox;
+class QStackedWidget;
 
 class RadialVelocityImportPage : public QWizardPage
 {
@@ -42,6 +45,7 @@ private slots:
     void onProcessTable();
     void onFitParamsToggled(bool checked);
     void onBrowseFitParamsFile();
+    void onPopulateInstrumentSys();
 
 private:
     // UI setup
@@ -121,6 +125,21 @@ private:
     QCheckBox* _skipZeroRVCheck = nullptr;
     QPushButton* _extractFitsBtn = nullptr;
 
+    // Systematic uncertainties (From Fits mode)
+    QGroupBox* _fitsSystematicGroup = nullptr;
+    QCheckBox* _fitsSystematicCheck = nullptr;
+    QRadioButton* _byResolutionRadio = nullptr;
+    QRadioButton* _byInstrumentRadio = nullptr;
+    QStackedWidget* _systematicStack = nullptr;
+
+    QDoubleSpinBox* _resThreshold1Spin = nullptr;
+    QDoubleSpinBox* _resThreshold2Spin = nullptr;
+    QDoubleSpinBox* _sysLowResSpin = nullptr;
+    QDoubleSpinBox* _sysMedResSpin = nullptr;
+    QDoubleSpinBox* _sysHighResSpin = nullptr;
+
+    QTreeWidget* _instrumentSysTree = nullptr;
+
     // From folders page
     QWidget* _fromFoldersPage = nullptr;
     QLineEdit* _rootFolderEdit = nullptr;
@@ -133,6 +152,7 @@ private:
     QComboBox* _folderRVErrColCombo = nullptr;
     QPushButton* _scanFoldersBtn = nullptr;
     QProgressBar* _folderProgress = nullptr;
+    QComboBox* _folderSysErrColCombo = nullptr;
 
     // From table page
     QWidget* _fromTablePage = nullptr;
@@ -146,6 +166,7 @@ private:
     QComboBox* _tableRVColCombo = nullptr;
     QComboBox* _tableRVErrColCombo = nullptr;
     QPushButton* _processTableBtn = nullptr;
+    QComboBox* _tableSysErrColCombo = nullptr;
 
     // Fit params group
     QGroupBox* _fitParamsGroup = nullptr;

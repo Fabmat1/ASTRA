@@ -1344,6 +1344,13 @@ void RVExtractionTask::executeFromFits()
                 auto rvPt = RadialVelocityPoint::createFromSpectralFit(best, spectrum);
                 if (rvPt) {
                     rvPt->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+                    if (_systematicConfig.enabled) {
+                        double sys = determineSystematicForSpectrum(spectrum);
+                        if (sys > 0) {
+                            rvPt->setRVErrorFormal(rvPt->getRVError());
+                            rvPt->setRVErrorSystematic(sys);
+                        }
+                    }
                     curve->addRVPoint(rvPt);
                 }
             } else {
@@ -1357,6 +1364,13 @@ void RVExtractionTask::executeFromFits()
                     auto rvPt = RadialVelocityPoint::createFromSpectralFit(fit, spectrum);
                     if (rvPt) {
                         rvPt->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+                        if (_systematicConfig.enabled) {
+                            double sys = determineSystematicForSpectrum(spectrum);
+                            if (sys > 0) {
+                                rvPt->setRVErrorFormal(rvPt->getRVError());
+                                rvPt->setRVErrorSystematic(sys);
+                            }
+                        }
                         curve->addRVPoint(rvPt);
                     }
                 }
@@ -1487,7 +1501,17 @@ void RVExtractionTask::executeFromFolders()
                     rvPt->setMJD(time);
                 }
                 rvPt->setRV(rv);
-                rvPt->setRVError(rvErr);
+                if (cfg.sysErrCol >= 0) {
+                    rvPt->setRVErrorFormal(rvErr);
+                    if (cfg.sysErrCol < fields.size()) {
+                        bool okSys;
+                        double sysErr = fields[cfg.sysErrCol].trimmed().toDouble(&okSys);
+                        if (okSys && sysErr > 0)
+                            rvPt->setRVErrorSystematic(sysErr);
+                    }
+                } else {
+                    rvPt->setRVError(rvErr);
+                }
                 rvPt->setSource(fileName);
 
                 curve->addRVPoint(rvPt);
@@ -1573,7 +1597,17 @@ void RVExtractionTask::executeFromTable()
                 rvPt->setMJD(time);
 
             rvPt->setRV(rv);
-            rvPt->setRVError(rvErr);
+            if (cfg.sysErrCol >= 0) {
+                rvPt->setRVErrorFormal(rvErr);
+                if (cfg.sysErrCol < row.size()) {
+                    bool okSys;
+                    double sysErr = row[cfg.sysErrCol].toDouble(&okSys);
+                    if (okSys && sysErr > 0)
+                        rvPt->setRVErrorSystematic(sysErr);
+                }
+            } else {
+                rvPt->setRVError(rvErr);
+            }
             rvPt->setSource("table_import");
 
             curve->addRVPoint(rvPt);
@@ -1690,4 +1724,76 @@ void RVExtractionTask::saveResultsToDatabase()
 
     LOG_INFO("RVExtract",
         QString("Saved %1 curves to database").arg(totalResults));
+}
+
+void RVExtractionTask::setSystematicConfig(
+    const RVSystematicConfig& config,
+    std::vector<std::shared_ptr<Instrument>> instruments)
+{
+    _systematicConfig = config;
+    _instruments = std::move(instruments);
+}
+
+double RVExtractionTask::resolveResolutionForSpectrum(
+    const std::shared_ptr<Spectrum>& spectrum) const
+{
+    QString instStr = spectrum->getInstrument();
+
+    // Try instrument database lookup (expects "InstrumentName/ModeKey" format)
+    if (!_instruments.empty() && !instStr.isEmpty() && instStr.contains('/')) {
+        QString instName = instStr.section('/', 0, 0);
+        QString modeKey  = instStr.section('/', 1);
+        for (const auto& inst : _instruments) {
+            if (inst->getName().compare(instName, Qt::CaseInsensitive) != 0)
+                continue;
+            const InstrumentMode* mode = inst->mode(modeKey);
+            if (mode && mode->hasSpectralProperties()) {
+                const auto& sp = mode->spectral();
+                double centralWl = (sp.wavelengthMin + sp.wavelengthMax) / 2.0;
+                double R = sp.resolution.at(centralWl);
+                if (R > 0) return R;
+            }
+            break;
+        }
+    }
+
+    // Fallback: estimate Nyquist resolution from spectral sampling
+    if (spectrum->hasData()) {
+        auto wl = spectrum->getWavelengths();
+        if (wl.size() >= 2) {
+            double wlMin = std::min(wl.front(), wl.back());
+            double wlMax = std::max(wl.front(), wl.back());
+            double central = (wlMin + wlMax) / 2.0;
+            double dLambda = (wlMax - wlMin) / (static_cast<double>(wl.size()) - 1.0);
+            if (dLambda > 0)
+                return central / (2.0 * dLambda);
+        }
+    }
+
+    return 0.0;
+}
+
+double RVExtractionTask::determineSystematicForSpectrum(
+    const std::shared_ptr<Spectrum>& spectrum) const
+{
+    if (!_systematicConfig.enabled) return 0.0;
+
+    // Check per-instrument/mode override first
+    QString instStr = spectrum->getInstrument();
+    if (!instStr.isEmpty()) {
+        auto it = _systematicConfig.instrumentModeOverrides.find(instStr);
+        if (it != _systematicConfig.instrumentModeOverrides.end())
+            return it.value();
+    }
+
+    // Resolution-based lookup
+    double R = resolveResolutionForSpectrum(spectrum);
+    if (R > 0)
+        return _systematicConfig.systematicForResolution(R);
+
+    // Unknown resolution: conservative fallback to middle band
+    if (_systematicConfig.resolutionBands.size() >= 2)
+        return _systematicConfig.resolutionBands[1].systematicKmS;
+
+    return 0.0;
 }

@@ -119,8 +119,8 @@ void StarImportWizard::accept()
                     "• %1 stars\n"
                     "• %2 spectra\n"
                     "• %3 spectral fits\n"
-                    "• %4 RV curves"
-                    "• %5 SED fits"
+                    "• %4 RV curves\n"
+                    "• %5 SED fits\n"
                     "• %6 Lightcurves")
                 .arg(nStars).arg(nSpectra).arg(nFits).arg(nRV).arg(nSED).arg(nLC));
 
