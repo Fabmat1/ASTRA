@@ -182,6 +182,8 @@ private:
     QLabel* _matchRadiusLabel;
 
     
+    QCheckBox* _autoInstrumentCheck;
+    
     // Mapping column combos
     QComboBox* _filePathColumnCombo;
     QComboBox* _starIdColumnCombo;

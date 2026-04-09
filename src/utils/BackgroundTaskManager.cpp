@@ -8,6 +8,7 @@
 #include "db/DatabaseManager.h"
 #include "../importWizard/ImportStagingArea.h"
 #include "models/Time.h"
+#include "db/InstrumentRepository.h"
 
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
@@ -823,6 +824,13 @@ SpectraImportTask::SpectraImportTask(std::vector<SpectrumImportEntry> entries,
 {
 }
 
+void SpectraImportTask::setAutoDetectInstrument(
+    bool enabled, std::vector<std::shared_ptr<Instrument>> instruments)
+{
+    _autoDetectInstrument = enabled;
+    _instruments = std::move(instruments);
+}
+
 void SpectraImportTask::execute()
 {
     LOG_SET_THREAD_NAME("SpectraImport");
@@ -906,6 +914,27 @@ void SpectraImportTask::execute()
             readResult.spectrum->setTime(t);
         if (entry.instrument.has_value() && readResult.spectrum->getInstrument().isEmpty()) {
             readResult.spectrum->setInstrument(entry.instrument.value());
+        }
+
+        // Auto-detect instrument and mode from spectral properties
+        if (_autoDetectInstrument && !_instruments.empty()
+            && readResult.spectrum->hasData())
+        {
+            auto wl = readResult.spectrum->getWavelengths();
+            if (wl.size() >= 2) {
+                double specWlMin = std::min(wl.front(), wl.back());
+                double specWlMax = std::max(wl.front(), wl.back());
+                int nPoints = static_cast<int>(wl.size());
+                QString hint = readResult.spectrum->getInstrument();
+
+                auto match = InstrumentRepository::matchSpectralProperties(
+                    _instruments, hint, specWlMin, specWlMax, nPoints);
+
+                static constexpr double kMinConfidence = 0.25;
+                if (match.instrument && match.confidence >= kMinConfidence) {
+                    readResult.spectrum->setInstrument(match.displayString);
+                }
+            }
         }
 
         readResults[idx] = readResult.spectrum;

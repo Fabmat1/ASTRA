@@ -8,6 +8,7 @@
 #include "models/Spectrum.h"
 #include "../utils/Logger.h"
 #include "../utils/BackgroundTaskManager.h"
+#include "db/DatabaseManager.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -276,7 +277,16 @@ void SpectraImportPage::setupUi()
     middleLayout->addWidget(matchGroupBox, 1);
     
     mainLayout->addLayout(middleLayout);
-    
+
+    _autoInstrumentCheck = new QCheckBox(
+        "Auto-determine instrument and mode from spectrum properties");
+    _autoInstrumentCheck->setToolTip(
+        "Uses wavelength range and spectral sampling to identify the instrument\n"
+        "and observing mode. For FITS files, the header keyword is used as a hint.\n"
+        "Matches against the configured instrument database.");
+    _autoInstrumentCheck->setChecked(true);
+
+    mainLayout->addWidget(_autoInstrumentCheck);
     // Preview section
     QGroupBox* previewGroup = new QGroupBox("Preview");
     QVBoxLayout* previewLayout = new QVBoxLayout;
@@ -1468,6 +1478,11 @@ void SpectraImportPage::queueImportTask(std::vector<SpectrumImportEntry> entries
 
     auto* task = new SpectraImportTask(std::move(entries), projectId, controller);
     task->setStagingArea(importWizard->stagingArea());
+
+    if (_autoInstrumentCheck->isChecked()) {
+        task->setAutoDetectInstrument(true,
+                                      controller->databaseManager()->getAllInstruments());
+    }
 
     connect(task, &SpectraImportTask::importComplete, this, [this](int imported, int failed) {
         LOG_INFO("SpectraImport", QString("Background import complete: %1 imported, %2 failed")

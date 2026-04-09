@@ -9,6 +9,14 @@
 
 class DBAccess;
 
+struct InstrumentModeMatch {
+    std::shared_ptr<Instrument> instrument;
+    QString modeKey;
+    QString displayString;   // "InstrumentName/ModeKey"
+    double confidence = 0.0;
+};
+
+
 class InstrumentRepository {
 public:
     explicit InstrumentRepository(DBAccess& db);
@@ -29,6 +37,11 @@ public:
     void cacheInstrument(std::shared_ptr<Instrument> inst);
     void uncacheInstrument(const QString& id);
     QString instrumentUUID(const QString& name);
+    
+    static InstrumentModeMatch matchSpectralProperties(
+        const std::vector<std::shared_ptr<Instrument>>& instruments,
+        const QString& instrumentHint,
+        double wlMin, double wlMax, int numPoints);
 
 private:
     DBAccess& _db;

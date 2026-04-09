@@ -28,6 +28,7 @@ class RadialVelocityPoint;
 class RVFit;                 
 class Project;               
 class ImportStagingArea;
+class Instrument;
 
 // Base class for background tasks
 class BackgroundTask : public QObject
@@ -231,6 +232,8 @@ public:
                       QObject* parent = nullptr);
 
     QString taskName() const override { return "Spectra Import"; }
+    void setAutoDetectInstrument(bool enabled,
+                                  std::vector<std::shared_ptr<Instrument>> instruments);
 
 public slots:
     void execute() override;
@@ -243,6 +246,8 @@ private:
     std::vector<SpectrumImportEntry> _entries;
     QString _projectId;
     ApplicationController* _controller;
+    bool _autoDetectInstrument = false;
+    std::vector<std::shared_ptr<Instrument>> _instruments;
 };
 
 

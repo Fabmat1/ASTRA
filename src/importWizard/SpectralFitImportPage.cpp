@@ -8,6 +8,7 @@
 #include "../db/DatabaseManager.h"
 #include "../utils/BackgroundTaskManager.h"
 
+#include <limits>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QLabel>
@@ -87,8 +88,12 @@ void SpectralFitImportPage::setupUi()
 
     // ── Mark best fit ───────────────────────────────────────────
     _markBestFitCheck = new QCheckBox(
-        "Mark all imported fits as best fit (replaces existing best fit)");
-    _markBestFitCheck->setChecked(false);
+        "Auto-determine best fit per spectrum (lowest reduced χ²)");
+    _markBestFitCheck->setToolTip(
+        "For each spectrum, compares the reduced χ² of all newly imported fits\n"
+        "and any existing fits. Only the fit with the lowest χ² is marked as best.\n"
+        "If an existing fit already has a lower χ² than all new fits, no change is made.");
+    _markBestFitCheck->setChecked(true);
     mainLayout->addWidget(_markBestFitCheck);
 
     // ── Preview ─────────────────────────────────────────────────
@@ -1090,9 +1095,9 @@ void SpectralFitImportPage::importDiggaFits()
     if (!importWizard || !importWizard->controller()) return;
 
     auto* controller = importWizard->controller();
-    bool markBest = _markBestFitCheck->isChecked();
+    bool autoBest = _markBestFitCheck->isChecked();
 
-    // Build import entries
+    // Build import entries (don't mark best fit yet)
     std::vector<DiggaFitImportEntry> entries;
 
     for (const auto& dir : _diggaDirs) {
@@ -1121,7 +1126,6 @@ void SpectralFitImportPage::importDiggaFits()
             fit->radialVelocity       = sm.vrad;
             fit->radialVelocityError  = sm.vradError;
             fit->modelId              = dir.gridName;
-            if (markBest) fit->isBestFit = true;
 
             DiggaFitImportEntry entry;
             entry.starId       = sm.matchedStar->getId();
@@ -1138,10 +1142,51 @@ void SpectralFitImportPage::importDiggaFits()
         return;
     }
 
-    int count = static_cast<int>(entries.size());
-    _statusLabel->setText(QString("Queued %1 spectral fits for background import.").arg(count));
+    // Auto-determine best fit per spectrum (lowest reduced χ²)
+    if (autoBest) {
+        QHash<QString, std::vector<int>> specGroups;
+        for (int i = 0; i < static_cast<int>(entries.size()); ++i)
+            specGroups[entries[i].spectrumId].push_back(i);
 
-    LOG_INFO("FitImport", QString("Queuing %1 fits for background import").arg(count));
+        int bestCount = 0;
+
+        for (auto it = specGroups.cbegin(); it != specGroups.cend(); ++it) {
+            const auto& indices = it.value();
+
+            // Start from the existing best fit's chi² (if any)
+            double bestChi2 = std::numeric_limits<double>::max();
+            auto existingBest = entries[indices.front()].spectrum->getBestFit();
+            if (existingBest && existingBest->chi2 > 0.0)
+                bestChi2 = existingBest->chi2;
+
+            // Find the new fit with the lowest chi²
+            int bestIdx = -1;
+            for (int idx : indices) {
+                double chi2 = entries[idx].fit->chi2;
+                if (chi2 > 0.0 && chi2 < bestChi2) {
+                    bestChi2 = chi2;
+                    bestIdx = idx;
+                }
+            }
+
+            // Only mark if a new fit actually beats everything existing
+            if (bestIdx >= 0) {
+                entries[bestIdx].fit->isBestFit = true;
+                bestCount++;
+            }
+        }
+
+        LOG_INFO("FitImport",
+                 QString("Auto-best: marked %1 fits as best across %2 spectra")
+                 .arg(bestCount).arg(specGroups.size()));
+    }
+
+    int count = static_cast<int>(entries.size());
+    _statusLabel->setText(
+        QString("Queued %1 spectral fits for background import.").arg(count));
+
+    LOG_INFO("FitImport",
+             QString("Queuing %1 fits for background import").arg(count));
 
     auto* task = new DiggaFitImportTask(std::move(entries), controller);
     task->setStagingArea(importWizard->stagingArea());
