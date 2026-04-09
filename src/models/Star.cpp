@@ -2,6 +2,7 @@
 #include "Photometry.h"
 #include "Spectrum.h"
 #include "RadialVelocity.h"
+#include "../utils/Logger.h"
 #include <QVariant>
 #include <limits>
 #include <cmath>
@@ -317,13 +318,19 @@ void Star::recomputePhotometryMetrics()
     if (!_photometry) return;
 
     // Dataset availability — uses getLightcurveSources()
-    for (const auto& source : _photometry->getLightcurveSources()) {
+    auto lcSources = _photometry->getLightcurveSources();
+    LOG_INFO("Star", QString("recomputePhotometryMetrics [%1]: %2 lightcurve source(s)")
+                         .arg(getId()).arg(lcSources.size()));
+    for (const auto& source : lcSources) {
         QString src = source.toLower();
-        if (src.contains("tess"))     _hasTess = true;
-        if (src.contains("gaia"))     _hasGaia = true;
-        if (src.contains("ztf"))      _hasZtf = true;
-        if (src.contains("atlas"))    _hasAtlas = true;
-        if (src.contains("blackgem")) _hasBlackgem = true;
+        LOG_INFO("Star", QString("  LC source: '%1' (%2 pts)")
+                             .arg(source)
+                             .arg(_photometry->getLightcurve(source).size()));
+        if (src.contains("tess"))                      _hasTess = true;
+        if (src.contains("gaia"))                      _hasGaia = true;
+        if (src.contains("ztf"))                       _hasZtf = true;
+        if (src.contains("atlas"))                     _hasAtlas = true;
+        if (src.contains("blackgem") || src == "bg")   _hasBlackgem = true;
     }
 
     // SED best fit — components is a public member

@@ -749,6 +749,8 @@ QString LightcurveImportPage::instrumentFromFilename(const QString& filename) co
         { "hatnet",    "hatnet"    },
         { "mascara",   "mascara"   },
         { "kelt",      "kelt"      },
+        { "blackgem",  "blackgem"  },
+        { "bg_",       "blackgem"   },
     };
 
     for (const auto& p : patterns) {
@@ -1397,20 +1399,14 @@ void LightcurveImportPage::stageSelectedLightcurves()
                         pt.time.setAutoConvertInfo(
                             entry.resolvedInstrument,
                             star->getRa(), star->getDec());
+                        pt.time.bjd();
                     }
                 }
             }
         }
 
-        auto phot = star->getPhotometry();
-        if (!phot) {
-            phot = std::make_shared<Photometry>();
-            phot->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
-            star->setPhotometry(phot);
-        }
-
-        phot->addLightcurve(entry.instrument, entry.points);
-        _staging->markLightcurveDirty(targetStarId);
+        if (!_staging->stageLightcurve(targetStarId, entry.instrument, entry.points))
+            continue;
         ++staged;
     }
 

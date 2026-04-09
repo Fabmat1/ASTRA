@@ -311,6 +311,8 @@ public:
     void addLightcurve(const QString& source, const std::vector<LightcurvePoint>& points);
     std::vector<LightcurvePoint> getLightcurve(const QString& source) const;
     std::vector<QString> getLightcurveSources() const;
+    enum class MergeResult { Identical, Replaced, Merged, Added };
+    MergeResult mergeLightcurve(const QString& source, const std::vector<LightcurvePoint>& newPoints);
 
     void addSEDModel(std::shared_ptr<SEDModel> model);
     std::vector<std::shared_ptr<SEDModel>> getSEDModels() const;

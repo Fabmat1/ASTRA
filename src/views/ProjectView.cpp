@@ -182,12 +182,6 @@ void ProjectView::loadProject(const QString& projectId)
         // Create source model
         _tableModel = new StarTableModel(_currentProject, this);
         
-        // Populate summary metrics for all loaded stars
-        // This uses already-loaded data only — no lazy loading triggered
-        for (auto& star : _currentProject->getAllStars()) {
-            star->computeSummaryMetrics();
-        }
-        
         // Create proxy — block signals during setup
         _proxyModel = new StarFilterProxyModel(this);
         _proxyModel->blockSignals(true);

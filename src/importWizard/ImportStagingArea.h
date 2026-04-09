@@ -11,6 +11,7 @@
 #include <vector>
 
 class Star;
+class LightcurvePoint;
 class DatabaseManager;
 
 class ImportStagingArea
@@ -61,6 +62,12 @@ public:
     // ── Lifecycle ───────────────────────────────────────────────
     void clear();
     bool commitAll(DatabaseManager* dbm, const QString& projectId);
+
+    // ── Lightcurve staging (with merge logic) ───────────────────
+    bool stageLightcurve(const QString& starId,
+                         const QString& instrument,
+                         const std::vector<LightcurvePoint>& points);
+
 
 private:
     void deduplicateStars();

@@ -256,6 +256,112 @@ void Photometry::addLightcurve(const QString& source, const std::vector<Lightcur
     _lightcurves[source] = points;
 }
 
+Photometry::MergeResult Photometry::mergeLightcurve(
+    const QString& source,
+    const std::vector<LightcurvePoint>& newPoints)
+{
+    auto it = _lightcurves.find(source);
+
+    // No existing lightcurve — just store
+    if (it == _lightcurves.end() || it->second.empty()) {
+        _lightcurves[source] = newPoints;
+        return MergeResult::Added;
+    }
+
+    auto& existing = it->second;
+
+    // Build a set of existing point keys for fast lookup.
+    // Key on (sortValue, flux) to identify duplicate points.
+    struct PointKey {
+        long long timeBits;
+        long long fluxBits;
+        bool operator==(const PointKey& o) const {
+            return timeBits == o.timeBits && fluxBits == o.fluxBits;
+        }
+    };
+    struct PointKeyHash {
+        size_t operator()(const PointKey& k) const {
+            size_t h1 = std::hash<long long>{}(k.timeBits);
+            size_t h2 = std::hash<long long>{}(k.fluxBits);
+            return h1 ^ (h2 * 0x9e3779b97f4a7c15ULL + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
+        }
+    };
+
+    auto makeKey = [](const LightcurvePoint& pt) -> PointKey {
+        double t = pt.time.sortValue();
+        double f = pt.flux;
+        long long tb, fb;
+        std::memcpy(&tb, &t, sizeof(double));
+        std::memcpy(&fb, &f, sizeof(double));
+        return { tb, fb };
+    };
+
+    std::unordered_set<PointKey, PointKeyHash> existingKeys;
+    existingKeys.reserve(existing.size());
+    for (const auto& pt : existing)
+        existingKeys.insert(makeKey(pt));
+
+    // Count how many new points already exist
+    int duplicateCount = 0;
+    std::vector<const LightcurvePoint*> uniqueNewPts;
+    uniqueNewPts.reserve(newPoints.size());
+
+    for (const auto& pt : newPoints) {
+        if (existingKeys.count(makeKey(pt)))
+            ++duplicateCount;
+        else
+            uniqueNewPts.push_back(&pt);
+    }
+
+    // Case 1: Exact same data
+    if (duplicateCount == static_cast<int>(newPoints.size())
+        && newPoints.size() == existing.size())
+    {
+        return MergeResult::Identical;
+    }
+
+    // Case 2: Existing is a subset of new (superset replacement)
+    // All existing points found in new data, and new data has extra points
+    if (uniqueNewPts.empty() == false) {
+        std::unordered_set<PointKey, PointKeyHash> newKeys;
+        newKeys.reserve(newPoints.size());
+        for (const auto& pt : newPoints)
+            newKeys.insert(makeKey(pt));
+
+        bool existingFullyContained = true;
+        for (const auto& pt : existing) {
+            if (!newKeys.count(makeKey(pt))) {
+                existingFullyContained = false;
+                break;
+            }
+        }
+
+        if (existingFullyContained) {
+            // New data is a strict superset — replace
+            _lightcurves[source] = newPoints;
+            return MergeResult::Replaced;
+        }
+    }
+
+    // Case 3: Partial overlap or disjoint — merge unique new points in
+    if (uniqueNewPts.empty()) {
+        // New is a subset of existing — nothing to add
+        return MergeResult::Identical;
+    }
+
+    existing.reserve(existing.size() + uniqueNewPts.size());
+    for (const auto* pt : uniqueNewPts)
+        existing.push_back(*pt);
+
+    // Re-sort by time
+    std::sort(existing.begin(), existing.end(),
+              [](const LightcurvePoint& a, const LightcurvePoint& b) {
+                  return a.time < b.time;
+              });
+
+    return MergeResult::Merged;
+}
+
 std::vector<QString> Photometry::getLightcurveSources() const
 {
     // Merge keys from both maps

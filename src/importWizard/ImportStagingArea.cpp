@@ -6,6 +6,7 @@
 #include "models/RadialVelocity.h"
 #include "../utils/Logger.h"
 #include "models/Photometry.h"
+#include <QUuid>
 
 // ── Working set management ──────────────────────────────────────
 
@@ -256,6 +257,66 @@ void ImportStagingArea::clear()
     _dirtyLightcurveStarIds.clear();
 }
 
+#include <QUuid>
+
+bool ImportStagingArea::stageLightcurve(const QString& starId,
+                                        const QString& instrument,
+                                        const std::vector<LightcurvePoint>& points)
+{
+    QMutexLocker lock(&_mutex);
+
+    auto starIt = _workingStars.find(starId);
+    if (starIt == _workingStars.end() || !starIt.value()) {
+        LOG_WARNING("Staging",
+                    QString("stageLightcurve: star %1 not in working set")
+                        .arg(starId));
+        return false;
+    }
+
+    auto star = starIt.value();
+    auto phot = star->getPhotometry();
+    if (!phot) {
+        phot = std::make_shared<Photometry>();
+        phot->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        star->setPhotometry(phot);
+    }
+
+    auto result = phot->mergeLightcurve(instrument, points);
+
+    switch (result) {
+    case Photometry::MergeResult::Identical:
+        LOG_INFO("Staging",
+                 QString("Lightcurve '%1' for star %2: identical, skipped")
+                     .arg(instrument, starId));
+        return true;
+
+    case Photometry::MergeResult::Replaced:
+        LOG_INFO("Staging",
+                 QString("Lightcurve '%1' for star %2: replaced with updated version (%3 → %4 pts)")
+                     .arg(instrument, starId)
+                     .arg(phot->getLightcurve(instrument).size())
+                     .arg(points.size()));
+        break;
+
+    case Photometry::MergeResult::Merged:
+        LOG_INFO("Staging",
+                 QString("Lightcurve '%1' for star %2: merged, now %3 pts")
+                     .arg(instrument, starId)
+                     .arg(phot->getLightcurve(instrument).size()));
+        break;
+
+    case Photometry::MergeResult::Added:
+        LOG_INFO("Staging",
+                 QString("Lightcurve '%1' for star %2: added (%3 pts)")
+                     .arg(instrument, starId)
+                     .arg(points.size()));
+        break;
+    }
+
+    _dirtyLightcurveStarIds.insert(starId);
+    return true;
+}
+
 // ── Commit ──────────────────────────────────────────────────────
 
 bool ImportStagingArea::commitAll(DatabaseManager* dbm, const QString& projectId)
@@ -307,6 +368,10 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm, const QString& projectId
             const bool isNew = _newStarIds.contains(starId);
             const bool isDirty = _dirtyStarIds.contains(starId);
 
+            // Recompute summary metrics before persisting
+            if (isNew || isDirty || _dirtyLightcurveStarIds.contains(starId))
+                star->computeSummaryMetrics();
+
             // ── A. Star row ─────────────────────────────────────
             if (isNew) {
                 // INSERT star row ONLY (no cascade — we handle children below)
@@ -322,8 +387,7 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm, const QString& projectId
                     dbm->rollbackTransaction();
                     return false;
                 }
-            } else if (isDirty) {
-                // UPDATE existing star row (no cascade)
+            } else if (isDirty || _dirtyLightcurveStarIds.contains(starId)) {
                 if (!dbm->updateStarRow(projectId, star)) {
                     LOG_ERROR("Staging", QString("Failed to update star %1").arg(starId));
                     dbm->rollbackTransaction();

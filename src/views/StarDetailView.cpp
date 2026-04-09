@@ -473,6 +473,7 @@ StarDetailView::StarDetailView(std::shared_ptr<Star> star, QWidget* parent)
     populateRVPlot();
     populateLCPlot();
     populateSpectraPanel();
+    _star->computeSummaryMetrics();
 }
 
 StarDetailView::~StarDetailView()
@@ -1865,25 +1866,48 @@ binLightcurve(const QVector<double>& px,
     QVector<std::tuple<double,double,double>> result;
     if (px.isEmpty() || nBins <= 0 || xMax <= xMin) return result;
 
+    bool useWeights = false;
+    for (int i = 0; i < pe.size(); ++i) {
+        if (std::isfinite(pe[i]) && pe[i] > 0.0) { useWeights = true; break; }
+    }
+
     double binWidth = (xMax - xMin) / nBins;
-    struct Acc { double sumW = 0; double sumWY = 0; int n = 0; };
+    struct Acc { double sumW = 0; double sumWY = 0;
+                 double sumY = 0; double sumY2 = 0; int n = 0; };
     QVector<Acc> bins(nBins);
 
     for (int i = 0; i < px.size(); ++i) {
-        if (pe[i] <= 0.0) continue;
+        if (!std::isfinite(px[i]) || !std::isfinite(py[i])) continue;
         int b = static_cast<int>((px[i] - xMin) / binWidth);
         b = std::clamp(b, 0, nBins - 1);
-        double w    = 1.0 / (pe[i] * pe[i]);
-        bins[b].sumW  += w;
-        bins[b].sumWY += w * py[i];
+
+        bins[b].sumY  += py[i];
+        bins[b].sumY2 += py[i] * py[i];
         bins[b].n++;
+
+        if (useWeights && std::isfinite(pe[i]) && pe[i] > 0.0) {
+            double w = 1.0 / (pe[i] * pe[i]);
+            bins[b].sumW  += w;
+            bins[b].sumWY += w * py[i];
+        }
     }
 
     for (int b = 0; b < nBins; ++b) {
-        if (bins[b].n == 0 || bins[b].sumW <= 0.0) continue;
-        double xc  = xMin + (b + 0.5) * binWidth;
-        double yMn = bins[b].sumWY / bins[b].sumW;
-        double yEr = 1.0 / std::sqrt(bins[b].sumW);
+        if (bins[b].n == 0) continue;
+        double xc = xMin + (b + 0.5) * binWidth;
+        double yMn, yEr;
+        if (useWeights && bins[b].sumW > 0.0) {
+            yMn = bins[b].sumWY / bins[b].sumW;
+            yEr = 1.0 / std::sqrt(bins[b].sumW);
+        } else {
+            yMn = bins[b].sumY / bins[b].n;
+            if (bins[b].n > 1) {
+                double var = (bins[b].sumY2 / bins[b].n) - (yMn * yMn);
+                yEr = std::sqrt(std::max(var, 0.0) / bins[b].n);
+            } else {
+                yEr = 0.0;
+            }
+        }
         result.append({xc, yMn, yEr});
     }
     return result;
@@ -1892,20 +1916,32 @@ binLightcurve(const QVector<double>& px,
 // ── Main function ────────────────────────────────────────────────────────────
 void StarDetailView::populateLCPlot()
 {
+    static const QString CAT = "StarDetailView.LC";
+
+    LOG_DEBUG(CAT, QString("Star %1 — populateLCPlot() called, folded=%2")
+        .arg(_star->getSourceId()).arg(_lcFolded));
+
     clearLayout(_lcContentLayout);
 
     auto phot = _star->getPhotometry();
     if (!phot) {
+        LOG_WARNING(CAT, QString("Star %1 — no photometry object")
+            .arg(_star->getSourceId()));
         _lcToggleButton->setEnabled(false);
         _lcContentLayout->addWidget(makePlaceholder("No photometry data available yet."));
         return;
     }
     auto sources = phot->getLightcurveSources();
     if (sources.empty()) {
+        LOG_WARNING(CAT, QString("Star %1 — no lightcurve sources")
+            .arg(_star->getSourceId()));
         _lcToggleButton->setEnabled(false);
         _lcContentLayout->addWidget(makePlaceholder("No light curve data available yet."));
         return;
     }
+
+    LOG_DEBUG(CAT, QString("Star %1 — %2 lightcurve source(s)")
+        .arg(_star->getSourceId()).arg(sources.size()));
 
     // ── Fold period ───────────────────────────────────────────────────────
     double foldPeriod = 0.0, foldT0 = 0.0;
@@ -1925,20 +1961,27 @@ void StarDetailView::populateLCPlot()
     _lcToggleButton->setEnabled(canFold);
     if (!canFold) { _lcToggleButton->setChecked(false); _lcFolded = false; _lcToggleButton->setText("Show Folded"); }
 
+    LOG_DEBUG(CAT, QString("Star %1 — canFold=%2, period=%3, t0=%4")
+        .arg(_star->getSourceId()).arg(canFold)
+        .arg(foldPeriod, 0, 'f', 6).arg(foldT0, 0, 'f', 6));
+
     // ── Collect raw points split by source×filter ─────────────────────────
     struct SeriesKey { QString source; QString filter; };
     struct RawSeries  { SeriesKey key; QVector<double> px, py, pe; };
 
-    // preserve insertion order
     QList<SeriesKey>              keyOrder;
-    QMap<QString, RawSeries>      seriesMap;   // key = "source::filter"
+    QMap<QString, RawSeries>      seriesMap;
 
     auto makeKey = [](const QString& src, const QString& filt) {
         return src + "::" + filt;
     };
 
     for (auto& src : sources) {
-        for (auto& pt : phot->getLightcurve(src)) {
+        auto lcPoints = phot->getLightcurve(src);
+        LOG_DEBUG(CAT, QString("  source '%1': getLightcurve() returned %2 point(s)")
+            .arg(src).arg(lcPoints.size()));
+
+        for (auto& pt : lcPoints) {
             QString k = makeKey(src, pt.filter);
             if (!seriesMap.contains(k)) {
                 seriesMap[k] = RawSeries{ {src, pt.filter}, {}, {}, {} };
@@ -1957,8 +2000,34 @@ void StarDetailView::populateLCPlot()
         }
     }
     if (seriesMap.isEmpty()) {
+        LOG_WARNING(CAT, QString("Star %1 — no series after collection")
+            .arg(_star->getSourceId()));
         _lcContentLayout->addWidget(makePlaceholder("No light curve data available yet."));
         return;
+    }
+
+    LOG_INFO(CAT, QString("Star %1 — %2 series collected")
+        .arg(_star->getSourceId()).arg(keyOrder.size()));
+
+    for (auto& sk : keyOrder) {
+        QString k  = makeKey(sk.source, sk.filter);
+        auto&   rs = seriesMap[k];
+
+        int zeroErr = 0, nanErr = 0, validErr = 0;
+        for (int i = 0; i < rs.pe.size(); ++i) {
+            if (!std::isfinite(rs.pe[i]))      ++nanErr;
+            else if (rs.pe[i] <= 0.0)          ++zeroErr;
+            else                                ++validErr;
+        }
+
+        double xLo = rs.px.isEmpty() ? 0.0 : *std::min_element(rs.px.begin(), rs.px.end());
+        double xHi = rs.px.isEmpty() ? 0.0 : *std::max_element(rs.px.begin(), rs.px.end());
+
+        LOG_DEBUG(CAT, QString("  series '%1': %2 pts, x=[%3, %4], "
+            "errors: %5 valid / %6 zero / %7 NaN")
+            .arg(k).arg(rs.px.size())
+            .arg(xLo, 0, 'f', 4).arg(xHi, 0, 'f', 4)
+            .arg(validErr).arg(zeroErr).arg(nanErr));
     }
 
     // ── Ensure every series×fold combination has a bin count entry ────────
@@ -1990,13 +2059,19 @@ void StarDetailView::populateLCPlot()
     double globalYMin =  std::numeric_limits<double>::max();
     double globalYMax =  std::numeric_limits<double>::lowest();
 
-    // global x range for bin edges
     for (auto& sk : keyOrder) {
         auto& rs = seriesMap[makeKey(sk.source, sk.filter)];
         for (double x : rs.px) { globalXMin = std::min(globalXMin, x); globalXMax = std::max(globalXMax, x); }
     }
+    if (globalXMax <= globalXMin) globalXMax = globalXMin + 1.0;
+
     double xBinMin = _lcFolded ? 0.0 : globalXMin;
     double xBinMax = _lcFolded ? 1.0 : globalXMax;
+
+    LOG_DEBUG(CAT, QString("Star %1 — global x=[%2, %3], bin range=[%4, %5]")
+        .arg(_star->getSourceId())
+        .arg(globalXMin, 0, 'f', 4).arg(globalXMax, 0, 'f', 4)
+        .arg(xBinMin, 0, 'f', 4).arg(xBinMax, 0, 'f', 4));
 
     int colorIdx = 0;
     for (auto& sk : keyOrder) {
@@ -2010,13 +2085,42 @@ void StarDetailView::populateLCPlot()
         QColor col = kLCColors[colorIdx % kNumLCColors];
         colorIdx++;
 
-        auto binned = binLightcurve(rs.px, rs.py, rs.pe, nBins, xBinMin, xBinMax);
+        // Per-series bin range
+        double seriesXMin = *std::min_element(rs.px.begin(), rs.px.end());
+        double seriesXMax = *std::max_element(rs.px.begin(), rs.px.end());
+        if (seriesXMax <= seriesXMin) seriesXMax = seriesXMin + 1.0;
+        double xBinMinS = _lcFolded ? 0.0 : seriesXMin;
+        double xBinMaxS = _lcFolded ? 1.0 : seriesXMax;
+
+        LOG_DEBUG(CAT, QString("  series '%1': binning %2 pts into %3 bins over [%4, %5]")
+            .arg(k).arg(rs.px.size()).arg(nBins)
+            .arg(xBinMinS, 0, 'f', 4).arg(xBinMaxS, 0, 'f', 4));
+
+        auto binned = binLightcurve(rs.px, rs.py, rs.pe, nBins, xBinMinS, xBinMaxS);
 
         QVector<double> bx, by, be;
-        for (auto& [x, y, e] : binned) {
-            bx.append(x); by.append(y); be.append(e);
-            globalYMin = std::min(globalYMin, y - e);
-            globalYMax = std::max(globalYMax, y + e);
+
+        if (!binned.isEmpty()) {
+            for (auto& [x, y, e] : binned) {
+                bx.append(x); by.append(y); be.append(e);
+            }
+            LOG_DEBUG(CAT, QString("  series '%1': %2 bins → %3 binned point(s)")
+                .arg(k).arg(nBins).arg(binned.size()));
+        } else {
+            bx = rs.px;
+            by = rs.py;
+            be.resize(rs.pe.size());
+            for (int i = 0; i < rs.pe.size(); ++i)
+                be[i] = (std::isfinite(rs.pe[i]) && rs.pe[i] > 0.0) ? rs.pe[i] : 0.0;
+
+            LOG_WARNING(CAT, QString("  series '%1': binning returned empty, "
+                "falling back to %2 raw point(s)").arg(k).arg(bx.size()));
+        }
+
+        for (int i = 0; i < bx.size(); ++i) {
+            double e = std::isfinite(be[i]) ? be[i] : 0.0;
+            globalYMin = std::min(globalYMin, by[i] - e);
+            globalYMax = std::max(globalYMax, by[i] + e);
         }
 
         QString label = sk.filter.isEmpty() ? sk.source
@@ -2042,9 +2146,9 @@ void StarDetailView::populateLCPlot()
         plot->xAxis->setRange(-0.05, 1.05);
     } else {
         plot->xAxis->setLabel("BJD");
-        double span = xBinMax - xBinMin;
+        double span = globalXMax - globalXMin;
         if (span <= 0) span = 1.0;
-        plot->xAxis->setRange(xBinMin - span * 0.02, xBinMax + span * 0.02);
+        plot->xAxis->setRange(globalXMin - span * 0.02, globalXMax + span * 0.02);
     }
     double yMargin = (globalYMax - globalYMin) * 0.08;
     if (yMargin <= 0) yMargin = 1.0;
@@ -2055,13 +2159,18 @@ void StarDetailView::populateLCPlot()
     outerLay->addWidget(plot);
     _lcContentLayout->addWidget(outer);
 
+    LOG_INFO(CAT, QString("Star %1 — LC plot created, %2 series, "
+        "x=[%3, %4], y=[%5, %6]")
+        .arg(_star->getSourceId()).arg(keyOrder.size())
+        .arg(globalXMin, 0, 'f', 2).arg(globalXMax, 0, 'f', 2)
+        .arg(globalYMin, 0, 'f', 4).arg(globalYMax, 0, 'f', 4));
+
     // ── Floating burger menu (QFrame child of outer, positioned top-right) ─
     QFrame* burger = new QFrame(outer);
     burger->setFrameShape(QFrame::StyledPanel);
     burger->setStyleSheet(
         "QFrame { background: palette(window); border: 1px solid palette(mid); border-radius: 6px; }"
     );
-    burger->setFixedWidth(220);
     burger->setAttribute(Qt::WA_TransparentForMouseEvents, false);
     burger->raise();
 
@@ -2135,7 +2244,7 @@ void StarDetailView::populateLCPlot()
         connect(sb, &QSpinBox::valueChanged, this, [this, k](int v) {
             if (_lcFolded) _lcBinsFolded[k]   = v;
             else           _lcBinsUnfolded[k] = v;
-            populateLCPlot();
+            QTimer::singleShot(0, this, [this]() { populateLCPlot(); });
         });
 
         rowLay->addWidget(swatch);
@@ -2145,7 +2254,6 @@ void StarDetailView::populateLCPlot()
     }
 
     burgerLay->addWidget(content);
-    burger->adjustSize();
 
     // Initially collapsed — just show the ≡ button
     burger->setFixedWidth(40);
@@ -2158,12 +2266,13 @@ void StarDetailView::populateLCPlot()
         burgerTitle->setVisible(expanding);
         if (expanding) {
             burger->setFixedWidth(220);
+            burger->setMinimumHeight(0);
+            burger->setMaximumHeight(QWIDGETSIZE_MAX);
             burger->adjustSize();
         } else {
             burger->setFixedWidth(40);
             burger->setFixedHeight(36);
         }
-        // Re-position (anchor stays top-right)
         burger->move(outer->width() - burger->width() - 8, 8);
     });
 
@@ -2171,8 +2280,7 @@ void StarDetailView::populateLCPlot()
     burger->move(outer->width() - burger->width() - 8, 8);
 
     // Keep anchored top-right when the outer widget resizes
-    outer->installEventFilter(this);   // see eventFilter below
-    // store pointer so eventFilter can reposition it
+    outer->installEventFilter(this);
     _lcBurgerMenu = burger;
 }
 
