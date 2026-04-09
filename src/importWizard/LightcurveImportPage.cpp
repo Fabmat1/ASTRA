@@ -168,7 +168,7 @@ LightcurveImportPage::LightcurveImportPage(QWidget* parent)
     // ── Results tree ─────────────────────────────────────────
     _resultsTree = new QTreeWidget;
     _resultsTree->setHeaderLabels({
-        "Import", "Star ID", "File", "Instrument",
+        "Import", "Star ID", "File", "Instrument", "Mode(s)",
         "Time Scale", "Points", "Filters", "Matched Star", "Status"
     });
     _resultsTree->setRootIsDecorated(false);
@@ -176,6 +176,7 @@ LightcurveImportPage::LightcurveImportPage(QWidget* parent)
     _resultsTree->header()->setStretchLastSection(true);
     _resultsTree->header()->setSectionResizeMode(QHeaderView::ResizeToContents);
     _resultsTree->setColumnWidth(0, 50);
+    _resultsTree->setMinimumHeight(150);
     mainLayout->addWidget(_resultsTree, 1);
 
     // ── Timescale overrides ──────────────────────────────────
@@ -327,6 +328,11 @@ void LightcurveImportPage::scanLightcurves()
     } else {
         scanCSVManifest(_csvFileEdit->text());
     }
+
+    // ── Resolve instrument models ────────────────────────────
+    _progressBar->setFormat("Resolving instruments…");
+    QApplication::processEvents();
+    resolveInstruments();
 
     // ── Match to project stars ───────────────────────────────
     _progressBar->setFormat("Matching to project stars…");
@@ -755,6 +761,130 @@ QString LightcurveImportPage::instrumentFromFilename(const QString& filename) co
     return fi.completeBaseName().toLower();
 }
 
+void LightcurveImportPage::resolveInstruments()
+{
+    auto* importWizard = qobject_cast<StarImportWizard*>(wizard());
+    if (!importWizard || !importWizard->controller()) return;
+
+    DatabaseManager* dbm = importWizard->controller()->databaseManager();
+    if (!dbm) return;
+
+    int resolved = 0;
+
+    for (auto& entry : _entries) {
+        if (entry.hasError) continue;
+
+        QString modeKey;
+        auto inst = dbm->resolveInstrumentString(entry.instrument, &modeKey);
+
+        if (!inst) continue;
+
+        entry.resolvedInstrument = inst;
+        entry.instrument = inst->getName();
+        ++resolved;
+
+        if (entry.detectedTimeScale == TimeScale::Unknown) {
+            TimeScale instScale = Time::guessScaleFromInstrument(inst->getName());
+            if (instScale != TimeScale::Unknown) {
+                entry.detectedTimeScale = instScale;
+                for (auto& pt : entry.points) {
+                    pt.time = Time(pt.time.nativeValue(), instScale);
+                }
+            }
+        }
+
+        if (!modeKey.isEmpty()) {
+            entry.resolvedModeKey = modeKey;
+            entry.detectedModeKeys = { modeKey };
+        } else {
+            entry.detectedModeKeys = detectPhotometricModes(entry.points, *inst);
+            if (!entry.detectedModeKeys.isEmpty())
+                entry.resolvedModeKey = entry.detectedModeKeys.first();
+        }
+    }
+
+    LOG_INFO("LCImport",
+             QString("Resolved %1 / %2 instruments from repository")
+                 .arg(resolved)
+                 .arg(_entries.size()));
+}
+
+QStringList LightcurveImportPage::detectPhotometricModes(
+    const std::vector<LightcurvePoint>& points,
+    const Instrument& instrument)
+{
+    if (points.size() < 2) return {};
+
+    auto photModes = instrument.photometricModes();
+    if (photModes.isEmpty()) return {};
+
+    struct ModeCandidate { double cadenceSec; QString key; };
+    std::vector<ModeCandidate> candidates;
+    for (const auto* mode : photModes) {
+        if (!mode->hasPhotometricProperties()) continue;
+        double cad = mode->photometric().cadence;
+        if (cad > 0)
+            candidates.push_back({ cad, mode->key() });
+    }
+    if (candidates.empty()) return {};
+
+    std::sort(candidates.begin(), candidates.end(),
+              [](const ModeCandidate& a, const ModeCandidate& b) {
+                  return a.cadenceSec < b.cadenceSec;
+              });
+
+    // Only consider gaps up to 3× the longest known cadence
+    double maxGapSec = candidates.back().cadenceSec * 3.0;
+
+    QHash<QString, int> modeCounts;
+    int totalClassified = 0;
+
+    for (size_t i = 1; i < points.size(); ++i) {
+        double dtSec = (points[i].time.sortValue()
+                        - points[i - 1].time.sortValue()) * 86400.0;
+        if (dtSec <= 0.0 || dtSec > maxGapSec) continue;
+
+        // Find the best-matching mode, allowing integer multiples 1–3
+        // to accommodate occasional dropped observations
+        double bestDeviation = 0.30;
+        QString bestKey;
+
+        for (const auto& c : candidates) {
+            for (int mult = 1; mult <= 3; ++mult) {
+                double expected = c.cadenceSec * mult;
+                double deviation = std::abs(dtSec - expected) / expected;
+                if (deviation < bestDeviation) {
+                    bestDeviation = deviation;
+                    bestKey = c.key;
+                }
+            }
+        }
+
+        if (!bestKey.isEmpty()) {
+            modeCounts[bestKey]++;
+            totalClassified++;
+        }
+    }
+
+    if (totalClassified == 0) return {};
+
+    // Keep modes that account for ≥5 % of classified gaps
+    double threshold = totalClassified * 0.05;
+    QStringList result;
+    for (auto it = modeCounts.constBegin(); it != modeCounts.constEnd(); ++it) {
+        if (it.value() >= threshold)
+            result.append(it.key());
+    }
+
+    // Most-represented mode first
+    std::sort(result.begin(), result.end(),
+              [&](const QString& a, const QString& b) {
+                  return modeCounts.value(a) > modeCounts.value(b);
+              });
+
+    return result;
+}
+
 // ══════════════════════════════════════════════════════════════
 // Star matching
 // ══════════════════════════════════════════════════════════════
@@ -909,38 +1039,65 @@ void LightcurveImportPage::populateTree()
     _resultsTree->blockSignals(true);
     _resultsTree->clear();
 
+    int shown = 0, skipped = 0;
+
     for (int i = 0; i < static_cast<int>(_entries.size()); ++i) {
         const auto& e = _entries[i];
+        if (e.hasError) {
+            ++skipped;
+            continue;
+        }
+
         auto* item = new QTreeWidgetItem;
 
         item->setCheckState(0, e.selected ? Qt::Checked : Qt::Unchecked);
-        item->setData(0, Qt::UserRole, i);  // store index
+        item->setData(0, Qt::UserRole, i);
         item->setText(1, e.starIdentifier);
         item->setText(2, QFileInfo(e.filePath).fileName());
-        item->setText(3, e.instrument);
-        item->setText(4, Time::scaleToString(e.detectedTimeScale));
-        item->setText(5, QString::number(e.numPoints));
-        item->setText(6, e.filters.join(", "));
-        item->setText(7, e.matchedStarDisplay);
 
-        if (e.hasError) {
-            item->setText(8, "⚠ " + e.errorMessage);
-            item->setForeground(8, QBrush(Qt::red));
-            item->setFlags(item->flags() & ~Qt::ItemIsUserCheckable);
-        } else if (e.matchedStarId.isEmpty()) {
-            item->setText(8, _createNewCb->isChecked()
+        if (e.resolvedInstrument) {
+            QString display = e.resolvedInstrument->getName();
+            if (!e.resolvedInstrument->getFullName().isEmpty())
+                display = e.resolvedInstrument->getFullName();
+            item->setText(3, display);
+            item->setToolTip(3, e.resolvedInstrument->getName()
+                                + " [" + e.resolvedInstrument->getId() + "]");
+        } else {
+            item->setText(3, e.instrument + "  ⚠");
+            item->setToolTip(3, "Instrument not found in repository");
+            item->setForeground(3, QBrush(QColor(180, 140, 0)));
+        }
+
+        if (!e.detectedModeKeys.isEmpty()) {
+            item->setText(4, e.detectedModeKeys.join(", "));
+            if (e.detectedModeKeys.size() > 1)
+                item->setToolTip(4, "Mixed-mode lightcurve");
+        }
+
+        item->setText(5, Time::scaleToString(e.detectedTimeScale));
+        item->setText(6, QString::number(e.numPoints));
+        item->setText(7, e.filters.join(", "));
+        item->setText(8, e.matchedStarDisplay);
+
+        if (e.matchedStarId.isEmpty()) {
+            item->setText(9, _createNewCb->isChecked()
                                  ? "Will create new star"
                                  : "No match");
-            item->setForeground(8, QBrush(QColor(180, 140, 0)));
+            item->setForeground(9, QBrush(QColor(180, 140, 0)));
         } else {
-            item->setText(8, "✓ Matched");
-            item->setForeground(8, QBrush(QColor(0, 150, 0)));
+            item->setText(9, "✓ Matched");
+            item->setForeground(9, QBrush(QColor(0, 150, 0)));
         }
 
         _resultsTree->addTopLevelItem(item);
+        ++shown;
     }
 
     _resultsTree->blockSignals(false);
+
+    LOG_INFO("LCImport",
+             QString("populateTree: %1 shown, %2 skipped (errors), %3 total")
+                 .arg(shown).arg(skipped).arg(_entries.size()));
 }
 
 // ══════════════════════════════════════════════════════════════
@@ -995,7 +1152,6 @@ void LightcurveImportPage::buildTimeScaleOverrides()
 
 void LightcurveImportPage::onTimeScaleOverrideChanged()
 {
-    // Reapply overrides and recompute BJD/MJD for affected entries
     for (auto it = _timeScaleCombos.constBegin();
          it != _timeScaleCombos.constEnd(); ++it)
     {
@@ -1017,12 +1173,11 @@ void LightcurveImportPage::onTimeScaleOverrideChanged()
         }
     }
 
-    // Update displayed timescale column
     for (int i = 0; i < _resultsTree->topLevelItemCount(); ++i) {
         auto* item = _resultsTree->topLevelItem(i);
         int idx = item->data(0, Qt::UserRole).toInt();
         if (idx >= 0 && idx < static_cast<int>(_entries.size())) {
-            item->setText(4, Time::scaleToString(
+            item->setText(5, Time::scaleToString(
                 _entries[idx].detectedTimeScale));
         }
     }
@@ -1101,10 +1256,11 @@ void LightcurveImportPage::selectMatched()
 void LightcurveImportPage::updateSummary()
 {
     int total    = static_cast<int>(_entries.size());
+    int errors   = 0;
     int selected = 0;
     int matched  = 0;
     int unmatched = 0;
-    int errors   = 0;
+    int instResolved = 0;
     long long totalPoints = 0;
 
     for (const auto& e : _entries) {
@@ -1112,6 +1268,8 @@ void LightcurveImportPage::updateSummary()
             ++errors;
             continue;
         }
+        if (e.resolvedInstrument)
+            ++instResolved;
         if (e.selected) {
             ++selected;
             totalPoints += e.numPoints;
@@ -1122,15 +1280,16 @@ void LightcurveImportPage::updateSummary()
         }
     }
 
+    int valid = total - errors;
     QString text = QString(
-        "%1 files found, %2 selected (%3 matched, %4 unmatched), "
-        "%5 errors, %L6 total points")
-        .arg(total).arg(selected).arg(matched).arg(unmatched)
-        .arg(errors).arg(totalPoints);
+        "%1 files found (%2 valid, %3 rejected), %4 selected "
+        "(%5 matched, %6 unmatched), %7 instruments resolved, %L8 total points")
+        .arg(total).arg(valid).arg(errors)
+        .arg(selected).arg(matched).arg(unmatched)
+        .arg(instResolved).arg(totalPoints);
 
-    if (unmatched > 0 && _createNewCb->isChecked()) {
+    if (unmatched > 0 && _createNewCb->isChecked())
         text += QString(" — %1 new star(s) will be created").arg(unmatched);
-    }
 
     _summaryLabel->setText(text);
 }
@@ -1145,7 +1304,6 @@ void LightcurveImportPage::stageSelectedLightcurves()
 
     auto* importWizard = qobject_cast<StarImportWizard*>(wizard());
 
-    // Pull matched stars into staging area from DB if not already there
     if (importWizard && importWizard->controller()) {
         auto proj = importWizard->project();
         if (proj) {
@@ -1183,7 +1341,6 @@ void LightcurveImportPage::stageSelectedLightcurves()
             if (!_createNewCb->isChecked())
                 continue;
 
-            // Check if we already created a star for this identifier
             bool alreadyCreated = false;
             for (const auto& other : _entries) {
                 if (&other != &entry
@@ -1202,7 +1359,6 @@ void LightcurveImportPage::stageSelectedLightcurves()
                 newStar->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
                 newStar->setJName(entry.starIdentifier);
 
-                // If the identifier looks like a Gaia source ID, set it
                 bool isNumeric;
                 entry.starIdentifier.toLongLong(&isNumeric);
                 if (isNumeric)
@@ -1216,13 +1372,34 @@ void LightcurveImportPage::stageSelectedLightcurves()
             }
         }
 
-        // Get the star's Photometry, create if needed
         auto star = _staging->getStar(targetStarId);
         if (!star) {
             LOG_WARNING("LCImport",
                         QString("Star %1 not found in staging area, skipping")
                             .arg(targetStarId));
             continue;
+        }
+
+        // Set auto-convert info on Time objects for BJD computation
+        // when we have a resolved instrument and the star has coordinates
+        if (entry.resolvedInstrument
+            && Star::isSet(star->getRa()) && Star::isSet(star->getDec()))
+        {
+            bool nativeIsBjd =
+                (entry.detectedTimeScale == TimeScale::BJD  ||
+                 entry.detectedTimeScale == TimeScale::BTJD ||
+                 entry.detectedTimeScale == TimeScale::BKJD ||
+                 entry.detectedTimeScale == TimeScale::GaiaTCB);
+
+            if (!nativeIsBjd) {
+                for (auto& pt : entry.points) {
+                    if (!pt.time.hasBjd()) {
+                        pt.time.setAutoConvertInfo(
+                            entry.resolvedInstrument,
+                            star->getRa(), star->getDec());
+                    }
+                }
+            }
         }
 
         auto phot = star->getPhotometry();
@@ -1232,11 +1409,7 @@ void LightcurveImportPage::stageSelectedLightcurves()
             star->setPhotometry(phot);
         }
 
-        // Add lightcurve data via Photometry's existing API
-        // source key = instrument name
         phot->addLightcurve(entry.instrument, entry.points);
-
-        // Mark this star's lightcurve data as needing to be saved
         _staging->markLightcurveDirty(targetStarId);
         ++staged;
     }

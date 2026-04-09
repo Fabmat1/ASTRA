@@ -6,6 +6,7 @@
 #include <vector>
 #include "models/Photometry.h"
 #include "models/Time.h"
+#include "models/Instrument.h"  
 
 class QListWidget;
 class QPushButton;
@@ -48,6 +49,10 @@ struct LightcurveScanEntry
     bool    selected     = true;
     bool    hasError     = false;
     QString errorMessage;
+
+    std::shared_ptr<Instrument> resolvedInstrument;
+    QString resolvedModeKey;  
+    QStringList detectedModeKeys; 
 };
 
 // ══════════════════════════════════════════════════════════════
@@ -119,6 +124,11 @@ private:
     QHash<QString, QComboBox*>          _timeScaleCombos;
     bool _scanned = false;
     bool _staged  = false;
+
+    void resolveInstruments();
+    QStringList detectPhotometricModes(
+        const std::vector<LightcurvePoint>& points,
+        const Instrument& instrument);
 };
 
 #endif // LIGHTCURVEIMPORTPAGE_H
