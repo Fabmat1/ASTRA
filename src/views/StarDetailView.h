@@ -100,6 +100,19 @@ private:
     QMap<QString, int>  _lcBinsUnfolded;
     QMap<QString, int>  _lcBinsFolded;
     QFrame*             _lcBurgerMenu = nullptr;
+    QMap<QString, bool>  _lcNormalize;
+    QMap<QString, bool>  _lcBinEnabled;
+
+    // ── LC data cache for fast replotting ──
+    struct LCSeries {
+        QString source;
+        QString filter;
+        QVector<double> px, py, pe;
+    };
+    QCustomPlot*    _lcPlot = nullptr;
+    QList<LCSeries> _lcSeriesCache;
+
+    void replotLCData();
 
     // ── Spectra panel ──
     QTabBar*     _spectraTabBar        = nullptr;
@@ -136,7 +149,7 @@ private:
     QPushButton* _calcOrbitButton     = nullptr;
 
     CrossRefResolver* _refResolver = nullptr;
-    
+
     // ── Summary dashboard helpers ──
     QWidget* buildDashboard();
     QWidget* createNameHeader();
