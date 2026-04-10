@@ -15,6 +15,7 @@
 #include "views/tools/SEDFitDialog.h"
 #include "views/tools/CMDDialog.h"
 #include "views/tools/GalacticOrbitDialog.h"
+#include "views/tools/SEDFitDialog.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -3397,9 +3398,14 @@ void StarDetailView::onFetchLightcurves()
 
 void StarDetailView::onViewFitSED()
 {
-    auto* dialog = new SEDFitDialog(_star, this);
-    dialog->setAttribute(Qt::WA_DeleteOnClose);
-    dialog->show();
+    auto* dlg = new SEDFitDialog(_star, nullptr, QString(), this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+
+    connect(dlg, &SEDFitDialog::fitDataChanged, this, [this] {
+        populateSummary();
+    });
+
+    dlg->show();
 }
 
 void StarDetailView::onShowCMD()

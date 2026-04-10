@@ -1,10 +1,10 @@
-<!DOCTYPE RCC>
 <RCC version="1.0">
-  <qresource prefix="/">
-    <file>themes/catppuccin_light.qss</file>
-    <file>themes/catppuccin_dark.qss</file>
-    <file>themes/rose_pine_dawn.qss</file>
-    <file>themes/one_light.qss</file>
-    <file>data/default_instruments.json</file>
-  </qresource>
+    <qresource prefix="/">
+        <file>themes/catppuccin_light.qss</file>
+        <file>themes/catppuccin_dark.qss</file>
+        <file>themes/rose_pine_dawn.qss</file>
+        <file>themes/one_light.qss</file>
+        <file>data/default_instruments.json</file>
+        <file>scripts/photometry_body.sl</file>
+    </qresource>
 </RCC>
