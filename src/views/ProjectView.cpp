@@ -526,7 +526,8 @@ void ProjectView::onShowDetailWindow()
     }
 
     // Launch the detail window (WA_DeleteOnClose handles cleanup)
-    StarDetailView* detailView = new StarDetailView(star);
+    StarDetailView* detailView = new StarDetailView(
+        star, _controller->databaseManager(), _currentProject->getId());
     detailView->show();
     detailView->raise();
     detailView->activateWindow();

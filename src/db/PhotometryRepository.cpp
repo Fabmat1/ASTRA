@@ -227,6 +227,35 @@ bool PhotometryRepository::saveSEDModelForStar(const QString& starId,
     return saveSEDModel(starId, photometryId, model);
 }
 
+bool PhotometryRepository::deleteSEDModel(const QString& modelId)
+{
+    QSqlDatabase db = _db.threadConnection();
+
+    // Retrieve the data file path before deleting the row
+    QString dataFile;
+    {
+        QSqlQuery q(db);
+        q.prepare("SELECT model_data_file FROM sed_models WHERE id = :id");
+        q.bindValue(":id", modelId);
+        if (q.exec() && q.next())
+            dataFile = q.value(0).toString();
+    }
+
+    QSqlQuery del(db);
+    del.prepare("DELETE FROM sed_models WHERE id = :id");
+    del.bindValue(":id", modelId);
+
+    if (!del.exec()) {
+        qDebug() << "Failed to delete SED model:" << del.lastError();
+        return false;
+    }
+
+    if (!dataFile.isEmpty() && QFile::exists(dataFile))
+        QFile::remove(dataFile);
+
+    return true;
+}
+
 bool PhotometryRepository::saveLightcurveForStar(const QString& starId,
                                             const QString& source,
                                             Photometry* photometry)

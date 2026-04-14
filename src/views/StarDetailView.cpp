@@ -529,9 +529,14 @@ private:
 // StarDetailView — construction
 // ============================================================================
 
-StarDetailView::StarDetailView(std::shared_ptr<Star> star, QWidget* parent)
+StarDetailView::StarDetailView(std::shared_ptr<Star> star,
+                               DatabaseManager* dbm,
+                               const QString& projectId,
+                               QWidget* parent)
     : QWidget(parent, Qt::Window)
     , _star(star)
+    , _dbm(dbm)
+    , _projectId(projectId)
     , _rvFolded(false)
     , _lcFolded(false)
     , _spectraMainPlot(nullptr)
@@ -3398,7 +3403,7 @@ void StarDetailView::onFetchLightcurves()
 
 void StarDetailView::onViewFitSED()
 {
-    auto* dlg = new SEDFitDialog(_star, nullptr, QString(), this);
+    auto* dlg = new SEDFitDialog(_star, _dbm, _projectId, this);
     dlg->setAttribute(Qt::WA_DeleteOnClose);
 
     connect(dlg, &SEDFitDialog::fitDataChanged, this, [this] {

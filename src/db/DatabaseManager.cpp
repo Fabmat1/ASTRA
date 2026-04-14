@@ -985,6 +985,11 @@ bool DatabaseManager::saveSEDModelForStar(const QString& starId, std::shared_ptr
     return _photometry->saveSEDModelForStar(starId, model);
 }
 
+bool DatabaseManager::deleteSEDModel(const QString& modelId)
+{
+    return _photometry->deleteSEDModel(modelId);
+}
+
 bool DatabaseManager::saveLightcurveForStar(const QString& starId, const QString& source, Photometry* photometry)
 {
     return _photometry->saveLightcurveForStar(starId, source, photometry);

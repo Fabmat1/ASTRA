@@ -5,6 +5,8 @@
 #include <memory>
 #include <vector>
 
+#include "models/Photometry.h"
+
 class SEDModel;
 struct PhotometricPoint;
 
@@ -23,6 +25,9 @@ namespace ExtractSED {
 /// Returns true if \a dirPath looks like an ISIS SED fit directory
 /// (contains at least photometry_fit.txt or photometry_fit_mag.txt).
 bool isSEDFitDirectory(const QString& dirPath);
+
+void mergePhotometryDat(const QString& filePath,
+                        std::vector<SEDPhotometryPoint>& points);
 
 /// Parse all available ISIS SED files in \a dirPath and build an SEDModel.
 /// The model's compressed data (curve + observed photometry) is populated

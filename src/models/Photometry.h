@@ -141,6 +141,11 @@ struct SEDPhotometryPoint
     QString system;
     int     flag         = 0;
     QString vizierCatalog;
+
+    double  magnitude    = 0.0;
+    double  magnitudeErr = 0.0;
+    QString type;
+    double  angularDist  = 0.0;
 };
 
 struct SEDComponentParams
@@ -317,6 +322,7 @@ public:
     void addSEDModel(std::shared_ptr<SEDModel> model);
     std::vector<std::shared_ptr<SEDModel>> getSEDModels() const;
     std::shared_ptr<SEDModel> getBestSEDModel() const;
+    bool removeSEDModel(const QString& modelId);
 
     void addLightcurveModel(const QString& source, std::shared_ptr<LightcurveModel> model);
     std::vector<std::shared_ptr<LightcurveModel>> getLightcurveModels(const QString& source) const;

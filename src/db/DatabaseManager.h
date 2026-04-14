@@ -70,6 +70,7 @@ public:
     bool updateStarRow(const QString& projectId, std::shared_ptr<Star> star);
     QString findMatchingStarId(const QString& projectId, const QString& sourceId, const QString& alias, const QString& tic, const QString& jname, double ra, double dec);
     bool saveSEDModelForStar(const QString& starId, std::shared_ptr<SEDModel> model);
+    bool deleteSEDModel(const QString& modelId);
     bool saveLightcurveForStar(const QString& starId, const QString& source, Photometry* photometry);
     void initializeInstruments();
     std::shared_ptr<Instrument> getInstrumentById(const QString& id) const;

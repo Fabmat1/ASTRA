@@ -637,5 +637,51 @@ SEDExtractResult ExtractSED::extractFromDirectory(const QString& dirPath)
     result.objectName  = model->objectName;
     result.success     = true;
 
+    // Merge magnitude data from photometry.dat if present
+    QString photDat = dirPath + "/photometry.dat";
+    if (QFile::exists(photDat) && result.model)
+        mergePhotometryDat(photDat, result.model->observedPoints);
+
     return result;
+}
+
+void ExtractSED::mergePhotometryDat(const QString& filePath,
+                                     std::vector<SEDPhotometryPoint>& points)
+{
+    QFile file(filePath);
+    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) return;
+    QTextStream in(&file);
+
+    std::map<std::pair<QString,QString>, int> lookup;
+    for (int i = 0; i < static_cast<int>(points.size()); ++i)
+        lookup[{points[i].system, points[i].passband}] = i;
+
+    while (!in.atEnd()) {
+        QString line = in.readLine().trimmed();
+        if (line.isEmpty() || line.startsWith('#') || line.startsWith("flag"))
+            continue;
+
+        QStringList parts = line.split(QRegularExpression("\\s+"),
+                                       Qt::SkipEmptyParts);
+        if (parts.size() < 6) continue;
+
+        QString sys     = parts[1];
+        QString band    = parts[2];
+        double  mag     = parts[3].toDouble();
+        double  magErr  = parts[4].toDouble();
+        QString type    = parts[5];
+        double  angDist = parts.size() > 6 ? parts[6].toDouble() : 0.0;
+        QString vizCat  = parts.size() > 7 ? parts[7] : QString();
+
+        auto it = lookup.find({sys, band});
+        if (it != lookup.end()) {
+            auto& p = points[it->second];
+            p.magnitude    = mag;
+            p.magnitudeErr = magErr;
+            p.type         = type;
+            p.angularDist  = angDist;
+            if (p.vizierCatalog.isEmpty())
+                p.vizierCatalog = vizCat;
+        }
+    }
 }

@@ -21,13 +21,17 @@ class QFrame;
 class Star;
 class Spectrum;
 class CrossRefResolver;
+class DatabaseManager;
 
 class StarDetailView : public QWidget
 {
     Q_OBJECT
 
 public:
-    explicit StarDetailView(std::shared_ptr<Star> star, QWidget* parent = nullptr);
+    explicit StarDetailView(std::shared_ptr<Star> star,
+                            DatabaseManager* dbm = nullptr,
+                            const QString& projectId = {},
+                            QWidget* parent = nullptr);
     ~StarDetailView() override;
 
 private slots:
@@ -76,6 +80,8 @@ private:
 
     // ── Data ──
     std::shared_ptr<Star> _star;
+    DatabaseManager*      _dbm = nullptr;
+    QString               _projectId;
 
     // ── Layout splitters ──
     QSplitter* _mainHSplitter  = nullptr;

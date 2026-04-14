@@ -124,6 +124,8 @@ SEDFitDialog::SEDFitDialog(std::shared_ptr<Star> star,
     , _dbm(dbm)
     , _projectId(projectId)
 {
+    setWindowFlags(Qt::Window);
+
     setupUi();
     discoverGrids();
     loadExistingFits();
@@ -131,6 +133,13 @@ SEDFitDialog::SEDFitDialog(std::shared_ptr<Star> star,
 
     LOG_INFO("Tools", QString("SED Fit dialog opened for %1")
                           .arg(_star->getSourceId()));
+
+    QTimer::singleShot(0, this, [this] {
+        applyPlotTheme(_sedPlot);
+        applyPlotTheme(_residualPlot);
+        _sedPlot->replot();
+        _residualPlot->replot();
+    });
 }
 
 SEDFitDialog::~SEDFitDialog()
@@ -151,7 +160,7 @@ void SEDFitDialog::setupUi()
                         ? _star->getSourceId()
                         : _star->getAlias();
     setWindowTitle(QString("SED Analysis — %1").arg(title));
-    resize(1250, 850);
+    resize(1500, 850);
 
     auto* root = new QVBoxLayout(this);
     root->setContentsMargins(6, 6, 6, 6);
@@ -160,14 +169,29 @@ void SEDFitDialog::setupUi()
     root->addWidget(createFitSelectorBar());
 
     auto* mainSplit = new QSplitter(Qt::Horizontal);
-    mainSplit->addWidget(createPlotArea());
-    mainSplit->addWidget(createParameterPanel());
+
+    // Left side: plots + params above, photometry below
+    auto* leftWidget = new QWidget;
+    auto* leftLayout = new QVBoxLayout(leftWidget);
+    leftLayout->setContentsMargins(0, 0, 0, 0);
+    leftLayout->setSpacing(4);
+
+    auto* plotParamSplit = new QSplitter(Qt::Horizontal);
+    plotParamSplit->addWidget(createPlotArea());
+    plotParamSplit->addWidget(createParameterPanel());
+    plotParamSplit->setStretchFactor(0, 3);
+    plotParamSplit->setStretchFactor(1, 1);
+    leftLayout->addWidget(plotParamSplit, 1);
+    leftLayout->addWidget(createPhotometrySection());
+
+    mainSplit->addWidget(leftWidget);
+
+    // Right side: new fit configuration
+    mainSplit->addWidget(createNewFitPanel());
     mainSplit->setStretchFactor(0, 3);
     mainSplit->setStretchFactor(1, 1);
-    root->addWidget(mainSplit, 1);
 
-    root->addWidget(createPhotometrySection());
-    root->addWidget(createNewFitPanel());
+    root->addWidget(mainSplit, 1);
 }
 
 // ── Fit selector bar ─────────────────────────────────────────────
@@ -218,11 +242,7 @@ QWidget* SEDFitDialog::createPlotArea()
     _sedPlot->xAxis->setScaleType(QCPAxis::stLogarithmic);
     _sedPlot->xAxis->setLabel("Wavelength (Å)");
 
-    QSharedPointer<QCPAxisTickerLog> yLogTicker(new QCPAxisTickerLog);
-    _sedPlot->yAxis->setTicker(yLogTicker);
-    _sedPlot->yAxis->setScaleType(QCPAxis::stLogarithmic);
-    _sedPlot->yAxis->setLabel("Flux (erg s⁻¹ cm⁻² Å⁻¹)");
-
+    _sedPlot->yAxis->setLabel("λ³ Fλ  (10⁻⁴ erg s⁻¹ cm⁻² Å²)");
     _sedPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
     _sedPlot->legend->setVisible(true);
     _sedPlot->legend->setFont(QFont(font().family(), 8));
@@ -327,26 +347,18 @@ QWidget* SEDFitDialog::createPhotometrySection()
 
 QWidget* SEDFitDialog::createNewFitPanel()
 {
-    auto* container = new QWidget;
-    auto* vlay = new QVBoxLayout(container);
-    vlay->setContentsMargins(0, 0, 0, 0);
-    vlay->setSpacing(0);
-
-    _newFitToggleBtn = new QPushButton("▸ New Fit Configuration");
-    _newFitToggleBtn->setFlat(true);
-    _newFitToggleBtn->setStyleSheet(
-        "text-align: left; font-weight: bold; padding: 4px;");
-    vlay->addWidget(_newFitToggleBtn);
-
     _newFitScroll = new QScrollArea;
     _newFitScroll->setWidgetResizable(true);
-    _newFitScroll->setMaximumHeight(500);
-    _newFitScroll->setVisible(false);
+    _newFitScroll->setMinimumWidth(340);
     _newFitScroll->setFrameShape(QFrame::NoFrame);
 
     auto* scrollContent = new QWidget;
     auto* nfLay = new QVBoxLayout(scrollContent);
     nfLay->setContentsMargins(8, 4, 8, 4);
+
+    auto* headerLabel = new QLabel("<b>New Fit Configuration</b>");
+    headerLabel->setStyleSheet("font-size: 12pt; padding: 4px;");
+    nfLay->addWidget(headerLabel);
 
     // ── ISIS binary ──────────────────────────────────────────
     auto* isisGroup = new QGroupBox("ISIS");
@@ -437,9 +449,9 @@ QWidget* SEDFitDialog::createNewFitPanel()
     _enableComp2Cb = new QCheckBox("Enable second component grid");
     nfLay->addWidget(_enableComp2Cb);
 
-    auto* grid2Group = new QGroupBox("Model Grid — Component 2");
-    grid2Group->setVisible(false);
-    auto* g2Lay = new QGridLayout(grid2Group);
+    _grid2Group = new QGroupBox("Model Grid — Component 2");
+    _grid2Group->setVisible(false);
+    auto* g2Lay = new QGridLayout(_grid2Group);
     g2Lay->setColumnStretch(1, 1);
 
     g2Lay->addWidget(new QLabel("Category:"), 0, 0);
@@ -459,14 +471,16 @@ QWidget* SEDFitDialog::createNewFitPanel()
         "Custom grid relative path (leave empty to use combo)");
     g2Lay->addWidget(_grid2OverrideEdit, 2, 1, 1, 2);
 
-    nfLay->addWidget(grid2Group);
+    nfLay->addWidget(_grid2Group);
 
     connect(_gridCatCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &SEDFitDialog::onGridCategoryChanged);
     connect(_grid2CatCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &SEDFitDialog::onGrid2CategoryChanged);
     connect(_enableComp2Cb, &QCheckBox::toggled,
-            grid2Group, &QWidget::setVisible);
+            _grid2Group, &QWidget::setVisible);
+    connect(_enableComp2Cb, &QCheckBox::toggled,
+            this, &SEDFitDialog::onComp2Toggled);
 
     // ── Distance ─────────────────────────────────────────────
     auto* distGroup = new QGroupBox("Distance");
@@ -516,7 +530,8 @@ QWidget* SEDFitDialog::createNewFitPanel()
         PP_Value, QHeaderView::ResizeToContents);
     _paramTableWidget->horizontalHeader()->setSectionResizeMode(
         PP_Freeze, QHeaderView::ResizeToContents);
-    _paramTableWidget->setMaximumHeight(180);
+    _paramTableWidget->setMinimumHeight(150);
+    _paramTableWidget->setMaximumHeight(350);
     _paramTableWidget->verticalHeader()->setDefaultSectionSize(24);
     pLayout->addWidget(_paramTableWidget);
 
@@ -595,16 +610,8 @@ QWidget* SEDFitDialog::createNewFitPanel()
     _isisOutput->setFont(QFont("monospace", 8));
     nfLay->addWidget(_isisOutput);
 
+    nfLay->addStretch();
     _newFitScroll->setWidget(scrollContent);
-    vlay->addWidget(_newFitScroll);
-
-    connect(_newFitToggleBtn, &QPushButton::clicked, this, [this] {
-        bool vis = !_newFitScroll->isVisible();
-        _newFitScroll->setVisible(vis);
-        _newFitToggleBtn->setText(
-            vis ? "▾ New Fit Configuration"
-                : "▸ New Fit Configuration");
-    });
 
     connect(_runFitBtn, &QPushButton::clicked, this, &SEDFitDialog::onRunFit);
     connect(_previewBtn, &QPushButton::clicked, this, [this] {
@@ -623,7 +630,7 @@ QWidget* SEDFitDialog::createNewFitPanel()
         dlg.exec();
     });
 
-    return container;
+    return _newFitScroll;
 }
 
 void SEDFitDialog::updateIsisStatus()
@@ -639,6 +646,181 @@ void SEDFitDialog::updateIsisStatus()
     }
     if (_runFitBtn)
         _runFitBtn->setEnabled(!bin.isEmpty());
+}
+
+void SEDFitDialog::writePhotometryDat(const QString& filepath)
+{
+    std::vector<SEDPhotometryPoint> points;
+
+    if (_currentFitIndex >= 0 && _currentFitIndex < static_cast<int>(_fits.size()))
+        points = _fits[_currentFitIndex]->observedPoints;
+
+    if (points.empty()) {
+        auto phot = _star->getPhotometry();
+        if (phot) {
+            for (const auto& pp : phot->getPhotometricPoints()) {
+                SEDPhotometryPoint sp;
+                sp.system       = pp.instrument;
+                sp.passband     = pp.filter;
+                sp.magnitude    = pp.magnitude;
+                sp.magnitudeErr = pp.magnitudeError;
+                sp.type         = "magnitude";
+                sp.flag         = 0;
+                points.push_back(sp);
+            }
+        }
+    }
+
+    bool hasMags = false;
+    for (const auto& p : points)
+        if (p.magnitude != 0.0) { hasMags = true; break; }
+    if (!hasMags) return;
+
+    QFile f(filepath);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return;
+    QTextStream out(&f);
+
+    if (Star::isSet(_star->getRa()) && Star::isSet(_star->getDec())) {
+        out << QString("# RA = %1 DEC = %2\n")
+               .arg(_star->getRa(), 0, 'f', 10)
+               .arg(_star->getDec(), 0, 'f', 10);
+    }
+
+    for (const auto& fit : _fits) {
+        if (!fit->isBestFit) continue;
+        if (fit->ebvSFD > 0)
+            out << QString("# meanSFD = %1 stdSFD = %2\n")
+                   .arg(fit->ebvSFD, 0, 'f', 4)
+                   .arg(fit->ebvSFDError, 0, 'f', 4);
+        if (fit->ebvSF > 0)
+            out << QString("# meanSandF = %1 stdSandF = %2\n")
+                   .arg(fit->ebvSF, 0, 'f', 4)
+                   .arg(fit->ebvSFError, 0, 'f', 4);
+        break;
+    }
+
+    out << "flag    system     passband            magnitude"
+           "           uncertainty        type"
+           "      angu_dist_arcsec     VizieR_catalog\n";
+
+    for (const auto& p : points) {
+        if (p.magnitude == 0.0 && p.magnitudeErr == 0.0) continue;
+        QString type = p.type.isEmpty() ? "magnitude" : p.type;
+
+        out << QString::asprintf("%4d     %-10s%16s%20s%20s   %-13s%21s         %s\n",
+                p.flag,
+                qPrintable(p.system),
+                qPrintable(p.passband),
+                qPrintable(QString::number(p.magnitude, 'g', 10)),
+                qPrintable(QString::number(p.magnitudeErr, 'g', 10)),
+                qPrintable(type),
+                qPrintable(QString::number(p.angularDist, 'g', 16)),
+                qPrintable(p.vizierCatalog));
+    }
+}
+
+void SEDFitDialog::populateParamsFromFit()
+{
+    if (_currentFitIndex < 0 || _currentFitIndex >= static_cast<int>(_fits.size()))
+        return;
+
+    auto& model = _fits[_currentFitIndex];
+    bool multi = model->numComponents > 1;
+
+    _enableComp2Cb->blockSignals(true);
+    _enableComp2Cb->setChecked(multi);
+    _enableComp2Cb->blockSignals(false);
+    if (_grid2Group) _grid2Group->setVisible(multi);
+
+    _paramTableWidget->setRowCount(0);
+
+    auto addRow = [this](const QString& name, double value, bool frozen,
+                         double min, double max, bool hasRange)
+    {
+        int row = _paramTableWidget->rowCount();
+        _paramTableWidget->insertRow(row);
+        _paramTableWidget->setItem(row, PP_Name, new QTableWidgetItem(name));
+        _paramTableWidget->setItem(row, PP_Value,
+            new QTableWidgetItem(QString::number(value, 'g', 8)));
+
+        auto* fz = new QTableWidgetItem;
+        fz->setFlags(fz->flags() | Qt::ItemIsUserCheckable);
+        fz->setCheckState(frozen ? Qt::Checked : Qt::Unchecked);
+        fz->setText("");
+        _paramTableWidget->setItem(row, PP_Freeze, fz);
+
+        _paramTableWidget->setItem(row, PP_Min,
+            new QTableWidgetItem(
+                hasRange ? QString::number(min, 'g', 8) : QString()));
+        _paramTableWidget->setItem(row, PP_Max,
+            new QTableWidgetItem(
+                hasRange ? QString::number(max, 'g', 8) : QString()));
+    };
+
+    auto poly3 = [](double x, double a3, double a2, double a1, double a0) {
+        return std::abs(((a3 * x + a2) * x + a1) * x + a0);
+    };
+
+    for (int ci = 0; ci < static_cast<int>(model->components.size()); ++ci) {
+        const auto& c = model->components[ci];
+        QString prefix = multi ? QString("c%1_").arg(ci + 1) : "c*_";
+
+        double teff = c.teff > 0 ? c.teff : 25000;
+        double logg = c.logg > 0 ? c.logg : 5.5;
+        double he   = c.heAbundance;
+        double z    = c.metallicity;
+
+        double eTeff = (c.teffErrUp + c.teffErrDown) * 0.5;
+        double eLogg = (c.loggErrUp + c.loggErrDown) * 0.5;
+        double eHe   = (c.heAbundanceErrUp + c.heAbundanceErrDown) * 0.5;
+
+        double T_kK = teff / 1000.0;
+        bool heRich = (he > -1.0);
+        double sysTeff, sysLogg, sysHe;
+        if (heRich) {
+            sysTeff = poly3(T_kK,  1.47e-5, -1.73e-3,  6.84e-2, -8.91e-1) * teff;
+            sysLogg = poly3(T_kK,  2.68e-5, -3.30e-3,  1.37e-1, -1.82e+0);
+            sysHe   = poly3(T_kK, -6.92e-5,  8.49e-3, -3.40e-1,  4.50e+0);
+        } else {
+            sysTeff = poly3(T_kK,  1.09e-6, -5.37e-5,  4.13e-4,  1.68e-2) * teff;
+            sysLogg = poly3(T_kK, -2.75e-6,  3.11e-4, -1.07e-2,  1.79e-1);
+            sysHe   = poly3(T_kK, -1.64e-5,  2.08e-3, -8.17e-2,  1.07e+0);
+        }
+
+        double totTeff = std::sqrt(eTeff * eTeff + sysTeff * sysTeff);
+        double totLogg = std::sqrt(eLogg * eLogg + sysLogg * sysLogg);
+        double totHe   = std::sqrt(eHe   * eHe   + sysHe   * sysHe);
+        if (totTeff < 100)  totTeff = teff * 0.15;
+        if (totLogg < 0.01) totLogg = 0.3;
+        if (totHe   < 0.01) totHe   = 0.5;
+
+        bool frozenTeff = (c.teffStatus != SEDParamStatus::Fitted);
+        bool frozenLogg = (c.loggStatus != SEDParamStatus::Fitted);
+        bool frozenHe   = (c.heAbundanceStatus != SEDParamStatus::Fitted);
+        bool frozenZ    = (c.metallicityStatus != SEDParamStatus::Fitted);
+        bool frozenXi   = (c.microturbulenceStatus != SEDParamStatus::Fitted);
+
+        addRow(prefix + "xi", c.microturbulence, frozenXi, 0, 0, false);
+        addRow(prefix + "z",  z, frozenZ, 0, 0, false);
+
+        addRow(prefix + "HE", he, frozenHe,
+               std::max(he - totHe, -5.0),
+               std::min(he + totHe, 0.0),
+               !frozenHe);
+
+        addRow(prefix + "logg", logg, frozenLogg,
+               std::max(logg - totLogg, 0.0),
+               std::min(logg + totLogg, 9.5),
+               !frozenLogg);
+
+        addRow(prefix + "teff", teff, frozenTeff,
+               std::max(teff - totTeff, 3000.0),
+               teff + totTeff,
+               !frozenTeff);
+    }
+
+    double r55 = model->r55 > 0 ? model->r55 : 3.02;
+    addRow("R_55", r55, true, 2.5, 6.0, true);
 }
 
 void SEDFitDialog::discoverGrids()
@@ -943,31 +1125,99 @@ void SEDFitDialog::onGrid2CategoryChanged(int)
 void SEDFitDialog::initDefaultFitParams()
 {
     double teff = 25000, logg = 5.5, he = -3.0, z = 0.0;
+    double eTeff = 0, eLogg = 0, eHe = 0;
+    bool hasSpectralValues = false;
 
-    // Pre-fill from best SED fit (component 1 only)
+    // Pre-fill from best SED fit (component 1)
     for (const auto& f : _fits) {
         if (f->isBestFit && !f->components.empty()) {
             auto& c1 = f->components[0];
-            if (c1.teff > 0) teff = c1.teff;
-            if (c1.logg > 0) logg = c1.logg;
-            if (c1.heAbundance != 0) he = c1.heAbundance;
+            if (c1.teff > 0) {
+                teff  = c1.teff;
+                eTeff = (c1.teffErrUp + c1.teffErrDown) * 0.5;
+                hasSpectralValues = true;
+            }
+            if (c1.logg > 0) {
+                logg  = c1.logg;
+                eLogg = (c1.loggErrUp + c1.loggErrDown) * 0.5;
+                hasSpectralValues = true;
+            }
+            if (c1.heAbundance != 0) {
+                he  = c1.heAbundance;
+                eHe = (c1.heAbundanceErrUp + c1.heAbundanceErrDown) * 0.5;
+                hasSpectralValues = true;
+            }
             if (c1.metallicity != 0) z = c1.metallicity;
             break;
         }
     }
-    // Fall back to star spectroscopic values (also c1)
-    if (Star::isSet(_star->getTeff())) teff = _star->getTeff();
-    if (Star::isSet(_star->getLogg())) logg = _star->getLogg();
-    if (Star::isSet(_star->getHe()))   he   = _star->getHe();
 
-    // All frozen by default — user unfreezes what they want to fit
+    // Fall back to star spectroscopic values
+    if (Star::isSet(_star->getTeff())) {
+        teff = _star->getTeff();
+        if (Star::isSet(_star->getETeff())) eTeff = _star->getETeff();
+        hasSpectralValues = true;
+    }
+    if (Star::isSet(_star->getLogg())) {
+        logg = _star->getLogg();
+        if (Star::isSet(_star->getELogg())) eLogg = _star->getELogg();
+        hasSpectralValues = true;
+    }
+    if (Star::isSet(_star->getHe())) {
+        he = _star->getHe();
+        if (Star::isSet(_star->getEHe())) eHe = _star->getEHe();
+        hasSpectralValues = true;
+    }
+
+    // ── Compute ranges only when we have spectral values ─────
+    double teffMin = 0, teffMax = 0;
+    double loggMin = 0, loggMax = 0;
+    double heMin   = 0, heMax   = 0;
+    bool hasRanges = false;
+
+    if (hasSpectralValues) {
+        double T_kK = teff / 1000.0;
+        auto poly3 = [](double x, double a3, double a2, double a1, double a0) {
+            return std::abs(((a3 * x + a2) * x + a1) * x + a0);
+        };
+
+        bool heRich = (he > -1.0);
+        double sysTeff, sysLogg, sysHe;
+
+        if (heRich) {
+            sysTeff = poly3(T_kK,  1.47e-5, -1.73e-3,  6.84e-2, -8.91e-1) * 1000.0;
+            sysLogg = poly3(T_kK,  2.68e-5, -3.30e-3,  1.37e-1, -1.82e+0);
+            sysHe   = poly3(T_kK, -6.92e-5,  8.49e-3, -3.40e-1,  4.50e+0);
+        } else {
+            sysTeff = poly3(T_kK,  1.09e-6, -5.37e-5,  4.13e-4,  1.68e-2) * 1000.0;
+            sysLogg = poly3(T_kK, -2.75e-6,  3.11e-4, -1.07e-2,  1.79e-1);
+            sysHe   = poly3(T_kK, -1.64e-5,  2.08e-3, -8.17e-2,  1.07e+0);
+        }
+
+        double totTeff = std::sqrt(eTeff * eTeff + sysTeff * sysTeff);
+        double totLogg = std::sqrt(eLogg * eLogg + sysLogg * sysLogg);
+        double totHe   = std::sqrt(eHe   * eHe   + sysHe   * sysHe);
+
+        if (totTeff < 100)  totTeff = teff * 0.15;
+        if (totLogg < 0.01) totLogg = 0.3;
+        if (totHe   < 0.01) totHe   = 0.5;
+
+        teffMin = std::max(teff - totTeff, 3000.0);
+        teffMax = teff + totTeff;
+        loggMin = std::max(logg - totLogg, 0.0);
+        loggMax = std::min(logg + totLogg, 9.5);
+        heMin   = std::max(he   - totHe,  -5.05);
+        heMax   = std::min(he   + totHe,   0.0);
+        hasRanges = true;
+    }
+
     _fitParams = {
-        {"c*_xi",   0.0,  true,  0,    0,    false},
-        {"c*_z",    z,    true,  -2.5, 1.0,  true},
-        {"c*_HE",   he,   true,  he - 2.0, std::min(he + 2.0, 0.0), true},
-        {"c*_logg", logg, true,  std::max(logg - 1.5, 0.0), logg + 1.5, true},
-        {"c*_teff", teff, true,  teff * 0.7, teff * 1.3, true},
-        {"R_55",    3.02, true,  2.5, 6.0, true},
+        {"c*_xi",   0.0,  true,  0,        0,        false},
+        {"c*_z",    z,    true,  0,        0,        false},
+        {"c*_HE",   he,   true,  heMin,    heMax,    hasRanges},
+        {"c*_logg", logg, true,  loggMin,  loggMax,  hasRanges},
+        {"c*_teff", teff, true,  teffMin,  teffMax,  hasRanges},
+        {"R_55",    3.02, true,  2.5,      6.0,      true},
     };
 
     _paramTableWidget->setRowCount(static_cast<int>(_fitParams.size()));
@@ -1025,13 +1275,82 @@ void SEDFitDialog::onRemoveParameter()
         _paramTableWidget->removeRow(r);
 }
 
+void SEDFitDialog::onComp2Toggled(bool enabled)
+{
+    if (enabled) {
+        // Rename c*_ → c1_
+        for (int r = 0; r < _paramTableWidget->rowCount(); ++r) {
+            auto* item = _paramTableWidget->item(r, PP_Name);
+            if (!item) continue;
+            QString name = item->text();
+            if (name.startsWith("c*_"))
+                item->setText("c1_" + name.mid(3));
+        }
+
+        // Add generic c2 parameters
+        struct C2Param {
+            QString name; double value; bool frozen;
+            double min; double max; bool hasRange;
+        };
+        std::vector<C2Param> c2 = {
+            {"c2_xi",   0.0,   true,   0,      0,      false},
+            {"c2_z",    0.0,   true,   0,      0,      false},
+            {"c2_HE",  -1.0,   true,  -5.0,    0.0,    true},
+            {"c2_logg", 4.5,   true,   3.0,    5.5,    true},
+            {"c2_teff", 6000,  true,   3500,   10000,  true},
+        };
+
+        for (const auto& p : c2) {
+            int row = _paramTableWidget->rowCount();
+            _paramTableWidget->insertRow(row);
+
+            _paramTableWidget->setItem(row, PP_Name,
+                new QTableWidgetItem(p.name));
+            _paramTableWidget->setItem(row, PP_Value,
+                new QTableWidgetItem(QString::number(p.value, 'g', 8)));
+
+            auto* fz = new QTableWidgetItem;
+            fz->setFlags(fz->flags() | Qt::ItemIsUserCheckable);
+            fz->setCheckState(p.frozen ? Qt::Checked : Qt::Unchecked);
+            fz->setText("");
+            _paramTableWidget->setItem(row, PP_Freeze, fz);
+
+            _paramTableWidget->setItem(row, PP_Min,
+                new QTableWidgetItem(
+                    p.hasRange ? QString::number(p.min, 'g', 8) : QString()));
+            _paramTableWidget->setItem(row, PP_Max,
+                new QTableWidgetItem(
+                    p.hasRange ? QString::number(p.max, 'g', 8) : QString()));
+        }
+    } else {
+        // Remove c2_ rows, rename c1_ → c*_
+        for (int r = _paramTableWidget->rowCount() - 1; r >= 0; --r) {
+            auto* item = _paramTableWidget->item(r, PP_Name);
+            if (!item) continue;
+            QString name = item->text();
+            if (name.startsWith("c2_")) {
+                _paramTableWidget->removeRow(r);
+            } else if (name.startsWith("c1_")) {
+                item->setText("c*_" + name.mid(3));
+            }
+        }
+    }
+}
+
 // ═══════════════════════════════════════════════════════════════════
 // Data loading
 // ═══════════════════════════════════════════════════════════════════
 
 void SEDFitDialog::loadExistingFits()
 {
+    // Ensure photometry is loaded from the database if not already in memory
     auto phot = _star->getPhotometry();
+    if (!phot && _dbm) {
+        phot = _dbm->loadPhotometry(_star->getId());
+        if (phot)
+            _star->setPhotometry(phot);
+    }
+
     if (!phot) {
         updateFitSelector();
         return;
@@ -1058,9 +1377,10 @@ void SEDFitDialog::loadExistingFits()
     if (_currentFitIndex < 0 && !_fits.empty())
         _currentFitIndex = 0;
 
-    if (_currentFitIndex >= 0)
+    if (_currentFitIndex >= 0) {
         _fitCombo->setCurrentIndex(_currentFitIndex);
-    else {
+        onFitSelected(_currentFitIndex);
+    } else {
         updatePlot();
         updateParameterDisplay();
         updatePhotometryTable();
@@ -1083,24 +1403,34 @@ void SEDFitDialog::updateFitSelector()
             auto& m = _fits[i];
             QString label;
             if (m->isBestFit) label += "★ ";
-
-            // Date
             label += m->creationDate.toString("yyyy-MM-dd");
 
-            // Key parameters from component 1
-            if (!m->components.empty()) {
-                auto& c = m->components[0];
+            for (int ci = 0; ci < static_cast<int>(m->components.size()); ++ci) {
+                auto& c = m->components[ci];
+                if (m->components.size() > 1)
+                    label += QString("  C%1:").arg(ci + 1);
+
                 if (c.teff > 0)
-                    label += QString("  Teff=%1K").arg(c.teff, 0, 'f', 0);
+                    label += QString(" %1K").arg(c.teff, 0, 'f', 0);
                 if (c.logg > 0)
-                    label += QString("  logg=%1").arg(c.logg, 0, 'f', 2);
+                    label += QString(" g=%1").arg(c.logg, 0, 'f', 2);
+                if (c.heAbundance != 0)
+                    label += QString(" He=%1").arg(c.heAbundance, 0, 'f', 1);
+
+                if (m->components.size() == 1) {
+                    if (c.radius.isValid())
+                        label += QString(" R=%1R☉").arg(c.radius.value, 0, 'f', 2);
+                    if (c.mass.isValid())
+                        label += QString(" M=%1M☉").arg(c.mass.value, 0, 'f', 2);
+                    if (c.luminosity.isValid())
+                        label += QString(" L=%1L☉").arg(c.luminosity.value, 0, 'f', 0);
+                }
             }
 
-            if (m->chi2Reduced > 0)
-                label += QString("  χ²=%1").arg(m->chi2Reduced, 0, 'f', 3);
+            if (m->excessNoise > 0)
+                label += QString("  δexc=%1").arg(m->excessNoise, 0, 'f', 3);
 
             label += QString("  (%1 comp)").arg(m->numComponents);
-
             _fitCombo->addItem(label);
         }
         _setBestFitBtn->setEnabled(true);
@@ -1125,6 +1455,7 @@ void SEDFitDialog::onFitSelected(int index)
     updateResidualPlot();
     updateParameterDisplay();
     updatePhotometryTable();
+    populateParamsFromFit();
 }
 
 void SEDFitDialog::onSetBestFit()
@@ -1162,6 +1493,7 @@ void SEDFitDialog::onSetBestFit()
 
     updateFitSelector();
     _fitCombo->setCurrentIndex(_currentFitIndex);
+    onFitSelected(_currentFitIndex);
 
     emit fitDataChanged();
     LOG_INFO("SED", QString("Set fit %1 as best for %2")
@@ -1179,36 +1511,81 @@ void SEDFitDialog::onDeleteFit()
                                         QMessageBox::Yes | QMessageBox::No);
     if (answer != QMessageBox::Yes) return;
 
-    bool wasBest = _fits[_currentFitIndex]->isBestFit;
+    auto doomed = _fits[_currentFitIndex];
+    bool wasBest = doomed->isBestFit;
+    QString doomedId = doomed->getId();
+
+    // Remove from the local working vector
     _fits.erase(_fits.begin() + _currentFitIndex);
 
-    // If we deleted the best fit, mark the first remaining as best
+    // Remove from the Photometry container on the star
+    auto phot = _star->getPhotometry();
+    if (phot)
+        phot->removeSEDModel(doomedId);
+
+    // Delete from the database and remove the data file
+    if (_dbm)
+        _dbm->deleteSEDModel(doomedId);
+
+    // If we deleted the best fit, promote the first remaining fit
     if (wasBest && !_fits.empty()) {
         _fits[0]->isBestFit = true;
         applyBestFitToStar(_fits[0]);
+
+        if (_dbm) {
+            _dbm->saveSEDModelForStar(_star->getId(), _fits[0]);
+            _dbm->saveStar(_projectId, _star);
+        }
     }
 
     _currentFitIndex = _fits.empty() ? -1 : 0;
     updateFitSelector();
-    if (_currentFitIndex >= 0)
+    if (_currentFitIndex >= 0) {
         _fitCombo->setCurrentIndex(_currentFitIndex);
-    else
+        onFitSelected(_currentFitIndex);
+    } else {
         onFitSelected(-1);
+    }
 
     emit fitDataChanged();
+    LOG_INFO("SED", QString("Deleted SED fit %1 for %2")
+                        .arg(doomedId, _star->getSourceId()));
 }
 
 // ═══════════════════════════════════════════════════════════════════
 // SED Plot
 // ═══════════════════════════════════════════════════════════════════
 
-void SEDFitDialog::updatePlot()
+QColor SEDFitDialog::systemColor(int index) const
 {
+    static const QColor dark[] = {
+        {"#3498DB"}, {"#E74C3C"}, {"#2ECC71"}, {"#F39C12"},
+        {"#9B59B6"}, {"#1ABC9C"}, {"#E67E22"}, {"#85C1E9"},
+        {"#F7DC6F"}, {"#82E0AA"}, {"#F1948A"}, {"#BB8FCE"},
+    };
+    static const QColor light[] = {
+        {"#2980B9"}, {"#C0392B"}, {"#27AE60"}, {"#D4AC0D"},
+        {"#8E44AD"}, {"#16A085"}, {"#D35400"}, {"#2C3E50"},
+        {"#B7950B"}, {"#1E8449"}, {"#CB4335"}, {"#6C3483"},
+    };
+    constexpr int n = 12;
+    return isDarkTheme() ? dark[index % n] : light[index % n];
+}
+
+void SEDFitDialog::updatePlot(bool preserveRange)
+{
+    QCPRange savedX, savedY;
+    if (preserveRange) {
+        savedX = _sedPlot->xAxis->range();
+        savedY = _sedPlot->yAxis->range();
+    }
+
     _sedPlot->clearPlottables();
+    _sedPlot->clearItems();
 
     if (_currentFitIndex < 0 || _currentFitIndex >= static_cast<int>(_fits.size())) {
         _sedPlot->xAxis->setRange(500, 60000);
-        _sedPlot->yAxis->setRange(1e-18, 1e-13);
+        _sedPlot->yAxis->setRange(0, 10);
         _sedPlot->replot();
         return;
     }
@@ -1216,15 +1593,19 @@ void SEDFitDialog::updatePlot()
     auto& model = _fits[_currentFitIndex];
     bool hasCurve = !model->modelWavelengths.empty();
 
-    // Track data range for auto-scaling
+    const double yScale = 1e4;
+    auto fL3 = [yScale](double f, double l) { return f * l * l * l * yScale; };
+
     double xMin = 1e30, xMax = 0, yMin = 1e30, yMax = 0;
 
     // ── Model SED curve (total) ──────────────────────────────
     if (hasCurve) {
-        QVector<double> wl(model->modelWavelengths.begin(),
-                           model->modelWavelengths.end());
-        QVector<double> fl(model->modelFluxes.begin(),
-                           model->modelFluxes.end());
+        const int nw = static_cast<int>(model->modelWavelengths.size());
+        QVector<double> wl(nw), fl(nw);
+        for (int i = 0; i < nw; ++i) {
+            wl[i] = model->modelWavelengths[i];
+            fl[i] = fL3(model->modelFluxes[i], wl[i]);
+        }
 
         auto* totalGraph = _sedPlot->addGraph();
         totalGraph->setData(wl, fl);
@@ -1234,16 +1615,16 @@ void SEDFitDialog::updatePlot()
         for (auto v : wl) { xMin = qMin(xMin, v); xMax = qMax(xMax, v); }
         for (auto v : fl) { if (v > 0) { yMin = qMin(yMin, v); yMax = qMax(yMax, v); } }
 
-        // ── Component curves ─────────────────────────────────
         QList<QColor> compColors = { comp1Color(), comp2Color(),
                                      QColor("#8E44AD"), QColor("#16A085") };
         for (int c = 0; c < static_cast<int>(model->componentFluxes.size()); ++c) {
             if (model->componentFluxes[c].empty()) continue;
-            // Skip if identical to total (single component)
             if (model->componentFluxes.size() == 1) break;
 
-            QVector<double> cf(model->componentFluxes[c].begin(),
-                               model->componentFluxes[c].end());
+            QVector<double> cf(nw);
+            for (int i = 0; i < nw; ++i)
+                cf[i] = fL3(model->componentFluxes[c][i], wl[i]);
+
             auto* cGraph = _sedPlot->addGraph();
             cGraph->setData(wl, cf);
             QPen pen(compColors[c % compColors.size()], 1.5, Qt::DashLine);
@@ -1252,74 +1633,123 @@ void SEDFitDialog::updatePlot()
         }
     }
 
-    // ── Observed photometry points ───────────────────────────
-    QVector<double> incL, incF, incFErrLo, incFErrHi, incLErrLo, incLErrHi;
-    QVector<double> excL, excF;
-
-    for (const auto& p : model->observedPoints) {
+    // ── Group observed points by system ──────────────────────
+    std::map<QString, std::vector<int>> systemGroups;
+    for (int i = 0; i < static_cast<int>(model->observedPoints.size()); ++i) {
+        const auto& p = model->observedPoints[i];
         if (p.lambda <= 0 || p.flux <= 0) continue;
+        systemGroups[p.system].push_back(i);
+    }
 
-        if (p.flag >= 0) {
-            incL.append(p.lambda);
-            incF.append(p.flux);
-            incFErrLo.append(p.flux - p.fluxMin);
-            incFErrHi.append(p.fluxMax - p.flux);
-            incLErrLo.append(p.lambda - p.lambdaMin);
-            incLErrHi.append(p.lambdaMax - p.lambda);
-        } else {
-            excL.append(p.lambda);
-            excF.append(p.flux);
+    int sysIdx = 0;
+    for (auto& [system, indices] : systemGroups) {
+        QColor color = systemColor(sysIdx++);
+
+        QVector<double> incL, incF, incFErrLo, incFErrHi, incLErrLo, incLErrHi;
+        QVector<double> excL, excF;
+        struct LabelInfo { double x; double y; QString band; };
+        QVector<LabelInfo> incLabels, excLabels;
+
+        for (int idx : indices) {
+            const auto& p = model->observedPoints[idx];
+            double l3s = p.lambda * p.lambda * p.lambda * yScale;
+            double sf  = p.flux * l3s;
+
+            double lMin = p.lambdaMin > 0 ? p.lambdaMin : p.lambda;
+            double lMax = p.lambdaMax > 0 ? p.lambdaMax : p.lambda;
+            double fMinS = (p.fluxMin > 0 ? p.fluxMin : p.flux) * l3s;
+            double fMaxS = (p.fluxMax > 0 ? p.fluxMax : p.flux) * l3s;
+            xMin = qMin(xMin, lMin);  xMax = qMax(xMax, lMax);
+            yMin = qMin(yMin, fMinS); yMax = qMax(yMax, fMaxS);
+
+            if (p.flag >= 0) {
+                incL.append(p.lambda);
+                incF.append(sf);
+                incFErrLo.append((p.flux - p.fluxMin) * l3s);
+                incFErrHi.append((p.fluxMax - p.flux) * l3s);
+                incLErrLo.append(p.lambda - lMin);
+                incLErrHi.append(lMax - p.lambda);
+                incLabels.append({p.lambda, sf, p.passband});
+            } else {
+                excL.append(p.lambda);
+                excF.append(sf);
+                excLabels.append({p.lambda, sf, p.passband});
+            }
         }
 
-        xMin = qMin(xMin, p.lambdaMin > 0 ? p.lambdaMin : p.lambda);
-        xMax = qMax(xMax, p.lambdaMax > 0 ? p.lambdaMax : p.lambda);
-        yMin = qMin(yMin, p.fluxMin > 0 ? p.fluxMin : p.flux);
-        yMax = qMax(yMax, p.fluxMax > 0 ? p.fluxMax : p.flux);
+        if (!incL.isEmpty()) {
+            auto* g = _sedPlot->addGraph();
+            g->setData(incL, incF);
+            g->setLineStyle(QCPGraph::lsNone);
+            g->setScatterStyle(QCPScatterStyle(
+                QCPScatterStyle::ssDisc, color, 7));
+            g->setName(system);
+
+            auto* vErr = new QCPErrorBars(_sedPlot->xAxis, _sedPlot->yAxis);
+            vErr->removeFromLegend();
+            vErr->setDataPlottable(g);
+            vErr->setErrorType(QCPErrorBars::etValueError);
+            vErr->setPen(QPen(color, 1));
+            vErr->setData(incFErrLo, incFErrHi);
+
+            auto* hErr = new QCPErrorBars(_sedPlot->xAxis, _sedPlot->yAxis);
+            hErr->removeFromLegend();
+            hErr->setDataPlottable(g);
+            hErr->setErrorType(QCPErrorBars::etKeyError);
+            hErr->setPen(QPen(color, 1));
+            hErr->setData(incLErrLo, incLErrHi);
+
+            for (const auto& lb : incLabels) {
+                auto* t = new QCPItemText(_sedPlot);
+                t->setPositionAlignment(Qt::AlignBottom | Qt::AlignHCenter);
+                t->position->setType(QCPItemPosition::ptPlotCoords);
+                t->position->setCoords(lb.x, lb.y * 1.08);
+                t->setText(lb.band);
+                t->setFont(QFont(font().family(), 7));
+                t->setColor(color);
+                t->setPadding(QMargins(0, 0, 0, 0));
+                t->setBrush(Qt::NoBrush);
+                t->setPen(Qt::NoPen);
+            }
+        }
+
+        if (!excL.isEmpty()) {
+            auto* g = _sedPlot->addGraph();
+            g->setData(excL, excF);
+            g->setLineStyle(QCPGraph::lsNone);
+            QColor dim = color;
+            dim.setAlpha(100);
+            g->setScatterStyle(QCPScatterStyle(
+                QCPScatterStyle::ssCircle, dim, dim, 6));
+            g->removeFromLegend();
+
+            for (const auto& lb : excLabels) {
+                auto* t = new QCPItemText(_sedPlot);
+                t->setPositionAlignment(Qt::AlignBottom | Qt::AlignHCenter);
+                t->position->setType(QCPItemPosition::ptPlotCoords);
+                t->position->setCoords(lb.x, lb.y * 1.08);
+                t->setText(lb.band);
+                t->setFont(QFont(font().family(), 7));
+                QColor dimText = color;
+                dimText.setAlpha(100);
+                t->setColor(dimText);
+                t->setPadding(QMargins(0, 0, 0, 0));
+                t->setBrush(Qt::NoBrush);
+                t->setPen(Qt::NoPen);
+            }
+        }
     }
 
-    // Included points with error bars
-    if (!incL.isEmpty()) {
-        auto* incGraph = _sedPlot->addGraph();
-        incGraph->setData(incL, incF);
-        incGraph->setLineStyle(QCPGraph::lsNone);
-        incGraph->setScatterStyle(QCPScatterStyle(
-            QCPScatterStyle::ssDisc, includedPointColor(), 7));
-        incGraph->setName("Included");
-
-        auto* vErr = new QCPErrorBars(_sedPlot->xAxis, _sedPlot->yAxis);
-        vErr->removeFromLegend();
-        vErr->setDataPlottable(incGraph);
-        vErr->setErrorType(QCPErrorBars::etValueError);
-        vErr->setPen(QPen(includedPointColor(), 1));
-        vErr->setData(incFErrLo, incFErrHi);
-
-        auto* hErr = new QCPErrorBars(_sedPlot->xAxis, _sedPlot->yAxis);
-        hErr->removeFromLegend();
-        hErr->setDataPlottable(incGraph);
-        hErr->setErrorType(QCPErrorBars::etKeyError);
-        hErr->setPen(QPen(includedPointColor(), 1));
-        hErr->setData(incLErrLo, incLErrHi);
-    }
-
-    // Excluded points (no error bars)
-    if (!excL.isEmpty()) {
-        auto* excGraph = _sedPlot->addGraph();
-        excGraph->setData(excL, excF);
-        excGraph->setLineStyle(QCPGraph::lsNone);
-        excGraph->setScatterStyle(QCPScatterStyle(
-            QCPScatterStyle::ssCircle, excludedPointColor(), excludedPointColor(), 6));
-        excGraph->setName("Excluded");
-    }
-
-    // ── Auto-range ───────────────────────────────────────────
-    if (xMin < xMax && yMin < yMax) {
-        double xPad = 0.15, yPad = 0.3;
+    // ── Axis range ───────────────────────────────────────────
+    if (preserveRange) {
+        _sedPlot->xAxis->setRange(savedX);
+        _sedPlot->yAxis->setRange(savedY);
+    } else if (xMin < xMax && yMin < yMax) {
         double lxMin = std::log10(xMin), lxMax = std::log10(xMax);
-        double lyMin = std::log10(yMin), lyMax = std::log10(yMax);
-        _sedPlot->xAxis->setRange(std::pow(10, lxMin - xPad),
-                                   std::pow(10, lxMax + xPad));
-        _sedPlot->yAxis->setRange(std::pow(10, lyMin - yPad),
-                                   std::pow(10, lyMax + yPad));
+        _sedPlot->xAxis->setRange(std::pow(10, lxMin - 0.15),
+                                   std::pow(10, lxMax + 0.15));
+        double yPad = (yMax - yMin) * 0.15;
+        _sedPlot->yAxis->setRange(std::max(0.0, yMin - yPad), yMax + yPad);
     }
 
     _sedPlot->replot();
@@ -1333,6 +1763,7 @@ void SEDFitDialog::updatePlot()
 void SEDFitDialog::updateResidualPlot()
 {
     _residualPlot->clearPlottables();
+    _residualPlot->clearItems();
 
     if (_currentFitIndex < 0 || _currentFitIndex >= static_cast<int>(_fits.size())) {
         _residualPlot->replot();
@@ -1340,59 +1771,101 @@ void SEDFitDialog::updateResidualPlot()
     }
 
     auto& model = _fits[_currentFitIndex];
+    double xLo = _sedPlot->xAxis->range().lower;
+    double xHi = _sedPlot->xAxis->range().upper;
 
-    // Add zero line
+    // ── Reference bands: ±1σ and ±3σ ────────────────────────
+    bool dark = isDarkTheme();
+    QColor band1 = dark ? QColor(255, 255, 255, 15) : QColor(0, 0, 0, 12);
+    QColor band3 = dark ? QColor(255, 255, 255, 8)  : QColor(0, 0, 0, 6);
+
+    auto addBand = [&](double lo, double hi, const QColor& col) {
+        auto* upper = _residualPlot->addGraph();
+        auto* lower = _residualPlot->addGraph();
+        upper->setData({xLo, xHi}, {hi, hi});
+        lower->setData({xLo, xHi}, {lo, lo});
+        upper->setPen(Qt::NoPen);
+        lower->setPen(Qt::NoPen);
+        upper->setBrush(Qt::NoBrush);
+        lower->setBrush(QBrush(col));
+        lower->setChannelFillGraph(upper);
+        upper->removeFromLegend();
+        lower->removeFromLegend();
+    };
+
+    addBand(-3.0, 3.0, band3);
+    addBand(-1.0, 1.0, band1);
+
+    // ── Zero line ────────────────────────────────────────────
     auto* zeroLine = _residualPlot->addGraph();
-    QVector<double> zx = {_sedPlot->xAxis->range().lower,
-                          _sedPlot->xAxis->range().upper};
-    QVector<double> zy = {0, 0};
-    zeroLine->setData(zx, zy);
+    zeroLine->setData({xLo, xHi}, {0.0, 0.0});
     zeroLine->setPen(QPen(Qt::gray, 1, Qt::DashLine));
     zeroLine->removeFromLegend();
 
-    // Separate included/excluded residuals
-    QVector<double> incL, incR, incE;
-    QVector<double> excL, excR;
-
-    for (const auto& p : model->observedPoints) {
+    // ── Group by system ──────────────────────────────────────
+    std::map<QString, std::vector<int>> systemGroups;
+    for (int i = 0; i < static_cast<int>(model->observedPoints.size()); ++i) {
+        const auto& p = model->observedPoints[i];
         if (p.lambda <= 0) continue;
-        double res = (p.diffErr > 0) ? p.diff / p.diffErr : p.diff;
+        systemGroups[p.system].push_back(i);
+    }
 
-        if (p.flag >= 0) {
-            incL.append(p.lambda);
-            incR.append(res);
-            incE.append((p.diffErr > 0) ? 1.0 : 0.0);
-        } else {
-            excL.append(p.lambda);
-            excR.append(res);
+    double maxR = 4.0;
+    int sysIdx = 0;
+
+    for (auto& [system, indices] : systemGroups) {
+        QColor color = systemColor(sysIdx++);
+
+        QVector<double> incL, incR, incErrLo, incErrHi;
+        QVector<double> excL, excR;
+
+        for (int idx : indices) {
+            const auto& p = model->observedPoints[idx];
+            double res = (p.diffErr > 0) ? p.diff / p.diffErr : p.diff;
+
+            if (p.flag >= 0) {
+                incL.append(p.lambda);
+                incR.append(res);
+                incErrLo.append(1.0);
+                incErrHi.append(1.0);
+                maxR = qMax(maxR, std::abs(res) + 1.5);
+            } else {
+                excL.append(p.lambda);
+                excR.append(res);
+                maxR = qMax(maxR, std::abs(res) + 1.0);
+            }
+        }
+
+        if (!incL.isEmpty()) {
+            auto* g = _residualPlot->addGraph();
+            g->setData(incL, incR);
+            g->setLineStyle(QCPGraph::lsNone);
+            g->setScatterStyle(QCPScatterStyle(
+                QCPScatterStyle::ssDisc, color, 5));
+            g->removeFromLegend();
+
+            auto* vErr = new QCPErrorBars(_residualPlot->xAxis, _residualPlot->yAxis);
+            vErr->removeFromLegend();
+            vErr->setDataPlottable(g);
+            vErr->setErrorType(QCPErrorBars::etValueError);
+            vErr->setPen(QPen(color, 1));
+            vErr->setData(incErrLo, incErrHi);
+        }
+
+        if (!excL.isEmpty()) {
+            auto* g = _residualPlot->addGraph();
+            g->setData(excL, excR);
+            g->setLineStyle(QCPGraph::lsNone);
+            QColor dim = color;
+            dim.setAlpha(100);
+            g->setScatterStyle(QCPScatterStyle(
+                QCPScatterStyle::ssCircle, dim, dim, 5));
+            g->removeFromLegend();
         }
     }
 
-    if (!incL.isEmpty()) {
-        auto* g = _residualPlot->addGraph();
-        g->setData(incL, incR);
-        g->setLineStyle(QCPGraph::lsNone);
-        g->setScatterStyle(QCPScatterStyle(
-            QCPScatterStyle::ssDisc, includedPointColor(), 5));
-        g->removeFromLegend();
-    }
-
-    if (!excL.isEmpty()) {
-        auto* g = _residualPlot->addGraph();
-        g->setData(excL, excR);
-        g->setLineStyle(QCPGraph::lsNone);
-        g->setScatterStyle(QCPScatterStyle(
-            QCPScatterStyle::ssCircle, excludedPointColor(), excludedPointColor(), 5));
-        g->removeFromLegend();
-    }
-
-    // Sync x range, auto-range y
     _residualPlot->xAxis->setRange(_sedPlot->xAxis->range());
-    double maxR = 4.0;
-    for (auto v : incR) maxR = qMax(maxR, std::abs(v) + 1.0);
-    for (auto v : excR) maxR = qMax(maxR, std::abs(v) + 1.0);
     _residualPlot->yAxis->setRange(-maxR, maxR);
-
     _residualPlot->replot();
 }
 
@@ -1614,22 +2087,27 @@ void SEDFitDialog::onPhotometryFlagToggled(int row, int column)
     if (_currentFitIndex < 0 || _currentFitIndex >= static_cast<int>(_fits.size()))
         return;
 
-    auto& pts = _fits[_currentFitIndex]->observedPoints;
+    auto& model = _fits[_currentFitIndex];
+    auto& pts = model->observedPoints;
     if (row < 0 || row >= static_cast<int>(pts.size())) return;
 
     auto* item = _photTable->item(row, PC_Include);
     bool included = (item->checkState() == Qt::Checked);
     pts[row].flag = included ? 0 : -1;
 
-    // Update row styling
     QColor col = included ? QColor() : excludedPointColor();
     for (int c = 1; c < PC_COUNT; ++c) {
         auto* cell = _photTable->item(row, c);
         if (cell) cell->setForeground(included ? QColor() : col);
     }
 
-    // Refresh plots
-    updatePlot();
+    if (_dbm) {
+        _dbm->saveSEDModelForStar(_star->getId(), model);
+    } else if (!model->getModelDataFile().isEmpty()) {
+        model->saveDataToFile(model->getModelDataFile());
+    }
+
+    updatePlot(true);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -1877,7 +2355,6 @@ void SEDFitDialog::onRunFit()
         return;
     }
 
-    // Create temp working directory
     QTemporaryDir tmpDir;
     if (!tmpDir.isValid()) {
         QMessageBox::warning(this, "Error",
@@ -1886,6 +2363,8 @@ void SEDFitDialog::onRunFit()
     }
     tmpDir.setAutoRemove(false);
     _workDir = tmpDir.path();
+
+    writePhotometryDat(_workDir + "/photometry.dat");
 
     // Write script
     QString scriptPath = _workDir + "/photometry.sl";
@@ -1900,15 +2379,17 @@ void SEDFitDialog::onRunFit()
         out << generateScript();
     }
 
-    // UI state
     _runFitBtn->setEnabled(false);
     _isisProgress->setVisible(true);
     _isisOutput->setVisible(true);
     _isisOutput->clear();
     _isisOutput->append("Working directory: " + _workDir);
+    if (QFile::exists(_workDir + "/photometry.dat"))
+        _isisOutput->append("✓ Wrote photometry.dat with existing photometric data");
+    else
+        _isisOutput->append("No photometry.dat written — ISIS will query for data");
     _isisOutput->append("Starting ISIS...\n");
 
-    // Launch isis
     _isisProcess = new QProcess(this);
     _isisProcess->setWorkingDirectory(_workDir);
 
@@ -1986,6 +2467,7 @@ void SEDFitDialog::importFitResults(const QString& workDir)
 
     int newIdx = static_cast<int>(_fits.size()) - 1;
     _fitCombo->setCurrentIndex(newIdx);
+    onFitSelected(newIdx);
 
     emit fitDataChanged();
 
@@ -2072,26 +2554,41 @@ QColor SEDFitDialog::excludedPointColor() const
 void SEDFitDialog::applyPlotTheme(QCustomPlot* plot)
 {
     bool dark = isDarkTheme();
-    QColor bg    = dark ? QColor("#1E1E2E") : QColor("#FFFFFF");
-    QColor fg    = dark ? QColor("#CDD6F4") : QColor("#2C3E50");
-    QColor grid  = dark ? QColor("#45475A") : QColor("#ECF0F1");
-    QColor sub   = dark ? QColor("#313244") : QColor("#F8F9FA");
 
-    plot->setBackground(bg);
-    plot->axisRect()->setBackground(sub);
+    QColor bgColor      = dark ? QColor(42, 42, 42)   : QColor(255, 255, 255);
+    QColor textColor    = dark ? QColor(210, 210, 210) : QColor(30, 30, 30);
+    QColor gridColor    = dark ? QColor(80, 80, 80)    : QColor(200, 200, 200);
+    QColor subGridColor = dark ? QColor(55, 55, 55)    : QColor(225, 225, 225);
+
+    for (QWidget* w = plot->parentWidget(); w; w = w->parentWidget()) {
+        QColor c = w->palette().color(QPalette::Window);
+        bool consistent = dark ? (c.lightnessF() < 0.45)
+                               : (c.lightnessF() > 0.55);
+        if (consistent && c.alpha() == 255) {
+            bgColor = c;
+            break;
+        }
+    }
+
+    plot->setStyleSheet("");
+    plot->setBackground(QBrush(bgColor));
+    plot->axisRect()->setBackground(QBrush(bgColor));
 
     for (auto* axis : {plot->xAxis, plot->xAxis2, plot->yAxis, plot->yAxis2}) {
-        axis->setBasePen(QPen(fg));
-        axis->setTickPen(QPen(fg));
-        axis->setSubTickPen(QPen(fg));
-        axis->setTickLabelColor(fg);
-        axis->setLabelColor(fg);
-        axis->grid()->setPen(QPen(grid, 0, Qt::DotLine));
+        axis->setBasePen(QPen(textColor, 1));
+        axis->setTickPen(QPen(textColor, 1));
+        axis->setSubTickPen(QPen(gridColor, 1));
+        axis->setLabelColor(textColor);
+        axis->setTickLabelColor(textColor);
+        axis->grid()->setPen(QPen(gridColor, 0.5, Qt::DotLine));
+        axis->grid()->setSubGridPen(QPen(subGridColor, 0.3, Qt::DotLine));
+        axis->grid()->setZeroLinePen(QPen(gridColor, 0.8));
+        axis->grid()->setSubGridVisible(false);
     }
 
     if (plot->legend) {
-        plot->legend->setBrush(QBrush(bg));
-        plot->legend->setTextColor(fg);
-        plot->legend->setBorderPen(QPen(grid));
+        plot->legend->setBorderPen(QPen(gridColor));
+        plot->legend->setBrush(QBrush(bgColor));
+        plot->legend->setTextColor(textColor);
     }
 }

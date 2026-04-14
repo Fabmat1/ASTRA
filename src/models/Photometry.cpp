@@ -152,7 +152,7 @@ bool SEDModel::saveDataToFile(const QString& filepath)
         QDataStream s(&buffer, QIODevice::WriteOnly);
         s.setVersion(QDataStream::Qt_6_0);
 
-        s << static_cast<quint16>(2);   // SED data format version
+        s << static_cast<quint16>(3);
 
         quint32 nc = static_cast<quint32>(componentFluxes.size());
         quint32 nw = static_cast<quint32>(modelWavelengths.size());
@@ -165,7 +165,6 @@ bool SEDModel::saveDataToFile(const QString& filepath)
             for (const auto& v : cf) s << v;
         }
 
-        // Observed photometry
         quint32 nobs = static_cast<quint32>(observedPoints.size());
         s << nobs;
         for (const auto& p : observedPoints) {
@@ -174,7 +173,9 @@ bool SEDModel::saveDataToFile(const QString& filepath)
               << p.diff      << p.diffErr
               << p.passband  << p.system
               << static_cast<qint32>(p.flag)
-              << p.vizierCatalog;
+              << p.vizierCatalog
+              << p.magnitude << p.magnitudeErr
+              << p.type      << p.angularDist;
         }
     }
     return DataStore::writeCompressed(filepath, DataStore::SEDModelData, buffer);
@@ -191,7 +192,7 @@ bool SEDModel::loadDataFromFile(const QString& filepath)
 
     quint16 version;
     s >> version;
-    if (version != 2) {
+    if (version < 2 || version > 3) {
         qWarning() << "SEDModel: unsupported data version" << version;
         return false;
     }
@@ -224,9 +225,25 @@ bool SEDModel::loadDataFromFile(const QString& filepath)
           >> flag
           >> p.vizierCatalog;
         p.flag = flag;
+
+        if (version >= 3) {
+            s >> p.magnitude >> p.magnitudeErr
+              >> p.type      >> p.angularDist;
+        }
     }
 
     return s.status() == QDataStream::Ok;
+}
+
+bool Photometry::removeSEDModel(const QString& modelId)
+{
+    auto it = std::remove_if(_sedModels.begin(), _sedModels.end(),
+        [&](const std::shared_ptr<SEDModel>& m) {
+            return m->getId() == modelId;
+        });
+    if (it == _sedModels.end()) return false;
+    _sedModels.erase(it, _sedModels.end());
+    return true;
 }
 
 // ══════════════════════════════════════════════════════════════

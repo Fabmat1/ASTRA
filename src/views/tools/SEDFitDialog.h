@@ -89,6 +89,7 @@ private slots:
     void onSearchPathsChanged();
     void onAddParameter();
     void onRemoveParameter();
+    void onComp2Toggled(bool enabled);
 
 private:
     void setupUi();
@@ -100,7 +101,7 @@ private:
     QWidget* createAdvancedOptions();
 
     void loadExistingFits();
-    void updatePlot();
+    void updatePlot(bool preserveRange = false);
     void updateResidualPlot();
     void updateParameterDisplay();
     void updatePhotometryTable();
@@ -117,6 +118,7 @@ private:
     QColor comp2Color() const;
     QColor includedPointColor() const;
     QColor excludedPointColor() const;
+    QColor systemColor(int index) const;
     void applyPlotTheme(QCustomPlot* plot);
 
     bool    isIsisAvailable() const;
@@ -132,7 +134,10 @@ private:
     QString statusTag(int status) const;
 
     static const std::vector<GridPreset>& gridPresets();
-
+    
+    void writePhotometryDat(const QString& filepath);
+    void populateParamsFromFit();
+    
     // ════════════════════════════════════════════════════════
 
     std::shared_ptr<Star> _star;
@@ -170,6 +175,7 @@ private:
     QComboBox* _grid2CatCombo      = nullptr;
     QComboBox* _grid2Combo         = nullptr;
     QLineEdit* _grid2OverrideEdit  = nullptr;
+    QGroupBox* _grid2Group         = nullptr;
     QLineEdit* _gridPathsEdit      = nullptr;
     std::vector<DiscoveredGrid> _discoveredGrids;
 

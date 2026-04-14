@@ -17,6 +17,7 @@ public:
 
     std::shared_ptr<Photometry> loadPhotometry(const QString& starId);
     bool saveSEDModelForStar(const QString& starId, std::shared_ptr<SEDModel> model);
+    bool deleteSEDModel(const QString& modelId);
     bool saveLightcurveForStar(const QString& starId, const QString& source, Photometry* photometry);
     void loadPhotometryBatch(std::vector<std::shared_ptr<Star>>& stars);
     bool savePhotometry(const QString& starId, std::shared_ptr<Photometry> photometry);
