@@ -104,8 +104,8 @@ const std::vector<GridPreset>& SEDFitDialog::gridPresets() { return sGridPresets
 
 namespace {
 
-enum PhotomCol { PC_Include=0, PC_System, PC_Band, PC_Lambda, PC_Flux,
-                 PC_FluxErr, PC_Residual, PC_Catalog, PC_COUNT };
+enum PhotomCol { PC_Include=0, PC_System, PC_Band, PC_Lambda, PC_Mag,
+                 PC_MagErr, PC_Residual, PC_Catalog, PC_COUNT };
 
 enum ParamCol  { PP_Name=0, PP_Value, PP_Freeze, PP_Min, PP_Max, PP_COUNT };
 
@@ -318,8 +318,8 @@ QWidget* SEDFitDialog::createPhotometrySection()
 
     _photTable = new QTableWidget(0, PC_COUNT);
     _photTable->setHorizontalHeaderLabels(
-        {"Include", "System", "Band", "λ (Å)", "Flux",
-         "±Flux", "Resid. (σ)", "Catalog"});
+        {"Include", "System", "Band", "λ (Å)", "Mag",
+         "±Mag", "Resid. (σ)", "Catalog"});
     _photTable->horizontalHeader()->setStretchLastSection(true);
     _photTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     _photTable->setSelectionBehavior(QAbstractItemView::SelectRows);
@@ -680,29 +680,53 @@ void SEDFitDialog::writePhotometryDat(const QString& filepath)
     if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return;
     QTextStream out(&f);
 
+    // ── Header: coordinates ──────────────────────────────────
     if (Star::isSet(_star->getRa()) && Star::isSet(_star->getDec())) {
         out << QString("# RA = %1 DEC = %2\n")
                .arg(_star->getRa(), 0, 'f', 10)
                .arg(_star->getDec(), 0, 'f', 10);
     }
 
+    // ── Header: reddening from any available fit ─────────────
+    double sfd = 0, sfdErr = 0, sf = 0, sfErr = 0;
+
+    // Prefer best fit, fall back to current, then any fit
     for (const auto& fit : _fits) {
         if (!fit->isBestFit) continue;
-        if (fit->ebvSFD > 0)
-            out << QString("# meanSFD = %1 stdSFD = %2\n")
-                   .arg(fit->ebvSFD, 0, 'f', 4)
-                   .arg(fit->ebvSFDError, 0, 'f', 4);
-        if (fit->ebvSF > 0)
-            out << QString("# meanSandF = %1 stdSandF = %2\n")
-                   .arg(fit->ebvSF, 0, 'f', 4)
-                   .arg(fit->ebvSFError, 0, 'f', 4);
+        sfd = fit->ebvSFD;  sfdErr = fit->ebvSFDError;
+        sf  = fit->ebvSF;   sfErr  = fit->ebvSFError;
         break;
     }
+    if (sfd == 0 && sf == 0 &&
+        _currentFitIndex >= 0 && _currentFitIndex < static_cast<int>(_fits.size()))
+    {
+        auto& cur = _fits[_currentFitIndex];
+        sfd = cur->ebvSFD;  sfdErr = cur->ebvSFDError;
+        sf  = cur->ebvSF;   sfErr  = cur->ebvSFError;
+    }
+    if (sfd == 0 && sf == 0) {
+        for (const auto& fit : _fits) {
+            if (fit->ebvSFD > 0 || fit->ebvSF > 0) {
+                sfd = fit->ebvSFD;  sfdErr = fit->ebvSFDError;
+                sf  = fit->ebvSF;   sfErr  = fit->ebvSFError;
+                break;
+            }
+        }
+    }
 
+    if (sfd > 0)
+        out << QString("# meanSFD = %1 stdSFD = %2\n")
+               .arg(sfd, 0, 'f', 4).arg(sfdErr, 0, 'f', 4);
+    if (sf > 0)
+        out << QString("# meanSandF = %1 stdSandF = %2\n")
+               .arg(sf, 0, 'f', 4).arg(sfErr, 0, 'f', 4);
+
+    // ── Column header ────────────────────────────────────────
     out << "flag    system     passband            magnitude"
            "           uncertainty        type"
            "      angu_dist_arcsec     VizieR_catalog\n";
 
+    // ── Data rows ────────────────────────────────────────────
     for (const auto& p : points) {
         if (p.magnitude == 0.0 && p.magnitudeErr == 0.0) continue;
         QString type = p.type.isEmpty() ? "magnitude" : p.type;
@@ -2044,13 +2068,10 @@ void SEDFitDialog::updatePhotometryTable()
     const auto& pts = model->observedPoints;
     _photTable->setRowCount(static_cast<int>(pts.size()));
 
-    QColor incColor = includedPointColor();
-    QColor excColor = excludedPointColor();
-
     for (int i = 0; i < static_cast<int>(pts.size()); ++i) {
         const auto& p = pts[i];
         bool included = (p.flag >= 0);
-        QColor rowColor = included ? QColor() : excColor;
+        QColor dimColor = excludedPointColor();
 
         // Include checkbox
         auto* cbItem = new QTableWidgetItem;
@@ -2059,23 +2080,32 @@ void SEDFitDialog::updatePhotometryTable()
         cbItem->setText("");
         _photTable->setItem(i, PC_Include, cbItem);
 
-        auto setCell = [&](int col, const QString& text) {
+        auto setReadOnly = [&](int col, const QString& text) {
             auto* item = new QTableWidgetItem(text);
             item->setFlags(item->flags() & ~Qt::ItemIsEditable);
-            if (!included)
-                item->setForeground(excColor);
+            if (!included) item->setForeground(dimColor);
             _photTable->setItem(i, col, item);
         };
 
-        setCell(PC_System,   p.system);
-        setCell(PC_Band,     p.passband);
-        setCell(PC_Lambda,   QString::number(p.lambda, 'f', 1));
-        setCell(PC_Flux,     QString::number(p.flux, 'e', 4));
-        setCell(PC_FluxErr,  QString::number((p.fluxMax - p.fluxMin) * 0.5, 'e', 3));
-        setCell(PC_Residual, (p.diffErr > 0)
-                                 ? QString::number(p.diff / p.diffErr, 'f', 2)
-                                 : "—");
-        setCell(PC_Catalog,  p.vizierCatalog);
+        auto setEditable = [&](int col, const QString& text) {
+            auto* item = new QTableWidgetItem(text);
+            if (!included) item->setForeground(dimColor);
+            _photTable->setItem(i, col, item);
+        };
+
+        setReadOnly(PC_System,   p.system);
+        setReadOnly(PC_Band,     p.passband);
+        setReadOnly(PC_Lambda,   QString::number(p.lambda, 'f', 1));
+
+        setEditable(PC_Mag,
+            p.magnitude != 0 ? QString::number(p.magnitude, 'f', 4) : "—");
+        setEditable(PC_MagErr,
+            p.magnitudeErr != 0 ? QString::number(p.magnitudeErr, 'f', 4) : "—");
+
+        setReadOnly(PC_Residual,
+            (p.diffErr > 0) ? QString::number(p.diff / p.diffErr, 'f', 2)
+                            : "—");
+        setReadOnly(PC_Catalog, p.vizierCatalog);
     }
 
     _updatingPhotTable = false;
@@ -2083,7 +2113,7 @@ void SEDFitDialog::updatePhotometryTable()
 
 void SEDFitDialog::onPhotometryFlagToggled(int row, int column)
 {
-    if (_updatingPhotTable || column != PC_Include) return;
+    if (_updatingPhotTable) return;
     if (_currentFitIndex < 0 || _currentFitIndex >= static_cast<int>(_fits.size()))
         return;
 
@@ -2091,15 +2121,38 @@ void SEDFitDialog::onPhotometryFlagToggled(int row, int column)
     auto& pts = model->observedPoints;
     if (row < 0 || row >= static_cast<int>(pts.size())) return;
 
-    auto* item = _photTable->item(row, PC_Include);
-    bool included = (item->checkState() == Qt::Checked);
-    pts[row].flag = included ? 0 : -1;
+    bool changed = false;
 
-    QColor col = included ? QColor() : excludedPointColor();
-    for (int c = 1; c < PC_COUNT; ++c) {
-        auto* cell = _photTable->item(row, c);
-        if (cell) cell->setForeground(included ? QColor() : col);
+    if (column == PC_Include) {
+        auto* item = _photTable->item(row, PC_Include);
+        bool included = (item->checkState() == Qt::Checked);
+        pts[row].flag = included ? 0 : -1;
+
+        QColor col = included ? QColor() : excludedPointColor();
+        for (int c = 1; c < PC_COUNT; ++c) {
+            auto* cell = _photTable->item(row, c);
+            if (cell) cell->setForeground(included ? QColor() : col);
+        }
+        changed = true;
+
+    } else if (column == PC_Mag) {
+        bool ok;
+        double val = _photTable->item(row, PC_Mag)->text().toDouble(&ok);
+        if (ok) {
+            pts[row].magnitude = val;
+            changed = true;
+        }
+
+    } else if (column == PC_MagErr) {
+        bool ok;
+        double val = _photTable->item(row, PC_MagErr)->text().toDouble(&ok);
+        if (ok) {
+            pts[row].magnitudeErr = val;
+            changed = true;
+        }
     }
+
+    if (!changed) return;
 
     if (_dbm) {
         _dbm->saveSEDModelForStar(_star->getId(), model);
@@ -2107,7 +2160,8 @@ void SEDFitDialog::onPhotometryFlagToggled(int row, int column)
         model->saveDataToFile(model->getModelDataFile());
     }
 
-    updatePlot(true);
+    if (column == PC_Include)
+        updatePlot(true);
 }
 
 // ═══════════════════════════════════════════════════════════════════

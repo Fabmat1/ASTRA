@@ -195,47 +195,64 @@ ParsedTexValue parseTexValue(const QString& raw)
     ParsedTexValue r;
     QString s = raw.trimmed();
 
-    // Strip surrounding $...$
-    if (s.startsWith('$')) s = s.mid(1);
-    if (s.endsWith('$'))  s.chop(1);
+    // Extract content of the first $...$ math block only,
+    // which separates the numeric value from trailing unit text
+    // like $0.0523 \pm 0.0022$\,mag  →  0.0523 \pm 0.0022
+    if (s.startsWith('$')) {
+        int closingDollar = s.indexOf('$', 1);
+        if (closingDollar > 0)
+            s = s.mid(1, closingDollar - 1);
+        else
+            s = s.mid(1);
+    }
 
-    // Remove common LaTeX wrappers
+    // Strip LaTeX commands that wrap or hide numbers
+    static QRegularExpression colorRe(R"(\\color\{[^}]*\})");
+    s.remove(colorRe);
+
+    static QRegularExpression phantomRe(R"(\\phantom\{[^}]*\})");
+    s.remove(phantomRe);
+
     s.remove("\\left(");
     s.remove("\\right)");
     s.remove("\\,");
-    s.remove("\\text{");
+
+    // Remove all remaining braces so  value^{+err}_{-err}
+    // becomes  value^+err_-err
+    s.remove('{');
     s.remove('}');
 
-    // Handle \times10^{N} scientific notation
+    // Handle \times10^N scientific notation (braces already gone)
     double multiplier = 1.0;
-    static QRegularExpression sciRe(R"(\\times\s*10\^\{?\s*([+-]?\d+)\s*\}?)");
+    static QRegularExpression sciRe(R"(\\times\s*10\^\s*([+-]?\d+))");
     QRegularExpressionMatch sciMatch = sciRe.match(s);
     if (sciMatch.hasMatch()) {
         multiplier = std::pow(10.0, sciMatch.captured(1).toDouble());
         s = s.left(sciMatch.capturedStart()).trimmed();
     }
 
-    // Try asymmetric: value^{+upper}_{-lower}
+    // Asymmetric: value^+upper_-lower
+    // Upper/lower may be negative when the fit hits a boundary (e.g. ^+-0)
     static QRegularExpression asymRe(
-        R"(([+-]?[\d.]+(?:[eE][+-]?\d+)?)\s*\^\{?\s*\+\s*([\d.]+(?:[eE][+-]?\d+)?)\s*\}?\s*_\{?\s*-\s*([\d.]+(?:[eE][+-]?\d+)?)\s*\}?)");
+        R"(([+-]?[\d.]+(?:[eE][+-]?\d+)?)\s*\^\s*\+\s*(-?[\d.]+(?:[eE][+-]?\d+)?)\s*_\s*-\s*(-?[\d.]+(?:[eE][+-]?\d+)?))");
     QRegularExpressionMatch asymMatch = asymRe.match(s);
     if (asymMatch.hasMatch()) {
-        r.value   = asymMatch.captured(1).toDouble() * multiplier;
-        r.errUp   = asymMatch.captured(2).toDouble() * multiplier;
-        r.errDown = asymMatch.captured(3).toDouble() * multiplier;
+        r.value    = asymMatch.captured(1).toDouble() * multiplier;
+        r.errUp    = std::abs(asymMatch.captured(2).toDouble()) * multiplier;
+        r.errDown  = std::abs(asymMatch.captured(3).toDouble()) * multiplier;
         r.hasError = true;
         r.valid    = true;
         return r;
     }
 
-    // Try symmetric: value \pm error
+    // Symmetric: value \pm error
     static QRegularExpression symRe(
         R"(([+-]?[\d.]+(?:[eE][+-]?\d+)?)\s*\\pm\s*([\d.]+(?:[eE][+-]?\d+)?))");
     QRegularExpressionMatch symMatch = symRe.match(s);
     if (symMatch.hasMatch()) {
-        r.value   = symMatch.captured(1).toDouble() * multiplier;
-        r.errUp   = symMatch.captured(2).toDouble() * multiplier;
-        r.errDown = r.errUp;
+        r.value    = symMatch.captured(1).toDouble() * multiplier;
+        r.errUp    = symMatch.captured(2).toDouble() * multiplier;
+        r.errDown  = r.errUp;
         r.hasError = true;
         r.valid    = true;
         return r;
@@ -243,7 +260,7 @@ ParsedTexValue parseTexValue(const QString& raw)
 
     // Plain number
     bool ok;
-    double v = s.toDouble(&ok);
+    double v = s.trimmed().toDouble(&ok);
     if (ok) {
         r.value = v * multiplier;
         r.valid = true;
@@ -270,27 +287,15 @@ bool parseTexResults(const QString& filepath, std::shared_ptr<SEDModel> model)
     QTextStream in(&file);
     QString content = in.readAll();
 
-    // Extract object name from "Object: XXX"
-    {
-        static QRegularExpression objRe(R"(Object:\s*(.+?)\s*&)");
-        QRegularExpressionMatch m = objRe.match(content);
-        if (m.hasMatch())
-            model->objectName = m.captured(1).trimmed();
-    }
-
-    // Split into lines and process each row of the tabular
-
-    static QRegularExpression rowRe(R"((.+?)\s*&\s*(.+?)\s*\\\\)");
-    QRegularExpressionMatchIterator it = rowRe.globalMatch(content);
-
-    int currentComponent = 0;   // 0 = global, 1 = c1, 2 = c2
-
-    // Ensure at least one component exists
     if (model->components.empty()) {
         SEDComponentParams c1;
         c1.componentIndex = 1;
         model->components.push_back(c1);
     }
+
+    // Single-component fits have no explicit "Component 1:" header,
+    // so start with component 1 active
+    int currentComponent = 1;
 
     auto ensureComponent = [&](int idx) {
         while (static_cast<int>(model->components.size()) < idx) {
@@ -300,27 +305,71 @@ bool parseTexResults(const QString& filepath, std::shared_ptr<SEDModel> model)
         }
     };
 
-    while (it.hasNext()) {
-        QRegularExpressionMatch row = it.next();
-        QString label = row.captured(1).trimmed();
-        QString value = row.captured(2).trimmed();
+    // Find the last unescaped '&' in a line — this is the real table
+    // column separator.  Escaped \& (e.g. S\&F) is skipped.
+    auto findColumnSeparator = [](const QString& line) -> int {
+        for (int i = line.length() - 1; i >= 0; --i) {
+            if (line[i] == '&' && (i == 0 || line[i - 1] != '\\'))
+                return i;
+        }
+        return -1;
+    };
 
-        // Remove trailing unit markers like \,mag, \,K, \,km\,s$^{-1}$
-        // We parse the numeric part only.
-        // Remove trailing \,unit
-        QString cleanValue = value;
-        // Remove trailing \,text..
-        static QRegularExpression trailingUnit(R"(\\,.*$)");
-        // But we need to be careful — the unit text comes after the number
-        // Better approach: just parse the number from the raw value string
+    const QStringList lines = content.split('\n');
 
-        // Detect component sections
-        if (label.contains("Component 1")) {
+    for (const QString& rawLine : lines) {
+        QString line = rawLine.trimmed();
+        if (line.isEmpty()) continue;
+
+        if (line.startsWith("\\documentclass") ||
+            line.startsWith("\\usepackage") ||
+            line.startsWith("\\begin{") ||
+            line.startsWith("\\end{") ||
+            line.startsWith("\\renewcommand") ||
+            line.startsWith("\\hline"))
+            continue;
+
+        // \multicolumn lines have no real column separator —
+        // check them for component headers and move on
+        if (line.contains("\\multicolumn")) {
+            if (line.contains("Component 1")) {
+                currentComponent = 1;
+                ensureComponent(1);
+            } else if (line.contains("Component 2")) {
+                currentComponent = 2;
+                model->numComponents = 2;
+                ensureComponent(2);
+            }
+            continue;
+        }
+
+        int sepPos = findColumnSeparator(line);
+        if (sepPos < 0) continue;
+
+        QString label = line.left(sepPos).trimmed();
+        QString value = line.mid(sepPos + 1).trimmed();
+
+        if (value.endsWith("\\\\")) {
+            value.chop(2);
+            value = value.trimmed();
+        }
+
+        // ── Object name ──────────────────────────────────
+        if (label.contains("Object:")) {
+            static QRegularExpression objRe(R"(Object:\s*(.+))");
+            QRegularExpressionMatch m = objRe.match(label);
+            if (m.hasMatch())
+                model->objectName = m.captured(1).trimmed();
+            continue;
+        }
+
+        // Fallback component detection for non-\multicolumn formats
+        if (label.contains("Component 1") && !label.contains("\\phantom")) {
             currentComponent = 1;
             ensureComponent(1);
             continue;
         }
-        if (label.contains("Component 2")) {
+        if (label.contains("Component 2") && !label.contains("\\phantom")) {
             currentComponent = 2;
             model->numComponents = 2;
             ensureComponent(2);
@@ -352,41 +401,34 @@ bool parseTexResults(const QString& filepath, std::shared_ptr<SEDModel> model)
             continue;
         }
 
-        // Parallax — extract RUWE and ZPO from label
         if (label.contains("\\varpi") && label.contains("Gaia")) {
             if (pv.valid) {
                 model->parallax = pv.value;
                 model->parallaxError = pv.errUp;
             }
-            // Extract RUWE
-            static QRegularExpression ruweRe(R"(RUWE\s*[=]\s*([\d.]+))");
+            static QRegularExpression ruweRe(R"(RUWE[^=]*=\s*([\d.]+))");
             QRegularExpressionMatch rm = ruweRe.match(label);
             if (rm.hasMatch()) model->parallaxRuwe = rm.captured(1).toDouble();
-            // Extract ZPO
-            static QRegularExpression zpoRe(R"(ZPO\s*[=]\s*([+-]?[\d.]+))");
+            static QRegularExpression zpoRe(R"(ZPO[^=]*=\s*([+-]?[\d.]+))");
             QRegularExpressionMatch zm = zpoRe.match(label);
             if (zm.hasMatch()) model->parallaxZpo = zm.captured(1).toDouble();
             continue;
         }
 
-        // Distance (mode)
         if (label.contains("Distance") && label.contains("mode") && !label.contains("\\phantom")) {
             if (pv.valid) { model->distanceMode = pv.value; model->distanceModeError = pv.errUp; }
             continue;
         }
-        // Distance (median)
         if (label.contains("Distance") && label.contains("median") && !label.contains("\\phantom")) {
             if (pv.valid) { model->distanceMedian = pv.value; model->distanceMedianError = pv.errUp; }
             continue;
         }
 
-        // Reduced chi2
         if (label.contains("\\chi^2") && label.contains("best fit")) {
             if (pv.valid) model->chi2Reduced = pv.value;
             continue;
         }
 
-        // Excess noise
         if (label.contains("\\delta_\\textnormal{excess}") ||
             label.contains("excess noise")) {
             if (pv.valid) model->excessNoise = pv.value;
@@ -398,7 +440,6 @@ bool parseTexResults(const QString& filepath, std::shared_ptr<SEDModel> model)
         ensureComponent(currentComponent);
         auto& comp = model->components[currentComponent - 1];
 
-        // Skip phantom (duplicate median) lines for R, M, L — handled below
         bool isPhantom = label.contains("\\phantom");
 
         if (label.contains("T_{\\mathrm{eff}}") && !isPhantom) {
@@ -410,7 +451,7 @@ bool parseTexResults(const QString& filepath, std::shared_ptr<SEDModel> model)
             }
             continue;
         }
-        if (label.contains("\\log (g") && !label.contains("\\phantom") &&
+        if (label.contains("\\log (g") && !isPhantom &&
             !label.contains("\\varv_\\mathrm{grav}")) {
             if (pv.valid) {
                 comp.logg = pv.value;
@@ -443,7 +484,7 @@ bool parseTexResults(const QString& filepath, std::shared_ptr<SEDModel> model)
             }
             continue;
         }
-        if (label.contains("A_\\mathrm{eff}") && label.contains("Surface ratio")) {
+        if (label.contains("Surface ratio")) {
             if (pv.valid) {
                 comp.surfaceRatio = pv.value;
                 comp.surfaceRatioErrUp = pv.errUp;
@@ -452,66 +493,50 @@ bool parseTexResults(const QString& filepath, std::shared_ptr<SEDModel> model)
             continue;
         }
 
-        // Radius (mode line — not phantom)
         if (label.contains("Radius") && !isPhantom) {
-            if (pv.valid) {
+            if (pv.valid)
                 comp.radius = { pv.value, pv.errUp, pv.errDown };
-            }
             continue;
         }
-        // Radius (median line — phantom)
         if (label.contains("Radius") && isPhantom) {
-            if (pv.valid) {
+            if (pv.valid)
                 comp.radiusMedian = { pv.value, pv.errUp, pv.errDown };
-            }
             continue;
         }
 
-        // Mass (mode)
         if (label.contains("Mass") && !isPhantom) {
-            if (pv.valid) {
+            if (pv.valid)
                 comp.mass = { pv.value, pv.errUp, pv.errDown };
-            }
             continue;
         }
-        // Mass (median)
         if (label.contains("Mass") && isPhantom) {
-            if (pv.valid) {
+            if (pv.valid)
                 comp.massMedian = { pv.value, pv.errUp, pv.errDown };
-            }
             continue;
         }
 
-        // Luminosity (mode)
         if (label.contains("Luminosity") && !isPhantom) {
-            if (pv.valid) {
+            if (pv.valid)
                 comp.luminosity = { pv.value, pv.errUp, pv.errDown };
-            }
             continue;
         }
-        // Luminosity (median)
         if (label.contains("Luminosity") && isPhantom) {
-            if (pv.valid) {
+            if (pv.valid)
                 comp.luminosityMedian = { pv.value, pv.errUp, pv.errDown };
-            }
             continue;
         }
 
-        // Gravitational redshift
         if (label.contains("\\varv_\\mathrm{grav}") ||
             label.contains("varv_\\mathrm{grav}")) {
-            if (pv.valid) {
+            if (pv.valid)
                 comp.vGrav = { pv.value, pv.errUp, pv.errDown };
-            }
             continue;
         }
 
-        // Escape velocity
         if (label.contains("\\varv_\\mathrm{esc}") ||
             label.contains("varv_\\mathrm{esc}")) {
-            if (pv.valid) {
+            if (pv.valid)
                 comp.vEsc = { pv.value, pv.errUp, pv.errDown };
-            }
             continue;
         }
     }
