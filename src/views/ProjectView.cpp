@@ -133,7 +133,9 @@ void ProjectView::setupContextMenus()
     connect(_openDetailAction, &QAction::triggered, this, &ProjectView::onShowDetailWindow);
     
     _tableContextMenu->addSeparator();
-    
+    _reloadMetricsAction = _tableContextMenu->addAction("Reload Metrics");
+    connect(_reloadMetricsAction, &QAction::triggered, this, &ProjectView::onReloadMetrics);
+
     _removeSelectedAction = _tableContextMenu->addAction("Remove Selected");
     connect(_removeSelectedAction, &QAction::triggered, this, &ProjectView::onRemoveStar);
     
@@ -348,6 +350,7 @@ void ProjectView::onTableContextMenu(const QPoint& pos)
     _copyAction->setEnabled(hasSelection);
     _openDetailAction->setEnabled(index.isValid());
     _removeSelectedAction->setEnabled(hasSelection);
+    _reloadMetricsAction->setEnabled(hasSelection);
     
     _tableContextMenu->exec(_starTable->viewport()->mapToGlobal(pos));
 }
@@ -426,6 +429,52 @@ void ProjectView::onImportStars()
     });
 
     wizard.exec();
+}
+
+void ProjectView::onReloadMetrics()
+{
+    auto selectedStars = getSelectedStars();
+    if (selectedStars.empty()) {
+        QMessageBox::information(this, "Reload Metrics", "No stars selected.");
+        return;
+    }
+    
+    // Get source row indices (need to sort descending to remove from end first)
+    std::vector<int> rowsToReload;
+    QSet<int> selectedSourceRows;
+    
+    for (const QModelIndex& proxyIndex : _starTable->selectionModel()->selectedIndexes()) {
+        QModelIndex sourceIndex = mapToSource(proxyIndex);
+        if (!selectedSourceRows.contains(sourceIndex.row())) {
+            selectedSourceRows.insert(sourceIndex.row());
+            rowsToReload.push_back(sourceIndex.row());
+        }
+    }
+    
+    // Sort descending so we remove from the end first
+    std::sort(rowsToReload.begin(), rowsToReload.end(), std::greater<int>());
+    
+    // Reload in database and model
+    bool success = true;
+    for (int row : rowsToReload) {
+        auto star = _tableModel->getStarAtRow(row);
+        if (star) {
+            auto projectId = _currentProject->getId();
+            // star->computeSummaryMetricsFull();
+            star->computeSummaryMetricsFull([this, star, projectId]() {
+                _controller->databaseManager()->updateStarRow(projectId, star);
+            });
+        }
+    }
+    
+    // Refresh the model
+    _tableModel->refresh();
+    
+    if (success) {
+        updateStatusBar(QString("Reloaded Metrics for %1 star%2.")
+                        .arg(selectedStars.size())
+                        .arg(selectedStars.size() != 1 ? "s" : ""));
+    }
 }
 
 void ProjectView::onRemoveStar()

@@ -168,6 +168,7 @@ public slots:
     void onAddStar();
     void onImportStars();
     void onRemoveStar();
+    void onReloadMetrics();
     void onShowDetailWindow();
     void onConfigureColumns();
     void onCreatePlot();
@@ -207,6 +208,7 @@ private:
     QAction* _copyAction;
     QAction* _openDetailAction;
     QAction* _removeSelectedAction;
+    QAction* _reloadMetricsAction;
     QAction* _configureColumnsAction;
     
     QModelIndex _rightClickedIndex;

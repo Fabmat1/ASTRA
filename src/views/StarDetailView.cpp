@@ -17,6 +17,8 @@
 #include "views/tools/GalacticOrbitDialog.h"
 #include "views/tools/SEDFitDialog.h"
 
+#include "db/DatabaseManager.h"
+
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QSplitter>
@@ -550,7 +552,9 @@ StarDetailView::StarDetailView(std::shared_ptr<Star> star,
     populateRVPlot();
     populateLCPlot();
     populateSpectraPanel();
-    _star->computeSummaryMetrics();
+    _star->computeSummaryMetricsFull([this]() {
+        _dbm->updateStarRow(_projectId, _star);
+    });
 
     QTimer::singleShot(0, this, &StarDetailView::refreshAllPlotThemes);
 }
@@ -2826,10 +2830,22 @@ void StarDetailView::displaySpectrum(int index)
 
     // ── Ensure spectral data is loaded ──
     if (!spec->hasData()) {
-        if (!spec->getDataFile().isEmpty())
-            spec->loadDataFromFile(spec->getDataFile());
-        else if (!spec->getFile().isEmpty())
-            spec->loadFromFile(spec->getFile());
+        LOG_INFO("StarDetailView", QString("Spectrum %1: no data in memory, dataFile='%2', file='%3'")
+            .arg(spec->getId()).arg(spec->getDataFile()).arg(spec->getFile()));
+        if (!spec->getDataFile().isEmpty()) {
+            bool ok = spec->loadDataFromFile(spec->getDataFile());
+            LOG_INFO("StarDetailView", QString("  loadDataFromFile → %1 (hasData now: %2)")
+                .arg(ok).arg(spec->hasData()));
+        } else if (!spec->getFile().isEmpty()) {
+            bool ok = spec->loadFromFile(spec->getFile());
+            LOG_INFO("StarDetailView", QString("  loadFromFile → %1 (hasData now: %2)")
+                .arg(ok).arg(spec->hasData()));
+        } else {
+            LOG_INFO("StarDetailView", "  No data file path available at all!");
+        }
+    } else {
+        LOG_INFO("StarDetailView", QString("Spectrum %1: data already loaded (%2 points)")
+            .arg(spec->getId()).arg(spec->getWavelengths().size()));
     }
 
     // ── Populate fit combo ──

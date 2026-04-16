@@ -133,6 +133,12 @@ bool Spectrum::loadFromFile(const QString& filepath)
 
 bool Spectrum::saveDataToFile(const QString& filepath)
 {
+    if (_wavelengths.empty()) {
+        LOG_ERROR("Spectrum", QString("REFUSING to save empty spectrum data to %1 (id=%2)")
+            .arg(filepath).arg(_id));
+        // Print a stack trace or breakpoint here
+        return false;
+    }
     QByteArray buffer;
     {
         QDataStream s(&buffer, QIODevice::WriteOnly);

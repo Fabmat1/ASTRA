@@ -622,7 +622,7 @@ double RadialVelocityCurve::computeLogP() const
     //   logp = log10(pval)
 
     int ndata = static_cast<int>(_rvPoints.size());
-    if (ndata < 2) return std::numeric_limits<double>::quiet_NaN();
+    if (ndata < 2) return 0.0;
 
     // Gather RV and errors, skipping points with zero/negative error
     std::vector<double> rv;

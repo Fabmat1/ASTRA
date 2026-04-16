@@ -8,6 +8,40 @@
 #include <cmath>
 
 
+namespace {
+
+bool nanSafeEqual(double a, double b) {
+    if (std::isnan(a) && std::isnan(b)) return true;
+    return a == b;
+}
+
+std::vector<double> captureSummaryValues(const Star& s) {
+    return {
+        double(s.getRVNPoints()), s.getRVTimespan(), s.getRVAvg(), s.getRVMed(),
+        s.getLogP(), s.getDeltaRV(),
+        s.getRVK(), s.getRVEK(), s.getRVPeriod(), s.getRVEPeriod(),
+        s.getRVGamma(), s.getRVEGamma(),
+        s.getRVEcc(), s.getRVPhi(), s.getRVT0(), s.getRVChi2(), s.getRVRms(),
+        double(s.getNSpectra()), double(s.getNFitSpectra()),
+        s.getTeff(), s.getETeff(), s.getLogg(), s.getELogg(), s.getHe(), s.getEHe(),
+        double(s.getHasTess()), double(s.getHasGaia()), double(s.getHasZtf()),
+        double(s.getHasAtlas()), double(s.getHasBlackgem()),
+        s.getSedMass1(), s.getSedEMass1(), s.getSedRadius1(), s.getSedERadius1(),
+        s.getSedLum1(), s.getSedELum1(),
+        s.getSedMass2(), s.getSedEMass2(), s.getSedRadius2(), s.getSedERadius2(),
+        s.getSedLum2(), s.getSedELum2(),
+    };
+}
+
+bool summaryChanged(const std::vector<double>& before, const std::vector<double>& after) {
+    if (before.size() != after.size()) return true;
+    for (size_t i = 0; i < before.size(); ++i)
+        if (!nanSafeEqual(before[i], after[i])) return true;
+    return false;
+}
+
+} // anonymous namespace
+
 Star::Star()
     : _ra(std::numeric_limits<double>::quiet_NaN())
     , _dec(std::numeric_limits<double>::quiet_NaN())
@@ -232,16 +266,33 @@ void Star::removeSpectrum(const QString& spectrumId)
 }
 
 
-void Star::computeSummaryMetrics()
+void Star::computeSummaryMetrics(const SummaryPersistCallback& onChanged)
 {
+    auto before = captureSummaryValues(*this);
+
     recomputeRVMetrics();
     recomputeSpectraMetrics();
     recomputePhotometryMetrics();
+
+    if (onChanged && summaryChanged(before, captureSummaryValues(*this))) {
+        onChanged();
+    }
+}
+
+void Star::computeSummaryMetricsFull(const SummaryPersistCallback& onChanged)
+{
+    // Force lazy loads
+    getRVCurve();
+    getSpectra();
+    getPhotometry();
+
+    computeSummaryMetrics(onChanged);
 }
 
 void Star::recomputeRVMetrics()
 {
     if (!_rvCurve) return;
+    _rvCurve->setLogP(_rvCurve->computeLogP());
 
     _rvNPoints  = static_cast<int>(_rvCurve->getNumPoints());
     _rvTimespan = _rvCurve->getTimeSpan();

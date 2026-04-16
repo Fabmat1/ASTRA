@@ -306,6 +306,24 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
             logg = :logg, e_logg = :e_logg, he = :he, e_he = :e_he,
             logp = :logp, deltaRV = :deltaRV, e_deltaRV = :e_deltaRV,
             rv_avg = :rv_avg, e_rv_avg = :e_rv_avg, rv_med = :rv_med, e_rv_med = :e_rv_med,
+            n_spectra = :n_spectra, n_fit_spectra = :n_fit_spectra,
+            rv_timespan = :rv_timespan, rv_npoints = :rv_npoints,
+            rv_k = :rv_k, rv_e_k = :rv_e_k,
+            rv_period = :rv_period, rv_e_period = :rv_e_period,
+            rv_gamma = :rv_gamma, rv_e_gamma = :rv_e_gamma,
+            rv_ecc = :rv_ecc, rv_phi = :rv_phi, rv_t0 = :rv_t0,
+            rv_chi2 = :rv_chi2, rv_rms = :rv_rms,
+            sed_mass1 = :sed_mass1, sed_e_mass1 = :sed_e_mass1,
+            sed_radius1 = :sed_radius1, sed_e_radius1 = :sed_e_radius1,
+            sed_lum1 = :sed_lum1, sed_e_lum1 = :sed_e_lum1,
+            sed_mass2 = :sed_mass2, sed_e_mass2 = :sed_e_mass2,
+            sed_radius2 = :sed_radius2, sed_e_radius2 = :sed_e_radius2,
+            sed_lum2 = :sed_lum2, sed_e_lum2 = :sed_e_lum2,
+            phot_period = :phot_period, phot_e_period = :phot_e_period,
+            phot_incl = :phot_incl, phot_e_incl = :phot_e_incl,
+            phot_q = :phot_q, phot_e_q = :phot_e_q,
+            has_tess = :has_tess, has_gaia = :has_gaia, has_ztf = :has_ztf,
+            has_atlas = :has_atlas, has_blackgem = :has_blackgem,
             bibcodes = :bibcodes
         WHERE id = :id AND project_id = :project_id
     )");
@@ -352,6 +370,49 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
     query.bindValue(":e_rv_avg", star->getERVAvg());
     query.bindValue(":rv_med", star->getRVMed());
     query.bindValue(":e_rv_med", star->getERVMed());
+
+    query.bindValue(":n_spectra", star->getNSpectra());
+    query.bindValue(":n_fit_spectra", star->getNFitSpectra());
+
+    query.bindValue(":rv_timespan", star->getRVTimespan());
+    query.bindValue(":rv_npoints", star->getRVNPoints());
+    query.bindValue(":rv_k", star->getRVK());
+    query.bindValue(":rv_e_k", star->getRVEK());
+    query.bindValue(":rv_period", star->getRVPeriod());
+    query.bindValue(":rv_e_period", star->getRVEPeriod());
+    query.bindValue(":rv_gamma", star->getRVGamma());
+    query.bindValue(":rv_e_gamma", star->getRVEGamma());
+    query.bindValue(":rv_ecc", star->getRVEcc());
+    query.bindValue(":rv_phi", star->getRVPhi());
+    query.bindValue(":rv_t0", star->getRVT0());
+    query.bindValue(":rv_chi2", star->getRVChi2());
+    query.bindValue(":rv_rms", star->getRVRms());
+
+    query.bindValue(":sed_mass1", star->getSedMass1());
+    query.bindValue(":sed_e_mass1", star->getSedEMass1());
+    query.bindValue(":sed_radius1", star->getSedRadius1());
+    query.bindValue(":sed_e_radius1", star->getSedERadius1());
+    query.bindValue(":sed_lum1", star->getSedLum1());
+    query.bindValue(":sed_e_lum1", star->getSedELum1());
+    query.bindValue(":sed_mass2", star->getSedMass2());
+    query.bindValue(":sed_e_mass2", star->getSedEMass2());
+    query.bindValue(":sed_radius2", star->getSedRadius2());
+    query.bindValue(":sed_e_radius2", star->getSedERadius2());
+    query.bindValue(":sed_lum2", star->getSedLum2());
+    query.bindValue(":sed_e_lum2", star->getSedELum2());
+
+    query.bindValue(":phot_period", star->getPhotPeriod());
+    query.bindValue(":phot_e_period", star->getPhotEPeriod());
+    query.bindValue(":phot_incl", star->getPhotIncl());
+    query.bindValue(":phot_e_incl", star->getPhotEIncl());
+    query.bindValue(":phot_q", star->getPhotQ());
+    query.bindValue(":phot_e_q", star->getPhotEQ());
+
+    query.bindValue(":has_tess", star->getHasTess() ? 1 : 0);
+    query.bindValue(":has_gaia", star->getHasGaia() ? 1 : 0);
+    query.bindValue(":has_ztf", star->getHasZtf() ? 1 : 0);
+    query.bindValue(":has_atlas", star->getHasAtlas() ? 1 : 0);
+    query.bindValue(":has_blackgem", star->getHasBlackgem() ? 1 : 0);
 
     QJsonArray bibcodesArray;
     for (const auto& bibcode : star->getBibcodes()) {

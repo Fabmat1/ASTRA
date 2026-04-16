@@ -241,13 +241,14 @@ public:
     // In Star.h, public section:
     static bool isSet(double v) { return !std::isnan(v); }
 
+    using SummaryPersistCallback = std::function<void()>;
     // Compute all summary metrics from already-loaded child objects
     // Does NOT trigger lazy loading - safe to call for large datasets
-    void computeSummaryMetrics();
+    void computeSummaryMetrics(const SummaryPersistCallback& onChanged = nullptr);
     
     // Compute summary from child objects, triggering lazy load if needed
     // Only call for individual stars, NOT in bulk
-    void computeSummaryMetricsFull();
+    void computeSummaryMetricsFull(const SummaryPersistCallback& onChanged = nullptr);
     void updateDatasetAvailability();
 
 private:
