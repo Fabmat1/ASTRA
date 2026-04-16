@@ -97,18 +97,57 @@ double regularizedGammaP(double a, double x)
     }
 }
 
-// Chi-squared survival function: P(X > x) where X ~ chi2(k)
-// Equivalent to scipy.stats.chi2.sf(x, k)
-double chi2SurvivalFunction(double x, int k)
+// Continued fraction expansion for Q(a,x) via Lentz's method.
+// Numerically stable for x > a+1, where 1-P(a,x) catastrophically cancels.
+// Returns log(Q(a,x)) = log(regularized upper incomplete gamma) directly.
+// Avoids underflow for arbitrarily large x.
+static double logRegularizedGammaQ_CF(double a, double x)
 {
-    if (x <= 0.0) return 1.0;
-    if (k <= 0) return 0.0;
+    constexpr double FPMIN = 1e-300;
+    constexpr double EPS   = 3e-12;
+    constexpr int    ITMAX = 300;
 
-    double a = k / 2.0;
+    double gln = std::lgamma(a);
+    double b = x + 1.0 - a;
+    double c = 1.0 / FPMIN;
+    double d = 1.0 / b;
+    double h = d;
+
+    for (int i = 1; i <= ITMAX; ++i) {
+        double an = -static_cast<double>(i) * (static_cast<double>(i) - a);
+        b += 2.0;
+        d = an * d + b;
+        if (std::fabs(d) < FPMIN) d = FPMIN;
+        c = b + an / c;
+        if (std::fabs(c) < FPMIN) c = FPMIN;
+        d = 1.0 / d;
+        double del = d * c;
+        h *= del;
+        if (std::fabs(del - 1.0) < EPS) break;
+    }
+
+    // Never compute exp(...) — stay in log space the whole way
+    return -x + a * std::log(x) - gln + std::log(h);
+}
+
+// Returns log10(chi2.sf(x, k)) directly, without ever materializing pval.
+double logChi2SF(double x, int k)
+{
+    constexpr double LOG10E = 0.4342944819032518; // 1/ln(10)
+
+    if (x <= 0.0) return 0.0;   // pval = 1
+    if (k <= 0)   return std::numeric_limits<double>::lowest();
+
+    double a     = k / 2.0;
     double halfX = x / 2.0;
 
-    // sf = 1 - CDF = 1 - P(a, x/2) = Q(a, x/2)
-    return 1.0 - regularizedGammaP(a, halfX);
+    if (halfX >= a + 1.0) {
+        return logRegularizedGammaQ_CF(a, halfX) * LOG10E;
+    } else {
+        // x is small → Q is close to 1 → log(Q) close to 0, no precision issue
+        double Q = 1.0 - regularizedGammaP(a, halfX);
+        return std::log10(Q);  // fine here since Q ≫ 0
+    }
 }
 
 } // anonymous namespace
@@ -632,21 +671,12 @@ double RadialVelocityCurve::computeLogP() const
 
     int dof = n - 1;
 
-    // Compute the chi-squared survival function (upper tail probability)
-    // P(X > chisq_sum) where X ~ chi2(dof)
-    //
-    // Use the regularized upper incomplete gamma function:
-    //   chi2.sf(x, k) = 1 - gammainc(k/2, x/2) = gammaincc(k/2, x/2)
-    //
-    // We implement this using a series/continued-fraction expansion.
-
-    double pval = chi2SurvivalFunction(chisq_sum, dof);
-
-    if (pval <= 0.0) return -500.0;
-    if (std::isnan(pval)) return 0.0;
-
-    double logp = std::log10(pval);
+    // Compute log10(p-value) for the chi-squared survival function directly in
+    // log-space, avoiding underflow for extreme chi-squared values.
+    //   log10(P(X > chisq_sum)) where X ~ chi2(dof)
+    //   = log10(Q(dof/2, chisq_sum/2))  [regularized upper incomplete gamma]
+    // See logChi2SF() for the continued-fraction implementation.
+    double logp = logChi2SF(chisq_sum, dof);
     if (std::isnan(logp)) return 0.0;
-
     return logp;
 }
