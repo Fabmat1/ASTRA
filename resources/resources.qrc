@@ -5,6 +5,7 @@
         <file>themes/rose_pine_dawn.qss</file>
         <file>themes/one_light.qss</file>
         <file>data/default_instruments.json</file>
+        <file>data/gaia_cmd.csv</file>
         <file>scripts/photometry_body.sl</file>
     </qresource>
 </RCC>

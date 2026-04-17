@@ -5,6 +5,7 @@
 #include "models/RadialVelocity.h"
 #include "models/Instrument.h"
 #include "models/Time.h"
+#include "models/Project.h"
 #include "utils/Logger.h"
 #include "utils/CrossRefResolver.h"
 #include "utils/AppPaths.h"
@@ -17,6 +18,7 @@
 #include "views/tools/GalacticOrbitDialog.h"
 #include "views/tools/SEDFitDialog.h"
 
+#include "controllers/ApplicationController.h"
 #include "db/DatabaseManager.h"
 
 #include <QVBoxLayout>
@@ -533,11 +535,13 @@ private:
 
 StarDetailView::StarDetailView(std::shared_ptr<Star> star,
                                DatabaseManager* dbm,
+                               ApplicationController* controller,
                                const QString& projectId,
                                QWidget* parent)
     : QWidget(parent, Qt::Window)
     , _star(star)
     , _dbm(dbm)
+    , _controller(controller)
     , _projectId(projectId)
     , _rvFolded(false)
     , _lcFolded(false)
@@ -3431,7 +3435,13 @@ void StarDetailView::onViewFitSED()
 
 void StarDetailView::onShowCMD()
 {
-    auto* dialog = new CMDDialog(_star, this);
+    std::vector<std::shared_ptr<Star>> projectStars;
+    if (_controller) {
+        if (auto proj = _controller->getCurrentProject()) {
+            projectStars = proj->getAllStars();
+        }
+    }
+    auto* dialog = new CMDDialog(_star, std::move(projectStars), _projectId, this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->show();
 }
