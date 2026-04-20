@@ -161,6 +161,15 @@ set(SOURCES
     src/views/tools/RVInspectorDialog.cpp
     src/views/tools/SEDFitDialog.cpp
     src/views/tools/SpectraFitDialog.cpp
+
+    # views/panels
+    src/views/panels/PanelUtils.cpp
+    src/views/panels/DetailPanel.cpp
+    src/views/panels/DetailPanelFactory.cpp
+    src/views/panels/SummaryPanel.cpp
+    src/views/panels/RVPanel.cpp
+    src/views/panels/LCPanel.cpp
+    src/views/panels/SpectraPanel.cpp
 )
 
 # Header files
@@ -236,6 +245,16 @@ set(HEADERS
     src/views/tools/RVInspectorDialog.h
     src/views/tools/SEDFitDialog.h
     src/views/tools/SpectraFitDialog.h
+
+    # views/panels
+    src/views/panels/PanelUtils.h
+    src/views/panels/DetailPanel.h
+    src/views/panels/DetailPanelFactory.h
+    src/views/panels/SummaryPanel.h
+    src/views/panels/RVPanel.h
+    src/views/panels/LCPanel.h
+    src/views/panels/SpectraPanel.h
+
 )
 
 # Create executable
