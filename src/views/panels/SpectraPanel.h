@@ -21,12 +21,28 @@ public:
     void refresh() override;
     void refreshTheme() override;
 
-private:
+
     enum DisplayMode {
         DisplayNormalized = 0,
         DisplayRebinned   = 1,
         DisplayRaw        = 2,
     };
+
+    // Navigation / control
+    void selectSpectrumById(const QString& spectrumId);
+    void selectFitById(const QString& fitId);          // navigates + Normalized
+    void setDisplayMode(DisplayMode mode);
+    void clearFitSelection();                           // fit combo → "None"
+    void refreshCurrentView();                          // rebuild combo labels
+
+    // State
+    QString currentSpectrumId() const;
+    QString currentFitId() const;
+    
+signals:
+    void selectionChanged(const QString& spectrumId, const QString& fitId);
+
+private:
 
     void setupUi();
     void populate();

@@ -169,7 +169,10 @@ void SpectraPanel::setupUi()
 
     // ── Connections for fit combo and renorm ──
     connect(_fitCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int) { updateSpectrumDisplay(); });
+        this, [this](int) {
+        updateSpectrumDisplay();
+        emit selectionChanged(currentSpectrumId(), currentFitId());
+    });
     connect(_displayMode, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { updateSpectrumDisplay(); });
 }
@@ -359,6 +362,7 @@ void SpectraPanel::displaySpectrum(int index)
     _infoLabel->setText(formatInfo(spec));
 
     updateSpectrumDisplay();
+    emit selectionChanged(currentSpectrumId(), currentFitId());
 }
 
 void SpectraPanel::updateSpectrumDisplay()
@@ -872,4 +876,97 @@ double SpectraPanel::computeRenormFactor(
         den += model[i] * model[i];
     }
     return (den > 0.0) ? (num / den) : 1.0;
+}
+
+QString SpectraPanel::currentSpectrumId() const
+{
+    if (_currentSpectrumIndex < 0 ||
+        _currentSpectrumIndex >= static_cast<int>(_sortedSpectra.size()))
+        return {};
+    return _sortedSpectra[_currentSpectrumIndex]->getId();
+}
+
+QString SpectraPanel::currentFitId() const
+{
+    if (_currentSpectrumIndex < 0 ||
+        _currentSpectrumIndex >= static_cast<int>(_sortedSpectra.size()))
+        return {};
+    int idx = _fitCombo->currentData().toInt();
+    if (idx < 0) return {};
+    auto fits = _sortedSpectra[_currentSpectrumIndex]->getSpectralFits();
+    if (idx >= static_cast<int>(fits.size())) return {};
+    return fits[idx]->getId();
+}
+
+void SpectraPanel::selectSpectrumById(const QString& spectrumId)
+{
+    for (int i = 0; i < static_cast<int>(_sortedSpectra.size()); ++i) {
+        if (_sortedSpectra[i]->getId() == spectrumId) {
+            if (_tabBar->currentIndex() != i)
+                _tabBar->setCurrentIndex(i);       // triggers displaySpectrum via signal
+            else
+                displaySpectrum(i);
+            return;
+        }
+    }
+}
+
+void SpectraPanel::selectFitById(const QString& fitId)
+{
+    int parentIdx  = -1;
+    int fitArrayIdx = -1;
+    for (int i = 0; i < static_cast<int>(_sortedSpectra.size()); ++i) {
+        auto fits = _sortedSpectra[i]->getSpectralFits();
+        for (int j = 0; j < static_cast<int>(fits.size()); ++j) {
+            if (fits[j]->getId() == fitId) { parentIdx = i; fitArrayIdx = j; break; }
+        }
+        if (parentIdx >= 0) break;
+    }
+    if (parentIdx < 0) return;
+
+    if (_tabBar->currentIndex() != parentIdx)
+        _tabBar->setCurrentIndex(parentIdx);
+    else
+        displaySpectrum(parentIdx);
+
+    for (int c = 0; c < _fitCombo->count(); ++c) {
+        if (_fitCombo->itemData(c).toInt() == fitArrayIdx) {
+            _fitCombo->setCurrentIndex(c);
+            break;
+        }
+    }
+    setDisplayMode(DisplayNormalized);
+}
+
+void SpectraPanel::setDisplayMode(DisplayMode mode)
+{
+    _displayMode->setCurrentIndex(static_cast<int>(mode));
+}
+
+void SpectraPanel::clearFitSelection()
+{
+    // "None" is always at index 0
+    if (_fitCombo->count() > 0) _fitCombo->setCurrentIndex(0);
+}
+
+void SpectraPanel::refreshCurrentView()
+{
+    if (_currentSpectrumIndex < 0) return;
+    QString fitId = currentFitId();
+    displaySpectrum(_currentSpectrumIndex);
+
+    if (!fitId.isEmpty()) {
+        auto fits = _sortedSpectra[_currentSpectrumIndex]->getSpectralFits();
+        for (int j = 0; j < static_cast<int>(fits.size()); ++j) {
+            if (fits[j]->getId() == fitId) {
+                for (int c = 0; c < _fitCombo->count(); ++c) {
+                    if (_fitCombo->itemData(c).toInt() == j) {
+                        _fitCombo->setCurrentIndex(c);
+                        return;
+                    }
+                }
+                return;
+            }
+        }
+    }
 }

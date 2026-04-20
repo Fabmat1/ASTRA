@@ -8,9 +8,7 @@ class Star;
 class Spectrum;
 class SpectralFit;
 class DatabaseManager;
-class QTabBar;
-class QCustomPlot;
-class QLabel;
+class SpectraPanel;
 class QTreeWidget;
 class QTreeWidgetItem;
 class QSplitter;
@@ -19,41 +17,40 @@ class SpectraFitDialog : public QDialog
 {
     Q_OBJECT
 public:
-    explicit SpectraFitDialog(std::shared_ptr<Star> star,
-                              DatabaseManager* dbm = nullptr,
-                              QWidget* parent = nullptr);
+    SpectraFitDialog(std::shared_ptr<Star> star,
+                     DatabaseManager* dbm,
+                     const QString& projectId,
+                     QWidget* parent = nullptr);
     ~SpectraFitDialog() override;
+
+signals:
+    void starParametersChanged();
 
 private slots:
     void onTreeItemChanged(QTreeWidgetItem* item, int column);
     void onTreeItemClicked(QTreeWidgetItem* item, int column);
-    void onTreeItemSelected();
-    void onTabChanged(int index);
+    void onPanelSelectionChanged(const QString& spectrumId,
+                                 const QString& fitId);
 
 private:
     void setupUi();
     void rebuildTree();
     void refreshTreeStyling();
-    void displaySpectrum(int index);
-    QString formatSpectrumTabLabel(const std::shared_ptr<Spectrum>& s, int i) const;
-    QString formatSpectrumInfo(const std::shared_ptr<Spectrum>& s) const;
-
-    // Keep tree and tab selection in sync
-    void syncTreeToCurrentSpectrum();
+    void updateBestMarkers();
+    void setBestFitTied(const QString& fitId, bool markBest);
+    void propagateBestFitParams(const std::shared_ptr<SpectralFit>& fit);
+    void syncTreeSelectionTo(const QString& spectrumId, const QString& fitId);
 
     std::shared_ptr<Star>  _star;
     DatabaseManager*       _dbm = nullptr;
+    QString                _projectId;
 
-    // Sorted spectra (mirrors the tab order)
     std::vector<std::shared_ptr<Spectrum>> _spectra;
 
-    // UI
-    QSplitter*    _splitter     = nullptr;
-    QTabBar*      _tabBar       = nullptr;
-    QCustomPlot*  _plot         = nullptr;
-    QLabel*       _infoLabel    = nullptr;
-    QTreeWidget*  _tree         = nullptr;
+    QSplitter*    _splitter = nullptr;
+    SpectraPanel* _panel    = nullptr;
+    QTreeWidget*  _tree     = nullptr;
 
-    int _currentSpectrumIndex = -1;
-    bool _updatingTree = false;   // reentrancy guard
+    bool _updatingTree   = false;
+    bool _syncingFromPanel = false;
 };
