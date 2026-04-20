@@ -3409,7 +3409,7 @@ void StarDetailView::onViewAdjustRV()
 
 void StarDetailView::onViewFitSpectra()
 {
-    auto* dialog = new SpectraFitDialog(_star, this);
+    auto* dialog = new SpectraFitDialog(_star, _dbm, this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->show();
 }

@@ -8,6 +8,9 @@
 #include "models/Project.h"
 #include "utils/ThemeManager.h"
 #include "utils/BackgroundTaskManager.h"
+#include "dialogs/SettingsDialog.h"
+#include "controllers/ApplicationController.h"
+
 #include <QStackedWidget>
 #include <QMenuBar>
 #include <QMenu>
@@ -92,13 +95,15 @@ void MainWindow::setupMenus()
 
     // File menu - always visible
     _fileMenu = menuBar->addMenu("&File");
-    _newProjectAction = _fileMenu->addAction("&New Project...");
-    _openProjectAction = _fileMenu->addAction("&Open Project...");
-    _closeProjectAction = _fileMenu->addAction("&Close Project");
+    _newProjectAction    = _fileMenu->addAction("&New Project...");
+    _openProjectAction   = _fileMenu->addAction("&Open Project...");
+    _closeProjectAction  = _fileMenu->addAction("&Close Project");
     _removeProjectAction = _fileMenu->addAction("&Remove Project...");
     _fileMenu->addSeparator();
+    _settingsAction = _fileMenu->addAction("&Preferences…");
+    _settingsAction->setShortcut(QKeySequence::Preferences);
+    _fileMenu->addSeparator();
     _exitAction = _fileMenu->addAction("E&xit");
-
     // View menu - always visible
     _viewMenu = menuBar->addMenu("&View");
     
@@ -217,6 +222,11 @@ void MainWindow::createActions()
             "Version dev0.0.1\n\n"
             "A modern Qt6 application for managing and analyzing stellar astrophysics data.\n"
             "All your data in one place! :)");
+    });
+
+    connect(_settingsAction, &QAction::triggered, this, [this] {
+        SettingsDialog dlg(_controller->settings(), this);
+        dlg.exec();
     });
 }
 

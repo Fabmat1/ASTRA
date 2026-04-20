@@ -534,6 +534,9 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE lightcurves ADD COLUMN mode_key TEXT",
         "ALTER TABLE photometric_points ADD COLUMN instrument_id TEXT",
         "ALTER TABLE photometric_points ADD COLUMN mode_key TEXT",
+
+        "ALTER TABLE spectra        ADD COLUMN is_flagged INTEGER DEFAULT 0",
+        "ALTER TABLE spectral_fits  ADD COLUMN is_flagged INTEGER DEFAULT 0",
     };
 
     for (const QString& sql : alterQueries) {
@@ -928,6 +931,24 @@ bool DatabaseManager::saveSpectralFit(const QString& starId, const QString& spec
 std::vector<std::shared_ptr<SpectralFit>> DatabaseManager::loadSpectralFits(const QString& spectrumId)
 {
     return _spectra->loadSpectralFits(spectrumId);
+}
+
+bool DatabaseManager::updateSpectrumFlag(const QString& spectrumId, bool flagged)
+{
+    if (!_spectra) return false;
+    return _spectra->updateSpectrumFlag(spectrumId, flagged);
+}
+
+bool DatabaseManager::updateSpectralFitFlag(const QString& fitId, bool flagged)
+{
+    if (!_spectra) return false;
+    return _spectra->updateSpectralFitFlag(fitId, flagged);
+}
+
+bool DatabaseManager::updateBestFit(const QString& spectrumId, const QString& bestFitId)
+{
+    if (!_spectra) return false;
+    return _spectra->updateBestFit(spectrumId, bestFitId);
 }
 
 bool DatabaseManager::saveRadialVelocityCurve(std::shared_ptr<RadialVelocityCurve> curve, const QString& starId)

@@ -90,122 +90,152 @@ set_target_properties(qcustomplot PROPERTIES AUTOMOC ON)
 # Source files
 set(SOURCES
     src/main.cpp
+
+    # controllers
     src/controllers/ApplicationController.cpp
-    src/models/Project.cpp
-    src/models/Star.cpp
-    src/models/Photometry.cpp
-    src/models/Spectrum.cpp
-    src/models/Instrument.cpp
-    src/models/RadialVelocity.cpp
-    src/models/Time.cpp
+
+    # db
+    src/db/DatabaseManager.cpp
+    src/db/DBAccess.cpp
+    src/db/InstrumentRepository.cpp
+    src/db/PhotometryRepository.cpp
+    src/db/ProjectRepository.cpp
+    src/db/RadialVelocityRepository.cpp
+    src/db/SpectrumRepository.cpp
+    src/db/StarRepository.cpp
+
+    # dialogs
+    src/dialogs/EditProjectDialog.cpp
+    src/dialogs/NewProjectDialog.cpp
+    src/dialogs/SettingsDialog.cpp
+
+    # importWizard
+    src/importWizard/GeneralImportPage.cpp
+    src/importWizard/ImportStagingArea.cpp
+    src/importWizard/LightcurveImportPage.cpp
+    src/importWizard/RadialVelocityImportPage.cpp
+    src/importWizard/RVPhotometryPages.cpp
+    src/importWizard/SEDImportPage.cpp
+    src/importWizard/SpectraImportPage.cpp
+    src/importWizard/SpectralFitImportPage.cpp
+    src/importWizard/StarImportWizard.cpp
+
+    # models
     src/models/BarycentricCorrection.cpp
+    src/models/ColumnPreset.cpp
+    src/models/Instrument.cpp
+    src/models/InstrumentMode.cpp
+    src/models/Photometry.cpp
+    src/models/Project.cpp
+    src/models/RadialVelocity.cpp
+    src/models/Spectrum.cpp
+    src/models/Star.cpp
+    src/models/Time.cpp
+
+    # utils
+    src/utils/AppSettings.cpp
+    src/utils/BackgroundTaskManager.cpp
+    src/utils/CatalogQueryWorkers.cpp
+    src/utils/CoastlineData.cpp
+    src/utils/CrossRefResolver.cpp
+    src/utils/DataStore.cpp
+    src/utils/ExtractSED.cpp
+    src/utils/Logger.cpp
+    src/utils/SpectrumReader.cpp
+    src/utils/ThemeManager.cpp
+
+    # views
+    src/views/BooleanColumnDelegate.cpp
+    src/views/ColumnConfigDialog.cpp
+    src/views/InstrumentConfigView.cpp
     src/views/MainWindow.cpp
     src/views/ProjectSelectionView.cpp
     src/views/ProjectView.cpp
     src/views/StarDetailView.cpp
-    src/dialogs/NewProjectDialog.cpp
-    src/dialogs/EditProjectDialog.cpp
-    src/importWizard/StarImportWizard.cpp
-    
-    src/utils/ThemeManager.cpp
-    # ── db layer (generated) ──
-    src/db/DatabaseManager.cpp
-    src/db/DatabaseManager.h
-    src/db/DBAccess.cpp
-    src/db/DBAccess.h
-    src/db/ProjectRepository.cpp
-    src/db/ProjectRepository.h
-    src/db/StarRepository.cpp
-    src/db/StarRepository.h
-    src/db/PhotometryRepository.cpp
-    src/db/PhotometryRepository.h
-    src/db/SpectrumRepository.cpp
-    src/db/SpectrumRepository.h
-    src/db/RadialVelocityRepository.cpp
-    src/db/RadialVelocityRepository.h
-    src/db/InstrumentRepository.cpp
-    src/db/InstrumentRepository.h
-    src/utils/BackgroundTaskManager.cpp
-    src/utils/Logger.cpp
-    src/utils/SpectrumReader.cpp
-    src/importWizard/StarImportWizard.cpp
-    src/importWizard/GeneralImportPage.cpp
-    src/importWizard/SpectraImportPage.cpp
-    src/importWizard/SEDImportPage.cpp
-    src/importWizard/RVPhotometryPages.cpp
-    src/utils/CatalogQueryWorkers.cpp
-    src/utils/DataStore.cpp
     src/views/StarFilterWidget.cpp
-    src/importWizard/SpectralFitImportPage.cpp
-    src/importWizard/RadialVelocityImportPage.cpp
-    src/importWizard/ImportStagingArea.cpp
-    src/importWizard/LightcurveImportPage.cpp
-    src/utils/ExtractSED.cpp
-    src/utils/CoastlineData.cpp
-    src/views/tools/RVInspectorDialog.cpp
-    src/views/tools/SpectraFitDialog.cpp
-    src/views/tools/LightcurveFetchDialog.cpp
-    src/views/tools/SEDFitDialog.cpp
+
+    # views/tools
     src/views/tools/CMDDialog.cpp
     src/views/tools/GalacticOrbitDialog.cpp
-    src/views/BooleanColumnDelegate.cpp
-    src/views/ColumnConfigDialog.cpp
-    src/views/InstrumentConfigView.cpp
-    src/models/ColumnPreset.cpp
-    src/models/InstrumentMode.cpp
-    src/utils/CrossRefResolver.cpp
-    )
+    src/views/tools/LightcurveFetchDialog.cpp
+    src/views/tools/RVInspectorDialog.cpp
+    src/views/tools/SEDFitDialog.cpp
+    src/views/tools/SpectraFitDialog.cpp
+)
 
 # Header files
 set(HEADERS
+    # controllers
     src/controllers/ApplicationController.h
-    src/models/Project.h
-    src/models/Star.h
-    src/models/Photometry.h
-    src/models/Spectrum.h
-    src/models/Instrument.h
-    src/models/RadialVelocity.h
-    src/models/Time.h
+
+    # db
+    src/db/DatabaseManager.h
+    src/db/DBAccess.h
+    src/db/InstrumentRepository.h
+    src/db/PhotometryRepository.h
+    src/db/ProjectRepository.h
+    src/db/RadialVelocityRepository.h
+    src/db/SpectrumRepository.h
+    src/db/StarRepository.h
+
+    # dialogs
+    src/dialogs/EditProjectDialog.h
+    src/dialogs/NewProjectDialog.h
+    src/dialogs/SettingsDialog.h
+
+    # importWizard
+    src/importWizard/GeneralImportPage.h
+    src/importWizard/ImportStagingArea.h
+    src/importWizard/LightcurveImportPage.h
+    src/importWizard/RadialVelocityImportPage.h
+    src/importWizard/RVPhotometryPages.h
+    src/importWizard/SEDImportPage.h
+    src/importWizard/SpectraImportPage.h
+    src/importWizard/SpectralFitImportPage.h
+    src/importWizard/StarImportWizard.h
+
+    # models
     src/models/BarycentricCorrection.h
+    src/models/ColumnPreset.h
+    src/models/Instrument.h
+    src/models/InstrumentMode.h
+    src/models/Photometry.h
+    src/models/Project.h
+    src/models/RadialVelocity.h
+    src/models/Spectrum.h
+    src/models/Star.h
+    src/models/Time.h
+
+    # utils
+    src/utils/AppPaths.h
+    src/utils/AppSettings.h
+    src/utils/BackgroundTaskManager.h
+    src/utils/CatalogQueryWorkers.h
+    src/utils/CoastlineData.h
+    src/utils/CrossRefResolver.h
+    src/utils/DataStore.h
+    src/utils/ExtractSED.h
+    src/utils/Logger.h
+    src/utils/SpectrumReader.h
+    src/utils/ThemeManager.h
+
+    # views
+    src/views/BooleanColumnDelegate.h
+    src/views/ColumnConfigDialog.h
+    src/views/InstrumentConfigView.h
     src/views/MainWindow.h
     src/views/ProjectSelectionView.h
     src/views/ProjectView.h
     src/views/StarDetailView.h
-    src/dialogs/NewProjectDialog.h
-    src/dialogs/EditProjectDialog.h
-    src/importWizard/StarImportWizard.h
-    
-    src/utils/ThemeManager.h
-    src/utils/BackgroundTaskManager.h
-    src/utils/Logger.h
-    src/utils/SpectrumReader.h
-    src/importWizard/StarImportWizard.h
-    src/importWizard/GeneralImportPage.h
-    src/importWizard/SpectraImportPage.h
-    src/importWizard/SEDImportPage.h
-    src/importWizard/RVPhotometryPages.h
-    src/utils/CatalogQueryWorkers.h
-    src/utils/DataStore.h
     src/views/StarFilterWidget.h
-    src/importWizard/SpectralFitImportPage.h
-    src/utils/AppPaths.h
-    src/importWizard/RadialVelocityImportPage.h
-    src/importWizard/ImportStagingArea.h
-    src/importWizard/LightcurveImportPage.h
-    src/utils/ExtractSED.h
-    src/utils/CoastlineData.h
-    src/views/tools/RVInspectorDialog.h
-    src/views/tools/SpectraFitDialog.h
-    src/views/tools/LightcurveFetchDialog.h
-    src/views/tools/SEDFitDialog.h
+
+    # views/tools
     src/views/tools/CMDDialog.h
     src/views/tools/GalacticOrbitDialog.h
-    src/views/BooleanColumnDelegate.h
-    src/views/ColumnConfigDialog.h
-    src/views/InstrumentConfigView.h
-    src/models/ColumnPreset.h
-    src/models/InstrumentMode.h
-    src/utils/CrossRefResolver.h
+    src/views/tools/LightcurveFetchDialog.h
+    src/views/tools/RVInspectorDialog.h
+    src/views/tools/SEDFitDialog.h
+    src/views/tools/SpectraFitDialog.h
 )
 
 # Create executable

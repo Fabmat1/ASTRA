@@ -20,6 +20,10 @@ public:
     std::vector<std::shared_ptr<SpectralFit>> loadSpectralFits(const QString& spectrumId);
     void loadSpectraBatch(std::vector<std::shared_ptr<Star>>& stars);
 
+    bool updateSpectrumFlag(const QString& spectrumId, bool flagged);
+    bool updateSpectralFitFlag(const QString& fitId, bool flagged);
+    bool updateBestFit(const QString& spectrumId, const QString& bestFitId);
+
 private:
     DBAccess& _db;
 };

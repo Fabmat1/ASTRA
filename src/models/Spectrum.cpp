@@ -11,6 +11,7 @@
 // SpectralFit implementation
 SpectralFit::SpectralFit()
     : isBestFit(false)
+    , isFlagged(false)
     , teff(0.0)
     , teffError(0.0)
     , logg(0.0)
@@ -302,4 +303,10 @@ bool SpectralFit::loadDataFromFile(const QString& filepath)
     QDataStream s(&legacyBuf, QIODevice::ReadOnly);
     s.setVersion(QDataStream::Qt_5_0);
     return parse(s, legacyBuf.size(), /*legacy=*/true);
+}
+
+void Spectrum::setBestFitById(const QString& fitId)
+{
+    for (auto& f : _spectralFits)
+        if (f) f->isBestFit = (!fitId.isEmpty() && f->getId() == fitId);
 }

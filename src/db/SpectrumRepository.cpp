@@ -32,10 +32,10 @@ bool SpectrumRepository::saveSpectrum(const QString& starId, std::shared_ptr<Spe
     query.prepare(R"(
         INSERT OR REPLACE INTO spectra (
             id, star_id, file, instrument, mjd, bjd, exposure_time,
-            data_file, barycentric_corrected
+            data_file, barycentric_corrected, is_flagged
         ) VALUES (
             :id, :star_id, :file, :instrument, :mjd, :bjd, :exposure_time,
-            :data_file, :barycentric_corrected
+            :data_file, :barycentric_corrected, :is_flagged
         )
     )");
 
@@ -49,6 +49,8 @@ bool SpectrumRepository::saveSpectrum(const QString& starId, std::shared_ptr<Spe
     query.bindValue(":data_file", dataFile);
     query.bindValue(":barycentric_corrected",
                     spectrum->isBarycentricallyCorrected() ? 1 : 0);
+    query.bindValue(":is_flagged",
+                    spectrum->isFlagged() ? 1 : 0);
 
     if (!query.exec()) {
         qDebug() << "Failed to save spectrum:" << query.lastError();
@@ -82,7 +84,7 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
     QSqlQuery query(_db.threadConnection());
     query.prepare(R"(
         INSERT OR REPLACE INTO spectral_fits (
-            id, spectrum_id, creation_date, model_id, is_best_fit,
+            id, spectrum_id, creation_date, model_id, is_best_fit, is_flagged,
             teff, teff_error, logg, logg_error, he, he_error,
             vsini, vsini_error, radial_velocity, radial_velocity_error,
             chi2, metallicity, metallicity_error,
@@ -90,7 +92,7 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
             microturbulence, microturbulence_error,
             model_data_file
         ) VALUES (
-            :id, :spectrum_id, :creation_date, :model_id, :is_best_fit,
+            :id, :spectrum_id, :creation_date, :model_id, :is_best_fit, :is_flagged,
             :teff, :teff_error, :logg, :logg_error, :he, :he_error,
             :vsini, :vsini_error, :radial_velocity, :radial_velocity_error,
             :chi2, :metallicity, :metallicity_error,
@@ -105,6 +107,7 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
     query.bindValue(":creation_date", fit->creationDate.toString(Qt::ISODate));
     query.bindValue(":model_id", fit->modelId);
     query.bindValue(":is_best_fit", fit->isBestFit ? 1 : 0);
+    query.bindValue(":is_flagged", fit->isFlagged ? 1 : 0);
     query.bindValue(":teff", fit->teff);
     query.bindValue(":teff_error", fit->teffError);
     query.bindValue(":logg", fit->logg);
@@ -154,6 +157,7 @@ std::vector<std::shared_ptr<Spectrum>> SpectrumRepository::loadSpectra(const QSt
             expTime > 0.0 ? expTime : -1.0));
         spectrum->setDataFile(query.value("data_file").toString());
         spectrum->setBarycentricallyCorrected(query.value("barycentric_corrected").toInt() != 0);
+        spectrum->setFlagged(query.value("barycentric_corrected").toInt() != 0);
 
         // Load spectral fits
         auto fits = loadSpectralFits(spectrum->getId());
@@ -185,6 +189,7 @@ std::vector<std::shared_ptr<SpectralFit>> SpectrumRepository::loadSpectralFits(c
         fit->creationDate = QDateTime::fromString(query.value("creation_date").toString(), Qt::ISODate);
         fit->modelId = query.value("model_id").toString();
         fit->isBestFit = query.value("is_best_fit").toInt() == 1;
+        fit->isFlagged = query.value("is_flagged").toInt() == 1;
         fit->teff = query.value("teff").toDouble();
         fit->teffError = query.value("teff_error").toDouble();
         fit->logg = query.value("logg").toDouble();
@@ -208,4 +213,35 @@ std::vector<std::shared_ptr<SpectralFit>> SpectrumRepository::loadSpectralFits(c
     }
 
     return fits;
+}
+
+bool SpectrumRepository::updateSpectrumFlag(const QString& spectrumId, bool flagged)
+{
+    QSqlQuery q(_db.database());
+    q.prepare("UPDATE spectra SET is_flagged = :f WHERE id = :id");
+    q.bindValue(":f", flagged ? 1 : 0);
+    q.bindValue(":id", spectrumId);
+    return q.exec();
+}
+
+bool SpectrumRepository::updateSpectralFitFlag(const QString& fitId, bool flagged)
+{
+    QSqlQuery q(_db.database());
+    q.prepare("UPDATE spectral_fits SET is_flagged = :f WHERE id = :id");
+    q.bindValue(":f", flagged ? 1 : 0);
+    q.bindValue(":id", fitId);
+    return q.exec();
+}
+
+bool SpectrumRepository::updateBestFit(const QString& spectrumId, const QString& bestFitId)
+{
+    QSqlQuery q(_db.database());
+    // Clear for all fits of this spectrum
+    q.prepare("UPDATE spectral_fits SET is_best_fit = 0 WHERE spectrum_id = :sid");
+    q.bindValue(":sid", spectrumId);
+    if (!q.exec()) return false;
+    if (bestFitId.isEmpty()) return true;
+    q.prepare("UPDATE spectral_fits SET is_best_fit = 1 WHERE id = :id");
+    q.bindValue(":id", bestFitId);
+    return q.exec();
 }

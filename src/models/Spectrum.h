@@ -30,6 +30,7 @@ public:
     QDateTime creationDate;
     QString modelId;
     bool isBestFit;
+    bool isFlagged;
 
     // Model data - not loaded by default
     std::vector<double> modelWavelengths;
@@ -132,6 +133,13 @@ public:
     bool loadFromFile(const QString& filepath);
     bool hasData() const { return !_wavelengths.empty(); }
 
+    bool isFlagged() const { return _flagged; }
+    void setFlagged(bool f) { _flagged = f; }
+
+    // Set which fit is the best one. Pass empty string to clear.
+    // Unsets isBestFit on all other fits for this spectrum.
+    void setBestFitById(const QString& fitId);
+
 private:
     // File and metadata
     QString _id;
@@ -140,6 +148,8 @@ private:
     QString _instrument;
 
     Time _time;  
+
+    bool _flagged = false;
     
     bool _isBarycentricallyCorrected;
 

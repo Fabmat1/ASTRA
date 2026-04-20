@@ -11,6 +11,7 @@
 #include <chrono>
 #include "utils/Logger.h"
 #include "utils/AppPaths.h"
+#include "utils/AppSettings.h"
 
 ApplicationController::ApplicationController(QObject *parent)
     : QObject(parent)
@@ -22,6 +23,7 @@ ApplicationController::ApplicationController(QObject *parent)
     _databaseManager = std::make_unique<DatabaseManager>();
     _themeManager = std::make_unique<ThemeManager>(this);
     _backgroundTaskManager = std::make_unique<BackgroundTaskManager>(this);
+    _settings = std::make_unique<AppSettings>(this);
     loadProjects();
     LOG_INFO("Controller", QString("Loaded %1 projects").arg(_projects.size()));
     

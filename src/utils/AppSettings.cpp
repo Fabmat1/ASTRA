@@ -1,0 +1,126 @@
+#include "AppSettings.h"
+
+#include <QSettings>
+#include <QStringList>
+#include <QStandardPaths>
+#include <algorithm>
+
+namespace {
+constexpr const char* kGroup      = "AppSettings";
+constexpr const char* kIsisBinary = "general/isisBinary";
+constexpr const char* kRows       = "starDetail/rows";
+constexpr const char* kCols       = "starDetail/cols";
+constexpr const char* kGrid       = "starDetail/grid";
+}
+
+QString AppSettings::panelName(DetailPanel p)
+{
+    switch (p) {
+        case DetailPanel::None:           return "— Empty —";
+        case DetailPanel::Summary:        return "Summary";
+        case DetailPanel::RadialVelocity: return "Radial Velocity";
+        case DetailPanel::LightCurve:     return "Light Curves";
+        case DetailPanel::Spectra:        return "Spectra";
+    }
+    return "?";
+}
+
+QList<AppSettings::DetailPanel> AppSettings::allPanels()
+{
+    return {
+        DetailPanel::None,
+        DetailPanel::Summary,
+        DetailPanel::RadialVelocity,
+        DetailPanel::LightCurve,
+        DetailPanel::Spectra,
+    };
+}
+
+AppSettings::AppSettings(QObject* parent) : QObject(parent)
+{
+    applyDefaults();
+    load();
+}
+
+void AppSettings::applyDefaults()
+{
+    _isisBinaryPath = QStandardPaths::findExecutable("isis");
+
+    _rows = 2;
+    _cols = 2;
+    _grid = {
+        { DetailPanel::Summary, DetailPanel::RadialVelocity },
+        { DetailPanel::Spectra, DetailPanel::LightCurve     },
+    };
+}
+
+void AppSettings::load()
+{
+    QSettings s;
+    s.beginGroup(kGroup);
+
+    _isisBinaryPath = s.value(kIsisBinary, _isisBinaryPath).toString();
+
+    int rows = std::clamp(s.value(kRows, _rows).toInt(), kMinGridDim, kMaxGridDim);
+    int cols = std::clamp(s.value(kCols, _cols).toInt(), kMinGridDim, kMaxGridDim);
+
+    QString flat = s.value(kGrid).toString();
+    s.endGroup();
+
+    if (!flat.isEmpty()) {
+        QStringList parts = flat.split(',', Qt::SkipEmptyParts);
+        if (parts.size() == rows * cols) {
+            _rows = rows;
+            _cols = cols;
+            _grid.assign(rows, QVector<DetailPanel>(cols, DetailPanel::None));
+            for (int i = 0; i < parts.size(); ++i) {
+                int r = i / cols, c = i % cols;
+                _grid[r][c] = static_cast<DetailPanel>(parts[i].toInt());
+            }
+        }
+    }
+}
+
+void AppSettings::save() const
+{
+    QSettings s;
+    s.beginGroup(kGroup);
+    s.setValue(kIsisBinary, _isisBinaryPath);
+    s.setValue(kRows, _rows);
+    s.setValue(kCols, _cols);
+
+    QStringList flat;
+    for (int r = 0; r < _rows; ++r)
+        for (int c = 0; c < _cols; ++c)
+            flat << QString::number(static_cast<int>(_grid[r][c]));
+    s.setValue(kGrid, flat.join(','));
+    s.endGroup();
+    s.sync();
+}
+
+void AppSettings::setIsisBinaryPath(const QString& path)
+{
+    if (_isisBinaryPath == path) return;
+    _isisBinaryPath = path;
+    save();
+    emit isisBinaryPathChanged();
+}
+
+AppSettings::DetailPanel AppSettings::detailCell(int row, int col) const
+{
+    if (row < 0 || row >= _rows || col < 0 || col >= _cols)
+        return DetailPanel::None;
+    return _grid[row][col];
+}
+
+void AppSettings::setDetailGrid(int rows, int cols,
+                                const QVector<QVector<DetailPanel>>& grid)
+{
+    rows = std::clamp(rows, kMinGridDim, kMaxGridDim);
+    cols = std::clamp(cols, kMinGridDim, kMaxGridDim);
+    _rows = rows;
+    _cols = cols;
+    _grid = grid;
+    save();
+    emit detailGridChanged();
+}

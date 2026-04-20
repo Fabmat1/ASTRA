@@ -56,6 +56,9 @@ public:
     bool saveSpectrum(const QString& starId, std::shared_ptr<Spectrum> spectrum);
     bool saveSpectralFit(const QString& starId, const QString& spectrumId, std::shared_ptr<SpectralFit> fit);
     std::vector<std::shared_ptr<SpectralFit>> loadSpectralFits(const QString& spectrumId);
+    bool updateSpectrumFlag(const QString& spectrumId, bool flagged);
+    bool updateSpectralFitFlag(const QString& fitId, bool flagged);
+    bool updateBestFit(const QString& spectrumId, const QString& bestFitId);
     bool saveRadialVelocityCurve(std::shared_ptr<RadialVelocityCurve> curve, const QString& starId);
     bool saveRadialVelocityPoint(std::shared_ptr<RadialVelocityPoint> point, const QString& curveId);
     bool saveRVFit(std::shared_ptr<RVFit> fit, const QString& curveId);

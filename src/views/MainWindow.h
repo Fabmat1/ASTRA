@@ -71,6 +71,10 @@ private:
     QAction* _configureColumnsAction;
     QAction* _aboutAction;
 
+    // Settings actions
+    QMenu* _toolsMenu = nullptr;
+    QAction* _settingsAction = nullptr;
+
     // Theme actions
     QActionGroup* _themeActionGroup;
 

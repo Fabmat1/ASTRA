@@ -159,3 +159,5 @@ perf.data
 perf.data*
 
 scripts/
+
+!resources/scripts/
