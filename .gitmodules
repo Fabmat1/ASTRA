@@ -1,0 +1,3 @@
+[submodule "external/DIGGA"]
+	path = external/DIGGA
+	url = https://github.com/Fabmat1/DIGGA
