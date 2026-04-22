@@ -12,6 +12,8 @@ class SpectraPanel;
 class QTreeWidget;
 class QTreeWidgetItem;
 class QSplitter;
+class FitSetupWidget;
+class QTabWidget;
 
 class SpectraFitDialog : public QDialog
 {
@@ -25,19 +27,20 @@ public:
 
 signals:
     void starParametersChanged();
-
+    void spectraUpdated();          
+    
 private slots:
     void onTreeItemChanged(QTreeWidgetItem* item, int column);
     void onTreeItemClicked(QTreeWidgetItem* item, int column);
     void onPanelSelectionChanged(const QString& spectrumId,
                                  const QString& fitId);
-
-private:
-    void setupUi();
-    void rebuildTree();
-    void refreshTreeStyling();
-    void updateBestMarkers();
-    void setBestFitTied(const QString& fitId, bool markBest);
+                                 
+                                 private:
+                                     void setupUi();
+                                     void rebuildTree();
+                                     void refreshTreeStyling();
+                                     void updateBestMarkers();
+                                     void setBestFitTied(const QString& fitId, bool markBest);
     void propagateBestFitParams(const std::shared_ptr<SpectralFit>& fit);
     void syncTreeSelectionTo(const QString& spectrumId, const QString& fitId);
 
@@ -50,6 +53,8 @@ private:
     QSplitter*    _splitter = nullptr;
     SpectraPanel* _panel    = nullptr;
     QTreeWidget*  _tree     = nullptr;
+    QTabWidget*    _rightTabs  = nullptr;
+    FitSetupWidget* _setup     = nullptr;
 
     bool _updatingTree   = false;
     bool _syncingFromPanel = false;

@@ -3,6 +3,15 @@
 #include "controllers/ApplicationController.h"
 #include "utils/Logger.h"
 #include "utils/AppPaths.h"
+#include "fitting/FitTypes.h"
+#include "fitting/FitBackendRegistry.h"
+#include <QDebug>
+
+void smokeTest() {
+    auto b = astra::fitting::FitBackendRegistry::instance().create("DIGGA");
+    qDebug() << "Backend:" << (b ? b->name() : "<none>")
+             << "caps.maxComponents:" << (b ? b->capabilities().maxComponents : -1);
+}
 
 int main(int argc, char *argv[])
 {
@@ -11,12 +20,16 @@ int main(int argc, char *argv[])
     app.setApplicationVersion("1.0.0");
     app.setOrganizationName("ASTRA");
 
+    smokeTest();
     // Initialize paths (uses compile-time ASTRA_DATA_DIR, or QStandardPaths if empty)
     AppPaths::initialize();
 
     // Initialize logging system
     Logger::initialize("ASTRA");
     LOG_INFO("Main", QString("Data root: %1").arg(AppPaths::root()));
+    
+    qRegisterMetaType<astra::fitting::SpectralFitResult>();
+    qRegisterMetaType<astra::fitting::SpectralFitJob>();
 
     ApplicationController controller;
     MainWindow window(&controller);

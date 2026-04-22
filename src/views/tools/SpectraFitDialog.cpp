@@ -5,6 +5,7 @@
 #include "db/DatabaseManager.h"
 #include "utils/Logger.h"
 #include "views/panels/SpectraPanel.h"
+#include "FitSetupWidget.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -117,33 +118,42 @@ void SpectraFitDialog::setupUi()
     connect(_panel, &SpectraPanel::selectionChanged,
             this,   &SpectraFitDialog::onPanelSelectionChanged);
 
-    // Right: tree
-    QWidget* right = new QWidget;
-    auto* rl = new QVBoxLayout(right);
-    rl->setContentsMargins(0, 0, 0, 0);
+    // Right: tabbed (Browse / Fit Setup)
+    _rightTabs = new QTabWidget;
+    _rightTabs->setDocumentMode(true);
 
-    QLabel* title = new QLabel("Spectra & Fits");
-    title->setStyleSheet("font-weight: 600; font-size: 12px; padding: 2px 4px;");
-    rl->addWidget(title);
+    // ── Browse tab (existing tree) ──
+    QWidget* browseTab = new QWidget;
+    auto* rl = new QVBoxLayout(browseTab);
+    rl->setContentsMargins(6, 6, 6, 6);
 
     _tree = new QTreeWidget;
-    _tree->setColumnCount(3);
-    _tree->setHeaderLabels({"Spectrum / Fit", "\xf0\x9f\x9a\xa9", "\xe2\x98\x85"});
-    _tree->header()->setSectionResizeMode(kColName, QHeaderView::Stretch);
-    _tree->header()->setSectionResizeMode(kColFlag, QHeaderView::ResizeToContents);
-    _tree->header()->setSectionResizeMode(kColBest, QHeaderView::ResizeToContents);
-    _tree->header()->setStretchLastSection(false);
-    _tree->setRootIsDecorated(true);
-    _tree->setAllColumnsShowFocus(true);
-    _tree->setSelectionMode(QAbstractItemView::SingleSelection);
     rl->addWidget(_tree, 1);
 
-    connect(_tree, &QTreeWidget::itemChanged,
-            this,  &SpectraFitDialog::onTreeItemChanged);
-    connect(_tree, &QTreeWidget::itemClicked,
-            this,  &SpectraFitDialog::onTreeItemClicked);
+    _rightTabs->addTab(browseTab, "Browse");
 
-    _splitter->addWidget(right);
+    // ── Fit Setup tab ──
+    FitSetupWidget::Context setupCtx;
+    setupCtx.star      = _star;
+    setupCtx.dbm       = _dbm;
+    setupCtx.projectId = _projectId;
+    setupCtx.panel     = _panel;
+
+    _setup = new FitSetupWidget(setupCtx);
+    _rightTabs->addTab(_setup, "Fit Setup");
+
+    connect(_setup, &FitSetupWidget::fitCompleted, this, [this]{
+        // Reload fits from DB for our star, then refresh everything
+        if (_dbm) {
+            auto freshSpectra = _dbm->loadSpectra(_star->getId());
+            _star->setSpectra(freshSpectra);
+        }
+        rebuildTree();
+        _panel->refresh();
+        emit spectraUpdated();
+    });
+
+    _splitter->addWidget(_rightTabs);
     _splitter->setStretchFactor(0, 3);
     _splitter->setStretchFactor(1, 1);
     _splitter->setSizes({950, 420});

@@ -87,6 +87,11 @@ target_include_directories(qcustomplot PUBLIC
 )
 set_target_properties(qcustomplot PROPERTIES AUTOMOC ON)
 
+# In ASTRA's top-level CMakeLists.txt
+set(DIGGA_BUILD_REPORT OFF CACHE BOOL "" FORCE)   # no matplotlib/Python dep
+add_subdirectory(external/DIGGA EXCLUDE_FROM_ALL)
+
+
 # Source files
 set(SOURCES
     src/main.cpp
@@ -145,7 +150,6 @@ set(SOURCES
     src/utils/ThemeManager.cpp
 
     # views
-    src/views/BooleanColumnDelegate.cpp
     src/views/ColumnConfigDialog.cpp
     src/views/InstrumentConfigView.cpp
     src/views/MainWindow.cpp
@@ -170,6 +174,13 @@ set(SOURCES
     src/views/panels/RVPanel.cpp
     src/views/panels/LCPanel.cpp
     src/views/panels/SpectraPanel.cpp
+
+    # DIGGA fitting
+    src/fitting/FitBackendRegistry.cpp
+    src/fitting/DiggaBackend.cpp
+    src/fitting/FitWorker.cpp
+    src/views/tools/FitSetupWidget.cpp
+    src/views/tools/FitProgressDialog.cpp
 )
 
 # Header files
@@ -255,6 +266,14 @@ set(HEADERS
     src/views/panels/LCPanel.h
     src/views/panels/SpectraPanel.h
 
+    #DIGGA fitting
+    src/fitting/FitTypes.h
+    src/fitting/IFitBackend.h
+    src/fitting/FitBackendRegistry.h
+    src/fitting/DiggaBackend.h
+    src/fitting/FitWorker.h
+    src/views/tools/FitSetupWidget.h
+    src/views/tools/FitProgressDialog.h
 )
 
 # Create executable
@@ -262,6 +281,10 @@ qt_add_executable(ASTRA
     ${SOURCES}
     ${HEADERS}
     resources/resources.qrc
+)
+
+target_include_directories(ASTRA PRIVATE
+    ${CMAKE_SOURCE_DIR}/external/DIGGA/include
 )
 
 # Pass to source as a preprocessor define
@@ -297,6 +320,7 @@ target_link_libraries(ASTRA PRIVATE
     Qt6::Concurrent
     Qt6::PrintSupport
     qcustomplot
+    DIGGA::core
 )
 
 # Add CCfits support if available

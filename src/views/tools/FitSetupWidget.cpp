@@ -1,0 +1,853 @@
+#include "FitSetupWidget.h"
+#include "FitProgressDialog.h"
+
+#include "models/Star.h"
+#include "models/Spectrum.h"
+#include "db/DatabaseManager.h"
+#include "views/panels/SpectraPanel.h"
+#include "fitting/FitWorker.h"
+#include "fitting/FitBackendRegistry.h"
+#include "utils/Logger.h"
+#include "utils/AppSettings.h"
+
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QFormLayout>
+#include <QGroupBox>
+#include <QScrollArea>
+#include <QListWidget>
+#include <QPushButton>
+#include <QDoubleSpinBox>
+#include <QSpinBox>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QLineEdit>
+#include <QLabel>
+#include <QFileDialog>
+#include <QMessageBox>
+#include <QTemporaryDir>
+#include <QFile>
+#include <QTextStream>
+#include <QUuid>
+#include <QDir>
+
+#include <algorithm>
+#include <cmath>
+
+namespace fit = astra::fitting;
+
+// ─────────────────────────────────────────────────────────────────────
+// Small inline UI helpers
+// ─────────────────────────────────────────────────────────────────────
+namespace {
+
+QDoubleSpinBox* makeDoubleSpin(double min, double max, int decimals,
+                                double val, double step = 1.0,
+                                const QString& suffix = {})
+{
+    auto* s = new QDoubleSpinBox;
+    s->setRange(min, max);
+    s->setDecimals(decimals);
+    s->setSingleStep(step);
+    s->setValue(val);
+    if (!suffix.isEmpty()) s->setSuffix(" " + suffix);
+    s->setKeyboardTracking(false);
+    return s;
+}
+
+QSpinBox* makeIntSpin(int min, int max, int val, int step = 1)
+{
+    auto* s = new QSpinBox;
+    s->setRange(min, max);
+    s->setSingleStep(step);
+    s->setValue(val);
+    return s;
+}
+
+void clearLayout(QLayout* l)
+{
+    if (!l) return;
+    while (auto* it = l->takeAt(0)) {
+        if (auto* w = it->widget()) { w->setParent(nullptr); delete w; }
+        if (auto* c = it->layout())  { clearLayout(c); delete c; }
+        delete it;
+    }
+}
+
+QString spectrumLabel(const std::shared_ptr<Spectrum>& s, int idx)
+{
+    QString l;
+    if (!s->getInstrument().isEmpty()) l = s->getInstrument();
+    else l = QString("#%1").arg(idx + 1);
+    if (s->getMJD() > 0) l += QString("  MJD %1").arg(s->getMJD(), 0, 'f', 4);
+    return l;
+}
+
+} // namespace
+
+// =====================================================================
+// Construction
+// =====================================================================
+
+FitSetupWidget::FitSetupWidget(const Context& ctx, QWidget* parent)
+    : QWidget(parent), _ctx(ctx)
+{
+    // Seed defaults
+    fit::StellarComponent c;
+    _components.append(c);
+
+    setupUi();
+    refreshSpectraList();
+}
+
+FitSetupWidget::~FitSetupWidget()
+{
+    if (_worker) _worker->requestAbort();
+}
+
+// =====================================================================
+// UI construction
+// =====================================================================
+
+void FitSetupWidget::setupUi()
+{
+    auto* outer = new QVBoxLayout(this);
+    outer->setContentsMargins(0, 0, 0, 0);
+
+    // Everything scrollable
+    auto* scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+
+    auto* host = new QWidget;
+    auto* hostLayout = new QVBoxLayout(host);
+    hostLayout->setContentsMargins(6, 6, 6, 6);
+    hostLayout->setSpacing(6);
+
+    hostLayout->addWidget(buildComponentsSection());
+    hostLayout->addWidget(buildSpectraListSection());
+    hostLayout->addWidget(buildPerSpectrumSection());
+    hostLayout->addWidget(buildGlobalSection());
+
+    _runButton = new QPushButton(QStringLiteral("▶  Run Fit"));
+    _runButton->setMinimumHeight(36);
+    QFont f = _runButton->font();
+    f.setBold(true);
+    _runButton->setFont(f);
+    connect(_runButton, &QPushButton::clicked, this, &FitSetupWidget::onRunFit);
+    hostLayout->addWidget(_runButton);
+
+    hostLayout->addStretch();
+    scroll->setWidget(host);
+    outer->addWidget(scroll);
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Components section
+// ────────────────────────────────────────────────────────────────────
+QGroupBox* FitSetupWidget::buildComponentsSection()
+{
+    auto* box = new QGroupBox("Stellar components");
+    auto* v = new QVBoxLayout(box);
+    v->setSpacing(4);
+
+    _componentsLayout = new QVBoxLayout;
+    _componentsLayout->setSpacing(6);
+    v->addLayout(_componentsLayout);
+
+    auto* row = new QHBoxLayout;
+    _addComponentBtn = new QPushButton("+ Add component");
+    connect(_addComponentBtn, &QPushButton::clicked, this, [this]{
+        fit::StellarComponent c;
+        _components.append(c);
+        rebuildComponentRows();
+    });
+    row->addWidget(_addComponentBtn);
+    row->addStretch();
+    v->addLayout(row);
+
+    rebuildComponentRows();
+    return box;
+}
+
+void FitSetupWidget::rebuildComponentRows()
+{
+    clearLayout(_componentsLayout);
+
+    for (int i = 0; i < _components.size(); ++i) {
+        auto& c = _components[i];
+
+        auto* frame = new QGroupBox(QString("Component %1").arg(i + 1));
+        auto* form  = new QFormLayout(frame);
+        form->setLabelAlignment(Qt::AlignRight);
+
+        // Grid path
+        auto* pathRow = new QHBoxLayout;
+        auto* pathEdit = new QLineEdit(c.gridPath);
+        pathEdit->setPlaceholderText("grid folder relative to base paths (e.g. sdB/processed/)");
+        connect(pathEdit, &QLineEdit::editingFinished, this,
+                [this, pathEdit, i]{ _components[i].gridPath = pathEdit->text(); });
+        auto* browse = new QPushButton("…");
+        browse->setMaximumWidth(32);
+        connect(browse, &QPushButton::clicked, this, [pathEdit]{
+            QString d = QFileDialog::getExistingDirectory(pathEdit, "Select grid folder");
+            if (!d.isEmpty()) { pathEdit->setText(d); emit pathEdit->editingFinished(); }
+        });
+        pathRow->addWidget(pathEdit, 1);
+        pathRow->addWidget(browse);
+        form->addRow("Grid:", pathRow);
+
+        // Each numeric param gets: spin + freeze checkbox
+        struct P { const char* label; double* val; bool* freeze;
+                   double min, max; int decimals; double step; };
+        std::vector<P> params = {
+            { "Teff [K]",   &c.teff,  &c.freezeTeff,  1000.0, 200000.0, 0,  100.0  },
+            { "log g",      &c.logg,  &c.freezeLogg,  0.0,    7.0,      2,  0.05   },
+            { "vsini [km/s]",&c.vsini,&c.freezeVsini, 0.0,    2000.0,   2,  1.0    },
+            { "log(He/H)",  &c.he,    &c.freezeHe,   -5.0,    2.0,      3,  0.05   },
+            { "ζ",          &c.zeta,  &c.freezeZeta, -5.0,    50.0,     3,  0.1    },
+            { "ξ",          &c.xi,    &c.freezeXi,   -5.0,    50.0,     3,  0.1    },
+            { "[M/H]",      &c.z,     &c.freezeZ,    -5.0,    5.0,      3,  0.05   },
+        };
+
+        for (auto& p : params) {
+            auto* spin = makeDoubleSpin(p.min, p.max, p.decimals, *p.val, p.step);
+            auto* cb   = new QCheckBox("freeze");
+            cb->setChecked(*p.freeze);
+            auto* row2 = new QHBoxLayout;
+            row2->addWidget(spin, 1);
+            row2->addWidget(cb);
+            form->addRow(p.label, row2);
+
+            double* vPtr  = p.val;
+            bool*   fPtr  = p.freeze;
+            connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                    this, [vPtr](double v){ *vPtr = v; });
+            connect(cb, &QCheckBox::toggled, this,
+                    [fPtr](bool b){ *fPtr = b; });
+        }
+
+        if (_components.size() > 1) {
+            auto* rm = new QPushButton("Remove component");
+            connect(rm, &QPushButton::clicked, this, [this, i]{
+                _components.removeAt(i);
+                rebuildComponentRows();
+            });
+            form->addRow("", rm);
+        }
+
+        _componentsLayout->addWidget(frame);
+    }
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Spectra list
+// ────────────────────────────────────────────────────────────────────
+QGroupBox* FitSetupWidget::buildSpectraListSection()
+{
+    auto* box = new QGroupBox("Spectra to fit");
+    auto* v = new QVBoxLayout(box);
+
+    _spectraList = new QListWidget;
+    _spectraList->setSelectionMode(QAbstractItemView::SingleSelection);
+    connect(_spectraList, &QListWidget::currentRowChanged,
+            this, &FitSetupWidget::onSpectrumListRowChanged);
+    connect(_spectraList, &QListWidget::itemChanged, this, [this](QListWidgetItem* it){
+        QString id = it->data(Qt::UserRole).toString();
+        if (!id.isEmpty() && _configs.contains(id))
+            _configs[id].enabled = (it->checkState() == Qt::Checked);
+    });
+    v->addWidget(_spectraList);
+
+    auto* btnRow = new QHBoxLayout;
+    auto* all  = new QPushButton("Select all");
+    auto* none = new QPushButton("Select none");
+    connect(all,  &QPushButton::clicked, this, [this]{
+        for (int i = 0; i < _spectraList->count(); ++i)
+            _spectraList->item(i)->setCheckState(Qt::Checked);
+    });
+    connect(none, &QPushButton::clicked, this, [this]{
+        for (int i = 0; i < _spectraList->count(); ++i)
+            _spectraList->item(i)->setCheckState(Qt::Unchecked);
+    });
+    btnRow->addWidget(all);
+    btnRow->addWidget(none);
+    btnRow->addStretch();
+    v->addLayout(btnRow);
+    return box;
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Per-spectrum editor
+// ────────────────────────────────────────────────────────────────────
+QGroupBox* FitSetupWidget::buildPerSpectrumSection()
+{
+    auto* box = new QGroupBox("Current spectrum");
+    auto* v = new QVBoxLayout(box);
+
+    auto* form = new QFormLayout;
+    form->setLabelAlignment(Qt::AlignRight);
+
+    // Wave range
+    auto* wlRow = new QHBoxLayout;
+    _wlMinSpin = makeDoubleSpin(500.0, 100000.0, 2, 3600.0, 10.0, "Å");
+    _wlMaxSpin = makeDoubleSpin(500.0, 100000.0, 2, 5250.0, 10.0, "Å");
+    wlRow->addWidget(_wlMinSpin);
+    wlRow->addWidget(new QLabel("to"));
+    wlRow->addWidget(_wlMaxSpin);
+    form->addRow("Fit range:", wlRow);
+
+    // Resolution coefficients
+    auto* resRow = new QHBoxLayout;
+    _resOffsetSpin = makeDoubleSpin(-1e6, 1e6, 4, 0.0, 0.1);
+    _resSlopeSpin  = makeDoubleSpin(-1e6, 1e6, 6, 0.37037, 0.01);
+    resRow->addWidget(new QLabel("offset"));
+    resRow->addWidget(_resOffsetSpin);
+    resRow->addWidget(new QLabel("slope"));
+    resRow->addWidget(_resSlopeSpin);
+    form->addRow("Resolution:", resRow);
+
+    v->addLayout(form);
+
+    // Infer from fits
+    _inferCheck = new QCheckBox("Infer ignore regions and range from best fit");
+    v->addWidget(_inferCheck);
+
+    // Ignore regions
+    auto* igHeader = new QLabel("<b>Ignore regions</b>");
+    igHeader->setContentsMargins(0, 6, 0, 2);
+    v->addWidget(igHeader);
+    _ignoreListLayout = new QVBoxLayout;
+    _ignoreListLayout->setSpacing(2);
+    v->addLayout(_ignoreListLayout);
+    _addIgnoreBtn = new QPushButton("+ Add ignore region");
+    connect(_addIgnoreBtn, &QPushButton::clicked, this, [this]{
+        if (_currentId.isEmpty()) return;
+        auto& cfg = _configs[_currentId];
+        double mid = (cfg.wlMin + cfg.wlMax) * 0.5;
+        cfg.ignore.append({mid - 5.0, mid + 5.0});
+        rebuildIgnoreRows();
+    });
+    v->addWidget(_addIgnoreBtn);
+
+    // Continuum anchors
+    auto* anHeader = new QLabel("<b>Continuum-spline anchor ranges</b>");
+    anHeader->setContentsMargins(0, 6, 0, 2);
+    v->addWidget(anHeader);
+    _anchorListLayout = new QVBoxLayout;
+    _anchorListLayout->setSpacing(2);
+    v->addLayout(_anchorListLayout);
+    _addAnchorBtn = new QPushButton("+ Add anchor range");
+    connect(_addAnchorBtn, &QPushButton::clicked, this, [this]{
+        if (_currentId.isEmpty()) return;
+        auto& cfg = _configs[_currentId];
+        double span = (cfg.wlMax - cfg.wlMin);
+        cfg.anchors.append({cfg.wlMin, cfg.wlMax, std::max(10.0, span / 20.0)});
+        rebuildAnchorRows();
+    });
+    v->addWidget(_addAnchorBtn);
+
+    _copyToAllBtn = new QPushButton("Copy these settings to all spectra");
+    connect(_copyToAllBtn, &QPushButton::clicked, this, &FitSetupWidget::onCopyToAll);
+    v->addWidget(_copyToAllBtn);
+
+    // Hook up editor-change callbacks — they flush the spin values into state
+    auto flush = [this]{ commitEditorToState(); };
+    connect(_wlMinSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
+    connect(_wlMaxSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
+    connect(_resOffsetSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
+    connect(_resSlopeSpin,  QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
+    connect(_inferCheck, &QCheckBox::toggled, this, [this](bool on){
+        if (_currentId.isEmpty()) return;
+        auto& cfg = _configs[_currentId];
+        cfg.inferFromFits = on;
+        if (on) {
+            std::shared_ptr<Spectrum> sp;
+            for (auto& s : _sortedSpectra)
+                if (s->getId() == _currentId) { sp = s; break; }
+            if (sp) inferFromBestFit(cfg, sp);
+            loadStateToEditor();
+            rebuildIgnoreRows();
+        }
+    });
+
+    _perSpectrumHost = box;
+    box->setEnabled(false);
+    return box;
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Global options
+// ────────────────────────────────────────────────────────────────────
+QGroupBox* FitSetupWidget::buildGlobalSection()
+{
+    auto* box = new QGroupBox("Global options");
+    auto* form = new QFormLayout(box);
+    form->setLabelAlignment(Qt::AlignRight);
+
+    _backendCombo = new QComboBox;
+    for (const auto& n : fit::FitBackendRegistry::instance().availableBackends())
+        _backendCombo->addItem(n);
+    form->addRow("Backend:", _backendCombo);
+
+    _basePathsEdit = new QLineEdit;
+    _basePathsEdit->setPlaceholderText(
+        "Grid base paths (colon-separated, e.g. /data/grids:/home/me/ISIS_models)");
+    form->addRow("Base paths:", _basePathsEdit);
+
+    _untiedEdit = new QLineEdit("vrad");
+    _untiedEdit->setPlaceholderText("Comma-separated: vrad,vsini,…");
+    form->addRow("Untied params:", _untiedEdit);
+
+    _filterSnrSpin   = makeDoubleSpin(0, 1e6,  2, 5.0,  0.5);
+    form->addRow("Min SNR:", _filterSnrSpin);
+
+    _requireBlueSpin = makeDoubleSpin(0, 1e6,  2, 0.0, 10.0, "Å");
+    _requireBlueSpin->setToolTip("Require spectrum to start below this wavelength (0 = disabled)");
+    form->addRow("Require blue <:", _requireBlueSpin);
+
+    _nitNoiseMaxSpin = makeIntSpin(0, 100, 5);
+    form->addRow("Max noise iters:", _nitNoiseMaxSpin);
+
+    _outlierLoSpin = makeDoubleSpin(0, 20, 2, 3.0, 0.1, "σ");
+    _outlierHiSpin = makeDoubleSpin(0, 20, 2, 3.0, 0.1, "σ");
+    auto* oRow = new QHBoxLayout;
+    oRow->addWidget(new QLabel("lo"));
+    oRow->addWidget(_outlierLoSpin);
+    oRow->addWidget(new QLabel("hi"));
+    oRow->addWidget(_outlierHiSpin);
+    form->addRow("Outlier clip:", oRow);
+
+    _verboseCheck = new QCheckBox("Verbose log output");
+    _verboseCheck->setChecked(true);
+    form->addRow("", _verboseCheck);
+
+    return box;
+}
+
+// =====================================================================
+// Spectra list population
+// =====================================================================
+
+void FitSetupWidget::refreshSpectraList()
+{
+    _spectraList->blockSignals(true);
+    _spectraList->clear();
+
+    _sortedSpectra = _ctx.star->getSpectra();
+    std::sort(_sortedSpectra.begin(), _sortedSpectra.end(),
+        [](auto& a, auto& b){
+            if (a->getInstrument() != b->getInstrument())
+                return a->getInstrument() < b->getInstrument();
+            return a->getMJD() < b->getMJD();
+        });
+
+    for (int i = 0; i < (int)_sortedSpectra.size(); ++i) {
+        auto& s = _sortedSpectra[i];
+        auto* item = new QListWidgetItem(spectrumLabel(s, i));
+        item->setData(Qt::UserRole, s->getId());
+        item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+        item->setCheckState(Qt::Checked);
+        if (s->isFlagged()) {
+            QFont f = item->font(); f.setStrikeOut(true); item->setFont(f);
+            item->setCheckState(Qt::Unchecked);
+        }
+        _spectraList->addItem(item);
+
+        if (!_configs.contains(s->getId())) {
+            PerSpec cfg;
+            // Reasonable defaults from spectrum extent
+            auto wl = s->getWavelengths();
+            if (!wl.empty()) {
+                cfg.wlMin = wl.front();
+                cfg.wlMax = wl.back();
+            }
+            _configs[s->getId()] = cfg;
+        }
+    }
+    _spectraList->blockSignals(false);
+
+    if (!_sortedSpectra.empty() && _currentId.isEmpty())
+        _spectraList->setCurrentRow(0);
+}
+
+// =====================================================================
+// Per-spectrum selection / commit / load
+// =====================================================================
+
+void FitSetupWidget::onSpectrumListRowChanged(int row)
+{
+    commitEditorToState();   // save previous selection
+
+    if (row < 0 || row >= (int)_sortedSpectra.size()) {
+        _currentId.clear();
+        _perSpectrumHost->setEnabled(false);
+        return;
+    }
+    auto& sp = _sortedSpectra[row];
+    _currentId = sp->getId();
+    _perSpectrumHost->setEnabled(true);
+
+    // Ensure panel shows this spectrum
+    if (_ctx.panel) _ctx.panel->selectSpectrumById(_currentId);
+
+    loadStateToEditor();
+    rebuildIgnoreRows();
+    rebuildAnchorRows();
+}
+
+void FitSetupWidget::commitEditorToState()
+{
+    if (_currentId.isEmpty() || !_configs.contains(_currentId)) return;
+    auto& c = _configs[_currentId];
+    c.wlMin      = _wlMinSpin->value();
+    c.wlMax      = _wlMaxSpin->value();
+    c.resOffset  = _resOffsetSpin->value();
+    c.resSlope   = _resSlopeSpin->value();
+    c.inferFromFits = _inferCheck->isChecked();
+}
+
+void FitSetupWidget::loadStateToEditor()
+{
+    if (!_configs.contains(_currentId)) return;
+    auto& c = _configs[_currentId];
+
+    QSignalBlocker b1(_wlMinSpin), b2(_wlMaxSpin),
+                   b3(_resOffsetSpin), b4(_resSlopeSpin), b5(_inferCheck);
+    _wlMinSpin->setValue(c.wlMin);
+    _wlMaxSpin->setValue(c.wlMax);
+    _resOffsetSpin->setValue(c.resOffset);
+    _resSlopeSpin->setValue(c.resSlope);
+    _inferCheck->setChecked(c.inferFromFits);
+}
+
+void FitSetupWidget::rebuildIgnoreRows()
+{
+    clearLayout(_ignoreListLayout);
+    if (!_configs.contains(_currentId)) return;
+    auto& cfg = _configs[_currentId];
+
+    for (int i = 0; i < cfg.ignore.size(); ++i) {
+        auto* row = new QHBoxLayout;
+        auto* lo = makeDoubleSpin(0, 100000, 2, cfg.ignore[i].wlLow,  0.5, "Å");
+        auto* hi = makeDoubleSpin(0, 100000, 2, cfg.ignore[i].wlHigh, 0.5, "Å");
+        auto* rm = new QPushButton("×"); rm->setMaximumWidth(28);
+        connect(lo, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, [this, i](double v){ _configs[_currentId].ignore[i].wlLow = v; });
+        connect(hi, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, [this, i](double v){ _configs[_currentId].ignore[i].wlHigh = v; });
+        connect(rm, &QPushButton::clicked, this, [this, i]{
+            _configs[_currentId].ignore.removeAt(i);
+            rebuildIgnoreRows();
+        });
+        row->addWidget(lo);
+        row->addWidget(new QLabel("–"));
+        row->addWidget(hi);
+        row->addWidget(rm);
+        auto* w = new QWidget; w->setLayout(row);
+        _ignoreListLayout->addWidget(w);
+    }
+}
+
+void FitSetupWidget::rebuildAnchorRows()
+{
+    clearLayout(_anchorListLayout);
+    if (!_configs.contains(_currentId)) return;
+    auto& cfg = _configs[_currentId];
+
+    for (int i = 0; i < cfg.anchors.size(); ++i) {
+        auto* row = new QHBoxLayout;
+        auto* lo = makeDoubleSpin(0, 100000, 2, cfg.anchors[i].wlLow,   0.5, "Å");
+        auto* hi = makeDoubleSpin(0, 100000, 2, cfg.anchors[i].wlHigh,  0.5, "Å");
+        auto* sp = makeDoubleSpin(1, 10000,   2, cfg.anchors[i].spacing,1.0, "Å");
+        sp->setPrefix("Δ ");
+        auto* rm = new QPushButton("×"); rm->setMaximumWidth(28);
+        connect(lo, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, [this, i](double v){ _configs[_currentId].anchors[i].wlLow = v; });
+        connect(hi, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, [this, i](double v){ _configs[_currentId].anchors[i].wlHigh = v; });
+        connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                this, [this, i](double v){ _configs[_currentId].anchors[i].spacing = v; });
+        connect(rm, &QPushButton::clicked, this, [this, i]{
+            _configs[_currentId].anchors.removeAt(i);
+            rebuildAnchorRows();
+        });
+        row->addWidget(lo); row->addWidget(new QLabel("–"));
+        row->addWidget(hi); row->addWidget(sp);
+        row->addWidget(rm);
+        auto* w = new QWidget; w->setLayout(row);
+        _anchorListLayout->addWidget(w);
+    }
+}
+
+void FitSetupWidget::onCopyToAll()
+{
+    commitEditorToState();
+    if (_currentId.isEmpty()) return;
+    const auto src = _configs[_currentId];
+    for (auto it = _configs.begin(); it != _configs.end(); ++it) {
+        if (it.key() == _currentId) continue;
+        it->wlMin = src.wlMin; it->wlMax = src.wlMax;
+        it->ignore = src.ignore;
+        it->anchors = src.anchors;
+        it->resOffset = src.resOffset;
+        it->resSlope  = src.resSlope;
+    }
+}
+
+// =====================================================================
+// Infer-from-best-fit
+// =====================================================================
+
+void FitSetupWidget::inferFromBestFit(PerSpec& cfg,
+                                       const std::shared_ptr<Spectrum>& s) const
+{
+    auto best = s->getBestFit();
+    if (!best) {
+        auto fits = s->getSpectralFits();
+        if (!fits.empty()) best = fits.front();
+    }
+    if (!best) return;
+
+    if (best->modelWavelengths.empty() && !best->getModelDataFile().isEmpty())
+        const_cast<SpectralFit&>(*best).loadDataFromFile(best->getModelDataFile());
+
+    if (best->modelWavelengths.empty()) return;
+
+    cfg.wlMin = best->modelWavelengths.front();
+    cfg.wlMax = best->modelWavelengths.back();
+
+    // Extract contiguous runs of modelIgnore == 0 → ignore regions
+    cfg.ignore.clear();
+    const auto& ig  = best->modelIgnore;
+    const auto& wl  = best->modelWavelengths;
+    if (ig.size() == wl.size()) {
+        size_t i = 0;
+        while (i < ig.size()) {
+            if (ig[i] == 0) {
+                size_t start = i;
+                while (i < ig.size() && ig[i] == 0) ++i;
+                size_t end = i - 1;
+                fit::IgnoreRegion r;
+                r.wlLow  = wl[start];
+                r.wlHigh = wl[end];
+                cfg.ignore.append(r);
+            } else ++i;
+        }
+    }
+}
+
+// =====================================================================
+// Build DIGGA job / run / persist
+// =====================================================================
+
+fit::SpectralFitJob FitSetupWidget::buildJob(QStringList& tempFilesOut) const
+{
+    fit::SpectralFitJob job;
+    job.backend = _backendCombo->currentText();
+
+    job.filterSnr      = _filterSnrSpin->value();
+    job.requireBlue    = _requireBlueSpin->value();
+    job.nitNoiseMax    = _nitNoiseMaxSpin->value();
+    job.outlierSigmaLo = _outlierLoSpin->value();
+    job.outlierSigmaHi = _outlierHiSpin->value();
+    job.verbose        = _verboseCheck->isChecked();
+
+    for (const auto& p : _basePathsEdit->text().split(':', Qt::SkipEmptyParts))
+        job.basePaths.append(p.trimmed());
+
+    QStringList ut;
+    for (const auto& p : _untiedEdit->text().split(',', Qt::SkipEmptyParts))
+        ut << p.trimmed();
+    job.untiedParams = ut;
+
+    job.components = _components;
+
+    // One observation group per spectrum (simplest path: keeps per-file settings
+    // as group-level settings; no per-file overrides needed).
+    QTemporaryDir tempDir;
+    tempDir.setAutoRemove(false);   // worker still needs files after we return
+    const QString dir = tempDir.path();
+    tempFilesOut.append(dir);        // caller cleans up
+
+    job.outputPath = dir;
+
+    for (const auto& s : _sortedSpectra) {
+        if (!_configs.contains(s->getId())) continue;
+        const auto& cfg = _configs[s->getId()];
+        if (!cfg.enabled) continue;
+
+        QString path = exportSpectrumToTemp(s, dir);
+        if (path.isEmpty()) continue;
+
+        fit::Observation obs;
+        obs.waveCut = { cfg.wlMin, cfg.wlMax };
+        obs.ignore  = cfg.ignore;
+        obs.anchors = cfg.anchors;
+
+        fit::SpectrumFile f;
+        f.filename   = path;
+        f.spectype   = "ASCII_with_2_columns";
+        f.resOffset  = cfg.resOffset;
+        f.resSlope   = cfg.resSlope;
+        f.spectrumId = s->getId();
+        obs.files.append(f);
+
+        job.observations.append(obs);
+    }
+
+    return job;
+}
+
+QString FitSetupWidget::exportSpectrumToTemp(const std::shared_ptr<Spectrum>& s,
+                                              const QString& dir) const
+{
+    if (!s->hasData()) {
+        if (!s->getDataFile().isEmpty()) s->loadDataFromFile(s->getDataFile());
+        else if (!s->getFile().isEmpty()) s->loadFromFile(s->getFile());
+    }
+    auto wl = s->getWavelengths();
+    auto fl = s->getFluxes();
+    if (wl.empty() || fl.empty()) return {};
+
+    const QString safeId = QString(s->getId()).replace('/', '_').replace(':', '_');
+    QString path = QString("%1/%2.txt").arg(dir, safeId);
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return {};
+    QTextStream out(&f);
+    out.setRealNumberPrecision(10);
+    for (size_t i = 0; i < wl.size(); ++i)
+        out << wl[i] << ' ' << fl[i] << '\n';
+    return path;
+}
+
+// ────────────────────────────────────────────────────────────────────
+void FitSetupWidget::onRunFit()
+{
+    commitEditorToState();
+
+    // Sanity checks
+    if (_components.isEmpty() || _components.first().gridPath.isEmpty()) {
+        QMessageBox::warning(this, "Cannot run fit",
+            "At least one component with a grid path is required.");
+        return;
+    }
+
+    QStringList tempCleanup;
+    fit::SpectralFitJob job = buildJob(tempCleanup);
+    if (job.observations.isEmpty()) {
+        QMessageBox::warning(this, "Cannot run fit",
+            "No spectra selected (or no data loaded for the selected spectra).");
+        return;
+    }
+
+    // Launch progress dialog + worker
+    auto* worker = new fit::FitWorker(this);
+    _worker = worker;
+
+    auto* dlg = new FitProgressDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+
+    connect(worker, &fit::FitWorker::logMessage,
+            dlg,    &FitProgressDialog::appendLog);
+    connect(worker, &fit::FitWorker::progress,
+            dlg,    &FitProgressDialog::setProgress);
+    connect(dlg,    &FitProgressDialog::abortRequested,
+            worker, &fit::FitWorker::requestAbort);
+
+    connect(worker, &fit::FitWorker::failed, this,
+            [this, dlg](const QString& err) {
+        dlg->setError(err);
+        _worker = nullptr;
+        _runButton->setEnabled(true);
+    });
+    connect(worker, &fit::FitWorker::finished, this,
+            [this, dlg, job](const fit::SpectralFitResult& r) {
+        persistResult(r, job);
+        dlg->setFinished(r);
+        _worker = nullptr;
+        _runButton->setEnabled(true);
+        emit fitCompleted();
+    });
+
+    _runButton->setEnabled(false);
+    dlg->show();
+    worker->start(job);
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Persisting the result as SpectralFit objects on the Spectrum
+// ────────────────────────────────────────────────────────────────────
+void FitSetupWidget::persistResult(const fit::SpectralFitResult& result,
+                                    const fit::SpectralFitJob&    job)
+{
+    if (!result.success || result.components.isEmpty()) return;
+
+    // For now, only persist component[0]. Multi-component fits will write
+    // a SpectralFit per component once SpectralFit carries component info.
+    const auto& comp = result.components.first();
+
+    // Map result spectra back to our Spectrum objects
+    for (int i = 0; i < result.spectra.size(); ++i) {
+        const auto& fs = result.spectra[i];
+        if (fs.spectrumId.isEmpty()) continue;
+
+        std::shared_ptr<Spectrum> target;
+        for (auto& s : _sortedSpectra)
+            if (s->getId() == fs.spectrumId) { target = s; break; }
+        if (!target) continue;
+
+        auto fit = std::make_shared<SpectralFit>();
+        fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        fit->modelId = QString("%1:%2")
+            .arg(job.backend,
+                 job.components.isEmpty() ? "model"
+                                           : QFileInfo(job.components.first().gridPath)
+                                               .fileName());
+
+        auto pick = [&](const QVector<fit::FittedParameter>& v, int idx) -> fit::FittedParameter {
+            if (v.isEmpty()) return {};
+            return v[std::min<int>(idx, int(v.size()) - 1)];       // tied → always [0]
+        };
+        auto P = [&](auto field) { return pick(field, i); };
+
+        fit->teff             = P(comp.teff).value;
+        fit->teffError        = P(comp.teff).error;
+        fit->logg             = P(comp.logg).value;
+        fit->loggError        = P(comp.logg).error;
+        fit->he               = P(comp.he).value;
+        fit->heError          = P(comp.he).error;
+        fit->vsini            = P(comp.vsini).value;
+        fit->vsiniError       = P(comp.vsini).error;
+        fit->radialVelocity   = P(comp.vrad).value;
+        fit->radialVelocityError = P(comp.vrad).error;
+        fit->metallicity      = P(comp.z).value;
+        fit->metallicityError = P(comp.z).error;
+        fit->macroturbulence  = P(comp.zeta).value;
+        fit->macroturbulenceError = P(comp.zeta).error;
+        fit->microturbulence  = P(comp.xi).value;
+        fit->microturbulenceError = P(comp.xi).error;
+        fit->chi2             = result.finalChi2;
+
+        // Plottable arrays
+        fit->modelWavelengths.assign(fs.lambda.begin(),    fs.lambda.end());
+        fit->modelFluxes.assign     (fs.model.begin(),     fs.model.end());
+        fit->rebinnedFluxes.assign  (fs.flux.begin(),      fs.flux.end());
+        fit->rebinnedSigmas.assign  (fs.sigma.begin(),     fs.sigma.end());
+        fit->modelSplines.assign    (fs.continuum.begin(), fs.continuum.end());
+        fit->modelIgnore.assign     (fs.ignoreFlag.begin(),fs.ignoreFlag.end());
+
+        // Auto-mark best only if the spectrum has no best fit yet
+        if (!target->getBestFit())
+            fit->isBestFit = true;
+
+        target->addSpectralFit(fit);
+
+        if (_ctx.dbm) {
+            _ctx.dbm->saveSpectralFit(_ctx.star->getId(), target->getId(), fit);
+        }
+    }
+
+    LOG_INFO("FitSetup", QString("Persisted %1 spectral fits for star %2")
+        .arg(result.spectra.size()).arg(_ctx.star->getSourceId()));
+}
