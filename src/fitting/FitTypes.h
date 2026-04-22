@@ -14,16 +14,16 @@ namespace astra::fitting {
 
 struct StellarComponent {
     QString gridPath;
-    double teff   = 35000.0;
+    double teff   = 25000.0;
     double logg   = 5.5;
-    double vsini  = 5.0;
+    double vsini  = 7.0;
     double he     = -1.0;
     double zeta   = 0.0;     // macroturbulence
     double xi     = 0.0;     // microturbulence
     double z      = 0.0;     // metallicity
     bool freezeTeff  = false;
     bool freezeLogg  = false;
-    bool freezeVsini = false;
+    bool freezeVsini = true;
     bool freezeHe    = false;
     bool freezeZeta  = true;
     bool freezeXi    = true;

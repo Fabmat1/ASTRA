@@ -181,6 +181,8 @@ set(SOURCES
     src/fitting/FitWorker.cpp
     src/views/tools/FitSetupWidget.cpp
     src/views/tools/FitProgressDialog.cpp
+    src/views/widgets/GridSelectorWidget.cpp
+
 )
 
 # Header files
@@ -274,6 +276,7 @@ set(HEADERS
     src/fitting/FitWorker.h
     src/views/tools/FitSetupWidget.h
     src/views/tools/FitProgressDialog.h
+    src/views/widgets/GridSelectorWidget.h
 )
 
 # Create executable

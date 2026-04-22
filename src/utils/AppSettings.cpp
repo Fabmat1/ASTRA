@@ -3,6 +3,7 @@
 #include <QSettings>
 #include <QStringList>
 #include <QStandardPaths>
+#include <QDir>
 #include <algorithm>
 
 namespace {
@@ -11,6 +12,7 @@ constexpr const char* kIsisBinary = "general/isisBinary";
 constexpr const char* kRows       = "starDetail/rows";
 constexpr const char* kCols       = "starDetail/cols";
 constexpr const char* kGrid       = "starDetail/grid";
+constexpr const char* kGridPaths  = "gridPaths/all";
 }
 
 QString AppSettings::panelName(DetailPanel p)
@@ -52,6 +54,10 @@ void AppSettings::applyDefaults()
         { DetailPanel::Summary, DetailPanel::RadialVelocity },
         { DetailPanel::Spectra, DetailPanel::LightCurve     },
     };
+    const QString home = QDir::homePath();
+    _gridBasePaths = { home + "/ISIS_models",
+                       home + "/isis/synthetic_spectra/grids",
+                       "/data/stellar/modelgrids" };
 }
 
 void AppSettings::load()
@@ -65,6 +71,7 @@ void AppSettings::load()
     int cols = std::clamp(s.value(kCols, _cols).toInt(), kMinGridDim, kMaxGridDim);
 
     QString flat = s.value(kGrid).toString();
+    _gridBasePaths = s.value(kGridPaths, _gridBasePaths).toStringList();
     s.endGroup();
 
     if (!flat.isEmpty()) {
@@ -94,6 +101,7 @@ void AppSettings::save() const
         for (int c = 0; c < _cols; ++c)
             flat << QString::number(static_cast<int>(_grid[r][c]));
     s.setValue(kGrid, flat.join(','));
+    s.setValue(kGridPaths, _gridBasePaths);
     s.endGroup();
     s.sync();
 }
@@ -123,4 +131,12 @@ void AppSettings::setDetailGrid(int rows, int cols,
     _grid = grid;
     save();
     emit detailGridChanged();
+}
+
+void AppSettings::setGridBasePaths(const QStringList& paths)
+{
+    if (_gridBasePaths == paths) return;
+    _gridBasePaths = paths;
+    save();
+    emit gridBasePathsChanged();
 }

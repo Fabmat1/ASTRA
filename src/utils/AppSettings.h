@@ -29,6 +29,9 @@ public:
     QString isisBinaryPath() const { return _isisBinaryPath; }
     void    setIsisBinaryPath(const QString& path);
 
+    QStringList gridBasePaths() const { return _gridBasePaths; }
+    void        setGridBasePaths(const QStringList& paths);    
+
     // ── Star Detail View grid ────────────────────────────────────────────
     int rows() const { return _rows; }
     int cols() const { return _cols; }
@@ -40,6 +43,7 @@ public:
 signals:
     void isisBinaryPathChanged();
     void detailGridChanged();
+    void gridBasePathsChanged();
 
 private:
     void load();
@@ -47,6 +51,7 @@ private:
     void applyDefaults();
 
     QString _isisBinaryPath;
+    QStringList _gridBasePaths;
 
     int _rows = 2;
     int _cols = 2;

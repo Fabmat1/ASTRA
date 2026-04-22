@@ -16,6 +16,7 @@
 #include <QFileDialog>
 #include <QGroupBox>
 #include <QStandardPaths>
+#include <QListWidget>
 
 // =====================================================================
 // DetailGridEditor — nested widget (file-private)
@@ -167,10 +168,12 @@ void SettingsDialog::setupUi()
     _topicList->setFrameShape(QFrame::NoFrame);
     _topicList->addItem("General");
     _topicList->addItem("Star Detail View");
-
+    _topicList->addItem("Grid Paths");
+    
     _pages = new QStackedWidget;
     _pages->addWidget(createGeneralPage());
     _pages->addWidget(createStarDetailPage());
+    _pages->addWidget(createGridPathsPage());
 
     connect(_topicList, &QListWidget::currentRowChanged,
             _pages, &QStackedWidget::setCurrentIndex);
@@ -193,6 +196,69 @@ void SettingsDialog::setupUi()
     connect(buttons->button(QDialogButtonBox::Apply), &QPushButton::clicked,
             this, &SettingsDialog::apply);
 }
+
+
+QWidget* SettingsDialog::createGridPathsPage()
+{
+    auto* page = new QWidget;
+    auto* outer = new QVBoxLayout(page);
+    outer->setContentsMargins(16, 16, 16, 16);
+
+    auto* intro = new QLabel(
+        "Base directories searched recursively for stellar model grids. "
+        "Both the SED fit (ISIS) and spectral fit (DIGGA) tools scan these "
+        "paths for <code>grid.fits</code> markers.");
+    intro->setWordWrap(true);
+    outer->addWidget(intro);
+
+    auto* box = new QGroupBox("Grid base paths");
+    auto* v = new QVBoxLayout(box);
+
+    _gridPathsList = new QListWidget;
+    _gridPathsList->addItems(_settings->gridBasePaths());
+    _gridPathsList->setSelectionMode(QAbstractItemView::SingleSelection);
+    v->addWidget(_gridPathsList, 1);
+
+    auto* row = new QHBoxLayout;
+    auto* add  = new QPushButton("Add…");
+    auto* rem  = new QPushButton("Remove");
+    auto* up   = new QPushButton(QString::fromUtf8("\xE2\x86\x91"));
+    auto* down = new QPushButton(QString::fromUtf8("\xE2\x86\x93"));
+    up->setMaximumWidth(30); down->setMaximumWidth(30);
+    row->addWidget(add); row->addWidget(rem);
+    row->addWidget(up);  row->addWidget(down);
+    row->addStretch();
+    v->addLayout(row);
+
+    connect(add, &QPushButton::clicked, this, [this]{
+        QString d = QFileDialog::getExistingDirectory(this, "Add grid base path");
+        if (!d.isEmpty()) _gridPathsList->addItem(d);
+    });
+    connect(rem, &QPushButton::clicked, this, [this]{
+        int r = _gridPathsList->currentRow();
+        if (r >= 0) delete _gridPathsList->takeItem(r);
+    });
+    connect(up, &QPushButton::clicked, this, [this]{
+        int r = _gridPathsList->currentRow();
+        if (r > 0) {
+            auto* it = _gridPathsList->takeItem(r);
+            _gridPathsList->insertItem(r - 1, it);
+            _gridPathsList->setCurrentRow(r - 1);
+        }
+    });
+    connect(down, &QPushButton::clicked, this, [this]{
+        int r = _gridPathsList->currentRow();
+        if (r >= 0 && r < _gridPathsList->count() - 1) {
+            auto* it = _gridPathsList->takeItem(r);
+            _gridPathsList->insertItem(r + 1, it);
+            _gridPathsList->setCurrentRow(r + 1);
+        }
+    });
+
+    outer->addWidget(box, 1);
+    return page;
+}
+
 
 QWidget* SettingsDialog::createGeneralPage()
 {
@@ -261,5 +327,9 @@ QWidget* SettingsDialog::createStarDetailPage()
 void SettingsDialog::apply()
 {
     _settings->setIsisBinaryPath(_isisEdit->text().trimmed());
+    QStringList paths;
+    for (int i = 0; i < _gridPathsList->count(); ++i)
+        paths << _gridPathsList->item(i)->text();
+    _settings->setGridBasePaths(paths);
     _gridEditor->commit();
 }

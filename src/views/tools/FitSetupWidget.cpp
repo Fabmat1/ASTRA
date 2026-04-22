@@ -9,6 +9,8 @@
 #include "fitting/FitBackendRegistry.h"
 #include "utils/Logger.h"
 #include "utils/AppSettings.h"
+#include "views/widgets/GridSelectorWidget.h"
+#include "dialogs/SettingsDialog.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -173,6 +175,10 @@ QGroupBox* FitSetupWidget::buildComponentsSection()
 void FitSetupWidget::rebuildComponentRows()
 {
     clearLayout(_componentsLayout);
+    _componentSelectors.clear();
+
+    AppSettings settings;
+    const QStringList basePaths = settings.gridBasePaths();
 
     for (int i = 0; i < _components.size(); ++i) {
         auto& c = _components[i];
@@ -181,33 +187,43 @@ void FitSetupWidget::rebuildComponentRows()
         auto* form  = new QFormLayout(frame);
         form->setLabelAlignment(Qt::AlignRight);
 
-        // Grid path
-        auto* pathRow = new QHBoxLayout;
-        auto* pathEdit = new QLineEdit(c.gridPath);
-        pathEdit->setPlaceholderText("grid folder relative to base paths (e.g. sdB/processed/)");
-        connect(pathEdit, &QLineEdit::editingFinished, this,
-                [this, pathEdit, i]{ _components[i].gridPath = pathEdit->text(); });
-        auto* browse = new QPushButton("…");
-        browse->setMaximumWidth(32);
-        connect(browse, &QPushButton::clicked, this, [pathEdit]{
-            QString d = QFileDialog::getExistingDirectory(pathEdit, "Select grid folder");
-            if (!d.isEmpty()) { pathEdit->setText(d); emit pathEdit->editingFinished(); }
-        });
-        pathRow->addWidget(pathEdit, 1);
-        pathRow->addWidget(browse);
-        form->addRow("Grid:", pathRow);
+        auto* selector = new GridSelectorWidget;
+        selector->setBasePaths(basePaths);
+        selector->setShowConfigureButton(true);
+        if (!c.gridPath.isEmpty())
+            selector->setSelection({}, c.gridPath);
+        // seed in case setSelection happened before scan populated combos
+        c.gridPath = selector->selectedRelativePath();
 
-        // Each numeric param gets: spin + freeze checkbox
+        connect(selector, &GridSelectorWidget::selectionChanged,
+                this, [this, i, selector]{
+            if (i < _components.size())
+                _components[i].gridPath = selector->selectedRelativePath();
+        });
+        connect(selector, &GridSelectorWidget::configurePathsRequested,
+                this, [this]{
+            AppSettings s;
+            SettingsDialog dlg(&s, this);
+            if (dlg.exec() == QDialog::Accepted) {
+                AppSettings fresh;
+                const auto paths = fresh.gridBasePaths();
+                for (auto* sel : _componentSelectors) sel->setBasePaths(paths);
+            }
+        });
+
+        _componentSelectors.append(selector);
+        form->addRow("Grid:", selector);
+
         struct P { const char* label; double* val; bool* freeze;
                    double min, max; int decimals; double step; };
         std::vector<P> params = {
-            { "Teff [K]",   &c.teff,  &c.freezeTeff,  1000.0, 200000.0, 0,  100.0  },
-            { "log g",      &c.logg,  &c.freezeLogg,  0.0,    7.0,      2,  0.05   },
-            { "vsini [km/s]",&c.vsini,&c.freezeVsini, 0.0,    2000.0,   2,  1.0    },
-            { "log(He/H)",  &c.he,    &c.freezeHe,   -5.0,    2.0,      3,  0.05   },
-            { "ζ",          &c.zeta,  &c.freezeZeta, -5.0,    50.0,     3,  0.1    },
-            { "ξ",          &c.xi,    &c.freezeXi,   -5.0,    50.0,     3,  0.1    },
-            { "[M/H]",      &c.z,     &c.freezeZ,    -5.0,    5.0,      3,  0.05   },
+            { "Teff [K]",     &c.teff,  &c.freezeTeff,  1000.0, 200000.0, 0, 100.0 },
+            { "log g",        &c.logg,  &c.freezeLogg,     0.0,      7.0, 2,  0.05 },
+            { "vsini [km/s]", &c.vsini, &c.freezeVsini,    0.0,   2000.0, 2,  1.0  },
+            { "log(He/H)",    &c.he,    &c.freezeHe,      -5.0,      2.0, 3,  0.05 },
+            { "ζ",            &c.zeta,  &c.freezeZeta,    -5.0,     50.0, 3,  0.1  },
+            { "ξ",            &c.xi,    &c.freezeXi,      -5.0,     50.0, 3,  0.1  },
+            { "[M/H]",        &c.z,     &c.freezeZ,       -5.0,      5.0, 3,  0.05 },
         };
 
         for (auto& p : params) {
@@ -219,8 +235,8 @@ void FitSetupWidget::rebuildComponentRows()
             row2->addWidget(cb);
             form->addRow(p.label, row2);
 
-            double* vPtr  = p.val;
-            bool*   fPtr  = p.freeze;
+            double* vPtr = p.val;
+            bool*   fPtr = p.freeze;
             connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                     this, [vPtr](double v){ *vPtr = v; });
             connect(cb, &QCheckBox::toggled, this,
@@ -250,6 +266,7 @@ QGroupBox* FitSetupWidget::buildSpectraListSection()
 
     _spectraList = new QListWidget;
     _spectraList->setSelectionMode(QAbstractItemView::SingleSelection);
+    _spectraList->setMinimumHeight(250);
     connect(_spectraList, &QListWidget::currentRowChanged,
             this, &FitSetupWidget::onSpectrumListRowChanged);
     connect(_spectraList, &QListWidget::itemChanged, this, [this](QListWidgetItem* it){
@@ -390,19 +407,14 @@ QGroupBox* FitSetupWidget::buildGlobalSection()
         _backendCombo->addItem(n);
     form->addRow("Backend:", _backendCombo);
 
-    _basePathsEdit = new QLineEdit;
-    _basePathsEdit->setPlaceholderText(
-        "Grid base paths (colon-separated, e.g. /data/grids:/home/me/ISIS_models)");
-    form->addRow("Base paths:", _basePathsEdit);
-
     _untiedEdit = new QLineEdit("vrad");
     _untiedEdit->setPlaceholderText("Comma-separated: vrad,vsini,…");
     form->addRow("Untied params:", _untiedEdit);
 
-    _filterSnrSpin   = makeDoubleSpin(0, 1e6,  2, 5.0,  0.5);
+    _filterSnrSpin   = makeDoubleSpin(0, 1e6, 2, 5.0, 0.5);
     form->addRow("Min SNR:", _filterSnrSpin);
 
-    _requireBlueSpin = makeDoubleSpin(0, 1e6,  2, 0.0, 10.0, "Å");
+    _requireBlueSpin = makeDoubleSpin(0, 1e6, 2, 0.0, 10.0, "Å");
     _requireBlueSpin->setToolTip("Require spectrum to start below this wavelength (0 = disabled)");
     form->addRow("Require blue <:", _requireBlueSpin);
 
@@ -628,6 +640,7 @@ void FitSetupWidget::inferFromBestFit(PerSpec& cfg,
                 size_t start = i;
                 while (i < ig.size() && ig[i] == 0) ++i;
                 size_t end = i - 1;
+                if (wl[start] == wl[end]) continue;
                 fit::IgnoreRegion r;
                 r.wlLow  = wl[start];
                 r.wlHigh = wl[end];
@@ -653,8 +666,9 @@ fit::SpectralFitJob FitSetupWidget::buildJob(QStringList& tempFilesOut) const
     job.outlierSigmaHi = _outlierHiSpin->value();
     job.verbose        = _verboseCheck->isChecked();
 
-    for (const auto& p : _basePathsEdit->text().split(':', Qt::SkipEmptyParts))
-        job.basePaths.append(p.trimmed());
+    AppSettings settings;
+    for (const auto& p : settings.gridBasePaths())
+        job.basePaths.append(p);
 
     QStringList ut;
     for (const auto& p : _untiedEdit->text().split(',', Qt::SkipEmptyParts))

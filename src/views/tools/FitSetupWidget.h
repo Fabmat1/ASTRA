@@ -13,6 +13,7 @@ class Star;
 class Spectrum;
 class DatabaseManager;
 class SpectraPanel;
+class GridSelectorWidget;
 
 class QVBoxLayout;
 class QListWidget;
@@ -94,6 +95,8 @@ private:
 
     QVector<astra::fitting::StellarComponent> _components;
 
+    QVector<GridSelectorWidget*> _componentSelectors;
+
     // ── UI ─────────────────────────────────────────────────────
     QListWidget*    _spectraList        = nullptr;
 
@@ -116,7 +119,6 @@ private:
 
     // Global options
     QComboBox*      _backendCombo       = nullptr;
-    QLineEdit*      _basePathsEdit      = nullptr;
     QLineEdit*      _untiedEdit         = nullptr;
     QDoubleSpinBox* _filterSnrSpin      = nullptr;
     QDoubleSpinBox* _requireBlueSpin    = nullptr;

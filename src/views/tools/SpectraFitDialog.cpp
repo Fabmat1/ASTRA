@@ -128,6 +128,25 @@ void SpectraFitDialog::setupUi()
     rl->setContentsMargins(6, 6, 6, 6);
 
     _tree = new QTreeWidget;
+    _tree->setColumnCount(3);
+    _tree->setHeaderLabels({ "Spectrum / Fit", "Flag", "Best" });
+    _tree->setRootIsDecorated(true);
+    _tree->setUniformRowHeights(true);
+    _tree->setSelectionMode(QAbstractItemView::SingleSelection);
+    _tree->setEditTriggers(QAbstractItemView::NoEditTriggers);
+
+    if (auto* hdr = _tree->header()) {
+        hdr->setStretchLastSection(false);
+        hdr->setSectionResizeMode(kColName, QHeaderView::Stretch);
+        hdr->setSectionResizeMode(kColFlag, QHeaderView::ResizeToContents);
+        hdr->setSectionResizeMode(kColBest, QHeaderView::ResizeToContents);
+    }
+
+    connect(_tree, &QTreeWidget::itemClicked,
+            this,  &SpectraFitDialog::onTreeItemClicked);
+    connect(_tree, &QTreeWidget::itemChanged,
+            this,  &SpectraFitDialog::onTreeItemChanged);
+
     rl->addWidget(_tree, 1);
 
     _rightTabs->addTab(browseTab, "Browse");

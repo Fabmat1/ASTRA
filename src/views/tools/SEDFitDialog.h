@@ -4,12 +4,14 @@
 #include <QProcess>
 #include <memory>
 #include <vector>
+#include "views/widgets/GridSelectorWidget.h"
 
 class Star;
 class SEDModel;
 class Photometry;
 class DatabaseManager;
 
+class GridSelectorWidget;
 class QCustomPlot;
 class QCPGraph;
 class QCPErrorBars;
@@ -27,31 +29,6 @@ class QToolButton;
 class QTextEdit;
 class QProgressBar;
 class QLineEdit;
-
-struct GridPreset
-{
-    QString category;
-    QString name;
-    QString path;
-    double teffMin, teffMax;
-    double loggMin, loggMax;
-    double heMin, heMax;
-    double zMin, zMax;
-};
-
-struct DiscoveredGrid
-{
-    QString basePath;
-    QString relativePath;
-    QString fullPath;
-    int     presetIndex = -1;
-    QString category;
-    QString displayName;
-    double  teffMin = 0, teffMax = 0;
-    double  loggMin = 0, loggMax = 0;
-    double  heMin   = 0, heMax   = 0;
-    double  zMin    = 0, zMax    = 0;
-};
 
 struct FitParameterRow
 {
@@ -84,9 +61,6 @@ private slots:
     void onPhotometryFlagToggled(int row, int column);
     void onRunFit();
     void onIsisFinished(int exitCode, QProcess::ExitStatus status);
-    void onGridCategoryChanged(int index);
-    void onGrid2CategoryChanged(int index);
-    void onSearchPathsChanged();
     void onAddParameter();
     void onRemoveParameter();
     void onComp2Toggled(bool enabled);
@@ -107,9 +81,6 @@ private:
     void updatePhotometryTable();
     void updateFitSelector();
     void initDefaultFitParams();
-
-    void discoverGrids();
-    void populateGridCombos();
     void updateIsisStatus();
 
     bool isDarkTheme() const;
@@ -132,8 +103,6 @@ private:
                           int prec = 3, const QString& unit = {}) const;
     QString formatParamRow(const QString& label, const QString& value) const;
     QString statusTag(int status) const;
-
-    static const std::vector<GridPreset>& gridPresets();
     
     void writePhotometryDat(const QString& filepath);
     void populateParamsFromFit();
@@ -168,16 +137,10 @@ private:
     QLineEdit* _isisPathEdit     = nullptr;
     QLabel*    _isisStatusLabel  = nullptr;
 
-    QComboBox* _gridCatCombo       = nullptr;
-    QComboBox* _gridCombo          = nullptr;
-    QLineEdit* _gridOverrideEdit   = nullptr;
-    QCheckBox* _enableComp2Cb      = nullptr;
-    QComboBox* _grid2CatCombo      = nullptr;
-    QComboBox* _grid2Combo         = nullptr;
-    QLineEdit* _grid2OverrideEdit  = nullptr;
-    QGroupBox* _grid2Group         = nullptr;
-    QLineEdit* _gridPathsEdit      = nullptr;
-    std::vector<DiscoveredGrid> _discoveredGrids;
+    GridSelectorWidget* _gridSelector1 = nullptr;
+    GridSelectorWidget* _gridSelector2 = nullptr;
+    QCheckBox*          _enableComp2Cb = nullptr;
+    QGroupBox*          _grid2Group    = nullptr;    
 
     QCheckBox*      _fixDistCb    = nullptr;
     QDoubleSpinBox* _distSpin     = nullptr;

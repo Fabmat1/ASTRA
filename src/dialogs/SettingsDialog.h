@@ -7,6 +7,7 @@ class QListWidget;
 class QStackedWidget;
 class QLineEdit;
 class DetailGridEditor;
+class QListWidget;
 
 class SettingsDialog : public QDialog
 {
@@ -20,6 +21,7 @@ private:
     void setupUi();
     QWidget* createGeneralPage();
     QWidget* createStarDetailPage();
+    QWidget* createGridPathsPage();
 
     AppSettings*   _settings;
 
@@ -31,4 +33,6 @@ private:
 
     // Star detail page
     DetailGridEditor* _gridEditor = nullptr;
+
+    QListWidget* _gridPathsList = nullptr;
 };

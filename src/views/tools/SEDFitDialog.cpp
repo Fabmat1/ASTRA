@@ -6,6 +6,9 @@
 #include "utils/ExtractSED.h"
 #include "utils/Logger.h"
 #include "plotting/qcustomplot.h"
+#include "views/widgets/GridSelectorWidget.h"
+#include "utils/AppSettings.h"
+#include "dialogs/SettingsDialog.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -42,63 +45,6 @@
 #include <algorithm>
 
 // ═══════════════════════════════════════════════════════════════════
-// Grid preset catalogue (mirrors photometry.sl commented-out options)
-// ═══════════════════════════════════════════════════════════════════
-
-static const std::vector<GridPreset>& sGridPresets()
-{
-    static const std::vector<GridPreset> p = {
-        // sdB
-        {"sdB", "sdB standard",      "sdB/processed/",             15000,55000, 4.6,6.6, -5.05,-0.041, -1.0,1.0},
-        {"sdB", "sdB extended",       "sdB/processed_sdB24/",       15000,55000, 4.6,7.0, -5.05,-0.041, -1.0,1.0},
-        {"sdB", "ELM / BHB",         "sdB/processed_ELM_BHB/",     9000,20000,  2.8,7.0, -5.05,-0.300, -1.0,1.0},
-        {"sdB", "BLAPS",             "sdB/processed_blaps/",        15000,31000, 3.6,7.0, -4.05,-0.300, -2.0,1.0},
-        {"sdB", "Hot sdO",           "sdB/processed_hot_sdO/",      51000,75000, 5.2,6.6, -5.05,-0.041, -1.0,1.0},
-        {"sdB", "He-sdO",            "sdB/processed_He_sdO/",       25000,55000, 5.0,6.6, -1.05,-0.001, -1.0,1.0},
-        {"sdB", "He-sdO Z=0 xl",    "sdB/processed_He_sdO_Z0.00_xl/",25000,55000,4.0,6.6,-1.05,-0.001, 0.0,0.0},
-        {"sdB", "Very hot sdO",      "sdB/processed_vhot_sdO/",     75000,99000, 5.6,7.0, -5.05,-0.041, -1.0,0.0},
-        {"sdB", "Super-hot sdO",     "sdB/processed_shot_sdO/",     75000,115000,5.8,7.0, -5.05,-0.041, -1.0,0.0},
-        // B stars
-        {"B stars", "Late B (III–V)","B_V_III/processed_late/",     10000,19000, 3.0,4.6, -1.25,-0.85, -0.5,0.5},
-        {"B stars", "Mid B (III–V)", "B_V_III/processed_mid/",      18000,25000, 3.0,4.6, -1.25,-0.85, -0.5,0.5},
-        {"B stars", "Early B (III–V)","B_V_III/processed_early/",   25000,33000, 3.4,4.6, -1.25,-0.85, -0.5,0.5},
-        // sdO (2020)
-        {"sdO (2020)", "Standard",   "sdOstar2020_SED/processed/",  26250,57500, 4.25,6.75,-1.75,4.00, 0.0,0.0},
-        {"sdO (2020)", "Hot",        "sdOstar2020_SED/processed_hot/",26250,65000,4.50,6.75,-1.50,4.00, 0.0,0.0},
-        {"sdO (2020)", "Hot He-sdO", "sdOstar2020_SED/processed_hot_HesdO/",26250,72500,4.625,6.75,-1.00,4.00,0.0,0.0},
-        {"sdO (2020)", "Low-He sdO", "sdOstar2020_SED/processed_lHe-sdO/",26250,55000,4.00,6.75,-1.50,4.00,0.0,0.0},
-        {"sdO (2020)", "MS",         "sdOstar2020_SED/processed_MS/",26250,45000,3.625,6.75,-1.50,4.00,0.0,0.0},
-        {"sdO (2020)", "Cool",       "sdOstar2020_SED/processed_cool/",26250,47500,3.75,6.75,-1.50,4.00,0.0,0.0},
-        {"sdO (2020)", "EHe",        "sdOstar2020_SED/processed_EHe/",26250,35000,3.25,6.75,-1.50,4.00,0.0,0.0},
-        {"sdO (2020)", "EHe cool",   "sdOstar2020_SED/processed_EHe_cool/",26250,31250,3.00,6.75,-0.75,4.00,0.0,0.0},
-        // Steven
-        {"Steven", "Grid 5 (hot)",  "steven/grid5/",               38000,55000, 4.6,6.6, -5.00,-0.25, -2.0,0.5},
-        {"Steven", "Grid 4",        "steven/grid4/",               22000,40000, 4.0,6.6, -5.00,-0.25, -2.0,0.5},
-        {"Steven", "Grid 3",        "steven/grid3/",               15000,26000, 3.0,6.4, -5.00,-0.25, -2.0,0.5},
-        {"Steven", "Grid 2",        "steven/grid2/",               11000,17000, 2.8,6.0, -5.00,-0.25, -2.0,0.5},
-        {"Steven", "Grid 1 (cool)", "steven/grid1/",                8000,12500, 2.4,4.4, -5.00,-0.50, -2.0,0.5},
-        // Cool stars
-        {"Cool stars", "Synthe",     "synthe/processed/",            3800,12500, 1.4,5.6, -1.0,-1.0, -2.5,0.5},
-        {"Cool stars", "Synthe high logg","synthe/processed_vhighlogg/",4600,14000,1.6,7.0,-1.0,-1.0,-2.0,0.5},
-        {"Cool stars", "Synthe low logg", "synthe/processed_lowlogg/",3400,6200,0.0,4.0,-1.0,-1.0,-2.0,0.5},
-        {"Cool stars", "Synthe α+0.3","synthe_alpha+0.3/processed/", 4000,8000, 2.0,5.2, -1.0,-1.0, -2.0,0.5},
-        {"Cool stars", "Synthe α+0.4","synthe_alpha+0.4/processed/", 4000,8000, 2.0,5.2, -1.0,-1.0, -2.0,0.5},
-        {"Cool stars", "Phoenix",    "Phoenix_late_type_stars_photometry_v2.0/processed/",2300,15000,2.0,5.0,-1.05,-1.05,-2.0,0.0},
-        // White dwarfs
-        {"WD", "DAO (Nicole)",       "WD/Nicole/DAO/processed/",    40000,180000,6.0,9.0, -5.0,0.0, 0.0,0.0},
-        {"WD", "DO (Nicole)",        "WD/Nicole/DO/processed/",     40000,180000,6.0,9.0, 99.0,99.0, 0.0,0.0},
-        {"WD", "DA (Nicole)",        "WD/Nicole/DA/processed/",     20000,180000,6.0,9.0,-99.0,-99.0,0.0,0.0},
-        {"WD", "OH (Nicole)",        "WD/Nicole/OH/processed/",     40000,140000,5.5,6.5,-1.553,-0.423,0.0,0.0},
-        {"WD", "DA NLTE (Tremblay)", "WD/Tremblay/processed_DA1DNLTE/",2000,140000,6.5,9.5,-99,-99,0.0,0.0},
-        {"WD", "DA",                 "WD/DA/processed",              6000,100000,5.5,9.5,-100,-100,0.0,0.0},
-        {"WD", "DB",                 "WD/DB/processed",             10000,40000, 7.0,9.0, 0,0, 0.0,0.0},
-    };
-    return p;
-}
-
-const std::vector<GridPreset>& SEDFitDialog::gridPresets() { return sGridPresets(); }
-
-// ═══════════════════════════════════════════════════════════════════
 // Helper: format an asymmetric value as HTML
 // ═══════════════════════════════════════════════════════════════════
 
@@ -127,7 +73,6 @@ SEDFitDialog::SEDFitDialog(std::shared_ptr<Star> star,
     setWindowFlags(Qt::Window);
 
     setupUi();
-    discoverGrids();
     loadExistingFits();
     initDefaultFitParams();
 
@@ -390,97 +335,43 @@ QWidget* SEDFitDialog::createNewFitPanel()
             this, &SEDFitDialog::updateIsisStatus);
     updateIsisStatus();
 
-    // ── Grid search paths ────────────────────────────────────
-    auto* pathGroup = new QGroupBox("Grid Search Paths");
-    auto* pLay = new QHBoxLayout(pathGroup);
+    // ── Grid — Component 1 ─────────────────────────────────
+    AppSettings settings;
+    _gridSelector1 = new GridSelectorWidget;
+    _gridSelector1->setTitle("Model Grid — Component 1");
+    _gridSelector1->setBasePaths(settings.gridBasePaths());
+    _gridSelector1->setShowConfigureButton(true);
+    nfLay->addWidget(_gridSelector1);
 
-    _gridPathsEdit = new QLineEdit;
-    _gridPathsEdit->setPlaceholderText(
-        "Semicolon-separated base directories containing model grids");
-    _gridPathsEdit->setText(
-        QDir::homePath() + "/ISIS_models/;" +
-        QDir::homePath() + "/isis/synthetic_spectra/grids/;" +
-        "/data/stellar/modelgrids/");
-    pLay->addWidget(_gridPathsEdit, 1);
-
-    auto* pathBrowse = new QPushButton("Add…");
-    pathBrowse->setMaximumWidth(50);
-    pLay->addWidget(pathBrowse);
-
-    nfLay->addWidget(pathGroup);
-
-    connect(pathBrowse, &QPushButton::clicked, this, [this] {
-        QString dir = QFileDialog::getExistingDirectory(
-            this, "Select Grid Base Path");
-        if (!dir.isEmpty()) {
-            QString cur = _gridPathsEdit->text().trimmed();
-            if (!cur.isEmpty() && !cur.endsWith(';')) cur += ";";
-            _gridPathsEdit->setText(cur + dir);
-            onSearchPathsChanged();
-        }
-    });
-    connect(_gridPathsEdit, &QLineEdit::editingFinished,
-            this, &SEDFitDialog::onSearchPathsChanged);
-
-    // ── Grid selection ───────────────────────────────────────
-    auto* gridGroup = new QGroupBox("Model Grid — Component 1");
-    auto* gLay = new QGridLayout(gridGroup);
-    gLay->setColumnStretch(1, 1);
-
-    gLay->addWidget(new QLabel("Category:"), 0, 0);
-    _gridCatCombo = new QComboBox;
-    gLay->addWidget(_gridCatCombo, 0, 1, 1, 2);
-
-    gLay->addWidget(new QLabel("Grid:"), 1, 0);
-    _gridCombo = new QComboBox;
-    _gridCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    _gridCombo->setMinimumContentsLength(40);
-    gLay->addWidget(_gridCombo, 1, 1, 1, 2);
-
-    gLay->addWidget(new QLabel("Override:"), 2, 0);
-    _gridOverrideEdit = new QLineEdit;
-    _gridOverrideEdit->setPlaceholderText(
-        "Custom grid relative path (leave empty to use combo)");
-    gLay->addWidget(_gridOverrideEdit, 2, 1, 1, 2);
-
-    nfLay->addWidget(gridGroup);
-
-    // ── Component 2 grid ─────────────────────────────────────
+    // ── Component 2 toggle + selector ──────────────────────
     _enableComp2Cb = new QCheckBox("Enable second component grid");
     nfLay->addWidget(_enableComp2Cb);
 
-    _grid2Group = new QGroupBox("Model Grid — Component 2");
-    _grid2Group->setVisible(false);
-    auto* g2Lay = new QGridLayout(_grid2Group);
-    g2Lay->setColumnStretch(1, 1);
+    _gridSelector2 = new GridSelectorWidget;
+    _gridSelector2->setTitle("Model Grid — Component 2");
+    _gridSelector2->setBasePaths(settings.gridBasePaths());
+    _gridSelector2->setShowConfigureButton(true);
+    _gridSelector2->setVisible(false);
+    nfLay->addWidget(_gridSelector2);
 
-    g2Lay->addWidget(new QLabel("Category:"), 0, 0);
-    _grid2CatCombo = new QComboBox;
-    g2Lay->addWidget(_grid2CatCombo, 0, 1, 1, 2);
-
-    g2Lay->addWidget(new QLabel("Grid:"), 1, 0);
-    _grid2Combo = new QComboBox;
-    _grid2Combo->setSizeAdjustPolicy(
-        QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    _grid2Combo->setMinimumContentsLength(40);
-    g2Lay->addWidget(_grid2Combo, 1, 1, 1, 2);
-
-    g2Lay->addWidget(new QLabel("Override:"), 2, 0);
-    _grid2OverrideEdit = new QLineEdit;
-    _grid2OverrideEdit->setPlaceholderText(
-        "Custom grid relative path (leave empty to use combo)");
-    g2Lay->addWidget(_grid2OverrideEdit, 2, 1, 1, 2);
-
-    nfLay->addWidget(_grid2Group);
-
-    connect(_gridCatCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &SEDFitDialog::onGridCategoryChanged);
-    connect(_grid2CatCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &SEDFitDialog::onGrid2CategoryChanged);
     connect(_enableComp2Cb, &QCheckBox::toggled,
-            _grid2Group, &QWidget::setVisible);
+            _gridSelector2, &QWidget::setVisible);
     connect(_enableComp2Cb, &QCheckBox::toggled,
-            this, &SEDFitDialog::onComp2Toggled);
+            this,           &SEDFitDialog::onComp2Toggled);
+
+    auto reconfigurePaths = [this]{
+        AppSettings s;
+        SettingsDialog dlg(&s, this);
+        if (dlg.exec() == QDialog::Accepted) {
+            AppSettings fresh;
+            _gridSelector1->setBasePaths(fresh.gridBasePaths());
+            _gridSelector2->setBasePaths(fresh.gridBasePaths());
+        }
+    };
+    connect(_gridSelector1, &GridSelectorWidget::configurePathsRequested,
+            this, reconfigurePaths);
+    connect(_gridSelector2, &GridSelectorWidget::configurePathsRequested,
+            this, reconfigurePaths);
 
     // ── Distance ─────────────────────────────────────────────
     auto* distGroup = new QGroupBox("Distance");
@@ -754,7 +645,7 @@ void SEDFitDialog::populateParamsFromFit()
     _enableComp2Cb->blockSignals(true);
     _enableComp2Cb->setChecked(multi);
     _enableComp2Cb->blockSignals(false);
-    if (_grid2Group) _grid2Group->setVisible(multi);
+    if (_gridSelector2) _gridSelector2->setVisible(multi);
 
     _paramTableWidget->setRowCount(0);
 
@@ -845,84 +736,6 @@ void SEDFitDialog::populateParamsFromFit()
 
     double r55 = model->r55 > 0 ? model->r55 : 3.02;
     addRow("R_55", r55, true, 2.5, 6.0, true);
-}
-
-void SEDFitDialog::discoverGrids()
-{
-    _discoveredGrids.clear();
-
-    QStringList bases =
-        _gridPathsEdit->text().split(';', Qt::SkipEmptyParts);
-
-    QSet<QString> seen;
-    const auto& presets = gridPresets();
-
-    for (const QString& raw : bases) {
-        QString base = raw.trimmed();
-        if (base.isEmpty()) continue;
-        QDir baseDir(base);
-        if (!baseDir.exists()) continue;
-        QString baseCan = baseDir.canonicalPath();
-
-        std::function<void(const QString&, int)> scan =
-            [&](const QString& dir, int depth)
-        {
-            if (depth > 5) return;
-            QDir d(dir);
-
-            if (d.exists("grid.fits")) {
-                QString canon = QDir(dir).canonicalPath();
-                if (seen.contains(canon)) return;
-                seen.insert(canon);
-
-                DiscoveredGrid dg;
-                dg.fullPath     = canon;
-                dg.basePath     = baseCan;
-                dg.relativePath = baseDir.relativeFilePath(canon);
-                if (!dg.relativePath.endsWith('/'))
-                    dg.relativePath += '/';
-
-                // Match against known presets by suffix
-                QString normFull = canon;
-                for (int pi = 0; pi < static_cast<int>(presets.size()); ++pi) {
-                    QString suffix = presets[pi].path;
-                    while (suffix.endsWith('/')) suffix.chop(1);
-                    if (normFull.endsWith(suffix)) {
-                        dg.presetIndex = pi;
-                        dg.category    = presets[pi].category;
-                        dg.displayName = presets[pi].name;
-                        dg.teffMin     = presets[pi].teffMin;
-                        dg.teffMax     = presets[pi].teffMax;
-                        dg.loggMin     = presets[pi].loggMin;
-                        dg.loggMax     = presets[pi].loggMax;
-                        dg.heMin       = presets[pi].heMin;
-                        dg.heMax       = presets[pi].heMax;
-                        dg.zMin        = presets[pi].zMin;
-                        dg.zMax        = presets[pi].zMax;
-                        break;
-                    }
-                }
-
-                if (dg.presetIndex < 0) {
-                    dg.category    = "Discovered";
-                    dg.displayName = dg.relativePath;
-                }
-
-                _discoveredGrids.push_back(std::move(dg));
-            }
-
-            for (const auto& sub :
-                 d.entryList(QDir::Dirs | QDir::NoDotAndDotDot))
-            {
-                if (sub.startsWith('.')) continue;
-                scan(dir + "/" + sub, depth + 1);
-            }
-        };
-
-        scan(baseCan, 0);
-    }
-
-    populateGridCombos();
 }
 
 
@@ -1025,121 +838,6 @@ QWidget* SEDFitDialog::createAdvancedOptions()
     });
 
     return w;
-}
-
-// ═══════════════════════════════════════════════════════════════════
-// Grid combo population
-// ═══════════════════════════════════════════════════════════════════
-
-void SEDFitDialog::populateGridCombos()
-{
-    // Collect categories that have at least one discovered grid
-    QStringList cats;
-    for (const auto& dg : _discoveredGrids)
-        if (!cats.contains(dg.category)) cats << dg.category;
-
-    // Also include all preset categories even if absent
-    // (they'll just show 0 grids, making it clear nothing was found)
-    for (const auto& p : gridPresets())
-        if (!cats.contains(p.category)) cats << p.category;
-
-    auto fillCat = [&](QComboBox* catCombo, QComboBox* gridCombo) {
-        QString prevCat = catCombo->currentText();
-        catCombo->blockSignals(true);
-        catCombo->clear();
-
-        for (const auto& c : cats) {
-            int n = 0;
-            for (const auto& dg : _discoveredGrids)
-                if (dg.category == c) ++n;
-            catCombo->addItem(
-                n > 0 ? QString("%1  (%2 found)").arg(c).arg(n)
-                       : QString("%1  (none found)").arg(c),
-                c);
-        }
-
-        int idx = catCombo->findData(prevCat);
-        if (idx >= 0) catCombo->setCurrentIndex(idx);
-        catCombo->blockSignals(false);
-
-        // Populate grid combo for current category
-        QString cat = catCombo->currentData().toString();
-        gridCombo->blockSignals(true);
-        gridCombo->clear();
-        for (int i = 0; i < static_cast<int>(_discoveredGrids.size()); ++i) {
-            const auto& dg = _discoveredGrids[i];
-            if (dg.category != cat) continue;
-            QString label;
-            if (dg.presetIndex >= 0) {
-                label = QString("%1  (%2–%3 kK, logg %4–%5)")
-                            .arg(dg.displayName)
-                            .arg(dg.teffMin / 1000.0, 0, 'f', 0)
-                            .arg(dg.teffMax / 1000.0, 0, 'f', 0)
-                            .arg(dg.loggMin, 0, 'f', 1)
-                            .arg(dg.loggMax, 0, 'f', 1);
-            } else {
-                label = dg.displayName;
-            }
-            gridCombo->addItem(label, i);
-        }
-        gridCombo->blockSignals(false);
-    };
-
-    fillCat(_gridCatCombo, _gridCombo);
-    fillCat(_grid2CatCombo, _grid2Combo);
-}
-
-void SEDFitDialog::onSearchPathsChanged()
-{
-    discoverGrids();
-}
-
-void SEDFitDialog::onGridCategoryChanged(int)
-{
-    QString cat = _gridCatCombo->currentData().toString();
-    _gridCombo->blockSignals(true);
-    _gridCombo->clear();
-    for (int i = 0; i < static_cast<int>(_discoveredGrids.size()); ++i) {
-        const auto& dg = _discoveredGrids[i];
-        if (dg.category != cat) continue;
-        QString label;
-        if (dg.presetIndex >= 0) {
-            label = QString("%1  (%2–%3 kK, logg %4–%5)")
-                        .arg(dg.displayName)
-                        .arg(dg.teffMin / 1000.0, 0, 'f', 0)
-                        .arg(dg.teffMax / 1000.0, 0, 'f', 0)
-                        .arg(dg.loggMin, 0, 'f', 1)
-                        .arg(dg.loggMax, 0, 'f', 1);
-        } else {
-            label = dg.displayName;
-        }
-        _gridCombo->addItem(label, i);
-    }
-    _gridCombo->blockSignals(false);
-}
-
-void SEDFitDialog::onGrid2CategoryChanged(int)
-{
-    QString cat = _grid2CatCombo->currentData().toString();
-    _grid2Combo->blockSignals(true);
-    _grid2Combo->clear();
-    for (int i = 0; i < static_cast<int>(_discoveredGrids.size()); ++i) {
-        const auto& dg = _discoveredGrids[i];
-        if (dg.category != cat) continue;
-        QString label;
-        if (dg.presetIndex >= 0) {
-            label = QString("%1  (%2–%3 kK, logg %4–%5)")
-                        .arg(dg.displayName)
-                        .arg(dg.teffMin / 1000.0, 0, 'f', 0)
-                        .arg(dg.teffMax / 1000.0, 0, 'f', 0)
-                        .arg(dg.loggMin, 0, 'f', 1)
-                        .arg(dg.loggMax, 0, 'f', 1);
-        } else {
-            label = dg.displayName;
-        }
-        _grid2Combo->addItem(label, i);
-    }
-    _grid2Combo->blockSignals(false);
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2288,61 +1986,42 @@ QString SEDFitDialog::generateScript() const
     }
 
     // ── Grid directories ─────────────────────────────────────
-    // Resolve selected grids to relative paths
-    auto resolveGrid = [&](QComboBox* combo, QLineEdit* override)
-        -> QPair<QString, QString>   // (relativePath, basePath)
-    {
-        QString ov = override->text().trimmed();
-        if (!ov.isEmpty())
-            return {ov, {}};
-
-        int idx = combo->currentData().toInt();
-        if (idx >= 0 && idx < static_cast<int>(_discoveredGrids.size())) {
-            return {_discoveredGrids[idx].relativePath,
-                    _discoveredGrids[idx].basePath};
-        }
-        return {};
-    };
-
     QStringList gridDirs;
     QSet<QString> extraBases;
-
-    auto g1 = resolveGrid(_gridCombo, _gridOverrideEdit);
-    if (!g1.first.isEmpty()) {
-        gridDirs << "\"" + g1.first + "\"";
-        if (!g1.second.isEmpty()) extraBases.insert(g1.second);
-    }
-
-    if (_enableComp2Cb->isChecked()) {
-        auto g2 = resolveGrid(_grid2Combo, _grid2OverrideEdit);
-        if (!g2.first.isEmpty()) {
-            gridDirs << "\"" + g2.first + "\"";
-            if (!g2.second.isEmpty()) extraBases.insert(g2.second);
-        }
-    }
-
+    
+    auto collect = [&](GridSelectorWidget* sel) {
+        QString rel  = sel->selectedRelativePath();
+        QString base = sel->selectedBasePath();
+        if (rel.isEmpty()) return;
+        gridDirs << "\"" + rel + "\"";
+        if (!base.isEmpty()) extraBases.insert(base);
+    };
+    
+    collect(_gridSelector1);
+    if (_enableComp2Cb->isChecked()) collect(_gridSelector2);
+    
     s << "variable griddirectories, bpaths;\n";
     if (gridDirs.isEmpty()) {
         s << "griddirectories = [\"sdB/processed/\"];\n";
     } else {
         s << "griddirectories = [" << gridDirs.join(", ") << "];\n";
     }
-
-    // Collect all search paths
+    
+    // Merge extra bases from selected grids with configured base paths
     QStringList quotedPaths;
     quotedPaths << "\"./\"";
-    for (const auto& bp : extraBases)
-        quotedPaths << "\"" + bp + "/\"";
-    for (const auto& p :
-         _gridPathsEdit->text().split(';', Qt::SkipEmptyParts))
-    {
+    for (const auto& bp : extraBases) {
+        QString t = bp;
+        if (!t.endsWith('/')) t += '/';
+        quotedPaths << "\"" + t + "\"";
+    }
+    AppSettings sGrid;
+    for (const auto& p : sGrid.gridBasePaths()) {
         QString t = p.trimmed();
-        if (!t.isEmpty()) {
-            if (!t.endsWith('/')) t += '/';
-            QString q = "\"" + t + "\"";
-            if (!quotedPaths.contains(q))
-                quotedPaths << q;
-        }
+        if (t.isEmpty()) continue;
+        if (!t.endsWith('/')) t += '/';
+        QString q = "\"" + t + "\"";
+        if (!quotedPaths.contains(q)) quotedPaths << q;
     }
     s << "bpaths = [" << quotedPaths.join(",\n          ") << "];\n";
     s << "griddirectories = search_grid_fit_photometry("
