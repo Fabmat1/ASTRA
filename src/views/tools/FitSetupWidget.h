@@ -14,6 +14,7 @@ class Spectrum;
 class DatabaseManager;
 class SpectraPanel;
 class GridSelectorWidget;
+class Instrument;
 
 class QVBoxLayout;
 class QListWidget;
@@ -52,6 +53,9 @@ private slots:
     void onSpectrumListRowChanged(int row);
     void onRunFit();
     void onCopyToAll();
+    void onCopyToSameInstrument();
+    void onSaveAsModeDefault();
+    void onResetToModeDefault();
 
 private:
     struct PerSpec {
@@ -79,6 +83,7 @@ private:
     void commitEditorToState();       // numeric fields → _configs[_currentId]
     void loadStateToEditor();         // _configs[_currentId] → numeric fields
     void inferFromBestFit(PerSpec& cfg, const std::shared_ptr<Spectrum>& s) const;
+    PerSpec makeDefaultConfig(const std::shared_ptr<Spectrum>& s) const;
 
     astra::fitting::SpectralFitJob buildJob(QStringList& tempFilesOut) const;
     QString exportSpectrumToTemp(const std::shared_ptr<Spectrum>& s,
@@ -86,6 +91,9 @@ private:
 
     void persistResult(const astra::fitting::SpectralFitResult& result,
                         const astra::fitting::SpectralFitJob&  job);
+
+    std::shared_ptr<Instrument> instrumentForSpectrum(
+        const std::shared_ptr<Spectrum>& s, QString* modeKey = nullptr) const;
 
     // ── State ──────────────────────────────────────────────────
     Context _ctx;
@@ -105,17 +113,20 @@ private:
     QPushButton*    _addComponentBtn    = nullptr;
 
     // Per-spectrum editor
-    QWidget*        _perSpectrumHost    = nullptr;
-    QDoubleSpinBox* _wlMinSpin          = nullptr;
-    QDoubleSpinBox* _wlMaxSpin          = nullptr;
-    QCheckBox*      _inferCheck         = nullptr;
-    QVBoxLayout*    _ignoreListLayout   = nullptr;
-    QPushButton*    _addIgnoreBtn       = nullptr;
-    QVBoxLayout*    _anchorListLayout   = nullptr;
-    QPushButton*    _addAnchorBtn       = nullptr;
-    QDoubleSpinBox* _resOffsetSpin      = nullptr;
-    QDoubleSpinBox* _resSlopeSpin       = nullptr;
-    QPushButton*    _copyToAllBtn       = nullptr;
+    QWidget*        _perSpectrumHost     = nullptr;
+    QDoubleSpinBox* _wlMinSpin           = nullptr;
+    QDoubleSpinBox* _wlMaxSpin           = nullptr;
+    QCheckBox*      _inferCheck          = nullptr;
+    QVBoxLayout*    _ignoreListLayout    = nullptr;
+    QPushButton*    _addIgnoreBtn        = nullptr;
+    QVBoxLayout*    _anchorListLayout    = nullptr;
+    QPushButton*    _addAnchorBtn        = nullptr;
+    QDoubleSpinBox* _resOffsetSpin       = nullptr;
+    QDoubleSpinBox* _resSlopeSpin        = nullptr;
+    QPushButton*    _copyToAllBtn        = nullptr;
+    QPushButton*    _copyToInstrumentBtn = nullptr;
+    QPushButton* _saveAsModeDefaultBtn   = nullptr;
+    QPushButton* _resetToModeDefaultBtn  = nullptr;
 
     // Global options
     QComboBox*      _backendCombo       = nullptr;

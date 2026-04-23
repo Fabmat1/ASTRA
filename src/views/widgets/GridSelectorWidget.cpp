@@ -81,7 +81,7 @@ void GridSelectorWidget::buildUi()
     g->addWidget(new QLabel("Grid:"), r, 0);
     _gridCombo = new QComboBox;
     _gridCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
-    _gridCombo->setMinimumContentsLength(40);
+    _gridCombo->setMinimumContentsLength(20);
     g->addWidget(_gridCombo, r++, 1, 1, 2);
 
     g->addWidget(new QLabel("Override:"), r, 0);

@@ -43,12 +43,44 @@ struct WavelengthSetup {
     static WavelengthSetup fromJson(const QJsonObject& obj);
 };
 
+struct IgnoreRange {
+    double wlLow  = 0.0;
+    double wlHigh = 0.0;
+    QJsonObject toJson() const;
+    static IgnoreRange fromJson(const QJsonObject& o);
+};
+
+struct AnchorRange {
+    double wlLow   = 0.0;
+    double wlHigh  = 0.0;
+    double spacing = 50.0;
+    QJsonObject toJson() const;
+    static AnchorRange fromJson(const QJsonObject& o);
+};
+
+struct DiggaFitDefaults {
+    std::optional<double>   wlMin;
+    std::optional<double>   wlMax;
+    QVector<IgnoreRange>    ignore;
+    QVector<AnchorRange>    anchors;
+    std::optional<double>   resOffset;
+    std::optional<double>   resSlope;
+
+    bool isEmpty() const {
+        return !wlMin && !wlMax && ignore.isEmpty() && anchors.isEmpty()
+            && !resOffset && !resSlope;
+    }
+    QJsonObject toJson() const;
+    static DiggaFitDefaults fromJson(const QJsonObject& o);
+};
+
 struct SpectralProperties {
-    ResolutionModel             resolution;
+    ResolutionModel             resolution;       // R(λ)
     QString                     disperser;
     double                      wavelengthMin = 0.0;
     double                      wavelengthMax = 0.0;
     QVector<WavelengthSetup>    commonSetups;
+    DiggaFitDefaults            fitDefaults;
 
     QJsonObject toJson() const;
     static SpectralProperties fromJson(const QJsonObject& obj);

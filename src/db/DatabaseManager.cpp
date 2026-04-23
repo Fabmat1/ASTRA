@@ -85,6 +85,7 @@ bool DatabaseManager::openDatabase(const QString& path)
     }
 
     _instruments->initializeInstruments();
+    backfillSpectrumInstrumentIds();
 
     return true;
 }
@@ -881,6 +882,83 @@ bool DatabaseManager::saveStar(const QString& projectId, std::shared_ptr<Star> s
     }
 
     return true;
+}
+
+void DatabaseManager::backfillSpectrumInstrumentIds()
+{
+    QSqlQuery q(_db->threadConnection());
+    if (!q.exec("SELECT id, instrument FROM spectra "
+                "WHERE (instrument_id IS NULL OR instrument_id = '') "
+                "  AND instrument IS NOT NULL AND instrument <> ''"))
+    {
+        qWarning() << "Backfill query failed:" << q.lastError();
+        return;
+    }
+
+    struct Row { QString id, instrumentStr; };
+    std::vector<Row> rows;
+    while (q.next()) rows.push_back({q.value(0).toString(), q.value(1).toString()});
+    if (rows.empty()) return;
+
+    // Resolve once per unique string — usually only a handful of distinct values.
+    struct Hit { std::shared_ptr<Instrument> inst; QString modeKey; int count = 0; };
+    QHash<QString, Hit> byString;
+    QHash<QString, int> unresolvedCounts;
+
+    for (const auto& r : rows) {
+        auto it = byString.find(r.instrumentStr);
+        if (it == byString.end()) {
+            Hit h;
+            h.inst = _instruments->resolveInstrumentString(r.instrumentStr, &h.modeKey);
+            it = byString.insert(r.instrumentStr, h);
+        }
+        ++it.value().count;
+        if (!it.value().inst)
+            unresolvedCounts[r.instrumentStr] = it.value().count;
+    }
+
+    // Log the distribution
+    auto dump = [](const QString& title, const QHash<QString, int>& h, int max) {
+        QList<QPair<QString,int>> items;
+        for (auto it = h.begin(); it != h.end(); ++it)
+            items.append({it.key(), it.value()});
+        std::sort(items.begin(), items.end(),
+                  [](auto& a, auto& b){ return a.second > b.second; });
+        LOG_INFO("DB", title + QString(" (%1 distinct)").arg(items.size()));
+        for (int i = 0; i < std::min(max, int(items.size())); ++i)
+            LOG_INFO("DB", QString("  %1×  \"%2\"")
+                .arg(items[i].second, 6).arg(items[i].first));
+    };
+
+    QHash<QString, int> resolvedCounts;
+    for (auto it = byString.begin(); it != byString.end(); ++it)
+        if (it.value().inst)
+            resolvedCounts[QString("%1 / %2")
+                .arg(it.value().inst->getName(),
+                     it.value().modeKey.isEmpty() ? "(no mode)" : it.value().modeKey)]
+                += it.value().count;
+
+    dump("Resolved mappings",   resolvedCounts,  20);
+    dump("UNRESOLVED strings",  unresolvedCounts, 40);
+
+    // Apply updates for the resolved ones
+    QSqlDatabase db = _db->threadConnection();
+    db.transaction();
+    QSqlQuery u(db);
+    u.prepare("UPDATE spectra SET instrument_id = :iid, mode_key = :mk WHERE id = :id");
+    int resolved = 0, missed = 0;
+    for (const auto& r : rows) {
+        const auto& h = byString[r.instrumentStr];
+        if (!h.inst) { ++missed; continue; }
+        u.bindValue(":iid", h.inst->getId());
+        u.bindValue(":mk",  h.modeKey);
+        u.bindValue(":id",  r.id);
+        if (u.exec()) ++resolved;
+    }
+    db.commit();
+
+    LOG_INFO("DB", QString("Instrument backfill: %1 resolved, %2 unresolved (of %3 legacy rows)")
+        .arg(resolved).arg(missed).arg(int(rows.size())));
 }
 
 bool DatabaseManager::saveStars(const QString& projectId, const std::vector<std::shared_ptr<Star>>& stars)

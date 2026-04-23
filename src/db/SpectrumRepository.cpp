@@ -31,18 +31,28 @@ bool SpectrumRepository::saveSpectrum(const QString& starId, std::shared_ptr<Spe
     QSqlQuery query(_db.threadConnection());
     query.prepare(R"(
         INSERT OR REPLACE INTO spectra (
-            id, star_id, file, instrument, mjd, bjd, exposure_time,
+            id, star_id, file, instrument, instrument_id, mode_key,
+            mjd, bjd, exposure_time,
             data_file, barycentric_corrected, is_flagged
         ) VALUES (
-            :id, :star_id, :file, :instrument, :mjd, :bjd, :exposure_time,
+            :id, :star_id, :file, :instrument, :instrument_id, :mode_key,
+            :mjd, :bjd, :exposure_time,
             :data_file, :barycentric_corrected, :is_flagged
         )
     )");
-
+    
     query.bindValue(":id", spectrum->getId());
     query.bindValue(":star_id", starId);
     query.bindValue(":file", spectrum->getFile());
     query.bindValue(":instrument", spectrum->getInstrument());
+    query.bindValue(":instrument_id",
+                    spectrum->getInstrumentId().isEmpty()
+                        ? QVariant(QMetaType(QMetaType::QString))
+                        : QVariant(spectrum->getInstrumentId()));
+    query.bindValue(":mode_key",
+                    spectrum->getModeKey().isEmpty()
+                        ? QVariant(QMetaType(QMetaType::QString))
+                        : QVariant(spectrum->getModeKey()));
     query.bindValue(":mjd", spectrum->getMJD());
     query.bindValue(":bjd", spectrum->getBJD());
     query.bindValue(":exposure_time", spectrum->getExposureTime());
@@ -150,6 +160,8 @@ std::vector<std::shared_ptr<Spectrum>> SpectrumRepository::loadSpectra(const QSt
         spectrum->setId(query.value("id").toString());
         spectrum->setFile(query.value("file").toString());
         spectrum->setInstrument(query.value("instrument").toString());
+        spectrum->setInstrumentId(query.value("instrument_id").toString());
+        spectrum->setModeKey(query.value("mode_key").toString());
         double expTime = query.value("exposure_time").toDouble();
         spectrum->setTime(Time::fromMjdBjd(
             query.value("mjd").toDouble(),
@@ -157,7 +169,7 @@ std::vector<std::shared_ptr<Spectrum>> SpectrumRepository::loadSpectra(const QSt
             expTime > 0.0 ? expTime : -1.0));
         spectrum->setDataFile(query.value("data_file").toString());
         spectrum->setBarycentricallyCorrected(query.value("barycentric_corrected").toInt() != 0);
-        spectrum->setFlagged(query.value("barycentric_corrected").toInt() != 0);
+        spectrum->setFlagged(query.value("is_flagged").toInt() != 0);
 
         // Load spectral fits
         auto fits = loadSpectralFits(spectrum->getId());

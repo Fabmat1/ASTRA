@@ -121,6 +121,8 @@ void SpectraFitDialog::setupUi()
     // Right: tabbed (Browse / Fit Setup)
     _rightTabs = new QTabWidget;
     _rightTabs->setDocumentMode(true);
+    _rightTabs->tabBar()->setDrawBase(false);
+    _rightTabs->setStyleSheet("QTabWidget::pane { border: 0; }");
 
     // ── Browse tab (existing tree) ──
     QWidget* browseTab = new QWidget;
@@ -175,7 +177,7 @@ void SpectraFitDialog::setupUi()
     _splitter->addWidget(_rightTabs);
     _splitter->setStretchFactor(0, 3);
     _splitter->setStretchFactor(1, 1);
-    _splitter->setSizes({950, 420});
+    _splitter->setSizes({880, 520}); 
 
     root->addWidget(_splitter, 1);
 

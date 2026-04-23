@@ -378,40 +378,88 @@ bool InstrumentRepository::deleteInstrument(const QString& id)
     return true;
 }
 
-std::shared_ptr<Instrument> InstrumentRepository::resolveInstrumentString(
-    const QString& input, QString* modeKey) const
+std::shared_ptr<Instrument>
+InstrumentRepository::resolveInstrumentString(const QString& input,
+                                               QString* modeKey) const
 {
-    // Try exact instrument name first
-    auto inst = getInstrumentByName(input);
-    if (inst) {
-        if (modeKey) modeKey->clear();
+    if (modeKey) modeKey->clear();
+    QString s = input.trimmed();
+    if (s.isEmpty()) return nullptr;
+
+    // ── Hardcoded aliases for known legacy strings ──
+    // Keyed on case-insensitive exact match of the input.
+    struct Alias { const char* from; const char* instr; const char* mode; };
+    static const Alias kAliases[] = {
+        { "LAMOST_LORES", "LAMOST", "LRS" },
+        { "LAMOST_HIRES", "LAMOST", "MRS_blue" },  // ← confirm / split if needed
+        { "EFOSC",        "EFOSC2", ""          },
+    };
+    for (const auto& a : kAliases) {
+        if (s.compare(a.from, Qt::CaseInsensitive) == 0) {
+            auto inst = getInstrumentByName(a.instr);
+            if (inst) {
+                if (modeKey && a.mode[0]) *modeKey = a.mode;
+                return inst;
+            }
+        }
+    }
+
+    // ── Split into candidate (name, mode) tokens on / _ - whitespace ──
+    static const QRegularExpression sep("[/\\-_\\s]+");
+    const QStringList parts = s.split(sep, Qt::SkipEmptyParts);
+
+    auto tryMatch = [&](const QString& namePart, const QString& modePart)
+        -> std::shared_ptr<Instrument>
+    {
+        if (namePart.length() < 2) return nullptr;
+
+        // Case-insensitive name match: exact > prefix > contains
+        std::shared_ptr<Instrument> exact, prefix, contains;
+        for (const auto& inst : _instrumentsById) {
+            const QString n = inst->getName();
+            if (n.compare(namePart, Qt::CaseInsensitive) == 0)          { exact = inst; break; }
+            if (!prefix && n.startsWith(namePart, Qt::CaseInsensitive)) prefix = inst;
+            if (!contains && n.contains(namePart, Qt::CaseInsensitive)) contains = inst;
+        }
+        auto inst = exact ? exact : (prefix ? prefix : contains);
+        if (!inst) return nullptr;
+
+        if (modeKey && !modePart.isEmpty()) {
+            // Try case-insensitive match on mode key, then display name
+            for (const auto& m : inst->modes()) {
+                if (m.key().compare(modePart, Qt::CaseInsensitive) == 0 ||
+                    m.displayName().compare(modePart, Qt::CaseInsensitive) == 0)
+                {
+                    *modeKey = m.key();
+                    return inst;
+                }
+            }
+            // Partial: input mode is a prefix/contains of any mode key
+            for (const auto& m : inst->modes()) {
+                if (m.key().startsWith(modePart, Qt::CaseInsensitive) ||
+                    m.key().contains(modePart, Qt::CaseInsensitive))
+                {
+                    *modeKey = m.key();
+                    return inst;
+                }
+            }
+        }
         return inst;
+    };
+
+    // 1. Try the whole string as an instrument name.
+    if (auto inst = tryMatch(s, {})) return inst;
+
+    // 2. Try (first token) as instrument, (rest) as mode.
+    if (parts.size() >= 2) {
+        QString rest = parts.mid(1).join('_');   // preserve multi-word modes
+        if (auto inst = tryMatch(parts[0], rest))    return inst;
+        if (auto inst = tryMatch(parts[0], parts[1]))return inst;
     }
 
-    // Try "INSTRUMENT_MODE" pattern — split on underscore from left
-    int sep = input.indexOf('_');
-    while (sep > 0) {
-        QString instPart = input.left(sep);
-        QString modePart = input.mid(sep + 1);
-
-        inst = getInstrumentByName(instPart);
-        if (inst && inst->hasMode(modePart)) {
-            if (modeKey) *modeKey = modePart;
-            return inst;
-        }
-
-        // Handle instrument names containing underscores (e.g. "X-Shooter")
-        sep = input.indexOf('_', sep + 1);
-    }
-
-    // Try every cached instrument to see if input matches a mode key
-    for (auto it = _instrumentsById.constBegin();
-         it != _instrumentsById.constEnd(); ++it) {
-        if (it.value()->hasMode(input)) {
-            if (modeKey) *modeKey = input;
-            return it.value();
-        }
-    }
+    // 3. Try each token as an instrument name (handles "ESO/UVES" → UVES).
+    for (const QString& p : parts)
+        if (auto inst = tryMatch(p, {})) return inst;
 
     return nullptr;
 }

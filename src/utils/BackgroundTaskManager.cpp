@@ -933,6 +933,8 @@ void SpectraImportTask::execute()
                 static constexpr double kMinConfidence = 0.25;
                 if (match.instrument && match.confidence >= kMinConfidence) {
                     readResult.spectrum->setInstrument(match.displayString);
+                    readResult.spectrum->setInstrumentId(match.instrument->getId());
+                    readResult.spectrum->setModeKey(match.modeKey);
                 }
             }
         }

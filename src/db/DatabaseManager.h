@@ -86,6 +86,7 @@ public:
     void restoreDefaultInstruments();
 
 private:
+    void backfillSpectrumInstrumentIds();
     bool createTables();
     bool createIndexes();
     bool runMigrations();

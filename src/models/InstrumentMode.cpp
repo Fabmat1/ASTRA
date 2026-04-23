@@ -55,6 +55,8 @@ QJsonObject SpectralProperties::toJson() const
     obj["wavelength_min"]           = wavelengthMin;
     obj["wavelength_max"]           = wavelengthMax;
 
+    if (!fitDefaults.isEmpty()) obj["fitDefaults"] = fitDefaults.toJson();
+
     if (!commonSetups.isEmpty()) {
         QJsonArray arr;
         for (const auto& s : commonSetups)
@@ -71,6 +73,9 @@ SpectralProperties SpectralProperties::fromJson(const QJsonObject& obj)
     sp.resolution    = ResolutionModel::fromJsonArray(obj["resolution_coefficients"].toArray());
     sp.wavelengthMin = obj["wavelength_min"].toDouble();
     sp.wavelengthMax = obj["wavelength_max"].toDouble();
+
+    if (obj.contains("fitDefaults"))
+    sp.fitDefaults = DiggaFitDefaults::fromJson(obj["fitDefaults"].toObject());
 
     for (const auto& v : obj["common_setups"].toArray())
         sp.commonSetups.append(WavelengthSetup::fromJson(v.toObject()));
@@ -166,4 +171,53 @@ InstrumentMode InstrumentMode::fromJson(const QJsonObject& obj)
         mode._extras = obj["extras"].toObject().toVariantMap();
 
     return mode;
+}
+
+QJsonObject IgnoreRange::toJson() const
+{ return { {"wlLow", wlLow}, {"wlHigh", wlHigh} }; }
+
+IgnoreRange IgnoreRange::fromJson(const QJsonObject& o)
+{ return { o["wlLow"].toDouble(), o["wlHigh"].toDouble() }; }
+
+QJsonObject AnchorRange::toJson() const
+{ return { {"wlLow", wlLow}, {"wlHigh", wlHigh}, {"spacing", spacing} }; }
+
+AnchorRange AnchorRange::fromJson(const QJsonObject& o)
+{ return { o["wlLow"].toDouble(), o["wlHigh"].toDouble(),
+           o["spacing"].toDouble(50.0) }; }
+
+QJsonObject DiggaFitDefaults::toJson() const
+{
+    QJsonObject o;
+    if (wlMin)     o["wlMin"]     = *wlMin;
+    if (wlMax)     o["wlMax"]     = *wlMax;
+    if (resOffset) o["resOffset"] = *resOffset;
+    if (resSlope)  o["resSlope"]  = *resSlope;
+
+    if (!ignore.isEmpty()) {
+        QJsonArray arr;
+        for (const auto& r : ignore) arr.append(r.toJson());
+        o["ignore"] = arr;
+    }
+    if (!anchors.isEmpty()) {
+        QJsonArray arr;
+        for (const auto& a : anchors) arr.append(a.toJson());
+        o["anchors"] = arr;
+    }
+    return o;
+}
+
+DiggaFitDefaults DiggaFitDefaults::fromJson(const QJsonObject& o)
+{
+    DiggaFitDefaults d;
+    if (o.contains("wlMin"))     d.wlMin     = o["wlMin"].toDouble();
+    if (o.contains("wlMax"))     d.wlMax     = o["wlMax"].toDouble();
+    if (o.contains("resOffset")) d.resOffset = o["resOffset"].toDouble();
+    if (o.contains("resSlope"))  d.resSlope  = o["resSlope"].toDouble();
+
+    for (const auto& v : o["ignore"].toArray())
+        d.ignore.append(IgnoreRange::fromJson(v.toObject()));
+    for (const auto& v : o["anchors"].toArray())
+        d.anchors.append(AnchorRange::fromJson(v.toObject()));
+    return d;
 }

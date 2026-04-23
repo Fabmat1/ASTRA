@@ -54,6 +54,7 @@ QDoubleSpinBox* makeDoubleSpin(double min, double max, int decimals,
     s->setValue(val);
     if (!suffix.isEmpty()) s->setSuffix(" " + suffix);
     s->setKeyboardTracking(false);
+    s->setMaximumWidth(110);
     return s;
 }
 
@@ -364,9 +365,29 @@ QGroupBox* FitSetupWidget::buildPerSpectrumSection()
     });
     v->addWidget(_addAnchorBtn);
 
-    _copyToAllBtn = new QPushButton("Copy these settings to all spectra");
-    connect(_copyToAllBtn, &QPushButton::clicked, this, &FitSetupWidget::onCopyToAll);
-    v->addWidget(_copyToAllBtn);
+    auto* copyRow = new QHBoxLayout;
+    _copyToAllBtn = new QPushButton("Copy to all spectra");
+    _copyToInstrumentBtn = new QPushButton("Copy to same instrument/mode");
+    copyRow->addWidget(_copyToAllBtn);
+    copyRow->addWidget(_copyToInstrumentBtn);
+    connect(_copyToAllBtn,        &QPushButton::clicked, this, &FitSetupWidget::onCopyToAll);
+    connect(_copyToInstrumentBtn, &QPushButton::clicked, this, &FitSetupWidget::onCopyToSameInstrument);
+    v->addLayout(copyRow);
+
+    auto* modeBtnRow = new QHBoxLayout;
+    _saveAsModeDefaultBtn  = new QPushButton("Save as mode default");
+    _resetToModeDefaultBtn = new QPushButton("Reset to mode default");
+    _saveAsModeDefaultBtn->setToolTip(
+        "Persist these ignore regions, anchors and resolution as defaults "
+        "for this spectrum's instrument mode.");
+    modeBtnRow->addWidget(_saveAsModeDefaultBtn);
+    modeBtnRow->addWidget(_resetToModeDefaultBtn);
+    v->addLayout(modeBtnRow);
+
+    connect(_saveAsModeDefaultBtn,  &QPushButton::clicked,
+            this, &FitSetupWidget::onSaveAsModeDefault);
+    connect(_resetToModeDefaultBtn, &QPushButton::clicked,
+            this, &FitSetupWidget::onResetToModeDefault);
 
     // Hook up editor-change callbacks — they flush the spin values into state
     auto flush = [this]{ commitEditorToState(); };
@@ -466,16 +487,8 @@ void FitSetupWidget::refreshSpectraList()
         }
         _spectraList->addItem(item);
 
-        if (!_configs.contains(s->getId())) {
-            PerSpec cfg;
-            // Reasonable defaults from spectrum extent
-            auto wl = s->getWavelengths();
-            if (!wl.empty()) {
-                cfg.wlMin = wl.front();
-                cfg.wlMax = wl.back();
-            }
-            _configs[s->getId()] = cfg;
-        }
+        if (!_configs.contains(s->getId()))
+            _configs[s->getId()] = makeDefaultConfig(s);
     }
     _spectraList->blockSignals(false);
 
@@ -569,9 +582,9 @@ void FitSetupWidget::rebuildAnchorRows()
 
     for (int i = 0; i < cfg.anchors.size(); ++i) {
         auto* row = new QHBoxLayout;
-        auto* lo = makeDoubleSpin(0, 100000, 2, cfg.anchors[i].wlLow,   0.5, "Å");
-        auto* hi = makeDoubleSpin(0, 100000, 2, cfg.anchors[i].wlHigh,  0.5, "Å");
-        auto* sp = makeDoubleSpin(1, 10000,   2, cfg.anchors[i].spacing,1.0, "Å");
+        auto* lo = makeDoubleSpin(0, 100000, 1, cfg.anchors[i].wlLow,   0.5, "Å");
+        auto* hi = makeDoubleSpin(0, 100000, 1, cfg.anchors[i].wlHigh,  0.5, "Å");
+        auto* sp = makeDoubleSpin(1, 10000,  0, cfg.anchors[i].spacing, 1.0, "Å");
         sp->setPrefix("Δ ");
         auto* rm = new QPushButton("×"); rm->setMaximumWidth(28);
         connect(lo, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
@@ -605,6 +618,168 @@ void FitSetupWidget::onCopyToAll()
         it->resOffset = src.resOffset;
         it->resSlope  = src.resSlope;
     }
+}
+
+std::shared_ptr<Instrument> FitSetupWidget::instrumentForSpectrum(
+    const std::shared_ptr<Spectrum>& s, QString* modeKey) const
+{
+    if (!_ctx.dbm || !s) return nullptr;
+    // Prefer explicit ID; fall back to string resolution for legacy rows.
+    if (!s->getInstrumentId().isEmpty()) {
+        if (modeKey) *modeKey = s->getModeKey();
+        return _ctx.dbm->getInstrumentById(s->getInstrumentId());
+    }
+    return _ctx.dbm->resolveInstrumentString(s->getInstrument(), modeKey);
+}
+
+
+
+void FitSetupWidget::onCopyToSameInstrument()
+{
+    commitEditorToState();
+    if (_currentId.isEmpty()) return;
+
+    std::shared_ptr<Spectrum> src;
+    for (auto& s : _sortedSpectra)
+        if (s->getId() == _currentId) { src = s; break; }
+    if (!src) return;
+
+    const QString instrument = src->getInstrument();
+    const auto ref = _configs[_currentId];
+    int copied = 0;
+
+    for (auto& s : _sortedSpectra) {
+        if (s->getId() == _currentId) continue;
+        if (s->getInstrument() != instrument) continue;
+        auto& dst = _configs[s->getId()];
+        dst.wlMin     = ref.wlMin;
+        dst.wlMax     = ref.wlMax;
+        dst.ignore    = ref.ignore;
+        dst.anchors   = ref.anchors;
+        dst.resOffset = ref.resOffset;
+        dst.resSlope  = ref.resSlope;
+        ++copied;
+    }
+    LOG_INFO("FitSetup", QString("Copied settings to %1 spectra on %2")
+        .arg(copied).arg(instrument.isEmpty() ? "(no instrument)" : instrument));
+}
+
+FitSetupWidget::PerSpec FitSetupWidget::makeDefaultConfig(
+    const std::shared_ptr<Spectrum>& s) const
+{
+    PerSpec cfg;
+
+    // 1. Wavelength range from spectrum data, as fallback
+    auto wl = s->getWavelengths();
+    if (!wl.empty()) { cfg.wlMin = wl.front(); cfg.wlMax = wl.back(); }
+
+    // 2. Hardcoded sensible defaults
+    cfg.ignore = {
+        { 3932.0, 3935.0 }, { 3967.0, 3970.0 },
+        { 4610.0, 4655.0 }, { 5888.0, 5892.0 },
+        { 5894.0, 5898.0 },
+    };
+    cfg.anchors = {
+        { 3000.0,  3850.0,  50.0 },
+        { 3850.0,  4050.0, 100.0 },
+        { 4050.0,  4550.0, 100.0 },
+        { 4550.0, 15050.0, 200.0 },
+    };
+    cfg.resOffset = 0.0;
+    cfg.resSlope  = 0.37037;
+
+    // 3. Overlay instrument-mode defaults if available
+    QString modeKey;
+    auto inst = instrumentForSpectrum(s, &modeKey);
+    if (!inst || modeKey.isEmpty()) return cfg;
+
+    const auto* mode = inst->mode(modeKey);
+    if (!mode || !mode->hasSpectralProperties()) return cfg;
+
+    const auto& d = mode->spectral().fitDefaults;
+    if (d.wlMin)     cfg.wlMin     = *d.wlMin;
+    if (d.wlMax)     cfg.wlMax     = *d.wlMax;
+    if (d.resOffset) cfg.resOffset = *d.resOffset;
+    if (d.resSlope)  cfg.resSlope  = *d.resSlope;
+    if (!d.ignore.isEmpty()) {
+        cfg.ignore.clear();
+        for (const auto& r : d.ignore)
+            cfg.ignore.append({r.wlLow, r.wlHigh});
+    }
+    if (!d.anchors.isEmpty()) {
+        cfg.anchors.clear();
+        for (const auto& a : d.anchors)
+            cfg.anchors.append({a.wlLow, a.wlHigh, a.spacing});
+    }
+    return cfg;
+}
+
+void FitSetupWidget::onSaveAsModeDefault()
+{
+    commitEditorToState();
+    if (_currentId.isEmpty() || !_ctx.dbm) return;
+
+    std::shared_ptr<Spectrum> sp;
+    for (auto& s : _sortedSpectra)
+        if (s->getId() == _currentId) { sp = s; break; }
+    if (!sp) return;
+
+    QString modeKey;
+    auto inst = instrumentForSpectrum(sp, &modeKey);
+    if (!inst || modeKey.isEmpty()) {
+        QMessageBox::warning(this, "Cannot save defaults",
+            "This spectrum isn't linked to an instrument mode. "
+            "Please assign an instrument/mode first.");
+        return;
+    }
+
+    auto modes = inst->modes();
+    InstrumentMode* target = nullptr;
+    for (auto& m : modes) if (m.key() == modeKey) { target = &m; break; }
+    if (!target) return;
+
+    if (!target->hasSpectralProperties())
+        target->setSpectralProperties(SpectralProperties{});
+
+    SpectralProperties sp2 = target->spectral();
+    DiggaFitDefaults& d = sp2.fitDefaults;
+
+    const auto& cfg = _configs[_currentId];
+    d.wlMin     = cfg.wlMin;
+    d.wlMax     = cfg.wlMax;
+    d.resOffset = cfg.resOffset;
+    d.resSlope  = cfg.resSlope;
+    d.ignore.clear();
+    for (const auto& r : cfg.ignore) d.ignore.append({r.wlLow, r.wlHigh});
+    d.anchors.clear();
+    for (const auto& a : cfg.anchors) d.anchors.append({a.wlLow, a.wlHigh, a.spacing});
+
+    target->setSpectralProperties(sp2);
+
+    // Rebuild mode list on instrument (Instrument stores modes in a hash).
+    inst->clearModes();
+    for (const auto& m : modes) inst->addMode(m);
+
+    _ctx.dbm->updateInstrument(inst);
+
+    LOG_INFO("FitSetup",
+        QString("Saved fit defaults for %1 / %2").arg(inst->getName(), modeKey));
+    QMessageBox::information(this, "Defaults saved",
+        QString("Fit defaults stored for %1 / %2").arg(inst->getName(), modeKey));
+}
+
+void FitSetupWidget::onResetToModeDefault()
+{
+    if (_currentId.isEmpty()) return;
+    std::shared_ptr<Spectrum> sp;
+    for (auto& s : _sortedSpectra)
+        if (s->getId() == _currentId) { sp = s; break; }
+    if (!sp) return;
+
+    _configs[_currentId] = makeDefaultConfig(sp);
+    loadStateToEditor();
+    rebuildIgnoreRows();
+    rebuildAnchorRows();
 }
 
 // =====================================================================
@@ -690,6 +865,13 @@ fit::SpectralFitJob FitSetupWidget::buildJob(QStringList& tempFilesOut) const
         if (!_configs.contains(s->getId())) continue;
         const auto& cfg = _configs[s->getId()];
         if (!cfg.enabled) continue;
+    
+        if (cfg.anchors.isEmpty()) {
+            LOG_WARNING("FitSetup",
+                QString("Spectrum %1 has no continuum anchors — skipping")
+                    .arg(s->getId()));
+            continue;
+        }
 
         QString path = exportSpectrumToTemp(s, dir);
         if (path.isEmpty()) continue;

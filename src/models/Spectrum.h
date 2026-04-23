@@ -109,6 +109,11 @@ public:
     // ── Instrument ──────────────────────────────────────────────────────────
     QString getInstrument() const { return _instrument; }
     void setInstrument(const QString& instrument) { _instrument = instrument; }
+    QString getInstrumentId() const      { return _instrumentId; }
+    void    setInstrumentId(const QString& id) { _instrumentId = id; }
+
+    QString getModeKey() const           { return _modeKey; }
+    void    setModeKey(const QString& k) { _modeKey = k; }
 
     // Barycentric correction status
     bool isBarycentricallyCorrected() const { return _isBarycentricallyCorrected; }
@@ -146,6 +151,8 @@ private:
     QString _dataFile;
     QString _file;
     QString _instrument;
+    QString _instrumentId;      // UUID into Instrument table
+    QString _modeKey;           // InstrumentMode key within that instrument
 
     Time _time;  
 
