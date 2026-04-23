@@ -6,6 +6,7 @@
 #include "db/DatabaseManager.h"
 #include "views/panels/SpectraPanel.h"
 #include "fitting/FitWorker.h"
+#include "fitting/IsisBackend.h"
 #include "fitting/FitBackendRegistry.h"
 #include "utils/Logger.h"
 #include "utils/AppSettings.h"
@@ -32,6 +33,11 @@
 #include <QTextStream>
 #include <QUuid>
 #include <QDir>
+#include <QDialog>
+#include <QPlainTextEdit>
+#include <QDialogButtonBox>
+#include <QApplication>
+#include <QClipboard>
 
 #include <algorithm>
 #include <cmath>
@@ -117,7 +123,6 @@ void FitSetupWidget::setupUi()
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
 
-    // Everything scrollable
     auto* scroll = new QScrollArea;
     scroll->setWidgetResizable(true);
     scroll->setFrameShape(QFrame::NoFrame);
@@ -131,6 +136,11 @@ void FitSetupWidget::setupUi()
     hostLayout->addWidget(buildSpectraListSection());
     hostLayout->addWidget(buildPerSpectrumSection());
     hostLayout->addWidget(buildGlobalSection());
+    hostLayout->addWidget(buildIsisOptionsSection());
+
+    _previewScriptBtn = new QPushButton(QStringLiteral("Preview script…"));
+    connect(_previewScriptBtn, &QPushButton::clicked,
+            this, &FitSetupWidget::onPreviewScript);
 
     _runButton = new QPushButton(QStringLiteral("▶  Run Fit"));
     _runButton->setMinimumHeight(36);
@@ -138,7 +148,12 @@ void FitSetupWidget::setupUi()
     f.setBold(true);
     _runButton->setFont(f);
     connect(_runButton, &QPushButton::clicked, this, &FitSetupWidget::onRunFit);
-    hostLayout->addWidget(_runButton);
+
+    auto* runRow = new QHBoxLayout;
+    runRow->addWidget(_previewScriptBtn);
+    runRow->addStretch();
+    runRow->addWidget(_runButton, 1);
+    hostLayout->addLayout(runRow);
 
     hostLayout->addStretch();
     scroll->setWidget(host);
@@ -148,6 +163,7 @@ void FitSetupWidget::setupUi()
         connect(_ctx.panel, &SpectraPanel::fitPreviewEdited,
                 this, &FitSetupWidget::onFitPreviewEdited);
     }
+    updateBackendSpecificUi();
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -435,6 +451,9 @@ QGroupBox* FitSetupWidget::buildGlobalSection()
         _backendCombo->addItem(n);
     form->addRow("Backend:", _backendCombo);
 
+    connect(_backendCombo, &QComboBox::currentTextChanged,
+        this, [this]{ updateBackendSpecificUi(); });
+
     _untiedEdit = new QLineEdit("vrad");
     _untiedEdit->setPlaceholderText("Comma-separated: vrad,vsini,…");
     form->addRow("Untied params:", _untiedEdit);
@@ -463,6 +482,49 @@ QGroupBox* FitSetupWidget::buildGlobalSection()
     form->addRow("", _verboseCheck);
 
     return box;
+}
+
+QGroupBox* FitSetupWidget::buildIsisOptionsSection()
+{
+    auto* g = new QGroupBox("ISIS options");
+    auto* form = new QFormLayout(g);
+
+    _isisXrangeSpin = new QDoubleSpinBox;
+    _isisXrangeSpin->setRange(10.0, 10000.0);
+    _isisXrangeSpin->setDecimals(1);
+    _isisXrangeSpin->setValue(_isisOptions.xrange);
+    _isisXrangeSpin->setSuffix(" Å");
+    form->addRow("Plot x-range per panel", _isisXrangeSpin);
+
+    _isisErrorEstCb  = new QCheckBox("Estimate uncertainties via conf_loop");
+    _isisErrorEstCb->setChecked(_isisOptions.errorEstimation);
+    form->addRow(_isisErrorEstCb);
+
+    _isisAutoVsiniCb = new QCheckBox("Auto-freeze vsini when unresolved");
+    _isisAutoVsiniCb->setChecked(_isisOptions.autoFreezeVsini);
+    form->addRow(_isisAutoVsiniCb);
+
+    _isisTelluricCb  = new QCheckBox("Include telluric transmission model");
+    _isisTelluricCb->setChecked(_isisOptions.addTelluricModel);
+    form->addRow(_isisTelluricCb);
+
+    _isisMaskCb      = new QCheckBox("Apply spectral mask (create_ignore_list)");
+    _isisMaskCb->setChecked(_isisOptions.applyMask);
+    form->addRow(_isisMaskCb);
+
+    _isisXfigIgnoreSpin = new QSpinBox;
+    _isisXfigIgnoreSpin->setRange(-1, 10);
+    _isisXfigIgnoreSpin->setValue(_isisOptions.xfigIgnore);
+    form->addRow("xfig_ignore", _isisXfigIgnoreSpin);
+
+    _isisOptsGroup = g;
+    return g;
+}
+
+void FitSetupWidget::updateBackendSpecificUi()
+{
+    const bool isis = (_backendCombo->currentText() == "ISIS");
+    if (_isisOptsGroup) _isisOptsGroup->setVisible(isis);
 }
 
 // =====================================================================
@@ -867,6 +929,17 @@ fit::SpectralFitJob FitSetupWidget::buildJob(QStringList& tempFilesOut) const
     job.outlierSigmaHi = _outlierHiSpin->value();
     job.verbose        = _verboseCheck->isChecked();
 
+    astra::fitting::IsisOptions isis;
+    if (_isisXrangeSpin) {
+        isis.xrange           = _isisXrangeSpin->value();
+        isis.errorEstimation  = _isisErrorEstCb->isChecked();
+        isis.autoFreezeVsini  = _isisAutoVsiniCb->isChecked();
+        isis.addTelluricModel = _isisTelluricCb->isChecked();
+        isis.applyMask        = _isisMaskCb->isChecked();
+        isis.xfigIgnore       = _isisXfigIgnoreSpin->value();
+    }
+    job.isis = isis;
+
     AppSettings settings;
     for (const auto& p : settings.gridBasePaths())
         job.basePaths.append(p);
@@ -1021,11 +1094,16 @@ void FitSetupWidget::persistResult(const fit::SpectralFitResult& result,
 
         auto fit = std::make_shared<SpectralFit>();
         fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
-        fit->modelId = QString("%1:%2")
-            .arg(job.backend,
-                 job.components.isEmpty() ? "model"
-                                           : QFileInfo(job.components.first().gridPath)
-                                               .fileName());
+        QStringList gridNames;
+        for (const auto& c : job.components) {
+            QString g = c.gridPath.trimmed();
+            if (g.endsWith('/')) g.chop(1);
+            if (!g.isEmpty()) gridNames << g;
+        }
+        const QString gridDesc = gridNames.isEmpty()
+                                ? QStringLiteral("model")
+                                : gridNames.join(" + ");
+        fit->modelId = QString("%1 · %2").arg(job.backend, gridDesc);
 
         auto pick = [&](const QVector<fit::FittedParameter>& v, int idx) -> fit::FittedParameter {
             if (v.isEmpty()) return {};
@@ -1130,4 +1208,53 @@ void FitSetupWidget::setPreviewActive(bool on)
     } else {
         _ctx.panel->clearFitPreview();
     }
+}
+
+
+void FitSetupWidget::onPreviewScript()
+{
+    commitEditorToState();
+
+    QStringList cleanup;
+    auto job = buildJob(cleanup);
+    if (job.observations.isEmpty()) {
+        QMessageBox::information(this, "Preview script",
+            "Nothing to preview: no spectra selected.");
+        return;
+    }
+
+    QString body;
+    if (job.backend == "ISIS") {
+        body = astra::fitting::IsisBackend::generateScript(job);
+    } else {
+        body = "# DIGGA runs as a library, not a script.\n"
+               "# Job summary:\n";
+        body += QString("#   backend     : %1\n").arg(job.backend);
+        body += QString("#   components  : %1\n").arg(job.components.size());
+        body += QString("#   observations: %1\n").arg(job.observations.size());
+        body += QString("#   untied      : %1\n").arg(job.untiedParams.join(", "));
+        for (const auto& c : job.components)
+            body += QString("#   grid        : %1\n").arg(c.gridPath);
+    }
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(QString("%1 — script preview").arg(job.backend));
+    dlg.resize(820, 640);
+
+    auto* v   = new QVBoxLayout(&dlg);
+    auto* txt = new QPlainTextEdit;
+    txt->setReadOnly(true);
+    txt->setStyleSheet("font-family: monospace; font-size: 11px;");
+    txt->setPlainText(body);
+    v->addWidget(txt, 1);
+
+    auto* bb = new QDialogButtonBox(QDialogButtonBox::Close);
+    auto* copyBtn = bb->addButton("Copy to clipboard", QDialogButtonBox::ActionRole);
+    connect(copyBtn, &QPushButton::clicked, &dlg, [body]{
+        QApplication::clipboard()->setText(body);
+    });
+    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    v->addWidget(bb);
+
+    dlg.exec();
 }

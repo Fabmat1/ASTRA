@@ -184,6 +184,7 @@ set(SOURCES
     # DIGGA fitting
     src/fitting/FitBackendRegistry.cpp
     src/fitting/DiggaBackend.cpp
+    src/fitting/IsisBackend.cpp
     src/fitting/FitWorker.cpp
     src/fitting/StdStreamRedirector.cpp
 
@@ -283,6 +284,7 @@ set(HEADERS
     src/fitting/IFitBackend.h
     src/fitting/FitBackendRegistry.h
     src/fitting/DiggaBackend.h
+    src/fitting/IsisBackend.h
     src/fitting/FitWorker.h
     src/fitting/StdStreamRedirector.h
 )

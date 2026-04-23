@@ -59,6 +59,7 @@ private slots:
     void onSaveAsModeDefault();
     void onResetToModeDefault();
     void onFitPreviewEdited(const FitPreviewConfig& pc);
+    void onPreviewScript();
 
 private:
     struct PerSpec {
@@ -143,6 +144,20 @@ private:
     QDoubleSpinBox* _outlierHiSpin      = nullptr;
     QCheckBox*      _verboseCheck       = nullptr;
 
+    // ── ISIS-only options ───────────────────────────────────────
+    mutable astra::fitting::IsisOptions _isisOptions;
+
+    QGroupBox*      _isisOptsGroup      = nullptr;
+    QDoubleSpinBox* _isisXrangeSpin     = nullptr;
+    QCheckBox*      _isisErrorEstCb     = nullptr;
+    QCheckBox*      _isisAutoVsiniCb    = nullptr;
+    QCheckBox*      _isisTelluricCb     = nullptr;
+    QCheckBox*      _isisMaskCb         = nullptr;
+    QSpinBox*       _isisXfigIgnoreSpin = nullptr;
+    QPushButton*      _previewScriptBtn = nullptr;
+
+    QGroupBox* buildIsisOptionsSection();
+    void       updateBackendSpecificUi();
 
     bool _applyingPreviewEdit = false;
     bool _previewActive = false;

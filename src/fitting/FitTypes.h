@@ -63,6 +63,16 @@ struct Observation {
     QVector<SpectrumFile>     files;
 };
 
+struct IsisOptions {
+    double  xrange           = 500.0;  // plot panel width
+    bool    errorEstimation  = false;  // conf_loop for uncertainties
+    bool    autoFreezeVsini  = true;
+    bool    addTelluricModel = false;
+    bool    applyMask        = false;
+    QString saveModel;                 // "", "ascii", or "fits"
+    int     xfigIgnore       = -1;
+};
+
 struct SpectralFitJob {
     QVector<StellarComponent> components;
     QVector<Observation>      observations;
@@ -82,6 +92,7 @@ struct SpectralFitJob {
     QString outputPath;                  // temp dir for intermediate files
     QStringList basePaths;               // grid search paths (DIGGA gs.base_paths)
     QString backend = "DIGGA";           // which IFitBackend to use
+    IsisOptions isis;
 };
 
 // ────────────────────────────────────────────────────────────────────
