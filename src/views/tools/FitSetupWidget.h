@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "fitting/FitTypes.h"
+#include "views/widgets/FitPreviewOverlay.h"  
 
 class Star;
 class Spectrum;
@@ -45,6 +46,7 @@ public:
     ~FitSetupWidget() override;
 
     void refreshSpectraList();
+    void setPreviewActive(bool on);
 
 signals:
     void fitCompleted();
@@ -56,6 +58,7 @@ private slots:
     void onCopyToSameInstrument();
     void onSaveAsModeDefault();
     void onResetToModeDefault();
+    void onFitPreviewEdited(const FitPreviewConfig& pc);
 
 private:
     struct PerSpec {
@@ -94,6 +97,8 @@ private:
 
     std::shared_ptr<Instrument> instrumentForSpectrum(
         const std::shared_ptr<Spectrum>& s, QString* modeKey = nullptr) const;
+
+    void pushPreviewToPanel();
 
     // ── State ──────────────────────────────────────────────────
     Context _ctx;
@@ -137,6 +142,10 @@ private:
     QDoubleSpinBox* _outlierLoSpin      = nullptr;
     QDoubleSpinBox* _outlierHiSpin      = nullptr;
     QCheckBox*      _verboseCheck       = nullptr;
+
+
+    bool _applyingPreviewEdit = false;
+    bool _previewActive = false;
 
     // Run
     QPushButton*    _runButton          = nullptr;

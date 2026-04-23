@@ -107,6 +107,10 @@ void SpectraPanel::setupUi()
     _mainPlot->axisRect()->setRangeDrag(Qt::Horizontal | Qt::Vertical);
     _mainPlot->axisRect()->setRangeZoom(Qt::Horizontal | Qt::Vertical);
     layout->addWidget(_mainPlot, 5);
+    
+    _fitOverlay = new FitPreviewOverlay(_mainPlot, this);
+    connect(_fitOverlay, &FitPreviewOverlay::edited,
+            this,        &SpectraPanel::fitPreviewEdited);
 
     // ── Residual plot (QCustomPlot) ──
     _residualPlot = new QCustomPlot;
@@ -362,6 +366,7 @@ void SpectraPanel::displaySpectrum(int index)
     _infoLabel->setText(formatInfo(spec));
 
     updateSpectrumDisplay();
+    refreshFitPreviewData();
     emit selectionChanged(currentSpectrumId(), currentFitId());
 }
 
@@ -600,10 +605,12 @@ void SpectraPanel::updateSpectrumDisplay()
             std::vector<double> allY;
             allY.insert(allY.end(), activeD.begin(), activeD.end());
             for (double v : modelVec) allY.push_back(v);
-            auto [mainYLo, mainYHi] = PanelUtils::robustRange(allY, 0.95, 0.25);
+
             _mainPlot->yAxis->setLabel(
                 displayMode == DisplayNormalized ? "Normalized Flux" : "Flux");
-            _mainPlot->yAxis->setRange(mainYLo, mainYHi);
+
+            auto [yLo, yHi] = PanelUtils::robustRange(allY, 0.98, 0.15);
+            _mainPlot->yAxis->setRange(yLo, yHi);
 
         } else {
             // ── Raw + renorm mode — existing behaviour ──
@@ -656,7 +663,7 @@ void SpectraPanel::updateSpectrumDisplay()
         for (size_t i = 0; i < fluxes.size(); ++i)
             if (!std::isnan(fluxes[i])) allMainY.push_back(fluxes[i]);
         auto [mainYLo, mainYHi] = PanelUtils::robustRange(allMainY, 0.95, 0.15);
-        _mainPlot->yAxis->setLabel("Normalized Flux");
+        _mainPlot->yAxis->setLabel("Flux");
         _mainPlot->yAxis->setRange(mainYLo, mainYHi);
     }
 
@@ -940,13 +947,18 @@ void SpectraPanel::selectFitById(const QString& fitId)
 
 void SpectraPanel::setDisplayMode(DisplayMode mode)
 {
+    if (mode != _displayMode->currentIndex()) {
+        _hasCustomZoom = false;          // forget user zoom — we're changing views
+    }
     _displayMode->setCurrentIndex(static_cast<int>(mode));
+    updateSpectrumDisplay();
 }
 
 void SpectraPanel::clearFitSelection()
 {
-    // "None" is always at index 0
-    if (_fitCombo->count() > 0) _fitCombo->setCurrentIndex(0);
+    _hasCustomZoom = false;              // no-fit view has different y scale
+    if (_fitCombo) _fitCombo->setCurrentIndex(0);
+    updateSpectrumDisplay();
 }
 
 void SpectraPanel::refreshCurrentView()
@@ -969,4 +981,29 @@ void SpectraPanel::refreshCurrentView()
             }
         }
     }
+}
+
+void SpectraPanel::setFitPreview(const FitPreviewConfig& cfg)
+{
+    if (!_fitOverlay) return;
+    refreshFitPreviewData();     
+    _fitOverlay->setConfig(cfg);  
+}
+
+void SpectraPanel::clearFitPreview()
+{ if (_fitOverlay) _fitOverlay->clearConfig(); }
+
+void SpectraPanel::refreshFitPreviewData()
+{
+    if (!_fitOverlay) return;
+    if (_currentSpectrumIndex < 0 ||
+        _currentSpectrumIndex >= (int)_sortedSpectra.size()) {
+        _fitOverlay->setSpectrumData({}, {});
+        return;
+    }
+    auto& s = _sortedSpectra[_currentSpectrumIndex];
+    // Lazy-load in case the panel was just asked to show this spectrum
+    if (!s->hasData() && !s->getDataFile().isEmpty())
+        s->loadDataFromFile(s->getDataFile());
+    _fitOverlay->setSpectrumData(s->getWavelengths(), s->getFluxes());
 }

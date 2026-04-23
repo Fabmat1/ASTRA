@@ -52,13 +52,21 @@ void FitProgressDialog::appendLog(const QString& line)
 void FitProgressDialog::setProgress(const QString& stage, double frac)
 {
     if (!stage.isEmpty()) _status->setText(stage);
-    _bar->setValue(std::clamp(int(frac * 1000.0), 0, 1000));
+
+    if (frac < 0.0) {
+        // Indeterminate: Qt shows a marquee animation when min == max == 0.
+        if (_bar->maximum() != 0) _bar->setRange(0, 0);
+    } else {
+        if (_bar->maximum() == 0) _bar->setRange(0, 1000);
+        _bar->setValue(std::clamp(int(frac * 1000.0), 0, 1000));
+    }
 }
 
 void FitProgressDialog::setFinished(const astra::fitting::SpectralFitResult& r)
 {
     _abortBtn->setEnabled(false);
     _closeBtn->setEnabled(true);
+    _bar->setRange(0, 1000);
     _bar->setValue(1000);
     QString summary = QString(
         "✔ Finished — χ² = %1, iter = %2, free = %3, points = %4, converged = %5")
@@ -77,6 +85,8 @@ void FitProgressDialog::setError(const QString& msg)
 {
     _abortBtn->setEnabled(false);
     _closeBtn->setEnabled(true);
+    _bar->setRange(0, 1000);
+    _bar->setValue(0);
     _status->setText("✘ Failed: " + msg);
     appendLog("ERROR: " + msg);
 }

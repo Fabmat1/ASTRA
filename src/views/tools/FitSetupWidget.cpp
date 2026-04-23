@@ -143,6 +143,11 @@ void FitSetupWidget::setupUi()
     hostLayout->addStretch();
     scroll->setWidget(host);
     outer->addWidget(scroll);
+
+    if (_ctx.panel) {
+        connect(_ctx.panel, &SpectraPanel::fitPreviewEdited,
+                this, &FitSetupWidget::onFitPreviewEdited);
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -345,6 +350,7 @@ QGroupBox* FitSetupWidget::buildPerSpectrumSection()
         double mid = (cfg.wlMin + cfg.wlMax) * 0.5;
         cfg.ignore.append({mid - 5.0, mid + 5.0});
         rebuildIgnoreRows();
+        pushPreviewToPanel();
     });
     v->addWidget(_addIgnoreBtn);
 
@@ -362,6 +368,7 @@ QGroupBox* FitSetupWidget::buildPerSpectrumSection()
         double span = (cfg.wlMax - cfg.wlMin);
         cfg.anchors.append({cfg.wlMin, cfg.wlMax, std::max(10.0, span / 20.0)});
         rebuildAnchorRows();
+        pushPreviewToPanel();
     });
     v->addWidget(_addAnchorBtn);
 
@@ -390,7 +397,7 @@ QGroupBox* FitSetupWidget::buildPerSpectrumSection()
             this, &FitSetupWidget::onResetToModeDefault);
 
     // Hook up editor-change callbacks — they flush the spin values into state
-    auto flush = [this]{ commitEditorToState(); };
+    auto flush = [this]{ commitEditorToState(); pushPreviewToPanel(); };
     connect(_wlMinSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
     connect(_wlMaxSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
     connect(_resOffsetSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
@@ -514,11 +521,16 @@ void FitSetupWidget::onSpectrumListRowChanged(int row)
     _perSpectrumHost->setEnabled(true);
 
     // Ensure panel shows this spectrum
-    if (_ctx.panel) _ctx.panel->selectSpectrumById(_currentId);
+    if (_ctx.panel && _previewActive) {
+        _ctx.panel->selectSpectrumById(_currentId);
+        _ctx.panel->clearFitSelection();
+        _ctx.panel->setDisplayMode(SpectraPanel::DisplayRaw);
+    }
 
     loadStateToEditor();
     rebuildIgnoreRows();
     rebuildAnchorRows();
+    pushPreviewToPanel();
 }
 
 void FitSetupWidget::commitEditorToState()
@@ -558,12 +570,19 @@ void FitSetupWidget::rebuildIgnoreRows()
         auto* hi = makeDoubleSpin(0, 100000, 2, cfg.ignore[i].wlHigh, 0.5, "Å");
         auto* rm = new QPushButton("×"); rm->setMaximumWidth(28);
         connect(lo, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                this, [this, i](double v){ _configs[_currentId].ignore[i].wlLow = v; });
+                this, [this, i](double v){
+            _configs[_currentId].ignore[i].wlLow = v;
+            pushPreviewToPanel();
+        });
         connect(hi, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                this, [this, i](double v){ _configs[_currentId].ignore[i].wlHigh = v; });
+                this, [this, i](double v){
+            _configs[_currentId].ignore[i].wlHigh = v;
+            pushPreviewToPanel();
+        });
         connect(rm, &QPushButton::clicked, this, [this, i]{
             _configs[_currentId].ignore.removeAt(i);
             rebuildIgnoreRows();
+            pushPreviewToPanel();
         });
         row->addWidget(lo);
         row->addWidget(new QLabel("–"));
@@ -588,14 +607,21 @@ void FitSetupWidget::rebuildAnchorRows()
         sp->setPrefix("Δ ");
         auto* rm = new QPushButton("×"); rm->setMaximumWidth(28);
         connect(lo, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                this, [this, i](double v){ _configs[_currentId].anchors[i].wlLow = v; });
+                this, [this, i](double v){
+            _configs[_currentId].anchors[i].wlLow = v;  pushPreviewToPanel();
+        });
         connect(hi, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                this, [this, i](double v){ _configs[_currentId].anchors[i].wlHigh = v; });
+                this, [this, i](double v){
+            _configs[_currentId].anchors[i].wlHigh = v; pushPreviewToPanel();
+        });
         connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                this, [this, i](double v){ _configs[_currentId].anchors[i].spacing = v; });
+                this, [this, i](double v){
+            _configs[_currentId].anchors[i].spacing = v; pushPreviewToPanel();
+        });
         connect(rm, &QPushButton::clicked, this, [this, i]{
             _configs[_currentId].anchors.removeAt(i);
             rebuildAnchorRows();
+            pushPreviewToPanel();
         });
         row->addWidget(lo); row->addWidget(new QLabel("–"));
         row->addWidget(hi); row->addWidget(sp);
@@ -1046,4 +1072,62 @@ void FitSetupWidget::persistResult(const fit::SpectralFitResult& result,
 
     LOG_INFO("FitSetup", QString("Persisted %1 spectral fits for star %2")
         .arg(result.spectra.size()).arg(_ctx.star->getSourceId()));
+}
+
+void FitSetupWidget::pushPreviewToPanel()
+{
+    if (!_ctx.panel || !_previewActive) return;
+    if (_currentId.isEmpty() || !_configs.contains(_currentId)) {
+        _ctx.panel->clearFitPreview();
+        return;
+    }
+    const auto& cfg = _configs[_currentId];
+    FitPreviewConfig pc;
+    pc.active = true;
+    pc.wlMin = cfg.wlMin;
+    pc.wlMax = cfg.wlMax;
+    for (const auto& r : cfg.ignore)  pc.ignore.append ({r.wlLow, r.wlHigh});
+    for (const auto& a : cfg.anchors) pc.anchors.append({a.wlLow, a.wlHigh, a.spacing});
+    _ctx.panel->setFitPreview(pc);
+}
+
+void FitSetupWidget::onFitPreviewEdited(const FitPreviewConfig& pc)
+{
+    if (_currentId.isEmpty() || _applyingPreviewEdit) return;
+    _applyingPreviewEdit = true;
+
+    auto& cfg = _configs[_currentId];
+    cfg.wlMin = pc.wlMin;
+    cfg.wlMax = pc.wlMax;
+    cfg.ignore.clear();
+    for (const auto& r : pc.ignore) {
+        astra::fitting::IgnoreRegion ir;
+        ir.wlLow = r.wlLow; ir.wlHigh = r.wlHigh;
+        cfg.ignore.append(ir);
+    }
+    cfg.anchors.clear();
+    for (const auto& a : pc.anchors) {
+        astra::fitting::ContinuumAnchor ac;
+        ac.wlLow = a.wlLow; ac.wlHigh = a.wlHigh; ac.spacing = a.spacing;
+        cfg.anchors.append(ac);
+    }
+    loadStateToEditor();
+    rebuildIgnoreRows();
+    rebuildAnchorRows();
+    _applyingPreviewEdit = false;
+}
+
+void FitSetupWidget::setPreviewActive(bool on)
+{
+    _previewActive = on;
+    if (!_ctx.panel) return;
+    if (on) {
+        if (!_currentId.isEmpty())
+            _ctx.panel->selectSpectrumById(_currentId);
+        _ctx.panel->clearFitSelection();
+        _ctx.panel->setDisplayMode(SpectraPanel::DisplayRaw);
+        pushPreviewToPanel();
+    } else {
+        _ctx.panel->clearFitPreview();
+    }
 }

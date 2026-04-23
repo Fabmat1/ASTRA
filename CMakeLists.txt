@@ -165,6 +165,8 @@ set(SOURCES
     src/views/tools/RVInspectorDialog.cpp
     src/views/tools/SEDFitDialog.cpp
     src/views/tools/SpectraFitDialog.cpp
+    src/views/tools/FitSetupWidget.cpp
+    src/views/tools/FitProgressDialog.cpp
 
     # views/panels
     src/views/panels/PanelUtils.cpp
@@ -175,13 +177,15 @@ set(SOURCES
     src/views/panels/LCPanel.cpp
     src/views/panels/SpectraPanel.cpp
 
+    # views/widgets
+    src/views/widgets/FitPreviewOverlay.cpp
+    src/views/widgets/GridSelectorWidget.cpp
+
     # DIGGA fitting
     src/fitting/FitBackendRegistry.cpp
     src/fitting/DiggaBackend.cpp
     src/fitting/FitWorker.cpp
-    src/views/tools/FitSetupWidget.cpp
-    src/views/tools/FitProgressDialog.cpp
-    src/views/widgets/GridSelectorWidget.cpp
+    src/fitting/StdStreamRedirector.cpp
 
 )
 
@@ -258,6 +262,8 @@ set(HEADERS
     src/views/tools/RVInspectorDialog.h
     src/views/tools/SEDFitDialog.h
     src/views/tools/SpectraFitDialog.h
+    src/views/tools/FitSetupWidget.h
+    src/views/tools/FitProgressDialog.h
 
     # views/panels
     src/views/panels/PanelUtils.h
@@ -268,15 +274,17 @@ set(HEADERS
     src/views/panels/LCPanel.h
     src/views/panels/SpectraPanel.h
 
+    # views/widgets
+    src/views/widgets/FitPreviewOverlay.h
+    src/views/widgets/GridSelectorWidget.h
+
     #DIGGA fitting
     src/fitting/FitTypes.h
     src/fitting/IFitBackend.h
     src/fitting/FitBackendRegistry.h
     src/fitting/DiggaBackend.h
     src/fitting/FitWorker.h
-    src/views/tools/FitSetupWidget.h
-    src/views/tools/FitProgressDialog.h
-    src/views/widgets/GridSelectorWidget.h
+    src/fitting/StdStreamRedirector.h
 )
 
 # Create executable

@@ -163,6 +163,11 @@ void SpectraFitDialog::setupUi()
     _setup = new FitSetupWidget(setupCtx);
     _rightTabs->addTab(_setup, "Fit Setup");
 
+    connect(_rightTabs, &QTabWidget::currentChanged, this, [this](int){
+        _setup->setPreviewActive(_rightTabs->currentWidget() == _setup);
+    });
+    _setup->setPreviewActive(_rightTabs->currentWidget() == _setup);
+
     connect(_setup, &FitSetupWidget::fitCompleted, this, [this]{
         // Reload fits from DB for our star, then refresh everything
         if (_dbm) {

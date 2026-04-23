@@ -3,6 +3,7 @@
 #include "DetailPanel.h"
 #include <QMetaObject>
 #include <vector>
+#include "views/widgets/FitPreviewOverlay.h"
 
 class Spectrum;
 class QTabBar;
@@ -20,7 +21,8 @@ public:
 
     void refresh() override;
     void refreshTheme() override;
-
+    void setFitPreview(const FitPreviewConfig& cfg);
+    void clearFitPreview();
 
     enum DisplayMode {
         DisplayNormalized = 0,
@@ -34,13 +36,16 @@ public:
     void setDisplayMode(DisplayMode mode);
     void clearFitSelection();                           // fit combo → "None"
     void refreshCurrentView();                          // rebuild combo labels
-
+    void refreshFitPreviewData();
+    void resetCustomZoom() { _hasCustomZoom = false; }
+    
     // State
     QString currentSpectrumId() const;
     QString currentFitId() const;
     
 signals:
     void selectionChanged(const QString& spectrumId, const QString& fitId);
+    void fitPreviewEdited(const FitPreviewConfig& cfg);
 
 private:
 
@@ -67,6 +72,7 @@ private:
     QLabel*      _infoLabel    = nullptr;
     QPushButton* _resetZoomButton = nullptr;
     QTimer*      _axisSyncTimer   = nullptr;
+    FitPreviewOverlay* _fitOverlay = nullptr;
 
     int  _currentSpectrumIndex = -1;
     std::vector<std::shared_ptr<Spectrum>> _sortedSpectra;
