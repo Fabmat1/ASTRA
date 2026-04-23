@@ -162,6 +162,16 @@ private:
     bool _applyingPreviewEdit = false;
     bool _previewActive = false;
 
+    // ── ISIS (interactive) options ──────────────────────────────
+    astra::fitting::IsisInteractiveOptions _isisInteractiveOptions;
+
+    QGroupBox*  _isisInteractiveGroup = nullptr;
+    QCheckBox*  _rvCorrCb             = nullptr;
+    QLineEdit*  _rvAnchorsEdit        = nullptr;
+    QComboBox*  _macrobroadeningCombo = nullptr;
+
+    QGroupBox* buildIsisInteractiveSection();
+
     // Run
     QPushButton*    _runButton          = nullptr;
 

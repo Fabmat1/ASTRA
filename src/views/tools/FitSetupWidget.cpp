@@ -12,6 +12,7 @@
 #include "utils/AppSettings.h"
 #include "views/widgets/GridSelectorWidget.h"
 #include "dialogs/SettingsDialog.h"
+#include "InteractiveIsisDialog.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -137,6 +138,7 @@ void FitSetupWidget::setupUi()
     hostLayout->addWidget(buildPerSpectrumSection());
     hostLayout->addWidget(buildGlobalSection());
     hostLayout->addWidget(buildIsisOptionsSection());
+    hostLayout->addWidget(buildIsisInteractiveSection());
 
     _previewScriptBtn = new QPushButton(QStringLiteral("Preview script…"));
     connect(_previewScriptBtn, &QPushButton::clicked,
@@ -484,6 +486,32 @@ QGroupBox* FitSetupWidget::buildGlobalSection()
     return box;
 }
 
+QGroupBox* FitSetupWidget::buildIsisInteractiveSection()
+{
+    auto* g = new QGroupBox("ISIS (interactive) options");
+    auto* form = new QFormLayout(g);
+
+    _rvCorrCb = new QCheckBox("Enable RV-spline correction");
+    _rvCorrCb->setChecked(_isisInteractiveOptions.rvCorrection);
+    form->addRow(_rvCorrCb);
+
+    _rvAnchorsEdit = new QLineEdit(_isisInteractiveOptions.rvAnchors);
+    _rvAnchorsEdit->setPlaceholderText(
+        "Array_Type expression, e.g. [[3000:6500:500],[6500:25500:1000]]");
+    _rvAnchorsEdit->setEnabled(_isisInteractiveOptions.rvCorrection);
+    connect(_rvCorrCb, &QCheckBox::toggled,
+            _rvAnchorsEdit, &QWidget::setEnabled);
+    form->addRow("RV-spline anchors", _rvAnchorsEdit);
+
+    _macrobroadeningCombo = new QComboBox;
+    _macrobroadeningCombo->addItem("Rotation only (r)",             "r");
+    _macrobroadeningCombo->addItem("Rotation + macroturbulence (rm)","rm");
+    form->addRow("Macrobroadening model", _macrobroadeningCombo);
+
+    _isisInteractiveGroup = g;
+    return g;
+}
+
 QGroupBox* FitSetupWidget::buildIsisOptionsSection()
 {
     auto* g = new QGroupBox("ISIS options");
@@ -523,8 +551,13 @@ QGroupBox* FitSetupWidget::buildIsisOptionsSection()
 
 void FitSetupWidget::updateBackendSpecificUi()
 {
-    const bool isis = (_backendCombo->currentText() == "ISIS");
-    if (_isisOptsGroup) _isisOptsGroup->setVisible(isis);
+    const QString b = _backendCombo->currentText();
+    if (_isisOptsGroup)
+        _isisOptsGroup->setVisible(b == "ISIS");
+    if (_isisInteractiveGroup)
+        _isisInteractiveGroup->setVisible(b == "ISIS (interactive)");
+    if (_previewScriptBtn)
+        _previewScriptBtn->setVisible(b == "ISIS" || b == "ISIS (interactive)");
 }
 
 // =====================================================================
@@ -940,6 +973,14 @@ fit::SpectralFitJob FitSetupWidget::buildJob(QStringList& tempFilesOut) const
     }
     job.isis = isis;
 
+    astra::fitting::IsisInteractiveOptions inter;
+    if (_rvCorrCb) {
+        inter.rvCorrection    = _rvCorrCb->isChecked();
+        inter.rvAnchors       = _rvAnchorsEdit->text().trimmed();
+        inter.macrobroadening = _macrobroadeningCombo->currentData().toString();
+    }
+    job.isisInteractive = inter;
+
     AppSettings settings;
     for (const auto& p : settings.gridBasePaths())
         job.basePaths.append(p);
@@ -1033,6 +1074,19 @@ void FitSetupWidget::onRunFit()
     if (job.observations.isEmpty()) {
         QMessageBox::warning(this, "Cannot run fit",
             "No spectra selected (or no data loaded for the selected spectra).");
+        return;
+    }
+
+    if (job.backend == "ISIS (interactive)") {
+        auto* dlg = new InteractiveIsisDialog(job, this);
+        dlg->setAttribute(Qt::WA_DeleteOnClose);
+        connect(dlg, &InteractiveIsisDialog::fitExtracted,
+                this, [this](const fit::SpectralFitResult& r,
+                              const fit::SpectralFitJob&   j) {
+            persistResult(r, j);
+            emit fitCompleted();
+        });
+        dlg->show();
         return;
     }
 
@@ -1226,6 +1280,8 @@ void FitSetupWidget::onPreviewScript()
     QString body;
     if (job.backend == "ISIS") {
         body = astra::fitting::IsisBackend::generateScript(job);
+    } else if (job.backend == "ISIS (interactive)") {
+        body = InteractiveIsisDialog::generateScript(job, job.outputPath);
     } else {
         body = "# DIGGA runs as a library, not a script.\n"
                "# Job summary:\n";

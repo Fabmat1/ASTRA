@@ -7,5 +7,6 @@
         <file>data/default_instruments.json</file>
         <file>data/gaia_cmd.csv</file>
         <file>scripts/photometry_body.sl</file>
+        <file>scripts/spectroscopy_interactive_body.sl</file>
     </qresource>
 </RCC>

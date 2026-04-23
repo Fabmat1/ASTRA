@@ -14,13 +14,14 @@ FitBackendRegistry& FitBackendRegistry::instance()
 
 QStringList FitBackendRegistry::availableBackends() const
 {
-    return { "DIGGA", "ISIS" };
+    return { "DIGGA", "ISIS", "ISIS (interactive)" };
 }
 
 std::unique_ptr<IFitBackend> FitBackendRegistry::create(const QString& name) const
 {
     if (name == "DIGGA") return std::make_unique<DiggaBackend>();
     if (name == "ISIS")  return std::make_unique<IsisBackend>();
+    if (name == "ISIS (interactive)")  return std::make_unique<IsisBackend>();
     return nullptr;
 }
 

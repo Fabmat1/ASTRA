@@ -167,6 +167,7 @@ set(SOURCES
     src/views/tools/SpectraFitDialog.cpp
     src/views/tools/FitSetupWidget.cpp
     src/views/tools/FitProgressDialog.cpp
+    src/views/tools/InteractiveIsisDialog.cpp
 
     # views/panels
     src/views/panels/PanelUtils.cpp
@@ -180,6 +181,8 @@ set(SOURCES
     # views/widgets
     src/views/widgets/FitPreviewOverlay.cpp
     src/views/widgets/GridSelectorWidget.cpp
+    src/views/widgets/TerminalView.cpp
+    src/views/widgets/IsisMacroPanel.cpp
 
     # DIGGA fitting
     src/fitting/FitBackendRegistry.cpp
@@ -265,6 +268,7 @@ set(HEADERS
     src/views/tools/SpectraFitDialog.h
     src/views/tools/FitSetupWidget.h
     src/views/tools/FitProgressDialog.h
+    src/views/tools/InteractiveIsisDialog.h
 
     # views/panels
     src/views/panels/PanelUtils.h
@@ -278,6 +282,8 @@ set(HEADERS
     # views/widgets
     src/views/widgets/FitPreviewOverlay.h
     src/views/widgets/GridSelectorWidget.h
+    src/views/widgets/TerminalView.h
+    src/views/widgets/IsisMacroPanel.h
 
     #DIGGA fitting
     src/fitting/FitTypes.h

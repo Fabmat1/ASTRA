@@ -73,6 +73,12 @@ struct IsisOptions {
     int     xfigIgnore       = -1;
 };
 
+struct IsisInteractiveOptions {
+    bool    rvCorrection = false;
+    QString rvAnchors    = "[[3000:6500:500],[6500:25500:1000]]";
+    QString macrobroadening = "r";   // "r" = rotation, "rm" = rotation + macroturbulence
+};
+
 struct SpectralFitJob {
     QVector<StellarComponent> components;
     QVector<Observation>      observations;
@@ -92,7 +98,8 @@ struct SpectralFitJob {
     QString outputPath;                  // temp dir for intermediate files
     QStringList basePaths;               // grid search paths (DIGGA gs.base_paths)
     QString backend = "DIGGA";           // which IFitBackend to use
-    IsisOptions isis;
+    IsisOptions            isis;
+    IsisInteractiveOptions isisInteractive;   // used only by ISIS (interactive)
 };
 
 // ────────────────────────────────────────────────────────────────────
