@@ -4,6 +4,7 @@
 #include <QEvent>
 #include <algorithm>
 #include <cmath>
+#include <QMenu>
 
 namespace {
 constexpr const char* kLayerName = "fitPreview";
@@ -289,6 +290,11 @@ bool FitPreviewOverlay::eventFilter(QObject* watched, QEvent* ev)
     switch (ev->type()) {
     case QEvent::MouseButtonPress: {
         auto* me = static_cast<QMouseEvent*>(ev);
+        if (me->button() == Qt::RightButton) {
+            if (!_plot->axisRect()->rect().contains(me->pos())) return false;
+            showContextMenu(me->globalPosition().toPoint(), me->pos());
+            return true;
+        }
         if (me->button() != Qt::LeftButton) return false;
         auto h = hitTest(me->pos());
         if (h.kind == None) return false;
@@ -325,6 +331,75 @@ bool FitPreviewOverlay::eventFilter(QObject* watched, QEvent* ev)
     default: break;
     }
     return false;
+}
+
+void FitPreviewOverlay::showContextMenu(const QPoint& globalPos,
+                                         const QPoint& localPos)
+{
+    if (!_plot || !_cfg.active) return;
+    const double wl = _plot->xAxis->pixelToCoord(localPos.x());
+    const Hit hit   = hitTest(localPos);
+
+    QMenu menu;
+
+    const bool onIgnore = (hit.kind == IgnoreLo || hit.kind == IgnoreHi ||
+                            hit.kind == IgnoreBody);
+    const bool onAnchor = (hit.kind == AnchorLo || hit.kind == AnchorHi);
+
+    if (onIgnore && hit.index >= 0 && hit.index < _cfg.ignore.size()) {
+        const auto& ig = _cfg.ignore[hit.index];
+        menu.addAction(
+            QString("Remove ignore region (%1–%2 Å)")
+                .arg(ig.wlLow, 0, 'f', 1).arg(ig.wlHigh, 0, 'f', 1),
+            this, [this, i = hit.index]{
+                if (i < _cfg.ignore.size()) {
+                    _cfg.ignore.remove(i);
+                    rebuild();
+                    emit edited(_cfg);
+                }
+            });
+    } else if (onAnchor && hit.index >= 0 && hit.index < _cfg.anchors.size()) {
+        const auto& a = _cfg.anchors[hit.index];
+        menu.addAction(
+            QString("Remove anchor range (%1–%2 Å)")
+                .arg(a.wlLow, 0, 'f', 1).arg(a.wlHigh, 0, 'f', 1),
+            this, [this, i = hit.index]{
+                if (i < _cfg.anchors.size()) {
+                    _cfg.anchors.remove(i);
+                    rebuild();
+                    emit edited(_cfg);
+                }
+            });
+    }
+
+    if (menu.actions().isEmpty() ||
+        menu.actions().last()->text().startsWith("Remove"))
+    {
+        if (!menu.actions().isEmpty()) menu.addSeparator();
+
+        menu.addAction(QString("Add ignore region at %1 Å").arg(wl, 0, 'f', 1),
+            this, [this, wl]{
+                FitPreviewConfig::Ignore ig;
+                ig.wlLow  = wl - 5.0;
+                ig.wlHigh = wl + 5.0;
+                _cfg.ignore.append(ig);
+                rebuild();
+                emit edited(_cfg);
+            });
+
+        menu.addAction(QString("Add anchor range at %1 Å").arg(wl, 0, 'f', 1),
+            this, [this, wl]{
+                FitPreviewConfig::Anchor a;
+                a.wlLow   = wl - 50.0;
+                a.wlHigh  = wl + 50.0;
+                a.spacing = 50.0;
+                _cfg.anchors.append(a);
+                rebuild();
+                emit edited(_cfg);
+            });
+    }
+
+    menu.exec(globalPos);
 }
 
 void FitPreviewOverlay::setSpectrumData(const std::vector<double>& wl,

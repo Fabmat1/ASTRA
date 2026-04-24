@@ -5,6 +5,7 @@
 #include <QPoint>
 #include "plotting/qcustomplot.h"
 #include <QPointer>
+#include <QMenu>
 
 class QCustomPlot;
 class QCPAbstractItem;
@@ -42,6 +43,7 @@ protected:
     bool eventFilter(QObject* watched, QEvent* ev) override;
 
 private:
+    void showContextMenu(const QPoint& globalPos, const QPoint& localPos);
     enum HandleKind {
         None,
         RangeMin, RangeMax,
