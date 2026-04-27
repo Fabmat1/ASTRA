@@ -251,6 +251,11 @@ public:
     void computeSummaryMetricsFull(const SummaryPersistCallback& onChanged = nullptr);
     void updateDatasetAvailability();
 
+    void markSummaryDirty();
+
+    void setSummaryPersistCallback(SummaryPersistCallback cb)
+        { _summaryPersistCb = std::move(cb); }
+
 private:
     // Targeted recomputation
     void recomputeRVMetrics();
@@ -324,6 +329,8 @@ private:
     int _nSpectra = 0;
     int _nFitSpectra = 0;
     bool _rvAttached = false;
+
+    SummaryPersistCallback _summaryPersistCb;
 
     // RV curve summary
     double _rvTimespan = std::numeric_limits<double>::quiet_NaN();

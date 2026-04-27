@@ -111,6 +111,12 @@ std::shared_ptr<Project> ApplicationController::openProject(const QString& proje
                     star->setPhotometryLoader(photometryLoader);
                     star->setSpectraLoader(spectraLoader);
                     star->setRVLoader(rvLoader);
+
+                    std::weak_ptr<Star> wstar = star;
+                    star->setSummaryPersistCallback([this, wstar, projectId]() {
+                        if (auto s = wstar.lock())
+                            this->databaseManager()->updateStarRow(projectId, s);
+                    });
                 }
                 
                 project->setStars(std::move(stars), false);

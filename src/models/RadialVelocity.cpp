@@ -454,102 +454,100 @@ void RadialVelocityCurve::setBestFit(const QString& fitId)
 
 double RadialVelocityCurve::getMinRV() const
 {
-    if (_rvPoints.empty()) return 0.0;
-    
-    auto minIt = std::min_element(_rvPoints.begin(), _rvPoints.end(),
+    auto pts = getActiveRVPoints();
+    if (pts.empty()) return 0.0;
+
+    auto minIt = std::min_element(pts.begin(), pts.end(),
         [](const std::shared_ptr<RadialVelocityPoint>& a,
            const std::shared_ptr<RadialVelocityPoint>& b) {
             return a->getRV() < b->getRV();
         });
-    
     return (*minIt)->getRV();
 }
 
 double RadialVelocityCurve::getMaxRV() const
 {
-    if (_rvPoints.empty()) return 0.0;
-    
-    auto maxIt = std::max_element(_rvPoints.begin(), _rvPoints.end(),
+    auto pts = getActiveRVPoints();
+    if (pts.empty()) return 0.0;
+
+    auto maxIt = std::max_element(pts.begin(), pts.end(),
         [](const std::shared_ptr<RadialVelocityPoint>& a,
            const std::shared_ptr<RadialVelocityPoint>& b) {
             return a->getRV() < b->getRV();
         });
-    
     return (*maxIt)->getRV();
 }
 
 double RadialVelocityCurve::getMeanRV() const
 {
-    if (_rvPoints.empty()) return 0.0;
-    
-    double sum = std::accumulate(_rvPoints.begin(), _rvPoints.end(), 0.0,
+    auto pts = getActiveRVPoints();
+    if (pts.empty()) return 0.0;
+
+    double sum = std::accumulate(pts.begin(), pts.end(), 0.0,
         [](double acc, const std::shared_ptr<RadialVelocityPoint>& point) {
             return acc + point->getRV();
         });
-    
-    return sum / _rvPoints.size();
+    return sum / pts.size();
 }
 
 double RadialVelocityCurve::getMedianRV() const
 {
-    if (_rvPoints.empty()) return 0.0;
-    
+    auto pts = getActiveRVPoints();
+    if (pts.empty()) return 0.0;
+
     std::vector<double> values;
-    values.reserve(_rvPoints.size());
-    for (const auto& point : _rvPoints) {
+    values.reserve(pts.size());
+    for (const auto& point : pts)
         values.push_back(point->getRV());
-    }
-    
     return calculateMedian(values);
 }
 
 double RadialVelocityCurve::getStdDevRV() const
 {
-    if (_rvPoints.size() < 2) return 0.0;
-    
+    auto pts = getActiveRVPoints();
+    if (pts.size() < 2) return 0.0;
+
     double mean = getMeanRV();
-    double sumSquares = std::accumulate(_rvPoints.begin(), _rvPoints.end(), 0.0,
+    double sumSquares = std::accumulate(pts.begin(), pts.end(), 0.0,
         [mean](double acc, const std::shared_ptr<RadialVelocityPoint>& point) {
             double diff = point->getRV() - mean;
             return acc + diff * diff;
         });
-    
-    return std::sqrt(sumSquares / (_rvPoints.size() - 1));
+    return std::sqrt(sumSquares / (pts.size() - 1));
 }
 
 double RadialVelocityCurve::getRVAmplitude() const
 {
-    if (_rvPoints.empty()) return 0.0;
+    if (getActiveRVPoints().empty()) return 0.0;
     return getMaxRV() - getMinRV();
 }
 
 double RadialVelocityCurve::getWeightedMeanRV() const
 {
-    if (_rvPoints.empty()) return 0.0;
-    
+    auto pts = getActiveRVPoints();
+    if (pts.empty()) return 0.0;
+
     double sumWeightedRV = 0.0;
     double sumWeights = 0.0;
-    
-    for (const auto& point : _rvPoints) {
+    for (const auto& point : pts) {
         if (point->getRVError() > 0) {
             double weight = 1.0 / (point->getRVError() * point->getRVError());
             sumWeightedRV += point->getRV() * weight;
             sumWeights += weight;
         }
     }
-    
     return (sumWeights > 0) ? sumWeightedRV / sumWeights : getMeanRV();
 }
 
 double RadialVelocityCurve::getWeightedStdDevRV() const
 {
-    if (_rvPoints.size() < 2) return 0.0;
-    
+    auto pts = getActiveRVPoints();
+    if (pts.size() < 2) return 0.0;
+
     double weightedMean = getWeightedMeanRV();
     double sumWeightedSquares = 0.0;
     double sumWeights = 0.0;
-    
-    for (const auto& point : _rvPoints) {
+    for (const auto& point : pts) {
         if (point->getRVError() > 0) {
             double weight = 1.0 / (point->getRVError() * point->getRVError());
             double diff = point->getRV() - weightedMean;
@@ -557,42 +555,42 @@ double RadialVelocityCurve::getWeightedStdDevRV() const
             sumWeights += weight;
         }
     }
-    
     if (sumWeights <= 0) return getStdDevRV();
-    
-    // Bessel's correction for weighted standard deviation
-    double n = _rvPoints.size();
+
+    double n = static_cast<double>(pts.size());
     return std::sqrt(sumWeightedSquares * n / (sumWeights * (n - 1)));
 }
 
 double RadialVelocityCurve::getMinMJD() const
 {
-    if (_rvPoints.empty()) return 0.0;
-    
-    auto minIt = std::min_element(_rvPoints.begin(), _rvPoints.end(),
+    auto pts = getActiveRVPoints();
+    if (pts.empty()) return 0.0;
+
+    auto minIt = std::min_element(pts.begin(), pts.end(),
         [](const std::shared_ptr<RadialVelocityPoint>& a,
            const std::shared_ptr<RadialVelocityPoint>& b) {
             return a->getMJD() < b->getMJD();
         });
-    
     return (*minIt)->getMJD();
 }
 
 double RadialVelocityCurve::getMaxMJD() const
 {
-    if (_rvPoints.empty()) return 0.0;
-    
-    auto maxIt = std::max_element(_rvPoints.begin(), _rvPoints.end(),
+    auto pts = getActiveRVPoints();
+    if (pts.empty()) return 0.0;
+
+    auto maxIt = std::max_element(pts.begin(), pts.end(),
         [](const std::shared_ptr<RadialVelocityPoint>& a,
            const std::shared_ptr<RadialVelocityPoint>& b) {
             return a->getMJD() < b->getMJD();
         });
-    
     return (*maxIt)->getMJD();
 }
 
 double RadialVelocityCurve::getTimeSpan() const
 {
+    auto pts = getActiveRVPoints();
+    if (pts.size() < 2) return 0.0;
     return getMaxMJD() - getMinMJD();
 }
 
@@ -622,7 +620,7 @@ double RadialVelocityCurve::computeLogP() const
     //   pval = chi2.sf(chisq_sum, dof)
     //   logp = log10(pval)
 
-    int ndata = static_cast<int>(_rvPoints.size());
+    int ndata = static_cast<int>(getActiveRVPoints().size());
     if (ndata < 2) return 0.0;
 
     // Gather RV and errors, skipping points with zero/negative error
@@ -631,7 +629,7 @@ double RadialVelocityCurve::computeLogP() const
     rv.reserve(ndata);
     err.reserve(ndata);
 
-    for (const auto& pt : _rvPoints) {
+    for (const auto& pt : getActiveRVPoints()) {
         double e = pt->getRVError();
         if (e > 0.0) {
             rv.push_back(pt->getRV());
@@ -645,7 +643,7 @@ double RadialVelocityCurve::computeLogP() const
         // Use equal weights (error = 1)
         rv.clear();
         err.clear();
-        for (const auto& pt : _rvPoints) {
+        for (const auto& pt : getActiveRVPoints()) {
             rv.push_back(pt->getRV());
             err.push_back(1.0);
         }
@@ -708,12 +706,38 @@ void RadialVelocityCurve::attachToSpectra(
     for (const auto& spec : spectra) {
         if (!spec) continue;
         std::weak_ptr<Spectrum> wspec = spec;
-        auto handler = [this, wspec](Spectrum*, std::shared_ptr<SpectralFit> fit) {
-            if (auto s = wspec.lock()) onBestFitChanged(s, fit);
-        };
-        spec->setBestFitChangedCallback(handler);
-        spec->setFitChangedCallback(handler);
+
+        spec->setBestFitChangedCallback(
+            [this, wspec](Spectrum*, std::shared_ptr<SpectralFit> newBest) {
+                if (auto s = wspec.lock()) onBestFitChanged(s, newBest);
+            });
+
+        spec->setFitChangedCallback(
+            [this, wspec](Spectrum*, std::shared_ptr<SpectralFit> fit) {
+                if (auto s = wspec.lock()) onLinkedFitMetadataChanged(s, fit);
+            });
     }
+}
+
+void RadialVelocityCurve::onLinkedFitMetadataChanged(
+    const std::shared_ptr<Spectrum>& spec,
+    const std::shared_ptr<SpectralFit>& fit)
+{
+    if (!fit) return;
+
+    std::shared_ptr<RadialVelocityPoint> point;
+    for (auto& p : _rvPoints) {
+        if (p->getSpectrumId() == spec->getId()) { point = p; break; }
+    }
+    if (!point) return;
+
+    // Only mirror metadata if this fit is the one the RV point is linked to.
+    if (point->getSpectralFitId() != fit->getId()) return;
+
+    point->mirrorFlagFromFit(*fit);
+
+    if (_pointPersistCb) _pointPersistCb(point);
+    notifyChanged();
 }
 
 void RadialVelocityCurve::onBestFitChanged(
@@ -759,4 +783,9 @@ RadialVelocityCurve::getActiveRVPoints() const
     for (const auto& p : _rvPoints)
         if (p && !p->isFlagged()) out.push_back(p);
     return out;
+}
+
+void RadialVelocityPoint::mirrorFlagFromFit(const SpectralFit& fit)
+{
+    setFlagged(fit.isFlagged);
 }

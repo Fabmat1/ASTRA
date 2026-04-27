@@ -119,7 +119,8 @@ public:
 
     // Apply values from a SpectralFit. Always refreshes linkage + flag.
     // Active RV/error fields are overwritten only if rvSource == FromFit.
-    void applyFromFit(const SpectralFit& fit);
+    void mirrorFlagFromFit(const SpectralFit& fit);
+    void applyFromFit(const SpectralFit& fit);   // unchanged signature
 
 private:
     QString _id;
@@ -349,8 +350,11 @@ private:
     PointPersistCallback _pointPersistCb;
     
     double calculateMedian(std::vector<double> values) const;
+
     void onBestFitChanged(const std::shared_ptr<Spectrum>& spec,
                           const std::shared_ptr<SpectralFit>& newBest);
+    void onLinkedFitMetadataChanged(const std::shared_ptr<Spectrum>& spec,
+                                    const std::shared_ptr<SpectralFit>& fit);
 };
 
 #endif // RADIALVELOCITY_H

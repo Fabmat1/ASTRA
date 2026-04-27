@@ -346,8 +346,10 @@ void SpectraFitDialog::onTreeItemChanged(QTreeWidgetItem* item, int column)
         }
         if (_dbm) _dbm->updateSpectralFitFlag(id, flagged);
     }
+    
     refreshTreeStyling();
     _panel->refreshCurrentView();
+    if (_star) _star->markSummaryDirty();
 }
 
 void SpectraFitDialog::onTreeItemClicked(QTreeWidgetItem* item, int column)
