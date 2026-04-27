@@ -322,3 +322,8 @@ void Spectrum::setBestFitById(const QString& fitId)
         if (f) f->isBestFit = (!fitId.isEmpty() && f->getId() == fitId);
     notifyBestFitChanged();
 }
+
+void Spectrum::notifyFitChanged(const std::shared_ptr<SpectralFit>& fit)
+{
+    if (_fitChangedCb) _fitChangedCb(this, fit);
+}

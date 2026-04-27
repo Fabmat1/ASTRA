@@ -5,6 +5,7 @@
 class QPushButton;
 class QVBoxLayout;
 class QCustomPlot;
+class QCheckBox;
 
 class RVPanel : public DetailPanel
 {
@@ -26,4 +27,7 @@ private:
     QWidget*     _content       = nullptr;
     QVBoxLayout* _contentLayout = nullptr;
     bool         _folded        = false;
+
+    QCheckBox* _showFlaggedCheck = nullptr;
+    bool _showFlagged = false;
 };

@@ -708,11 +708,11 @@ void RadialVelocityCurve::attachToSpectra(
     for (const auto& spec : spectra) {
         if (!spec) continue;
         std::weak_ptr<Spectrum> wspec = spec;
-        spec->setBestFitChangedCallback(
-            [this, wspec](Spectrum*, std::shared_ptr<SpectralFit> newBest) {
-                if (auto s = wspec.lock())
-                    onBestFitChanged(s, newBest);
-            });
+        auto handler = [this, wspec](Spectrum*, std::shared_ptr<SpectralFit> fit) {
+            if (auto s = wspec.lock()) onBestFitChanged(s, fit);
+        };
+        spec->setBestFitChangedCallback(handler);
+        spec->setFitChangedCallback(handler);
     }
 }
 
@@ -732,6 +732,7 @@ void RadialVelocityCurve::onBestFitChanged(
             point->setSpectralFitId(QString());
             point->setSourceFit({});
         }
+        if (_pointPersistCb && point) _pointPersistCb(point);
         notifyChanged();
         return;
     }
@@ -746,6 +747,7 @@ void RadialVelocityCurve::onBestFitChanged(
         point->setSourceFit(newBest);
         point->applyFromFit(*newBest);
     }
+    if (_pointPersistCb && point) _pointPersistCb(point);
     notifyChanged();
 }
 

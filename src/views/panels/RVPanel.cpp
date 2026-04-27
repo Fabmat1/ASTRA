@@ -10,6 +10,7 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGroupBox>
+#include <QCheckBox>
 #include <QPushButton>
 #include <QTimer>
 #include <QPainter>
@@ -209,6 +210,10 @@ RVPanel::RVPanel(const Context& ctx, QWidget* parent)
 {
     setupUi();
     populate();
+
+    if (auto curve = _ctx.star->getRVCurve()) {
+        curve->setChangeCallback([this]() { populate(); });
+    }
 }
 
 void RVPanel::refresh()      { populate(); }
@@ -254,7 +259,8 @@ void RVPanel::populate()
     }
 
     // ── Gather data ──
-    auto points = rvCurve->getRVPoints();
+    auto points = _showFlagged ? rvCurve->getRVPoints()
+                            : rvCurve->getActiveRVPoints();
 
     LOG_DEBUG(CAT, QString("Star %1 — getRVPoints() returned %2 point(s)")
         .arg(_ctx.star->getSourceId())
@@ -534,8 +540,16 @@ void RVPanel::setupUi()
     _toggleButton->setMaximumWidth(140);
     connect(_toggleButton, &QPushButton::clicked, this, &RVPanel::onToggleFolded);
 
+    _showFlaggedCheck = new QCheckBox("Show flagged");
+    _showFlaggedCheck->setChecked(false);
+    connect(_showFlaggedCheck, &QCheckBox::toggled, this, [this](bool on) {
+        _showFlagged = on;
+        populate();
+    });
+
     QHBoxLayout* toolbar = new QHBoxLayout;
     toolbar->addStretch();
+    toolbar->addWidget(_showFlaggedCheck);
     toolbar->addWidget(_toggleButton);
     layout->addLayout(toolbar);
 

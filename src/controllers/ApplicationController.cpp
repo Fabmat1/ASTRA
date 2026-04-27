@@ -1,6 +1,7 @@
 #include "ApplicationController.h"
 #include "models/Project.h"
 #include "models/Star.h"
+#include "models/RadialVelocity.h"
 #include "db/DatabaseManager.h"
 #include "utils/ThemeManager.h"
 #include "utils/BackgroundTaskManager.h"
@@ -95,7 +96,14 @@ std::shared_ptr<Project> ApplicationController::openProject(const QString& proje
                     return dbMgr->loadSpectra(starId);
                 };
                 auto rvLoader = [dbMgr](const QString& starId) {
-                    return dbMgr->loadRadialVelocityCurve(starId);
+                    auto curve = dbMgr->loadRadialVelocityCurve(starId);
+                    if (curve) {
+                        curve->setPointPersistCallback(
+                            [dbMgr](const std::shared_ptr<RadialVelocityPoint>& p) {
+                                dbMgr->saveRadialVelocityPoint(p, p->getCurveId());
+                            });
+                    }
+                    return curve;
                 };
                 
                 // Set the same loader instances on all stars

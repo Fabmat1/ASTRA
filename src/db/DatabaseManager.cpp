@@ -544,6 +544,9 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE rv_points ADD COLUMN rv_manual_error_formal REAL DEFAULT 0",
         "ALTER TABLE rv_points ADD COLUMN rv_manual_error_systematic REAL DEFAULT 0",
         "ALTER TABLE rv_points ADD COLUMN rv_source INTEGER DEFAULT 0",
+
+        "ALTER TABLE rv_points ADD COLUMN rv_error_formal REAL DEFAULT 0",
+        "ALTER TABLE rv_points ADD COLUMN rv_error_systematic REAL DEFAULT 0",
     };
 
     for (const QString& sql : alterQueries) {
@@ -556,6 +559,9 @@ bool DatabaseManager::runMigrations()
                "WHERE rv_manual IS NULL "
                "AND spectral_fit_id IS NOT NULL "
                "AND spectral_fit_id != ''");
+        q.exec("UPDATE rv_points "
+                "SET rv_error_formal = rv_error "
+                "WHERE rv_error_formal = 0 AND rv_error_systematic = 0");
     }
 
     return true;

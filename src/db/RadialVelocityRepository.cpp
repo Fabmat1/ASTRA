@@ -59,6 +59,8 @@ bool RadialVelocityRepository::saveRadialVelocityPoint(
     query.bindValue(":bjd", point->getBJD());
     query.bindValue(":rv", point->getRV());
     query.bindValue(":rv_error", point->getRVError());
+    query.bindValue(":rv_error_formal",     point->getRVErrorFormal());
+    query.bindValue(":rv_error_systematic", point->getRVErrorSystematic());
     query.bindValue(":source", point->getSource());
     query.bindValue(":spectrum_id", point->getSpectrumId());
     query.bindValue(":fit_id", point->getSpectralFitId());
@@ -186,6 +188,8 @@ RadialVelocityRepository::loadRadialVelocityPoints(const QString& curveId)
         pt->setRVManualErrorSystematic(query.value("rv_manual_error_systematic").toDouble());
         pt->setRVSource(static_cast<RadialVelocityPoint::RVSource>(
             query.value("rv_source").toInt()));
+        pt->setRVErrorFormal    (query.value("rv_error_formal").toDouble());
+        pt->setRVErrorSystematic(query.value("rv_error_systematic").toDouble());
         result.push_back(pt);
     }
     return result;

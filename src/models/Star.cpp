@@ -249,6 +249,22 @@ std::shared_ptr<RadialVelocityCurve> Star::getRVCurve()
         _rvCurve->attachToSpectra(_spectra);
         _rvAttached = true;
     }
+    if (_rvCurve && _spectraLoaded && !_rvAttached) {
+    _rvCurve->attachToSpectra(_spectra);
+
+    for (auto& spec : _spectra) {
+        if (!spec) continue;
+        auto best = spec->getBestFit();
+        if (!best) continue;
+        for (auto& p : _rvCurve->getRVPoints()) {
+            if (p->getSpectrumId() == spec->getId()) {
+                p->applyFromFit(*best);
+                break;
+            }
+        }
+    }
+        _rvAttached = true;
+    }
     return _rvCurve;
 }
 

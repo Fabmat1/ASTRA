@@ -332,9 +332,18 @@ void SpectraFitDialog::onTreeItemChanged(QTreeWidgetItem* item, int column)
         for (auto& s : _spectra) if (s->getId() == id) { s->setFlagged(flagged); break; }
         if (_dbm) _dbm->updateSpectrumFlag(id, flagged);
     } else if (kind == kKindFit) {
-        for (auto& s : _spectra)
-            for (auto& f : s->getSpectralFits())
-                if (f->getId() == id) { f->isFlagged = flagged; break; }
+        std::shared_ptr<Spectrum> owner;
+        std::shared_ptr<SpectralFit> targetFit;
+        for (auto& s : _spectra) {
+            for (auto& f : s->getSpectralFits()) {
+                if (f->getId() == id) { owner = s; targetFit = f; break; }
+            }
+            if (targetFit) break;
+        }
+        if (targetFit) {
+            targetFit->isFlagged = flagged;
+            if (owner) owner->notifyFitChanged(targetFit);
+        }
         if (_dbm) _dbm->updateSpectralFitFlag(id, flagged);
     }
     refreshTreeStyling();

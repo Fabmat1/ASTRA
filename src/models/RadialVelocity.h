@@ -330,6 +330,11 @@ public:
 
     std::vector<std::shared_ptr<RadialVelocityPoint>> getActiveRVPoints() const;
 
+    using PointPersistCallback =
+        std::function<void(const std::shared_ptr<RadialVelocityPoint>&)>;
+    void setPointPersistCallback(PointPersistCallback cb)
+        { _pointPersistCb = std::move(cb); }
+
 protected:
     void notifyChanged() { if (_onChange) _onChange(); }
 
@@ -341,6 +346,8 @@ private:
     std::vector<std::shared_ptr<RVFit>> _rvFits;
     double _logP;
 
+    PointPersistCallback _pointPersistCb;
+    
     double calculateMedian(std::vector<double> values) const;
     void onBestFitChanged(const std::shared_ptr<Spectrum>& spec,
                           const std::shared_ptr<SpectralFit>& newBest);

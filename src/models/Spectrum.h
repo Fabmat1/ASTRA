@@ -28,6 +28,8 @@ public:
     bool saveDataToFile(const QString& filepath);
     bool loadDataFromFile(const QString& filepath);
 
+    void setFlagged(bool f) { isFlagged = f; }   // ← delete from Spectrum
+
     QDateTime creationDate;
     QString modelId;
     bool isBestFit;
@@ -138,6 +140,12 @@ public:
         std::function<void(Spectrum*, std::shared_ptr<SpectralFit>)>;
     void setBestFitChangedCallback(BestFitChangedCallback cb)
         { _bestFitChangedCb = std::move(cb); }
+    using FitChangedCallback =
+        std::function<void(Spectrum*, std::shared_ptr<SpectralFit>)>;
+    void setFitChangedCallback(FitChangedCallback cb)
+        { _fitChangedCb = std::move(cb); }
+
+    void notifyFitChanged(const std::shared_ptr<SpectralFit>& fit);
 
     // ── Utilities ───────────────────────────────────────────────────────────
     bool loadFromFile(const QString& filepath);
@@ -173,6 +181,7 @@ private:
     // Model fits
     std::vector<std::shared_ptr<SpectralFit>> _spectralFits;
     BestFitChangedCallback _bestFitChangedCb;
+    FitChangedCallback _fitChangedCb;
 
     void notifyBestFitChanged();
 
