@@ -807,6 +807,9 @@ void RVInspectorDialog::setupUi()
     // Initialise plot with whatever the solutions widget chose to display
     if (_solutions && _plotPanel)
         _plotPanel->setDisplayedFit(_solutions->displayedFit());
+
+    for (auto* btn : findChildren<QPushButton*>())
+        btn->setAutoDefault(false);
 }
 
 void RVInspectorDialog::onTableContextMenu(const QPoint& pos)
