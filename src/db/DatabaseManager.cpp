@@ -538,11 +538,24 @@ bool DatabaseManager::runMigrations()
 
         "ALTER TABLE spectra        ADD COLUMN is_flagged INTEGER DEFAULT 0",
         "ALTER TABLE spectral_fits  ADD COLUMN is_flagged INTEGER DEFAULT 0",
+
+        "ALTER TABLE rv_points      ADD COLUMN is_flagged INTEGER DEFAULT 0",
+        "ALTER TABLE rv_points ADD COLUMN rv_manual REAL",
+        "ALTER TABLE rv_points ADD COLUMN rv_manual_error_formal REAL DEFAULT 0",
+        "ALTER TABLE rv_points ADD COLUMN rv_manual_error_systematic REAL DEFAULT 0",
+        "ALTER TABLE rv_points ADD COLUMN rv_source INTEGER DEFAULT 0",
     };
 
     for (const QString& sql : alterQueries) {
         QSqlQuery q(_db->threadConnection());            
         q.exec(sql);
+    }
+    {
+        QSqlQuery q(_db->threadConnection());
+        q.exec("UPDATE rv_points SET rv_source = 1 "
+               "WHERE rv_manual IS NULL "
+               "AND spectral_fit_id IS NOT NULL "
+               "AND spectral_fit_id != ''");
     }
 
     return true;

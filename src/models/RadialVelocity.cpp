@@ -222,6 +222,7 @@ std::shared_ptr<RadialVelocityPoint> RadialVelocityPoint::createFromSpectralFit(
     rvPoint->setSpectrumId(spectrum->getId());
     rvPoint->setSpectralFitId(fit->getId());
     rvPoint->setSource("spectral_fit");
+    rvPoint->setRVSource(RadialVelocityPoint::RVSource::FromFit);
 
     if (instrument) {
         rvPoint->setInstrument(instrument);
@@ -679,4 +680,71 @@ double RadialVelocityCurve::computeLogP() const
     double logp = logChi2SF(chisq_sum, dof);
     if (std::isnan(logp)) return 0.0;
     return logp;
+}
+
+void RadialVelocityPoint::captureAsManual()
+{
+    _rvManual              = _rv;
+    _rvManualErrorFormal   = _rvErrorFormal;
+    _rvManualErrorSystematic = _rvErrorSystematic;
+    _rvSource              = RVSource::Manual;
+}
+
+void RadialVelocityPoint::applyFromFit(const SpectralFit& fit)
+{
+    setSpectralFitId(fit.getId());
+    setFlagged(fit.isFlagged);            
+
+    if (_rvSource == RVSource::FromFit) {
+        _rv             = fit.radialVelocity;
+        _rvErrorFormal  = fit.radialVelocityError;
+        _rvErrorDirty   = true;
+    }
+}
+
+void RadialVelocityCurve::attachToSpectra(
+    const std::vector<std::shared_ptr<Spectrum>>& spectra)
+{
+    for (const auto& spec : spectra) {
+        if (!spec) continue;
+        std::weak_ptr<Spectrum> wspec = spec;
+        spec->setBestFitChangedCallback(
+            [this, wspec](Spectrum*, std::shared_ptr<SpectralFit> newBest) {
+                if (auto s = wspec.lock())
+                    onBestFitChanged(s, newBest);
+            });
+    }
+}
+
+void RadialVelocityCurve::onBestFitChanged(
+    const std::shared_ptr<Spectrum>& spec,
+    const std::shared_ptr<SpectralFit>& newBest)
+{
+    std::shared_ptr<RadialVelocityPoint> point;
+    for (auto& p : _rvPoints) {
+        if (p->getSpectrumId() == spec->getId()) { point = p; break; }
+    }
+
+    if (!newBest) {
+        // Best fit disappeared. Keep the point (may carry manual values),
+        // but sever the fit link.
+        if (point) {
+            point->setSpectralFitId(QString());
+            point->setSourceFit({});
+        }
+        notifyChanged();
+        return;
+    }
+
+    if (!point) {
+        point = RadialVelocityPoint::createFromSpectralFit(newBest, spec);
+        if (point) {
+            point->setRVSource(RadialVelocityPoint::RVSource::FromFit);
+            addRVPoint(point);
+        }
+    } else {
+        point->setSourceFit(newBest);
+        point->applyFromFit(*newBest);
+    }
+    notifyChanged();
 }

@@ -6,6 +6,7 @@
 #include <vector>
 #include <memory>
 #include <cmath>
+#include <limits>
 
 #include "Time.h"
 
@@ -95,6 +96,31 @@ public:
         std::shared_ptr<Spectrum> spectrum,
         std::shared_ptr<Instrument> instrument = nullptr);
 
+    // Flagged: excluded from RV fits; auto-mirrored from source SpectralFit
+    bool isFlagged() const { return _flagged; }
+    void setFlagged(bool f) { _flagged = f; }
+
+    enum class RVSource { Manual = 0, FromFit = 1 };
+
+    RVSource getRVSource() const { return _rvSource; }
+    void     setRVSource(RVSource s) { _rvSource = s; }
+
+    // Manual snapshot (preserved across fit refreshes)
+    bool   hasManualValue() const { return !std::isnan(_rvManual); }
+    double getRVManual() const { return _rvManual; }
+    double getRVManualErrorFormal() const { return _rvManualErrorFormal; }
+    double getRVManualErrorSystematic() const { return _rvManualErrorSystematic; }
+    void   setRVManual(double v) { _rvManual = v; }
+    void   setRVManualErrorFormal(double v) { _rvManualErrorFormal = v; }
+    void   setRVManualErrorSystematic(double v) { _rvManualErrorSystematic = v; }
+
+    // Capture current active values as manual snapshot and switch to Manual mode.
+    void captureAsManual();
+
+    // Apply values from a SpectralFit. Always refreshes linkage + flag.
+    // Active RV/error fields are overwritten only if rvSource == FromFit.
+    void applyFromFit(const SpectralFit& fit);
+
 private:
     QString _id;
     QString _curveId;
@@ -117,6 +143,11 @@ private:
     QString _spectrumId;
     QString _spectralFitId;
     QString _source;
+    bool _flagged = false;
+    double   _rvManual              = std::numeric_limits<double>::quiet_NaN();
+    double   _rvManualErrorFormal   = 0.0;
+    double   _rvManualErrorSystematic = 0.0;
+    RVSource _rvSource              = RVSource::Manual;
 };
 
 
@@ -293,6 +324,7 @@ public:
 
     using ChangeCallback = std::function<void()>;
     void setChangeCallback(ChangeCallback cb) { _onChange = cb; }
+    void attachToSpectra(const std::vector<std::shared_ptr<Spectrum>>& spectra);
 
 
 protected:
@@ -307,6 +339,8 @@ private:
     double _logP;
 
     double calculateMedian(std::vector<double> values) const;
+    void onBestFitChanged(const std::shared_ptr<Spectrum>& spec,
+                          const std::shared_ptr<SpectralFit>& newBest);
 };
 
 #endif // RADIALVELOCITY_H

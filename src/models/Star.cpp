@@ -232,6 +232,10 @@ std::vector<std::shared_ptr<Spectrum>> Star::getSpectra()
         _spectra = _spectraLoader(_id);
         _spectraLoaded = true;
     }
+    if (_rvCurve && _spectraLoaded && !_rvAttached) {
+        _rvCurve->attachToSpectra(_spectra);
+        _rvAttached = true;
+    }
     return _spectra;
 }
 
@@ -240,6 +244,10 @@ std::shared_ptr<RadialVelocityCurve> Star::getRVCurve()
     if (!_RVLoaded && _RVLoader && !_id.isEmpty()) {
         _rvCurve = _RVLoader(_id);
         _RVLoaded = true;
+    }
+    if (_rvCurve && _spectraLoaded && !_rvAttached) {
+        _rvCurve->attachToSpectra(_spectra);
+        _rvAttached = true;
     }
     return _rvCurve;
 }

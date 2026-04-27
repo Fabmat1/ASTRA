@@ -52,25 +52,36 @@ void Spectrum::setData(const std::vector<double>& wavelengths,
     _fluxErrors = errors;
 }
 
+void Spectrum::notifyBestFitChanged()
+{
+    if (_bestFitChangedCb) _bestFitChangedCb(this, getBestFit());
+}
+
 void Spectrum::addSpectralFit(std::shared_ptr<SpectralFit> fit)
 {
-    // If this is set as best fit, unset others
-    if (fit->isBestFit) {
-        for (auto& existing : _spectralFits) {
+    const bool willBecomeBest = fit->isBestFit;
+    if (willBecomeBest) {
+        for (auto& existing : _spectralFits)
             existing->isBestFit = false;
-        }
     }
     _spectralFits.push_back(fit);
+    if (willBecomeBest) notifyBestFitChanged();
 }
 
 void Spectrum::removeSpectralFit(const QString& fitId)
 {
+    bool removedBest = false;
+    for (const auto& f : _spectralFits)
+        if (f && f->getId() == fitId && f->isBestFit) { removedBest = true; break; }
+
     _spectralFits.erase(
         std::remove_if(_spectralFits.begin(), _spectralFits.end(),
             [&fitId](const std::shared_ptr<SpectralFit>& f) {
                 return f && f->getId() == fitId;
             }),
         _spectralFits.end());
+
+    if (removedBest) notifyBestFitChanged();
 }
 
 std::vector<std::shared_ptr<SpectralFit>> Spectrum::getSpectralFits() const
@@ -309,4 +320,5 @@ void Spectrum::setBestFitById(const QString& fitId)
 {
     for (auto& f : _spectralFits)
         if (f) f->isBestFit = (!fitId.isEmpty() && f->getId() == fitId);
+    notifyBestFitChanged();
 }

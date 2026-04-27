@@ -6,6 +6,7 @@
 #include <QDateTime>
 #include <vector>
 #include <memory>
+#include <functional>
 
 #include "Time.h"
 
@@ -133,6 +134,10 @@ public:
     void removeSpectralFit(const QString& fitId);
     std::vector<std::shared_ptr<SpectralFit>> getSpectralFits() const;
     std::shared_ptr<SpectralFit> getBestFit() const;
+    using BestFitChangedCallback =
+        std::function<void(Spectrum*, std::shared_ptr<SpectralFit>)>;
+    void setBestFitChangedCallback(BestFitChangedCallback cb)
+        { _bestFitChangedCb = std::move(cb); }
 
     // ── Utilities ───────────────────────────────────────────────────────────
     bool loadFromFile(const QString& filepath);
@@ -167,6 +172,10 @@ private:
 
     // Model fits
     std::vector<std::shared_ptr<SpectralFit>> _spectralFits;
+    BestFitChangedCallback _bestFitChangedCb;
+
+    void notifyBestFitChanged();
+
 };
 
 #endif // SPECTRUM_H

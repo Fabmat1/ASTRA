@@ -320,11 +320,10 @@ private:
     std::function<std::vector<std::shared_ptr<Spectrum>>(const QString&)> _spectraLoader;
     std::function<std::shared_ptr<RadialVelocityCurve>(const QString&)> _RVLoader;
 
-    // ─── In Star.h, add to PRIVATE section ──────────────────────────────────────
-
     // Spectra counts
     int _nSpectra = 0;
     int _nFitSpectra = 0;
+    bool _rvAttached = false;
 
     // RV curve summary
     double _rvTimespan = std::numeric_limits<double>::quiet_NaN();

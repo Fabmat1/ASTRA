@@ -62,7 +62,14 @@ bool RadialVelocityRepository::saveRadialVelocityPoint(
     query.bindValue(":source", point->getSource());
     query.bindValue(":spectrum_id", point->getSpectrumId());
     query.bindValue(":fit_id", point->getSpectralFitId());
-
+    query.bindValue(":is_flagged", point->isFlagged() ? 1 : 0);
+    query.bindValue(":rv_manual",
+                point->hasManualValue() ? QVariant(point->getRVManual())
+                                        : QVariant(QMetaType(QMetaType::Double)));
+    query.bindValue(":rv_manual_error_formal",     point->getRVManualErrorFormal());
+    query.bindValue(":rv_manual_error_systematic", point->getRVManualErrorSystematic());
+    query.bindValue(":rv_source",
+            static_cast<int>(point->getRVSource()));
     if (!query.exec()) {
         qDebug() << "Failed to save RV point:" << query.lastError();
         return false;
@@ -172,6 +179,13 @@ RadialVelocityRepository::loadRadialVelocityPoints(const QString& curveId)
         pt->setSource(query.value("source").toString());
         pt->setSpectrumId(query.value("spectrum_id").toString());
         pt->setSpectralFitId(query.value("spectral_fit_id").toString());
+        pt->setFlagged(query.value("is_flagged").toInt() != 0);
+        if (!query.value("rv_manual").isNull())
+        pt->setRVManual(query.value("rv_manual").toDouble());
+        pt->setRVManualErrorFormal    (query.value("rv_manual_error_formal").toDouble());
+        pt->setRVManualErrorSystematic(query.value("rv_manual_error_systematic").toDouble());
+        pt->setRVSource(static_cast<RadialVelocityPoint::RVSource>(
+            query.value("rv_source").toInt()));
         result.push_back(pt);
     }
     return result;
