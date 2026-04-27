@@ -234,7 +234,8 @@ void RVPanel::populate()
     bool hasData = rvCurve && rvCurve->getNumPoints() > 0;
 
     std::shared_ptr<RVFit> bestFit;
-    if (rvCurve) bestFit = rvCurve->getBestFit();
+    if (_displayedFit) bestFit = _displayedFit;
+    else if (rvCurve)  bestFit = rvCurve->getBestFit();
     bool hasPeriod = bestFit && bestFit->getPeriod() > 0;
 
     LOG_DEBUG(CAT, QString("Star %1 — rvCurve=%2, getNumPoints=%3, hasPeriod=%4")
@@ -267,7 +268,7 @@ void RVPanel::populate()
         .arg(points.size()));
 
     struct RVDatum {
-        double time; double rv; double err;
+        double time; double rv; double err; Time tobj;
     };
     std::vector<RVDatum> data;
     data.reserve(points.size());
@@ -288,7 +289,7 @@ void RVPanel::populate()
             continue;
         }
 
-        data.push_back({tm.sortValue(), pt->getRV(), pt->getRVError()});
+        data.push_back({tm.sortValue(), pt->getRV(), pt->getRVError(), tm});
     }
 
     LOG_INFO(CAT, QString("Star %1 — %2 skipped, %3/%4 accepted")
@@ -316,9 +317,7 @@ void RVPanel::populate()
 
         std::vector<double> phases, rvs, errs;
         for (auto& d : data) {
-            double phase = std::fmod((d.time - phi) / P, 1.0);
-            if (phase < 0.0) phase += 1.0;
-            phases.push_back(phase);
+            phases.push_back(bestFit->computePhase(d.tobj));
             rvs.push_back(d.rv);
             errs.push_back(d.err);
         }
@@ -329,14 +328,18 @@ void RVPanel::populate()
         plot->legend->setVisible(false);
 
         auto yRange = addRVDataToPlot(plot, phases, rvs, errs,
-                                       -0.05, 1.05, PanelUtils::kPointColor, PanelUtils::kErrorBarColor);
+                                      -0.05, 1.05,
+                                      PanelUtils::kPointColor,
+                                      PanelUtils::kErrorBarColor);
 
-        // Fit curve overlay
-        QVector<double> fitX(201), fitY(201);
-        for (int i = 0; i <= 200; ++i) {
-            double ph = static_cast<double>(i) / 200.0;
+        // Model curve — span the full visible range so it joins continuously
+        // across the wrap and at phase 0.
+        constexpr int N = 240;
+        QVector<double> fitX(N + 1), fitY(N + 1);
+        for (int i = 0; i <= N; ++i) {
+            const double ph = -0.05 + (1.10 * i) / N;
             fitX[i] = ph;
-            fitY[i] = bestFit->calculateRV(Time(phi + ph * P, TimeScale::BJD));
+            fitY[i] = bestFit->calculateRVAtPhase(ph);
         }
         QCPGraph* fitGraph = plot->addGraph();
         fitGraph->setPen(QPen(PanelUtils::kFitCurveColor, 2.0));
@@ -563,5 +566,11 @@ void RVPanel::onToggleFolded()
 {
     _folded = _toggleButton->isChecked();
     _toggleButton->setText(_folded ? "Show Timeline" : "Show Folded");
+    populate();
+}
+
+void RVPanel::setDisplayedFit(std::shared_ptr<RVFit> fit)
+{
+    _displayedFit = std::move(fit);
     populate();
 }

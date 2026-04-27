@@ -255,6 +255,11 @@ public:
 
     void setSummaryPersistCallback(SummaryPersistCallback cb)
         { _summaryPersistCb = std::move(cb); }
+    using SummaryChangedCallback = std::function<void()>;
+    void setSummaryChangedCallback(SummaryChangedCallback cb)
+        { _summaryChangedCb = std::move(cb); }
+        
+    void tryAttachRVCurve();
 
 private:
     // Targeted recomputation
@@ -331,6 +336,7 @@ private:
     bool _rvAttached = false;
 
     SummaryPersistCallback _summaryPersistCb;
+    SummaryChangedCallback _summaryChangedCb;
 
     // RV curve summary
     double _rvTimespan = std::numeric_limits<double>::quiet_NaN();

@@ -47,31 +47,42 @@ bool RadialVelocityRepository::saveRadialVelocityPoint(
     QSqlQuery query(_db.threadConnection());
     query.prepare(R"(
         INSERT OR REPLACE INTO rv_points
-        (id, curve_id, mjd, bjd, radial_velocity,
-         rv_error, source, spectrum_id, spectral_fit_id)
-        VALUES (:id, :curve_id, :mjd, :bjd, :rv,
-                :rv_error, :source, :spectrum_id, :fit_id)
+            (id, curve_id, mjd, bjd,
+             radial_velocity, rv_error,
+             rv_error_formal, rv_error_systematic,
+             source, spectrum_id, spectral_fit_id,
+             is_flagged,
+             rv_manual, rv_manual_error_formal, rv_manual_error_systematic,
+             rv_source)
+        VALUES
+            (:id, :curve_id, :mjd, :bjd,
+             :rv, :rv_error,
+             :rv_error_formal, :rv_error_systematic,
+             :source, :spectrum_id, :fit_id,
+             :is_flagged,
+             :rv_manual, :rv_manual_error_formal, :rv_manual_error_systematic,
+             :rv_source)
     )");
 
-    query.bindValue(":id", point->getId());
-    query.bindValue(":curve_id", curveId);
-    query.bindValue(":mjd", point->getMJD());
-    query.bindValue(":bjd", point->getBJD());
-    query.bindValue(":rv", point->getRV());
-    query.bindValue(":rv_error", point->getRVError());
-    query.bindValue(":rv_error_formal",     point->getRVErrorFormal());
-    query.bindValue(":rv_error_systematic", point->getRVErrorSystematic());
-    query.bindValue(":source", point->getSource());
-    query.bindValue(":spectrum_id", point->getSpectrumId());
-    query.bindValue(":fit_id", point->getSpectralFitId());
-    query.bindValue(":is_flagged", point->isFlagged() ? 1 : 0);
+    query.bindValue(":id",                          point->getId());
+    query.bindValue(":curve_id",                    curveId);
+    query.bindValue(":mjd",                         point->getMJD());
+    query.bindValue(":bjd",                         point->getBJD());
+    query.bindValue(":rv",                          point->getRV());
+    query.bindValue(":rv_error",                    point->getRVError());
+    query.bindValue(":rv_error_formal",             point->getRVErrorFormal());
+    query.bindValue(":rv_error_systematic",         point->getRVErrorSystematic());
+    query.bindValue(":source",                      point->getSource());
+    query.bindValue(":spectrum_id",                 point->getSpectrumId());
+    query.bindValue(":fit_id",                      point->getSpectralFitId());
+    query.bindValue(":is_flagged",                  point->isFlagged() ? 1 : 0);
     query.bindValue(":rv_manual",
-                point->hasManualValue() ? QVariant(point->getRVManual())
-                                        : QVariant(QMetaType(QMetaType::Double)));
-    query.bindValue(":rv_manual_error_formal",     point->getRVManualErrorFormal());
-    query.bindValue(":rv_manual_error_systematic", point->getRVManualErrorSystematic());
-    query.bindValue(":rv_source",
-            static_cast<int>(point->getRVSource()));
+        point->hasManualValue() ? QVariant(point->getRVManual())
+                                : QVariant(QMetaType(QMetaType::Double)));
+    query.bindValue(":rv_manual_error_formal",      point->getRVManualErrorFormal());
+    query.bindValue(":rv_manual_error_systematic",  point->getRVManualErrorSystematic());
+    query.bindValue(":rv_source",                   static_cast<int>(point->getRVSource()));
+
     if (!query.exec()) {
         qDebug() << "Failed to save RV point:" << query.lastError();
         return false;

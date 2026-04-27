@@ -40,6 +40,10 @@ StarDetailView::StarDetailView(std::shared_ptr<Star> star,
     setupUi();
     buildGrid();
 
+    _star->setSummaryChangedCallback([this]() {
+        for (auto* p : _panels) if (p) p->refresh();
+    });
+
     _star->computeSummaryMetricsFull([this]() {
         if (_dbm) _dbm->updateStarRow(_projectId, _star);
     });
@@ -52,7 +56,14 @@ StarDetailView::StarDetailView(std::shared_ptr<Star> star,
     QTimer::singleShot(0, this, &StarDetailView::refreshAllThemes);
 }
 
-StarDetailView::~StarDetailView() = default;
+
+StarDetailView::~StarDetailView()
+{
+    // Star outlives this view (project-owned); detach so the lambda
+    // doesn't fire into a dangling `this`.
+    if (_star) _star->setSummaryChangedCallback(nullptr);
+}
+
 
 void StarDetailView::setupUi()
 {
@@ -228,8 +239,13 @@ void StarDetailView::onViewFitSED()
 
 void StarDetailView::onViewAdjustRV()
 {
-    auto* dialog = new RVInspectorDialog(_star, this);
+    auto* dialog = new RVInspectorDialog(_star, _dbm, _controller, _projectId, this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
+
+    connect(dialog, &QDialog::finished, this, [this](int) {
+        for (auto* p : _panels) if (p) p->refresh();
+    });
+
     dialog->show();
 }
 

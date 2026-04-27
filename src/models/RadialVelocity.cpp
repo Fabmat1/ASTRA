@@ -150,6 +150,13 @@ double logChi2SF(double x, int k)
     }
 }
 
+inline double wrapPhase(double p)
+{
+    p = std::fmod(p, 1.0);
+    if (p < 0.0) p += 1.0;
+    return p;
+}
+
 } // anonymous namespace
 
 
@@ -261,39 +268,28 @@ RVFit::~RVFit()
 
 double RVFit::calculateRV(const Time& t) const
 {
-    if (_period <= 0.0) {
-        return _gamma;  // Return systemic velocity if no period
-    }
-    
-    double bjd = t.bjdOr(0.0);
-    if (bjd == 0.0)
-        bjd = t.mjdOr(0.0) + Time::MJD_OFFSET;   // rough fallback
-    
-    // Calculate phase
-    double phase = std::fmod((bjd - _phi) / _period, 1.0);
-    if (phase < 0) phase += 1.0;
-    
-    double rv = _gamma;
-    
-    if (_isEccentric && _eccentricity > 0.0) {
-        // Eccentric orbit calculation
-        // TODO: Implement proper Kepler equation solver
-        // For now, simplified approximation
-        double meanAnomaly = 2.0 * M_PI * phase;
-        double eccentricAnomaly = meanAnomaly;  // Would need iterative solver
-        double trueAnomaly = 2.0 * std::atan2(
-            std::sqrt(1.0 + _eccentricity) * std::sin(eccentricAnomaly / 2.0),
-            std::sqrt(1.0 - _eccentricity) * std::cos(eccentricAnomaly / 2.0)
-        );
-        
-        rv += _K * (std::cos(trueAnomaly + _omega * M_PI / 180.0) + 
-                    _eccentricity * std::cos(_omega * M_PI / 180.0));
-    } else {
-        // Circular orbit
-        rv += _K * std::sin(2.0 * M_PI * phase);
-    }
-    
-    return rv;
+    if (_period <= 0.0) return _gamma;
+    return calculateRVAtPhase(computePhase(t));
+}
+
+double RVFit::calculateRV(double bjd) const
+{
+    Time t; t.setBJD(bjd);
+    return calculateRV(t);
+}
+
+double RVFit::getT0BJD() const
+{
+    if (_tRefBJD <= 0.0 || _period <= 0.0)
+        return std::numeric_limits<double>::quiet_NaN();
+    return _tRefBJD - _phi * _period;
+}
+
+double RVFit::getT0MJD() const
+{
+    if (_tRefMJD <= 0.0 || _period <= 0.0)
+        return std::numeric_limits<double>::quiet_NaN();
+    return _tRefMJD - _phi * _period;
 }
 
 RadialVelocityCurve::RadialVelocityCurve()
@@ -309,6 +305,7 @@ void RadialVelocityCurve::addRVPoint(std::shared_ptr<RadialVelocityPoint> point)
 {
     if (point) {
         _rvPoints.push_back(point);
+        updateFitReferences();
     }
     notifyChanged();
 }
@@ -397,16 +394,35 @@ void RadialVelocityCurve::updateFromSpectra(const std::vector<std::shared_ptr<Sp
 
 void RadialVelocityCurve::addRVFit(std::shared_ptr<RVFit> fit)
 {
-    if (!fit) return;
-    
-    // If this is set as best fit, unset others
-    if (fit->isBestFit()) {
-        for (auto& existing : _rvFits) {
-            existing->setBestFit(false);
-        }
+    if (fit) {
+        _rvFits.push_back(fit);
+        updateFitReferences();
     }
-    _rvFits.push_back(fit);
+    notifyChanged();
 }
+
+void RadialVelocityCurve::updateFitReferences()
+{
+    if (_rvPoints.empty() || _rvFits.empty()) return;
+
+    std::shared_ptr<RadialVelocityPoint> first;
+    double minSort = std::numeric_limits<double>::max();
+    for (const auto& p : _rvPoints) {
+        if (!p || !p->time().isValid()) continue;
+        const double s = p->time().sortValue();
+        if (s < minSort) { minSort = s; first = p; }
+    }
+    if (!first) return;
+
+    double bjd = first->getBJD();
+    double mjd = first->getMJD();
+    if (std::isnan(bjd)) bjd = 0.0;
+    if (std::isnan(mjd)) mjd = 0.0;
+
+    for (auto& fit : _rvFits)
+        if (fit) fit->setReferenceTime(bjd, mjd);
+}
+
 
 void RadialVelocityCurve::removeRVFit(const QString& fitId)
 {
@@ -788,4 +804,85 @@ RadialVelocityCurve::getActiveRVPoints() const
 void RadialVelocityPoint::mirrorFlagFromFit(const SpectralFit& fit)
 {
     setFlagged(fit.isFlagged);
+}
+
+double RVFit::solveKepler(double M, double e, double tol, int maxIter)
+{
+    // Reduce M to [-π, π] for fastest convergence
+    M = std::fmod(M, 2.0 * M_PI);
+    if (M >  M_PI) M -= 2.0 * M_PI;
+    if (M < -M_PI) M += 2.0 * M_PI;
+
+    // Murray & Dermott initial guess (good for moderate e)
+    double E = (e < 0.8) ? (M + e * std::sin(M)) : M_PI;
+
+    for (int i = 0; i < maxIter; ++i) {
+        double sinE = std::sin(E), cosE = std::cos(E);
+        double f  = E - e * sinE - M;
+        double fp = 1.0 - e * cosE;
+        double dE = f / fp;
+        E -= dE;
+        if (std::abs(dE) < tol) break;
+    }
+    return E;
+}
+
+
+double RVFit::computePhase(const Time& t) const
+{
+    if (_period <= 0.0) return 0.0;
+
+    double tVal = 0.0, refVal = 0.0;
+    double bjd  = t.bjdOr(0.0);
+    double mjd  = t.mjdOr(0.0);
+
+    if (_tRefBJD > 0.0 && bjd > 0.0) {
+        tVal = bjd; refVal = _tRefBJD;
+    } else if (_tRefMJD > 0.0 && mjd > 0.0) {
+        tVal = mjd; refVal = _tRefMJD;
+    } else {
+        return wrapPhase(_phi);
+    }
+    return wrapPhase((tVal - refVal) / _period + _phi);
+}
+
+
+double RVFit::calculateRVAtPhase(double phase) const
+{
+    const double M = 2.0 * M_PI * phase;
+
+    if (_isEccentric && _eccentricity > 0.0 && _eccentricity < 1.0) {
+        const double e = _eccentricity;
+        const double E = solveKepler(M, e);
+        const double nu = 2.0 * std::atan2(
+            std::sqrt(1.0 + e) * std::sin(E * 0.5),
+            std::sqrt(1.0 - e) * std::cos(E * 0.5));
+        const double w = _omega * M_PI / 180.0;
+        return _gamma + _K * (std::cos(nu + w) + e * std::cos(w));
+    }
+    // Circular: keep historical convention (max RV at phase 0.25)
+    return _gamma + _K * std::sin(M);
+}
+
+
+void RVFit::updateStatistics(
+    const std::vector<std::shared_ptr<RadialVelocityPoint>>& points)
+{
+    int n = 0;
+    double sumSq = 0.0, chi2 = 0.0;
+    for (const auto& p : points) {
+        if (!p || p->isFlagged()) continue;
+        const double model = calculateRV(p->time());
+        const double resid = p->getRV() - model;
+        const double err   = p->getRVError();   // combined formal+systematic
+        sumSq += resid * resid;
+        if (err > 0.0) chi2 += (resid * resid) / (err * err);
+        ++n;
+    }
+    if (n > 0) {
+        _rms  = std::sqrt(sumSq / static_cast<double>(n));
+        _chi2 = chi2;
+    } else {
+        _rms = 0.0; _chi2 = 0.0;
+    }
 }

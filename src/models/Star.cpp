@@ -232,10 +232,7 @@ std::vector<std::shared_ptr<Spectrum>> Star::getSpectra()
         _spectra = _spectraLoader(_id);
         _spectraLoaded = true;
     }
-    if (_rvCurve && _spectraLoaded && !_rvAttached) {
-        _rvCurve->attachToSpectra(_spectra);
-        _rvAttached = true;
-    }
+    tryAttachRVCurve();
     return _spectra;
 }
 
@@ -245,26 +242,10 @@ std::shared_ptr<RadialVelocityCurve> Star::getRVCurve()
         _rvCurve = _RVLoader(_id);
         _RVLoaded = true;
     }
-    if (_rvCurve && _spectraLoaded && !_rvAttached) {
-        _rvCurve->attachToSpectra(_spectra);
-
-        _rvCurve->setChangeCallback([this]() { markSummaryDirty(); });
-
-        for (auto& spec : _spectra) {
-            if (!spec) continue;
-            auto best = spec->getBestFit();
-            if (!best) continue;
-            for (auto& p : _rvCurve->getRVPoints()) {
-                if (p->getSpectrumId() == spec->getId()) {
-                    p->applyFromFit(*best);
-                    break;
-                }
-            }
-        }
-        _rvAttached = true;
-    }
+    tryAttachRVCurve();
     return _rvCurve;
 }
+
 
 void Star::addSpectrum(std::shared_ptr<Spectrum> spectrum)
 {
@@ -296,8 +277,9 @@ void Star::computeSummaryMetrics(const SummaryPersistCallback& onChanged)
     recomputeSpectraMetrics();
     recomputePhotometryMetrics();
 
-    if (onChanged && summaryChanged(before, captureSummaryValues(*this))) {
-        onChanged();
+    if (summaryChanged(before, captureSummaryValues(*this))) {
+        if (onChanged) onChanged();           // persist
+        if (_summaryChangedCb) _summaryChangedCb();  // notify UI
     }
 }
 
@@ -455,4 +437,30 @@ void Star::setSpectra(const std::vector<std::shared_ptr<Spectrum>>& spectra)
 void Star::markSummaryDirty()
 {
     computeSummaryMetrics(_summaryPersistCb);
+}
+
+void Star::tryAttachRVCurve()
+{
+    if (_rvAttached) return;
+    if (!_rvCurve || !_spectraLoaded) return;
+
+    _rvCurve->attachToSpectra(_spectra);
+    _rvCurve->setChangeCallback([this]() { markSummaryDirty(); });
+
+    // Reconciliation pass: ensure every RV point mirrors its linked best fit
+    // (covers the case where flags/RV/etc. were toggled while one side was
+    // not yet loaded).
+    for (auto& spec : _spectra) {
+        if (!spec) continue;
+        auto best = spec->getBestFit();
+        if (!best) continue;
+        for (auto& p : _rvCurve->getRVPoints()) {
+            if (p->getSpectrumId() == spec->getId()) {
+                p->applyFromFit(*best);
+                break;
+            }
+        }
+    }
+
+    _rvAttached = true;
 }

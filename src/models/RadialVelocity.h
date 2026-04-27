@@ -232,6 +232,31 @@ public:
     double getRms() const { return _rms; }
     void setRms(double rms) { _rms = rms; }
 
+    // ── Reference time (runtime only — not persisted; rebound on load) ──
+    // Set by RadialVelocityCurve::updateFitReferences() to the first
+    // datapoint's BJD/MJD.  _phi is interpreted as the phase at this time.
+    void setReferenceTime(double bjd, double mjd) { _tRefBJD = bjd; _tRefMJD = mjd; }
+    double getReferenceBJD() const { return _tRefBJD; }
+    double getReferenceMJD() const { return _tRefMJD; }
+
+    // Derived time of periapsis (phase 0) just before reference.
+    // NaN if reference is unset.
+    double getT0BJD() const;
+    double getT0MJD() const;
+
+    // Model evaluation
+    double calculateRVAtPhase(double phase) const;   // phase 0 == periapsis
+    double computePhase(const Time& t) const;        // [0,1)
+
+    // Update _chi2 and _rms from the supplied points (flagged are skipped).
+    void updateStatistics(
+        const std::vector<std::shared_ptr<RadialVelocityPoint>>& points);
+
+    // Numerically robust Kepler equation solver (Newton with Murray–Dermott
+    // initial guess).  Returns eccentric anomaly E for given M, e.
+    static double solveKepler(double M, double e,
+                              double tol = 1e-12, int maxIter = 60);
+
 private:
     QString _id;
     QString _curveId;
@@ -255,6 +280,9 @@ private:
     double _eccentricityError;
     double _omega;
     double _omegaError;
+
+    double _tRefBJD = 0.0;
+    double _tRefMJD = 0.0;
 
     double _chi2;
     double _rms;
@@ -335,6 +363,14 @@ public:
         std::function<void(const std::shared_ptr<RadialVelocityPoint>&)>;
     void setPointPersistCallback(PointPersistCallback cb)
         { _pointPersistCb = std::move(cb); }
+
+    void persistPoint(const std::shared_ptr<RadialVelocityPoint>& p)
+        { if (_pointPersistCb && p) _pointPersistCb(p); }
+
+    // Re-binds every fit's reference time to the earliest point's
+    // BJD/MJD.  Called automatically by addRVPoint/addRVFit; call manually
+    // after a bulk load (e.g. at end of repository::loadRadialVelocityCurve).
+    void updateFitReferences();
 
 protected:
     void notifyChanged() { if (_onChange) _onChange(); }
