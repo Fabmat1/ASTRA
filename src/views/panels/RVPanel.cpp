@@ -175,20 +175,27 @@ QPair<double, double> addRVDataToPlot(
         yHi = std::max(yHi, y + e);
     }
 
-    // Scatter points
+    // Make sure a layer exists below "main" for error bars
+    if (!plot->layer("errorbars")) {
+        plot->addLayer("errorbars", plot->layer("main"), QCustomPlot::limBelow);
+    }
+
+    // Error bars on the lower layer (paint behind)
+    QCPErrorBars* errorBars = new QCPErrorBars(plot->xAxis, plot->yAxis);
+    errorBars->setLayer("errorbars");
+    errorBars->removeFromLegend();
+    errorBars->setErrorType(QCPErrorBars::etValueError);
+    errorBars->setPen(QPen(errCol, 1.0));
+    errorBars->setSymbolGap(1);
+
+    // Scatter on the default "main" layer (paints on top)
     QCPGraph* scatter = plot->addGraph();
     scatter->setLineStyle(QCPGraph::lsNone);
     scatter->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle, ptCol, ptCol, 7));
     scatter->setData(px, py);
     scatter->removeFromLegend();
 
-    // Error bars
-    QCPErrorBars* errorBars = new QCPErrorBars(plot->xAxis, plot->yAxis);
-    errorBars->removeFromLegend();
     errorBars->setDataPlottable(scatter);
-    errorBars->setErrorType(QCPErrorBars::etValueError);
-    errorBars->setPen(QPen(errCol, 1.0));
-    errorBars->setSymbolGap(1);
     errorBars->setData(pe);
 
     return {yLo, yHi};

@@ -748,3 +748,13 @@ void RadialVelocityCurve::onBestFitChanged(
     }
     notifyChanged();
 }
+
+std::vector<std::shared_ptr<RadialVelocityPoint>>
+RadialVelocityCurve::getActiveRVPoints() const
+{
+    std::vector<std::shared_ptr<RadialVelocityPoint>> out;
+    out.reserve(_rvPoints.size());
+    for (const auto& p : _rvPoints)
+        if (p && !p->isFlagged()) out.push_back(p);
+    return out;
+}

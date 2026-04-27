@@ -148,6 +148,8 @@ private:
     double   _rvManualErrorFormal   = 0.0;
     double   _rvManualErrorSystematic = 0.0;
     RVSource _rvSource              = RVSource::Manual;
+
+    std::vector<std::shared_ptr<RadialVelocityPoint>> getActiveRVPoints() const;
 };
 
 
@@ -326,6 +328,7 @@ public:
     void setChangeCallback(ChangeCallback cb) { _onChange = cb; }
     void attachToSpectra(const std::vector<std::shared_ptr<Spectrum>>& spectra);
 
+    std::vector<std::shared_ptr<RadialVelocityPoint>> getActiveRVPoints() const;
 
 protected:
     void notifyChanged() { if (_onChange) _onChange(); }
