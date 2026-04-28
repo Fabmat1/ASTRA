@@ -1,28 +1,61 @@
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.21)   # PROJECT_IS_TOP_LEVEL needs ≥3.21
 project(ASTRA VERSION 0.1.0 LANGUAGES CXX)
 
-# Configurable data directory (set at install/build time)
-# Usage: cmake -DASTRA_DATA_DIR=/opt/astra/data ..
-# Default: empty string → falls back to QStandardPaths::AppDataLocation at runtime
-set(ASTRA_DATA_DIR "" CACHE PATH "Compile-time default for data/db/log storage directory")
+# ── Build type (refuse typos like "Relase") ─────────────────────────────────
+set(_allowed_build_types Debug Release RelWithDebInfo MinSizeRel)
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE RelWithDebInfo CACHE STRING
+        "Build type" FORCE)
+endif()
+if(NOT CMAKE_BUILD_TYPE IN_LIST _allowed_build_types)
+    message(FATAL_ERROR
+        "Invalid CMAKE_BUILD_TYPE='${CMAKE_BUILD_TYPE}'. "
+        "Allowed: ${_allowed_build_types}")
+endif()
+set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS ${_allowed_build_types})
+
+# ── Single, project-wide ABI for every target (host + submodules) ───────────
+# DIGGA requires C++20, so the whole project is C++20.
+set(CMAKE_CXX_STANDARD          20)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_CXX_EXTENSIONS        OFF)   # use -std=c++20 (NOT gnu++20) everywhere
+
+# Pick a baseline ISA that covers desktop + laptop. Avoid -march=native.
+add_compile_options(
+    -mtune=generic
+    -march=x86-64-v3        # AVX2/FMA. Use x86-64-v2 if you support older CPUs.
+)
+
+# Pin Eigen ABI so allocations made in one TU can be safely freed in another.
+add_compile_definitions(
+    EIGEN_USE_BLAS
+    EIGEN_USE_LAPACKE
+    EIGEN_MAX_ALIGN_BYTES=32
+    EIGEN_DEFAULT_ALIGN_BYTES=32
+)
+
+# Configurable data dir
+set(ASTRA_DATA_DIR "" CACHE PATH
+    "Compile-time default for data/db/log storage directory")
 message(STATUS "ASTRA data storage location set to: ${ASTRA_DATA_DIR}")
 
-# Set C++ standard
-set(CMAKE_CXX_STANDARD 17)
-set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS OFF)
-
-# Find required Qt6 components
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets Sql Network Concurrent PrintSupport)
+# Qt
+find_package(Qt6 REQUIRED COMPONENTS
+    Core Widgets Sql Network Concurrent PrintSupport)
 qt_standard_project_setup()
 
-# Set automatic MOC, UIC and RCC for Qt
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
-# Export compile commands for IDE integration
+# Compile-commands for IDEs and the diff/sanity script
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# Sane install RPATH so the installed binary doesn't pick up stale system .so's
+include(GNUInstallDirs)
+set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
+set(CMAKE_INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
+set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
 # Find optional CCfits for FITS file support
 # First try to find CCfits using pkg-config
@@ -95,6 +128,25 @@ add_subdirectory(external/DIGGA EXCLUDE_FROM_ALL)
 set(RV_MCMC_BUILD_CLI    OFF CACHE BOOL "" FORCE)
 set(RV_MCMC_BUILD_PYBIND OFF CACHE BOOL "" FORCE)
 add_subdirectory(external/rv_mcmc EXCLUDE_FROM_ALL)
+
+
+# ── Belt-and-braces: force the final ABI on every linked target ─────────────
+# Some submodules unconditionally `set(CMAKE_CXX_STANDARD 17)` in their own
+# CMakeLists.txt, which silently overrides our directory-scope setting.
+foreach(_t IN ITEMS DIGGAcore rv_mcmc qcustomplot)
+    if(TARGET ${_t})
+        set_target_properties(${_t} PROPERTIES
+            CXX_STANDARD 20
+            CXX_STANDARD_REQUIRED ON
+            CXX_EXTENSIONS OFF)
+    endif()
+endforeach()
+
+# rv_mcmc legitimately needs GNU extensions for the `2j` complex literal.
+if(TARGET rv_mcmc)
+    target_compile_options(rv_mcmc PRIVATE
+        $<$<CXX_COMPILER_ID:GNU>:-fext-numeric-literals>)
+endif()
 
 # Source files
 set(SOURCES
@@ -322,11 +374,6 @@ target_compile_definitions(ASTRA PRIVATE
 # Profiling option
 option(ENABLE_PROFILING "Build with profiling support (debug symbols + frame pointers)" OFF)
 
-# Always-on flags for the rv_mcmc submodule (GCC complex-literal suffix `2j`)
-target_compile_options(rv_mcmc PRIVATE
-    $<$<CXX_COMPILER_ID:GNU>:-fext-numeric-literals>
-)
-set_target_properties(rv_mcmc PROPERTIES CXX_EXTENSIONS ON)
 
 if(ENABLE_PROFILING)
     message(STATUS "Profiling enabled: -g -fno-omit-frame-pointer")
@@ -427,8 +474,6 @@ if(BUILD_TESTING)
         Qt6::Core
     )
     set_target_properties(astra_core PROPERTIES
-        CXX_STANDARD 17
-        CXX_STANDARD_REQUIRED ON
         AUTOMOC ON
     )
 
@@ -466,10 +511,6 @@ if(BUILD_TESTING)
     # Tell the test where to find the JSON at compile time
     target_compile_definitions(test_barycentric PRIVATE
         REFERENCE_BJD_PATH="${REFERENCE_JSON}"
-    )
-    set_target_properties(test_barycentric PROPERTIES
-        CXX_STANDARD 17
-        CXX_STANDARD_REQUIRED ON
     )
 
     # Ensure reference data is generated before the test runs
