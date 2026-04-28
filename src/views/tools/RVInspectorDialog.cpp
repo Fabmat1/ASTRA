@@ -9,6 +9,7 @@
 #include "views/panels/RVPanel.h"
 #include "views/panels/DetailPanel.h"
 #include "utils/Logger.h"
+#include "RVAddFitDialog.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -620,34 +621,26 @@ void RVSolutionsWidget::onAddSolution()
     auto curve = _star ? _star->getRVCurve() : nullptr;
     if (!curve) return;
 
-    auto fit = std::make_shared<RVFit>();
-    fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
-    fit->setCurveId(curve->getId());
-    fit->setCreationDate(QDateTime::currentDateTime());
-    fit->setFitMethod("manual");
+    RVAddFitDialog dlg(_star, curve, _dbm, this);
+    if (dlg.exec() != QDialog::Accepted) return;
 
-    const double minRV = curve->getMinRV();
-    const double maxRV = curve->getMaxRV();
-    const double mean  = curve->getMeanRV();
-    const double span  = curve->getTimeSpan();
+    const auto fits = dlg.resultFits();
+    if (fits.isEmpty()) return;
 
-    fit->setK(std::isnan(maxRV - minRV)
-                  ? 50.0
-                  : std::max(1.0, (maxRV - minRV) * 0.5));
-    fit->setGamma (std::isnan(mean) ? 0.0 : mean);
-    fit->setPeriod(span > 0 ? std::max(0.1, span * 0.1) : 1.0);
-    fit->setPhi(0.0);            // first datapoint at phase 0
-    fit->setEccentric(false);
-    fit->setEccentricity(0.0);
-    fit->setOmega(0.0);
-    fit->setBestFit(false);
-
-    curve->addRVFit(fit);                 // auto-binds reference time
-    fit->updateStatistics(curve->getRVPoints());
-    if (_dbm) _dbm->saveRVFit(fit, curve->getId());
+    int firstNewRow = -1;
+    for (const auto& fit : fits) {
+        if (!fit) continue;
+        curve->addRVFit(fit);                         // auto-binds reference time
+        fit->updateStatistics(curve->getRVPoints());
+        if (_dbm) _dbm->saveRVFit(fit, curve->getId());
+        if (firstNewRow < 0) firstNewRow = (int)curve->getRVFits().size() - 1;
+    }
 
     rebuildList();
-    _list->setCurrentRow(_list->count() - 1);
+    if (firstNewRow >= 0 && firstNewRow < _list->count())
+        _list->setCurrentRow(firstNewRow);
+
+    LOG_INFO("Tools", QString("RV Inspector: added %1 solution(s)").arg(fits.size()));
     emit fitsChanged();
 }
 

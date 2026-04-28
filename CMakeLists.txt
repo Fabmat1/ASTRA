@@ -91,6 +91,10 @@ set_target_properties(qcustomplot PROPERTIES AUTOMOC ON)
 set(DIGGA_BUILD_REPORT OFF CACHE BOOL "" FORCE)   # no matplotlib/Python dep
 add_subdirectory(external/DIGGA EXCLUDE_FROM_ALL)
 
+# RV_MCMC submodule – build only the static library, not the CLI
+set(RV_MCMC_BUILD_CLI    OFF CACHE BOOL "" FORCE)
+set(RV_MCMC_BUILD_PYBIND OFF CACHE BOOL "" FORCE)
+add_subdirectory(external/rv_mcmc EXCLUDE_FROM_ALL)
 
 # Source files
 set(SOURCES
@@ -168,6 +172,8 @@ set(SOURCES
     src/views/tools/FitSetupWidget.cpp
     src/views/tools/FitProgressDialog.cpp
     src/views/tools/InteractiveIsisDialog.cpp
+    src/views/tools/RVAddFitDialog.cpp
+    src/views/tools/RVMCMCResultsDialog.cpp
 
     # views/panels
     src/views/panels/PanelUtils.cpp
@@ -269,6 +275,8 @@ set(HEADERS
     src/views/tools/FitSetupWidget.h
     src/views/tools/FitProgressDialog.h
     src/views/tools/InteractiveIsisDialog.h
+    src/views/tools/RVAddFitDialog.h
+    src/views/tools/RVMCMCResultsDialog.h
 
     # views/panels
     src/views/panels/PanelUtils.h
@@ -314,14 +322,20 @@ target_compile_definitions(ASTRA PRIVATE
 # Profiling option
 option(ENABLE_PROFILING "Build with profiling support (debug symbols + frame pointers)" OFF)
 
+# Always-on flags for the rv_mcmc submodule (GCC complex-literal suffix `2j`)
+target_compile_options(rv_mcmc PRIVATE
+    $<$<CXX_COMPILER_ID:GNU>:-fext-numeric-literals>
+)
+set_target_properties(rv_mcmc PROPERTIES CXX_EXTENSIONS ON)
+
 if(ENABLE_PROFILING)
     message(STATUS "Profiling enabled: -g -fno-omit-frame-pointer")
     set(PROFILING_FLAGS -O2 -g -fno-omit-frame-pointer)
 
-    target_compile_options(ASTRA PRIVATE ${PROFILING_FLAGS})
+    target_compile_options(ASTRA       PRIVATE ${PROFILING_FLAGS})
     target_compile_options(qcustomplot PRIVATE ${PROFILING_FLAGS})
+    target_compile_options(rv_mcmc     PRIVATE ${PROFILING_FLAGS})
 
-    # Export all symbol names so perf can resolve them
     target_link_options(ASTRA PRIVATE -rdynamic)
 endif()
 
@@ -340,6 +354,7 @@ target_link_libraries(ASTRA PRIVATE
     Qt6::PrintSupport
     qcustomplot
     DIGGA::core
+    rv_mcmc
 )
 
 # Add CCfits support if available

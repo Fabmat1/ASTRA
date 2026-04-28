@@ -1,3 +1,6 @@
 [submodule "external/DIGGA"]
 	path = external/DIGGA
 	url = https://github.com/Fabmat1/DIGGA
+[submodule "external/rv_mcmc"]
+	path = external/rv_mcmc
+	url = git@github.com:Fabmat1/RV_MCMC.git
