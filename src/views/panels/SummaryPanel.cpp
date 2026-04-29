@@ -902,6 +902,15 @@ QWidget* SummaryPanel::createReferencesSection()
         abstractBtn->setVisible(false);
         btnLayout->addWidget(abstractBtn);
 
+        QPushButton* adsScrapeBtn = new QPushButton("↻ Fetch from NASA/ADS");
+        adsScrapeBtn->setFlat(true);
+        adsScrapeBtn->setFixedHeight(20);
+        adsScrapeBtn->setCursor(Qt::PointingHandCursor);
+        adsScrapeBtn->setToolTip("CrossRef has no record. Click to scrape the ADS page once.");
+        adsScrapeBtn->setStyleSheet(linkBtnStyle);
+        adsScrapeBtn->setVisible(false);
+        btnLayout->addWidget(adsScrapeBtn);
+
         btnLayout->addStretch();
 
         QPushButton* adsBtn = new QPushButton("Open on ADS ↗");
@@ -983,14 +992,30 @@ QWidget* SummaryPanel::createReferencesSection()
             toResolve << bib;
 
             connect(_refResolver, &CrossRefResolver::resolved,
-                    card, [bib, populateCard](const QString& resolvedBib,
-                                              const BibcodeInfo& info) {
-                if (resolvedBib == bib) populateCard(info);
+                    card, [bib, populateCard, adsScrapeBtn]
+                        (const QString& resolvedBib, const BibcodeInfo& info) {
+                if (resolvedBib != bib) return;
+                adsScrapeBtn->setVisible(false);
+                populateCard(info);
             });
 
             connect(_refResolver, &CrossRefResolver::fetchFailed,
-                    card, [bib, loadingLabel](const QString& failedBib) {
-                if (failedBib == bib) loadingLabel->setVisible(false);
+                    card, [bib, loadingLabel, adsScrapeBtn]
+                        (const QString& failedBib) {
+                if (failedBib != bib) return;
+                loadingLabel->setVisible(false);
+                loadingLabel->setText("Resolving…");
+                adsScrapeBtn->setVisible(true);
+                adsScrapeBtn->setEnabled(true);
+            });
+
+            connect(adsScrapeBtn, &QPushButton::clicked, this,
+                    [this, bib, loadingLabel, adsScrapeBtn]() {
+                adsScrapeBtn->setEnabled(false);
+                adsScrapeBtn->setVisible(false);
+                loadingLabel->setText("Fetching from NASA/ADS…");
+                loadingLabel->setVisible(true);
+                _refResolver->resolveViaADS(bib);
             });
         }
     }

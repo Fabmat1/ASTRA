@@ -71,6 +71,14 @@ bool CrossRefResolver::openCache()
         )
     )");
 
+    q.exec(R"(
+        CREATE TABLE IF NOT EXISTS failed_lookups (
+            bibcode TEXT PRIMARY KEY,
+            reason TEXT,
+            failed_at TEXT DEFAULT (datetime('now'))
+        )
+    )");
+
     return true;
 }
 
@@ -123,9 +131,16 @@ void CrossRefResolver::resolve(const QStringList& bibcodes)
             continue;
         }
 
+        if (isKnownFailed(bib)) {
+            LOG_DEBUG(CAT, "Skipping previously-failed bibcode: " + bib);
+            emit fetchFailed(bib);
+            continue;
+        }
+
         ParsedBibcode parsed = parseBibcode(bib);
         if (!parsed.valid) {
             LOG_DEBUG(CAT, "Could not parse bibcode: " + bib);
+            markFailed(bib, "unparseable");
             emit fetchFailed(bib);
             continue;
         }
@@ -145,6 +160,7 @@ void CrossRefResolver::resolve(const QStringList& bibcodes)
             query.addQueryItem("query.container-title", parsed.journalName);
 
         if (bibTerms.isEmpty() && parsed.journalName.isEmpty()) {
+            markFailed(bib, "no-query-terms");
             emit fetchFailed(bib);
             continue;
         }
@@ -169,12 +185,19 @@ void CrossRefResolver::resolve(const QStringList& bibcodes)
 
 void CrossRefResolver::onNetworkReply(QNetworkReply* reply)
 {
-    reply->deleteLater();
+    if (_adsRequests.contains(reply)) {
+        QString bib = _adsRequests.take(reply);
+        reply->deleteLater();
+        handleADSReply(reply, bib);
+        return;
+    }
 
+    reply->deleteLater();
     QString bibcode = _pendingRequests.take(reply);
     if (bibcode.isEmpty()) return;
 
     if (reply->error() != QNetworkReply::NoError) {
+        // Transient — do NOT mark as permanently failed.
         LOG_WARNING(CAT, QString("CrossRef request failed for %1: %2")
             .arg(bibcode, reply->errorString()));
         emit fetchFailed(bibcode);
@@ -184,6 +207,7 @@ void CrossRefResolver::onNetworkReply(QNetworkReply* reply)
     QByteArray data = reply->readAll();
     QJsonDocument doc = QJsonDocument::fromJson(data);
     if (!doc.isObject()) {
+        // Treat as transient; server hiccup, malformed response, etc.
         LOG_WARNING(CAT, "Invalid JSON response for " + bibcode);
         emit fetchFailed(bibcode);
         return;
@@ -192,10 +216,11 @@ void CrossRefResolver::onNetworkReply(QNetworkReply* reply)
     QJsonArray items = doc.object()["message"].toObject()["items"].toArray();
     if (items.isEmpty()) {
         LOG_DEBUG(CAT, "No CrossRef results for " + bibcode);
+        markFailed(bibcode, "no-results");
         emit fetchFailed(bibcode);
         return;
     }
-
+    
     ParsedBibcode parsed = parseBibcode(bibcode);
     QChar authorInitial = (bibcode.length() == 19) ? bibcode.at(18) : QChar();
 
@@ -261,6 +286,7 @@ void CrossRefResolver::onNetworkReply(QNetworkReply* reply)
                 "expected vol=%2 page=%3, got vol=%4 page=%5 art=%6")
                 .arg(bibcode, parsed.volume, parsed.page,
                      matchVol, matchPage, matchArtNum));
+            markFailed(bibcode, "wrong-match");
             emit fetchFailed(bibcode);
             return;
         }
@@ -313,6 +339,7 @@ void CrossRefResolver::onNetworkReply(QNetworkReply* reply)
         emit resolved(bibcode, info);
         LOG_INFO(CAT, QString("Resolved %1 → \"%2\"").arg(bibcode, info.title));
     } else {
+        markFailed(bibcode, "empty-title");
         emit fetchFailed(bibcode);
     }
 }
@@ -393,4 +420,184 @@ QString CrossRefResolver::journalToSearchName(const QString& abbrev) const
     QString cleaned = abbrev;
     cleaned.remove('.');
     return cleaned.trimmed();
+}
+
+
+bool CrossRefResolver::isKnownFailed(const QString& bibcode)
+{
+    QSqlDatabase db = QSqlDatabase::database(_connectionName, false);
+    if (!db.isOpen()) return false;
+
+    QSqlQuery q(db);
+    q.prepare("SELECT 1 FROM failed_lookups WHERE bibcode = :bib LIMIT 1");
+    q.bindValue(":bib", bibcode);
+    if (q.exec() && q.next())
+        return true;
+    return false;
+}
+
+void CrossRefResolver::markFailed(const QString& bibcode, const QString& reason)
+{
+    QSqlDatabase db = QSqlDatabase::database(_connectionName, false);
+    if (!db.isOpen()) return;
+
+    QSqlQuery q(db);
+    q.prepare(R"(
+        INSERT OR REPLACE INTO failed_lookups (bibcode, reason, failed_at)
+        VALUES (:bib, :reason, datetime('now'))
+    )");
+    q.bindValue(":bib", bibcode);
+    q.bindValue(":reason", reason);
+
+    if (!q.exec())
+        LOG_WARNING(CAT, "Failed-lookup store failed for " + bibcode + ": " + q.lastError().text());
+}
+
+void CrossRefResolver::resolveViaADS(const QString& bibcode)
+{
+    // If we somehow already have it, short-circuit.
+    BibcodeInfo cached = lookupCache(bibcode);
+    if (!cached.title.isEmpty()) {
+        emit resolved(bibcode, cached);
+        return;
+    }
+
+    QUrl url(QString("https://ui.adsabs.harvard.edu/abs/%1/abstract").arg(bibcode));
+
+    QNetworkRequest request(url);
+    request.setRawHeader("Accept", "text/html");
+    request.setTransferTimeout(20000);
+    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                         QNetworkRequest::NoLessSafeRedirectPolicy);
+
+    QNetworkReply* reply = _nam->get(request);
+    _adsRequests[reply] = bibcode;
+
+    LOG_DEBUG(CAT, QString("Scraping ADS for %1: %2").arg(bibcode, url.toString()));
+}
+
+static QString unescapeHtml(QString s)
+{
+    s.replace("&amp;",  "&");
+    s.replace("&lt;",   "<");
+    s.replace("&gt;",   ">");
+    s.replace("&quot;", "\"");
+    s.replace("&#39;",  "'");
+    s.replace("&apos;", "'");
+    s.replace("&nbsp;", " ");
+    // numeric entities (basic)
+    static QRegularExpression numEnt("&#(\\d+);");
+    auto it = numEnt.globalMatch(s);
+    while (it.hasNext()) {
+        auto m = it.next();
+        QChar c(m.captured(1).toInt());
+        s.replace(m.captured(0), QString(c));
+    }
+    return s;
+}
+
+// Pulls <meta name="X" content="Y"> values, attribute-order-agnostic.
+static QStringList extractMetaByName(const QString& html, const QString& metaName)
+{
+    QStringList out;
+    static QRegularExpression metaTag("<meta\\b[^>]*>",
+                                      QRegularExpression::CaseInsensitiveOption);
+    QRegularExpression nameRe(
+        QString("name\\s*=\\s*[\"']%1[\"']").arg(QRegularExpression::escape(metaName)),
+        QRegularExpression::CaseInsensitiveOption);
+    static QRegularExpression contentRe("content\\s*=\\s*[\"']([^\"']*)[\"']",
+                                        QRegularExpression::CaseInsensitiveOption);
+
+    auto it = metaTag.globalMatch(html);
+    while (it.hasNext()) {
+        QString tag = it.next().captured(0);
+        if (!nameRe.match(tag).hasMatch()) continue;
+        auto cm = contentRe.match(tag);
+        if (cm.hasMatch()) out << unescapeHtml(cm.captured(1));
+    }
+    return out;
+}
+
+BibcodeInfo CrossRefResolver::parseADSHtml(const QString& bibcode, const QString& html)
+{
+    BibcodeInfo info;
+    info.bibcode = bibcode;
+
+    // Title — Google Scholar-style meta tag, present on every ADS abstract page.
+    auto titles = extractMetaByName(html, "citation_title");
+    if (!titles.isEmpty())
+        info.title = cleanTitle(titles.first());
+
+    // Authors — one meta tag per author; ADS uses "Family, Given".
+    auto authors = extractMetaByName(html, "citation_author");
+    QStringList authorList;
+    int maxA = std::min<int>(5, authors.size());
+    for (int i = 0; i < maxA; ++i)
+        authorList << authors[i].trimmed();
+    if (authors.size() > 5)
+        authorList << "et al.";
+    info.authors = authorList.join("; ");
+
+    // DOI
+    auto dois = extractMetaByName(html, "citation_doi");
+    if (!dois.isEmpty())
+        info.doi = dois.first().trimmed();
+
+    // Abstract — ADS embeds it as a JSON-escaped block. Try meta description
+    // first (truncated, but always there), then a more generous regex.
+    auto descs = extractMetaByName(html, "description");
+    if (!descs.isEmpty())
+        info.abstract = cleanTitle(descs.first());
+
+    // Try to find the full abstract in the embedded React state.
+    static QRegularExpression absRe(
+        "\"abstract\"\\s*:\\s*\"((?:\\\\.|[^\"\\\\])*)\"",
+        QRegularExpression::CaseInsensitiveOption);
+    auto am = absRe.match(html);
+    if (am.hasMatch()) {
+        QString a = am.captured(1);
+        a.replace("\\\"", "\"");
+        a.replace("\\n", " ");
+        a.replace("\\t", " ");
+        a.replace("\\\\", "\\");
+        a = cleanTitle(a);
+        if (a.length() > info.abstract.length())   // prefer longer
+            info.abstract = a;
+    }
+
+    return info;
+}
+
+void CrossRefResolver::clearFailed(const QString& bibcode)
+{
+    QSqlDatabase db = QSqlDatabase::database(_connectionName, false);
+    if (!db.isOpen()) return;
+    QSqlQuery q(db);
+    q.prepare("DELETE FROM failed_lookups WHERE bibcode = :bib");
+    q.bindValue(":bib", bibcode);
+    q.exec();
+}
+
+void CrossRefResolver::handleADSReply(QNetworkReply* reply, const QString& bibcode)
+{
+    if (reply->error() != QNetworkReply::NoError) {
+        LOG_WARNING(CAT, QString("ADS scrape failed for %1: %2")
+            .arg(bibcode, reply->errorString()));
+        emit fetchFailed(bibcode);
+        return;
+    }
+
+    const QString html = QString::fromUtf8(reply->readAll());
+    BibcodeInfo info = parseADSHtml(bibcode, html);
+
+    if (info.title.isEmpty()) {
+        LOG_WARNING(CAT, "ADS HTML had no parseable title for " + bibcode);
+        emit fetchFailed(bibcode);
+        return;
+    }
+
+    storeInCache(info);
+    clearFailed(bibcode);   // it's no longer a failure
+    emit resolved(bibcode, info);
+    LOG_INFO(CAT, QString("Resolved %1 via ADS → \"%2\"").arg(bibcode, info.title));
 }

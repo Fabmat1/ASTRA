@@ -24,6 +24,7 @@ public:
     ~CrossRefResolver() override;
 
     void resolve(const QStringList& bibcodes);
+    void resolveViaADS(const QString& bibcode);
     BibcodeInfo lookupCache(const QString& bibcode);
 
 signals:
@@ -34,6 +35,9 @@ private slots:
     void onNetworkReply(QNetworkReply* reply);
 
 private:
+    void handleADSReply(QNetworkReply* reply, const QString& bibcode);
+    static BibcodeInfo parseADSHtml(const QString& bibcode, const QString& html);
+
     struct ParsedBibcode {
         int year = 0;
         QString journalAbbrev;
@@ -49,8 +53,13 @@ private:
     bool openCache();
     void storeInCache(const BibcodeInfo& info);
 
+    bool isKnownFailed(const QString& bibcode);
+    void markFailed(const QString& bibcode, const QString& reason);
+    void clearFailed(const QString& bibcode);
+
     QNetworkAccessManager* _nam = nullptr;
     QString _dbPath;
     QString _connectionName;
     QMap<QNetworkReply*, QString> _pendingRequests;
+    QMap<QNetworkReply*, QString> _adsRequests; 
 };
