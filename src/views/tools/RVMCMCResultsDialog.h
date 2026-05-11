@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QDialog>
+#include <QList>
 #include <memory>
 #include "rv_mcmc/api.h"
 
@@ -29,6 +30,7 @@ private slots:
     void onAddCustomRegion();
     void onPeakActivated(int row);
     void onCornerRangeChanged();   // when user zooms a corner panel
+    void onResetView();
 
 private:
     void buildUi();
@@ -58,4 +60,15 @@ private:
     std::vector<std::vector<QCustomPlot*>> _offPlots;
     std::vector<QCPColorMap*>             _colormaps; // flat list, parallels offPlots
     bool _suppressRangeSync = false;
+
+        struct CustomRegion {
+        double pmin = 0.0;
+        double pmax = 0.0;
+        int    nSamples = 0;
+    };
+    void addPeakListItem(int solutionIndex);
+    void addCustomListItem(int customIndex);
+
+    QList<CustomRegion> _customRegions;
+    QPushButton*        _resetViewBtn = nullptr;
 };

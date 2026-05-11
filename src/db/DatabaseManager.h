@@ -84,6 +84,7 @@ public:
     bool deleteInstrument(const QString& id);
     std::shared_ptr<Instrument> resolveInstrumentString( const QString& input, QString* modeKey = nullptr) const;
     void restoreDefaultInstruments();
+    bool deleteRVFit(const QString& fitId);
 
 private:
     void backfillSpectrumInstrumentIds();

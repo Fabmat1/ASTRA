@@ -1,0 +1,15 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=ASTRA
+GenericName=Stellar Astrophysics Data Manager
+Comment=Manage and analyse spectral, photometric and radial velocity data for stars
+Exec=ASTRA %F
+Icon=astra
+Categories=Science;Astronomy;Education;
+MimeType=application/fits;
+Keywords=astronomy;spectroscopy;radial velocity;subdwarf;RV;spectrum;photometry;astra;
+Terminal=false
+StartupNotify=true
+StartupWMClass=ASTRA
+X-AppVersion=@PROJECT_VERSION@

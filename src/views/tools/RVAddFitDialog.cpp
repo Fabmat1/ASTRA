@@ -22,6 +22,9 @@
 #include <thread>
 #include <QMessageBox>
 #include <QUuid>
+#include <QTimer>
+#include <QElapsedTimer>
+#include <memory>
 
 #include <cmath>
 
@@ -280,25 +283,68 @@ void RVAddFitDialog::onRunMCMC()
     }
     auto cfg = collectMCMCConfig();
 
-    // ── Modal progress dialog while worker runs ───────────────────────
+    // Shared buffer the MCMC worker fills as it produces (thinned) samples.
+    // We sample its size from the GUI thread for a real progress bar.
+    auto chainBuffer = std::make_shared<std::vector<std::vector<double>>>();
+    cfg.chain_buffer = chainBuffer.get();
+
+    const int totalSamples = cfg.n_samples;
+    const int chainThin    = std::max(1, cfg.chain_thin);
+
     auto* progress = new QProgressDialog(
-        QString("Running RV-MCMC fit… (%1 samples × %2 chains)")
-            .arg(cfg.n_samples).arg(cfg.n_temperatures),
-        QString(), 0, 0, this);
+        QString("Running RV-MCMC fit… burn-in (%1 samples)").arg(cfg.n_burn_in),
+        QString(), 0, totalSamples, this);
     progress->setWindowModality(Qt::WindowModal);
     progress->setMinimumDuration(0);
     progress->setAutoClose(false);
+    progress->setAutoReset(false);
     progress->setCancelButton(nullptr);
+    progress->setValue(0);
     progress->show();
 
-    // QPointers survive dialog destruction during the (long) MCMC run.
+    // Poll the chain buffer for samples, compute ETA from observed rate.
+    auto elapsedTimer = std::make_shared<QElapsedTimer>();
+    elapsedTimer->start();
+    auto firstSampleMs = std::make_shared<qint64>(-1);
+
+    auto* poll = new QTimer(progress);
+    poll->setInterval(400);
+    connect(poll, &QTimer::timeout, progress,
+        [progress, chainBuffer, totalSamples, chainThin, elapsedTimer, firstSampleMs]()
+    {
+        const int done = static_cast<int>(chainBuffer->size()) * chainThin;
+        progress->setValue(std::min(done, totalSamples));
+
+        if (done <= 0) {
+            // still in burn-in
+            return;
+        }
+        if (*firstSampleMs < 0) *firstSampleMs = elapsedTimer->elapsed();
+
+        const qint64 now      = elapsedTimer->elapsed();
+        const qint64 since1st = now - *firstSampleMs;
+        QString etaStr;
+        if (since1st > 1500 && done > 0) {
+            const double rate = double(done) / (double(since1st) / 1000.0); // samples/s
+            if (rate > 0.0) {
+                const double remaining = std::max(0, totalSamples - done) / rate;
+                const int s = int(remaining);
+                etaStr = QString(" — ETA %1:%2:%3")
+                    .arg(s / 3600, 2, 10, QChar('0'))
+                    .arg((s / 60) % 60, 2, 10, QChar('0'))
+                    .arg(s % 60, 2, 10, QChar('0'));
+            }
+        }
+        progress->setLabelText(QString("RV-MCMC fit: %L1 / %L2 samples%3")
+            .arg(done).arg(totalSamples).arg(etaStr));
+    });
+    poll->start();
+
     QPointer<RVAddFitDialog>  self = this;
     QPointer<QProgressDialog> pd   = progress;
     const QString curveId = _curve ? _curve->getId() : QString();
 
-    // Run on a *real* OS thread (NOT a QThreadPool worker) — this is
-    // mandatory because rv_mcmc::run_fit internally uses OpenMP.
-    std::thread worker([self, pd, curveId,
+    std::thread worker([self, pd, curveId, chainBuffer,
                         data = std::move(data),
                         cfg]() mutable
     {
@@ -312,17 +358,15 @@ void RVAddFitDialog::onRunMCMC()
             error = "Unknown exception in rv_mcmc::run_fit";
         }
 
-        // Hop back to the GUI thread to deliver the result.
         QMetaObject::invokeMethod(qApp,
-            [self, pd, curveId,
+            [self, pd, curveId, chainBuffer,
              result = std::move(result), error]() mutable
         {
             if (pd) { pd->close(); pd->deleteLater(); }
-            if (!self) return;                       // dialog gone
+            if (!self) return;
 
             if (!error.isEmpty()) {
-                QMessageBox::critical(self, "RV-MCMC",
-                    "MCMC failed: " + error);
+                QMessageBox::critical(self, "RV-MCMC", "MCMC failed: " + error);
                 return;
             }
             if (!result.success) {
@@ -332,10 +376,8 @@ void RVAddFitDialog::onRunMCMC()
                 return;
             }
 
-            LOG_INFO("Tools",
-                QString("RV-MCMC: %1 samples, %2 peaks detected")
-                    .arg(result.chain.size())
-                    .arg(result.solutions.size()));
+            LOG_INFO("Tools", QString("RV-MCMC: %1 samples, %2 peaks detected")
+                .arg(result.chain.size()).arg(result.solutions.size()));
 
             RVMCMCResultsDialog dlg(std::move(result), curveId, self);
             if (dlg.exec() == QDialog::Accepted) {
@@ -345,5 +387,5 @@ void RVAddFitDialog::onRunMCMC()
             }
         }, Qt::QueuedConnection);
     });
-    worker.detach();   // self-managed; result/cleanup is queued to main thread
+    worker.detach();
 }

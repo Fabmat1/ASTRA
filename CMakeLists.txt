@@ -451,6 +451,65 @@ install(TARGETS ASTRA
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
 
+# ── Linux desktop integration ─────────────────────────────────────────────
+if(UNIX AND NOT APPLE)
+    # --- .desktop file ---------------------------------------------------
+    configure_file(
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/linux/astra.desktop.in"
+        "${CMAKE_CURRENT_BINARY_DIR}/astra.desktop"
+        @ONLY
+    )
+    install(
+        FILES "${CMAKE_CURRENT_BINARY_DIR}/astra.desktop"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/applications"
+    )
+
+    # --- Icon (scalable SVG preferred; fall back to 256×256 PNG) ---------
+    # Place your icon at resources/icons/astra.svg (or astra.png).
+    if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/resources/linux/icons/astra.svg")
+        install(
+            FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/linux/icons/astra.svg"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/scalable/apps"
+        )
+    elseif(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/resources/linux/icons/astra.png")
+        install(
+            FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/linux/icons/astra.png"
+            DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps"
+        )
+    endif()
+
+    # --- Refresh the icon/desktop caches after install -------------------
+    # These are no-ops if the tools are absent (e.g. a headless build host).
+    find_program(UPDATE_DESKTOP_DB update-desktop-database)
+    find_program(UPDATE_ICON_CACHE  gtk-update-icon-cache)
+
+    if(UPDATE_DESKTOP_DB)
+        install(CODE "
+            execute_process(
+                COMMAND \"${UPDATE_DESKTOP_DB}\"
+                        \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATADIR}/applications\"
+                RESULT_VARIABLE _ret
+            )
+            if(NOT _ret EQUAL 0)
+                message(WARNING \"update-desktop-database returned \${_ret}\")
+            endif()
+        ")
+    endif()
+
+    if(UPDATE_ICON_CACHE)
+        install(CODE "
+            execute_process(
+                COMMAND \"${UPDATE_ICON_CACHE}\" --quiet --force --ignore-theme-index
+                        \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATADIR}/icons/hicolor\"
+                RESULT_VARIABLE _ret
+            )
+            if(NOT _ret EQUAL 0)
+                message(WARNING \"gtk-update-icon-cache returned \${_ret}\")
+            endif()
+        ")
+    endif()
+endif()
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # Tests

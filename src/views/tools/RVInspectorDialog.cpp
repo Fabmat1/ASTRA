@@ -653,18 +653,20 @@ void RVSolutionsWidget::onDeleteSolution()
 
     bool wasBest = fit->isBestFit();
     QString fitId = fit->getId();
-    curve->removeRVFit(fitId);
 
-    // TODO: persist deletion — DatabaseManager::deleteRVFit not yet exposed.
-    // The fit will reappear on next reload until that's added.
-    LOG_WARNING("Tools",
-        "RV Inspector: removed fit in-memory only — DB delete not implemented.");
+    if (_dbm && !_dbm->deleteRVFit(fitId)) {
+        LOG_ERROR("Tools", QString("Failed to delete RV fit %1 from database").arg(fitId));
+        return;
+    }
+
+    curve->removeRVFit(fitId);
 
     rebuildList();
     if (_list->count() > 0) _list->setCurrentRow(0);
     else { _displayed.reset(); emit displayedFitChanged(nullptr); }
 
     if (wasBest && _star) _star->markSummaryDirty();
+    LOG_INFO("Tools", QString("RV Inspector: deleted fit %1").arg(fitId));
     emit fitsChanged();
 }
 

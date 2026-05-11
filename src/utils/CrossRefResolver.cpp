@@ -12,6 +12,7 @@
 #include <QSqlError>
 #include <QUrl>
 #include <QUrlQuery>
+#include <QTimer>
 #include <QRegularExpression>
 
 #include <algorithm>
@@ -38,6 +39,11 @@ CrossRefResolver::CrossRefResolver(const QString& dbPath, QObject* parent)
 {
     connect(_nam, &QNetworkAccessManager::finished,
             this, &CrossRefResolver::onNetworkReply);
+
+    _pumpTimer = new QTimer(this);
+    _pumpTimer->setSingleShot(true);
+    connect(_pumpTimer, &QTimer::timeout, this, &CrossRefResolver::pumpQueue);
+
     openCache();
 }
 
@@ -125,6 +131,7 @@ void CrossRefResolver::storeInCache(const BibcodeInfo& info)
 void CrossRefResolver::resolve(const QStringList& bibcodes)
 {
     for (const QString& bib : bibcodes) {
+
         BibcodeInfo cached = lookupCache(bib);
         if (!cached.title.isEmpty()) {
             emit resolved(bib, cached);
@@ -132,69 +139,55 @@ void CrossRefResolver::resolve(const QStringList& bibcodes)
         }
 
         if (isKnownFailed(bib)) {
-            LOG_DEBUG(CAT, "Skipping previously-failed bibcode: " + bib);
             emit fetchFailed(bib);
+            continue;
+        }
+
+        if (_attempted.contains(bib)) {
+            if (!_inProgress.contains(bib))
+                emit fetchFailed(bib);
             continue;
         }
 
         ParsedBibcode parsed = parseBibcode(bib);
         if (!parsed.valid) {
-            LOG_DEBUG(CAT, "Could not parse bibcode: " + bib);
+            _attempted.insert(bib);
             markFailed(bib, "unparseable");
             emit fetchFailed(bib);
             continue;
         }
 
-        QUrl url("https://api.crossref.org/works");
-        QUrlQuery query;
-
-        QString bibTerms;
-        if (!parsed.volume.isEmpty()) bibTerms += parsed.volume;
-        if (!parsed.page.isEmpty())   bibTerms += " " + parsed.page;
-        bibTerms = bibTerms.trimmed();
-
-        if (!bibTerms.isEmpty())
-            query.addQueryItem("query.bibliographic", bibTerms);
-
-        if (!parsed.journalName.isEmpty())
-            query.addQueryItem("query.container-title", parsed.journalName);
-
-        if (bibTerms.isEmpty() && parsed.journalName.isEmpty()) {
-            markFailed(bib, "no-query-terms");
-            emit fetchFailed(bib);
-            continue;
-        }
-
-        query.addQueryItem("filter",
-            QString("from-pub-date:%1,until-pub-date:%1").arg(parsed.year));
-        query.addQueryItem("rows", "5");
-        url.setQuery(query);
-
-        QNetworkRequest request(url);
-        request.setRawHeader("User-Agent",
-            "ASTRA/1.0 (mailto:astra-tool@astro.dev)");
-        request.setRawHeader("Accept", "application/json");
-        request.setTransferTimeout(15000);
-
-        QNetworkReply* reply = _nam->get(request);
-        _pendingRequests[reply] = bib;
-
-        LOG_DEBUG(CAT, QString("Querying CrossRef for %1: %2").arg(bib, url.toString()));
+        _attempted.insert(bib);
+        _inProgress.insert(bib);
+        enqueue(bib);
     }
+
+    pumpQueue();
+}
+
+void CrossRefResolver::enqueue(const QString& bibcode)
+{
+    _queue.enqueue(bibcode);
 }
 
 void CrossRefResolver::onNetworkReply(QNetworkReply* reply)
 {
-    if (_adsRequests.contains(reply)) {
+        if (_adsRequests.contains(reply)) {
         QString bib = _adsRequests.take(reply);
         reply->deleteLater();
         handleADSReply(reply, bib);
-        return;
+        return;   
+
     }
 
     reply->deleteLater();
     QString bibcode = _pendingRequests.take(reply);
     if (bibcode.isEmpty()) return;
+
+    --_inflight;
+    _inProgress.remove(bibcode);
+    applyRateLimitHeaders(reply);
+    QTimer::singleShot(0, this, &CrossRefResolver::pumpQueue);
 
     if (reply->error() != QNetworkReply::NoError) {
         // Transient — do NOT mark as permanently failed.
@@ -455,12 +448,19 @@ void CrossRefResolver::markFailed(const QString& bibcode, const QString& reason)
 
 void CrossRefResolver::resolveViaADS(const QString& bibcode)
 {
-    // If we somehow already have it, short-circuit.
     BibcodeInfo cached = lookupCache(bibcode);
     if (!cached.title.isEmpty()) {
         emit resolved(bibcode, cached);
         return;
     }
+
+    if (_inProgress.contains(bibcode)) {
+        // CrossRef or a previous ADS click is already in flight — just wait.
+        return;
+    }
+
+    _attempted.insert(bibcode);
+    _inProgress.insert(bibcode);
 
     QUrl url(QString("https://ui.adsabs.harvard.edu/abs/%1/abstract").arg(bibcode));
 
@@ -580,6 +580,8 @@ void CrossRefResolver::clearFailed(const QString& bibcode)
 
 void CrossRefResolver::handleADSReply(QNetworkReply* reply, const QString& bibcode)
 {
+    _inProgress.remove(bibcode);
+
     if (reply->error() != QNetworkReply::NoError) {
         LOG_WARNING(CAT, QString("ADS scrape failed for %1: %2")
             .arg(bibcode, reply->errorString()));
@@ -601,3 +603,112 @@ void CrossRefResolver::handleADSReply(QNetworkReply* reply, const QString& bibco
     emit resolved(bibcode, info);
     LOG_INFO(CAT, QString("Resolved %1 via ADS → \"%2\"").arg(bibcode, info.title));
 }
+
+void CrossRefResolver::pumpQueue()
+{
+    while (!_queue.isEmpty() && _inflight < _maxConcurrent) {
+        const qint64 elapsed = _lastDispatch.isValid()
+                               ? _lastDispatch.elapsed()
+                               : _minIntervalMs;
+
+        if (elapsed < _minIntervalMs) {
+            const int waitMs = int(_minIntervalMs - elapsed);
+            if (!_pumpTimer->isActive() || _pumpTimer->remainingTime() > waitMs)
+                _pumpTimer->start(waitMs);
+            return;
+        }
+
+        QString bib = _queue.dequeue();
+        dispatchCrossRef(bib);
+        _lastDispatch.restart();
+    }
+}
+
+void CrossRefResolver::dispatchCrossRef(const QString& bibcode)
+{
+    ParsedBibcode parsed = parseBibcode(bibcode);  // re-parse; cheap
+
+    QUrl url("https://api.crossref.org/works");
+    QUrlQuery query;
+
+    QString bibTerms;
+    if (!parsed.volume.isEmpty()) bibTerms += parsed.volume;
+    if (!parsed.page.isEmpty())   bibTerms += " " + parsed.page;
+    bibTerms = bibTerms.trimmed();
+
+    if (!bibTerms.isEmpty())
+        query.addQueryItem("query.bibliographic", bibTerms);
+    if (!parsed.journalName.isEmpty())
+        query.addQueryItem("query.container-title", parsed.journalName);
+
+    if (bibTerms.isEmpty() && parsed.journalName.isEmpty()) {
+        markFailed(bibcode, "no-query-terms");
+        _inProgress.remove(bibcode);
+        emit fetchFailed(bibcode);
+        return;
+    }
+
+    query.addQueryItem("filter",
+        QString("from-pub-date:%1,until-pub-date:%1").arg(parsed.year));
+    query.addQueryItem("rows", "5");
+    url.setQuery(query);
+
+    QNetworkRequest request(url);
+    request.setRawHeader("User-Agent",
+        "ASTRA/1.0 (mailto:astra-tool@astro.dev)");
+    request.setRawHeader("Accept", "application/json");
+    request.setTransferTimeout(15000);
+
+    QNetworkReply* reply = _nam->get(request);
+    _pendingRequests[reply] = bibcode;
+    ++_inflight;
+
+    LOG_DEBUG(CAT, QString("Querying CrossRef for %1 (queue=%2, inflight=%3): %4")
+        .arg(bibcode).arg(_queue.size()).arg(_inflight).arg(url.toString()));
+}
+
+void CrossRefResolver::applyRateLimitHeaders(QNetworkReply* reply)
+{
+    // 429 → temporarily pause the queue.
+    int status = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+    if (status == 429) {
+        int retryS = reply->rawHeader("Retry-After").toInt();
+        if (retryS <= 0) retryS = 5;
+        LOG_WARNING(CAT, QString("CrossRef 429 — pausing queue %1s").arg(retryS));
+        // Block the pump for that long by pretending we just dispatched.
+        _lastDispatch.restart();
+        _minIntervalMs = std::max(_minIntervalMs, retryS * 1000);
+        QTimer::singleShot(retryS * 1000, this, [this]() {
+            _minIntervalMs = 100;   // restore default
+            pumpQueue();
+        });
+        return;
+    }
+
+    // Tune our pacing from the advertised limit if possible.
+    QByteArray lim = reply->rawHeader("X-Rate-Limit-Limit");
+    QByteArray iv  = reply->rawHeader("X-Rate-Limit-Interval");
+    if (!lim.isEmpty() && !iv.isEmpty()) {
+        bool ok1 = false, ok2 = false;
+        int allowed = lim.toInt(&ok1);
+        // Interval is "1s" / "1m" — strip suffix and convert.
+        QString ivStr = QString::fromLatin1(iv).trimmed();
+        int seconds = 1;
+        if (ivStr.endsWith('s', Qt::CaseInsensitive))
+            seconds = ivStr.left(ivStr.size()-1).toInt(&ok2);
+        else if (ivStr.endsWith('m', Qt::CaseInsensitive))
+            seconds = ivStr.left(ivStr.size()-1).toInt(&ok2) * 60;
+
+        if (ok1 && ok2 && allowed > 0 && seconds > 0) {
+            // Use half the allowed rate as a safety margin.
+            int safeMs = (seconds * 1000) / std::max(1, allowed / 2);
+            _minIntervalMs = std::clamp(safeMs, 50, 2000);
+        }
+    }
+}
+
+bool CrossRefResolver::isPending(const QString& bib) const
+{ return _inProgress.contains(bib); }
+
+bool CrossRefResolver::wasAttempted(const QString& bib) const
+{ return _attempted.contains(bib); }

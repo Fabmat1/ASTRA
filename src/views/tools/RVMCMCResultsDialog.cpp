@@ -38,10 +38,18 @@ void RVMCMCResultsDialog::buildUi()
     auto* split = new QSplitter(Qt::Horizontal, this);
     outer->addWidget(split, 1);
 
-    // ── LEFT: corner plot grid ────────────────────────────────
+    // ── LEFT: corner plot grid + Reset view button ────────────
     auto* leftHost = new QWidget;
     auto* leftLay  = new QVBoxLayout(leftHost);
     leftLay->setContentsMargins(0, 0, 0, 0);
+
+    auto* topRow = new QHBoxLayout;
+    topRow->addStretch();
+    _resetViewBtn = new QPushButton("Reset view");
+    _resetViewBtn->setToolTip("Reset all corner plots to span the full chain range");
+    topRow->addWidget(_resetViewBtn);
+    leftLay->addLayout(topRow);
+
     auto* gridHost = new QWidget;
     _cornerGrid = new QGridLayout(gridHost);
     _cornerGrid->setSpacing(2);
@@ -53,31 +61,18 @@ void RVMCMCResultsDialog::buildUi()
     auto* right = new QWidget;
     auto* rl = new QVBoxLayout(right);
 
-    auto* peaksBox = new QGroupBox("Detected period peaks");
+    auto* peaksBox = new QGroupBox("Candidate solutions");
     auto* pv = new QVBoxLayout(peaksBox);
     _peakList = new QListWidget;
     _peakList->setSelectionMode(QAbstractItemView::ExtendedSelection);
-    int rank = 1;
-    for (const auto& s : _result.solutions) {
-        auto p   = s.parameters.at("period");
-        auto k   = s.parameters.at("amplitude");
-        auto txt = QString("#%1   P = %2 d   K = %3 km/s   "
-                            "n = %4   prom = %5")
-                .arg(rank++)
-                .arg(p.median, 0, 'f', 6)
-                .arg(k.median, 0, 'f', 2)
-                .arg(s.n_samples)
-                .arg(s.prominence, 0, 'f', 0);
-        auto* item = new QListWidgetItem(txt);
-        item->setData(Qt::UserRole, int(rank - 2));   // index into solutions
-        _peakList->addItem(item);
-    }
+    for (int i = 0; i < (int)_result.solutions.size(); ++i)
+        addPeakListItem(i);
     pv->addWidget(_peakList, 1);
-    _addPeaksBtn = new QPushButton("Add selected peaks as solutions");
+    _addPeaksBtn = new QPushButton("Add selected as solutions");
     pv->addWidget(_addPeaksBtn);
     rl->addWidget(peaksBox, 1);
 
-    // Custom region (period range)
+    // Custom region
     auto* regionBox = new QGroupBox("Custom region (period range)");
     auto* form = new QFormLayout(regionBox);
     _pMinSpin = new QDoubleSpinBox;
@@ -88,35 +83,41 @@ void RVMCMCResultsDialog::buildUi()
     auto periods_minmax = std::minmax_element(
         _result.chain.begin(), _result.chain.end(),
         [](const auto& a, const auto& b){ return a[0] < b[0]; });
-    _pMinSpin->setValue((*periods_minmax.first)[0]);
-    _pMaxSpin->setValue((*periods_minmax.second)[0]);
+    if (periods_minmax.first != _result.chain.end()) {
+        _pMinSpin->setValue((*periods_minmax.first)[0]);
+        _pMaxSpin->setValue((*periods_minmax.second)[0]);
+    }
 
     form->addRow("Min P [d]", _pMinSpin);
     form->addRow("Max P [d]", _pMaxSpin);
     _filterInfo  = new QLabel;
     _filterInfo->setStyleSheet("color:gray;");
     form->addRow(_filterInfo);
-    _addRegionBtn = new QPushButton("Add custom region as solution");
+    _addRegionBtn = new QPushButton("Add custom region to list");
     form->addRow(_addRegionBtn);
     rl->addWidget(regionBox);
 
     rl->addStretch();
     split->addWidget(right);
-    split->setStretchFactor(0, 4);
+    split->setStretchFactor(0, 5);
     split->setStretchFactor(1, 1);
+    // Force initial sizes — stretch alone doesn't override widget hints.
+    const int w = std::max(width(), 1200);
+    split->setSizes({ int(w * 0.8), int(w * 0.2) });
 
     auto* btns = new QDialogButtonBox(QDialogButtonBox::Close);
     btns->button(QDialogButtonBox::Close)->setText("Done");
     outer->addWidget(btns);
 
     connect(btns, &QDialogButtonBox::rejected, this, [this]() {
-        // Done with no selection → still accept if user already added solutions
         if (_selected.isEmpty()) reject(); else accept();
     });
     connect(_addPeaksBtn,  &QPushButton::clicked,
             this, &RVMCMCResultsDialog::onAddSelectedPeaks);
     connect(_addRegionBtn, &QPushButton::clicked,
             this, &RVMCMCResultsDialog::onAddCustomRegion);
+    connect(_resetViewBtn, &QPushButton::clicked,
+            this, &RVMCMCResultsDialog::onResetView);
     connect(_peakList, &QListWidget::itemDoubleClicked,
             this, [this](QListWidgetItem* it){ onPeakActivated(_peakList->row(it)); });
 }
@@ -392,11 +393,13 @@ std::shared_ptr<RVFit> RVMCMCResultsDialog::fitFromSubChain(
     const auto& names = _result.param_names;
     const int dim = (int)names.size();
 
-    auto median = [&](int col){
+    auto quantile = [&](int col, double q) {
         std::vector<double> v(sub.size());
         for (size_t i = 0; i < sub.size(); ++i) v[i] = sub[i][col];
-        std::nth_element(v.begin(), v.begin() + v.size()/2, v.end());
-        return v[v.size()/2];
+        size_t idx = std::min<size_t>(v.size() - 1,
+                                      static_cast<size_t>(q * (v.size() - 1)));
+        std::nth_element(v.begin(), v.begin() + idx, v.end());
+        return v[idx];
     };
 
     auto fit = std::make_shared<RVFit>();
@@ -406,13 +409,17 @@ std::shared_ptr<RVFit> RVMCMCResultsDialog::fitFromSubChain(
     fit->setFitMethod(methodTag);
 
     for (int k = 0; k < dim; ++k) {
-        double m = median(k);
-        if      (names[k] == "period")       fit->setPeriod(m);
-        else if (names[k] == "amplitude")    fit->setK(m);
-        else if (names[k] == "offset")       fit->setGamma(m);
-        else if (names[k] == "phase")        fit->setPhi(m);
-        else if (names[k] == "eccentricity") fit->setEccentricity(m);
-        else if (names[k] == "omega")        fit->setOmega(m);
+        const double med = quantile(k, 0.5);
+        const double q16 = quantile(k, 0.16);
+        const double q84 = quantile(k, 0.84);
+        const double err = 0.5 * (q84 - q16);
+
+        if      (names[k] == "period")       { fit->setPeriod(med);       fit->setPeriodError(err); }
+        else if (names[k] == "amplitude")    { fit->setK(med);            fit->setKError(err); }
+        else if (names[k] == "offset")       { fit->setGamma(med);        fit->setGammaError(err); }
+        else if (names[k] == "phase")        { fit->setPhi(med);          fit->setPhiError(err); }
+        else if (names[k] == "eccentricity") { fit->setEccentricity(med); fit->setEccentricityError(err); }
+        else if (names[k] == "omega")        { fit->setOmega(med);        fit->setOmegaError(err); }
     }
     bool ecc = (dim == 6);
     fit->setEccentric(ecc);
@@ -420,38 +427,77 @@ std::shared_ptr<RVFit> RVMCMCResultsDialog::fitFromSubChain(
     return fit;
 }
 
+void RVMCMCResultsDialog::addPeakListItem(int solutionIndex)
+{
+    if (solutionIndex < 0 || solutionIndex >= (int)_result.solutions.size()) return;
+    const auto& s = _result.solutions[solutionIndex];
+    auto p = s.parameters.at("period");
+    auto k = s.parameters.at("amplitude");
+    auto txt = QString("#%1   P = %2 d   K = %3 km/s   n = %4   prom = %5")
+        .arg(solutionIndex + 1)
+        .arg(p.median, 0, 'f', 6)
+        .arg(k.median, 0, 'f', 2)
+        .arg(s.n_samples)
+        .arg(s.prominence, 0, 'f', 0);
+    auto* item = new QListWidgetItem(txt);
+    item->setData(Qt::UserRole, solutionIndex);
+    item->setData(Qt::UserRole + 1, false);   // false = automatic peak
+    _peakList->addItem(item);
+}
+
+void RVMCMCResultsDialog::addCustomListItem(int customIndex)
+{
+    if (customIndex < 0 || customIndex >= _customRegions.size()) return;
+    const auto& r = _customRegions[customIndex];
+    auto txt = QString("[custom]   P ∈ [%1, %2] d   n = %3")
+        .arg(r.pmin, 0, 'f', 6).arg(r.pmax, 0, 'f', 6).arg(r.nSamples);
+    auto* item = new QListWidgetItem(txt);
+    item->setForeground(QBrush(QColor(70, 110, 200)));
+    item->setData(Qt::UserRole, customIndex);
+    item->setData(Qt::UserRole + 1, true);    // true = custom region
+    _peakList->addItem(item);
+    _peakList->setCurrentItem(item);          // pre-select the newly added one
+}
+
 // ────────────────────────────────────────────────────────────────────
 void RVMCMCResultsDialog::onAddSelectedPeaks()
 {
     auto rows = _peakList->selectionModel()->selectedRows();
     if (rows.isEmpty()) {
-        // If nothing selected, add ALL peaks (common case after MCMC)
         for (int r = 0; r < _peakList->count(); ++r)
             rows << _peakList->model()->index(r, 0);
     }
 
     int added = 0;
     for (const auto& m : rows) {
-        int idx = m.data(Qt::UserRole).toInt();
-        if (idx < 0 || idx >= (int)_result.solutions.size()) continue;
-        const auto& s = _result.solutions[idx];
-
-        // Build sub-chain from the period range that defines this peak.
-        // We approximate it by selecting all chain rows whose period is
-        // within the median ± a window derived from the bin spacing.
-        // (For exact masks you can extend the API to return them.)
-        double pmed = s.parameters.at("period").median;
-        double pq16 = s.parameters.at("period").q16;
-        double pq84 = s.parameters.at("period").q84;
-        double pad  = std::max(pmed - pq16, pq84 - pmed) * 1.5;
-        double plo  = pmed - pad;
-        double phi  = pmed + pad;
+        const bool isCustom = m.data(Qt::UserRole + 1).toBool();
+        const int  idx      = m.data(Qt::UserRole).toInt();
 
         std::vector<std::vector<double>> sub;
-        for (const auto& row : _result.chain)
-            if (row[0] >= plo && row[0] <= phi) sub.push_back(row);
+        QString tag;
 
-        auto f = fitFromSubChain(sub, QString("rv_mcmc#%1").arg(idx + 1));
+        if (isCustom) {
+            if (idx < 0 || idx >= _customRegions.size()) continue;
+            const auto& r = _customRegions[idx];
+            for (const auto& row : _result.chain)
+                if (row[0] >= r.pmin && row[0] <= r.pmax) sub.push_back(row);
+            tag = QString("rv_mcmc[%1..%2 d]")
+                  .arg(r.pmin, 0, 'f', 4).arg(r.pmax, 0, 'f', 4);
+        } else {
+            if (idx < 0 || idx >= (int)_result.solutions.size()) continue;
+            const auto& s = _result.solutions[idx];
+            double pmed = s.parameters.at("period").median;
+            double pq16 = s.parameters.at("period").q16;
+            double pq84 = s.parameters.at("period").q84;
+            double pad  = std::max(pmed - pq16, pq84 - pmed) * 1.5;
+            double plo  = pmed - pad;
+            double phi  = pmed + pad;
+            for (const auto& row : _result.chain)
+                if (row[0] >= plo && row[0] <= phi) sub.push_back(row);
+            tag = QString("rv_mcmc#%1").arg(idx + 1);
+        }
+
+        auto f = fitFromSubChain(sub, tag);
         if (f) { _selected.append(f); ++added; }
     }
     if (added > 0) {
@@ -466,20 +512,19 @@ void RVMCMCResultsDialog::onAddCustomRegion()
     double hi = _pMaxSpin->value();
     if (!(hi > lo)) return;
 
-    std::vector<std::vector<double>> sub;
+    int n = 0;
     for (const auto& row : _result.chain)
-        if (row[0] >= lo && row[0] <= hi) sub.push_back(row);
+        if (row[0] >= lo && row[0] <= hi) ++n;
 
-    if (sub.size() < 50) {
+    if (n < 50) {
         LOG_WARNING("Tools", "Custom region has fewer than 50 samples — skipping");
         return;
     }
-    auto f = fitFromSubChain(sub,
-        QString("rv_mcmc[%1..%2 d]").arg(lo, 0, 'f', 4).arg(hi, 0, 'f', 4));
-    if (f) {
-        _selected.append(f);
-        accept();
-    }
+
+    _customRegions.append({lo, hi, n});
+    addCustomListItem(_customRegions.size() - 1);
+    LOG_INFO("Tools", QString("RV-MCMC: queued custom region [%1, %2] d (n=%3)")
+             .arg(lo).arg(hi).arg(n));
 }
 
 void RVMCMCResultsDialog::onPeakActivated(int row)
@@ -499,4 +544,23 @@ void RVMCMCResultsDialog::onPeakActivated(int row)
 
     _diagPlots[0]->xAxis->setRange(pmed - pad, pmed + pad);
     _diagPlots[0]->replot();   // triggers onCornerRangeChanged
+}
+
+void RVMCMCResultsDialog::onResetView()
+{
+    const auto& corner = _result.full_corner;
+    const int n = (int)corner.param_names.size();
+    if (n == 0 || _diagPlots.empty()) return;
+
+    _suppressRangeSync = true;
+    for (int k = 0; k < n; ++k) {
+        QCustomPlot* cp = _diagPlots[k];
+        if (!cp) continue;
+        const auto& h = corner.diagonals[k];
+        if (h.edges.size() >= 2)
+            cp->xAxis->setRange(h.edges.front(), h.edges.back());
+    }
+    _suppressRangeSync = false;
+
+    onCornerRangeChanged();   // propagate to off-diagonals + rebuild histograms
 }

@@ -1083,6 +1083,11 @@ std::vector<std::shared_ptr<RVFit>> DatabaseManager::loadRVFits(const QString& c
     return _rv->loadRVFits(curveId);
 }
 
+bool DatabaseManager::deleteRVFit(const QString& fitId)
+{
+    return _rv->deleteRVFit(fitId);
+}
+
 bool DatabaseManager::deleteRadialVelocityCurve(const QString& curveId)
 {
     return _rv->deleteRadialVelocityCurve(curveId);

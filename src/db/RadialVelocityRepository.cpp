@@ -280,3 +280,15 @@ void RadialVelocityRepository::loadRVCurveBatch(std::vector<std::shared_ptr<Star
         }
     }
 }
+
+bool RadialVelocityRepository::deleteRVFit(const QString& fitId)
+{
+    QSqlQuery query(_db.threadConnection());
+    query.prepare("DELETE FROM rv_fits WHERE id = :id");
+    query.bindValue(":id", fitId);
+    if (!query.exec()) {
+        qDebug() << "Failed to delete RV fit:" << query.lastError();
+        return false;
+    }
+    return true;
+}

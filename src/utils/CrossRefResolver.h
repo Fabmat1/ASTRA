@@ -3,7 +3,11 @@
 #include <QObject>
 #include <QString>
 #include <QMap>
+#include <QQueue>
+#include <QElapsedTimer>
+#include <QSet>
 
+class QTimer;
 class QNetworkAccessManager;
 class QNetworkReply;
 
@@ -26,6 +30,9 @@ public:
     void resolve(const QStringList& bibcodes);
     void resolveViaADS(const QString& bibcode);
     BibcodeInfo lookupCache(const QString& bibcode);
+    bool isPending(const QString& bibcode)     const;
+    bool wasAttempted(const QString& bibcode)  const;
+    bool isKnownFailed(const QString& bibcode); 
 
 signals:
     void resolved(const QString& bibcode, const BibcodeInfo& info);
@@ -35,6 +42,11 @@ private slots:
     void onNetworkReply(QNetworkReply* reply);
 
 private:
+    void enqueue(const QString& bibcode);
+    void pumpQueue();
+    void dispatchCrossRef(const QString& bibcode);
+
+    void applyRateLimitHeaders(QNetworkReply* reply);
     void handleADSReply(QNetworkReply* reply, const QString& bibcode);
     static BibcodeInfo parseADSHtml(const QString& bibcode, const QString& html);
 
@@ -53,7 +65,6 @@ private:
     bool openCache();
     void storeInCache(const BibcodeInfo& info);
 
-    bool isKnownFailed(const QString& bibcode);
     void markFailed(const QString& bibcode, const QString& reason);
     void clearFailed(const QString& bibcode);
 
@@ -62,4 +73,13 @@ private:
     QString _connectionName;
     QMap<QNetworkReply*, QString> _pendingRequests;
     QMap<QNetworkReply*, QString> _adsRequests; 
+
+    QSet<QString> _attempted;  
+    QSet<QString> _inProgress; 
+    QQueue<QString>  _queue;
+    int              _inflight       = 0;
+    int              _maxConcurrent  = 4;   
+    int              _minIntervalMs  = 100;     
+    QElapsedTimer    _lastDispatch;
+    QTimer*          _pumpTimer      = nullptr;
 };

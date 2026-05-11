@@ -24,6 +24,7 @@ public:
     std::vector<std::shared_ptr<RVFit>> loadRVFits(const QString& curveId);
     bool deleteRadialVelocityCurve(const QString& curveId);
     void loadRVCurveBatch(std::vector<std::shared_ptr<Star>>& stars);
+    bool deleteRVFit(const QString& fitId);
 
 private:
     DBAccess& _db;
