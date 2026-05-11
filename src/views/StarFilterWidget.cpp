@@ -2,7 +2,13 @@
 #include "ProjectView.h"
 #include "models/Star.h"
 #include "models/ColumnPreset.h"
+#include "models/Instrument.h"
+#include "utils/ObservabilityCalculator.h"
 
+#include <QDateEdit>
+#include <QDoubleSpinBox>
+#include <QGroupBox>
+#include <QGridLayout>
 #include <QLineEdit>
 #include <QComboBox>
 #include <QHBoxLayout>
@@ -226,10 +232,9 @@ QVector<FilterCondition> StarFilterProxyModel::getFilterConditions() const
 int StarFilterProxyModel::activeFilterCount() const
 {
     int count = 0;
-    for (const auto& c : _conditions) {
-        if (c.enabled) ++count;
-    }
-    if (!_quickSearchText.isEmpty()) ++count;
+    for (const auto& c : _conditions) if (c.enabled) ++count;
+    if (!_quickSearchText.isEmpty())             ++count;
+    if (_obsFilter.enabled && _obsFilter.instrument && _obsNight.valid) ++count;
     return count;
 }
 
@@ -242,18 +247,15 @@ endBatchFilter();
 
 bool StarFilterProxyModel::filterAcceptsRow(int sourceRow, const QModelIndex& sourceParent) const
 {
-    // Quick search must always match (AND with advanced filters)
-    if (!_quickSearchText.isEmpty() && !matchesQuickSearch(sourceRow, sourceParent)) {
+    if (!_quickSearchText.isEmpty() && !matchesQuickSearch(sourceRow, sourceParent))
         return false;
-    }
-
-    // Advanced filters
-    if (!_conditions.isEmpty() && !matchesAdvancedFilters(sourceRow, sourceParent)) {
+    if (!_conditions.isEmpty() && !matchesAdvancedFilters(sourceRow, sourceParent))
         return false;
-    }
-
+    if (_obsFilter.enabled && !matchesObservability(sourceRow, sourceParent))
+        return false;
     return true;
 }
+
 
 bool StarFilterProxyModel::lessThan(const QModelIndex& left, const QModelIndex& right) const
 {
@@ -367,8 +369,11 @@ FilterConditionRow::FilterConditionRow(const QStringList& columnNames,
     connect(_enableButton, &QToolButton::toggled, this, [this](bool checked) {
         _enabled = checked;
         _enableButton->setText(checked ? "✓" : "○");
-        setEnabled(checked);
-        _enableButton->setEnabled(true);  // Keep toggle always enabled
+        _columnCombo->setEnabled(checked);
+        _operatorCombo->setEnabled(checked);
+        _valueEdit1->setEnabled(checked);
+        _valueEdit2->setEnabled(checked);
+
         emit conditionChanged();
     });
     layout->addWidget(_enableButton);
@@ -587,6 +592,96 @@ void StarFilterWidget::setupUi()
     _filterRowsLayout->setSpacing(2);
     advLayout->addLayout(_filterRowsLayout);
 
+    // ── Observability filter (collapsible, off by default) ─────────────────
+    _obsToggleButton = new QToolButton(_advancedPanel);
+    _obsToggleButton->setText("▸ Observability filter");
+    _obsToggleButton->setCheckable(true);
+    _obsToggleButton->setChecked(false);
+    _obsToggleButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    _obsToggleButton->setAutoRaise(true);
+    _obsToggleButton->setStyleSheet("QToolButton { font-weight: normal; }");
+    advLayout->addWidget(_obsToggleButton);
+
+    _obsBody = new QWidget(_advancedPanel);
+    _obsBody->setVisible(false);
+    auto* obsLayout = new QGridLayout(_obsBody);
+    obsLayout->setContentsMargins(18, 2, 8, 6);
+    obsLayout->setHorizontalSpacing(8);
+    obsLayout->setVerticalSpacing(4);
+
+    _obsEnableButton = new QToolButton(_obsBody);
+    _obsEnableButton->setText("Apply");
+    _obsEnableButton->setCheckable(true);
+    _obsEnableButton->setChecked(false);
+    _obsEnableButton->setToolTip("Enable this filter");
+    obsLayout->addWidget(_obsEnableButton, 0, 0);
+
+    obsLayout->addWidget(new QLabel("Observatory:", _obsBody), 0, 1);
+    _obsInstrumentCombo = new QComboBox(_obsBody);
+    _obsInstrumentCombo->setMinimumWidth(180);
+    obsLayout->addWidget(_obsInstrumentCombo, 0, 2);
+
+    obsLayout->addWidget(new QLabel("Date (UTC):", _obsBody), 0, 3);
+    _obsDateEdit = new QDateEdit(QDate::currentDate(), _obsBody);
+    _obsDateEdit->setCalendarPopup(true);
+    _obsDateEdit->setDisplayFormat("yyyy-MM-dd");
+    obsLayout->addWidget(_obsDateEdit, 0, 4);
+
+    obsLayout->addWidget(new QLabel("Hours:", _obsBody), 1, 1);
+    _obsCompCombo = new QComboBox(_obsBody);
+    _obsCompCombo->addItems({"≥", "<"});
+    obsLayout->addWidget(_obsCompCombo, 1, 2);
+
+    _obsThresholdSpin = new QDoubleSpinBox(_obsBody);
+    _obsThresholdSpin->setRange(0.0, 24.0);
+    _obsThresholdSpin->setSingleStep(0.5);
+    _obsThresholdSpin->setDecimals(2);
+    _obsThresholdSpin->setSuffix(" h");
+    _obsThresholdSpin->setValue(4.0);
+    obsLayout->addWidget(_obsThresholdSpin, 1, 3);
+
+    obsLayout->addWidget(new QLabel("Min alt.:", _obsBody), 1, 4);
+    _obsAltSpin = new QDoubleSpinBox(_obsBody);
+    _obsAltSpin->setRange(0.0, 90.0);
+    _obsAltSpin->setSingleStep(1.0);
+    _obsAltSpin->setDecimals(1);
+    _obsAltSpin->setSuffix("°");
+    _obsAltSpin->setValue(30.0);
+    obsLayout->addWidget(_obsAltSpin, 1, 5);
+
+    obsLayout->addWidget(new QLabel("Sun alt.:", _obsBody), 1, 6);
+    _obsSunAltSpin = new QDoubleSpinBox(_obsBody);
+    _obsSunAltSpin->setRange(-90.0, 0.0);
+    _obsSunAltSpin->setSingleStep(1.0);
+    _obsSunAltSpin->setDecimals(1);
+    _obsSunAltSpin->setSuffix("°");
+    _obsSunAltSpin->setValue(-18.0);
+    _obsSunAltSpin->setToolTip("Twilight threshold: -18° astronomical, -12° nautical, -6° civil, 0° geometric horizon");
+    obsLayout->addWidget(_obsSunAltSpin, 1, 7);
+
+    advLayout->addWidget(_obsBody);
+
+    connect(_obsToggleButton, &QToolButton::toggled, this, [this](bool open) {
+        _obsBody->setVisible(open);
+        _obsToggleButton->setText(open ? "▾ Observability filter"
+                                       : "▸ Observability filter");
+    });
+
+    connect(_obsEnableButton, &QToolButton::toggled,
+            this, &StarFilterWidget::onObservabilityChanged);
+    connect(_obsInstrumentCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &StarFilterWidget::onObservabilityChanged);
+    connect(_obsDateEdit, &QDateEdit::dateChanged,
+            this, &StarFilterWidget::onObservabilityChanged);
+    connect(_obsCompCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &StarFilterWidget::onObservabilityChanged);
+    connect(_obsThresholdSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, &StarFilterWidget::onObservabilityChanged);
+    connect(_obsAltSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, &StarFilterWidget::onObservabilityChanged);
+    connect(_obsSunAltSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, &StarFilterWidget::onObservabilityChanged);
+
     // --- Connections ---
 
     // Debounced search
@@ -700,16 +795,19 @@ void StarFilterWidget::clearAllFilters()
 {
     _searchEdit->clear();
 
-    // Remove all filter rows
     while (!_filterRows.isEmpty()) {
         auto* row = _filterRows.takeLast();
         _filterRowsLayout->removeWidget(row);
         row->deleteLater();
     }
 
+    if (_obsEnableButton) _obsEnableButton->setChecked(false);
+    if (_obsToggleButton) _obsToggleButton->setChecked(false);
+
     if (_proxy) {
         _proxy->setQuickSearchText(QString());
         _proxy->clearFilterConditions();
+        _proxy->setObservabilityFilter({});
     }
     updateFilterCountLabel();
     emit filtersChanged();
@@ -744,4 +842,94 @@ void StarFilterProxyModel::endBatchFilter()
         QSortFilterProxyModel::beginFilterChange();
         QSortFilterProxyModel::endFilterChange();
     }
+}
+
+void StarFilterProxyModel::setObservabilityFilter(const ObservabilityFilterSpec& spec)
+{
+    _obsFilter = spec;
+
+    if (spec.enabled && spec.instrument && spec.date.isValid()) {
+        Observability::Config cfg;
+        cfg.minAltitudeDeg = spec.minAltitudeDeg;
+        cfg.sunAltitudeDeg = spec.sunAltitudeDeg;
+        _obsNight = Observability::computeNight(*spec.instrument, spec.date, cfg);
+    } else {
+        _obsNight = {};
+    }
+
+    beginBatchFilter();
+    endBatchFilter();
+}
+
+bool StarFilterProxyModel::matchesObservability(int sourceRow, const QModelIndex& sourceParent) const
+{
+    Q_UNUSED(sourceParent);
+    if (!_obsFilter.instrument || !_obsNight.valid)
+        return true;   // misconfigured filter → pass everything
+
+    auto* model = qobject_cast<StarTableModel*>(sourceModel());
+    if (!model) return true;
+
+    auto star = model->getStarAtRow(sourceRow);
+    if (!star) return true;
+
+    Observability::Config cfg;
+    cfg.minAltitudeDeg = _obsFilter.minAltitudeDeg;
+    cfg.sunAltitudeDeg = _obsFilter.sunAltitudeDeg;
+
+    const double hours = Observability::observableHours(
+        star->getRa(), star->getDec(),
+        *_obsFilter.instrument, _obsNight, cfg);
+
+    return _obsFilter.above ? (hours >= _obsFilter.thresholdHours)
+                            : (hours <  _obsFilter.thresholdHours);
+}
+
+void StarFilterWidget::setInstruments(const std::vector<std::shared_ptr<Instrument>>& instruments)
+{
+    _obsInstruments.clear();
+    if (!_obsInstrumentCombo) return;
+
+    _obsInstrumentCombo->blockSignals(true);
+    _obsInstrumentCombo->clear();
+    for (const auto& inst : instruments) {
+        if (!inst) continue;
+        if (inst->isSpaceBased() || !inst->hasLocation()) continue;
+        _obsInstruments.push_back(inst);
+        QString label = inst->getFullName().isEmpty() ? inst->getName()
+                                                       : inst->getFullName();
+        _obsInstrumentCombo->addItem(label);
+    }
+    _obsInstrumentCombo->blockSignals(false);
+
+    const bool any = !_obsInstruments.empty();
+    if (_obsBody) _obsBody->setEnabled(any);
+    if (!any && _obsToggleButton) {
+        _obsToggleButton->setToolTip("Configure at least one ground-based instrument "
+                                     "with a known location to use this filter.");
+    } else if (_obsToggleButton) {
+        _obsToggleButton->setToolTip(QString());
+    }
+}
+
+void StarFilterWidget::onObservabilityChanged()
+{
+    if (!_proxy) return;
+
+    ObservabilityFilterSpec spec;
+    spec.enabled = _obsEnableButton && _obsEnableButton->isChecked();
+
+    const int idx = _obsInstrumentCombo ? _obsInstrumentCombo->currentIndex() : -1;
+    if (idx >= 0 && idx < static_cast<int>(_obsInstruments.size()))
+        spec.instrument = _obsInstruments[idx];
+
+    spec.date            = _obsDateEdit ? _obsDateEdit->date() : QDate::currentDate();
+    spec.thresholdHours  = _obsThresholdSpin ? _obsThresholdSpin->value() : 4.0;
+    spec.above           = _obsCompCombo ? (_obsCompCombo->currentIndex() == 0) : true;
+    spec.minAltitudeDeg  = _obsAltSpin    ? _obsAltSpin->value()    : 30.0;
+    spec.sunAltitudeDeg  = _obsSunAltSpin ? _obsSunAltSpin->value() : -18.0;
+
+    _proxy->setObservabilityFilter(spec);
+    updateFilterCountLabel();
+    emit filtersChanged();
 }

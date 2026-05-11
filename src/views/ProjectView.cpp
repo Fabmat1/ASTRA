@@ -67,6 +67,8 @@ void ProjectView::setupUi()
 
     // Filter widget (only the search bar portion lives here)
     _filterWidget = new StarFilterWidget(this);
+    _filterWidget->setInstruments(
+        _controller->databaseManager()->getAllInstruments());
     _filterWidget->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Preferred);
     connect(_filterWidget, &StarFilterWidget::filtersChanged,
             this, [this]() {

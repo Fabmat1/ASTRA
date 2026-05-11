@@ -34,6 +34,7 @@ private slots:
     void onViewFitSED();
     void onShowInSimbad();
     void onSettingsGridChanged();
+    void onShowObservability();
 
 private:
     void setupUi();
@@ -59,5 +60,6 @@ private:
     QPushButton* _fetchLCButton       = nullptr;
     QPushButton* _viewFitSEDButton    = nullptr;
     QPushButton* _cmdButton           = nullptr;
+    QPushButton* _observabilityButton = nullptr;
     QPushButton* _calcOrbitButton     = nullptr;
 };

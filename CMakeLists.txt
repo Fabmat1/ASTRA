@@ -204,6 +204,7 @@ set(SOURCES
     src/utils/Logger.cpp
     src/utils/SpectrumReader.cpp
     src/utils/ThemeManager.cpp
+    src/utils/ObservabilityCalculator.cpp
 
     # views
     src/views/ColumnConfigDialog.cpp
@@ -226,6 +227,7 @@ set(SOURCES
     src/views/tools/InteractiveIsisDialog.cpp
     src/views/tools/RVAddFitDialog.cpp
     src/views/tools/RVMCMCResultsDialog.cpp
+    src/views/tools/ObservabilityDialog.cpp
 
     # views/panels
     src/views/panels/PanelUtils.cpp
@@ -306,6 +308,7 @@ set(HEADERS
     src/utils/Logger.h
     src/utils/SpectrumReader.h
     src/utils/ThemeManager.h
+    src/utils/ObservabilityCalculator.h
 
     # views
     src/views/BooleanColumnDelegate.h
@@ -329,6 +332,7 @@ set(HEADERS
     src/views/tools/InteractiveIsisDialog.h
     src/views/tools/RVAddFitDialog.h
     src/views/tools/RVMCMCResultsDialog.h
+    src/views/tools/ObservabilityDialog.h
 
     # views/panels
     src/views/panels/PanelUtils.h

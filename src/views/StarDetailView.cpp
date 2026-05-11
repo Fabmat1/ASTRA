@@ -16,6 +16,7 @@
 #include "views/tools/SEDFitDialog.h"
 #include "views/tools/CMDDialog.h"
 #include "views/tools/GalacticOrbitDialog.h"
+#include "views/tools/ObservabilityDialog.h"
 
 #include <QHBoxLayout>
 #include <QVBoxLayout>
@@ -206,6 +207,10 @@ QWidget* StarDetailView::createButtonSidebar()
 
     layout->addSpacing(8);
 
+    _observabilityButton = makeButton("Observability", "Plan observations of this star");
+    connect(_observabilityButton, &QPushButton::clicked,
+            this, &StarDetailView::onShowObservability);
+
     _cmdButton = makeButton("Show CMD", "Show colour–magnitude diagram");
     connect(_cmdButton, &QPushButton::clicked, this, &StarDetailView::onShowCMD);
 
@@ -294,4 +299,11 @@ void StarDetailView::onShowInSimbad()
     QString url = QString("https://simbad.cds.unistra.fr/simbad/sim-id?Ident=Gaia+DR3+%1&submit=submit+id")
                       .arg(_star->getSourceId());
     QDesktopServices::openUrl(QUrl(url));
+}
+
+void StarDetailView::onShowObservability()
+{
+    auto* dialog = new ObservabilityDialog(_star, _dbm, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
 }
