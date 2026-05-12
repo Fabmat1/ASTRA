@@ -1162,3 +1162,8 @@ void DatabaseManager::restoreDefaultInstruments()
 {
     _instruments->restoreDefaultInstruments();
 }
+
+bool DatabaseManager::deleteRadialVelocityPoint(const QString& pointId)
+{
+    return _rv->deleteRadialVelocityPoint(pointId);
+}

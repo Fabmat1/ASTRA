@@ -10,7 +10,9 @@
 #include "views/panels/DetailPanel.h"
 #include "utils/Logger.h"
 #include "RVAddFitDialog.h"
+#include "RVAddPointDialog.h"
 
+#include <QItemSelectionModel>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
@@ -51,6 +53,7 @@ RVPointsTableModel::RVPointsTableModel(std::shared_ptr<Star> star,
 void RVPointsTableModel::reload()
 {
     beginResetModel();
+    if (_star) _curve = _star->getRVCurve();   // pick up newly created curves
     _points = _curve ? _curve->getRVPoints()
                      : std::vector<std::shared_ptr<RadialVelocityPoint>>{};
     _spectraById.clear();
@@ -728,6 +731,7 @@ void RVInspectorDialog::setupUi()
     setAttribute(Qt::WA_DeleteOnClose);
     resize(1400, 900);
 
+    if (_star) _star->ensureRVCurveSynced();
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(6, 6, 6, 6);
 
@@ -763,6 +767,25 @@ void RVInspectorDialog::setupUi()
     connect(_pointsTable, &QWidget::customContextMenuRequested,
             this, &RVInspectorDialog::onTableContextMenu);
     tableLay->addWidget(_pointsTable);
+
+    auto* pointBtnRow = new QHBoxLayout;
+    _addPointBtn = new QPushButton("Add manual point…");
+    _actionBtn   = new QPushButton("Remove selected");
+    _actionBtn->setEnabled(false);
+    pointBtnRow->addStretch();
+    pointBtnRow->addWidget(_addPointBtn);
+    pointBtnRow->addWidget(_actionBtn);
+    tableLay->addLayout(pointBtnRow);
+
+    connect(_addPointBtn, &QPushButton::clicked,
+            this, &RVInspectorDialog::onAddManualPoint);
+    connect(_actionBtn,   &QPushButton::clicked,
+            this, &RVInspectorDialog::onPointActionClicked);
+    connect(_pointsTable->selectionModel(), &QItemSelectionModel::selectionChanged,
+            this, [this](const QItemSelection&, const QItemSelection&) {
+                onPointSelectionChanged();
+            });
+
     leftSplit->addWidget(tableBox);
 
     leftSplit->setStretchFactor(0, 3);
@@ -818,4 +841,86 @@ void RVInspectorDialog::onTableContextMenu(const QPoint& pos)
     resetAct->setEnabled(_pointsModel->canResetToFit(row));
     QAction* chosen = menu.exec(_pointsTable->viewport()->mapToGlobal(pos));
     if (chosen == resetAct) _pointsModel->resetToFit(row);
+}
+
+bool RVPointsTableModel::canRemove(int row) const
+{
+    if (row < 0 || row >= static_cast<int>(_points.size())) return false;
+    const auto& p = _points[row];
+    return p
+        && p->getRVSource() == RadialVelocityPoint::RVSource::Manual
+        && p->getSpectrumId().isEmpty()      // truly free-standing
+        && p->getSpectralFitId().isEmpty();
+}
+
+void RVPointsTableModel::removePoint(int row)
+{
+    if (!canRemove(row) || !_curve) return;
+    auto p = _points[row];
+    const QString id = p->getId();
+
+    if (_dbm) _dbm->deleteRadialVelocityPoint(id);
+    _curve->removeRVPoint(id);
+    if (_star) _star->markSummaryDirty();
+    reload();
+}
+
+void RVPointsTableModel::appendPoint(std::shared_ptr<RadialVelocityPoint> p)
+{
+    if (!p || !_star) return;
+    _star->ensureRVCurveSynced();      // creates curve if missing
+    _curve = _star->getRVCurve();
+    if (!_curve) return;
+
+    _curve->addRVPoint(p);             // assigns id + curveId, dedup-safe
+    _curve->persistPoint(p);
+    _star->markSummaryDirty();
+    reload();
+}
+
+void RVInspectorDialog::onAddManualPoint()
+{
+    RVAddPointDialog dlg(_star, _dbm, this);
+    if (dlg.exec() != QDialog::Accepted) return;
+    auto p = dlg.result();
+    if (!p) return;
+
+    _pointsModel->appendPoint(p);
+    if (_plotPanel) _plotPanel->refresh();
+}
+
+void RVInspectorDialog::onPointSelectionChanged()
+{
+    const auto rows = _pointsTable->selectionModel()->selectedRows();
+    if (rows.size() != 1) {
+        _actionBtn->setText("Remove selected");
+        _actionBtn->setEnabled(false);
+        return;
+    }
+    const int row = rows.first().row();
+    if (_pointsModel->canRemove(row)) {
+        _actionBtn->setText("Remove selected");
+        _actionBtn->setEnabled(true);
+    } else if (_pointsModel->canResetToFit(row)) {
+        _actionBtn->setText("Reset to fit value");
+        _actionBtn->setEnabled(true);
+    } else {
+        _actionBtn->setText("Remove selected");
+        _actionBtn->setEnabled(false);
+    }
+}
+
+void RVInspectorDialog::onPointActionClicked()
+{
+    const auto rows = _pointsTable->selectionModel()->selectedRows();
+    if (rows.size() != 1) return;
+    const int row = rows.first().row();
+
+    if (_pointsModel->canRemove(row)) {
+        _pointsModel->removePoint(row);
+    } else if (_pointsModel->canResetToFit(row)) {
+        _pointsModel->resetToFit(row);
+    }
+    if (_plotPanel) _plotPanel->refresh();
+    onPointSelectionChanged();
 }

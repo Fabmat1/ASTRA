@@ -209,11 +209,8 @@ RVPanel::RVPanel(const Context& ctx, QWidget* parent)
     : DetailPanel(ctx, parent)
 {
     setupUi();
+    if (_ctx.star) _ctx.star->ensureRVCurveSynced();
     populate();
-
-    if (auto curve = _ctx.star->getRVCurve()) {
-        curve->setChangeCallback([this]() { populate(); });
-    }
 }
 
 void RVPanel::refresh()      { populate(); }
@@ -231,6 +228,10 @@ void RVPanel::populate()
     PanelUtils::clearLayout(_contentLayout);
 
     auto rvCurve = _ctx.star->getRVCurve();
+    if (rvCurve) {
+        rvCurve->setChangeCallback([this]() { populate(); });
+    }
+
     bool hasData = rvCurve && rvCurve->getNumPoints() > 0;
 
     std::shared_ptr<RVFit> bestFit;

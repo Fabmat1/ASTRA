@@ -143,7 +143,7 @@ std::optional<double> Time::bjd() const
 
 void Time::computeBJD(const Instrument& inst, double raDeg, double decDeg)
 {
-    if (_bjd.has_value()) return;
+    if (_bjd.has_value() && *_bjd > 0.0) return;
     if (!_mjd.has_value()) {
         qWarning() << "Time::computeBJD: MJD not available – cannot convert.";
         return;

@@ -226,6 +226,7 @@ set(SOURCES
     src/views/tools/FitProgressDialog.cpp
     src/views/tools/InteractiveIsisDialog.cpp
     src/views/tools/RVAddFitDialog.cpp
+    src/views/tools/RVAddPointDialog.cpp
     src/views/tools/RVMCMCResultsDialog.cpp
     src/views/tools/ObservabilityDialog.cpp
 
@@ -331,6 +332,7 @@ set(HEADERS
     src/views/tools/FitProgressDialog.h
     src/views/tools/InteractiveIsisDialog.h
     src/views/tools/RVAddFitDialog.h
+    src/views/tools/RVAddPointDialog.h
     src/views/tools/RVMCMCResultsDialog.h
     src/views/tools/ObservabilityDialog.h
 

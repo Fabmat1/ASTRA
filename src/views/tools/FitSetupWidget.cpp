@@ -1132,6 +1132,11 @@ void FitSetupWidget::persistResult(const fit::SpectralFitResult& result,
 {
     if (!result.success || result.components.isEmpty()) return;
 
+    // Make sure the RV curve is loaded, callbacks wired for every spectrum
+    // (including the one we're about to add a fit to), and any pre-existing
+    // drift is repaired before notifyBestFitChanged() fires below.
+    if (_ctx.star) _ctx.star->ensureRVCurveSynced();
+
     // For now, only persist component[0]. Multi-component fits will write
     // a SpectralFit per component once SpectralFit carries component info.
     const auto& comp = result.components.first();

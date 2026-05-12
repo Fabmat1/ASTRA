@@ -260,6 +260,11 @@ public:
         { _summaryChangedCb = std::move(cb); }
         
     void tryAttachRVCurve();
+    void ensureRVCurveSynced();
+
+    using RVCurveFactory =
+        std::function<std::shared_ptr<RadialVelocityCurve>(const QString& starId)>;
+    void setRVCurveFactory(RVCurveFactory f) { _RVCurveFactory = std::move(f); }
 
 private:
     // Targeted recomputation
@@ -329,6 +334,7 @@ private:
     std::function<std::shared_ptr<Photometry>(const QString&)> _photometryLoader;
     std::function<std::vector<std::shared_ptr<Spectrum>>(const QString&)> _spectraLoader;
     std::function<std::shared_ptr<RadialVelocityCurve>(const QString&)> _RVLoader;
+    RVCurveFactory _RVCurveFactory;
 
     // Spectra counts
     int _nSpectra = 0;

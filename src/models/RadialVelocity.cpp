@@ -13,7 +13,7 @@
 #include <cmath>
 #include <numeric>
 #include <limits>
-#include <QDebug>
+#include <QUuid>
 
 // ════════════════════════════════════════════════════════════════
 // Chi-squared survival function helpers (file-scope)
@@ -207,34 +207,27 @@ std::shared_ptr<RadialVelocityPoint> RadialVelocityPoint::createFromSpectralFit(
     std::shared_ptr<Spectrum> spectrum,
     std::shared_ptr<Instrument> instrument)
 {
-    if (!fit || !spectrum) {
-        return nullptr;
-    }
+    if (!fit || !spectrum) return nullptr;
 
     auto rvPoint = std::make_shared<RadialVelocityPoint>();
 
-    // Extract RV values from fit
     rvPoint->setRV(fit->radialVelocity);
-    rvPoint->setRVError(fit->radialVelocityError);
+    rvPoint->setRVErrorFormal(fit->radialVelocityError);
+    rvPoint->setRVErrorSystematic(0.0);
 
-    // Extract time stamps from spectrum
     rvPoint->setMJD(spectrum->getMJD());
-    rvPoint->setBJD(spectrum->getBJD());
+    const double specBjd = spectrum->getBJD();
+    if (specBjd > 0.0 && !std::isnan(specBjd))
+        rvPoint->setBJD(specBjd);
 
-    // Set object references
     rvPoint->setSourceSpectrum(spectrum);
     rvPoint->setSourceFit(fit);
-
-    // Set serializable IDs for database persistence
     rvPoint->setSpectrumId(spectrum->getId());
     rvPoint->setSpectralFitId(fit->getId());
     rvPoint->setSource("spectral_fit");
     rvPoint->setRVSource(RadialVelocityPoint::RVSource::FromFit);
 
-    if (instrument) {
-        rvPoint->setInstrument(instrument);
-    }
-
+    if (instrument) rvPoint->setInstrument(instrument);
     return rvPoint;
 }
 
@@ -301,12 +294,44 @@ RadialVelocityCurve::~RadialVelocityCurve()
 {
 }
 
+// src/models/RadialVelocity.cpp :: RadialVelocityCurve::addRVPoint
 void RadialVelocityCurve::addRVPoint(std::shared_ptr<RadialVelocityPoint> point)
 {
-    if (point) {
-        _rvPoints.push_back(point);
-        updateFitReferences();
+    if (!point) { notifyChanged(); return; }
+
+    // ── Unique-spectrum constraint ──────────────────────────────────────────
+    // If a point already exists for this spectrum, update it in place rather
+    // than appending a duplicate. Keeps the existing DB row id.
+    const QString sid = point->getSpectrumId();
+    if (!sid.isEmpty()) {
+        for (auto& existing : _rvPoints) {
+            if (!existing || existing->getSpectrumId() != sid) continue;
+
+            existing->setSpectralFitId(point->getSpectralFitId());
+            existing->setRV(point->getRV());
+            existing->setRVErrorFormal(point->getRVErrorFormal());
+            existing->setRVErrorSystematic(point->getRVErrorSystematic());
+            existing->setTime(point->time());
+            existing->setSource(point->getSource());
+            existing->setSourceSpectrum(point->getSourceSpectrum());
+            existing->setSourceFit(point->getSourceFit());
+            existing->setRVSource(point->getRVSource());
+            existing->setFlagged(point->isFlagged());
+            if (point->getInstrument()) existing->setInstrument(point->getInstrument());
+
+            updateFitReferences();
+            notifyChanged();
+            return;
+        }
     }
+
+    // ── New point: make sure persistence keys are populated ────────────────
+    if (point->getId().isEmpty())
+        point->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    point->setCurveId(_id);
+
+    _rvPoints.push_back(point);
+    updateFitReferences();
     notifyChanged();
 }
 
@@ -766,8 +791,6 @@ void RadialVelocityCurve::onBestFitChanged(
     }
 
     if (!newBest) {
-        // Best fit disappeared. Keep the point (may carry manual values),
-        // but sever the fit link.
         if (point) {
             point->setSpectralFitId(QString());
             point->setSourceFit({});
@@ -786,6 +809,11 @@ void RadialVelocityCurve::onBestFitChanged(
     } else {
         point->setSourceFit(newBest);
         point->applyFromFit(*newBest);
+    }
+
+    if (point) {
+        const double bjd = point->getBJD();
+        if (!(bjd > 0.0) || std::isnan(bjd)) resolveBjd(point);
     }
     if (_pointPersistCb && point) _pointPersistCb(point);
     notifyChanged();
@@ -885,4 +913,50 @@ void RVFit::updateStatistics(
     } else {
         _rms = 0.0; _chi2 = 0.0;
     }
+}
+
+// src/models/RadialVelocity.cpp
+void RadialVelocityCurve::reconcileWithSpectra(
+    const std::vector<std::shared_ptr<Spectrum>>& spectra)
+{
+    bool changed = false;
+
+    for (const auto& spec : spectra) {
+        if (!spec) continue;
+        auto best = spec->getBestFit();
+        if (!best) continue;
+
+        std::shared_ptr<RadialVelocityPoint> existing;
+        for (auto& p : _rvPoints) {
+            if (p && p->getSpectrumId() == spec->getId()) { existing = p; break; }
+        }
+
+        const bool needsCreate   = !existing;
+        const bool linkDrifted   = existing &&
+            existing->getSpectralFitId() != best->getId();
+        const bool bjdMissing    = existing &&
+            (!(existing->getBJD() > 0.0) || std::isnan(existing->getBJD()));
+
+        if (!needsCreate && !linkDrifted && !bjdMissing) continue;
+
+        if (needsCreate) {
+            auto pt = RadialVelocityPoint::createFromSpectralFit(best, spec);
+            if (!pt) continue;
+            addRVPoint(pt);                 // assigns id+curveId; dedup-safe
+            resolveBjd(pt);
+            if (_pointPersistCb) _pointPersistCb(pt);
+            changed = true;
+        } else {
+            if (linkDrifted) {
+                existing->setSourceFit(best);
+                existing->setSourceSpectrum(spec);
+                existing->applyFromFit(*best);
+            }
+            if (bjdMissing) resolveBjd(existing);
+            if (_pointPersistCb) _pointPersistCb(existing);
+            changed = true;
+        }
+    }
+
+    if (changed) notifyChanged();
 }

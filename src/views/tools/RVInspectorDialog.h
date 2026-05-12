@@ -53,6 +53,10 @@ public:
     bool canResetToFit(int row) const;
     void resetToFit(int row);
 
+    bool canRemove(int row) const;
+    void removePoint(int row);
+    void appendPoint(std::shared_ptr<RadialVelocityPoint> p);
+
 signals:
     void pointEdited(const QModelIndex& row);
 
@@ -152,6 +156,11 @@ public:
                                QWidget* parent = nullptr);
     ~RVInspectorDialog() override;
 
+private slots:
+    void onAddManualPoint();
+    void onPointActionClicked();
+    void onPointSelectionChanged();
+
 private:
     void setupUi();
     void onTableContextMenu(const QPoint& pos);
@@ -165,4 +174,8 @@ private:
     RVSolutionsWidget*  _solutions   = nullptr;
     QTableView*         _pointsTable = nullptr;
     RVPointsTableModel* _pointsModel = nullptr;
+
+    QPushButton* _addPointBtn    = nullptr;
+    QPushButton* _actionBtn = nullptr;
+
 };

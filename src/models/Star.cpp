@@ -255,6 +255,10 @@ void Star::addSpectrum(std::shared_ptr<Spectrum> spectrum)
     }
     _spectra.push_back(spectrum);
     recomputeSpectraMetrics();
+    if (_rvCurve && spectrum) {
+        std::vector<std::shared_ptr<Spectrum>> one{spectrum};
+        _rvCurve->attachToSpectra(one);
+    }
 }
 
 void Star::removeSpectrum(const QString& spectrumId)
@@ -439,6 +443,7 @@ void Star::markSummaryDirty()
     computeSummaryMetrics(_summaryPersistCb);
 }
 
+// src/models/Star.cpp :: tryAttachRVCurve
 void Star::tryAttachRVCurve()
 {
     if (_rvAttached) return;
@@ -446,21 +451,28 @@ void Star::tryAttachRVCurve()
 
     _rvCurve->attachToSpectra(_spectra);
     _rvCurve->setChangeCallback([this]() { markSummaryDirty(); });
-
-    // Reconciliation pass: ensure every RV point mirrors its linked best fit
-    // (covers the case where flags/RV/etc. were toggled while one side was
-    // not yet loaded).
-    for (auto& spec : _spectra) {
-        if (!spec) continue;
-        auto best = spec->getBestFit();
-        if (!best) continue;
-        for (auto& p : _rvCurve->getRVPoints()) {
-            if (p->getSpectrumId() == spec->getId()) {
-                p->applyFromFit(*best);
-                break;
-            }
-        }
-    }
+    _rvCurve->reconcileWithSpectra(_spectra);
 
     _rvAttached = true;
+}
+
+// src/models/Star.cpp — replace existing ensureRVCurveSynced
+void Star::ensureRVCurveSynced()
+{
+    (void)getRVCurve();     // lazy-loads curve + tryAttachRVCurve
+    (void)getSpectra();     // lazy-loads spectra
+
+    if (!_rvCurve && _RVCurveFactory && !_id.isEmpty()) {
+        _rvCurve = _RVCurveFactory(_id);
+        _RVLoaded   = true;
+        _rvAttached = false;   // force re-attach below
+    }
+    if (!_rvCurve) return;
+
+    _rvCurve->attachToSpectra(_spectra);   // idempotent
+    if (!_rvAttached) {
+        _rvCurve->setChangeCallback([this]() { markSummaryDirty(); });
+        _rvAttached = true;
+    }
+    _rvCurve->reconcileWithSpectra(_spectra);
 }

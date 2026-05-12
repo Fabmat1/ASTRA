@@ -292,3 +292,16 @@ bool RadialVelocityRepository::deleteRVFit(const QString& fitId)
     }
     return true;
 }
+
+// src/db/RadialVelocityRepository.cpp
+bool RadialVelocityRepository::deleteRadialVelocityPoint(const QString& pointId)
+{
+    QSqlQuery query(_db.threadConnection());
+    query.prepare("DELETE FROM rv_points WHERE id = :id");
+    query.bindValue(":id", pointId);
+    if (!query.exec()) {
+        qDebug() << "Failed to delete RV point:" << query.lastError();
+        return false;
+    }
+    return true;
+}

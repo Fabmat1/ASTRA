@@ -372,6 +372,16 @@ public:
     // after a bulk load (e.g. at end of repository::loadRadialVelocityCurve).
     void updateFitReferences();
 
+    using BjdResolverCallback =
+    std::function<void(const std::shared_ptr<RadialVelocityPoint>&)>;
+    void setBjdResolverCallback(BjdResolverCallback cb)
+        { _bjdResolverCb = std::move(cb); }
+    void resolveBjd(const std::shared_ptr<RadialVelocityPoint>& p)
+        { if (_bjdResolverCb && p) _bjdResolverCb(p); }
+
+    void reconcileWithSpectra(
+        const std::vector<std::shared_ptr<Spectrum>>& spectra);
+
 protected:
     void notifyChanged() { if (_onChange) _onChange(); }
 
@@ -383,6 +393,7 @@ private:
     std::vector<std::shared_ptr<RVFit>> _rvFits;
     double _logP;
 
+    BjdResolverCallback _bjdResolverCb;
     PointPersistCallback _pointPersistCb;
     
     double calculateMedian(std::vector<double> values) const;
