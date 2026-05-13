@@ -268,7 +268,7 @@ void StarDetailView::onViewFitSpectra()
 
 void StarDetailView::onFetchLightcurves()
 {
-    auto* dialog = new LightcurveFetchDialog(_star, this);
+    auto* dialog = new LightcurveFetchDialog(_star, _dbm, _controller, _projectId, this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->show();
 }

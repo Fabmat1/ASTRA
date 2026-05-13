@@ -2,50 +2,121 @@
 
 #include "DetailPanel.h"
 #include <QMap>
+#include <QHash>
+#include <QList>
 #include <QVector>
+#include <QPointer>
 
 class QPushButton;
+class QToolButton;
 class QVBoxLayout;
+class QComboBox;
+class QScrollArea;
+class QMenu;
 class QCustomPlot;
-class QFrame;
+class QCPGraph;
+class QCPRange;
 
 class LCPanel : public DetailPanel
 {
     Q_OBJECT
 public:
+    enum class ViewMode { Overlay = 0, StackedBySource = 1, StackedBySourceFilter = 2 };
+
     explicit LCPanel(const Context& ctx, QWidget* parent = nullptr);
 
     void refresh() override;
     void refreshTheme() override;
+
+    void setFoldPeriod(double period, double t0 = 0.0);
+    void setFolded(bool folded);
+    void setViewMode(ViewMode mode);
+    ViewMode viewMode() const { return _viewMode; }
+    bool     isFolded() const { return _folded; }
+
+    struct SeriesData {
+        QString         source;
+        QString         filter;
+        QVector<double> t, y, e;
+    };
+    /// Snapshot of all series. Flagged points excluded by default.
+    QList<SeriesData> seriesData(bool includeFlagged = false) const;
 
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;
 
 private slots:
     void onToggleFolded();
+    void onViewModeChanged(int idx);
+    void onFlagModeToggled(bool on);
+    void onClearFlagsClicked();
+    void onResetZoom();
 
 private:
+    struct SeriesCache {
+        QString          source;
+        QString          filter;
+        QString          key;
+        QVector<double>  bjd, flux, err;
+        QVector<int>     origIdx;
+        QVector<bool>    flagged;
+    };
+    struct PlotRange { double xLo = 0, xHi = 1, yLo = 0, yHi = 1; };
+
     void setupUi();
     void populate();
-    void replotData();
+    void rebuildSeriesCache();
+    void rebuildPlots();
+    void replotAll(bool preserveZoom = false);
+    void plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs);
+    void wirePlotInteractions(QCustomPlot* plot);
+    void applyFlagModeInteractions(QCustomPlot* plot);
+    void handleSelectionRect(QCustomPlot* plot, const QRect& rect);
+    void persistFlagsForSource(const QString& source);
+    void buildSettingsMenu();
 
-    struct LCSeries {
-        QString source;
-        QString filter;
-        QVector<double> px, py, pe;
-    };
+    bool binEnabled(const QString& k) const {
+        return _folded ? _binEnabledFolded.value(k, true)
+                       : _binEnabledUnfolded.value(k, false);
+    }
+    void setBinEnabled(const QString& k, bool on) {
+        (_folded ? _binEnabledFolded : _binEnabledUnfolded)[k] = on;
+    }
 
-    QPushButton* _toggleButton  = nullptr;
-    QWidget*     _content       = nullptr;
-    QVBoxLayout* _contentLayout = nullptr;
-    bool         _folded        = false;
+    // Toolbar
+    QComboBox*   _viewModeCombo  = nullptr;
+    QPushButton* _toggleFoldBtn  = nullptr;
+    QToolButton* _flagBtn        = nullptr;
+    QToolButton* _clearFlagsBtn  = nullptr;
+    QToolButton* _resetZoomBtn   = nullptr;
+    QToolButton* _settingsBtn    = nullptr;
+    QMenu*       _settingsMenu   = nullptr;
 
-    QCustomPlot*    _plot = nullptr;
-    QList<LCSeries> _seriesCache;
-    QFrame*         _burgerMenu = nullptr;
+    // Content
+    QWidget*     _content        = nullptr;
+    QVBoxLayout* _contentLayout  = nullptr;
+    QScrollArea* _scrollArea     = nullptr;
+    QWidget*     _stackedHost    = nullptr;
+    QVBoxLayout* _stackedLayout  = nullptr;
+
+    // State
+    ViewMode _viewMode      = ViewMode::Overlay;
+    bool     _folded        = false;
+    bool     _flagMode      = false;
+    double   _foldPeriod    = 0.0;
+    double   _foldT0        = 0.0;
+    bool     _foldExternal  = false;
+    bool     _syncingXAxis  = false;
+
+    QList<SeriesCache>              _series;
+    QList<QCustomPlot*>             _plots;
+    QHash<QCustomPlot*, QList<int>> _plotSeries;
+    QHash<QCustomPlot*, PlotRange>  _defaultRanges;
 
     QMap<QString, int>  _binsUnfolded;
     QMap<QString, int>  _binsFolded;
     QMap<QString, bool> _normalize;
-    QMap<QString, bool> _binEnabled;
+    QMap<QString, bool> _binEnabledFolded; 
+    QMap<QString, bool> _binEnabledUnfolded;
+    QMap<QString, bool> _visible;
 };

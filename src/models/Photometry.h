@@ -18,7 +18,7 @@
 
 struct LightcurvePoint
 {
-    Time    time;                                // replaces originalTime, bjd, mjd
+    Time    time;
 
     double  flux           = 0.0;
     double  fluxError      = 0.0;
@@ -26,8 +26,8 @@ struct LightcurvePoint
     double  magnitudeError = std::nan("");
     QString filter;
     int     qualityFlag    = 0;
+    bool    userFlagged    = false;
 
-    // ── Legacy convenience (match old field access during migration) ────
     double originalTime() const { return time.nativeValue(); }
     double bjd()          const { return time.bjdOr(0.0); }
     double mjd()          const { return time.mjdOr(0.0); }

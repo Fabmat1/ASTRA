@@ -238,6 +238,7 @@ set(SOURCES
     src/views/panels/RVPanel.cpp
     src/views/panels/LCPanel.cpp
     src/views/panels/SpectraPanel.cpp
+    src/views/panels/PeriodogramPanel.cpp
 
     # views/widgets
     src/views/widgets/FitPreviewOverlay.cpp
@@ -245,12 +246,13 @@ set(SOURCES
     src/views/widgets/TerminalView.cpp
     src/views/widgets/IsisMacroPanel.cpp
 
-    # DIGGA fitting
+    # fitting
     src/fitting/FitBackendRegistry.cpp
     src/fitting/DiggaBackend.cpp
     src/fitting/IsisBackend.cpp
     src/fitting/FitWorker.cpp
     src/fitting/StdStreamRedirector.cpp
+    src/fitting/Periodogram.cpp
 
 )
 
@@ -344,6 +346,7 @@ set(HEADERS
     src/views/panels/RVPanel.h
     src/views/panels/LCPanel.h
     src/views/panels/SpectraPanel.h
+    src/views/panels/PeriodogramPanel.h
 
     # views/widgets
     src/views/widgets/FitPreviewOverlay.h
@@ -359,6 +362,8 @@ set(HEADERS
     src/fitting/IsisBackend.h
     src/fitting/FitWorker.h
     src/fitting/StdStreamRedirector.h
+    src/fitting/Periodogram.h
+    
 )
 
 # Create executable

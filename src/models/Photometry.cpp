@@ -585,9 +585,13 @@ bool Photometry::saveLightcurveToFile(const QString& source, const QString& file
         const auto& lc = it->second;
         QDataStream s(&buffer, QIODevice::WriteOnly);
         s.setVersion(QDataStream::Qt_6_0);
+        // New format: magic sentinel + version + count + per-point payload incl. userFlagged
+        s << static_cast<quint32>(0xFFFFFFFFu);
+        s << static_cast<quint32>(2);
         s << static_cast<quint32>(lc.size());
         for (const auto& p : lc) {
             s << p.time << p.flux << p.fluxError << p.filter;
+            s << static_cast<quint8>(p.userFlagged ? 1 : 0);
         }
     }
     return DataStore::writeCompressed(filepath, DataStore::LightcurveData, buffer);
@@ -596,13 +600,23 @@ bool Photometry::saveLightcurveToFile(const QString& source, const QString& file
 bool Photometry::loadLightcurveFromFile(const QString& source, const QString& filepath)
 {
     auto parse = [this, &source](QDataStream& s) -> bool {
+        quint32 first; s >> first;
+        quint32 version = 1;
         quint32 n;
-        s >> n;
+        if (first == 0xFFFFFFFFu) {
+            s >> version >> n;
+        } else {
+            n = first;
+        }
         std::vector<LightcurvePoint> lc;
         lc.reserve(n);
         for (quint32 i = 0; i < n; ++i) {
             LightcurvePoint p;
             s >> p.time >> p.flux >> p.fluxError >> p.filter;
+            if (version >= 2) {
+                quint8 fl; s >> fl;
+                p.userFlagged = (fl != 0);
+            }
             lc.push_back(p);
         }
         _lightcurves[source] = std::move(lc);
