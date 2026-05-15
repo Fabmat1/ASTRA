@@ -62,7 +62,7 @@ QWidget* LightcurveFetchDialog::buildViewerTab()
 
 QWidget* LightcurveFetchDialog::buildPeriodogramTab()
 {
-    _periodogramPanel = new PeriodogramPanel;
+    _periodogramPanel = new PeriodogramPanel(_dbm, _star->getId());
 
     // Push current LC series into the panel whenever this tab becomes active
     connect(_tabs, &QTabWidget::currentChanged, this, [this](int idx) {

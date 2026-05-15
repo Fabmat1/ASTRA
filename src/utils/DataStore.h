@@ -13,7 +13,8 @@ public:
         SEDModelData        = 3,
         LightcurveModelData = 4,
         PhotometricPointsData = 5,
-        LightcurveData      = 6
+        LightcurveData      = 6,
+        PeriodogramData     = 7
     };
 
     // Write payload compressed to filepath (creates parent dirs automatically).
@@ -42,6 +43,8 @@ public:
                                   const QString& photometryId, const QString& modelId);
     static QString lcModelPath   (const QString& base, const QString& starId,
                                   const QString& photometryId, const QString& modelId);
+    static QString periodogramPath(const QString& base, const QString& starId,
+                                  const QString& periodogramId);
 
     // Create parent directories for filepath. Returns success.
     static bool ensureDirForFile(const QString& filepath);

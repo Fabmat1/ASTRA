@@ -2,7 +2,10 @@
 #include "PanelUtils.h"
 #include "plotting/qcustomplot.h"
 #include "utils/Logger.h"
+#include "db/DatabaseManager.h"
+#include "models/PeriodogramRecord.h"
 
+#include <QDateTime>
 #include <QtConcurrent/QtConcurrent>
 #include <QFutureWatcher>
 #include <QProgressBar>
@@ -23,8 +26,14 @@
 #include <cmath>
 
 
-PeriodogramPanel::PeriodogramPanel(QWidget* parent) : QWidget(parent)
+PeriodogramPanel::PeriodogramPanel(DatabaseManager* dbm,
+                                    const QString& starId,
+                                    QWidget* parent)
+    : QWidget(parent), _dbm(dbm), _starId(starId)
 {
+    LOG_INFO("Periodogram",
+        QString("ctor: dbm=%1 starId='%2'")
+            .arg(_dbm ? "ok" : "NULL").arg(_starId));
     setupUi();
 }
 
@@ -173,9 +182,25 @@ void PeriodogramPanel::setupUi()
 
 void PeriodogramPanel::setSeries(const QList<Series>& series)
 {
+    // Detect no-op re-application (e.g. user just switched tabs).
+    // Hash every series' (t, y, e) plus its identifier — anything that
+    // would change the periodogram inputs.
+    quint64 h = 1469598103934665603ULL;   // FNV offset
+    for (const auto& s : series) {
+        const QByteArray k = (s.source + "::" + s.filter).toUtf8();
+        for (char c : k) { h ^= static_cast<unsigned char>(c); h *= 1099511628211ULL; }
+        h ^= Periodogram::hashData(s.t, s.y, s.e) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
+    }
+    if (h == _seriesHash && !_series.isEmpty()) {
+        // Same data; nothing to do. In-memory results stay intact.
+        return;
+    }
+    _seriesHash = h;
+
     _series = series;
     _perSeries.clear();
     _perSource.clear();
+    _cachedTags.clear();
     _combined = Periodogram::Result{};
 
     _sourceOrder.clear();
@@ -183,8 +208,11 @@ void PeriodogramPanel::setSeries(const QList<Series>& series)
         if (!_sourceOrder.contains(s.source)) _sourceOrder.append(s.source);
 
     rebuildPlots();
-    _statusLabel->setText(QString("%1 series — click Compute").arg(_series.size()));
     rebuildSeriesList();
+    loadFromCache();
+
+    if (_perSeries.isEmpty())
+        _statusLabel->setText(QString("%1 series — click Compute").arg(_series.size()));
 }
 
 Periodogram::Grid PeriodogramPanel::currentGrid() const
@@ -279,29 +307,36 @@ void PeriodogramPanel::computeAll(bool force)
         LOG_WARNING("Periodogram", "Grid invalid; aborting compute");
         return;
     }
+    const quint64 gh = Periodogram::hashGrid(grid);
 
     if (force) {
         _perSeries.clear();
         _perSource.clear();
+        _cachedTags.clear();
         _combined = Periodogram::Result{};
     }
 
-    // Figure out which series actually need computing
     QList<int> todo;
     for (int i = 0; i < _series.size(); ++i) {
         const auto& s = _series[i];
         if (s.t.size() < _minPts) continue;
         const QString k = makeKey(s.source, s.filter);
         if (!isSeriesEnabled(k))    continue;
-        if (_perSeries.contains(k)) continue;
+
+        const quint64 dh  = Periodogram::hashData(s.t, s.y, s.e);
+        const auto    tag = _cachedTags.constFind(k);
+        const bool cacheValid = _perSeries.contains(k)
+                              && tag != _cachedTags.constEnd()
+                              && tag->dataHash == dh
+                              && tag->gridHash == gh;
+        if (cacheValid) continue;
+
+        _perSeries.remove(k);
+        _cachedTags.remove(k);
         todo.append(i);
     }
 
-    if (todo.isEmpty()) {
-        // Just need to rebuild aggregates
-        onSeriesComputed(-1);
-        return;
-    }
+    if (todo.isEmpty()) { onSeriesComputed(-1); return; }
 
     _cancelRequested = false;
     _jobsRemaining   = todo.size();
@@ -320,9 +355,7 @@ void PeriodogramPanel::computeAll(bool force)
         const QString key = makeKey(s.source, s.filter);
 
         Job job;
-        job.key     = key;
-        job.source  = s.source;
-        job.filter  = s.filter;
+        job.key = key; job.source = s.source; job.filter = s.filter;
         job.watcher = new QFutureWatcher<Periodogram::Result>(this);
         _jobs.append(job);
         const int jobIdx = _jobs.size() - 1;
@@ -330,8 +363,10 @@ void PeriodogramPanel::computeAll(bool force)
         connect(job.watcher, &QFutureWatcher<Periodogram::Result>::finished,
                 this, [this, jobIdx]{ onSeriesComputed(jobIdx); });
 
-        // Copy the input vectors into the worker
         QVector<double> t = s.t, y = s.y, e = s.e;
+        const quint64 dh = Periodogram::hashData(t, y, e);
+        _cachedTags.insert(key, { dh, gh });   // tag pre-populated; data filled on completion
+
         job.watcher->setFuture(QtConcurrent::run(
             [t, y, e, grid, key]() {
                 auto r = Periodogram::computeGLS(t, y, e, grid);
@@ -356,22 +391,7 @@ void PeriodogramPanel::onSeriesComputed(int finishedIndex)
         if (_jobsRemaining > 0) return;
     }
 
-    // All done — aggregate
-    QHash<QString, QList<Periodogram::Result>> bySrc;
-    for (const auto& s : _series) {
-        if (s.t.size() < _minPts) continue;
-        const QString k = makeKey(s.source, s.filter);
-        if (!isSeriesEnabled(k))    continue;
-        if (_perSeries.contains(k)) bySrc[s.source].append(_perSeries[k]);
-    }
-    for (auto it = bySrc.constBegin(); it != bySrc.constEnd(); ++it) {
-        _perSource.insert(it.key(),
-            Periodogram::weightedSum(it.value(), it.key()));
-    }
-    QList<Periodogram::Result> all;
-    for (const auto& src : _sourceOrder)
-        if (_perSource.contains(src)) all.append(_perSource[src]);
-    _combined = Periodogram::multiplied(all, "Combined");
+    rebuildAggregates();
 
     _jobs.clear();
     _progress->setVisible(false);
@@ -381,7 +401,10 @@ void PeriodogramPanel::onSeriesComputed(int finishedIndex)
         ? "Cancelled"
         : QString("Done · %1 series · %2 sources").arg(_perSeries.size()).arg(_perSource.size()));
 
-    if (!_cancelRequested) replotAll();
+    if (!_cancelRequested) {
+        replotAll();
+        persistToCache();
+    }
 }
 
 void PeriodogramPanel::cancelCompute()
@@ -598,8 +621,6 @@ void PeriodogramPanel::onSeriesItemChanged(QListWidgetItem* item)
     if (!item) return;
     const QString key = item->data(Qt::UserRole).toString();
     _userEnabled[key] = (item->checkState() == Qt::Checked);
-    // Drop cached result so re-Compute re-runs only what's needed.
-    _perSeries.remove(key);
 }
 
 void PeriodogramPanel::onMinPtsChanged(int v)
@@ -613,4 +634,101 @@ void PeriodogramPanel::setMinPointsThreshold(int n) { _minPtsSpin->setValue(n); 
 bool PeriodogramPanel::isSeriesEnabled(const QString& key) const
 {
     return _userEnabled.value(key, true);
+}
+
+void PeriodogramPanel::loadFromCache()
+{
+    LOG_INFO("Periodogram",
+        QString("loadFromCache: dbm=%1 starId='%2' nSeries=%3")
+            .arg(_dbm ? "ok" : "NULL").arg(_starId).arg(_series.size()));
+    if (!_dbm || _starId.isEmpty() || _series.isEmpty()) return;
+
+    auto records = _dbm->loadStarPeriodograms(_starId);
+    LOG_INFO("Periodogram",
+        QString("Cache load: %1 record(s) on disk for star %2")
+            .arg(records.size()).arg(_starId));
+    if (records.empty()) return;
+
+    // Build a quick lookup of which series we currently know about
+    QSet<QString> known;
+    for (const auto& s : _series) known.insert(makeKey(s.source, s.filter));
+
+    int loaded = 0, stale = 0;
+    for (const auto& r : records) {
+        const QString k = makeKey(r->source, r->filter);
+        if (!known.contains(k)) continue;          // record for a series no longer present
+        _perSeries.insert(k, r->result);
+        _cachedTags.insert(k, { r->dataHash, r->gridHash });
+        ++loaded;
+
+        // Quick staleness check against current data
+        for (const auto& s : _series) {
+            if (makeKey(s.source, s.filter) != k) continue;
+            const quint64 dh = Periodogram::hashData(s.t, s.y, s.e);
+            if (dh != r->dataHash) ++stale;
+            break;
+        }
+    }
+
+    if (loaded == 0) return;
+
+    rebuildAggregates();
+    replotAll();
+    _statusLabel->setText(
+        stale > 0
+          ? QString("Loaded cache · %1 series (%2 stale — recompute to refresh)").arg(loaded).arg(stale)
+          : QString("Loaded cache · %1 series").arg(loaded));
+}
+
+void PeriodogramPanel::rebuildAggregates()
+{
+    _perSource.clear();
+    QHash<QString, QList<Periodogram::Result>> bySrc;
+    for (const auto& s : _series) {
+        if (s.t.size() < _minPts) continue;
+        const QString k = makeKey(s.source, s.filter);
+        if (!isSeriesEnabled(k)) continue;
+        auto it = _perSeries.constFind(k);
+        if (it != _perSeries.constEnd()) bySrc[s.source].append(*it);
+    }
+    for (auto it = bySrc.constBegin(); it != bySrc.constEnd(); ++it)
+        _perSource.insert(it.key(),
+            Periodogram::weightedSum(it.value(), it.key()));
+
+    QList<Periodogram::Result> all;
+    for (const QString& src : _sourceOrder)
+        if (_perSource.contains(src)) all.append(_perSource[src]);
+    _combined = Periodogram::multiplied(all, "Combined");
+}
+
+void PeriodogramPanel::persistToCache()
+{
+    LOG_INFO("Periodogram",
+        QString("persistToCache: dbm=%1 starId='%2' nSeries=%3")
+            .arg(_dbm ? "ok" : "NULL").arg(_starId).arg(_perSeries.size()));
+    if (!_dbm || _starId.isEmpty()) return;
+
+    std::vector<std::shared_ptr<PeriodogramRecord>> recs;
+    recs.reserve(_perSeries.size());
+
+    for (const auto& s : _series) {
+        const QString k = makeKey(s.source, s.filter);
+        auto it = _perSeries.constFind(k);
+        if (it == _perSeries.constEnd() || !it->isValid()) continue;
+
+        auto r = std::make_shared<PeriodogramRecord>();
+        r->source     = s.source;
+        r->filter     = s.filter;
+        r->result     = *it;
+        r->dataHash   = Periodogram::hashData(s.t, s.y, s.e);
+        r->gridHash   = Periodogram::hashGrid(it->grid);
+        r->computedAt = QDateTime::currentDateTime();
+        recs.push_back(r);
+
+        _cachedTags.insert(k, { r->dataHash, r->gridHash });
+    }
+    const bool ok = _dbm->saveStarPeriodograms(_starId, recs);
+    LOG_INFO("Periodogram",
+        QString("Persisted %1 records for star %2 (ok=%3)")
+            .arg(recs.size()).arg(_starId).arg(ok));
 }

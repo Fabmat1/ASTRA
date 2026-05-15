@@ -653,4 +653,31 @@ bool resolveAutoBounds(const QVector<double>& t,
     return maxPeriod > minPeriod;
 }
 
+static quint64 fnv1a64(const void* data, size_t len)
+{
+    constexpr quint64 OFFSET = 0xcbf29ce484222325ULL;
+    constexpr quint64 PRIME  = 0x00000100000001b3ULL;
+    quint64 h = OFFSET;
+    const unsigned char* p = static_cast<const unsigned char*>(data);
+    for (size_t i = 0; i < len; ++i) { h ^= p[i]; h *= PRIME; }
+    return h;
+}
+
+quint64 hashData(const QVector<double>& t,
+                 const QVector<double>& y,
+                 const QVector<double>& e)
+{
+    quint64 h = fnv1a64(t.constData(), t.size() * sizeof(double));
+    h ^= fnv1a64(y.constData(), y.size() * sizeof(double)) + 0x9e3779b97f4a7c15ULL + (h << 6);
+    if (!e.isEmpty())
+        h ^= fnv1a64(e.constData(), e.size() * sizeof(double)) + 0x9e3779b97f4a7c15ULL + (h << 6);
+    return h;
+}
+
+quint64 hashGrid(const Grid& g)
+{
+    const double buf[3] = { g.f0, g.df, static_cast<double>(g.Nf) };
+    return fnv1a64(buf, sizeof(buf));
+}
+
 } // namespace Periodogram

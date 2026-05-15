@@ -50,4 +50,10 @@ Result multiplied(const QList<Result>& parts, const QString& label = {});
 
 bool resolveAutoBounds(const QVector<double>& t,
                        double& minPeriod, double& maxPeriod);
+
+quint64 hashData(const QVector<double>& t,
+                 const QVector<double>& y,
+                 const QVector<double>& e);
+quint64 hashGrid(const Grid& g);
+
 } // namespace Periodogram

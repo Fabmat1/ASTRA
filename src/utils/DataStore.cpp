@@ -142,6 +142,12 @@ QString DataStore::lcModelPath(const QString& base, const QString& starId,
            + "_" + modelId + FILE_EXT;
 }
 
+QString DataStore::periodogramPath(const QString& base, const QString& starId,
+    const QString& periodogramId)
+{
+return starDir(base, starId) + "/periodograms/" + periodogramId + FILE_EXT;
+}
+
 bool DataStore::ensureDirForFile(const QString& filepath)
 {
     return QDir().mkpath(QFileInfo(filepath).absolutePath());

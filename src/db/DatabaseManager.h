@@ -16,6 +16,7 @@ class PhotometryRepository;
 class SpectrumRepository;
 class RadialVelocityRepository;
 class InstrumentRepository;
+class PeriodogramRepository;
 
 class Project;
 class Star;
@@ -27,6 +28,7 @@ class LightcurveModel;
 class RadialVelocityCurve;
 class RadialVelocityPoint;
 class RVFit;
+class PeriodogramRecord;
 
 class DatabaseManager : public QObject
 {
@@ -86,6 +88,10 @@ public:
     void restoreDefaultInstruments();
     bool deleteRVFit(const QString& fitId);
     bool deleteRadialVelocityPoint(const QString& pointId);
+    bool saveStarPeriodograms(const QString& starId, const std::vector<std::shared_ptr<PeriodogramRecord>>& records);
+    std::vector<std::shared_ptr<PeriodogramRecord>> loadStarPeriodograms(const QString& starId);
+    std::shared_ptr<PeriodogramRecord> loadPeriodogram(const QString& starId, const QString& source, const QString& filter = {});
+    bool deleteStarPeriodograms(const QString& starId);
 
 private:
     void backfillSpectrumInstrumentIds();
@@ -100,6 +106,7 @@ private:
     std::unique_ptr<SpectrumRepository> _spectra;
     std::unique_ptr<RadialVelocityRepository> _rv;
     std::unique_ptr<InstrumentRepository> _instruments;
+    std::unique_ptr<PeriodogramRepository> _periodograms;
 };
 
 #endif // DATABASEMANAGER_H

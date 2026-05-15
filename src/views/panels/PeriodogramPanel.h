@@ -19,6 +19,7 @@ class QCustomPlot;
 class QProgressBar;
 class QListWidget;
 class QListWidgetItem;
+class DatabaseManager;
 
 class PeriodogramPanel : public QWidget
 {
@@ -31,7 +32,9 @@ public:
     };
     enum class XAxis { Frequency, Period };
 
-    explicit PeriodogramPanel(QWidget* parent = nullptr);
+    explicit PeriodogramPanel(DatabaseManager* dbm,
+        const QString& starId,
+        QWidget* parent = nullptr);
 
     /// Replace the input series; caches are invalidated.
     void setSeries(const QList<Series>& series);
@@ -80,8 +83,19 @@ private:
     static QString makeKey(const QString& src, const QString& filt);
     void syncXRangeFrom(QCustomPlot* origin);
     
-    bool _syncingX = false;
+    void loadFromCache();
+    void persistToCache();
+    void rebuildAggregates();
 
+    bool _syncingX = false;
+    DatabaseManager* _dbm     = nullptr;
+    QString          _starId;
+    
+    struct CachedTag { quint64 dataHash; quint64 gridHash; };
+    QHash<QString, CachedTag> _cachedTags;   // key = src::filt
+
+    quint64 _seriesHash = 0;
+    
     QDoubleSpinBox* _minPSpin    = nullptr;
     QDoubleSpinBox* _maxPSpin    = nullptr;
     QSpinBox*       _nSampSpin   = nullptr;

@@ -6,10 +6,13 @@
 #include "SpectrumRepository.h"
 #include "RadialVelocityRepository.h"
 #include "InstrumentRepository.h"
+#include "PeriodogramRepository.h"
+
 #include "models/Project.h"
 #include "models/Star.h"
 #include "models/Photometry.h"
 #include "models/Spectrum.h"
+#include "models/PeriodogramRecord.h"
 #include "utils/DataStore.h"
 
 #include <QSqlQuery>
@@ -43,6 +46,7 @@ DatabaseManager::DatabaseManager(QObject *parent)
     , _spectra(std::make_unique<SpectrumRepository>(*_db))
     , _rv(std::make_unique<RadialVelocityRepository>(*_db))
     , _instruments(std::make_unique<InstrumentRepository>(*_db))
+    , _periodograms(std::make_unique<PeriodogramRepository>(*_db))
 {
     _db->setDatabasePath(AppPaths::database());
     QDir().mkpath(QFileInfo(_db->databasePath()).absolutePath());
@@ -425,6 +429,24 @@ bool DatabaseManager::createTables()
         )
     )";
 
+    QString createPeriodogramsTable = R"(
+        CREATE TABLE IF NOT EXISTS periodograms (
+            id TEXT PRIMARY KEY,
+            star_id TEXT NOT NULL,
+            source TEXT,
+            filter TEXT,
+            grid_f0 REAL,
+            grid_df REAL,
+            grid_nf INTEGER,
+            n_points INTEGER,
+            data_hash TEXT,
+            grid_hash TEXT,
+            computed_at TEXT,
+            data_file TEXT,
+            FOREIGN KEY(star_id) REFERENCES stars(id) ON DELETE CASCADE
+        )
+    )";
+
     // Execute all table creation queries
     QStringList queries = {
         createProjectsTable,
@@ -441,6 +463,7 @@ bool DatabaseManager::createTables()
         createRVPointsTable,
         createInstrumentsTable,
         createInstrumentModesTable,
+        createPeriodogramsTable,
     };
 
     for (const QString& query : queries) {
@@ -589,6 +612,7 @@ bool DatabaseManager::createIndexes()
         "CREATE INDEX IF NOT EXISTS idx_instrument_modes_instrument ON instrument_modes(instrument_id)",
         "CREATE INDEX IF NOT EXISTS idx_spectra_instrument ON spectra(instrument_id, mode_key)",
         "CREATE INDEX IF NOT EXISTS idx_lightcurves_instrument ON lightcurves(instrument_id, mode_key)",
+        "CREATE INDEX IF NOT EXISTS idx_periodograms_lookup ON periodograms(star_id, source, filter)",
     };
 
     for (const QString& query : indexQueries) {
@@ -1167,3 +1191,18 @@ bool DatabaseManager::deleteRadialVelocityPoint(const QString& pointId)
 {
     return _rv->deleteRadialVelocityPoint(pointId);
 }
+
+bool DatabaseManager::saveStarPeriodograms(const QString& starId,
+    const std::vector<std::shared_ptr<PeriodogramRecord>>& records)
+{ return _periodograms->saveAllForStar(starId, records); }
+
+std::vector<std::shared_ptr<PeriodogramRecord>>
+DatabaseManager::loadStarPeriodograms(const QString& starId)
+{ return _periodograms->loadAllForStar(starId); }
+
+std::shared_ptr<PeriodogramRecord> DatabaseManager::loadPeriodogram(
+    const QString& starId, const QString& source, const QString& filter)
+{ return _periodograms->load(starId, source, filter); }
+
+bool DatabaseManager::deleteStarPeriodograms(const QString& starId)
+{ return _periodograms->deleteAllForStar(starId); }

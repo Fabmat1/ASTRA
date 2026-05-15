@@ -164,6 +164,7 @@ set(SOURCES
     src/db/RadialVelocityRepository.cpp
     src/db/SpectrumRepository.cpp
     src/db/StarRepository.cpp
+    src/db/PeriodogramRepository.cpp
 
     # dialogs
     src/dialogs/EditProjectDialog.cpp
@@ -192,6 +193,7 @@ set(SOURCES
     src/models/Spectrum.cpp
     src/models/Star.cpp
     src/models/Time.cpp
+    src/models/PeriodogramRecord.cpp
 
     # utils
     src/utils/AppSettings.cpp
@@ -270,6 +272,7 @@ set(HEADERS
     src/db/RadialVelocityRepository.h
     src/db/SpectrumRepository.h
     src/db/StarRepository.h
+    src/db/PeriodogramRepository.h
 
     # dialogs
     src/dialogs/EditProjectDialog.h
@@ -298,6 +301,7 @@ set(HEADERS
     src/models/Spectrum.h
     src/models/Star.h
     src/models/Time.h
+    src/models/PeriodogramRecord.h
 
     # utils
     src/utils/AppPaths.h
