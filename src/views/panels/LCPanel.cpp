@@ -760,7 +760,7 @@ void LCPanel::persistFlagsForSource(const QString& source)
     if (!_ctx.dbm) return;
     auto phot = _ctx.star->getPhotometry();
     if (!phot) return;
-    if (!_ctx.dbm->saveLightcurveForStar(_ctx.star->getSourceId(), source, phot.get())) {
+    if (!_ctx.dbm->saveLightcurveForStar(_ctx.star->getId(), source, phot.get())) {
         LOG_WARNING("StarDetailView.LC",
             QString("Failed to persist flag changes for source '%1'").arg(source));
     }

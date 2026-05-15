@@ -256,6 +256,7 @@ bool PhotometryRepository::deleteSEDModel(const QString& modelId)
     return true;
 }
 
+// src/db/PhotometryRepository.cpp :: PhotometryRepository::saveLightcurveForStar
 bool PhotometryRepository::saveLightcurveForStar(const QString& starId,
                                             const QString& source,
                                             Photometry* photometry)
@@ -265,37 +266,77 @@ bool PhotometryRepository::saveLightcurveForStar(const QString& starId,
     QSqlDatabase db = _db.threadConnection();
     QString dataDir = QFileInfo(_db.databasePath()).absolutePath() + "/data";
 
-    // ── Ensure a photometry record exists ────────────────────
-    QString photometryId;
+    // ── Resolve photometry id ─────────────────────────────────
+    // Two independent lookups so we don't blindly INSERT a duplicate PK.
+    QString idByStar;
     {
         QSqlQuery q(db);
         q.prepare("SELECT id FROM photometry WHERE star_id = :star_id");
         q.bindValue(":star_id", starId);
-        if (q.exec() && q.next()) {
-            photometryId = q.value(0).toString();
-        }
+        if (q.exec() && q.next()) idByStar = q.value(0).toString();
     }
 
-    if (photometryId.isEmpty()) {
-        photometryId = photometry->getId();
-        if (photometryId.isEmpty())
-            photometryId = _db.generateUUID();
+    QString idByMem = photometry->getId();
+    QString idByMemStarId;
+    if (!idByMem.isEmpty()) {
+        QSqlQuery q(db);
+        q.prepare("SELECT star_id FROM photometry WHERE id = :id");
+        q.bindValue(":id", idByMem);
+        if (q.exec() && q.next()) idByMemStarId = q.value(0).toString();
+    }
 
+    QString photometryId;
+
+    if (!idByStar.isEmpty()) {
+        // Authoritative: the DB already has a photometry row for this star.
+        photometryId = idByStar;
+        if (!idByMem.isEmpty() && idByMem != idByStar) {
+            qWarning() << "PhotometryRepository: in-memory photometry id"
+                       << idByMem << "differs from DB id" << idByStar
+                       << "for star" << starId << "— using DB id.";
+        }
+    } else if (!idByMem.isEmpty() && !idByMemStarId.isEmpty()) {
+        // The in-memory id exists in the DB but under a different star_id.
+        // Refuse to clobber it; allocate a fresh id for this star instead.
+        qWarning() << "PhotometryRepository: in-memory photometry id"
+                   << idByMem << "belongs to star" << idByMemStarId
+                   << "not" << starId << "— creating a new photometry row.";
+        photometryId = _db.generateUUID();
+    } else {
+        // No row for this star, and the in-memory id (if any) is unused.
+        photometryId = idByMem.isEmpty() ? _db.generateUUID() : idByMem;
+    }
+
+    // ── Ensure the photometry row exists, without clobbering it ───
+    // INSERT OR IGNORE: if a row with this id already exists (e.g. another
+    // thread raced us), we don't touch it. We then verify the row is present.
+    {
         QSqlQuery ins(db);
         ins.prepare(R"(
-            INSERT INTO photometry (id, star_id, photometric_points_file)
+            INSERT OR IGNORE INTO photometry (id, star_id, photometric_points_file)
             VALUES (:id, :star_id, '')
         )");
         ins.bindValue(":id", photometryId);
         ins.bindValue(":star_id", starId);
         if (!ins.exec()) {
-            qDebug() << "Failed to create photometry record:" << ins.lastError();
+            qDebug() << "Failed to ensure photometry record:" << ins.lastError();
             return false;
         }
     }
+    {
+        QSqlQuery verify(db);
+        verify.prepare("SELECT id FROM photometry WHERE star_id = :star_id");
+        verify.bindValue(":star_id", starId);
+        if (verify.exec() && verify.next())
+            photometryId = verify.value(0).toString();   // canonical id
+    }
 
-    // ── Check if this source already exists ──────────────────
-    QString existingLcId;
+    // Keep the in-memory object aligned with the DB so subsequent calls
+    // (e.g. saving SED models, more lightcurve sources) reuse the same id.
+    photometry->setId(photometryId);
+
+    // ── Resolve or create the lightcurve row for (photometry, source) ──
+    QString lightcurveId;
     {
         QSqlQuery q(db);
         q.prepare(R"(
@@ -304,14 +345,11 @@ bool PhotometryRepository::saveLightcurveForStar(const QString& starId,
         )");
         q.bindValue(":pid", photometryId);
         q.bindValue(":source", source);
-        if (q.exec() && q.next()) {
-            existingLcId = q.value(0).toString();
-        }
+        if (q.exec() && q.next()) lightcurveId = q.value(0).toString();
     }
+    if (lightcurveId.isEmpty()) lightcurveId = _db.generateUUID();
 
-    QString lightcurveId = existingLcId.isEmpty() ? _db.generateUUID() : existingLcId;
-
-    // ── Save the data file ───────────────────────────────────
+    // ── Write the binary lightcurve file (includes userFlagged in v2) ──
     QString lcFile = DataStore::lightcurvePath(dataDir, starId,
                                                photometryId, source);
     if (!photometry->saveLightcurveToFile(source, lcFile)) {
@@ -319,7 +357,6 @@ bool PhotometryRepository::saveLightcurveForStar(const QString& starId,
         return false;
     }
 
-    // ── Insert or replace the lightcurve row ─────────────────
     QSqlQuery lcQuery(db);
     lcQuery.prepare(R"(
         INSERT OR REPLACE INTO lightcurves (id, photometry_id, source, data_file)
