@@ -14,21 +14,20 @@
 #include <QPushButton>
 #include <QToolButton>
 #include <QComboBox>
-#include <QDoubleSpinBox>
-#include <QSpinBox>
 #include <QLabel>
 #include <QScrollArea>
-#include <QGroupBox>
 #include <QMouseEvent>
-#include <QListWidget>
-#include <QListWidgetItem>
+#include <QJsonDocument>
+#include <QJsonArray>
+#include <QJsonObject>
 #include <algorithm>
 #include <cmath>
 
+// ── ctor / setup ────────────────────────────────────────────────────
 
 PeriodogramPanel::PeriodogramPanel(DatabaseManager* dbm,
-                                    const QString& starId,
-                                    QWidget* parent)
+                                   const QString&   starId,
+                                   QWidget*         parent)
     : QWidget(parent), _dbm(dbm), _starId(starId)
 {
     LOG_INFO("Periodogram",
@@ -42,136 +41,61 @@ QString PeriodogramPanel::makeKey(const QString& src, const QString& filt)
     return filt.isEmpty() ? src : (src + "::" + filt);
 }
 
+QString PeriodogramPanel::prettyDisplayName(const QString& label)
+{
+    if (label == "Combined") return label;
+    if (label.contains("::"))
+        return label.section("::", 0, 0) + " · " + label.section("::", 1);
+    return label;
+}
+
 void PeriodogramPanel::setupUi()
 {
     auto* outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
+    outer->setSpacing(4);
 
-    // ── Parameter row ──
-    auto* ctrl = new QGroupBox("Periodogram parameters");
-    auto* clay = new QHBoxLayout(ctrl);
-    clay->setSpacing(6);
+    // ── Minimal top bar: display options + status/progress ──
+    auto* tb = new QHBoxLayout;
+    tb->setContentsMargins(2, 0, 2, 0);
+    tb->setSpacing(6);
 
-    auto addLabeled = [clay](const QString& label, QWidget* w){
-        clay->addWidget(new QLabel(label));
-        clay->addWidget(w);
-    };
-
-    _minPSpin = new QDoubleSpinBox;
-    _minPSpin->setDecimals(8); 
-    _minPSpin->setRange(0.0, 1e9);
-    _minPSpin->setSpecialValueText("auto");
-    _minPSpin->setSuffix(" d");
-    _minPSpin->setMaximumWidth(140);
-    addLabeled("Min P:", _minPSpin);
-
-    _maxPSpin = new QDoubleSpinBox;
-    _maxPSpin->setDecimals(6);
-    _maxPSpin->setRange(0.0, 1e9);
-    _maxPSpin->setSpecialValueText("auto");
-    _maxPSpin->setSuffix(" d");
-    _maxPSpin->setMaximumWidth(140);
-    addLabeled("Max P:", _maxPSpin);
-
-    _nSampSpin = new QSpinBox;
-    _nSampSpin->setRange(0, 10000000);
-    _nSampSpin->setSpecialValueText("auto");
-    _nSampSpin->setSingleStep(1000);
-    _nSampSpin->setMaximumWidth(110);
-    addLabeled("N:", _nSampSpin);
-
-    _osSpin = new QDoubleSpinBox;
-    _osSpin->setRange(0.1, 100.0); _osSpin->setValue(20.0); _osSpin->setDecimals(1);
-    _osSpin->setMaximumWidth(70);
-    addLabeled("Oversample:", _osSpin);
-
-    _optimalBtn = new QToolButton;
-    _optimalBtn->setText("Optimal");
-    _optimalBtn->setToolTip("Auto-fill empty parameter fields");
-    connect(_optimalBtn, &QToolButton::clicked, this, &PeriodogramPanel::onOptimalClicked);
-    clay->addWidget(_optimalBtn);
-
-    _computeBtn = new QPushButton("Compute");
-    connect(_computeBtn, &QPushButton::clicked, this, &PeriodogramPanel::onComputeClicked);
-    clay->addWidget(_computeBtn);
-
-    clay->addSpacing(10);
-
-    clay->addWidget(new QLabel("X:"));
+    tb->addWidget(new QLabel("X:"));
     _xAxisCombo = new QComboBox;
     _xAxisCombo->addItem("Period",    static_cast<int>(XAxis::Period));
     _xAxisCombo->addItem("Frequency", static_cast<int>(XAxis::Frequency));
     connect(_xAxisCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &PeriodogramPanel::onXAxisChanged);
-    clay->addWidget(_xAxisCombo);
+    tb->addWidget(_xAxisCombo);
 
     _resetZoomBtn = new QToolButton;
     _resetZoomBtn->setText("Reset Zoom");
     connect(_resetZoomBtn, &QToolButton::clicked, this, &PeriodogramPanel::onResetZoom);
-    clay->addWidget(_resetZoomBtn);
+    tb->addWidget(_resetZoomBtn);
 
     _progress = new QProgressBar;
-    _progress->setMaximumWidth(160);
+    _progress->setMaximumWidth(180);
     _progress->setVisible(false);
-    clay->addWidget(_progress);
+    tb->addWidget(_progress);
 
     _cancelBtn = new QPushButton("Cancel");
     _cancelBtn->setVisible(false);
     connect(_cancelBtn, &QPushButton::clicked, this, &PeriodogramPanel::cancelCompute);
-    clay->addWidget(_cancelBtn);
+    tb->addWidget(_cancelBtn);
 
-    clay->addStretch();
+    tb->addStretch();
     _statusLabel = new QLabel;
     _statusLabel->setStyleSheet("color: gray;");
-    clay->addWidget(_statusLabel);
+    tb->addWidget(_statusLabel);
 
-    outer->addWidget(ctrl);
+    outer->addLayout(tb);
 
-    // ── Series selection row ──
-    auto* selGroup = new QGroupBox("Series");
-    auto* selLay   = new QVBoxLayout(selGroup);
-    selLay->setContentsMargins(6, 4, 6, 4);
-
-    auto* topRow = new QHBoxLayout;
-    topRow->addWidget(new QLabel("Min pts / series:"));
-    _minPtsSpin = new QSpinBox;
-    _minPtsSpin->setRange(0, 1000000);
-    _minPtsSpin->setValue(_minPts);
-    _minPtsSpin->setMaximumWidth(90);
-    connect(_minPtsSpin, QOverload<int>::of(&QSpinBox::valueChanged),
-            this, &PeriodogramPanel::onMinPtsChanged);
-    topRow->addWidget(_minPtsSpin);
-
-    auto* allBtn  = new QToolButton; allBtn->setText("All");
-    auto* noneBtn = new QToolButton; noneBtn->setText("None");
-    connect(allBtn,  &QToolButton::clicked, this, [this]{
-        for (int i = 0; i < _seriesList->count(); ++i) {
-            auto* it = _seriesList->item(i);
-            if (it->flags() & Qt::ItemIsEnabled) it->setCheckState(Qt::Checked);
-        }
-    });
-    connect(noneBtn, &QToolButton::clicked, this, [this]{
-        for (int i = 0; i < _seriesList->count(); ++i)
-            _seriesList->item(i)->setCheckState(Qt::Unchecked);
-    });
-    topRow->addWidget(allBtn);
-    topRow->addWidget(noneBtn);
-    topRow->addStretch();
-    selLay->addLayout(topRow);
-
-    _seriesList = new QListWidget;
-    _seriesList->setMaximumHeight(120);    // compact
-    _seriesList->setAlternatingRowColors(true);
-    connect(_seriesList, &QListWidget::itemChanged,
-            this, &PeriodogramPanel::onSeriesItemChanged);
-    selLay->addWidget(_seriesList);
-
-    outer->addWidget(selGroup);
-
-    // ── Stacked plots in a scroll area ──
+    // ── Stacked plots in a scroll area (vertical fill + min height) ──
     _scrollArea = new QScrollArea;
     _scrollArea->setWidgetResizable(true);
-    _scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAlwaysOn);
+    _scrollArea->setVerticalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    _scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+
     _stackedHost = new QWidget;
     _stackedLayout = new QVBoxLayout(_stackedHost);
     _stackedLayout->setContentsMargins(4, 4, 4, 4);
@@ -180,19 +104,19 @@ void PeriodogramPanel::setupUi()
     outer->addWidget(_scrollArea, 1);
 }
 
+// ── External data feed ──────────────────────────────────────────────
+
 void PeriodogramPanel::setSeries(const QList<Series>& series)
 {
-    // Detect no-op re-application (e.g. user just switched tabs).
-    // Hash every series' (t, y, e) plus its identifier — anything that
-    // would change the periodogram inputs.
-    quint64 h = 1469598103934665603ULL;   // FNV offset
+    // Detect no-op re-application; FNV-style mix.
+    quint64 h = 1469598103934665603ULL;
     for (const auto& s : series) {
         const QByteArray k = (s.source + "::" + s.filter).toUtf8();
         for (char c : k) { h ^= static_cast<unsigned char>(c); h *= 1099511628211ULL; }
         h ^= Periodogram::hashData(s.t, s.y, s.e) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
     }
     if (h == _seriesHash && !_series.isEmpty()) {
-        // Same data; nothing to do. In-memory results stay intact.
+        emit seriesChanged();   // host might want to refresh anyway
         return;
     }
     _seriesHash = h;
@@ -208,27 +132,93 @@ void PeriodogramPanel::setSeries(const QList<Series>& series)
         if (!_sourceOrder.contains(s.source)) _sourceOrder.append(s.source);
 
     rebuildPlots();
-    rebuildSeriesList();
     loadFromCache();
 
-    if (_perSeries.isEmpty())
-        _statusLabel->setText(QString("%1 series — click Compute").arg(_series.size()));
+    if (_perSeries.isEmpty()) {
+        const QString msg = QString("%1 series — click Compute").arg(_series.size());
+        _statusLabel->setText(msg);
+        emit statusMessage(msg);
+    }
+    emit seriesChanged();
 }
+
+QList<PeriodogramPanel::SeriesInfo> PeriodogramPanel::seriesInfo() const
+{
+    QList<SeriesInfo> out;
+    out.reserve(_series.size());
+    for (const auto& s : _series) {
+        SeriesInfo si;
+        si.source   = s.source;
+        si.filter   = s.filter;
+        si.key      = makeKey(s.source, s.filter);
+        si.nPoints  = s.t.size();
+        si.eligible = si.nPoints >= _minPts;
+        si.enabled  = si.eligible && _userEnabled.value(si.key, true);
+        out.append(si);
+    }
+    return out;
+}
+
+void PeriodogramPanel::setSeriesEnabled(const QString& key, bool on)
+{
+    _userEnabled[key] = on;
+    // Don't re-emit seriesChanged for every tick — the host is the source.
+}
+
+bool PeriodogramPanel::isSeriesEnabled(const QString& key) const
+{
+    return _userEnabled.value(key, true);
+}
+
+void PeriodogramPanel::setMinPointsThreshold(int n)
+{
+    if (_minPts == n) return;
+    _minPts = n;
+    emit seriesChanged();
+}
+
+void PeriodogramPanel::setGridParameters(double minP, double maxP, int nS, double os)
+{
+    _minPeriod  = std::max(0.0, minP);
+    _maxPeriod  = std::max(0.0, maxP);
+    _nSamples   = std::max(0,    nS);
+    _oversample = (os > 0.0) ? os : _oversample;
+}
+
+bool PeriodogramPanel::suggestAutoBounds(double& minP, double& maxP) const
+{
+    minP = 0.0; maxP = 0.0;
+    for (const auto& s : _series) {
+        if (s.t.size() < _minPts) continue;
+        if (!isSeriesEnabled(makeKey(s.source, s.filter))) continue;
+        double mn = 0, mx = 0;
+        if (!Periodogram::resolveAutoBounds(s.t, mn, mx)) continue;
+        minP = std::max(minP, mn);
+        maxP = std::max(maxP, mx);
+    }
+    return (minP > 0 && maxP > minP);
+}
+
+int PeriodogramPanel::suggestAutoNSamples() const
+{
+    if (_series.isEmpty()) return 0;
+    QVector<double> allT;
+    for (const auto& s : _series)
+        if (s.t.size() >= _minPts && isSeriesEnabled(makeKey(s.source, s.filter)))
+            allT += s.t;
+    if (allT.isEmpty()) return 0;
+    double mn = _minPeriod, mx = _maxPeriod;
+    if (mn <= 0 || mx <= mn) suggestAutoBounds(mn, mx);
+    if (mn <= 0 || mx <= mn) return 0;
+    auto g = Periodogram::generateOptimalGrid(allT, _oversample, mn, mx, 0);
+    return g.isValid() ? g.Nf : 0;
+}
+
+// ── Grid resolution ────────────────────────────────────────────────
 
 Periodogram::Grid PeriodogramPanel::currentGrid() const
 {
     if (_series.isEmpty()) return {};
-
-    const double os    = _osSpin->value();
-    const double minP  = _minPSpin->value();   // 0 ⇒ auto
-    const double maxP  = _maxPSpin->value();   // 0 ⇒ auto
-    const int    nSamp = _nSampSpin->value();  // 0 ⇒ auto
-
-    // Auto-resolve bounds per-series, then take the most permissive union:
-    //   minPeriod = max over series  (largest "smallest cadence")
-    //   maxPeriod = max over series  (largest span)
-    // This prevents two surveys whose timestamps happen to be milliseconds apart
-    // from collapsing the global minPeriod to that gap.
     auto isOn = [this](const Series& s){
         return s.t.size() >= _minPts && isSeriesEnabled(makeKey(s.source, s.filter));
     };
@@ -236,17 +226,17 @@ Periodogram::Grid PeriodogramPanel::currentGrid() const
     double autoMinP = 0.0, autoMaxP = 0.0;
     for (const auto& s : _series) {
         if (!isOn(s)) continue;
-        double mn = 0.0, mx = 0.0;
+        double mn = 0, mx = 0;
         if (!Periodogram::resolveAutoBounds(s.t, mn, mx)) continue;
         autoMinP = std::max(autoMinP, mn);
         autoMaxP = std::max(autoMaxP, mx);
     }
     if (autoMinP <= 0 || autoMaxP <= autoMinP) {
-        LOG_WARNING("Periodogram", "Per-series auto bounds failed (check selection / min pts)");
+        LOG_WARNING("Periodogram", "Auto bounds failed (check selection / min pts)");
         return {};
     }
-    const double useMinP = (minP > 0) ? minP : autoMinP;
-    const double useMaxP = (maxP > 0) ? maxP : autoMaxP;
+    const double useMinP = (_minPeriod > 0) ? _minPeriod : autoMinP;
+    const double useMaxP = (_maxPeriod > 0) ? _maxPeriod : autoMaxP;
 
     QVector<double> allT;
     int totN = 0;
@@ -254,56 +244,35 @@ Periodogram::Grid PeriodogramPanel::currentGrid() const
     allT.reserve(totN);
     for (const auto& s : _series) if (isOn(s)) allT += s.t;
 
-    auto g = Periodogram::generateOptimalGrid(allT, os, useMinP, useMaxP, nSamp);
-
+    auto g = Periodogram::generateOptimalGrid(allT, _oversample,
+                                              useMinP, useMaxP, _nSamples);
     LOG_DEBUG("Periodogram",
-        QString("grid: nT=%1 os=%2 minP=%3 (auto %4) maxP=%5 (auto %6) "
-                "N(req)=%7 → f0=%8 df=%9 Nf=%10")
-            .arg(allT.size()).arg(os)
-            .arg(useMinP, 0, 'g', 6).arg(autoMinP, 0, 'g', 6)
-            .arg(useMaxP, 0, 'g', 6).arg(autoMaxP, 0, 'g', 6)
-            .arg(nSamp)
+        QString("grid: nT=%1 os=%2 minP=%3 maxP=%4 Nreq=%5 → f0=%6 df=%7 Nf=%8")
+            .arg(allT.size()).arg(_oversample)
+            .arg(useMinP, 0, 'g', 6).arg(useMaxP, 0, 'g', 6).arg(_nSamples)
             .arg(g.f0, 0, 'g', 6).arg(g.df, 0, 'g', 6).arg(g.Nf));
     return g;
 }
 
-void PeriodogramPanel::onOptimalClicked()
-{
-    if (_series.isEmpty()) return;
-
-    double autoMinP = 0.0, autoMaxP = 0.0;
-    for (const auto& s : _series) {
-        double mn = 0.0, mx = 0.0;
-        if (!Periodogram::resolveAutoBounds(s.t, mn, mx)) continue;
-        autoMinP = std::max(autoMinP, mn);
-        autoMaxP = std::max(autoMaxP, mx);
-    }
-    if (autoMinP <= 0 || autoMaxP <= autoMinP) {
-        _statusLabel->setText("Could not auto-resolve period bounds");
-        return;
-    }
-
-    if (_minPSpin->value() <= 0) _minPSpin->setValue(autoMinP);
-    if (_maxPSpin->value() <= 0) _maxPSpin->setValue(autoMaxP);
-
-    QVector<double> allT;
-    for (const auto& s : _series) allT += s.t;
-    auto g = Periodogram::generateOptimalGrid(
-        allT, _osSpin->value(), _minPSpin->value(), _maxPSpin->value(), 0);
-    if (g.isValid()) _nSampSpin->setValue(g.Nf);
-    else _statusLabel->setText("Auto Nf failed; widen Min P");
-}
-
-void PeriodogramPanel::onComputeClicked() { computeAll(true); }
+// ── Compute pipeline ───────────────────────────────────────────────
 
 void PeriodogramPanel::computeAll(bool force)
 {
-    if (_series.isEmpty()) { _statusLabel->setText("No data"); return; }
-    if (_jobsRemaining > 0) { _statusLabel->setText("Already computing…"); return; }
+    if (_series.isEmpty()) {
+        _statusLabel->setText("No data");
+        emit statusMessage("No data");
+        return;
+    }
+    if (_jobsRemaining > 0) {
+        emit statusMessage("Already computing…");
+        return;
+    }
 
     const auto grid = currentGrid();
     if (!grid.isValid()) {
-        _statusLabel->setText("Invalid grid (check Min P / Max P / N) — see log");
+        const QString msg = "Invalid grid (check Min P / Max P / N) — see log";
+        _statusLabel->setText(msg);
+        emit statusMessage(msg);
         LOG_WARNING("Periodogram", "Grid invalid; aborting compute");
         return;
     }
@@ -321,16 +290,15 @@ void PeriodogramPanel::computeAll(bool force)
         const auto& s = _series[i];
         if (s.t.size() < _minPts) continue;
         const QString k = makeKey(s.source, s.filter);
-        if (!isSeriesEnabled(k))    continue;
+        if (!isSeriesEnabled(k)) continue;
 
-        const quint64 dh  = Periodogram::hashData(s.t, s.y, s.e);
-        const auto    tag = _cachedTags.constFind(k);
-        const bool cacheValid = _perSeries.contains(k)
-                              && tag != _cachedTags.constEnd()
-                              && tag->dataHash == dh
-                              && tag->gridHash == gh;
-        if (cacheValid) continue;
-
+        const quint64 dh = Periodogram::hashData(s.t, s.y, s.e);
+        const auto tag   = _cachedTags.constFind(k);
+        const bool ok = _perSeries.contains(k)
+                     && tag != _cachedTags.constEnd()
+                     && tag->dataHash == dh
+                     && tag->gridHash == gh;
+        if (ok) continue;
         _perSeries.remove(k);
         _cachedTags.remove(k);
         todo.append(i);
@@ -340,12 +308,15 @@ void PeriodogramPanel::computeAll(bool force)
 
     _cancelRequested = false;
     _jobsRemaining   = todo.size();
-    _computeBtn->setEnabled(false);
     _progress->setRange(0, todo.size());
     _progress->setValue(0);
     _progress->setVisible(true);
     _cancelBtn->setVisible(true);
-    _statusLabel->setText(QString("Computing %1 series…").arg(todo.size()));
+
+    const QString msg = QString("Computing %1 series…").arg(todo.size());
+    _statusLabel->setText(msg);
+    emit statusMessage(msg);
+    emit computeStarted(todo.size());
 
     _jobs.clear();
     _jobs.reserve(todo.size());
@@ -365,7 +336,7 @@ void PeriodogramPanel::computeAll(bool force)
 
         QVector<double> t = s.t, y = s.y, e = s.e;
         const quint64 dh = Periodogram::hashData(t, y, e);
-        _cachedTags.insert(key, { dh, gh });   // tag pre-populated; data filled on completion
+        _cachedTags.insert(key, { dh, gh });
 
         job.watcher->setFuture(QtConcurrent::run(
             [t, y, e, grid, key]() {
@@ -388,6 +359,7 @@ void PeriodogramPanel::onSeriesComputed(int finishedIndex)
         }
         --_jobsRemaining;
         _progress->setValue(_progress->maximum() - _jobsRemaining);
+        emit computeProgress(_progress->maximum() - _jobsRemaining, _progress->maximum());
         if (_jobsRemaining > 0) return;
     }
 
@@ -396,27 +368,30 @@ void PeriodogramPanel::onSeriesComputed(int finishedIndex)
     _jobs.clear();
     _progress->setVisible(false);
     _cancelBtn->setVisible(false);
-    _computeBtn->setEnabled(true);
-    _statusLabel->setText(_cancelRequested
-        ? "Cancelled"
-        : QString("Done · %1 series · %2 sources").arg(_perSeries.size()).arg(_perSource.size()));
+
+    const QString msg = _cancelRequested
+        ? QStringLiteral("Cancelled")
+        : QString("Done · %1 series · %2 sources")
+              .arg(_perSeries.size()).arg(_perSource.size());
+    _statusLabel->setText(msg);
+    emit statusMessage(msg);
 
     if (!_cancelRequested) {
         replotAll();
         persistToCache();
     }
+    emit computeFinished(_cancelRequested);
 }
 
 void PeriodogramPanel::cancelCompute()
 {
     if (_jobsRemaining <= 0) return;
     _cancelRequested = true;
-    for (auto& job : _jobs) {
-        if (job.watcher) {
-            job.watcher->cancel();
-        }
-    }
+    for (auto& job : _jobs)
+        if (job.watcher) job.watcher->cancel();
 }
+
+// ── Plot construction / replot ─────────────────────────────────────
 
 void PeriodogramPanel::rebuildPlots()
 {
@@ -430,11 +405,13 @@ void PeriodogramPanel::rebuildPlots()
     auto makePlot = [this](const QString& title) -> QCustomPlot* {
         auto* box = new QWidget;
         auto* l = new QVBoxLayout(box);
-        l->setContentsMargins(0, 0, 0, 0); l->setSpacing(2);
+        l->setContentsMargins(0, 0, 0, 0);
+        l->setSpacing(2);
         if (!title.isEmpty())
             l->addWidget(new QLabel(QString("<b>%1</b>").arg(title.toHtmlEscaped())));
         auto* p = new QCustomPlot;
-        p->setMinimumHeight(150);
+        p->setMinimumHeight(180);
+        p->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
         p->setNoAntialiasingOnDrag(true);
         p->setPlottingHints(QCP::phFastPolylines | QCP::phCacheLabels);
         p->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
@@ -443,8 +420,8 @@ void PeriodogramPanel::rebuildPlots()
         connect(p->xAxis,
             static_cast<void (QCPAxis::*)(const QCPRange&)>(&QCPAxis::rangeChanged),
             this, [this, p](const QCPRange&){ syncXRangeFrom(p); });
-        l->addWidget(p);
-        _stackedLayout->addWidget(box);
+        l->addWidget(p, 1);
+        _stackedLayout->addWidget(box, 1);   // each plot stretches
         _plots.append(p);
         return p;
     };
@@ -456,11 +433,12 @@ void PeriodogramPanel::rebuildPlots()
     }
     auto* p = makePlot("Combined (multiplied)");
     p->setProperty("kind", "combined");
-    _stackedLayout->addStretch();
+    // No trailing stretch: plots themselves carry the stretch factor so
+    // they fill the scroll-area vertically while still honoring minimumHeight.
 }
 
 void PeriodogramPanel::plotInto(QCustomPlot* plot, const Periodogram::Result& res,
-                                  const QColor& color, bool emphasize)
+                                const QColor& color, bool emphasize)
 {
     if (!res.isValid()) return;
     QVector<double> x; x.reserve(res.grid.Nf);
@@ -482,22 +460,90 @@ void PeriodogramPanel::plotInto(QCustomPlot* plot, const Periodogram::Result& re
     g->setPen(pen);
     g->setLineStyle(QCPGraph::lsLine);
     g->setAdaptiveSampling(true);
-    g->setData(x, y, /*alreadySorted*/ false);
+    g->setData(x, y, false);
+}
+
+void PeriodogramPanel::drawOverlays(QCustomPlot* plot)
+{
+    // Drop any prior overlay items.
+    for (int i = plot->itemCount() - 1; i >= 0; --i) {
+        auto* item = plot->item(i);
+        if (item->property("phHighlight").toBool() ||
+            item->property("phPeakBand").toBool())
+            plot->removeItem(i);
+    }
+
+    auto axisXForPeriod = [this](double P) {
+        return (_xAxis == XAxis::Period) ? P : (P > 0 ? 1.0 / P : 0.0);
+    };
+
+    // ── Uncertainty bands behind the data ──
+    for (const auto& pk : _markedPeaks) {
+        if (pk.period <= 0) continue;
+
+        if (pk.periodError > 0) {
+            const double pLo = std::max(pk.period - pk.periodError, 1e-12);
+            const double pHi = pk.period + pk.periodError;
+            // Frequency-mode bounds invert (and swap).
+            double x1, x2;
+            if (_xAxis == XAxis::Period) { x1 = pLo; x2 = pHi; }
+            else                         { x1 = 1.0 / pHi; x2 = 1.0 / pLo; }
+
+            auto* rect = new QCPItemRect(plot);
+            rect->setProperty("phPeakBand", true);
+            rect->setLayer("grid");                          // draw behind data line
+            rect->topLeft->setAxes(plot->xAxis, plot->yAxis);
+            rect->bottomRight->setAxes(plot->xAxis, plot->yAxis);
+            rect->topLeft->setTypeX(QCPItemPosition::ptPlotCoords);
+            rect->topLeft->setTypeY(QCPItemPosition::ptAxisRectRatio);
+            rect->bottomRight->setTypeX(QCPItemPosition::ptPlotCoords);
+            rect->bottomRight->setTypeY(QCPItemPosition::ptAxisRectRatio);
+            rect->topLeft->setCoords(x1, 0.0);
+            rect->bottomRight->setCoords(x2, 1.0);
+            rect->setBrush(QBrush(QColor(220, 60, 60, 45)));
+            rect->setPen(Qt::NoPen);
+        }
+
+        // Thin center marker (always shown, even if σ==0).
+        const double xc = axisXForPeriod(pk.period);
+        auto* line = new QCPItemStraightLine(plot);
+        line->setProperty("phPeakBand", true);
+        line->setLayer("grid");
+        line->point1->setCoords(xc, 0);
+        line->point2->setCoords(xc, 1);
+        QPen pen(QColor(220, 60, 60, 130));
+        pen.setWidthF(0.8);
+        line->setPen(pen);
+    }
+
+    // ── Highlighted period: dashed red line on top ──
+    if (_highlightedPeriod > 0) {
+        const double xc = axisXForPeriod(_highlightedPeriod);
+        auto* line = new QCPItemStraightLine(plot);
+        line->setProperty("phHighlight", true);
+        line->point1->setCoords(xc, 0);
+        line->point2->setCoords(xc, 1);
+        QPen pen(QColor(220, 60, 60));
+        pen.setStyle(Qt::DashLine);
+        pen.setWidthF(1.5);
+        line->setPen(pen);
+    }
 }
 
 void PeriodogramPanel::replotAll()
 {
     for (auto* p : _plots) {
         p->clearPlottables();
+        p->clearItems();
         const QString kind = p->property("kind").toString();
         if (kind == "source") {
             const QString src = p->property("source").toString();
             int colorIdx = 0, filterCount = 0;
             for (const auto& s : _series) {
-                if (s.source != src)                continue;
-                if (s.t.size() < _minPts)           continue;
+                if (s.source != src) continue;
+                if (s.t.size() < _minPts) continue;
                 const QString k = makeKey(s.source, s.filter);
-                if (!isSeriesEnabled(k))            continue;
+                if (!isSeriesEnabled(k)) continue;
                 auto it = _perSeries.constFind(k);
                 if (it != _perSeries.constEnd()) {
                     plotInto(p, *it, PanelUtils::kLCColors[colorIdx % PanelUtils::kNumLCColors]);
@@ -505,14 +551,13 @@ void PeriodogramPanel::replotAll()
                 }
                 ++colorIdx;
             }
-            // Overlay weighted-sum line only if multiple filters were combined
             if (filterCount > 1) {
                 auto it = _perSource.constFind(src);
                 if (it != _perSource.constEnd()) {
                     QColor emph = PanelUtils::isDarkTheme() ? Qt::white : Qt::black;
                     auto sumRes = *it;
                     sumRes.label = "weighted sum";
-                    plotInto(p, sumRes, emph, /*emphasize*/ true);
+                    plotInto(p, sumRes, emph, true);
                 }
             }
         } else if (kind == "combined") {
@@ -521,20 +566,19 @@ void PeriodogramPanel::replotAll()
                 plotInto(p, _combined, emph, true);
             }
         }
+
         const bool periodMode = (_xAxis == XAxis::Period);
         p->xAxis->setLabel(periodMode ? "Period [d]" : "Frequency [1/d]");
         p->yAxis->setLabel("Power");
-
         if (periodMode) {
             p->xAxis->setScaleType(QCPAxis::stLogarithmic);
-            QSharedPointer<QCPAxisTickerLog> logTicker(new QCPAxisTickerLog);
-            p->xAxis->setTicker(logTicker);
+            p->xAxis->setTicker(QSharedPointer<QCPAxisTickerLog>(new QCPAxisTickerLog));
         } else {
             p->xAxis->setScaleType(QCPAxis::stLinear);
             p->xAxis->setTicker(QSharedPointer<QCPAxisTicker>(new QCPAxisTicker));
         }
-
         p->rescaleAxes();
+        drawOverlays(p);
         PanelUtils::stylePlot(p);
         p->replot(QCustomPlot::rpQueuedReplot);
     }
@@ -554,7 +598,10 @@ void PeriodogramPanel::wirePlotInteractions(QCustomPlot* plot)
 void PeriodogramPanel::setXAxis(XAxis ax)
 {
     _xAxis = ax;
-    if (_xAxisCombo) _xAxisCombo->setCurrentIndex(static_cast<int>(ax));
+    if (_xAxisCombo) {
+        QSignalBlocker b(_xAxisCombo);
+        _xAxisCombo->setCurrentIndex(static_cast<int>(ax));
+    }
     replotAll();
 }
 
@@ -569,11 +616,52 @@ void PeriodogramPanel::onResetZoom()
     for (auto* p : _plots) { p->rescaleAxes(); p->replot(); }
 }
 
+void PeriodogramPanel::setHighlightedPeriod(double period)
+{
+    _highlightedPeriod = (period > 0.0) ? period : 0.0;
+    for (auto* p : _plots) {
+        drawOverlays(p);
+        p->replot(QCustomPlot::rpQueuedReplot);
+    }
+}
+
+// ── Result accessors ───────────────────────────────────────────────
+
 Periodogram::Result PeriodogramPanel::periodogramFor(const QString& source,
-                                                       const QString& filter) const
+                                                     const QString& filter) const
 {
     if (filter.isEmpty()) return _perSource.value(source);
     return _perSeries.value(makeKey(source, filter));
+}
+
+Periodogram::Result PeriodogramPanel::resultByLabel(const QString& label) const
+{
+    if (label == _combined.label && _combined.isValid()) return _combined;
+    for (auto it = _perSource.constBegin(); it != _perSource.constEnd(); ++it)
+        if (it->label == label && it->isValid()) return *it;
+    auto it = _perSeries.constFind(label);
+    if (it != _perSeries.constEnd() && it->isValid()) return *it;
+    return {};
+}
+
+QList<PeriodogramPanel::ResultDescriptor>
+PeriodogramPanel::availableResults() const
+{
+    QList<ResultDescriptor> out;
+    if (_combined.isValid())
+        out.append({_combined.label, "Combined (all sources)"});
+    for (const QString& src : _sourceOrder) {
+        auto it = _perSource.constFind(src);
+        if (it != _perSource.constEnd() && it->isValid())
+            out.append({it->label, QString("%1 (weighted sum)").arg(src)});
+    }
+    for (const auto& s : _series) {
+        const QString k = makeKey(s.source, s.filter);
+        auto it = _perSeries.constFind(k);
+        if (it != _perSeries.constEnd() && it->isValid())
+            out.append({k, prettyDisplayName(k)});
+    }
+    return out;
 }
 
 void PeriodogramPanel::syncXRangeFrom(QCustomPlot* origin)
@@ -589,95 +677,138 @@ void PeriodogramPanel::syncXRangeFrom(QCustomPlot* origin)
     _syncingX = false;
 }
 
-void PeriodogramPanel::rebuildSeriesList()
+// ── Peak detection ─────────────────────────────────────────────────
+
+PeriodogramPanel::PeriodPeak
+PeriodogramPanel::estimatePeakAt(const Periodogram::Result& res, double period)
 {
-    if (!_seriesList) return;
-    QSignalBlocker block(_seriesList);
-    _seriesList->clear();
+    PeriodPeak pk;
+    pk.period = period;
+    if (period <= 0 || !res.isValid() || res.frequency.isEmpty()) return pk;
 
-    for (const auto& s : _series) {
-        const QString key   = makeKey(s.source, s.filter);
-        const int     n     = s.t.size();
-        const bool    meets = n >= _minPts;
-        const bool    on    = meets && _userEnabled.value(key, true);
+    const double fHint = 1.0 / period;
+    const int N = res.power.size();
 
-        QString label = s.filter.isEmpty()
-                          ? QString("%1  (%2 pts)").arg(s.source).arg(n)
-                          : QString("%1 · %2  (%3 pts)").arg(s.source, s.filter).arg(n);
-        if (!meets) label += QString("  — skipped (<%1)").arg(_minPts);
-
-        auto* it = new QListWidgetItem(label);
-        it->setData(Qt::UserRole, key);
-        it->setFlags(meets
-            ? (Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable)
-            : (Qt::ItemIsSelectable));   // greyed, non-checkable
-        it->setCheckState(on ? Qt::Checked : Qt::Unchecked);
-        _seriesList->addItem(it);
+    // nearest bin
+    int idx = 0;
+    double bestD = std::abs(res.frequency[0] - fHint);
+    for (int i = 1; i < N; ++i) {
+        double d = std::abs(res.frequency[i] - fHint);
+        if (d < bestD) { bestD = d; idx = i; }
     }
+    // climb to local max within small window
+    int peakIdx = idx;
+    const int W = std::max(2, N / 200);
+    int lo = std::max(0, idx - W), hi = std::min(N - 1, idx + W);
+    for (int j = lo; j <= hi; ++j)
+        if (res.power[j] > res.power[peakIdx]) peakIdx = j;
+
+    const double fPk = res.frequency[peakIdx];
+    if (fPk <= 0) return pk;
+    pk.period      = 1.0 / fPk;
+    pk.frequency   = fPk;
+    pk.power       = res.power[peakIdx];
+    pk.sourceLabel = res.label;
+
+    // FWHM window (descend until power drops below half-max)
+    const double halfP = 0.5 * pk.power;
+    int wlo = peakIdx, whi = peakIdx;
+    while (wlo > 0       && res.power[wlo] >= halfP) --wlo;
+    while (whi < N - 1   && res.power[whi] >= halfP) ++whi;
+    if (whi - wlo < 2) {
+        // window too narrow — fall back to a few bins around the peak
+        wlo = std::max(0, peakIdx - 3);
+        whi = std::min(N - 1, peakIdx + 3);
+    }
+
+    // σ_f from weighted variance with power treated as ∝ p.d.f.
+    double sumW = 0, sumWF = 0, sumWF2 = 0;
+    for (int j = wlo; j <= whi; ++j) {
+        const double w  = res.power[j];
+        const double fj = res.frequency[j];
+        sumW += w; sumWF += w * fj; sumWF2 += w * fj * fj;
+    }
+    if (sumW > 0) {
+        const double mean = sumWF / sumW;
+        const double var  = std::max(0.0, sumWF2 / sumW - mean * mean);
+        const double sigF = std::sqrt(var);
+        pk.periodError    = sigF / (fPk * fPk);
+    }
+    return pk;
 }
 
-void PeriodogramPanel::onSeriesItemChanged(QListWidgetItem* item)
+QList<PeriodogramPanel::PeriodPeak>
+PeriodogramPanel::detectPeaks(const QString& resultLabel,
+                              int maxPeaks, double minRelSep) const
 {
-    if (!item) return;
-    const QString key = item->data(Qt::UserRole).toString();
-    _userEnabled[key] = (item->checkState() == Qt::Checked);
+    QList<PeriodPeak> peaks;
+    auto res = resultByLabel(resultLabel);
+    if (!res.isValid() || res.power.size() < 5) return peaks;
+
+    const int N = res.power.size();
+    QVector<int> candidates;
+    candidates.reserve(N / 4);
+    for (int i = 1; i < N - 1; ++i) {
+        const double p = res.power[i];
+        if (p > res.power[i - 1] && p > res.power[i + 1]) candidates.append(i);
+    }
+    std::sort(candidates.begin(), candidates.end(),
+              [&](int a, int b){ return res.power[a] > res.power[b]; });
+
+    QVector<int> chosen;
+    for (int i : candidates) {
+        if (chosen.size() >= maxPeaks) break;
+        const double fi = res.frequency[i];
+        bool close = false;
+        for (int j : chosen) {
+            const double fj = res.frequency[j];
+            if (std::abs(fi - fj) / std::max(fi, 1e-30) < minRelSep) { close = true; break; }
+        }
+        if (!close) chosen.append(i);
+    }
+    for (int idx : chosen) {
+        const double f = res.frequency[idx];
+        if (f <= 0) continue;
+        peaks.append(estimatePeakAt(res, 1.0 / f));
+    }
+    std::sort(peaks.begin(), peaks.end(),
+              [](const PeriodPeak& a, const PeriodPeak& b){ return a.period < b.period; });
+    return peaks;
 }
 
-void PeriodogramPanel::onMinPtsChanged(int v)
-{
-    _minPts = v;
-    rebuildSeriesList();
-}
-
-void PeriodogramPanel::setMinPointsThreshold(int n) { _minPtsSpin->setValue(n); }
-
-bool PeriodogramPanel::isSeriesEnabled(const QString& key) const
-{
-    return _userEnabled.value(key, true);
-}
+// ── Cache I/O / aggregates ─────────────────────────────────────────
 
 void PeriodogramPanel::loadFromCache()
 {
-    LOG_INFO("Periodogram",
-        QString("loadFromCache: dbm=%1 starId='%2' nSeries=%3")
-            .arg(_dbm ? "ok" : "NULL").arg(_starId).arg(_series.size()));
     if (!_dbm || _starId.isEmpty() || _series.isEmpty()) return;
-
     auto records = _dbm->loadStarPeriodograms(_starId);
-    LOG_INFO("Periodogram",
-        QString("Cache load: %1 record(s) on disk for star %2")
-            .arg(records.size()).arg(_starId));
     if (records.empty()) return;
 
-    // Build a quick lookup of which series we currently know about
     QSet<QString> known;
     for (const auto& s : _series) known.insert(makeKey(s.source, s.filter));
 
     int loaded = 0, stale = 0;
     for (const auto& r : records) {
         const QString k = makeKey(r->source, r->filter);
-        if (!known.contains(k)) continue;          // record for a series no longer present
+        if (!known.contains(k)) continue;
         _perSeries.insert(k, r->result);
         _cachedTags.insert(k, { r->dataHash, r->gridHash });
         ++loaded;
-
-        // Quick staleness check against current data
         for (const auto& s : _series) {
             if (makeKey(s.source, s.filter) != k) continue;
-            const quint64 dh = Periodogram::hashData(s.t, s.y, s.e);
-            if (dh != r->dataHash) ++stale;
+            if (Periodogram::hashData(s.t, s.y, s.e) != r->dataHash) ++stale;
             break;
         }
     }
-
     if (loaded == 0) return;
 
     rebuildAggregates();
     replotAll();
-    _statusLabel->setText(
-        stale > 0
-          ? QString("Loaded cache · %1 series (%2 stale — recompute to refresh)").arg(loaded).arg(stale)
-          : QString("Loaded cache · %1 series").arg(loaded));
+    const QString msg = stale > 0
+        ? QString("Loaded cache · %1 series (%2 stale — recompute to refresh)").arg(loaded).arg(stale)
+        : QString("Loaded cache · %1 series").arg(loaded);
+    _statusLabel->setText(msg);
+    emit statusMessage(msg);
 }
 
 void PeriodogramPanel::rebuildAggregates()
@@ -703,19 +834,13 @@ void PeriodogramPanel::rebuildAggregates()
 
 void PeriodogramPanel::persistToCache()
 {
-    LOG_INFO("Periodogram",
-        QString("persistToCache: dbm=%1 starId='%2' nSeries=%3")
-            .arg(_dbm ? "ok" : "NULL").arg(_starId).arg(_perSeries.size()));
     if (!_dbm || _starId.isEmpty()) return;
-
     std::vector<std::shared_ptr<PeriodogramRecord>> recs;
     recs.reserve(_perSeries.size());
-
     for (const auto& s : _series) {
         const QString k = makeKey(s.source, s.filter);
         auto it = _perSeries.constFind(k);
         if (it == _perSeries.constEnd() || !it->isValid()) continue;
-
         auto r = std::make_shared<PeriodogramRecord>();
         r->source     = s.source;
         r->filter     = s.filter;
@@ -724,11 +849,58 @@ void PeriodogramPanel::persistToCache()
         r->gridHash   = Periodogram::hashGrid(it->grid);
         r->computedAt = QDateTime::currentDateTime();
         recs.push_back(r);
-
         _cachedTags.insert(k, { r->dataHash, r->gridHash });
     }
     const bool ok = _dbm->saveStarPeriodograms(_starId, recs);
     LOG_INFO("Periodogram",
         QString("Persisted %1 records for star %2 (ok=%3)")
             .arg(recs.size()).arg(_starId).arg(ok));
+}
+
+void PeriodogramPanel::setMarkedPeaks(const QList<PeriodPeak>& peaks)
+{
+    _markedPeaks = peaks;
+    for (auto* p : _plots) {
+        drawOverlays(p);
+        p->replot(QCustomPlot::rpQueuedReplot);
+    }
+}
+
+QString PeriodogramPanel::peaksToJson(const QList<PeriodPeak>& peaks)
+{
+    QJsonArray arr;
+    for (const auto& pk : peaks) {
+        QJsonObject o;
+        o["period"]      = pk.period;
+        o["frequency"]   = pk.frequency;
+        o["power"]       = pk.power;
+        o["periodError"] = pk.periodError;
+        o["source"]      = pk.sourceLabel;
+        arr.append(o);
+    }
+    return QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact));
+}
+
+QList<PeriodogramPanel::PeriodPeak>
+PeriodogramPanel::peaksFromJson(const QString& json)
+{
+    QList<PeriodPeak> out;
+    if (json.trimmed().isEmpty()) return out;
+    QJsonParseError err{};
+    const auto doc = QJsonDocument::fromJson(json.toUtf8(), &err);
+    if (err.error != QJsonParseError::NoError || !doc.isArray()) return out;
+    const auto arr = doc.array();
+    out.reserve(arr.size());
+    for (const auto& v : arr) {
+        if (!v.isObject()) continue;
+        const auto o = v.toObject();
+        PeriodPeak pk;
+        pk.period      = o.value("period").toDouble();
+        pk.frequency   = o.value("frequency").toDouble();
+        pk.power       = o.value("power").toDouble();
+        pk.periodError = o.value("periodError").toDouble();
+        pk.sourceLabel = o.value("source").toString();
+        if (pk.period > 0) out.append(pk);
+    }
+    return out;
 }

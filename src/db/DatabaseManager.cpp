@@ -201,6 +201,7 @@ bool DatabaseManager::createTables()
             has_ztf INTEGER DEFAULT 0,
             has_atlas INTEGER DEFAULT 0,
             has_blackgem INTEGER DEFAULT 0,
+            phot_peaks_json TEXT,
             FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
         )
     )";
@@ -550,6 +551,7 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE stars ADD COLUMN has_ztf INTEGER DEFAULT 0",
         "ALTER TABLE stars ADD COLUMN has_atlas INTEGER DEFAULT 0",
         "ALTER TABLE stars ADD COLUMN has_blackgem INTEGER DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN phot_peaks_json TEXT",
 
         // Instrument foreign key migrations for existing tables
         "ALTER TABLE spectra ADD COLUMN instrument_id TEXT",
@@ -1206,3 +1208,28 @@ std::shared_ptr<PeriodogramRecord> DatabaseManager::loadPeriodogram(
 
 bool DatabaseManager::deleteStarPeriodograms(const QString& starId)
 { return _periodograms->deleteAllForStar(starId); }
+
+bool DatabaseManager::saveStarPhotPeaks(const QString& starId,
+                                        const QString& peaksJson)
+{
+    QSqlQuery q(_db->threadConnection());
+    q.prepare("UPDATE stars SET phot_peaks_json = :j WHERE id = :id");
+    q.bindValue(":j",  peaksJson);
+    q.bindValue(":id", starId);
+    if (!q.exec()) {
+        LOG_WARNING("DB",
+            QString("saveStarPhotPeaks failed for %1: %2")
+                .arg(starId, q.lastError().text()));
+        return false;
+    }
+    return true;
+}
+
+QString DatabaseManager::loadStarPhotPeaks(const QString& starId)
+{
+    QSqlQuery q(_db->threadConnection());
+    q.prepare("SELECT phot_peaks_json FROM stars WHERE id = :id");
+    q.bindValue(":id", starId);
+    if (!q.exec() || !q.next()) return {};
+    return q.value(0).toString();
+}

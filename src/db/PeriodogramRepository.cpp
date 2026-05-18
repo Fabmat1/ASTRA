@@ -10,6 +10,34 @@
 #include <QDateTime>
 #include <QDebug>
 
+static bool ensureSchema(QSqlDatabase& db)
+{
+    QSqlQuery q(db);
+    if (!q.exec(R"(
+        CREATE TABLE IF NOT EXISTS periodograms (
+            id TEXT PRIMARY KEY,
+            star_id TEXT NOT NULL,
+            source TEXT,
+            filter TEXT,
+            grid_f0 REAL,
+            grid_df REAL,
+            grid_nf INTEGER,
+            n_points INTEGER,
+            data_hash TEXT,
+            grid_hash TEXT,
+            computed_at TEXT,
+            data_file TEXT,
+            FOREIGN KEY(star_id) REFERENCES stars(id) ON DELETE CASCADE
+        )
+    )")) {
+        qWarning() << "PeriodogramRepository: create table:" << q.lastError();
+        return false;
+    }
+    q.exec("CREATE INDEX IF NOT EXISTS idx_periodograms_lookup "
+           "ON periodograms(star_id, source, filter)");
+    return true;
+}
+
 PeriodogramRepository::PeriodogramRepository(DBAccess& db) : _db(db) {}
 
 bool PeriodogramRepository::saveAllForStar(
@@ -17,13 +45,21 @@ bool PeriodogramRepository::saveAllForStar(
     const std::vector<std::shared_ptr<PeriodogramRecord>>& records)
 {
     QSqlDatabase db = _db.threadConnection();
+    if (!ensureSchema(db)) return false;
     QString dataDir = QFileInfo(_db.databasePath()).absolutePath() + "/data";
 
     // 1. Drop existing rows + files for this star
     {
         QSqlQuery sel(db);
-        sel.prepare("SELECT data_file FROM periodograms WHERE star_id = :sid");
+        if (!sel.prepare("SELECT data_file FROM periodograms WHERE star_id = :sid")) {
+            qWarning() << "PeriodogramRepository: prepare SELECT failed:" << sel.lastError();
+            return false;
+        }
         sel.bindValue(":sid", starId);
+        if (!sel.exec()) {
+            qWarning() << "PeriodogramRepository: SELECT failed:" << sel.lastError();
+            return false;
+        }
         if (sel.exec()) {
             while (sel.next()) {
                 const QString f = sel.value(0).toString();
@@ -110,7 +146,9 @@ std::vector<std::shared_ptr<PeriodogramRecord>>
 PeriodogramRepository::loadAllForStar(const QString& starId)
 {
     std::vector<std::shared_ptr<PeriodogramRecord>> out;
-    QSqlQuery q(_db.threadConnection());
+    QSqlDatabase db = _db.threadConnection();
+    if (!ensureSchema(db)) return out;
+    QSqlQuery q(db);
     q.prepare("SELECT * FROM periodograms WHERE star_id = :sid");
     q.bindValue(":sid", starId);
     if (!q.exec()) return out;
@@ -140,8 +178,15 @@ bool PeriodogramRepository::deleteAllForStar(const QString& starId)
 {
     QSqlDatabase db = _db.threadConnection();
     QSqlQuery sel(db);
-    sel.prepare("SELECT data_file FROM periodograms WHERE star_id = :sid");
+    if (!sel.prepare("SELECT data_file FROM periodograms WHERE star_id = :sid")) {
+        qWarning() << "PeriodogramRepository: prepare SELECT failed:" << sel.lastError();
+        return false;
+    }
     sel.bindValue(":sid", starId);
+    if (!sel.exec()) {
+        qWarning() << "PeriodogramRepository: SELECT failed:" << sel.lastError();
+        return false;
+    }
     if (sel.exec()) {
         while (sel.next()) {
             const QString f = sel.value(0).toString();

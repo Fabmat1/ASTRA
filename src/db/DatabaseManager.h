@@ -92,6 +92,8 @@ public:
     std::vector<std::shared_ptr<PeriodogramRecord>> loadStarPeriodograms(const QString& starId);
     std::shared_ptr<PeriodogramRecord> loadPeriodogram(const QString& starId, const QString& source, const QString& filter = {});
     bool deleteStarPeriodograms(const QString& starId);
+    bool    saveStarPhotPeaks(const QString& starId, const QString& peaksJson);
+    QString loadStarPhotPeaks(const QString& starId);
 
 private:
     void backfillSpectrumInstrumentIds();
