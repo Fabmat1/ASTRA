@@ -187,31 +187,52 @@ void PeriodogramPanel::setGridParameters(double minP, double maxP, int nS, doubl
 
 bool PeriodogramPanel::suggestAutoBounds(double& minP, double& maxP) const
 {
-    minP = 0.0; maxP = 0.0;
+    // Resolve bounds per source (aggregating its filters), then take the most
+    // permissive union: shortest minP wins, longest maxP wins.
+    QHash<QString, QVector<double>> tBySrc;
     for (const auto& s : _series) {
         if (s.t.size() < _minPts) continue;
         if (!isSeriesEnabled(makeKey(s.source, s.filter))) continue;
-        double mn = 0, mx = 0;
-        if (!Periodogram::resolveAutoBounds(s.t, mn, mx)) continue;
-        minP = std::max(minP, mn);
-        maxP = std::max(maxP, mx);
+        tBySrc[s.source] += s.t;
     }
-    return (minP > 0 && maxP > minP);
+    static constexpr double kMinAllowedPeriod = 0.01;   // TODO: make this changeable via settings
+
+    minP = 0.0; maxP = 0.0;
+    bool any = false;
+    for (auto it = tBySrc.constBegin(); it != tBySrc.constEnd(); ++it) {
+        double mn = 0, mx = 0;
+        if (!Periodogram::resolveAutoBounds(it.value(), mn, mx)) continue;
+        mn = std::max(mn, kMinAllowedPeriod);           // floor per source
+        if (mx <= mn) continue;
+        if (!any) { minP = mn; maxP = mx; any = true; }
+        else      { minP = std::min(minP, mn);
+                    maxP = std::max(maxP, mx); }
+    }
+    return (any && minP > 0 && maxP > minP);
 }
 
 int PeriodogramPanel::suggestAutoNSamples() const
 {
-    if (_series.isEmpty()) return 0;
-    QVector<double> allT;
-    for (const auto& s : _series)
-        if (s.t.size() >= _minPts && isSeriesEnabled(makeKey(s.source, s.filter)))
-            allT += s.t;
-    if (allT.isEmpty()) return 0;
+    QHash<QString, QVector<double>> tBySrc;
+    for (const auto& s : _series) {
+        if (s.t.size() < _minPts) continue;
+        if (!isSeriesEnabled(makeKey(s.source, s.filter))) continue;
+        tBySrc[s.source] += s.t;
+    }
+    if (tBySrc.isEmpty()) return 0;
+
     double mn = _minPeriod, mx = _maxPeriod;
-    if (mn <= 0 || mx <= mn) suggestAutoBounds(mn, mx);
-    if (mn <= 0 || mx <= mn) return 0;
-    auto g = Periodogram::generateOptimalGrid(allT, _oversample, mn, mx, 0);
-    return g.isValid() ? g.Nf : 0;
+    if (mn <= 0 || mx <= mn) {
+        if (!suggestAutoBounds(mn, mx)) return 0;
+    }
+    // Most-resolved source wins.
+    int bestN = 0;
+    for (auto it = tBySrc.constBegin(); it != tBySrc.constEnd(); ++it) {
+        const auto g = Periodogram::generateOptimalGrid(it.value(),
+                                                        _oversample, mn, mx, 0);
+        if (g.isValid()) bestN = std::max(bestN, g.Nf);
+    }
+    return bestN;
 }
 
 // ── Grid resolution ────────────────────────────────────────────────
@@ -223,33 +244,58 @@ Periodogram::Grid PeriodogramPanel::currentGrid() const
         return s.t.size() >= _minPts && isSeriesEnabled(makeKey(s.source, s.filter));
     };
 
+    // Per-source bounds, unioned permissively.
+    QHash<QString, QVector<double>> tBySrc;
+    for (const auto& s : _series)
+        if (isOn(s)) tBySrc[s.source] += s.t;
+
+    static constexpr double kMinAllowedPeriod = 0.01;   // TODO: make this changeable via settings
+
     double autoMinP = 0.0, autoMaxP = 0.0;
-    for (const auto& s : _series) {
-        if (!isOn(s)) continue;
+    bool any = false;
+    for (auto it = tBySrc.constBegin(); it != tBySrc.constEnd(); ++it) {
         double mn = 0, mx = 0;
-        if (!Periodogram::resolveAutoBounds(s.t, mn, mx)) continue;
-        autoMinP = std::max(autoMinP, mn);
-        autoMaxP = std::max(autoMaxP, mx);
+        if (!Periodogram::resolveAutoBounds(it.value(), mn, mx)) continue;
+        mn = std::max(mn, kMinAllowedPeriod);
+        if (mx <= mn) continue;
+        if (!any) { autoMinP = mn; autoMaxP = mx; any = true; }
+        else      { autoMinP = std::min(autoMinP, mn);
+                    autoMaxP = std::max(autoMaxP, mx); }
     }
-    if (autoMinP <= 0 || autoMaxP <= autoMinP) {
+    if (!any || autoMinP <= 0 || autoMaxP <= autoMinP) {
         LOG_WARNING("Periodogram", "Auto bounds failed (check selection / min pts)");
         return {};
     }
-    const double useMinP = (_minPeriod > 0) ? _minPeriod : autoMinP;
+    // Honor user override but clamp it too.
+    const double useMinP = std::max(kMinAllowedPeriod,
+                                    (_minPeriod > 0) ? _minPeriod : autoMinP);
     const double useMaxP = (_maxPeriod > 0) ? _maxPeriod : autoMaxP;
 
+    // If the user didn't pin N, pick the highest N across sources so the
+    // shortest-cadence dataset drives resolution.
+    int useN = _nSamples;
+    if (useN <= 0) {
+        for (auto it = tBySrc.constBegin(); it != tBySrc.constEnd(); ++it) {
+            const auto g = Periodogram::generateOptimalGrid(
+                it.value(), _oversample, useMinP, useMaxP, 0);
+            if (g.isValid()) useN = std::max(useN, g.Nf);
+        }
+    }
+
+    // Build the final grid from the union of all t's so df reflects the full
+    // baseline; Nf is forced to useN so we don't lose resolution.
     QVector<double> allT;
     int totN = 0;
-    for (const auto& s : _series) if (isOn(s)) totN += s.t.size();
+    for (auto it = tBySrc.constBegin(); it != tBySrc.constEnd(); ++it) totN += it.value().size();
     allT.reserve(totN);
-    for (const auto& s : _series) if (isOn(s)) allT += s.t;
+    for (auto it = tBySrc.constBegin(); it != tBySrc.constEnd(); ++it) allT += it.value();
 
     auto g = Periodogram::generateOptimalGrid(allT, _oversample,
-                                              useMinP, useMaxP, _nSamples);
+                                              useMinP, useMaxP, useN);
     LOG_DEBUG("Periodogram",
-        QString("grid: nT=%1 os=%2 minP=%3 maxP=%4 Nreq=%5 → f0=%6 df=%7 Nf=%8")
-            .arg(allT.size()).arg(_oversample)
-            .arg(useMinP, 0, 'g', 6).arg(useMaxP, 0, 'g', 6).arg(_nSamples)
+        QString("grid: nT=%1 sources=%2 os=%3 minP=%4 maxP=%5 N=%6 → f0=%7 df=%8 Nf=%9")
+            .arg(allT.size()).arg(tBySrc.size()).arg(_oversample)
+            .arg(useMinP, 0, 'g', 6).arg(useMaxP, 0, 'g', 6).arg(useN)
             .arg(g.f0, 0, 'g', 6).arg(g.df, 0, 'g', 6).arg(g.Nf));
     return g;
 }
