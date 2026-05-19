@@ -10,7 +10,6 @@
 #include <optional>
 
 struct ResolutionModel {
-    // R(λ) = c[0] + c[1]*λ + c[2]*λ² + ...   (λ in Angstroms)
     QVector<double> coefficients;
 
     double at(double wavelengthAngstrom) const
@@ -74,6 +73,17 @@ struct DiggaFitDefaults {
     static DiggaFitDefaults fromJson(const QJsonObject& o);
 };
 
+// ── NEW: range of periods to whiten in periodograms ────────────────────────
+struct PeriodAliasRange {
+    double low  = 0.0;   // days
+    double high = 0.0;   // days
+
+    bool isValid() const { return high > low && low > 0.0; }
+
+    QJsonArray toJsonArray() const;            // [low, high]
+    static PeriodAliasRange fromJsonArray(const QJsonArray& a);
+};
+
 struct SpectralProperties {
     ResolutionModel             resolution;       // R(λ)
     QString                     disperser;
@@ -82,8 +92,17 @@ struct SpectralProperties {
     QVector<WavelengthSetup>    commonSetups;
     DiggaFitDefaults            fitDefaults;
 
+    // Optional explicit systematic RV error (km/s).  When not set,
+    // a default is inferred from the resolution (see helpers below).
+    std::optional<double>       systematicRVError;
+
     QJsonObject toJson() const;
     static SpectralProperties fromJson(const QJsonObject& obj);
+
+    // Default rule:  R<4000 → 15,  4000–20000 → 10,  >20000 → 3.0  (km/s)
+    static double defaultSystematicRVError(double R);
+    // Returns the user value if set, otherwise the default at the band centre.
+    double effectiveSystematicRVError() const;
 };
 
 struct PhotometricProperties {
@@ -91,6 +110,10 @@ struct PhotometricProperties {
     double      fov        = 0.0;
     double      pixelScale = 0.0;
     QStringList filters;
+
+    // Period ranges (days) that should be whitened from the periodogram
+    // because they correspond to known sampling/observational aliases.
+    QVector<PeriodAliasRange> periodAliases;
 
     QJsonObject toJson() const;
     static PhotometricProperties fromJson(const QJsonObject& obj);

@@ -45,6 +45,23 @@ WavelengthSetup WavelengthSetup::fromJson(const QJsonObject& obj)
     return ws;
 }
 
+// ── PeriodAliasRange ───────────────────────────────────────────────────────
+
+QJsonArray PeriodAliasRange::toJsonArray() const
+{
+    return QJsonArray{ low, high };
+}
+
+PeriodAliasRange PeriodAliasRange::fromJsonArray(const QJsonArray& a)
+{
+    PeriodAliasRange r;
+    if (a.size() >= 2) {
+        r.low  = a.at(0).toDouble();
+        r.high = a.at(1).toDouble();
+    }
+    return r;
+}
+
 // ── SpectralProperties ─────────────────────────────────────────────────────
 
 QJsonObject SpectralProperties::toJson() const
@@ -54,6 +71,9 @@ QJsonObject SpectralProperties::toJson() const
     obj["resolution_coefficients"]  = resolution.toJsonArray();
     obj["wavelength_min"]           = wavelengthMin;
     obj["wavelength_max"]           = wavelengthMax;
+
+    if (systematicRVError)
+        obj["systematic_rv_error_kms"] = *systematicRVError;
 
     if (!fitDefaults.isEmpty()) obj["fitDefaults"] = fitDefaults.toJson();
 
@@ -74,13 +94,35 @@ SpectralProperties SpectralProperties::fromJson(const QJsonObject& obj)
     sp.wavelengthMin = obj["wavelength_min"].toDouble();
     sp.wavelengthMax = obj["wavelength_max"].toDouble();
 
+    if (obj.contains("systematic_rv_error_kms"))
+        sp.systematicRVError = obj["systematic_rv_error_kms"].toDouble();
+
     if (obj.contains("fitDefaults"))
-    sp.fitDefaults = DiggaFitDefaults::fromJson(obj["fitDefaults"].toObject());
+        sp.fitDefaults = DiggaFitDefaults::fromJson(obj["fitDefaults"].toObject());
 
     for (const auto& v : obj["common_setups"].toArray())
         sp.commonSetups.append(WavelengthSetup::fromJson(v.toObject()));
     return sp;
 }
+
+double SpectralProperties::defaultSystematicRVError(double R)
+{
+    if (R <= 0.0)        return 15.0;   // unknown → conservative
+    if (R <  4000.0)     return 15.0;
+    if (R <  20000.0)    return 10.0;
+    return 3.0;
+}
+
+double SpectralProperties::effectiveSystematicRVError() const
+{
+    if (systematicRVError) return *systematicRVError;
+    double centre = (wavelengthMin > 0 && wavelengthMax > wavelengthMin)
+                  ? 0.5 * (wavelengthMin + wavelengthMax)
+                  : 5500.0;
+    double R = resolution.at(centre);
+    return defaultSystematicRVError(R);
+}
+
 
 // ── PhotometricProperties ──────────────────────────────────────────────────
 
@@ -95,6 +137,12 @@ QJsonObject PhotometricProperties::toJson() const
         for (const auto& f : filters) arr.append(f);
         obj["filters"] = arr;
     }
+    if (!periodAliases.isEmpty()) {
+        QJsonArray arr;
+        for (const auto& a : periodAliases)
+            arr.append(a.toJsonArray());
+        obj["period_aliases"] = arr;
+    }
     return obj;
 }
 
@@ -106,6 +154,22 @@ PhotometricProperties PhotometricProperties::fromJson(const QJsonObject& obj)
     pp.pixelScale = obj["pixel_scale"].toDouble();
     for (const auto& v : obj["filters"].toArray())
         pp.filters.append(v.toString());
+
+    for (const auto& v : obj["period_aliases"].toArray()) {
+        if (v.isArray()) {
+            auto r = PeriodAliasRange::fromJsonArray(v.toArray());
+            if (r.high > r.low && r.low > 0.0)
+                pp.periodAliases.append(r);
+        } else if (v.isObject()) {
+            // tolerate alternative {low,high} form
+            auto o = v.toObject();
+            PeriodAliasRange r;
+            r.low  = o.value("low").toDouble(o.value("min").toDouble());
+            r.high = o.value("high").toDouble(o.value("max").toDouble());
+            if (r.high > r.low && r.low > 0.0)
+                pp.periodAliases.append(r);
+        }
+    }
     return pp;
 }
 
