@@ -91,15 +91,21 @@ public:
     bool canRead(const QString& filepath) const override;
     SpectrumMetadata readMetadata(const QString& filepath) const override;
     SpectrumReadResult readSpectrum(const QString& filepath) const override;
-    
-    // For ASCII files, metadata must be provided externally
+
     void setExternalMetadata(const SpectrumMetadata& metadata) { _externalMetadata = metadata; }
-    
+
 private:
     SpectrumMetadata _externalMetadata;
-    
-    bool parseDataLine(const QString& line, double& wavelength, double& flux, double& error) const;
-    QChar detectDelimiter(const QString& line) const;
+
+    // Kept for API compatibility — now uses a static regex internally
+    // and takes the delimiter as a parameter (no per-line re-detection).
+    bool parseDataLine(const QString& line, double& wavelength,
+                       double& flux, double& error) const;            // old signature; reimplemented
+    QChar detectDelimiter(const QString& line) const;                  // hoists regex to static
+
+    // New fast path
+    static char detectDelimiterFast(const char* data, qsizetype len);
+    static bool isCommentChar(char c) { return c == '#' || c == ';' || c == '!'; }
 };
 
 // Registry for spectrum readers

@@ -383,47 +383,86 @@ bool AsciiSpectrumReader::canRead(const QString& filepath) const
 
 QChar AsciiSpectrumReader::detectDelimiter(const QString& line) const
 {
-    // Count potential delimiters
-    int tabs = line.count('\t');
-    int commas = line.count(',');
-    int spaces = line.count(QRegularExpression("\\s+")) - line.count('\t');
-    int semicolons = line.count(';');
-    
-    if (tabs > 0 && tabs >= commas && tabs >= semicolons) return '\t';
-    if (commas > 0 && commas >= semicolons) return ',';
-    if (semicolons > 0) return ';';
-    return ' ';  // Default to whitespace
+    static const QRegularExpression wsRe(QStringLiteral("\\s+"));   // compiled once, ever
+
+    const int tabs       = line.count(QLatin1Char('\t'));
+    const int commas     = line.count(QLatin1Char(','));
+    const int semicolons = line.count(QLatin1Char(';'));
+    const int spaces     = line.count(wsRe) - tabs;
+
+    if (tabs > 0 && tabs >= commas && tabs >= semicolons) return QLatin1Char('\t');
+    if (commas > 0 && commas >= semicolons)               return QLatin1Char(',');
+    if (semicolons > 0)                                    return QLatin1Char(';');
+    Q_UNUSED(spaces);
+    return QLatin1Char(' ');
 }
 
-bool AsciiSpectrumReader::parseDataLine(const QString& line, double& wavelength, double& flux, double& error) const
+char AsciiSpectrumReader::detectDelimiterFast(const char* data, qsizetype len)
 {
+    // Look at the first few non-comment, non-blank lines and count delimiter occurrences.
+    int tabs = 0, commas = 0, semis = 0;
+    int linesSampled = 0;
+    const char* p   = data;
+    const char* end = data + len;
+
+    while (p < end && linesSampled < 5) {
+        // skip leading whitespace
+        while (p < end && (*p == ' ' || *p == '\t')) ++p;
+        if (p >= end) break;
+
+        if (*p == '\n' || *p == '\r') { ++p; continue; }
+        if (isCommentChar(*p)) {
+            while (p < end && *p != '\n') ++p;
+            if (p < end) ++p;
+            continue;
+        }
+
+        const char* lineStart = p;
+        while (p < end && *p != '\n') ++p;
+
+        for (const char* q = lineStart; q < p; ++q) {
+            switch (*q) {
+                case '\t': ++tabs;   break;
+                case ',':  ++commas; break;
+                case ';':  ++semis;  break;
+                default: break;
+            }
+        }
+        ++linesSampled;
+        if (p < end) ++p;
+    }
+
+    if (tabs   > 0 && tabs   >= commas && tabs   >= semis) return '\t';
+    if (commas > 0 && commas >= semis)                     return ',';
+    if (semis  > 0)                                        return ';';
+    return ' ';   // whitespace
+}
+
+bool AsciiSpectrumReader::parseDataLine(const QString& line, double& wavelength,
+                                        double& flux, double& error) const
+{
+    static const QRegularExpression wsSplit(QStringLiteral("\\s+"));   // compiled once, ever
+
     QString trimmed = line.trimmed();
-    if (trimmed.isEmpty() || trimmed.startsWith('#') || trimmed.startsWith(';')) {
+    if (trimmed.isEmpty() || trimmed.startsWith(QLatin1Char('#'))
+                          || trimmed.startsWith(QLatin1Char(';')))
         return false;
-    }
-    
-    QChar delimiter = detectDelimiter(trimmed);
+
+    const QChar delimiter = detectDelimiter(trimmed);
     QStringList parts;
-    
-    if (delimiter == ' ') {
-        parts = trimmed.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
-    } else {
+    if (delimiter == QLatin1Char(' '))
+        parts = trimmed.split(wsSplit, Qt::SkipEmptyParts);
+    else
         parts = trimmed.split(delimiter, Qt::SkipEmptyParts);
-    }
-    
+
     if (parts.size() < 2) return false;
-    
-    bool ok1, ok2, ok3;
+
+    bool ok1, ok2, ok3 = true;
     wavelength = parts[0].toDouble(&ok1);
-    flux = parts[1].toDouble(&ok2);
-    
-    if (parts.size() >= 3) {
-        error = parts[2].toDouble(&ok3);
-    } else {
-        error = 0.0;
-        ok3 = true;
-    }
-    
+    flux       = parts[1].toDouble(&ok2);
+    if (parts.size() >= 3) error = parts[2].toDouble(&ok3);
+    else                   error = 0.0;
+
     return ok1 && ok2 && ok3;
 }
 
@@ -445,67 +484,107 @@ SpectrumMetadata AsciiSpectrumReader::readMetadata(const QString& filepath) cons
 
 SpectrumReadResult AsciiSpectrumReader::readSpectrum(const QString& filepath) const
 {
-    LOG_DEBUG("SpectrumReader", QString("Reading ASCII spectrum from: %1").arg(filepath));  // Changed from LOG_INFO
-    
+    LOG_DEBUG("SpectrumReader", QString("Reading ASCII spectrum from: %1").arg(filepath));
+
     SpectrumReadResult result;
-    result.success = false;
+    result.success  = false;
     result.metadata = readMetadata(filepath);
-    
+
     QFile file(filepath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    if (!file.open(QIODevice::ReadOnly)) {
         result.errorMessage = QString("Cannot open file: %1").arg(file.errorString());
         return result;
     }
-    
-    std::vector<double> wavelengths;
-    std::vector<double> fluxes;
-    std::vector<double> errors;
-    
-    QTextStream in(&file);
-    int lineNum = 0;
-    
-    while (!in.atEnd()) {
-        QString line = in.readLine();
-        lineNum++;
-        
-        double w, f, e;
-        if (parseDataLine(line, w, f, e)) {
-            wavelengths.push_back(w);
-            fluxes.push_back(f);
-            errors.push_back(e);
-        }
-    }
-    
+
+    // Spectra are normally KB–MB; reading all at once is fine and avoids per-line I/O cost.
+    const QByteArray contents = file.readAll();
     file.close();
-    
+
+    const char* const data = contents.constData();
+    const qsizetype   len  = contents.size();
+    const char delim       = detectDelimiterFast(data, len);   // 0 → whitespace if ' '
+    Q_UNUSED(delim); // strtod skips any whitespace already; we treat ',' ';' '\t' uniformly below
+
+    // Reserve aggressively: ~25 bytes/line is a safe lower bound for "w f e"
+    const size_t estRows = static_cast<size_t>(len) / 24 + 16;
+    std::vector<double> wavelengths; wavelengths.reserve(estRows);
+    std::vector<double> fluxes;      fluxes.reserve(estRows);
+    std::vector<double> errors;      errors.reserve(estRows);
+
+    const char* p   = data;
+    const char* end = data + len;
+
+    auto skipToEol = [&]() {
+        while (p < end && *p != '\n') ++p;
+        if (p < end) ++p;
+    };
+    auto skipSeparators = [&]() {
+        // Treat any of these as field separators between numbers
+        while (p < end && (*p == ' ' || *p == '\t' || *p == ',' || *p == ';'))
+            ++p;
+    };
+
+    while (p < end) {
+        // Skip leading whitespace on the line
+        while (p < end && (*p == ' ' || *p == '\t')) ++p;
+        if (p >= end) break;
+
+        // Blank or comment line?
+        if (*p == '\n' || *p == '\r') { ++p; continue; }
+        if (isCommentChar(*p))        { skipToEol(); continue; }
+
+        // --- parse wavelength ---
+        char* tail;
+        const double w = std::strtod(p, &tail);
+        if (tail == p) { skipToEol(); continue; }       // not a number → skip line
+        p = tail;
+
+        skipSeparators();
+
+        // --- parse flux ---
+        const double f = std::strtod(p, &tail);
+        if (tail == p) { skipToEol(); continue; }
+        p = tail;
+
+        // --- optional error column ---
+        skipSeparators();
+        double e = 0.0;
+        if (p < end && *p != '\n' && *p != '\r') {
+            const double tmp = std::strtod(p, &tail);
+            if (tail != p) { e = tmp; p = tail; }
+        }
+
+        wavelengths.push_back(w);
+        fluxes.push_back(f);
+        errors.push_back(e);
+
+        skipToEol();
+    }
+
     if (wavelengths.empty()) {
         result.errorMessage = "No valid spectral data found in file";
         return result;
     }
-    
+
     result.spectrum = std::make_shared<Spectrum>();
     result.spectrum->setData(wavelengths, fluxes, errors);
     result.spectrum->setFile(filepath);
-    
+
     // Apply external metadata
-    if (result.metadata.mjd.has_value()) {
+    if (result.metadata.mjd.has_value())
         result.spectrum->setMJD(result.metadata.mjd.value());
-    }
-    if (result.metadata.bjd.has_value()) {
+    if (result.metadata.bjd.has_value())
         result.spectrum->setBJD(result.metadata.bjd.value());
-    }
-    if (result.metadata.exposureTime.has_value()) {
+    if (result.metadata.exposureTime.has_value())
         result.spectrum->setExposureTime(result.metadata.exposureTime.value());
-    }
-    if (result.metadata.instrument.has_value()) {
+    if (result.metadata.instrument.has_value())
         result.spectrum->setInstrument(result.metadata.instrument.value());
-    }
-    
+
     result.success = true;
-    
-    LOG_DEBUG("SpectrumReader", QString("Successfully read ASCII spectrum with %1 points")  // Changed from LOG_INFO
-             .arg(wavelengths.size()));
-    
+
+    LOG_DEBUG("SpectrumReader", QString("Successfully read ASCII spectrum with %1 points")
+              .arg(wavelengths.size()));
+
     return result;
 }
 
