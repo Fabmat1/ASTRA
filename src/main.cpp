@@ -7,11 +7,6 @@
 #include "fitting/FitBackendRegistry.h"
 #include <QDebug>
 
-void smokeTest() {
-    auto b = astra::fitting::FitBackendRegistry::instance().create("DIGGA");
-    qDebug() << "Backend:" << (b ? b->name() : "<none>")
-             << "caps.maxComponents:" << (b ? b->capabilities().maxComponents : -1);
-}
 
 int main(int argc, char *argv[])
 {
@@ -20,7 +15,6 @@ int main(int argc, char *argv[])
     app.setApplicationVersion("1.0.0");
     app.setOrganizationName("ASTRA");
 
-    smokeTest();
     // Initialize paths (uses compile-time ASTRA_DATA_DIR, or QStandardPaths if empty)
     AppPaths::initialize();
 

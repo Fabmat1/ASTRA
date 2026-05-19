@@ -12,6 +12,7 @@
 #include <QTextStream>
 #include <QElapsedTimer>  
 #include <memory>
+#include <atomic>
 
 // Log levels
 enum class LogLevel {
@@ -136,7 +137,7 @@ private:
     QTextStream* _stream;
     QString _currentFilePath;
     qint64 _currentFileSize;
-    bool _running;
+    std::atomic<bool> _running { false };
 };
 
 // Scoped logger for function entry/exit tracking

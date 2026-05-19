@@ -49,8 +49,6 @@ void Logger::initialize(const QString& appName)
     
     QObject::connect(logger->_writerThread, &QThread::started, 
                      logger->_writer, &LogWriter::start);
-    QObject::connect(logger->_writerThread, &QThread::finished,
-                     logger->_writer, &QObject::deleteLater);
     
     logger->_running = true;
     logger->_writerThread->start();
@@ -64,24 +62,35 @@ void Logger::initialize(const QString& appName)
 
 void Logger::shutdown()
 {
-    if (_instance) {
-        _instance->info("Logger", "Logger shutting down");
-        _instance->flush();
-        
-        // Stop writer thread
-        if (_instance->_writer) {
-            QMetaObject::invokeMethod(_instance->_writer, "stop", Qt::QueuedConnection);
+    if (!_instance) return;
+
+    _instance->info("Logger", "Logger shutting down");
+
+    QThread*   thread = _instance->_writerThread;
+    LogWriter* writer = _instance->_writer;
+
+    if (thread && writer) {
+        // The deleteLater connection set up in initialize() won't fire,
+        // because the writer thread has no event loop. Drop it and delete manually.
+        QObject::disconnect(thread, &QThread::finished,
+                            writer, &QObject::deleteLater);
+
+        // Safe direct call: only touches std::atomic + QWaitCondition.
+        writer->stop();
+
+        // start() will return -> QThread::run() returns -> thread finishes.
+        if (!thread->wait(5000)) {
+            qWarning("Logger writer thread did not stop in time, terminating");
+            thread->terminate();
+            thread->wait();
         }
-        
-        if (_instance->_writerThread) {
-            _instance->_writerThread->quit();
-            _instance->_writerThread->wait(5000);
-            delete _instance->_writerThread;
-        }
-        
-        delete _instance;
-        _instance = nullptr;
+
+        delete writer;   // thread is dead, no concurrent access
+        delete thread;
     }
+
+    delete _instance;
+    _instance = nullptr;
 }
 
 Logger::Logger(QObject* parent)
@@ -210,8 +219,14 @@ void Logger::enqueueEntry(const LogEntry& entry)
 
 void Logger::flush()
 {
-    if (_writer) {
-        QMetaObject::invokeMethod(_writer, "flush", Qt::BlockingQueuedConnection);
+    if (!_writer || !_writerThread || !_writerThread->isRunning())
+        return;
+
+    // Wait until the queue is empty. Writer drains it as fast as it can.
+    QMutexLocker locker(&_queueMutex);
+    while (!_entryQueue.isEmpty()) {
+        _queueCondition.wakeAll();
+        _queueCondition.wait(&_queueMutex, 20);
     }
 }
 
@@ -225,7 +240,6 @@ LogWriter::LogWriter(Logger* logger, QObject* parent)
     , _currentFile(nullptr)
     , _stream(nullptr)
     , _currentFileSize(0)
-    , _running(false)
 {
 }
 
@@ -243,22 +257,35 @@ LogWriter::~LogWriter()
 void LogWriter::start()
 {
     _running = true;
-    
-    // Create initial log file
+
     rotateLogFile();
-    
-    // Cleanup old logs on startup
     cleanupOldLogs();
-    
-    // Process queue
-    while (_running) {
+
+    while (_running.load(std::memory_order_acquire)) {
         processQueue();
     }
+
+    // Final drain after stop()
+    {
+        QMutexLocker locker(&_logger->_queueMutex);
+        while (!_logger->_entryQueue.isEmpty()) {
+            LogEntry entry = _logger->_entryQueue.dequeue();
+            locker.unlock();
+            writeEntry(entry);
+            locker.relock();
+        }
+    }
+
+    if (_stream)      _stream->flush();
+    if (_currentFile) _currentFile->flush();
+
+    QThread::currentThread()->quit();
 }
 
 void LogWriter::stop()
 {
-    _running = false;
+    _running.store(false, std::memory_order_release);
+    QMutexLocker locker(&_logger->_queueMutex);  // ensures the writer sees the flag
     _logger->_queueCondition.wakeAll();
 }
 
@@ -284,25 +311,21 @@ void LogWriter::flush()
 void LogWriter::processQueue()
 {
     QMutexLocker locker(&_logger->_queueMutex);
-    
-    // Wait for entries if queue is empty
-    while (_logger->_entryQueue.isEmpty() && _running) {
+
+    while (_logger->_entryQueue.isEmpty() &&
+           _running.load(std::memory_order_acquire)) {
         _logger->_queueCondition.wait(&_logger->_queueMutex, 100);
     }
-    
-    if (!_running && _logger->_entryQueue.isEmpty()) {
-        return;
-    }
-    
-    // Process all available entries
+
     while (!_logger->_entryQueue.isEmpty()) {
         LogEntry entry = _logger->_entryQueue.dequeue();
         locker.unlock();
-        
         writeEntry(entry);
-        
         locker.relock();
     }
+
+    // Notify any thread waiting in Logger::flush()
+    _logger->_queueCondition.wakeAll();
 }
 
 void LogWriter::writeEntry(const LogEntry& entry)
