@@ -484,6 +484,7 @@ Grid generateOptimalGrid(const QVector<double>& t,
     Grid g;
     if (oversampling <= 0) oversampling = 5.0;
     if (!resolveAutoBounds(t, minPeriod, maxPeriod)) return g;
+    minPeriod = std::max(minPeriod, 0.01);
 
     QVector<double> ts = t;
     std::sort(ts.begin(), ts.end());
@@ -649,6 +650,7 @@ bool resolveAutoBounds(const QVector<double>& t,
         if (!std::isfinite(minDiff) || minDiff <= 0) return false;
         minPeriod = 2.0 * minDiff;
     }
+    minPeriod = std::max(minPeriod, 0.01);
     if (maxPeriod <= 0) maxPeriod = 0.5 * span;
     return maxPeriod > minPeriod;
 }
