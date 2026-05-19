@@ -8,6 +8,8 @@ class QStackedWidget;
 class QLineEdit;
 class DetailGridEditor;
 class QListWidget;
+class QPlainTextEdit;
+class QLabel;
 
 class SettingsDialog : public QDialog
 {
@@ -22,6 +24,7 @@ private:
     QWidget* createGeneralPage();
     QWidget* createStarDetailPage();
     QWidget* createGridPathsPage();
+    QWidget* createLightcurveFetchPage();
 
     AppSettings*   _settings;
 
@@ -35,4 +38,10 @@ private:
     DetailGridEditor* _gridEditor = nullptr;
 
     QListWidget* _gridPathsList = nullptr;
+
+    QLineEdit*       _lcqPythonEdit    = nullptr;
+    QLineEdit*       _lcqScriptEdit    = nullptr;
+    QLineEdit*       _atlasTokenEdit   = nullptr;
+    QLineEdit*       _blackgemEdit     = nullptr;
+    QLabel*          _lcqTestResult    = nullptr;
 };

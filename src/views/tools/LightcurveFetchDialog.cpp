@@ -4,7 +4,17 @@
 #include "views/panels/DetailPanel.h"
 #include "models/Star.h"
 #include "utils/Logger.h"
+#include "utils/AppPaths.h"
+#include "db/DatabaseManager.h"
+#include "utils/AppSettings.h"
+#include "controllers/ApplicationController.h"
 
+#include <QPlainTextEdit>
+#include <QCheckBox>
+#include <QGroupBox>
+#include <QProgressBar>
+#include <QStandardPaths>
+#include <QDir>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
@@ -26,8 +36,84 @@
 #include <QInputDialog>
 #include <QMessageBox>
 #include <QSignalBlocker>
+#include <QRegularExpression>
+#include <QTextCursor>
 
 #include <cmath>
+
+namespace {
+
+// Convert a single line of ANSI-coloured text to a safe HTML span.
+QString ansiToHtml(const QString& line)
+{
+    static const QRegularExpression re(QStringLiteral("\x1b\\[([0-9;]*)m"));
+
+    auto colorFor = [](int code) -> QString {
+        switch (code) {
+            case 30: case 90: return "#7f7f7f";
+            case 31:          return "#cd3131";
+            case 91:          return "#f14c4c";
+            case 32:          return "#0dbc79";
+            case 92:          return "#23d18b";
+            case 33:          return "#c19c00";
+            case 93:          return "#f5f543";
+            case 34:          return "#2472c8";
+            case 94:          return "#3b8eea";
+            case 35:          return "#bc3fbc";
+            case 95:          return "#d670d6";
+            case 36:          return "#11a8cd";
+            case 96:          return "#29b8db";
+            case 37:          return "#e5e5e5";
+            case 97:          return "#ffffff";
+        }
+        return {};
+    };
+
+    QString html;
+    bool   bold = false;
+    QString color;
+    bool   spanOpen = false;
+
+    auto closeSpan = [&]() {
+        if (spanOpen) { html += "</span>"; spanOpen = false; }
+    };
+    auto openSpan = [&]() {
+        QString style;
+        if (bold)             style += "font-weight:bold;";
+        if (!color.isEmpty()) style += "color:" + color + ";";
+        if (!style.isEmpty()) { html += "<span style=\"" + style + "\">"; spanOpen = true; }
+    };
+    auto apply = [&](const QStringList& codes) {
+        closeSpan();
+        for (const QString& c : codes) {
+            const int n = c.toInt();
+            if (n == 0)        { bold = false; color.clear(); }
+            else if (n == 1)   { bold = true; }
+            else if (n == 22)  { bold = false; }
+            else if (n == 39)  { color.clear(); }
+            else { QString cc = colorFor(n); if (!cc.isEmpty()) color = cc; }
+        }
+        openSpan();
+    };
+
+    int pos = 0;
+    auto it = re.globalMatch(line);
+    while (it.hasNext()) {
+        auto m = it.next();
+        if (m.capturedStart() > pos)
+            html += line.mid(pos, m.capturedStart() - pos).toHtmlEscaped();
+        QStringList codes = m.captured(1).split(';', Qt::SkipEmptyParts);
+        if (codes.isEmpty()) codes << QStringLiteral("0");
+        apply(codes);
+        pos = m.capturedEnd();
+    }
+    if (pos < line.size())
+        html += line.mid(pos).toHtmlEscaped();
+    closeSpan();
+    return html;
+}
+
+} // anon
 
 LightcurveFetchDialog::LightcurveFetchDialog(std::shared_ptr<Star>  star,
                                              DatabaseManager*       dbm,
@@ -88,13 +174,147 @@ QWidget* LightcurveFetchDialog::buildViewerTab()
 
 QWidget* LightcurveFetchDialog::buildFetchTab()
 {
-    auto* w = new QWidget;
-    auto* l = new QVBoxLayout(w);
-    auto* ph = new QLabel("🚧  Fetch tab — coming in Task 3.");
-    ph->setAlignment(Qt::AlignCenter);
-    ph->setStyleSheet("color: gray; font-size: 14px;");
-    l->addWidget(ph);
-    return w;
+    auto* page = new QWidget;
+    auto* root = new QVBoxLayout(page);
+    root->setContentsMargins(8, 8, 8, 8);
+    root->setSpacing(8);
+
+    // Header showing what we're going to fetch and where
+    auto* hdr = new QLabel;
+    hdr->setWordWrap(true);
+    hdr->setText(tr("Fetch public light curves for "
+                    "<b>Gaia DR3 %1</b> via the bundled "
+                    "<i>lightcurvequery</i> Python tool.")
+                 .arg(_star->getSourceId().toHtmlEscaped()));
+    root->addWidget(hdr);
+
+    // ── Source selection ──
+    auto* srcBox = new QGroupBox(tr("Sources"));
+    auto* srcLay = new QHBoxLayout(srcBox);
+    _fetchTess  = new QCheckBox("TESS");      _fetchTess->setChecked(true);
+    _fetchZtf   = new QCheckBox("ZTF");       _fetchZtf->setChecked(true);
+    _fetchAtlas = new QCheckBox("ATLAS");     _fetchAtlas->setChecked(true);
+    _fetchGaia  = new QCheckBox("Gaia");      _fetchGaia->setChecked(true);
+    _fetchBg    = new QCheckBox("BlackGEM");  _fetchBg->setChecked(false);
+    _fetchBg->setToolTip(tr("Requires BLACKGEM_QUERYSCRIPT_LOCATION env var "
+                            "to be set in your environment."));
+    for (auto* cb : { _fetchTess, _fetchZtf, _fetchAtlas, _fetchGaia, _fetchBg })
+        srcLay->addWidget(cb);
+    srcLay->addStretch();
+    root->addWidget(srcBox);
+
+    // ── Options ──
+    auto* optBox = new QGroupBox(tr("Options"));
+    auto* optLay = new QFormLayout(optBox);
+
+    _trimTess = new QDoubleSpinBox;
+    _trimTess->setRange(0.0, 0.5); _trimTess->setSingleStep(0.01);
+    _trimTess->setDecimals(3);     _trimTess->setValue(0.0);
+    _trimTess->setSuffix(tr(" frac"));
+    _trimTess->setToolTip(tr("Trim this fraction from beginning and end of every TESS sector"));
+    optLay->addRow(tr("Trim TESS:"), _trimTess);
+
+    _ztfInner = new QDoubleSpinBox;
+    _ztfInner->setRange(0.5, 60.0); _ztfInner->setValue(5.0);
+    _ztfInner->setSuffix(QStringLiteral(" \""));
+    optLay->addRow(tr("ZTF inner radius:"), _ztfInner);
+
+    _ztfOuter = new QDoubleSpinBox;
+    _ztfOuter->setRange(1.0, 120.0); _ztfOuter->setValue(20.0);
+    _ztfOuter->setSuffix(QStringLiteral(" \""));
+    optLay->addRow(tr("ZTF outer radius:"), _ztfOuter);
+
+    root->addWidget(optBox);
+
+    // ── Action row ──
+    auto* btnRow = new QHBoxLayout;
+    _fetchBtn = new QPushButton(tr("Fetch"));
+    _fetchBtn->setDefault(true);
+    _cancelFetch = new QPushButton(tr("Cancel"));
+    _cancelFetch->setEnabled(false);
+    _fetchBusy = new QProgressBar;
+    _fetchBusy->setRange(0, 0);                  // indeterminate spinner
+    _fetchBusy->setVisible(false);
+    _fetchBusy->setMaximumHeight(18);
+    _fetchStatus = new QLabel;
+    _fetchStatus->setStyleSheet("color: gray;");
+    btnRow->addWidget(_fetchBtn);
+    btnRow->addWidget(_cancelFetch);
+    btnRow->addWidget(_fetchBusy, 1);
+    btnRow->addWidget(_fetchStatus, 2);
+    root->addLayout(btnRow);
+
+    connect(_fetchBtn,    &QPushButton::clicked, this, &LightcurveFetchDialog::onFetchClicked);
+    connect(_cancelFetch, &QPushButton::clicked, this, &LightcurveFetchDialog::onFetchCancelClicked);
+
+    // ── Log view ──
+    _fetchLog = new AnsiTerminalWidget;       // <-- nothing else needed
+    root->addWidget(_fetchLog, 1);
+
+    // Need access to AppSettings. Easiest is via the controller:
+    //     AppSettings* settings = _controller->appSettings();
+    // If your ApplicationController doesn't already expose AppSettings,
+    // add a one-liner getter — _controller already owns it.
+
+    AppSettings* settings = _controller ? _controller->settings() : nullptr;
+
+    _fetcher = new LightcurveFetcher(this);
+    _fetcher->setWorkingDir(QDir(AppPaths::root())
+                            .absoluteFilePath("lcquery"));
+
+    if (settings) {
+        if (!settings->lcqueryPython().isEmpty())
+            _fetcher->setPython(settings->lcqueryPython());
+        if (!settings->lcqueryScript().isEmpty())
+            _fetcher->setScript(settings->lcqueryScript());
+        _fetcher->setAtlasToken(settings->atlasToken());
+        _fetcher->setBlackgemScript(settings->blackgemScript());
+
+        // Live-update if the user changes settings while the dialog is open
+        connect(settings, &AppSettings::lcquerySettingsChanged,
+                this, [this, settings] {
+            _fetcher->setPython(settings->lcqueryPython());
+            _fetcher->setScript(settings->lcqueryScript());
+            _fetcher->setAtlasToken(settings->atlasToken());
+            _fetcher->setBlackgemScript(settings->blackgemScript());
+
+            _fetchStatus->setStyleSheet("color: gray;");
+            _fetchStatus->setText(tr("Re-checking…"));
+            _fetchBtn->setEnabled(false);
+            _fetcher->checkAvailableAsync();
+        });
+    }
+
+    connect(_fetcher, &LightcurveFetcher::started,
+            this, &LightcurveFetchDialog::onFetcherStarted);
+    connect(_fetcher, &LightcurveFetcher::finished,
+            this, &LightcurveFetchDialog::onFetcherFinished);
+    connect(_fetcher, &LightcurveFetcher::failed,
+            this, &LightcurveFetchDialog::onFetcherFailed);
+    connect(_fetcher, &LightcurveFetcher::rawOutput,
+            _fetchLog, QOverload<const QByteArray&>::of(&AnsiTerminalWidget::feed));
+
+    connect(_fetcher, &LightcurveFetcher::availabilityChecked,
+            this, [this](bool ok, const QString& msg) {
+        if (ok) {
+            _fetchStatus->setStyleSheet("color: gray;");
+            _fetchStatus->setText(tr("Ready."));
+            _fetchBtn->setEnabled(true);
+        } else {
+            _fetchStatus->setStyleSheet("color: #c46060;");
+            _fetchStatus->setText(tr("⚠ %1").arg(msg.section('\n', 0, 0)));
+            _fetchBtn->setEnabled(false);
+            _fetchLog->feed("[availability] " + msg + '\n');
+            _fetchLog->feed(tr("→ Open Settings → Lightcurve Fetching to configure.\n"));
+        }
+    });
+
+    _fetchStatus->setStyleSheet("color: gray;");
+    _fetchStatus->setText(tr("Checking Python setup…"));
+    _fetchBtn->setEnabled(false);
+    _fetcher->checkAvailableAsync();
+
+    return page;
 }
 
 QWidget* LightcurveFetchDialog::buildFitTab()
@@ -611,4 +831,176 @@ void LightcurveFetchDialog::onSetAsBestFitClicked()
     LOG_INFO("Periodogram",
         QString("Saved best-fit photometric period for %1: P=%2 ±%3")
             .arg(_star->getId()).arg(pk.period).arg(pk.periodError));
+}
+
+// ──────────────────────────────────────────────────────────────────
+// Fetch tab logic
+// ──────────────────────────────────────────────────────────────────
+
+void LightcurveFetchDialog::onFetchClicked()
+{
+    if (!_fetcher) return;
+
+    LightcurveFetcher::Options opt;
+    if (_fetchTess->isChecked())  opt.sources << "TESS";
+    if (_fetchZtf->isChecked())   opt.sources << "ZTF";
+    if (_fetchAtlas->isChecked()) opt.sources << "ATLAS";
+    if (_fetchGaia->isChecked())  opt.sources << "Gaia";
+    if (_fetchBg->isChecked())    opt.sources << "BlackGEM";
+
+    if (opt.sources.isEmpty()) {
+        QMessageBox::information(this, tr("Fetch"),
+            tr("Select at least one source."));
+        return;
+    }
+
+    opt.trimTess    = _trimTess->value();
+    opt.ztfInnerArc = _ztfInner->value();
+    opt.ztfOuterArc = _ztfOuter->value();
+
+    _fetchLog->clear();
+    _fetchLog->feed(tr("Fetching: %1\n").arg(opt.sources.join(", ")));
+
+    const QString gaiaId = _star->getSourceId();
+    _fetcher->start(gaiaId, opt);
+}
+
+void LightcurveFetchDialog::onFetchCancelClicked()
+{
+    if (_fetcher && _fetcher->isRunning()) {
+        _fetchLog->feed(tr("— cancellation requested —\n"));
+        _fetcher->cancel();
+    }
+}
+
+void LightcurveFetchDialog::onFetcherStarted()
+{
+    _fetchBtn->setEnabled(false);
+    _cancelFetch->setEnabled(true);
+    _fetchBusy->setVisible(true);
+    _fetchStatus->setStyleSheet("color: #dca84d;");
+    _fetchStatus->setText(tr("Running…"));
+}
+
+void LightcurveFetchDialog::onFetcherLog(const QString& line)
+{
+    LOG_INFO("lightcurvequery", line);
+}
+
+void LightcurveFetchDialog::onFetcherFailed(const QString& reason)
+{
+    _fetchLog->feed("[fail] " + reason + '\n');
+    _fetchStatus->setStyleSheet("color: #c46060;");
+    _fetchStatus->setText(tr("Failed."));
+    _fetchBtn->setEnabled(true);
+    _cancelFetch->setEnabled(false);
+    _fetchBusy->setVisible(false);
+}
+
+void LightcurveFetchDialog::onFetcherFinished(int code, bool ok)
+{
+    _fetchBusy->setVisible(false);
+    _cancelFetch->setEnabled(false);
+    _fetchBtn->setEnabled(true);
+
+    auto status = [this](const QString& s) {
+        _fetchLog->feed((s + '\n').toUtf8());
+    };
+
+    status(ok ? tr("— lightcurvequery finished successfully —")
+              : tr("— lightcurvequery exited with code %1 —").arg(code));
+
+    const QString gaiaId = _star->getSourceId();
+    const auto expected  = _fetcher->expectedOutputFiles(gaiaId);
+
+    auto phot = _star->getPhotometry();
+    if (!phot) {
+        phot = std::make_shared<Photometry>();
+        _star->setPhotometry(phot);
+    }
+
+    // Pre-compute once whether we can do BJD conversion at all.
+    const bool haveCoords =
+        Star::isSet(_star->getRa()) && Star::isSet(_star->getDec());
+    if (!haveCoords) {
+        status(tr("Warning: star has no RA/Dec — BJDs will not be computed."));
+    }
+
+    QStringList imported, empty;
+    int totalPoints = 0;
+
+    for (auto it = expected.cbegin(); it != expected.cend(); ++it) {
+        const QString& source = it.key();
+        const QString& path   = it.value();
+        if (!QFile::exists(path)) continue;
+
+        TimeScale ts = TimeScale::Unknown;
+        auto pts = LightcurveFetcher::parseOutputFile(path, source, &ts);
+        if (pts.empty()) { empty << source; continue; }
+
+        // ── Compute BJD for sources whose native scale isn't BJD-derived ──
+        const bool nativeIsBjd =
+            (ts == TimeScale::BJD  ||
+             ts == TimeScale::BTJD ||
+             ts == TimeScale::BKJD ||
+             ts == TimeScale::GaiaTCB);
+
+        if (!nativeIsBjd && haveCoords && _dbm) {
+            // Look up the canonical Instrument record for this source name.
+            // resolveInstrumentString matches "TESS"/"ZTF"/"ATLAS"/"Gaia"/...
+            auto inst = _dbm->resolveInstrumentString(source);
+            if (!inst) {
+                status(tr("[%1] no instrument record found — BJD not computed")
+                       .arg(source));
+            } else {
+                int converted = 0;
+                for (auto& pt : pts) {
+                    if (pt.time.hasBjd()) continue;
+                    pt.time.setAutoConvertInfo(
+                        inst, _star->getRa(), _star->getDec());
+                    // Force the lazy computation NOW so _bjd is cached and
+                    // gets serialized when we save the lightcurve to disk.
+                    if (pt.time.bjd().has_value()) ++converted;
+                }
+                status(tr("[%1] computed BJD for %2 / %3 points")
+                       .arg(source).arg(converted).arg(int(pts.size())));
+            }
+        }
+
+        // ── Merge into the star's Photometry ──
+        auto result = phot->mergeLightcurve(source, pts);
+
+        QString verb;
+        switch (result) {
+            case Photometry::MergeResult::Identical: verb = tr("identical");  break;
+            case Photometry::MergeResult::Replaced:  verb = tr("replaced");   break;
+            case Photometry::MergeResult::Merged:    verb = tr("merged");     break;
+            case Photometry::MergeResult::Added:     verb = tr("added");      break;
+        }
+        status(tr("[%1] %2 points %3").arg(source).arg(pts.size()).arg(verb));
+
+        if (_dbm && !_dbm->saveLightcurveForStar(_star->getId(), source, phot.get())) {
+            status(tr("[%1] WARNING: failed to save to database").arg(source));
+        }
+
+        imported << QString("%1 (%2)").arg(source).arg(pts.size());
+        totalPoints += int(pts.size());
+    }
+
+    if (!imported.isEmpty()) {
+        _fetchStatus->setStyleSheet("color: #7dbd5e;");
+        _fetchStatus->setText(tr("Imported %1 points: %2")
+                              .arg(totalPoints).arg(imported.join(", ")));
+        if (_lcPanel)          _lcPanel->refresh();
+        if (_periodogramPanel) pushSeriesIntoPanel();
+    } else if (ok) {
+        _fetchStatus->setStyleSheet("color: gray;");
+        _fetchStatus->setText(tr("No data was produced."));
+    } else {
+        _fetchStatus->setStyleSheet("color: #c46060;");
+        _fetchStatus->setText(tr("Failed (exit %1).").arg(code));
+    }
+
+    if (!empty.isEmpty())
+        status(tr("(No data for: %1)").arg(empty.join(", ")));
 }

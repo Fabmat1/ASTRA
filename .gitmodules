@@ -4,3 +4,6 @@
 [submodule "external/rv_mcmc"]
 	path = external/rv_mcmc
 	url = git@github.com:Fabmat1/RV_MCMC.git
+[submodule "external/lightcurvequery"]
+	path = external/lightcurvequery
+	url = https://github.com/Fabmat1/lightcurvequery

@@ -40,10 +40,22 @@ public:
     void setDetailGrid(int rows, int cols,
                        const QVector<QVector<DetailPanel>>& grid);
 
+    QString lcqueryPython()    const { return _lcqueryPython; }
+    QString lcqueryScript()    const { return _lcqueryScript; }
+    QString atlasToken()       const { return _atlasToken; }
+    QString blackgemScript()   const { return _blackgemScript; }
+
+    void setLcqueryPython  (const QString& p);
+    void setLcqueryScript  (const QString& p);
+    void setAtlasToken     (const QString& t);
+    void setBlackgemScript (const QString& p);
+
+
 signals:
     void isisBinaryPathChanged();
     void detailGridChanged();
     void gridBasePathsChanged();
+    void lcquerySettingsChanged();
 
 private:
     void load();
@@ -56,4 +68,9 @@ private:
     int _rows = 2;
     int _cols = 2;
     QVector<QVector<DetailPanel>> _grid;
+
+    QString _lcqueryPython;
+    QString _lcqueryScript;
+    QString _atlasToken;
+    QString _blackgemScript;
 };

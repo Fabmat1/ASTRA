@@ -44,6 +44,31 @@ find_package(Qt6 REQUIRED COMPONENTS
     Core Widgets Sql Network Concurrent PrintSupport)
 qt_standard_project_setup()
 
+set(LCQUERY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/lightcurvequery")
+set(LCQUERY_SCRIPT "${LCQUERY_DIR}/lightcurvequery.py")
+set(LCQUERY_REQS   "${LCQUERY_DIR}/requirements.txt")
+
+if(EXISTS "${LCQUERY_SCRIPT}")
+    message(STATUS "lightcurvequery script: ${LCQUERY_SCRIPT}")
+    set(ASTRA_HAVE_LCQUERY TRUE)
+else()
+    message(WARNING
+        "lightcurvequery submodule missing - fetch feature will refuse to launch.\n"
+        "  git submodule add https://github.com/Fabmat1/lightcurvequery external/lightcurvequery\n"
+        "  git submodule update --init --recursive")
+    set(ASTRA_HAVE_LCQUERY FALSE)
+endif()
+
+# Optional convenience target:  cmake --build build --target lcquery_deps
+find_package(Python3 COMPONENTS Interpreter)
+if(Python3_FOUND AND EXISTS "${LCQUERY_REQS}")
+    add_custom_target(lcquery_deps
+        COMMAND "${Python3_EXECUTABLE}" -m pip install --user -r "${LCQUERY_REQS}"
+        WORKING_DIRECTORY "${LCQUERY_DIR}"
+        COMMENT "Installing lightcurvequery Python dependencies"
+        VERBATIM)
+endif()
+
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
@@ -207,6 +232,7 @@ set(SOURCES
     src/utils/SpectrumReader.cpp
     src/utils/ThemeManager.cpp
     src/utils/ObservabilityCalculator.cpp
+    src/utils/LightcurveFetcher.cpp
 
     # views
     src/views/ColumnConfigDialog.cpp
@@ -246,6 +272,7 @@ set(SOURCES
     src/views/widgets/FitPreviewOverlay.cpp
     src/views/widgets/GridSelectorWidget.cpp
     src/views/widgets/TerminalView.cpp
+    src/views/widgets/AnsiTerminalWidget.cpp
     src/views/widgets/IsisMacroPanel.cpp
 
     # fitting
@@ -316,6 +343,7 @@ set(HEADERS
     src/utils/SpectrumReader.h
     src/utils/ThemeManager.h
     src/utils/ObservabilityCalculator.h
+    src/utils/LightcurveFetcher.h
 
     # views
     src/views/BooleanColumnDelegate.h
@@ -356,6 +384,7 @@ set(HEADERS
     src/views/widgets/FitPreviewOverlay.h
     src/views/widgets/GridSelectorWidget.h
     src/views/widgets/TerminalView.h
+    src/views/widgets/AnsiTerminalWidget.h
     src/views/widgets/IsisMacroPanel.h
 
     #DIGGA fitting
@@ -384,6 +413,9 @@ target_include_directories(ASTRA PRIVATE
 # Pass to source as a preprocessor define
 target_compile_definitions(ASTRA PRIVATE
     ASTRA_DATA_DIR="${ASTRA_DATA_DIR}"
+    ASTRA_LCQUERY_SCRIPT="${LCQUERY_SCRIPT}"
+    ASTRA_LCQUERY_REQS="${LCQUERY_REQS}"
+    ASTRA_HAVE_LCQUERY=$<BOOL:${ASTRA_HAVE_LCQUERY}>
 )
 
 # Profiling option

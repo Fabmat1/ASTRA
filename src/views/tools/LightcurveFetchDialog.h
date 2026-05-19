@@ -2,10 +2,17 @@
 
 #include <QDialog>
 #include <QList>
+#include <QTextEdit>
 #include <memory>
 #include "views/panels/PeriodogramPanel.h"
+#include "views/widgets/AnsiTerminalWidget.h"
 #include "db/DatabaseManager.h"
+#include "utils/LightcurveFetcher.h"
 
+class QCheckBox;
+class QDoubleSpinBox;
+class QPlainTextEdit;
+class QProgressBar;
 class QTabWidget;
 class QListWidget;
 class QListWidgetItem;
@@ -57,6 +64,14 @@ private slots:
     void onSetAsBestFitClicked();
     void onPeakSelectionChanged();
     void onPeakDoubleClicked();
+
+    // Fetch
+    void onFetchClicked();
+    void onFetchCancelClicked();
+    void onFetcherStarted();
+    void onFetcherLog(const QString& line);
+    void onFetcherFinished(int code, bool ok);
+    void onFetcherFailed(const QString& reason);
 
 private:
     void     setupUi();
@@ -111,4 +126,21 @@ private:
     QLabel*       _bestFitLabel     = nullptr;
 
     QList<PeriodogramPanel::PeriodPeak> _peaks;
+
+    LightcurveFetcher* _fetcher = nullptr;
+
+    // Fetch tab widgets
+    QCheckBox*       _fetchTess    = nullptr;
+    QCheckBox*       _fetchZtf     = nullptr;
+    QCheckBox*       _fetchAtlas   = nullptr;
+    QCheckBox*       _fetchGaia    = nullptr;
+    QCheckBox*       _fetchBg      = nullptr;
+    QDoubleSpinBox*  _trimTess     = nullptr;
+    QDoubleSpinBox*  _ztfInner     = nullptr;
+    QDoubleSpinBox*  _ztfOuter     = nullptr;
+    QPushButton*     _fetchBtn     = nullptr;
+    QPushButton*     _cancelFetch  = nullptr;
+    AnsiTerminalWidget*  _fetchLog = nullptr;
+    QProgressBar*    _fetchBusy    = nullptr;
+    QLabel*          _fetchStatus  = nullptr;
 };

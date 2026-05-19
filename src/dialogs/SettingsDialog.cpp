@@ -1,6 +1,9 @@
 #include "SettingsDialog.h"
 #include "utils/AppSettings.h"
+#include "utils/LightcurveFetcher.h"
 
+#include <QPlainTextEdit>
+#include <QCheckBox>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
@@ -169,11 +172,13 @@ void SettingsDialog::setupUi()
     _topicList->addItem("General");
     _topicList->addItem("Star Detail View");
     _topicList->addItem("Grid Paths");
+    _topicList->addItem("Lightcurve Fetching"); 
     
     _pages = new QStackedWidget;
     _pages->addWidget(createGeneralPage());
     _pages->addWidget(createStarDetailPage());
     _pages->addWidget(createGridPathsPage());
+    _pages->addWidget(createLightcurveFetchPage());
 
     connect(_topicList, &QListWidget::currentRowChanged,
             _pages, &QStackedWidget::setCurrentIndex);
@@ -324,6 +329,138 @@ QWidget* SettingsDialog::createStarDetailPage()
     return page;
 }
 
+QWidget* SettingsDialog::createLightcurveFetchPage()
+{
+    auto* page = new QWidget;
+    auto* outer = new QVBoxLayout(page);
+    outer->setContentsMargins(16, 16, 16, 16);
+
+    auto* intro = new QLabel(
+        "The Lightcurve Fetch dialog uses the bundled "
+        "<i>lightcurvequery</i> Python tool "
+        "(<code>external/lightcurvequery</code>). "
+        "The selected Python interpreter must have its "
+        "dependencies installed:<br>"
+        "<code>python -m pip install -r external/lightcurvequery/requirements.txt</code>");
+    intro->setWordWrap(true);
+    outer->addWidget(intro);
+
+    auto* form = new QFormLayout;
+    form->setLabelAlignment(Qt::AlignRight);
+    form->setRowWrapPolicy(QFormLayout::DontWrapRows);
+
+    auto makePathRow = [&](QLineEdit*& edit,
+                           const QString& current,
+                           const QString& placeholder,
+                           bool   pickFile,
+                           const QString& filter = {}) -> QHBoxLayout*
+    {
+        auto* row = new QHBoxLayout;
+        edit = new QLineEdit(current);
+        edit->setPlaceholderText(placeholder);
+        auto* browse = new QPushButton("Browse…");
+        row->addWidget(edit, 1);
+        row->addWidget(browse);
+        connect(browse, &QPushButton::clicked, this, [this, edit, pickFile, filter] {
+            QString start = edit->text().isEmpty()
+                ? QDir::homePath() : edit->text();
+            QString f = pickFile
+                ? QFileDialog::getOpenFileName(this, "Locate file", start, filter)
+                : QFileDialog::getExistingDirectory(this, "Locate directory", start);
+            if (!f.isEmpty()) edit->setText(f);
+        });
+        return row;
+    };
+
+    // Python interpreter
+    QString pyHint = QStandardPaths::findExecutable("python3").isEmpty()
+        ? "python3 not found in PATH — set explicitly"
+        : "Auto-detected from PATH";
+    form->addRow("Python:",
+        makePathRow(_lcqPythonEdit, _settings->lcqueryPython(),
+                    pyHint, true,
+                    "Executables (python python3 *.exe);;All files (*)"));
+
+    // lightcurvequery script
+    form->addRow("lightcurvequery.py:",
+        makePathRow(_lcqScriptEdit, _settings->lcqueryScript(),
+                    "Path to bundled lightcurvequery.py", true,
+                    "Python scripts (*.py);;All files (*)"));
+
+    // ATLAS token (password-style)
+    _atlasTokenEdit = new QLineEdit(_settings->atlasToken());
+    _atlasTokenEdit->setEchoMode(QLineEdit::Password);
+    _atlasTokenEdit->setPlaceholderText("ATLAS forced-photometry token (optional)");
+    auto* showToken = new QCheckBox("Show");
+    connect(showToken, &QCheckBox::toggled, this, [this](bool on){
+        _atlasTokenEdit->setEchoMode(on ? QLineEdit::Normal : QLineEdit::Password);
+    });
+    {
+        auto* row = new QHBoxLayout;
+        row->addWidget(_atlasTokenEdit, 1);
+        row->addWidget(showToken);
+        form->addRow("ATLAS token:", row);
+    }
+
+    // BlackGEM script
+    form->addRow("BlackGEM script:",
+        makePathRow(_blackgemEdit, _settings->blackgemScript(),
+                    "Path to query_fullsource.py (leave blank to disable)", true,
+                    "Python scripts (*.py);;All files (*)"));
+
+    outer->addLayout(form);
+
+    // ── Test row ────────────────────────────────────────────────────
+    auto* testRow = new QHBoxLayout;
+    auto* testBtn = new QPushButton("Test setup");
+    testBtn->setToolTip("Probe the configured Python and verify "
+                        "all required packages are importable.");
+    testRow->addWidget(testBtn);
+    testRow->addStretch();
+    outer->addLayout(testRow);
+
+    _lcqTestResult = new QLabel;
+    _lcqTestResult->setWordWrap(true);
+    _lcqTestResult->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    outer->addWidget(_lcqTestResult);
+
+    connect(testBtn, &QPushButton::clicked, this, [this, testBtn] {
+        _lcqTestResult->setStyleSheet("color: gray;");
+        _lcqTestResult->setText("Testing…");
+        testBtn->setEnabled(false);
+
+        auto* f = new LightcurveFetcher(this);
+        f->setPython(_lcqPythonEdit->text().trimmed());
+        f->setScript(_lcqScriptEdit->text().trimmed());
+
+        connect(f, &LightcurveFetcher::availabilityChecked,
+                this, [this, f, testBtn](bool ok, const QString& msg) {
+            if (ok) {
+                _lcqTestResult->setStyleSheet("color: #7dbd5e;");
+                _lcqTestResult->setText("✓ All checks passed.");
+            } else {
+                _lcqTestResult->setStyleSheet("color: #c46060;");
+                _lcqTestResult->setText("⚠ " + msg);
+            }
+            testBtn->setEnabled(true);
+            f->deleteLater();
+        });
+
+        f->checkAvailableAsync();
+    });
+
+    auto* hint = new QLabel(
+        "<i>ATLAS token and BlackGEM script are passed to the child process as "
+        "environment variables (<code>ATLASFORCED_SECRET_KEY</code>, "
+        "<code>BLACKGEM_QUERYSCRIPT_LOCATION</code>).</i>");
+    hint->setStyleSheet("color: gray;");
+    hint->setWordWrap(true);
+    outer->addWidget(hint);
+
+    outer->addStretch();
+    return page;
+}
+
 void SettingsDialog::apply()
 {
     _settings->setIsisBinaryPath(_isisEdit->text().trimmed());
@@ -332,4 +469,10 @@ void SettingsDialog::apply()
         paths << _gridPathsList->item(i)->text();
     _settings->setGridBasePaths(paths);
     _gridEditor->commit();
+
+    // Lightcurve fetching
+    _settings->setLcqueryPython (_lcqPythonEdit->text().trimmed());
+    _settings->setLcqueryScript (_lcqScriptEdit->text().trimmed());
+    _settings->setAtlasToken    (_atlasTokenEdit->text().trimmed());
+    _settings->setBlackgemScript(_blackgemEdit->text().trimmed());
 }
