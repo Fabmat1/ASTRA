@@ -563,6 +563,22 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
         }
         if (bx.isEmpty()) { bx = uPx; by = uPy; be = uPe; }
 
+        if (foldable) {
+            const int n  = bx.size();
+            const int nf = fPx.size();
+            bx.reserve(2 * n);  by.reserve(2 * n);  be.reserve(2 * n);
+            fPx.reserve(2 * nf); fPy.reserve(2 * nf);
+            for (int i = 0; i < n; ++i) {
+                bx.append(bx.at(i) - 1.0);
+                by.append(by.at(i));
+                be.append(be.at(i));
+            }
+            for (int i = 0; i < nf; ++i) {
+                fPx.append(fPx.at(i) - 1.0);
+                fPy.append(fPy.at(i));
+            }
+        }
+
         // y range tracking
         for (int i = 0; i < bx.size(); ++i) {
             double e = std::isfinite(be[i]) ? be[i] : 0.0;
@@ -632,7 +648,7 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
 
     if (_folded && _foldPeriod > 0.0) {
         plot->xAxis->setLabel("Phase");
-        def.xLo = -0.05; def.xHi = 1.05;
+        def.xLo = -1.05; def.xHi = 1.05; 
     } else {
         plot->xAxis->setLabel("BJD");
         double span = globalXMax - globalXMin;

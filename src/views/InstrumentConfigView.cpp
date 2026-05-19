@@ -738,19 +738,17 @@ bool InstrumentConfigView::editModeDialog(InstrumentMode& mode, bool isNew)
 {
     QDialog dlg(this);
     dlg.setWindowTitle(isNew ? tr("Add Mode") : tr("Edit Mode"));
-    dlg.setMinimumWidth(460);
+    dlg.setMinimumWidth(560);
     auto* layout = new QVBoxLayout(&dlg);
 
-    // Basic fields
+    // ── Basic fields ────────────────────────────────────────────────────
     auto* basicForm = new QFormLayout;
     auto* keyEdit   = new QLineEdit(mode.key());
     auto* nameEdit  = new QLineEdit(mode.displayName());
     auto* descEdit  = new QLineEdit(mode.description());
     auto* typeCombo = new QComboBox;
-    typeCombo->addItems({
-        "spectroscopy", "photometry", "imaging", "ifu", "other"});
-    typeCombo->setCurrentText(
-        InstrumentMode::dataTypeToString(mode.dataType()));
+    typeCombo->addItems({"spectroscopy", "photometry", "imaging", "ifu", "other"});
+    typeCombo->setCurrentText(InstrumentMode::dataTypeToString(mode.dataType()));
 
     basicForm->addRow(tr("Key:"),          keyEdit);
     basicForm->addRow(tr("Display Name:"), nameEdit);
@@ -758,7 +756,7 @@ bool InstrumentConfigView::editModeDialog(InstrumentMode& mode, bool isNew)
     basicForm->addRow(tr("Description:"),  descEdit);
     layout->addLayout(basicForm);
 
-    // Spectral properties
+    // ── Spectral group ──────────────────────────────────────────────────
     auto* specGroup = new QGroupBox(tr("Spectral Properties"));
     specGroup->setCheckable(true);
     specGroup->setChecked(mode.hasSpectralProperties());
@@ -777,54 +775,101 @@ bool InstrumentConfigView::editModeDialog(InstrumentMode& mode, bool isNew)
     resEdit->setPlaceholderText(tr("e.g. 2100  or  100, 0.5"));
     resEdit->setToolTip(tr(
         "R(\u03BB) = c\u2080 + c\u2081\u03BB + c\u2082\u03BB\u00B2 + ...\n"
-        "Enter comma-separated coefficients. Single value = constant R."));
+        "Comma-separated coefficients. Single value = constant R."));
 
     auto* wlMinSpin = new QDoubleSpinBox;
-    wlMinSpin->setRange(0, 200000);
-    wlMinSpin->setDecimals(1);
+    wlMinSpin->setRange(0, 200000); wlMinSpin->setDecimals(1);
     wlMinSpin->setSuffix(QStringLiteral(" \u00C5"));
-    wlMinSpin->setValue(
-        mode.hasSpectralProperties() ? mode.spectral().wavelengthMin : 0);
+    wlMinSpin->setValue(mode.hasSpectralProperties() ? mode.spectral().wavelengthMin : 0);
 
     auto* wlMaxSpin = new QDoubleSpinBox;
-    wlMaxSpin->setRange(0, 200000);
-    wlMaxSpin->setDecimals(1);
+    wlMaxSpin->setRange(0, 200000); wlMaxSpin->setDecimals(1);
     wlMaxSpin->setSuffix(QStringLiteral(" \u00C5"));
-    wlMaxSpin->setValue(
-        mode.hasSpectralProperties() ? mode.spectral().wavelengthMax : 0);
+    wlMaxSpin->setValue(mode.hasSpectralProperties() ? mode.spectral().wavelengthMax : 0);
+
+    // Systematic RV error (optional)
+    auto* sysRvCheck = new QCheckBox(tr("Override default"));
+    auto* sysRvSpin  = new QDoubleSpinBox;
+    sysRvSpin->setRange(0.0, 1000.0);
+    sysRvSpin->setDecimals(2);
+    sysRvSpin->setSingleStep(0.5);
+    sysRvSpin->setSuffix(tr(" km/s"));
+    sysRvSpin->setToolTip(tr(
+        "Default systematic RV uncertainty added in quadrature to formal errors.\n"
+        "Default rule:  R<4000 → 15 km/s,  4000–20000 → 10 km/s,  >20000 → 3 km/s."));
+
+    auto recomputeDefaultSysRv = [&]() {
+        // Parse coefficients live so the default tracks the resolution field.
+        ResolutionModel rm;
+        for (const auto& s : resEdit->text().split(',', Qt::SkipEmptyParts)) {
+            bool ok; double v = s.trimmed().toDouble(&ok);
+            if (ok) rm.coefficients.append(v);
+        }
+        double centre = (wlMinSpin->value() > 0 && wlMaxSpin->value() > wlMinSpin->value())
+                      ? 0.5 * (wlMinSpin->value() + wlMaxSpin->value())
+                      : 5500.0;
+        double R = rm.at(centre);
+        double def = SpectralProperties::defaultSystematicRVError(R);
+        if (!sysRvCheck->isChecked())
+            sysRvSpin->setValue(def);
+        sysRvSpin->setToolTip(
+            tr("Default for R \u2248 %1 is %2 km/s.\n"
+               "Rule: R<4000 → 15, 4000–20000 → 10, >20000 → 3 km/s.")
+                .arg(R, 0, 'f', 0).arg(def, 0, 'f', 1));
+    };
+
+    if (mode.hasSpectralProperties() && mode.spectral().systematicRVError) {
+        sysRvCheck->setChecked(true);
+        sysRvSpin->setValue(*mode.spectral().systematicRVError);
+        sysRvSpin->setEnabled(true);
+    } else {
+        sysRvCheck->setChecked(false);
+        sysRvSpin->setEnabled(false);
+    }
+
+    connect(sysRvCheck, &QCheckBox::toggled, &dlg, [&](bool on) {
+        sysRvSpin->setEnabled(on);
+        if (!on) recomputeDefaultSysRv();
+    });
+    connect(resEdit,    &QLineEdit::textChanged,        &dlg, [&](const QString&){ recomputeDefaultSysRv(); });
+    connect(wlMinSpin,  QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                                                        &dlg, [&](double){ recomputeDefaultSysRv(); });
+    connect(wlMaxSpin,  QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                                                        &dlg, [&](double){ recomputeDefaultSysRv(); });
+
+    auto* sysRvRow = new QHBoxLayout;
+    sysRvRow->addWidget(sysRvSpin, 1);
+    sysRvRow->addWidget(sysRvCheck);
 
     specForm->addRow(tr("Disperser:"),               disperserEdit);
     specForm->addRow(tr("R(\u03BB) coefficients:"),  resEdit);
     specForm->addRow(tr("\u03BB min:"),               wlMinSpin);
     specForm->addRow(tr("\u03BB max:"),               wlMaxSpin);
+    specForm->addRow(tr("Systematic RV err:"),        sysRvRow);
     layout->addWidget(specGroup);
 
-    // Photometric properties
+    recomputeDefaultSysRv();
+
+    // ── Photometric group ───────────────────────────────────────────────
     auto* photGroup = new QGroupBox(tr("Photometric Properties"));
     photGroup->setCheckable(true);
     photGroup->setChecked(mode.hasPhotometricProperties());
     auto* photForm = new QFormLayout(photGroup);
 
     auto* cadenceSpin = new QDoubleSpinBox;
-    cadenceSpin->setRange(0, 1e7);
-    cadenceSpin->setDecimals(1);
+    cadenceSpin->setRange(0, 1e7); cadenceSpin->setDecimals(1);
     cadenceSpin->setSuffix(tr(" s"));
-    cadenceSpin->setValue(
-        mode.hasPhotometricProperties() ? mode.photometric().cadence : 0);
+    cadenceSpin->setValue(mode.hasPhotometricProperties() ? mode.photometric().cadence : 0);
 
     auto* fovSpin = new QDoubleSpinBox;
-    fovSpin->setRange(0, 50000);
-    fovSpin->setDecimals(2);
+    fovSpin->setRange(0, 50000); fovSpin->setDecimals(2);
     fovSpin->setSuffix(QStringLiteral(" \u2032"));
-    fovSpin->setValue(
-        mode.hasPhotometricProperties() ? mode.photometric().fov : 0);
+    fovSpin->setValue(mode.hasPhotometricProperties() ? mode.photometric().fov : 0);
 
     auto* pxScaleSpin = new QDoubleSpinBox;
-    pxScaleSpin->setRange(0, 200);
-    pxScaleSpin->setDecimals(3);
+    pxScaleSpin->setRange(0, 200); pxScaleSpin->setDecimals(3);
     pxScaleSpin->setSuffix(QStringLiteral(" \u2033/px"));
-    pxScaleSpin->setValue(
-        mode.hasPhotometricProperties() ? mode.photometric().pixelScale : 0);
+    pxScaleSpin->setValue(mode.hasPhotometricProperties() ? mode.photometric().pixelScale : 0);
 
     auto* filtersEdit = new QLineEdit(
         mode.hasPhotometricProperties()
@@ -835,28 +880,78 @@ bool InstrumentConfigView::editModeDialog(InstrumentMode& mode, bool isNew)
     photForm->addRow(tr("FOV:"),         fovSpin);
     photForm->addRow(tr("Pixel scale:"), pxScaleSpin);
     photForm->addRow(tr("Filters:"),     filtersEdit);
+
+    // Period-alias editor
+    auto* aliasBox = new QGroupBox(tr("Period Aliases (whitened in periodogram)"));
+    auto* aliasLay = new QVBoxLayout(aliasBox);
+    auto* aliasTable = new QTableWidget(0, 2, aliasBox);
+    aliasTable->setHorizontalHeaderLabels({tr("Low (d)"), tr("High (d)")});
+    aliasTable->horizontalHeader()->setStretchLastSection(true);
+    aliasTable->horizontalHeader()->setSectionResizeMode(0, QHeaderView::Stretch);
+    aliasTable->verticalHeader()->setVisible(false);
+    aliasTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    aliasTable->setSelectionMode(QAbstractItemView::SingleSelection);
+    aliasTable->setMinimumHeight(140);
+    aliasTable->setToolTip(tr(
+        "Periodogram peaks falling inside these ranges (days) will be\n"
+        "treated as instrumental/sampling aliases and whitened out."));
+
+    auto setRow = [aliasTable](int row, double lo, double hi) {
+        auto* a = new QTableWidgetItem(QString::number(lo, 'g', 10));
+        auto* b = new QTableWidgetItem(QString::number(hi, 'g', 10));
+        a->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        b->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
+        aliasTable->setItem(row, 0, a);
+        aliasTable->setItem(row, 1, b);
+    };
+
+    if (mode.hasPhotometricProperties()) {
+        for (const auto& a : mode.photometric().periodAliases) {
+            int r = aliasTable->rowCount();
+            aliasTable->insertRow(r);
+            setRow(r, a.low, a.high);
+        }
+    }
+
+    auto* aliasBtnRow = new QHBoxLayout;
+    auto* addAliasBtn = new QPushButton(tr("Add"));
+    auto* delAliasBtn = new QPushButton(tr("Remove"));
+    aliasBtnRow->addWidget(addAliasBtn);
+    aliasBtnRow->addWidget(delAliasBtn);
+    aliasBtnRow->addStretch();
+    aliasLay->addWidget(aliasTable);
+    aliasLay->addLayout(aliasBtnRow);
+
+    connect(addAliasBtn, &QPushButton::clicked, aliasBox, [aliasTable, setRow]() {
+        int r = aliasTable->rowCount();
+        aliasTable->insertRow(r);
+        setRow(r, 0.0, 0.0);
+        aliasTable->setCurrentCell(r, 0);
+        aliasTable->editItem(aliasTable->item(r, 0));
+    });
+    connect(delAliasBtn, &QPushButton::clicked, aliasBox, [aliasTable]() {
+        int r = aliasTable->currentRow();
+        if (r >= 0) aliasTable->removeRow(r);
+    });
+
+    photForm->addRow(aliasBox);
     layout->addWidget(photGroup);
 
-    // Link data type combo to group box defaults
+    // ── Link data type to group defaults ────────────────────────────────
     auto syncGroups = [&]() {
         QString dt = typeCombo->currentText();
         if (dt == "spectroscopy" || dt == "ifu") {
             specGroup->setChecked(true);
-            if (!mode.hasPhotometricProperties())
-                photGroup->setChecked(false);
+            if (!mode.hasPhotometricProperties()) photGroup->setChecked(false);
         } else if (dt == "photometry" || dt == "imaging") {
             photGroup->setChecked(true);
-            if (!mode.hasSpectralProperties())
-                specGroup->setChecked(false);
+            if (!mode.hasSpectralProperties()) specGroup->setChecked(false);
         }
     };
-
     connect(typeCombo, &QComboBox::currentTextChanged, &dlg, syncGroups);
+    if (isNew) syncGroups();
 
-    if (isNew)
-        syncGroups();
-
-    // Buttons
+    // ── Dialog buttons ──────────────────────────────────────────────────
     auto* buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
@@ -866,41 +961,40 @@ bool InstrumentConfigView::editModeDialog(InstrumentMode& mode, bool isNew)
     if (dlg.exec() != QDialog::Accepted)
         return false;
 
-    // Validate
+    // ── Validation ──────────────────────────────────────────────────────
     QString key = keyEdit->text().trimmed();
     if (key.isEmpty()) {
         QMessageBox::warning(this, tr("Validation"),
                              tr("Mode key cannot be empty."));
         return false;
     }
-
-    // Check for duplicate key on new modes
     if (isNew && _editingInstrument && _editingInstrument->hasMode(key)) {
         QMessageBox::warning(this, tr("Validation"),
             tr("A mode with key \"%1\" already exists.").arg(key));
         return false;
     }
 
-    // Apply
+    // ── Apply ───────────────────────────────────────────────────────────
     mode.setKey(key);
     mode.setDisplayName(nameEdit->text().trimmed());
     mode.setDescription(descEdit->text().trimmed());
-    mode.setDataType(
-        InstrumentMode::dataTypeFromString(typeCombo->currentText()));
+    mode.setDataType(InstrumentMode::dataTypeFromString(typeCombo->currentText()));
 
     if (specGroup->isChecked()) {
         SpectralProperties sp;
         sp.disperser = disperserEdit->text().trimmed();
-        for (const auto& s :
-             resEdit->text().split(",", Qt::SkipEmptyParts)) {
-            bool ok;
-            double v = s.trimmed().toDouble(&ok);
+        for (const auto& s : resEdit->text().split(',', Qt::SkipEmptyParts)) {
+            bool ok; double v = s.trimmed().toDouble(&ok);
             if (ok) sp.resolution.coefficients.append(v);
         }
         sp.wavelengthMin = wlMinSpin->value();
         sp.wavelengthMax = wlMaxSpin->value();
-        if (mode.hasSpectralProperties())
+        if (mode.hasSpectralProperties()) {
             sp.commonSetups = mode.spectral().commonSetups;
+            sp.fitDefaults  = mode.spectral().fitDefaults;
+        }
+        if (sysRvCheck->isChecked())
+            sp.systematicRVError = sysRvSpin->value();
         mode.setSpectralProperties(sp);
     } else {
         mode.clearSpectralProperties();
@@ -911,9 +1005,29 @@ bool InstrumentConfigView::editModeDialog(InstrumentMode& mode, bool isNew)
         pp.cadence    = cadenceSpin->value();
         pp.fov        = fovSpin->value();
         pp.pixelScale = pxScaleSpin->value();
-        pp.filters    = filtersEdit->text().split(",", Qt::SkipEmptyParts);
-        for (auto& f : pp.filters)
-            f = f.trimmed();
+        pp.filters    = filtersEdit->text().split(',', Qt::SkipEmptyParts);
+        for (auto& f : pp.filters) f = f.trimmed();
+
+        for (int r = 0; r < aliasTable->rowCount(); ++r) {
+            auto* lo = aliasTable->item(r, 0);
+            auto* hi = aliasTable->item(r, 1);
+            if (!lo || !hi) continue;
+            bool okLo, okHi;
+            double lv = lo->text().trimmed().toDouble(&okLo);
+            double hv = hi->text().trimmed().toDouble(&okHi);
+            if (!okLo || !okHi) continue;
+            if (lv <= 0 || hv <= lv) continue;
+            PeriodAliasRange ar;
+            ar.low  = lv;
+            ar.high = hv;
+            pp.periodAliases.append(ar);
+        }
+        // Keep them sorted for readability/use downstream
+        std::sort(pp.periodAliases.begin(), pp.periodAliases.end(),
+                  [](const PeriodAliasRange& a, const PeriodAliasRange& b){
+                      return a.low < b.low;
+                  });
+
         mode.setPhotometricProperties(pp);
     } else {
         mode.clearPhotometricProperties();
