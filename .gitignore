@@ -160,4 +160,4 @@ perf.data*
 
 scripts/
 
-!resources/scripts/
+!resources/scripts/out.svg

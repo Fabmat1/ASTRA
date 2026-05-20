@@ -942,69 +942,150 @@ void SpectraImportPage::onMappingFileLoaded()
 bool SpectraImportPage::loadMappingFile(const QString& filepath)
 {
     LOG_INFO("SpectraImport", QString("Loading mapping file: %1").arg(filepath));
-    
+
     QFile file(filepath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        QMessageBox::warning(this, "Error", QString("Cannot open file: %1").arg(file.errorString()));
+    if (!file.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, "Error",
+                             QString("Cannot open file: %1").arg(file.errorString()));
         return false;
     }
-    
+
+    const QByteArray contents = file.readAll();
+    file.close();
+
     _mappingColumns.clear();
     _mappingRows.clear();
-    
-    QTextStream in(&file);
-    bool firstLine = true;
-    
-    QChar delimiter = ',';
-    int delimIndex = _delimiterCombo->currentIndex();
+
+    const char* const data = contents.constData();
+    const qsizetype   len  = contents.size();
+
+    // Strip UTF-8 BOM if present
+    qsizetype start = 0;
+    if (len >= 3 && (uint8_t)data[0] == 0xEF
+                 && (uint8_t)data[1] == 0xBB
+                 && (uint8_t)data[2] == 0xBF) {
+        start = 3;
+    }
+
+    // --- detect delimiter from first non-comment, non-blank line ---
+    char delim = ',';                         // default
+    bool whitespaceDelim = false;
+
+    const int delimIndex = _delimiterCombo->currentIndex();
     if (delimIndex == 0) {
-        QString firstLineContent = in.readLine();
-        in.seek(0);
-        
-        if (firstLineContent.count('\t') > firstLineContent.count(',')) {
-            delimiter = '\t';
-        } else if (firstLineContent.count(';') > firstLineContent.count(',')) {
-            delimiter = ';';
+        // Auto-detect: count tabs vs commas vs semicolons on the first data line
+        qsizetype p = start;
+        while (p < len) {
+            // skip blank/comment lines
+            while (p < len && (data[p] == ' ' || data[p] == '\t')) ++p;
+            if (p >= len) break;
+            if (data[p] == '\n' || data[p] == '\r') { ++p; continue; }
+            if (data[p] == '#')                    {
+                while (p < len && data[p] != '\n') ++p;
+                if (p < len) ++p;
+                continue;
+            }
+
+            qsizetype lineEnd = p;
+            while (lineEnd < len && data[lineEnd] != '\n') ++lineEnd;
+
+            int tabs = 0, commas = 0, semis = 0;
+            for (qsizetype q = p; q < lineEnd; ++q) {
+                switch (data[q]) {
+                    case '\t': ++tabs;   break;
+                    case ',':  ++commas; break;
+                    case ';':  ++semis;  break;
+                    default: break;
+                }
+            }
+            if (tabs > commas && tabs >= semis)        delim = '\t';
+            else if (semis > commas)                   delim = ';';
+            else if (commas == 0 && tabs == 0 && semis == 0) {
+                delim = ' ';
+                whitespaceDelim = true;
+            } else                                      delim = ',';
+            break;
         }
     } else {
         switch (delimIndex) {
-            case 1: delimiter = ','; break;
-            case 2: delimiter = '\t'; break;
-            case 3: delimiter = ';'; break;
-            case 4: delimiter = ' '; break;
+            case 1: delim = ',';  break;
+            case 2: delim = '\t'; break;
+            case 3: delim = ';';  break;
+            case 4: delim = ' ';  whitespaceDelim = true; break;
         }
     }
-    
-    while (!in.atEnd()) {
-        QString line = in.readLine().trimmed();
-        if (line.isEmpty() || line.startsWith('#')) continue;
-        
+
+    // --- parse rows ---
+    const bool hasHeader = _hasHeaderCheck->isChecked();
+    bool firstLine = true;
+
+    // Estimate row count for reserve
+    qsizetype nl = 0;
+    for (qsizetype i = start; i < len; ++i) if (data[i] == '\n') ++nl;
+    _mappingRows.reserve(static_cast<size_t>(nl));
+
+    qsizetype p = start;
+    while (p < len) {
+        // find line bounds [p, lineEnd)
+        qsizetype lineEnd = p;
+        while (lineEnd < len && data[lineEnd] != '\n') ++lineEnd;
+
+        // trim trailing \r and spaces
+        qsizetype eff = lineEnd;
+        while (eff > p && (data[eff-1] == '\r' || data[eff-1] == ' ' || data[eff-1] == '\t'))
+            --eff;
+        // trim leading spaces
+        qsizetype begin = p;
+        while (begin < eff && (data[begin] == ' ' || data[begin] == '\t'))
+            ++begin;
+
+        // skip blank / comment
+        if (begin >= eff || data[begin] == '#') {
+            p = lineEnd + 1;
+            continue;
+        }
+
+        // split this line into fields
         QStringList parts;
-        if (delimiter == ' ') {
-            parts = line.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
-        } else {
-            parts = line.split(delimiter);
-        }
-        
-        if (firstLine && _hasHeaderCheck->isChecked()) {
-            _mappingColumns = parts;
-            firstLine = false;
-        } else {
-            _mappingRows.push_back(parts);
-            if (firstLine) {
-                for (int i = 0; i < parts.size(); ++i) {
-                    _mappingColumns << QString("Column %1").arg(i + 1);
-                }
-                firstLine = false;
+        if (whitespaceDelim) {
+            qsizetype q = begin;
+            while (q < eff) {
+                while (q < eff && (data[q] == ' ' || data[q] == '\t')) ++q;
+                if (q >= eff) break;
+                qsizetype fStart = q;
+                while (q < eff && data[q] != ' ' && data[q] != '\t') ++q;
+                parts.append(QString::fromUtf8(data + fStart, q - fStart));
             }
+        } else {
+            qsizetype q = begin;
+            qsizetype fStart = q;
+            while (q < eff) {
+                if (data[q] == delim) {
+                    parts.append(QString::fromUtf8(data + fStart, q - fStart));
+                    fStart = q + 1;
+                }
+                ++q;
+            }
+            parts.append(QString::fromUtf8(data + fStart, q - fStart));
         }
+
+        if (firstLine && hasHeader) {
+            _mappingColumns = parts;
+        } else {
+            if (firstLine) {
+                for (int i = 0; i < parts.size(); ++i)
+                    _mappingColumns << QString("Column %1").arg(i + 1);
+            }
+            _mappingRows.push_back(std::move(parts));
+        }
+        firstLine = false;
+
+        p = lineEnd + 1;
     }
-    
-    file.close();
-    
+
     LOG_INFO("SpectraImport", QString("Loaded %1 rows with %2 columns")
              .arg(_mappingRows.size()).arg(_mappingColumns.size()));
-    
+
     return !_mappingRows.empty();
 }
 

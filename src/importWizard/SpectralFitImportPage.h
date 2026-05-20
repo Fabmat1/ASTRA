@@ -24,13 +24,12 @@ class QCheckBox;
 // ── Transient: raw filesystem scan result from background thread ─────
 struct DiggaScanResult {
     QString dirPath;
-    QString gridName;        // directory name containing fit files
-    QString parentDirName;   // parent directory name (often source_id)
+    QString gridName;
+    QString parentDirName;
 
-    QString fitReportContent;
-    QString fitParametersContent;
+    QByteArray fitReportContent;       
+    QByteArray fitParametersContent;   
 
-    // plotdata files found: basename (lowercase, no _plotdata.csv) → full path
     QMap<QString, QString> plotdataFiles;
 
     bool valid = true;
@@ -128,8 +127,8 @@ private:
 
     // DIGGA parsing (pure — safe for background thread)
     static DiggaFitDirectory parseDiggaDirectory(const DiggaScanResult& scan);
-    static QMap<int, QString> parseDiggaFitReport(const QString& content);
-    static void parseDiggaFitParameters(const QString& content, DiggaFitDirectory& dir);
+    static QMap<int, QString> parseDiggaFitReport(const QByteArray& content);
+    static void parseDiggaFitParameters(const QByteArray& content, DiggaFitDirectory& dir);
 
     // DIGGA matching (uses index — safe for background thread)
     static void matchDiggaDirectories(std::vector<DiggaFitDirectory>& dirs,

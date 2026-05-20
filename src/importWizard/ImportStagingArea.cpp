@@ -319,7 +319,9 @@ bool ImportStagingArea::stageLightcurve(const QString& starId,
 
 // ── Commit ──────────────────────────────────────────────────────
 
-bool ImportStagingArea::commitAll(DatabaseManager* dbm, const QString& projectId)
+bool ImportStagingArea::commitAll(DatabaseManager* dbm,
+                                  const QString& projectId,
+                                  ProgressCallback progress)
 {
     QMutexLocker lock(&_mutex);
 
@@ -358,6 +360,80 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm, const QString& projectId
         return false;
     }
 
+    // ── Pre-count total units of work for the progress bar ──────
+    // We count every operation we are *actually* going to perform below,
+    // including the cascaded saves inside saveStar() for new stars, so
+    // that the progress bar advances at a steady rate.
+    int total = 0;
+    for (auto it = _workingStars.cbegin(); it != _workingStars.cend(); ++it) {
+        const QString& starId = it.key();
+        const auto& star = it.value();
+        if (!star) continue;
+
+        const bool isNew   = _newStarIds.contains(starId);
+        const bool isDirty = _dirtyStarIds.contains(starId);
+        const bool hasNewLC = _dirtyLightcurveStarIds.contains(starId);
+
+        // A. Star row
+        if (isNew || isDirty || hasNewLC)
+            total += 1;
+
+        if (isNew) {
+            // saveStar() cascades to spectra/fits and photometry/SED.
+            // Count them so the bar reflects the real work.
+            for (const auto& sp : star->getSpectra())
+                total += 1 + static_cast<int>(sp->getSpectralFits().size());
+
+            if (auto phot = star->getPhotometry())
+                total += static_cast<int>(phot->getSEDModels().size());
+        } else {
+            // B. Spectra + fits (existing stars only)
+            for (const auto& sp : star->getSpectra()) {
+                if (_newSpectrumIds.contains(sp->getId())) {
+                    total += 1 + static_cast<int>(sp->getSpectralFits().size());
+                } else {
+                    for (const auto& fit : sp->getSpectralFits())
+                        if (_newFitIds.contains(fit->getId()))
+                            total += 1;
+                }
+            }
+
+            // B2. SED models (existing stars only)
+            if (auto phot = star->getPhotometry()) {
+                for (const auto& sedModel : phot->getSEDModels())
+                    if (_newSEDModelIds.contains(sedModel->getId()))
+                        total += 1;
+            }
+        }
+
+        // B3. Lightcurve sources
+        if (hasNewLC) {
+            if (auto phot = star->getPhotometry())
+                total += static_cast<int>(phot->getLightcurveSources().size());
+        }
+
+        // C. RV curve + points + fits
+        auto curve = star->getRVCurve();
+        if (curve && _newRVCurveIds.contains(curve->getId())) {
+            total += 1
+                   + static_cast<int>(curve->getRVPoints().size())
+                   + static_cast<int>(curve->getRVFits().size());
+        }
+    }
+
+    if (total <= 0) total = 1;  // guard against div-by-zero in ETA
+
+    int done = 0;
+    auto tick = [&](int n = 1) {
+        done += n;
+        if (progress) progress(done, total);
+    };
+
+    // Initial report so the UI gets the correct maximum immediately
+    if (progress) progress(0, total);
+
+    LOG_INFO("Staging", QString("Commit plan: %1 total operations").arg(total));
+
     try {
         // ── Single pass over all stars ──────────────────────────
         for (auto it = _workingStars.cbegin(); it != _workingStars.cend(); ++it) {
@@ -365,34 +441,38 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm, const QString& projectId
             const auto& star = it.value();
             if (!star) continue;
 
-            const bool isNew = _newStarIds.contains(starId);
-            const bool isDirty = _dirtyStarIds.contains(starId);
+            const bool isNew    = _newStarIds.contains(starId);
+            const bool isDirty  = _dirtyStarIds.contains(starId);
+            const bool hasNewLC = _dirtyLightcurveStarIds.contains(starId);
 
             // Recompute summary metrics before persisting
-            if (isNew || isDirty || _dirtyLightcurveStarIds.contains(starId))
+            if (isNew || isDirty || hasNewLC)
                 star->computeSummaryMetrics();
 
             // ── A. Star row ─────────────────────────────────────
             if (isNew) {
-                // INSERT star row ONLY (no cascade — we handle children below)
-                // Use saveStar which does INSERT OR REPLACE + cascades to
-                // spectra/fits. We still need to handle RV separately.
-                //
-                // However, saveStar() will also save all spectra and their
-                // fits via its own cascade. To avoid double-saving, we let
-                // saveStar handle spectra/fits for new stars and only
-                // supplement with RV below.
+                // saveStar() does INSERT OR REPLACE + cascades to spectra/fits
+                // and photometry/SED. RV is still handled separately below.
                 if (!dbm->saveStar(projectId, star)) {
                     LOG_ERROR("Staging", QString("Failed to save new star %1").arg(starId));
                     dbm->rollbackTransaction();
                     return false;
                 }
-            } else if (isDirty || _dirtyLightcurveStarIds.contains(starId)) {
+
+                // Account for the star row + every cascaded child in one shot
+                int cascaded = 1; // the star row itself
+                for (const auto& sp : star->getSpectra())
+                    cascaded += 1 + static_cast<int>(sp->getSpectralFits().size());
+                if (auto phot = star->getPhotometry())
+                    cascaded += static_cast<int>(phot->getSEDModels().size());
+                tick(cascaded);
+            } else if (isDirty || hasNewLC) {
                 if (!dbm->updateStarRow(projectId, star)) {
                     LOG_ERROR("Staging", QString("Failed to update star %1").arg(starId));
                     dbm->rollbackTransaction();
                     return false;
                 }
+                tick();
             }
 
             // ── B. Spectra + fits (existing stars only) ─────────
@@ -403,26 +483,30 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm, const QString& projectId
                     if (_newSpectrumIds.contains(sp->getId())) {
                         // New spectrum — saveSpectrum cascades to its fits
                         if (!dbm->saveSpectrum(starId, sp)) {
-                            LOG_ERROR("Staging", QString("Failed to save spectrum %1").arg(sp->getId()));
+                            LOG_ERROR("Staging",
+                                QString("Failed to save spectrum %1").arg(sp->getId()));
                             dbm->rollbackTransaction();
                             return false;
                         }
+                        tick(1 + static_cast<int>(sp->getSpectralFits().size()));
                     } else {
                         // Existing spectrum — check for new fits only
                         for (const auto& fit : sp->getSpectralFits()) {
                             if (_newFitIds.contains(fit->getId())) {
                                 if (!dbm->saveSpectralFit(starId, sp->getId(), fit)) {
-                                    LOG_ERROR("Staging", QString("Failed to save fit %1").arg(fit->getId()));
+                                    LOG_ERROR("Staging",
+                                        QString("Failed to save fit %1").arg(fit->getId()));
                                     dbm->rollbackTransaction();
                                     return false;
                                 }
+                                tick();
                             }
                         }
                     }
                 }
             }
 
-            // ── B2. SED models (existing stars only) ────────
+            // ── B2. SED models (existing stars only) ────────────
             // For new stars, saveStar() already cascaded to photometry/SED.
             // For existing stars, save new SED models surgically to avoid
             // the CASCADE DELETE that INSERT OR REPLACE on photometry causes.
@@ -438,56 +522,63 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm, const QString& projectId
                                 dbm->rollbackTransaction();
                                 return false;
                             }
+                            tick();
                         }
                     }
                 }
             }
 
             // ── B3. Lightcurve data (stars with new LC data) ────
-            if (_dirtyLightcurveStarIds.contains(starId)) {
+            if (hasNewLC) {
                 auto phot = star->getPhotometry();
                 if (phot) {
                     for (const QString& source : phot->getLightcurveSources()) {
                         if (!dbm->saveLightcurveForStar(starId, source, phot.get())) {
                             LOG_ERROR("Staging",
-                                      QString("Failed to save lightcurve '%1' for star %2")
-                                          .arg(source, starId));
+                                QString("Failed to save lightcurve '%1' for star %2")
+                                    .arg(source, starId));
                             dbm->rollbackTransaction();
                             return false;
                         }
+                        tick();
                     }
                 }
             }
 
             // ── C. RV curve + points + fits (ALL stars) ─────────
-            // This is the critical fix: never skip RV based on star newness.
             // saveStar() does NOT cascade to RV, so we always handle it here.
             auto curve = star->getRVCurve();
             if (curve && _newRVCurveIds.contains(curve->getId())) {
                 if (!dbm->saveRadialVelocityCurve(curve, starId)) {
-                    LOG_ERROR("Staging", QString("Failed to save RV curve %1").arg(curve->getId()));
+                    LOG_ERROR("Staging",
+                        QString("Failed to save RV curve %1").arg(curve->getId()));
                     dbm->rollbackTransaction();
                     return false;
                 }
+                tick();
 
                 for (const auto& pt : curve->getRVPoints()) {
                     pt->setCurveId(curve->getId());
                     if (!dbm->saveRadialVelocityPoint(pt, curve->getId())) {
-                        LOG_ERROR("Staging", QString("Failed to save RV point for curve %1")
-                                  .arg(curve->getId()));
+                        LOG_ERROR("Staging",
+                            QString("Failed to save RV point for curve %1")
+                                .arg(curve->getId()));
                         dbm->rollbackTransaction();
                         return false;
                     }
+                    tick();
                 }
 
                 for (const auto& fit : curve->getRVFits()) {
                     fit->setCurveId(curve->getId());
                     if (!dbm->saveRVFit(fit, curve->getId())) {
-                        LOG_ERROR("Staging", QString("Failed to save RV fit for curve %1")
-                                  .arg(curve->getId()));
+                        LOG_ERROR("Staging",
+                            QString("Failed to save RV fit for curve %1")
+                                .arg(curve->getId()));
                         dbm->rollbackTransaction();
                         return false;
                     }
+                    tick();
                 }
             }
         }
@@ -497,6 +588,9 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm, const QString& projectId
             LOG_ERROR("Staging", "Failed to commit transaction");
             return false;
         }
+
+        // Final snap to 100 % — covers any rounding from the cascaded ticks
+        if (progress) progress(total, total);
 
         LOG_INFO("Staging", "Commit successful");
 

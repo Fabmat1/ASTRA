@@ -23,7 +23,6 @@ bool DataStore::writeCompressed(const QString& filepath, DataType type,
         return false;
     }
 
-    // Magic bytes written raw (not through QDataStream)
     file.write(MAGIC, 4);
 
     QDataStream out(&file);
@@ -31,9 +30,12 @@ bool DataStore::writeCompressed(const QString& filepath, DataType type,
     out << FORMAT_VERSION;
     out << static_cast<quint16>(type);
 
-    QByteArray compressed = qCompress(payload, COMPRESSION_LEVEL);
-    out << compressed;                       // length-prefixed QByteArray
+    // Don't bother compressing tiny payloads — zlib overhead dwarfs the savings.
+    QByteArray compressed = (payload.size() < 256)
+        ? qCompress(payload, 1)           
+        : qCompress(payload, COMPRESSION_LEVEL);
 
+    out << compressed;
     file.close();
     return file.error() == QFileDevice::NoError;
 }

@@ -57,7 +57,7 @@ public:
 private:
     static constexpr char   MAGIC[4]        = {'A','S','T','R'};
     static constexpr quint16 FORMAT_VERSION = 1;
-    static constexpr int    COMPRESSION_LEVEL = -1;    // zlib default (≈6)
+    static constexpr int    COMPRESSION_LEVEL = 1;    // zlib default (≈6)
 
     static QString sanitize(const QString& name);      // make safe for filenames
 };

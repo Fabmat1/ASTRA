@@ -34,6 +34,30 @@
 #include <QtConcurrent>
 #include <QFutureWatcher>
 
+#include <cstdlib>
+#include <cstring>
+
+namespace {
+
+// Parse a double from [p, end). Advances p. Returns true on success.
+inline bool parseDouble(const char*& p, const char* end, double& out)
+{
+    auto [ptr, ec] = std::from_chars(p, end, out);
+    if (ec != std::errc{}) return false;
+    p = ptr;
+    return true;
+}
+
+inline bool parseLong(const char*& p, const char* end, long& out)
+{
+    auto [ptr, ec] = std::from_chars(p, end, out);
+    if (ec != std::errc{}) return false;
+    p = ptr;
+    return true;
+}
+
+} // anonymous namespace
+
 // ════════════════════════════════════════════════════════════════
 // Construction & UI setup
 // ════════════════════════════════════════════════════════════════
@@ -444,10 +468,10 @@ void SpectralFitImportPage::onScanDigga()
             scan.parentDirName = parent.dirName();
 
             // Read the two small text files
-            {
+            {  
                 QFile f(dir.filePath("fit_report.tex"));
-                if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-                    scan.fitReportContent = QTextStream(&f).readAll();
+                if (f.open(QIODevice::ReadOnly)) {
+                    scan.fitReportContent = f.readAll();
                 } else {
                     scan.valid = false;
                     scan.error = "Cannot read fit_report.tex";
@@ -455,8 +479,8 @@ void SpectralFitImportPage::onScanDigga()
             }
             {
                 QFile f(dir.filePath("fit_parameters.csv"));
-                if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-                    scan.fitParametersContent = QTextStream(&f).readAll();
+                if (f.open(QIODevice::ReadOnly)) {
+                    scan.fitParametersContent = f.readAll();
                 } else {
                     scan.valid = false;
                     scan.error = "Cannot read fit_parameters.csv";
@@ -477,11 +501,13 @@ void SpectralFitImportPage::onScanDigga()
 
         int scanCount = static_cast<int>(scanResults.size());
 
-        // ── Phase 2: Parse all dirs ─────────────────────────────
-        std::vector<DiggaFitDirectory> dirs;
-        dirs.reserve(scanResults.size());
-        for (const auto& scan : scanResults)
-            dirs.push_back(parseDiggaDirectory(scan));
+        // ── Phase 2: Parse all dirs in parallel ────────────────
+        std::vector<DiggaFitDirectory> dirs =
+            QtConcurrent::blockingMapped<std::vector<DiggaFitDirectory>>(
+                scanResults,
+                [](const DiggaScanResult& s) -> DiggaFitDirectory {
+                    return parseDiggaDirectory(s);
+                });
 
         // ── Phase 3: Match against index ────────────────────────
         matchDiggaDirectories(dirs, indexSnapshot);
@@ -542,7 +568,6 @@ DiggaFitDirectory SpectralFitImportPage::parseDiggaDirectory(
         return dir;
     }
 
-    // Parse fit_report.tex → spec index to filename mapping
     dir.specIndexToFilename = parseDiggaFitReport(scan.fitReportContent);
     if (dir.specIndexToFilename.isEmpty()) {
         dir.parseOk    = false;
@@ -550,174 +575,134 @@ DiggaFitDirectory SpectralFitImportPage::parseDiggaDirectory(
         return dir;
     }
 
-    // Parse fit_parameters.csv → shared + per-spectrum parameters
     parseDiggaFitParameters(scan.fitParametersContent, dir);
-
     dir.totalSpectra = dir.specIndexToFilename.size();
     return dir;
 }
 
 QMap<int, QString> SpectralFitImportPage::parseDiggaFitReport(
-    const QString& content)
+    const QByteArray& contentBytes)
 {
     QMap<int, QString> result;
 
-    LOG_INFO("FitImport", "=== Parsing fit_report.tex ===");
-    LOG_DEBUG("FitImport", QString("fit_report.tex content length: %1 chars")
-              .arg(content.length()));
-
-    // Log first ~500 chars so we can see the actual format
-    LOG_DEBUG("FitImport", QString("fit_report.tex preview:\n%1")
-              .arg(content.left(800)));
+    // Regex needs QString, but this file is small and parsed once per dir.
+    const QString content = QString::fromUtf8(contentBytes);
 
     // Strategy 1: spec N & \verb|filename|
     {
-        static QRegularExpression re(
+        static const QRegularExpression re(
             R"(spec\s+(\d+)\s*&\s*\\verb\|([^|]+)\|)");
         auto matches = re.globalMatch(content);
         while (matches.hasNext()) {
-            auto m  = matches.next();
-            int idx = m.captured(1).toInt();
-            QString fn = m.captured(2).trimmed();
-            result[idx] = fn;
-            LOG_DEBUG("FitImport", QString("  Pattern 1 match: spec %1 → '%2'")
-                      .arg(idx).arg(fn));
+            auto m = matches.next();
+            result[m.captured(1).toInt()] = m.captured(2).trimmed();
         }
     }
+    if (!result.isEmpty()) return result;
 
-    if (!result.isEmpty()) {
-        LOG_INFO("FitImport", QString("Pattern 1 (\\verb) matched %1 spectra")
-                 .arg(result.size()));
-        return result;
-    }
-
-    // Strategy 2: spec N & filename (no \verb)
+    // Strategy 2: spec N & filename
     {
-        static QRegularExpression re(
+        static const QRegularExpression re(
             R"(spec\s+(\d+)\s*&\s*([^\s&\\]+))");
         auto matches = re.globalMatch(content);
         while (matches.hasNext()) {
-            auto m  = matches.next();
-            int idx = m.captured(1).toInt();
-            QString fn = m.captured(2).trimmed();
-            result[idx] = fn;
-            LOG_DEBUG("FitImport", QString("  Pattern 2 match: spec %1 → '%2'")
-                      .arg(idx).arg(fn));
+            auto m = matches.next();
+            result[m.captured(1).toInt()] = m.captured(2).trimmed();
         }
     }
+    if (!result.isEmpty()) return result;
 
-    if (!result.isEmpty()) {
-        LOG_INFO("FitImport", QString("Pattern 2 (plain) matched %1 spectra")
-                 .arg(result.size()));
-        return result;
-    }
-
-    // Strategy 3: look for any line containing "spec" and a number
-    // followed by a filename-like string
+    // Strategy 3: loose
     {
-        static QRegularExpression re(
+        static const QRegularExpression re(
             R"(spec(?:trum)?\s*(\d+)\s*[&:=\s]+\s*[\|\"']?([^\s\|\"'\\&]+\.\w+))");
         auto matches = re.globalMatch(content);
         while (matches.hasNext()) {
-            auto m  = matches.next();
-            int idx = m.captured(1).toInt();
-            QString fn = m.captured(2).trimmed();
-            result[idx] = fn;
-            LOG_DEBUG("FitImport", QString("  Pattern 3 match: spec %1 → '%2'")
-                      .arg(idx).arg(fn));
+            auto m = matches.next();
+            result[m.captured(1).toInt()] = m.captured(2).trimmed();
         }
     }
 
-    if (!result.isEmpty()) {
-        LOG_INFO("FitImport", QString("Pattern 3 (loose) matched %1 spectra")
-                 .arg(result.size()));
-    } else {
-        LOG_WARNING("FitImport",
-            "No spectrum identifiers found with any pattern! "
-            "Check the fit_report.tex format.");
-
-        // Log all lines containing "spec" for diagnostics
-        QStringList lines = content.split('\n');
-        for (const QString& line : lines) {
-            if (line.contains("spec", Qt::CaseInsensitive)) {
-                LOG_DEBUG("FitImport", QString("  Line with 'spec': %1")
-                          .arg(line.trimmed()));
-            }
-        }
-    }
+    if (result.isEmpty())
+        LOG_WARNING("FitImport", "No spectrum identifiers found in fit_report.tex");
 
     return result;
 }
 
 void SpectralFitImportPage::parseDiggaFitParameters(
-    const QString& content, DiggaFitDirectory& dir)
+    const QByteArray& content, DiggaFitDirectory& dir)
 {
-    LOG_INFO("FitImport", QString("=== Parsing fit_parameters.csv for '%1' ===")
-             .arg(dir.dirPath));
-    LOG_DEBUG("FitImport", QString("Content length: %1 chars, preview:\n%2")
-              .arg(content.length()).arg(content.left(500)));
+    const char* p   = content.constData();
+    const char* end = p + content.size();
 
-    static QRegularExpression vradUntiedRe(R"(^c1_vrad_d(\d+)$)");
+    while (p < end && *p != '\n') ++p;
+    if (p < end) ++p;
 
-    QTextStream stream(const_cast<QString*>(&content), QIODevice::ReadOnly);
-    QString header = stream.readLine();
-    LOG_DEBUG("FitImport", QString("Header line: '%1'").arg(header));
+    auto skipWs = [](const char*& cur, const char* lim) {
+        while (cur < lim && (*cur == ' ' || *cur == '\t')) ++cur;
+    };
 
-    int lineCount = 0;
-    int parsedCount = 0;
+    while (p < end) {
+        skipWs(p, end);
 
-    while (!stream.atEnd()) {
-        QString line = stream.readLine().trimmed();
-        if (line.isEmpty()) continue;
-        lineCount++;
+        const char* paramStart = p;
+        while (p < end && *p != ',' && *p != '\n' && *p != '\r') ++p;
+        const char* paramEnd = p;
+        while (paramEnd > paramStart &&
+               (paramEnd[-1] == ' ' || paramEnd[-1] == '\t'))
+            --paramEnd;
 
-        QStringList parts = line.split(',');
-        if (parts.size() < 3) {
-            LOG_DEBUG("FitImport", QString("  Skipping short line: '%1'").arg(line));
+        if (p >= end || *p != ',') {
+            while (p < end && *p != '\n') ++p;
+            if (p < end) ++p;
             continue;
         }
+        ++p;
+        skipWs(p, end);
 
-        QString param = parts[0].trimmed();
-        bool okVal, okErr;
-        double value = parts[1].trimmed().toDouble(&okVal);
-        double error = parts[2].trimmed().toDouble(&okErr);
+        double value = 0.0;
+        const bool okVal = parseDouble(p, end, value);
+        skipWs(p, end);
 
-        if (!okVal) {
-            LOG_DEBUG("FitImport", QString("  Cannot parse value for param '%1': '%2'")
-                      .arg(param, parts[1].trimmed()));
-            continue;
+        double error = 0.0;
+        if (p < end && *p == ',') {
+            ++p;
+            skipWs(p, end);
+            parseDouble(p, end, error);
         }
-        if (!okErr) error = 0.0;
 
-        parsedCount++;
+        while (p < end && *p != '\n') ++p;
+        if (p < end) ++p;
 
-        if      (param == "final_chi2") { dir.chi2 = value; }
-        else if (param == "c1_teff")    { dir.teff = value; dir.teffError = error; }
-        else if (param == "c1_logg")    { dir.logg = value; dir.loggError = error; }
-        else if (param == "c1_he")      { dir.he   = value; dir.heError   = error; }
-        else if (param == "c1_vsini")   { dir.vsini = value; dir.vsiniError = error; }
-        else if (param == "c1_zeta")    { dir.zeta  = value; dir.zetaError  = error; }
-        else if (param == "c1_xi")      { dir.xi    = value; dir.xiError    = error; }
-        else if (param == "c1_z")       { dir.z     = value; dir.zError     = error; }
-        else if (param == "c1_vrad") {
+        if (!okVal) continue;
+
+        const size_t pLen = static_cast<size_t>(paramEnd - paramStart);
+        auto eq = [&](const char* lit, size_t litLen) {
+            return pLen == litLen && std::memcmp(paramStart, lit, litLen) == 0;
+        };
+
+        if      (eq("final_chi2", 10)) { dir.chi2 = value; }
+        else if (eq("c1_teff",  7))    { dir.teff  = value; dir.teffError  = error; }
+        else if (eq("c1_logg",  7))    { dir.logg  = value; dir.loggError  = error; }
+        else if (eq("c1_he",    5))    { dir.he    = value; dir.heError    = error; }
+        else if (eq("c1_vsini", 8))    { dir.vsini = value; dir.vsiniError = error; }
+        else if (eq("c1_zeta",  7))    { dir.zeta  = value; dir.zetaError  = error; }
+        else if (eq("c1_xi",    5))    { dir.xi    = value; dir.xiError    = error; }
+        else if (eq("c1_z",     4))    { dir.z     = value; dir.zError     = error; }
+        else if (eq("c1_vrad",  7)) {
             dir.vradTied      = true;
             dir.tiedVrad      = value;
             dir.tiedVradError = error;
         }
-        else {
-            QRegularExpressionMatch vm = vradUntiedRe.match(param);
-            if (vm.hasMatch()) {
-                int specIdx = vm.captured(1).toInt();
-                dir.vradPerSpectrum[specIdx] = {value, error};
+        else if (pLen > 9 &&
+                 std::memcmp(paramStart, "c1_vrad_d", 9) == 0) {
+            long specIdx;
+            const char* sp = paramStart + 9;
+            if (parseLong(sp, paramEnd, specIdx) && sp == paramEnd) {
+                dir.vradPerSpectrum[static_cast<int>(specIdx)] = { value, error };
             }
         }
     }
-
-    LOG_INFO("FitImport", QString("Parsed %1 parameters from %2 lines. "
-             "teff=%3 logg=%4 chi2=%5 vradTied=%6")
-             .arg(parsedCount).arg(lineCount)
-             .arg(dir.teff).arg(dir.logg).arg(dir.chi2)
-             .arg(dir.vradTied ? "yes" : "no"));
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -876,11 +861,10 @@ bool SpectralFitImportPage::loadPlotdata(
     std::vector<uint8_t>& modelIgnore)
 {
     QFile file(filepath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+    if (!file.open(QIODevice::ReadOnly))
         return false;
-
-    QTextStream in(&file);
-    in.readLine();  // skip header: lambda,flux,sigma,model,spline,ignore
+    const QByteArray data = file.readAll();
+    file.close();
 
     wavelengths.clear();
     modelFluxes.clear();
@@ -889,32 +873,63 @@ bool SpectralFitImportPage::loadPlotdata(
     modelSplines.clear();
     modelIgnore.clear();
 
-    while (!in.atEnd()) {
-        QString line = in.readLine().trimmed();
-        if (line.isEmpty()) continue;
+    const char* const begin = data.constData();
+    const char* const end   = begin + data.size();
 
-        QStringList parts = line.split(',');
-        if (parts.size() < 6) continue;
-
-        bool okL, okF, okS, okM, okSp, okI;
-        double lambda  = parts[0].toDouble(&okL);
-        double flux    = parts[1].toDouble(&okF);
-        double sigma   = parts[2].toDouble(&okS);
-        double model   = parts[3].toDouble(&okM);
-        double spline  = parts[4].toDouble(&okSp);
-        int    ignore  = parts[5].toInt(&okI);
-
-        if (okL && okF && okS && okM && okSp && okI) {
-            wavelengths.push_back(lambda);
-            rebinnedFluxes.push_back(flux);
-            rebinnedSigmas.push_back(sigma);
-            modelFluxes.push_back(model);
-            modelSplines.push_back(spline);
-            modelIgnore.push_back(static_cast<uint8_t>(ignore));
-        }
+    // Newline count via raw pointer (no operator[] bounds check)
+    size_t newlines = 0;
+    for (const char* c = begin; c != end; ++c)
+        if (*c == '\n') ++newlines;
+    if (newlines > 1) {
+        wavelengths.reserve(newlines);
+        modelFluxes.reserve(newlines);
+        rebinnedFluxes.reserve(newlines);
+        rebinnedSigmas.reserve(newlines);
+        modelSplines.reserve(newlines);
+        modelIgnore.reserve(newlines);
     }
 
-    file.close();
+    const char* p = begin;
+
+    // Skip header
+    while (p < end && *p != '\n') ++p;
+    if (p < end) ++p;
+
+    auto skipToNextLine = [&]() {
+        while (p < end && *p != '\n') ++p;
+        if (p < end) ++p;
+    };
+
+    while (p < end) {
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n'))
+            ++p;
+        if (p >= end) break;
+
+        double lambda, flux, sigma, model, spline;
+        long   ignore;
+
+        if (!parseDouble(p, end, lambda)) { skipToNextLine(); continue; }
+        if (p < end && *p == ',') ++p;
+        if (!parseDouble(p, end, flux))   { skipToNextLine(); continue; }
+        if (p < end && *p == ',') ++p;
+        if (!parseDouble(p, end, sigma))  { skipToNextLine(); continue; }
+        if (p < end && *p == ',') ++p;
+        if (!parseDouble(p, end, model))  { skipToNextLine(); continue; }
+        if (p < end && *p == ',') ++p;
+        if (!parseDouble(p, end, spline)) { skipToNextLine(); continue; }
+        if (p < end && *p == ',') ++p;
+        if (!parseLong  (p, end, ignore)) { skipToNextLine(); continue; }
+
+        skipToNextLine();
+
+        wavelengths.push_back(lambda);
+        rebinnedFluxes.push_back(flux);
+        rebinnedSigmas.push_back(sigma);
+        modelFluxes.push_back(model);
+        modelSplines.push_back(spline);
+        modelIgnore.push_back(static_cast<uint8_t>(ignore));
+    }
+
     return !wavelengths.empty();
 }
 

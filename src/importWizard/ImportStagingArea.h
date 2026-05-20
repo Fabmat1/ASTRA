@@ -61,7 +61,11 @@ public:
 
     // ── Lifecycle ───────────────────────────────────────────────
     void clear();
-    bool commitAll(DatabaseManager* dbm, const QString& projectId);
+    using ProgressCallback = std::function<void(int done, int total)>;
+
+    bool commitAll(DatabaseManager* dbm,
+                const QString& projectId,
+                ProgressCallback progress = {});
 
     // ── Lightcurve staging (with merge logic) ───────────────────
     bool stageLightcurve(const QString& starId,

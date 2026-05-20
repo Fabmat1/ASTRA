@@ -1048,53 +1048,87 @@ DiggaFitImportTask::DiggaFitImportTask(
 
 void DiggaFitImportTask::execute()
 {
-    int total = static_cast<int>(_entries.size());
-    int imported = 0;
-    int failed = 0;
+    LOG_SET_THREAD_NAME("DiggaFitImport");
+
+    const int total = static_cast<int>(_entries.size());
+    if (total == 0) {
+        emit importComplete(0, 0);
+        emit finished(true, "DIGGA Fit Import: nothing to do");
+        return;
+    }
 
     emit progress(QString("Loading plotdata for %1 fits...").arg(total));
 
-    // Phase 1: Read plotdata files (heavy I/O) — unchanged
-    for (int i = 0; i < total; ++i) {
-        auto& entry = _entries[i];
+    // ── Phase 1: PARALLEL plotdata loading ──────────────────────
+    // Each entry has its own unique `fit` shared_ptr (created in
+    // SpectralFitImportPage::importDiggaFits), so writing into
+    // entry.fit->modelWavelengths etc. from different threads is
+    // race-free as long as no two entries share a fit.
+    //
+    // entry.spectrum may be shared between entries, but we never
+    // touch it here — only in Phase 2 (sequential).
+
+    std::atomic<int> loadedCount{0};
+    std::atomic<int> loadFailed{0};
+
+    auto loadFn = [&loadedCount, &loadFailed](DiggaFitImportEntry& entry) {
         if (!entry.plotdataPath.isEmpty()) {
-            std::vector<double> wl, mf, rbf, rbs, spl;
+            std::vector<double>  wl, mf, rbf, rbs, spl;
             std::vector<uint8_t> ign;
-            if (SpectralFitImportPage::loadPlotdata(entry.plotdataPath, wl, mf, rbf, rbs, spl, ign)) {
+            if (SpectralFitImportPage::loadPlotdata(
+                    entry.plotdataPath, wl, mf, rbf, rbs, spl, ign))
+            {
                 entry.fit->modelWavelengths = std::move(wl);
                 entry.fit->modelFluxes      = std::move(mf);
                 entry.fit->rebinnedFluxes   = std::move(rbf);
                 entry.fit->rebinnedSigmas   = std::move(rbs);
                 entry.fit->modelSplines     = std::move(spl);
                 entry.fit->modelIgnore      = std::move(ign);
+            } else {
+                loadFailed.fetch_add(1, std::memory_order_relaxed);
             }
         }
+        loadedCount.fetch_add(1, std::memory_order_relaxed);
+    };
 
-        if (i % 500 == 0)
-            emit progress(QString("Read plotdata %1/%2").arg(i).arg(total));
+    auto future = QtConcurrent::map(_entries, loadFn);
+
+    while (!future.isFinished()) {
+        QThread::msleep(250);
+        const int done = loadedCount.load(std::memory_order_relaxed);
+        const int pct  = total > 0 ? (done * 100 / total) : 100;
+        emit progress(QString("Loading plotdata: %1/%2 (%3%)")
+                      .arg(done).arg(total).arg(pct));
     }
+    future.waitForFinished();
 
-    // Phase 2: In-memory linking + staging or DB save
+    // ── Phase 2: SEQUENTIAL linking + staging/DB ────────────────
+    // Anything that mutates shared objects (Spectrum::addSpectralFit,
+    // staging area, DB) stays single-threaded.
+
     emit progress(QString("Processing %1 fits...").arg(total));
+
+    int imported = 0;
+    int failed   = loadFailed.load(std::memory_order_relaxed);
 
     if (_stagingArea) {
         for (int i = 0; i < total; ++i) {
             auto& entry = _entries[i];
-            // Ensure fit has a UUID before tracking
             if (entry.fit->getId().isEmpty())
                 entry.fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
             entry.spectrum->addSpectralFit(entry.fit);
             _stagingArea->markFitNew(entry.fit->getId());
             imported++;
-    
-            if (i % 500 == 0)
+
+            if ((i & 1023) == 0)  // every 1024
                 emit progress(QString("Staged %1/%2 fits").arg(i).arg(total));
         }
-    
+
         emit importComplete(imported, failed);
-        emit finished(true, QString("Staged %1 fits (%2 failed)").arg(imported).arg(failed));
+        emit finished(true, QString("Staged %1 fits (%2 failed)")
+                      .arg(imported).arg(failed));
     } else {
-        // ── Legacy mode: direct DB writes ───────────────────────
+        // Legacy mode: direct DB writes (unchanged behavior)
         emit progress(QString("Saving %1 fits to database...").arg(total));
         auto* dbManager = _controller->databaseManager();
 
@@ -1107,7 +1141,7 @@ void DiggaFitImportTask::execute()
             else
                 failed++;
 
-            if (i % 500 == 0)
+            if ((i & 511) == 0)
                 emit progress(QString("Saved %1/%2 fits").arg(i).arg(total));
         }
 

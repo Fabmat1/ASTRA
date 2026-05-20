@@ -81,30 +81,59 @@ void StarImportWizard::accept()
              .arg(nStars).arg(nSpectra).arg(nFits).arg(nRV));
 
     // Progress dialog on the HEAP — so it survives until the async callback
-    auto* progress = new QProgressDialog("Saving imported data to database...",
-                                         QString(), 0, 0, this);
+    auto* progress = new QProgressDialog("Saving imported data to database…",
+                                     QString(), 0, 100, this);
     progress->setWindowModality(Qt::WindowModal);
     progress->setMinimumDuration(0);
     progress->setCancelButton(nullptr);
-    progress->setAttribute(Qt::WA_DeleteOnClose);  // auto-delete when closed
+    progress->setAttribute(Qt::WA_DeleteOnClose);
+    progress->setAutoClose(false);
+    progress->setAutoReset(false);
     progress->show();
 
-    DatabaseManager* dbm = _controller->databaseManager();
-    std::shared_ptr<Project> project = _project;
-    ImportStagingArea* staging = &_staging;
+    auto* elapsed = new QElapsedTimer;
+    elapsed->start();
 
+    // Lambda runs on the WORKER thread → must marshal to GUI thread.
+    auto progressCb = [progress, elapsed, this](int done, int total) {
+        QMetaObject::invokeMethod(this, [progress, elapsed, done, total]() {
+            if (!progress) return;
+            progress->setMaximum(total);
+            progress->setValue(done);
+
+            QString label = QStringLiteral("Saving imported data… (%1 / %2)")
+                                .arg(done).arg(total);
+
+            if (done > 0 && done < total) {
+                const qint64 ms = elapsed->elapsed();
+                const double rate = double(done) / double(ms);          // items/ms
+                const qint64 etaMs = qint64(double(total - done) / rate);
+                const qint64 etaS  = etaMs / 1000;
+                label += QStringLiteral("\nETA: %1m %2s")
+                            .arg(etaS / 60).arg(etaS % 60, 2, 10, QLatin1Char('0'));
+            } else if (done == total) {
+                label = QStringLiteral("Finalising…");
+            }
+            progress->setLabelText(label);
+        }, Qt::QueuedConnection);
+    };
+
+    DatabaseManager* dbm = _controller->databaseManager();
+    ImportStagingArea* staging = &_staging;
     QString projectId = _project->getId();
-    auto future = QtConcurrent::run([dbm, projectId, staging]() -> bool {
-        return staging->commitAll(dbm, projectId);
+
+    auto future = QtConcurrent::run([dbm, projectId, staging, progressCb]() -> bool {
+        return staging->commitAll(dbm, projectId, progressCb);
     });
 
-    QFutureWatcher<bool>* watcher = new QFutureWatcher<bool>(this);
+    auto* watcher = new QFutureWatcher<bool>(this);
     connect(watcher, &QFutureWatcher<bool>::finished, this,
-            [this, watcher, progress, nStars, nSpectra, nFits, nRV, nSED, nLC]()
-    {
+            [this, watcher, progress, elapsed, nStars, nSpectra, nFits, nRV, nSED, nLC]() {
         bool ok = watcher->result();
         watcher->deleteLater();
-        progress->close();  // triggers deleteLater via WA_DeleteOnClose
+        delete elapsed;
+        progress->reset();
+        progress->close();
 
         if (!ok) {
             QMessageBox::critical(this, "Import Error",
@@ -127,7 +156,6 @@ void StarImportWizard::accept()
         emit importCompleted(_project->getId());
         QWizard::accept();
     });
-
     watcher->setFuture(future);
 }
 
