@@ -197,6 +197,10 @@ public:
     bool getHasBlackgem() const      { return _hasBlackgem; }
     void setHasBlackgem(bool v)      { _hasBlackgem = v; }
 
+    // ── TESS crowding metric (mean CROWDSAP across used apertures) ──────────
+    double getTessCrowdsap() const         { return _tessCrowdsap; }
+    void   setTessCrowdsap(double v)       { _tessCrowdsap = v; }
+
     // Metadata
     std::vector<QString> getBibcodes() const { return _bibcodes; }
     void setBibcodes(const std::vector<QString>& bibcodes) { _bibcodes = bibcodes; }
@@ -387,6 +391,9 @@ private:
     bool _hasZtf      = false;
     bool _hasAtlas    = false;
     bool _hasBlackgem = false;
+
+    // TESS crowding metric (set from lightcurvequery's tess_crowdsap.txt)
+    double _tessCrowdsap = std::numeric_limits<double>::quiet_NaN();
 };
 
 #endif // STAR_H

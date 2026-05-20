@@ -78,6 +78,7 @@ private:
     QWidget* buildViewerTab();
     QWidget* buildPeriodogramTab();
     QWidget* buildFetchTab();
+    QWidget* buildPreviewsTab();
     QWidget* buildFitTab();
     QWidget* buildPeriodogramControls(); 
 
@@ -90,6 +91,11 @@ private:
     void loadPersistedPeaks();
     void persistPeaks();
     void commitPeaks();  
+
+    void     refreshPreviewsTab();
+    QString  previewDir() const;        
+    QString  previewPath(const QString& filename) const;
+    double   readCrowdsapFile(const QString& path) const;
 
     std::shared_ptr<Star>  _star;
     DatabaseManager*       _dbm        = nullptr;
@@ -143,4 +149,11 @@ private:
     AnsiTerminalWidget*  _fetchLog = nullptr;
     QProgressBar*    _fetchBusy    = nullptr;
     QLabel*          _fetchStatus  = nullptr;
+
+    int     _previewsTabIdx   = -1;
+    QLabel* _tessPreview       = nullptr;
+    QLabel* _ztfPreview       = nullptr;
+    QLabel* _atlasPreview     = nullptr;
+    QLabel* _gaiaPreview      = nullptr;
+    QLabel* _crowdsapTabLabel = nullptr;  
 };

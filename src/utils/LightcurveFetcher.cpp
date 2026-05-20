@@ -170,6 +170,7 @@ void LightcurveFetcher::start(const QString& gaiaId, const Options& opt)
     if (opt.noPlot)      args << "--no-plot";
     if (opt.noBinning)   args << "--no-binning";
     if (opt.noWhitening) args << "--no-whitening";
+    if (opt.crowding)    args << "--crowding";
 
     if (opt.trimTess > 0.0)
         args << "--trim-tess"        << QString::number(opt.trimTess,    'g', 4);

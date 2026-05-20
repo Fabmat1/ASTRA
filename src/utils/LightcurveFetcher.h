@@ -30,6 +30,7 @@ public:
         bool    noPlot      = true; // we never want the matplotlib output
         bool    noBinning   = true;
         bool    noWhitening = true;
+        bool       crowding = true;
     };
 
     explicit LightcurveFetcher(QObject* parent = nullptr);

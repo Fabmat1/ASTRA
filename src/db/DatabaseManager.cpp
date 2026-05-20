@@ -201,6 +201,7 @@ bool DatabaseManager::createTables()
             has_ztf INTEGER DEFAULT 0,
             has_atlas INTEGER DEFAULT 0,
             has_blackgem INTEGER DEFAULT 0,
+            tess_crowdsap REAL,
             phot_peaks_json TEXT,
             FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
         )
@@ -552,7 +553,8 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE stars ADD COLUMN has_atlas INTEGER DEFAULT 0",
         "ALTER TABLE stars ADD COLUMN has_blackgem INTEGER DEFAULT 0",
         "ALTER TABLE stars ADD COLUMN phot_peaks_json TEXT",
-
+        "ALTER TABLE stars ADD COLUMN tess_crowdsap REAL",
+        
         // Instrument foreign key migrations for existing tables
         "ALTER TABLE spectra ADD COLUMN instrument_id TEXT",
         "ALTER TABLE spectra ADD COLUMN mode_key TEXT",
@@ -723,6 +725,7 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
     const int idxHasZtf = rec.indexOf("has_ztf");
     const int idxHasAtlas = rec.indexOf("has_atlas");
     const int idxHasBlackgem = rec.indexOf("has_blackgem");
+    const int idxTessCrowdsap = rec.indexOf("tess_crowdsap");
 
     // Pre-allocate
     const size_t estimatedCount = _stars->getStarCountForProject(projectId);
@@ -833,7 +836,7 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
         if (idxHasZtf >= 0)      star->setHasZtf(query.value(idxHasZtf).toInt() != 0);
         if (idxHasAtlas >= 0)    star->setHasAtlas(query.value(idxHasAtlas).toInt() != 0);
         if (idxHasBlackgem >= 0) star->setHasBlackgem(query.value(idxHasBlackgem).toInt() != 0);
-
+        if (idxTessCrowdsap >= 0 && !query.isNull(idxTessCrowdsap)) star->setTessCrowdsap(query.value(idxTessCrowdsap).toDouble());
         stars.push_back(std::move(star));
     }
 
@@ -1232,4 +1235,29 @@ QString DatabaseManager::loadStarPhotPeaks(const QString& starId)
     q.bindValue(":id", starId);
     if (!q.exec() || !q.next()) return {};
     return q.value(0).toString();
+}
+
+bool DatabaseManager::saveStarTessCrowdsap(const QString& starId, double value)
+{
+    QSqlQuery q(_db->threadConnection());
+    q.prepare("UPDATE stars SET tess_crowdsap = :v WHERE id = :id");
+    if (std::isnan(value)) q.bindValue(":v", QVariant());
+    else                   q.bindValue(":v", value);
+    q.bindValue(":id", starId);
+    if (!q.exec()) {
+        LOG_WARNING("DB", QString("saveStarTessCrowdsap failed for %1: %2")
+                              .arg(starId, q.lastError().text()));
+        return false;
+    }
+    return true;
+}
+
+double DatabaseManager::loadStarTessCrowdsap(const QString& starId)
+{
+    QSqlQuery q(_db->threadConnection());
+    q.prepare("SELECT tess_crowdsap FROM stars WHERE id = :id");
+    q.bindValue(":id", starId);
+    if (!q.exec() || !q.next() || q.isNull(0))
+        return std::numeric_limits<double>::quiet_NaN();
+    return q.value(0).toDouble();
 }

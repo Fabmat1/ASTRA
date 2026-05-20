@@ -38,6 +38,10 @@
 #include <QSignalBlocker>
 #include <QRegularExpression>
 #include <QTextCursor>
+#include <QGridLayout>
+#include <QPixmap>
+#include <QFrame>
+#include <QFileInfo>
 
 #include <cmath>
 
@@ -144,19 +148,22 @@ void LightcurveFetchDialog::setupUi()
     layout->setContentsMargins(6, 6, 6, 6);
 
     _tabs = new QTabWidget;
-    _tabs->addTab(buildViewerTab(),                     "Viewer");
+    _tabs->addTab(buildViewerTab(),                          "Viewer");
     _periodogramTabIdx = _tabs->addTab(buildPeriodogramTab(), "Periodogram");
-    _tabs->addTab(buildFetchTab(),                      "Fetch");
-    _tabs->addTab(buildFitTab(),                        "Fit");
+    _previewsTabIdx    = _tabs->addTab(buildPreviewsTab(),    "Previews");
+    _tabs->addTab(buildFetchTab(),                           "Fetch");
+    _tabs->addTab(buildFitTab(),                             "Fit");
     layout->addWidget(_tabs, 1);
 
     connect(_tabs, &QTabWidget::currentChanged, this, [this](int idx){
         if (idx == _periodogramTabIdx) onPeriodogramTabActivated();
+        else if (idx == _previewsTabIdx) refreshPreviewsTab();
     });
 
     auto* buttons = new QDialogButtonBox(QDialogButtonBox::Close);
     connect(buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     layout->addWidget(buttons);
+
     loadPersistedPeaks();
 }
 
@@ -982,6 +989,22 @@ void LightcurveFetchDialog::onFetcherFinished(int code, bool ok)
         totalPoints += int(pts.size());
     }
 
+    // ── TESS crowding products (CROWDSAP + previews) ────────────────────
+    {
+        const QString crowdFile = previewPath("tess_crowdsap.txt");
+        if (QFile::exists(crowdFile)) {
+            const double v = readCrowdsapFile(crowdFile);
+            if (!std::isnan(v)) {
+                _star->setTessCrowdsap(v);
+                if (_dbm) _dbm->saveStarTessCrowdsap(_star->getId(), v);
+                status(tr("[TESS] CROWDSAP = %1").arg(v, 0, 'f', 3));
+            } else {
+                status(tr("[TESS] tess_crowdsap.txt present but could not be parsed"));
+            }
+        }
+        refreshPreviewsTab();
+    }
+
     if (!imported.isEmpty()) {
         _fetchStatus->setStyleSheet("color: #7dbd5e;");
         _fetchStatus->setText(tr("Imported %1 points: %2")
@@ -998,4 +1021,131 @@ void LightcurveFetchDialog::onFetcherFinished(int code, bool ok)
 
     if (!empty.isEmpty())
         status(tr("(No data for: %1)").arg(empty.join(", ")));
+}
+
+// ── Previews tab ──────────────────────────────────────────────────────────
+
+QString LightcurveFetchDialog::previewDir() const
+{
+    // lightcurvequery writes outputs relative to its own working dir
+    // (lcquery/) into lightcurves/<gaia_id>/. Use the exact same root the
+    // LightcurveFetcher was configured with above.
+    return QDir(AppPaths::root()).absoluteFilePath(
+        QString("lcquery/lightcurves/%1").arg(_star->getSourceId()));
+}
+
+QString LightcurveFetchDialog::previewPath(const QString& filename) const
+{
+    return QDir(previewDir()).absoluteFilePath(filename);
+}
+
+double LightcurveFetchDialog::readCrowdsapFile(const QString& path) const
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
+        return std::numeric_limits<double>::quiet_NaN();
+    QTextStream s(&f);
+    const QString line = s.readLine().trimmed();
+    bool ok = false;
+    const double v = line.toDouble(&ok);
+    return ok ? v : std::numeric_limits<double>::quiet_NaN();
+}
+
+static QFrame* wrapPreview(const QString& title, QLabel* lbl)
+{
+    auto* box = new QFrame;
+    box->setFrameStyle(QFrame::StyledPanel | QFrame::Sunken);
+    auto* v = new QVBoxLayout(box);
+    v->setContentsMargins(4, 4, 4, 4);
+    auto* t = new QLabel("<b>" + title + "</b>");
+    t->setAlignment(Qt::AlignCenter);
+    v->addWidget(t);
+    lbl->setAlignment(Qt::AlignCenter);
+    lbl->setMinimumSize(320, 320);
+    lbl->setStyleSheet("color: gray;");
+    v->addWidget(lbl, 1);
+    return box;
+}
+
+QWidget* LightcurveFetchDialog::buildPreviewsTab()
+{
+    auto* page = new QWidget;
+    auto* root = new QVBoxLayout(page);
+    root->setContentsMargins(8, 8, 8, 8);
+    root->setSpacing(8);
+
+    // Big CROWDSAP readout for the previews tab.
+    _crowdsapTabLabel = new QLabel;
+    _crowdsapTabLabel->setTextFormat(Qt::RichText);
+    _crowdsapTabLabel->setStyleSheet(
+        "QLabel { font-size: 13px; padding: 4px 6px; }");
+    root->addWidget(_crowdsapTabLabel);
+
+    _tessPreview  = new QLabel("(TESS FFI preview not yet fetched)");
+    _ztfPreview   = new QLabel("(ZTF reference preview not yet fetched)");
+    _atlasPreview = new QLabel("(ATLAS / DSS2 Red preview not yet fetched)");
+    _gaiaPreview  = new QLabel("(Pan-STARRS r preview not yet fetched)");
+
+    auto* grid = new QGridLayout;
+    grid->setSpacing(8);
+    grid->addWidget(wrapPreview("TESS FFI cutout",   _tessPreview ), 0, 0);
+    grid->addWidget(wrapPreview("ZTF reference",     _ztfPreview  ), 0, 1);
+    grid->addWidget(wrapPreview("ATLAS / DSS2 Red",  _atlasPreview), 1, 0);
+    grid->addWidget(wrapPreview("Gaia / Pan-STARRS r", _gaiaPreview), 1, 1);
+    root->addLayout(grid, 1);
+
+    refreshPreviewsTab();
+    return page;
+}
+
+void LightcurveFetchDialog::refreshPreviewsTab()
+{
+    if (!_tessPreview) return;     // tab not built yet
+
+    auto loadInto = [](QLabel* lbl, const QString& path, const QString& fallback) {
+        if (!lbl) return;
+        QPixmap pm;
+        if (QFileInfo::exists(path) && pm.load(path) && !pm.isNull()) {
+            const QSize tgt = lbl->size().isValid() && lbl->width() > 32
+                                ? lbl->size()
+                                : QSize(512, 512);
+            lbl->setPixmap(pm.scaled(tgt, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+            lbl->setToolTip(path);
+            lbl->setStyleSheet("");
+        } else {
+            lbl->clear();
+            lbl->setText(fallback);
+            lbl->setToolTip(QString());
+            lbl->setStyleSheet("color: gray;");
+        }
+    };
+
+    loadInto(_tessPreview,  previewPath("tess_preview.png"),  "(no TESS preview)");
+    loadInto(_ztfPreview,   previewPath("ztf_preview.png"),   "(no ZTF preview)");
+    loadInto(_atlasPreview, previewPath("atlas_preview.png"), "(no ATLAS preview)");
+    loadInto(_gaiaPreview,  previewPath("gaia_preview.png"),  "(no Pan-STARRS preview)");
+
+    // Bigger CROWDSAP readout for the tab.
+    if (_crowdsapTabLabel) {
+        const double v = _star->getTessCrowdsap();
+        if (Star::isSet(v)) {
+            QString interp = "uncontaminated";
+            QString color  = "#7dbd5e";
+            if (v < 0.5)      { interp = "heavily contaminated"; color = "#c46060"; }
+            else if (v < 0.8) { interp = "contaminated";         color = "#dca84d"; }
+            else if (v < 0.95) { interp = "slightly contaminated"; color = "#dca84d"; }
+            _crowdsapTabLabel->setText(
+                QString("TESS <b>CROWDSAP</b> = "
+                        "<span style=\"color:%1;font-weight:bold;\">%2</span>  "
+                        "<span style=\"color:gray;\">(%3)</span>  "
+                        "<span style=\"color:gray;font-size:11px;\">"
+                        "- 1.0 means none from neighbours.</span>")
+                    .arg(color).arg(v, 0, 'f', 3).arg(interp));
+        } else {
+            _crowdsapTabLabel->setText(
+                "<span style=\"color:gray;\">"
+                "TESS CROWDSAP not available — fetch TESS data with crowding "
+                "products enabled to populate this.</span>");
+        }
+    }
 }

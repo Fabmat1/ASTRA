@@ -94,6 +94,8 @@ public:
     bool deleteStarPeriodograms(const QString& starId);
     bool    saveStarPhotPeaks(const QString& starId, const QString& peaksJson);
     QString loadStarPhotPeaks(const QString& starId);
+    bool   saveStarTessCrowdsap(const QString& starId, double value);
+    double loadStarTessCrowdsap(const QString& starId);
 
 private:
     void backfillSpectrumInstrumentIds();
