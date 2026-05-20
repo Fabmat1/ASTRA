@@ -6,7 +6,7 @@
 #include "fitting/FitTypes.h"
 #include "fitting/FitBackendRegistry.h"
 #include <QDebug>
-
+#include <QFontDatabase>
 
 int main(int argc, char *argv[])
 {
@@ -14,6 +14,13 @@ int main(int argc, char *argv[])
     app.setApplicationName("ASTRA");
     app.setApplicationVersion("1.0.0");
     app.setOrganizationName("ASTRA");
+
+    QFontDatabase::addApplicationFont(":/fonts/FiraCode-Regular.ttf");
+    QFontDatabase::addApplicationFont(":/fonts/FiraCode-Medium.ttf");
+    QFontDatabase::addApplicationFont(":/fonts/FiraCode-Bold.ttf");
+    QFontDatabase::addApplicationFont(":/fonts/FiraCode-Light.ttf");
+    QFontDatabase::addApplicationFont(":/fonts/FiraCode-Retina.ttf");
+    QFontDatabase::addApplicationFont(":/fonts/FiraCode-SemiBold.ttf");
 
     // Initialize paths (uses compile-time ASTRA_DATA_DIR, or QStandardPaths if empty)
     AppPaths::initialize();

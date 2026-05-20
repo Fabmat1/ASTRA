@@ -248,13 +248,8 @@ QWidget* LightcurveFetchDialog::buildFetchTab()
     connect(_cancelFetch, &QPushButton::clicked, this, &LightcurveFetchDialog::onFetchCancelClicked);
 
     // ── Log view ──
-    _fetchLog = new AnsiTerminalWidget;       // <-- nothing else needed
+    _fetchLog = new AnsiTerminalWidget;  
     root->addWidget(_fetchLog, 1);
-
-    // Need access to AppSettings. Easiest is via the controller:
-    //     AppSettings* settings = _controller->appSettings();
-    // If your ApplicationController doesn't already expose AppSettings,
-    // add a one-liner getter — _controller already owns it.
 
     AppSettings* settings = _controller ? _controller->settings() : nullptr;
 

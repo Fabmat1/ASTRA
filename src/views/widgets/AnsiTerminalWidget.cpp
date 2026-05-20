@@ -17,12 +17,12 @@ AnsiTerminalWidget::AnsiTerminalWidget(QWidget* parent)
     setReadOnly(true);
     setAcceptRichText(false);
     setLineWrapMode(QTextEdit::NoWrap);
-    setStyleSheet("QTextEdit { background:#1e1e1e; color:#dcdcdc; }");
+    setStyleSheet("QTextEdit { background:#1e1e1e; color:#dcdcdc; font-family: 'Fira Code'; font-size: 11pt; }");
 
-    QFont mono;
-    mono.setFamily("Monospace");
-    mono.setStyleHint(QFont::TypeWriter);
+    QFont mono("Fira Code", 11);
+    mono.setStyleHint(QFont::Monospace);
     setFont(mono);
+    document()->setDefaultFont(mono);
 
     _format.setForeground(_defaultFg);
     _screen.append(QList<Cell>{});                        // start with one empty row
