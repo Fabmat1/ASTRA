@@ -353,8 +353,32 @@ public:
     double getLogP() const { return _logP; }
     void setLogP(double logP) { _logP = logP; }
 
+    // ─────────────────────────────────────────────────────────────────────
+    // Change notification — multi-subscriber, token-based.
+    //
+    // Each subscriber gets an opaque ListenerToken from addChangeListener();
+    // call removeChangeListener(token) (typically in your destructor) to
+    // detach. Removing a stale or zero token is a no-op.
+    //
+    // Listeners are invoked synchronously, in registration order, by
+    // notifyChanged(). Listeners must not modify the listener list during
+    // dispatch (we snapshot before invoking, so adding/removing during a
+    // callback is safe but takes effect on the NEXT notification).
+    // ─────────────────────────────────────────────────────────────────────
     using ChangeCallback = std::function<void()>;
-    void setChangeCallback(ChangeCallback cb) { _onChange = cb; }
+    using ListenerToken  = std::uint64_t;
+    static constexpr ListenerToken kInvalidToken = 0;
+
+    [[nodiscard]] ListenerToken addChangeListener(ChangeCallback cb);
+    void removeChangeListener(ListenerToken token);
+
+    // DEPRECATED: replaces all current listeners with a single one. Kept for
+    // backwards compatibility while call sites migrate to addChangeListener.
+    // Passing a null callback clears the single-slot listener (but leaves
+    // listeners installed via addChangeListener intact).
+    [[deprecated("Use addChangeListener / removeChangeListener instead")]]
+    void setChangeCallback(ChangeCallback cb);
+
     void attachToSpectra(const std::vector<std::shared_ptr<Spectrum>>& spectra);
 
     std::vector<std::shared_ptr<RadialVelocityPoint>> getActiveRVPoints() const;
@@ -373,7 +397,7 @@ public:
     void updateFitReferences();
 
     using BjdResolverCallback =
-    std::function<void(const std::shared_ptr<RadialVelocityPoint>&)>;
+        std::function<void(const std::shared_ptr<RadialVelocityPoint>&)>;
     void setBjdResolverCallback(BjdResolverCallback cb)
         { _bjdResolverCb = std::move(cb); }
     void resolveBjd(const std::shared_ptr<RadialVelocityPoint>& p)
@@ -383,19 +407,27 @@ public:
         const std::vector<std::shared_ptr<Spectrum>>& spectra);
 
 protected:
-    void notifyChanged() { if (_onChange) _onChange(); }
+    void notifyChanged();
 
 private:
-    ChangeCallback _onChange;
     QString _id;
     QString _starId;
     std::vector<std::shared_ptr<RadialVelocityPoint>> _rvPoints;
     std::vector<std::shared_ptr<RVFit>> _rvFits;
     double _logP;
 
-    BjdResolverCallback _bjdResolverCb;
-    PointPersistCallback _pointPersistCb;
-    
+    // Multi-subscriber change notification.
+    struct Listener {
+        ListenerToken    token;
+        ChangeCallback   cb;
+    };
+    std::vector<Listener> _listeners;
+    ListenerToken         _nextToken     = 1;     // 0 reserved for "invalid"
+    ListenerToken         _legacyToken   = kInvalidToken;  // for setChangeCallback shim
+
+    BjdResolverCallback   _bjdResolverCb;
+    PointPersistCallback  _pointPersistCb;
+
     double calculateMedian(std::vector<double> values) const;
 
     void onBestFitChanged(const std::shared_ptr<Spectrum>& spec,

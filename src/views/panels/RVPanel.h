@@ -1,22 +1,23 @@
 #pragma once
 
 #include "DetailPanel.h"
+#include "models/RadialVelocity.h"   // for RadialVelocityCurve::ListenerToken
 
 class QPushButton;
 class QVBoxLayout;
 class QCustomPlot;
 class QCheckBox;
-class RVFit;
 
 class RVPanel : public DetailPanel
 {
     Q_OBJECT
 public:
     explicit RVPanel(const Context& ctx, QWidget* parent = nullptr);
+    ~RVPanel() override;
 
     void refresh() override;
     void refreshTheme() override;
-    
+
     void setDisplayedFit(std::shared_ptr<RVFit> fit);
 
 private slots:
@@ -30,9 +31,12 @@ private:
     QWidget*     _content       = nullptr;
     QVBoxLayout* _contentLayout = nullptr;
     bool         _folded        = false;
-    
+
     std::shared_ptr<RVFit> _displayedFit;
 
     QCheckBox* _showFlaggedCheck = nullptr;
-    bool _showFlagged = false;
+    bool       _showFlagged      = false;
+
+    RadialVelocityCurve::ListenerToken _rvChangeToken =
+        RadialVelocityCurve::kInvalidToken;
 };

@@ -348,6 +348,8 @@ private:
     SummaryPersistCallback _summaryPersistCb;
     SummaryChangedCallback _summaryChangedCb;
 
+    RadialVelocityCurve::ListenerToken _rvChangeToken = RadialVelocityCurve::kInvalidToken;
+
     // RV curve summary
     double _rvTimespan = std::numeric_limits<double>::quiet_NaN();
     int    _rvNPoints  = 0;

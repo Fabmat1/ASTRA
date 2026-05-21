@@ -82,6 +82,9 @@ Star::Star()
 
 Star::~Star()
 {
+    if (_rvCurve && _rvChangeToken != RadialVelocityCurve::kInvalidToken) {
+        _rvCurve->removeChangeListener(_rvChangeToken);
+    }
 }
 
 // Helper: return QVariant for a double, blank string if NaN
@@ -418,12 +421,24 @@ void Star::recomputePhotometryMetrics()
 
 void Star::setRVCurve(std::shared_ptr<RadialVelocityCurve> curve)
 {
-    _rvCurve = curve;
+    // Detach from previous curve, if any.
+    if (_rvCurve && _rvChangeToken != RadialVelocityCurve::kInvalidToken) {
+        _rvCurve->removeChangeListener(_rvChangeToken);
+    }
+    _rvChangeToken = RadialVelocityCurve::kInvalidToken;
+    _rvAttached    = false;
+
+    _rvCurve = std::move(curve);
+
     if (_rvCurve) {
-        _rvCurve->setChangeCallback([this]() { recomputeRVMetrics(); });
+        _rvChangeToken = _rvCurve->addChangeListener(
+            [this]{ markSummaryDirty(); });
+        // Note: _rvAttached is set true by tryAttachRVCurve()/ensureRVCurveSynced()
+        // once spectra are also available; we only track listener registration here.
     }
     recomputeRVMetrics();
 }
+
 
 void Star::setPhotometry(std::shared_ptr<Photometry> photometry)
 {
@@ -443,36 +458,43 @@ void Star::markSummaryDirty()
     computeSummaryMetrics(_summaryPersistCb);
 }
 
-// src/models/Star.cpp :: tryAttachRVCurve
 void Star::tryAttachRVCurve()
 {
     if (_rvAttached) return;
     if (!_rvCurve || !_spectraLoaded) return;
 
     _rvCurve->attachToSpectra(_spectra);
-    _rvCurve->setChangeCallback([this]() { markSummaryDirty(); });
-    _rvCurve->reconcileWithSpectra(_spectra);
 
+    if (_rvChangeToken == RadialVelocityCurve::kInvalidToken) {
+        _rvChangeToken = _rvCurve->addChangeListener(
+            [this]{ markSummaryDirty(); });
+    }
+
+    _rvCurve->reconcileWithSpectra(_spectra);
     _rvAttached = true;
 }
 
-// src/models/Star.cpp — replace existing ensureRVCurveSynced
+
 void Star::ensureRVCurveSynced()
 {
     (void)getRVCurve();     // lazy-loads curve + tryAttachRVCurve
     (void)getSpectra();     // lazy-loads spectra
 
     if (!_rvCurve && _RVCurveFactory && !_id.isEmpty()) {
-        _rvCurve = _RVCurveFactory(_id);
-        _RVLoaded   = true;
-        _rvAttached = false;   // force re-attach below
+        _rvCurve       = _RVCurveFactory(_id);
+        _RVLoaded      = true;
+        _rvChangeToken = RadialVelocityCurve::kInvalidToken;  // new curve, no listener yet
+        _rvAttached    = false;                                // force re-attach below
     }
     if (!_rvCurve) return;
 
     _rvCurve->attachToSpectra(_spectra);   // idempotent
-    if (!_rvAttached) {
-        _rvCurve->setChangeCallback([this]() { markSummaryDirty(); });
-        _rvAttached = true;
+
+    if (_rvChangeToken == RadialVelocityCurve::kInvalidToken) {
+        _rvChangeToken = _rvCurve->addChangeListener(
+            [this]{ markSummaryDirty(); });
     }
+    _rvAttached = true;
+
     _rvCurve->reconcileWithSpectra(_spectra);
 }

@@ -960,3 +960,40 @@ void RadialVelocityCurve::reconcileWithSpectra(
 
     if (changed) notifyChanged();
 }
+
+RadialVelocityCurve::ListenerToken
+RadialVelocityCurve::addChangeListener(ChangeCallback cb)
+{
+    if (!cb) return kInvalidToken;
+    const ListenerToken token = _nextToken++;
+    _listeners.push_back({token, std::move(cb)});
+    return token;
+}
+
+void RadialVelocityCurve::removeChangeListener(ListenerToken token)
+{
+    if (token == kInvalidToken) return;
+    _listeners.erase(
+        std::remove_if(_listeners.begin(), _listeners.end(),
+                       [token](const Listener& l) { return l.token == token; }),
+        _listeners.end());
+}
+
+void RadialVelocityCurve::setChangeCallback(ChangeCallback cb)
+{
+    // Replace the previous "legacy" single-slot listener (if any).
+    if (_legacyToken != kInvalidToken) {
+        removeChangeListener(_legacyToken);
+        _legacyToken = kInvalidToken;
+    }
+    if (cb) _legacyToken = addChangeListener(std::move(cb));
+}
+
+void RadialVelocityCurve::notifyChanged()
+{
+    // Snapshot first: a listener may add/remove listeners during dispatch.
+    auto snapshot = _listeners;
+    for (auto& l : snapshot) {
+        if (l.cb) l.cb();
+    }
+}

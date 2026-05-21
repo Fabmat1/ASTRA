@@ -711,18 +711,7 @@ RVInspectorDialog::RVInspectorDialog(std::shared_ptr<Star> star,
         .arg(_star->getSourceId()));
 }
 
-RVInspectorDialog::~RVInspectorDialog()
-{
-    // Restore Star's curve change-callback (RVPanel hijacks it on construct).
-    if (_star) {
-        if (auto curve = _star->getRVCurve()) {
-            std::weak_ptr<Star> ws = _star;
-            curve->setChangeCallback([ws]() {
-                if (auto s = ws.lock()) s->markSummaryDirty();
-            });
-        }
-    }
-}
+RVInspectorDialog::~RVInspectorDialog() = default;
 
 void RVInspectorDialog::setupUi()
 {

@@ -15,6 +15,7 @@
 #include <QTimer>
 #include <QPainter>
 #include <QPen>
+#include <QPointer>
 
 #include <algorithm>
 #include <cmath>
@@ -204,6 +205,14 @@ QPair<double, double> addRVDataToPlot(
 
 } // namespace
 
+RVPanel::~RVPanel()
+{
+    if (_ctx.star && _rvChangeToken != RadialVelocityCurve::kInvalidToken) {
+        if (auto rv = _ctx.star->getRVCurve()) {
+            rv->removeChangeListener(_rvChangeToken);
+        }
+    }
+}
 
 RVPanel::RVPanel(const Context& ctx, QWidget* parent)
     : DetailPanel(ctx, parent)
@@ -228,8 +237,11 @@ void RVPanel::populate()
     PanelUtils::clearLayout(_contentLayout);
 
     auto rvCurve = _ctx.star->getRVCurve();
-    if (rvCurve) {
-        rvCurve->setChangeCallback([this]() { populate(); });
+    if (rvCurve && _rvChangeToken == RadialVelocityCurve::kInvalidToken) {
+        QPointer<RVPanel> self(this);
+        _rvChangeToken = rvCurve->addChangeListener([self]{
+            if (self) self->populate();
+        });
     }
 
     bool hasData = rvCurve && rvCurve->getNumPoints() > 0;
