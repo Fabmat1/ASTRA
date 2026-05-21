@@ -257,3 +257,67 @@ bool SpectrumRepository::updateBestFit(const QString& spectrumId, const QString&
     q.bindValue(":id", bestFitId);
     return q.exec();
 }
+
+bool SpectrumRepository::deleteSpectrum(const QString& spectrumId)
+{
+    auto fits = loadSpectralFits(spectrumId);
+
+    QSqlQuery query(_db.threadConnection());
+
+    query.prepare("DELETE FROM spectral_fits WHERE spectrum_id = :spectrum_id");
+    query.bindValue(":spectrum_id", spectrumId);
+    if (!query.exec()) {
+        qDebug() << "Failed to delete spectral fits:" << query.lastError();
+        return false;
+    }
+    for (const auto& fit : fits) {
+        const QString& modelFile = fit->getModelDataFile();
+        if (!modelFile.isEmpty() && QFile::exists(modelFile))
+            QFile::remove(modelFile);
+    }
+
+    query.prepare("SELECT data_file FROM spectra WHERE id = :id");
+    query.bindValue(":id", spectrumId);
+    if (!query.exec() || !query.next()) {
+        qDebug() << "Failed to fetch spectrum for deletion:" << query.lastError();
+        return false;
+    }
+    QString dataFile = query.value("data_file").toString();
+
+    query.prepare("DELETE FROM spectra WHERE id = :id");
+    query.bindValue(":id", spectrumId);
+    if (!query.exec()) {
+        qDebug() << "Failed to delete spectrum:" << query.lastError();
+        return false;
+    }
+
+    if (!dataFile.isEmpty() && QFile::exists(dataFile))
+        QFile::remove(dataFile);
+
+    return true;
+}
+
+bool SpectrumRepository::deleteSpectralFit(const QString& fitId)
+{
+    QSqlQuery query(_db.threadConnection());
+
+    query.prepare("SELECT model_data_file FROM spectral_fits WHERE id = :id");
+    query.bindValue(":id", fitId);
+    if (!query.exec() || !query.next()) {
+        qDebug() << "Failed to fetch spectral fit for deletion:" << query.lastError();
+        return false;
+    }
+    QString modelFile = query.value("model_data_file").toString();
+
+    query.prepare("DELETE FROM spectral_fits WHERE id = :id");
+    query.bindValue(":id", fitId);
+    if (!query.exec()) {
+        qDebug() << "Failed to delete spectral fit:" << query.lastError();
+        return false;
+    }
+
+    if (!modelFile.isEmpty() && QFile::exists(modelFile))
+        QFile::remove(modelFile);
+
+    return true;
+}

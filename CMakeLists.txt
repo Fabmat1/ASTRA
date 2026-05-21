@@ -233,7 +233,8 @@ set(SOURCES
     src/utils/ThemeManager.cpp
     src/utils/ObservabilityCalculator.cpp
     src/utils/LightcurveFetcher.cpp
-
+    src/utils/CheckStateDragger.cpp
+    
     # views
     src/views/ColumnConfigDialog.cpp
     src/views/InstrumentConfigView.cpp
@@ -344,6 +345,7 @@ set(HEADERS
     src/utils/ThemeManager.h
     src/utils/ObservabilityCalculator.h
     src/utils/LightcurveFetcher.h
+    src/utils/CheckStateDragger.h
 
     # views
     src/views/BooleanColumnDelegate.h

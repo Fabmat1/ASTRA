@@ -1054,6 +1054,16 @@ bool DatabaseManager::saveSpectralFit(const QString& starId, const QString& spec
     return _spectra->saveSpectralFit(starId, spectrumId, fit);
 }
 
+bool DatabaseManager::deleteSpectrum(const QString& spectrumId)
+{
+    return _spectra->deleteSpectrum(spectrumId);
+}
+
+bool DatabaseManager::deleteSpectralFit(const QString& fitId)
+{
+    return _spectra->deleteSpectralFit(fitId);
+}
+
 std::vector<std::shared_ptr<SpectralFit>> DatabaseManager::loadSpectralFits(const QString& spectrumId)
 {
     return _spectra->loadSpectralFits(spectrumId);

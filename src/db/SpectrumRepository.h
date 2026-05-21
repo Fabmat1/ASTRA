@@ -17,6 +17,8 @@ public:
     std::vector<std::shared_ptr<Spectrum>> loadSpectra(const QString& starId);
     bool saveSpectrum(const QString& starId, std::shared_ptr<Spectrum> spectrum);
     bool saveSpectralFit(const QString& starId, const QString& spectrumId, std::shared_ptr<SpectralFit> fit);
+    bool deleteSpectrum(const QString& spectrumId);
+    bool deleteSpectralFit(const QString& fitId);
     std::vector<std::shared_ptr<SpectralFit>> loadSpectralFits(const QString& spectrumId);
     void loadSpectraBatch(std::vector<std::shared_ptr<Star>>& stars);
 

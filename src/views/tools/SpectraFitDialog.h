@@ -14,6 +14,8 @@ class QTreeWidgetItem;
 class QSplitter;
 class FitSetupWidget;
 class QTabWidget;
+class QPushButton;
+class CheckStateDragger;
 
 class SpectraFitDialog : public QDialog
 {
@@ -27,22 +29,29 @@ public:
 
 signals:
     void starParametersChanged();
-    void spectraUpdated();          
-    
+    void spectraUpdated();
+
 private slots:
     void onTreeItemChanged(QTreeWidgetItem* item, int column);
     void onTreeItemClicked(QTreeWidgetItem* item, int column);
     void onPanelSelectionChanged(const QString& spectrumId,
                                  const QString& fitId);
-                                 
-                                 private:
-                                     void setupUi();
-                                     void rebuildTree();
-                                     void refreshTreeStyling();
-                                     void updateBestMarkers();
-                                     void setBestFitTied(const QString& fitId, bool markBest);
+
+    void onTreeContextMenu(const QPoint& pos);
+    void onAddSpectraClicked();
+    void onAddFitClicked();
+
+private:
+    void setupUi();
+    void rebuildTree();
+    void refreshTreeStyling();
+    void updateBestMarkers();
+    void setBestFitTied(const QString& fitId, bool markBest);
     void propagateBestFitParams(const std::shared_ptr<SpectralFit>& fit);
     void syncTreeSelectionTo(const QString& spectrumId, const QString& fitId);
+
+    void removeSpectrum(const QString& spectrumId);
+    void removeFit(const QString& spectrumId, const QString& fitId);
 
     std::shared_ptr<Star>  _star;
     DatabaseManager*       _dbm = nullptr;
@@ -56,6 +65,10 @@ private slots:
     QTabWidget*    _rightTabs  = nullptr;
     FitSetupWidget* _setup     = nullptr;
 
-    bool _updatingTree   = false;
+    QPushButton*  _addSpectraBtn = nullptr;
+    QPushButton*  _addFitBtn     = nullptr;
+    CheckStateDragger* _flagDragger = nullptr;
+
+    bool _updatingTree    = false;
     bool _syncingFromPanel = false;
 };

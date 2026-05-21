@@ -6,6 +6,8 @@
 #include "utils/Logger.h"
 #include "views/panels/SpectraPanel.h"
 #include "FitSetupWidget.h"
+#include "utils/CheckStateDragger.h"
+#include "utils/SpectrumReader.h"  
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -14,7 +16,13 @@
 #include <QDialogButtonBox>
 #include <QTreeWidget>
 #include <QHeaderView>
-
+#include <QMenu>
+#include <QAction>
+#include <QPushButton>
+#include <QMessageBox>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QUuid>
 #include <algorithm>
 #include <cmath>
 
@@ -124,7 +132,7 @@ void SpectraFitDialog::setupUi()
     _rightTabs->tabBar()->setDrawBase(false);
     _rightTabs->setStyleSheet("QTabWidget::pane { border: 0; }");
 
-    // ── Browse tab (existing tree) ──
+    // ── Browse tab (tree + bottom toolbar) ──
     QWidget* browseTab = new QWidget;
     auto* rl = new QVBoxLayout(browseTab);
     rl->setContentsMargins(6, 6, 6, 6);
@@ -133,9 +141,11 @@ void SpectraFitDialog::setupUi()
     _tree->setColumnCount(3);
     _tree->setHeaderLabels({ "Spectrum / Fit", "Flag", "Best" });
     _tree->setRootIsDecorated(true);
+    _tree->setAutoScroll(false);
     _tree->setUniformRowHeights(true);
     _tree->setSelectionMode(QAbstractItemView::SingleSelection);
     _tree->setEditTriggers(QAbstractItemView::NoEditTriggers);
+    _tree->setContextMenuPolicy(Qt::CustomContextMenu);
 
     if (auto* hdr = _tree->header()) {
         hdr->setStretchLastSection(false);
@@ -144,12 +154,33 @@ void SpectraFitDialog::setupUi()
         hdr->setSectionResizeMode(kColBest, QHeaderView::ResizeToContents);
     }
 
+    // Drag-toggle for the Flag column
+    _flagDragger = new CheckStateDragger(_tree, kColFlag);
+
     connect(_tree, &QTreeWidget::itemClicked,
             this,  &SpectraFitDialog::onTreeItemClicked);
     connect(_tree, &QTreeWidget::itemChanged,
             this,  &SpectraFitDialog::onTreeItemChanged);
+    connect(_tree, &QTreeWidget::customContextMenuRequested,
+            this,  &SpectraFitDialog::onTreeContextMenu);
 
     rl->addWidget(_tree, 1);
+
+    // Bottom toolbar: Add Spectra / Add Spectral Fit (functionality TBD)
+    auto* btnBar = new QHBoxLayout;
+    _addSpectraBtn = new QPushButton(QStringLiteral("Add Spectra…"));
+    _addFitBtn     = new QPushButton(QStringLiteral("Add Spectral Fit…"));
+    _addSpectraBtn->setToolTip("Add new spectra to this star");
+    _addFitBtn->setToolTip("Add a spectral fit to the selected spectrum");
+    btnBar->addWidget(_addSpectraBtn);
+    btnBar->addWidget(_addFitBtn);
+    btnBar->addStretch();
+    rl->addLayout(btnBar);
+
+    connect(_addSpectraBtn, &QPushButton::clicked,
+            this, &SpectraFitDialog::onAddSpectraClicked);
+    connect(_addFitBtn, &QPushButton::clicked,
+            this, &SpectraFitDialog::onAddFitClicked);
 
     _rightTabs->addTab(browseTab, "Browse");
 
@@ -197,6 +228,9 @@ void SpectraFitDialog::setupUi()
 
 void SpectraFitDialog::rebuildTree()
 {
+    const int scrollPos = _tree->verticalScrollBar()
+                              ? _tree->verticalScrollBar()->value() : 0;
+
     _updatingTree = true;
     _tree->clear();
     _spectra.clear();
@@ -265,6 +299,9 @@ void SpectraFitDialog::rebuildTree()
 
     _updatingTree = false;
     refreshTreeStyling();
+
+    if (auto* sb = _tree->verticalScrollBar())
+        sb->setValue(scrollPos);
 }
 
 void SpectraFitDialog::refreshTreeStyling()
@@ -503,4 +540,250 @@ void SpectraFitDialog::propagateBestFitParams(
             QString("Star %1 atmospheric params updated from best fit")
                 .arg(_star->getSourceId()));
     }
+}
+
+// ----------------------------------------------------------------------------
+// Context menu / Add / Remove
+// ----------------------------------------------------------------------------
+
+void SpectraFitDialog::onTreeContextMenu(const QPoint& pos)
+{
+    QTreeWidgetItem* item = _tree->itemAt(pos);
+
+    QMenu menu(this);
+
+    QAction* addSpectraAct = menu.addAction(QStringLiteral("Add Spectra…"));
+    connect(addSpectraAct, &QAction::triggered,
+            this, &SpectraFitDialog::onAddSpectraClicked);
+
+    if (item) {
+        const QString kind = item->data(kColName, kRoleKind).toString();
+
+        if (kind == kKindSpectrum) {
+            const QString specId = item->data(kColName, kRoleId).toString();
+
+            QAction* addFitAct = menu.addAction(QStringLiteral("Add Spectral Fit…"));
+            connect(addFitAct, &QAction::triggered,
+                    this, &SpectraFitDialog::onAddFitClicked);
+
+            menu.addSeparator();
+            QAction* removeAct = menu.addAction(QStringLiteral("Remove Spectrum"));
+            connect(removeAct, &QAction::triggered, this, [this, specId]{
+                if (QMessageBox::question(this, "Remove Spectrum",
+                        "Remove this spectrum and all of its fits?\n"
+                        "This cannot be undone.")
+                    == QMessageBox::Yes)
+                {
+                    removeSpectrum(specId);
+                }
+            });
+        }
+        else if (kind == kKindFit) {
+            const QString fitId  = item->data(kColName, kRoleId).toString();
+            const QString specId = item->data(kColName, kRoleParentId).toString();
+
+            menu.addSeparator();
+            QAction* removeAct = menu.addAction(QStringLiteral("Remove Fit"));
+            connect(removeAct, &QAction::triggered, this, [this, specId, fitId]{
+                if (QMessageBox::question(this, "Remove Fit",
+                        "Remove this spectral fit?\nThis cannot be undone.")
+                    == QMessageBox::Yes)
+                {
+                    removeFit(specId, fitId);
+                }
+            });
+        }
+    }
+
+    menu.exec(_tree->viewport()->mapToGlobal(pos));
+}
+
+void SpectraFitDialog::onAddSpectraClicked()
+{
+    if (!_star) return;
+
+    const QString filter =
+        QStringLiteral("Spectra (*.txt *.fits *.fit *.fts *.dat *.ascii *.csv);;"
+                       "FITS (*.fits *.fit *.fts);;"
+                       "ASCII (*.txt *.dat *.ascii *.csv);;"
+                       "All files (*)");
+
+    const QStringList paths = QFileDialog::getOpenFileNames(
+        this, QStringLiteral("Add Spectra"), QString(), filter);
+    if (paths.isEmpty()) return;
+
+    int added = 0;
+    QStringList failures;
+    auto& registry = SpectrumReaderRegistry::instance();
+
+    for (const QString& path : paths) {
+        const QString name = QFileInfo(path).fileName();
+
+        auto reader = registry.getReaderForFile(path);
+        if (!reader) {
+            failures << QString("%1 — no reader available").arg(name);
+            continue;
+        }
+
+        SpectrumReadResult res = reader->readSpectrum(path);
+        if (!res.success || !res.spectrum) {
+            failures << QString("%1 — %2")
+                .arg(name,
+                     res.errorMessage.isEmpty() ? "unknown read error"
+                                                : res.errorMessage);
+            continue;
+        }
+
+        auto spec = res.spectrum;
+        if (spec->getId().isEmpty())
+            spec->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        if (spec->getFile().isEmpty())
+            spec->setFile(path);
+
+        // Persist to DB (this also writes the spectrum's data file on disk
+        // via SpectrumRepository::saveSpectrum).
+        if (_dbm && !_dbm->saveSpectrum(_star->getId(), spec)) {
+            failures << QString("%1 — database save failed").arg(name);
+            continue;
+        }
+
+        _star->addSpectrum(spec);
+        ++added;
+        LOG_INFO("Tools",
+            QString("Added spectrum %1 (%2) to star %3")
+                .arg(spec->getId().left(8), name, _star->getSourceId()));
+    }
+
+    if (added > 0) {
+        _star->markSummaryDirty();
+        rebuildTree();
+        _panel->refresh();
+        emit spectraUpdated();
+    }
+
+    if (!failures.isEmpty()) {
+        QMessageBox::warning(this, "Add Spectra",
+            QString("Added %1 spectrum(a).\n\nFailures:\n• %2")
+                .arg(added).arg(failures.join("\n• ")));
+    } else if (added == 0) {
+        QMessageBox::information(this, "Add Spectra",
+            "No spectra were added.");
+    }
+}
+
+void SpectraFitDialog::onAddFitClicked()
+{
+    if (!_star) return;
+
+    QString targetSpecId;
+    if (auto* item = _tree->currentItem()) {
+        const QString kind = item->data(kColName, kRoleKind).toString();
+        if (kind == kKindSpectrum)
+            targetSpecId = item->data(kColName, kRoleId).toString();
+        else if (kind == kKindFit)
+            targetSpecId = item->data(kColName, kRoleParentId).toString();
+    }
+
+    if (targetSpecId.isEmpty()) {
+        QMessageBox::information(this, "Add Spectral Fit",
+            "Select a spectrum (or one of its fits) in the tree first.");
+        return;
+    }
+
+    std::shared_ptr<Spectrum> spec;
+    for (auto& s : _star->getSpectra())
+        if (s->getId() == targetSpecId) { spec = s; break; }
+    if (!spec) return;
+
+    const QString filter =
+        QStringLiteral("Fit model files (*.txt *.dat *.fit *.fits);;All files (*)");
+
+    const QString path = QFileDialog::getOpenFileName(
+        this, QStringLiteral("Add Spectral Fit"), QString(), filter);
+    if (path.isEmpty()) return;
+
+    auto fit = std::make_shared<SpectralFit>();
+    fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    fit->modelId = QFileInfo(path).completeBaseName();
+    fit->creationDate = QDateTime::currentDateTime();
+    fit->setModelDataFile(path);
+
+    // Best-effort load of the model arrays from the picked file. If the
+    // format doesn't match what SpectralFit expects we still keep the
+    // metadata row in the DB so the user can re-link later.
+    if (!fit->loadDataFromFile(path)) {
+        LOG_WARNING("Tools",
+            QString("Could not parse model data from %1; "
+                    "fit row will be saved without arrays").arg(path));
+    }
+
+    fit->isBestFit = false;
+
+    if (_dbm && !_dbm->saveSpectralFit(_star->getId(), spec->getId(), fit)) {
+        QMessageBox::warning(this, "Add Spectral Fit",
+            "Database save failed. See log for details.");
+        return;
+    }
+
+    spec->addSpectralFit(fit);
+    _star->markSummaryDirty();
+
+    rebuildTree();
+    _panel->refreshCurrentView();
+    emit spectraUpdated();
+
+    LOG_INFO("Tools",
+        QString("Added fit %1 from %2 to spectrum %3")
+            .arg(fit->getId().left(8),
+                 QFileInfo(path).fileName(),
+                 spec->getId().left(8)));
+}
+
+void SpectraFitDialog::removeSpectrum(const QString& spectrumId)
+{
+    if (!_dbm) return;
+    if (!_dbm->deleteSpectrum(spectrumId)) {
+        QMessageBox::warning(this, "Remove Spectrum",
+            "Database removal failed. See log for details.");
+        return;
+    }
+
+    auto specs = _star->getSpectra();
+    specs.erase(std::remove_if(specs.begin(), specs.end(),
+        [&](const std::shared_ptr<Spectrum>& s){
+            return s->getId() == spectrumId;
+        }), specs.end());
+    _star->setSpectra(specs);
+    _star->markSummaryDirty();
+
+    rebuildTree();
+    _panel->refresh();
+    emit spectraUpdated();
+
+    LOG_INFO("Tools", QString("Removed spectrum %1").arg(spectrumId));
+}
+
+void SpectraFitDialog::removeFit(const QString& spectrumId, const QString& fitId)
+{
+    if (!_dbm) return;
+    if (!_dbm->deleteSpectralFit(fitId)) {
+        QMessageBox::warning(this, "Remove Fit",
+            "Database removal failed. See log for details.");
+        return;
+    }
+
+    for (auto& s : _star->getSpectra()) {
+        if (s->getId() == spectrumId) {
+            s->removeSpectralFit(fitId);
+            break;
+        }
+    }
+    _star->markSummaryDirty();
+
+    rebuildTree();
+    _panel->refreshCurrentView();
+    emit spectraUpdated();
+
+    LOG_INFO("Tools",
+        QString("Removed fit %1 from spectrum %2").arg(fitId, spectrumId));
 }

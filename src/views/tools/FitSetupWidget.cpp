@@ -13,6 +13,7 @@
 #include "views/widgets/GridSelectorWidget.h"
 #include "dialogs/SettingsDialog.h"
 #include "InteractiveIsisDialog.h"
+#include "utils/CheckStateDragger.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -291,6 +292,9 @@ QGroupBox* FitSetupWidget::buildSpectraListSection()
     _spectraList = new QListWidget;
     _spectraList->setSelectionMode(QAbstractItemView::SingleSelection);
     _spectraList->setMinimumHeight(250);
+
+    new CheckStateDragger(_spectraList, /*checkColumn=*/0);
+
     connect(_spectraList, &QListWidget::currentRowChanged,
             this, &FitSetupWidget::onSpectrumListRowChanged);
     connect(_spectraList, &QListWidget::itemChanged, this, [this](QListWidgetItem* it){
