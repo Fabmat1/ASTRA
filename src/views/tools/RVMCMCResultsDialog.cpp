@@ -9,6 +9,7 @@
 #include <QFormLayout>
 #include <QSplitter>
 #include <QGroupBox>
+#include <QMessageBox>
 #include <QListWidget>
 #include <QPushButton>
 #include <QDoubleSpinBox>
@@ -449,14 +450,29 @@ void RVMCMCResultsDialog::addCustomListItem(int customIndex)
 {
     if (customIndex < 0 || customIndex >= _customRegions.size()) return;
     const auto& r = _customRegions[customIndex];
-    auto txt = QString("[custom]   P ∈ [%1, %2] d   n = %3")
-        .arg(r.pmin, 0, 'f', 6).arg(r.pmax, 0, 'f', 6).arg(r.nSamples);
+
+    const auto& pr = r.ranges[0];                 // period is param 0
+    auto txt = QString("[custom N-D]  P ∈ [%1, %2] d  (+%3 more axes)   n = %4")
+        .arg(pr.lo, 0, 'f', 6)
+        .arg(pr.hi, 0, 'f', 6)
+        .arg(r.ranges.size() - 1)
+        .arg(r.nSamples);
+
     auto* item = new QListWidgetItem(txt);
     item->setForeground(QBrush(QColor(70, 110, 200)));
     item->setData(Qt::UserRole, customIndex);
-    item->setData(Qt::UserRole + 1, true);    // true = custom region
+    item->setData(Qt::UserRole + 1, true);
+
+    QStringList lines;
+    for (size_t k = 0; k < r.ranges.size(); ++k) {
+        lines << QString("%1: [%2, %3]")
+            .arg(QString::fromStdString(_result.param_names[k]))
+            .arg(r.ranges[k].lo).arg(r.ranges[k].hi);
+    }
+    item->setToolTip(lines.join('\n'));
+
     _peakList->addItem(item);
-    _peakList->setCurrentItem(item);          // pre-select the newly added one
+    _peakList->setCurrentItem(item);
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -479,10 +495,20 @@ void RVMCMCResultsDialog::onAddSelectedPeaks()
         if (isCustom) {
             if (idx < 0 || idx >= _customRegions.size()) continue;
             const auto& r = _customRegions[idx];
-            for (const auto& row : _result.chain)
-                if (row[0] >= r.pmin && row[0] <= r.pmax) sub.push_back(row);
-            tag = QString("rv_mcmc[%1..%2 d]")
-                  .arg(r.pmin, 0, 'f', 4).arg(r.pmax, 0, 'f', 4);
+
+            const int dim = (int)r.ranges.size();
+            for (const auto& row : _result.chain) {
+                bool inside = true;
+                for (int k = 0; k < dim; ++k) {
+                    const double v = row[k];
+                    if (v < r.ranges[k].lo || v > r.ranges[k].hi) { inside = false; break; }
+                }
+                if (inside) sub.push_back(row);
+            }
+
+            const auto& pr = r.ranges[0];
+            tag = QString("rv_mcmc[crop P %1..%2 +%3d]")
+                    .arg(pr.lo, 0, 'f', 4).arg(pr.hi, 0, 'f', 4).arg(dim - 1);
         } else {
             if (idx < 0 || idx >= (int)_result.solutions.size()) continue;
             const auto& s = _result.solutions[idx];
@@ -508,23 +534,39 @@ void RVMCMCResultsDialog::onAddSelectedPeaks()
 
 void RVMCMCResultsDialog::onAddCustomRegion()
 {
-    double lo = _pMinSpin->value();
-    double hi = _pMaxSpin->value();
-    if (!(hi > lo)) return;
+    const int n = (int)_diagPlots.size();
+    if (n == 0) return;
 
-    int n = 0;
-    for (const auto& row : _result.chain)
-        if (row[0] >= lo && row[0] <= hi) ++n;
+    CustomRegion r;
+    r.ranges.resize(n);
+    for (int k = 0; k < n; ++k) {
+        if (!_diagPlots[k]) return;
+        const QCPRange qr = _diagPlots[k]->xAxis->range();
+        r.ranges[k] = { qr.lower, qr.upper };
+        if (!(r.ranges[k].hi > r.ranges[k].lo)) {
+            QMessageBox::information(this, "Add custom region",
+                QString("Axis '%1' is collapsed (min ≥ max). Widen the crop.")
+                    .arg(QString::fromStdString(_result.param_names[k])));
+            return;
+        }
+    }
 
-    if (n < 50) {
-        LOG_WARNING("Tools", "Custom region has fewer than 50 samples — skipping");
+    const auto mask = currentFilterMask();
+    r.nSamples = (int)std::count(mask.begin(), mask.end(), true);
+
+    constexpr int kMinSamples = 20;
+    if (r.nSamples < kMinSamples) {
+        QMessageBox::warning(this, "Add custom region",
+            QString("Only %1 samples fall inside the current crop "
+                    "(need at least %2). Zoom out a bit.")
+                .arg(r.nSamples).arg(kMinSamples));
         return;
     }
 
-    _customRegions.append({lo, hi, n});
+    _customRegions.append(std::move(r));
     addCustomListItem(_customRegions.size() - 1);
-    LOG_INFO("Tools", QString("RV-MCMC: queued custom region [%1, %2] d (n=%3)")
-             .arg(lo).arg(hi).arg(n));
+
+    LOG_INFO("Tools", QString("RV-MCMC: queued custom N-D region (n=%1)").arg(r.nSamples));
 }
 
 void RVMCMCResultsDialog::onPeakActivated(int row)

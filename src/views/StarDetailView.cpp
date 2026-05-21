@@ -42,7 +42,7 @@ StarDetailView::StarDetailView(std::shared_ptr<Star> star,
     buildGrid();
 
     _star->setSummaryChangedCallback([this]() {
-        for (auto* p : _panels) if (p) p->refresh();
+        for (auto* p : _panels) if (p) p->onSummaryChanged();
     });
 
     _star->computeSummaryMetricsFull([this]() {

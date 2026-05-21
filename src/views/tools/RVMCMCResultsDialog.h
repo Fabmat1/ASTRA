@@ -61,10 +61,11 @@ private:
     std::vector<QCPColorMap*>             _colormaps; // flat list, parallels offPlots
     bool _suppressRangeSync = false;
 
-        struct CustomRegion {
-        double pmin = 0.0;
-        double pmax = 0.0;
-        int    nSamples = 0;
+    struct AxisRange { double lo = 0.0, hi = 0.0; };
+
+    struct CustomRegion {
+        std::vector<AxisRange> ranges;   // one entry per parameter, in _result.param_names order
+        int nSamples = 0;
     };
     void addPeakListItem(int solutionIndex);
     void addCustomListItem(int customIndex);

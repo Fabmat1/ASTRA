@@ -34,6 +34,8 @@ public:
     ViewMode viewMode() const { return _viewMode; }
     bool     isFolded() const { return _folded; }
 
+    void onSummaryChanged() override { /* light curves unchanged by summary metrics */ }
+
     struct SeriesData {
         QString         source;
         QString         filter;

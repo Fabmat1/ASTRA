@@ -38,6 +38,8 @@ public:
     void refreshCurrentView();                          // rebuild combo labels
     void refreshFitPreviewData();
     void resetCustomZoom() { _hasCustomZoom = false; }
+
+    void onSummaryChanged() override { /* curves unchanged by summary metrics */ }
     
     // State
     QString currentSpectrumId() const;

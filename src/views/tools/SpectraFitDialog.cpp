@@ -385,7 +385,6 @@ void SpectraFitDialog::onTreeItemChanged(QTreeWidgetItem* item, int column)
     }
     
     refreshTreeStyling();
-    _panel->refreshCurrentView();
     if (_star) _star->markSummaryDirty();
 }
 
@@ -409,7 +408,6 @@ void SpectraFitDialog::onTreeItemClicked(QTreeWidgetItem* item, int column)
 
         setBestFitTied(fitId, !currentlyBest);
         updateBestMarkers();
-        _panel->refreshCurrentView();
         return;
     }
 
