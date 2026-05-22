@@ -72,6 +72,9 @@ private slots:
     void onFetcherLog(const QString& line);
     void onFetcherFinished(int code, bool ok);
     void onFetcherFailed(const QString& reason);
+    void onImportCsvClicked();
+    void onDeleteLightcurveClicked();
+    void onRecomputeBjdClicked();
 
 private:
     void     setupUi();
@@ -81,6 +84,8 @@ private:
     QWidget* buildPreviewsTab();
     QWidget* buildFitTab();
     QWidget* buildPeriodogramControls(); 
+
+    void refreshViewerSourceCombo();
 
     void pushSeriesIntoPanel();
     void rebuildPeaksTable();
@@ -106,6 +111,10 @@ private:
     LCPanel*          _lcPanel           = nullptr;
     PeriodogramPanel* _periodogramPanel  = nullptr;
     int               _periodogramTabIdx = -1;
+
+    QComboBox*   _viewerSourceCombo = nullptr;
+    QPushButton* _deleteLcBtn       = nullptr;
+    QPushButton* _recomputeBjdBtn   = nullptr;
 
     // Parameter controls (right column)
     QDoubleSpinBox* _minPSpin    = nullptr;
@@ -149,6 +158,9 @@ private:
     AnsiTerminalWidget*  _fetchLog = nullptr;
     QProgressBar*    _fetchBusy    = nullptr;
     QLabel*          _fetchStatus  = nullptr;
+    QCheckBox*       _reattemptAll = nullptr;
+    QPushButton*     _importCsvBtn = nullptr;
+    bool             _wasReattempt = false;
 
     int     _previewsTabIdx   = -1;
     QLabel*      _previewTitle      = nullptr;

@@ -79,6 +79,7 @@ public:
     bool saveSEDModelForStar(const QString& starId, std::shared_ptr<SEDModel> model);
     bool deleteSEDModel(const QString& modelId);
     bool saveLightcurveForStar(const QString& starId, const QString& source, Photometry* photometry);
+    bool removeLightcurve(const QString& starId, const QString& source);
     void initializeInstruments();
     std::shared_ptr<Instrument> getInstrumentById(const QString& id) const;
     std::shared_ptr<Instrument> getInstrumentByName(const QString& name) const;

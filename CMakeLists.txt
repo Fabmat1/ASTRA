@@ -196,6 +196,7 @@ set(SOURCES
     src/dialogs/NewProjectDialog.cpp
     src/dialogs/SettingsDialog.cpp
     src/dialogs/AddStarDialog.cpp
+    src/dialogs/ImportLightcurve.cpp
 
     # importWizard
     src/importWizard/GeneralImportPage.cpp
@@ -308,6 +309,7 @@ set(HEADERS
     src/dialogs/NewProjectDialog.h
     src/dialogs/SettingsDialog.h
     src/dialogs/AddStarDialog.h
+    src/dialogs/ImportLightcurve.h
 
     # importWizard
     src/importWizard/GeneralImportPage.h

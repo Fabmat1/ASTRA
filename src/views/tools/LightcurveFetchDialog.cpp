@@ -8,6 +8,7 @@
 #include "db/DatabaseManager.h"
 #include "utils/AppSettings.h"
 #include "controllers/ApplicationController.h"
+#include "dialogs/ImportLightcurve.h"
 
 #include <QPlainTextEdit>
 #include <QCheckBox>
@@ -191,14 +192,48 @@ void LightcurveFetchDialog::setupUi()
 
 QWidget* LightcurveFetchDialog::buildViewerTab()
 {
+    auto* page = new QWidget;
+    auto* root = new QVBoxLayout(page);
+    root->setContentsMargins(0, 0, 0, 0);
+    root->setSpacing(4);
+
+    auto* tb = new QHBoxLayout;
+    tb->setContentsMargins(6, 4, 6, 0);
+    tb->addWidget(new QLabel(tr("Source:")));
+    _viewerSourceCombo = new QComboBox;
+    _viewerSourceCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    _viewerSourceCombo->setMinimumWidth(140);
+    tb->addWidget(_viewerSourceCombo);
+
+    _recomputeBjdBtn = new QPushButton(tr("Recompute BJD…"));
+    _recomputeBjdBtn->setToolTip(tr(
+        "Re-set the original time scale for this lightcurve and force "
+        "BJD values to be recomputed from the native timestamps. "
+        "Useful for fixing all-zero BJDs left over from a faulty import."));
+
+    _deleteLcBtn = new QPushButton(tr("Delete…"));
+    _deleteLcBtn->setToolTip(tr("Delete this lightcurve from the star."));
+
+    tb->addWidget(_recomputeBjdBtn);
+    tb->addWidget(_deleteLcBtn);
+    tb->addStretch();
+    root->addLayout(tb);
+
     DetailPanel::Context ctx;
     ctx.star       = _star;
     ctx.dbm        = _dbm;
     ctx.controller = _controller;
     ctx.projectId  = _projectId;
-
     _lcPanel = new LCPanel(ctx);
-    return _lcPanel;
+    root->addWidget(_lcPanel, 1);
+
+    connect(_deleteLcBtn,     &QPushButton::clicked,
+            this, &LightcurveFetchDialog::onDeleteLightcurveClicked);
+    connect(_recomputeBjdBtn, &QPushButton::clicked,
+            this, &LightcurveFetchDialog::onRecomputeBjdClicked);
+
+    refreshViewerSourceCombo();
+    return page;
 }
 
 QWidget* LightcurveFetchDialog::buildFetchTab()
@@ -208,7 +243,6 @@ QWidget* LightcurveFetchDialog::buildFetchTab()
     root->setContentsMargins(8, 8, 8, 8);
     root->setSpacing(8);
 
-    // Header showing what we're going to fetch and where
     auto* hdr = new QLabel;
     hdr->setWordWrap(true);
     hdr->setText(tr("Fetch public light curves for "
@@ -217,7 +251,6 @@ QWidget* LightcurveFetchDialog::buildFetchTab()
                  .arg(_star->getSourceId().toHtmlEscaped()));
     root->addWidget(hdr);
 
-    // ── Source selection ──
     auto* srcBox = new QGroupBox(tr("Sources"));
     auto* srcLay = new QHBoxLayout(srcBox);
     _fetchTess  = new QCheckBox("TESS");      _fetchTess->setChecked(true);
@@ -232,7 +265,6 @@ QWidget* LightcurveFetchDialog::buildFetchTab()
     srcLay->addStretch();
     root->addWidget(srcBox);
 
-    // ── Options ──
     auto* optBox = new QGroupBox(tr("Options"));
     auto* optLay = new QFormLayout(optBox);
 
@@ -253,31 +285,42 @@ QWidget* LightcurveFetchDialog::buildFetchTab()
     _ztfOuter->setSuffix(QStringLiteral(" \""));
     optLay->addRow(tr("ZTF outer radius:"), _ztfOuter);
 
+    _reattemptAll = new QCheckBox(tr("Reattempt everything (clear previous results)"));
+    _reattemptAll->setToolTip(tr(
+        "Delete the cached lightcurvequery output files for the selected "
+        "sources before fetching, and fully replace any existing in-memory "
+        "lightcurves for those sources with the fresh results."));
+    optLay->addRow(QString(), _reattemptAll);
+
     root->addWidget(optBox);
 
-    // ── Action row ──
     auto* btnRow = new QHBoxLayout;
     _fetchBtn = new QPushButton(tr("Fetch"));
     _fetchBtn->setDefault(true);
     _cancelFetch = new QPushButton(tr("Cancel"));
     _cancelFetch->setEnabled(false);
+    _importCsvBtn = new QPushButton(tr("Import from CSV…"));
+    _importCsvBtn->setToolTip(tr("Import a lightcurve from a CSV file for "
+                                 "any instrument with a photometric mode."));
     _fetchBusy = new QProgressBar;
-    _fetchBusy->setRange(0, 0);                  // indeterminate spinner
+    _fetchBusy->setRange(0, 0);
     _fetchBusy->setVisible(false);
     _fetchBusy->setMaximumHeight(18);
     _fetchStatus = new QLabel;
     _fetchStatus->setStyleSheet("color: gray;");
     btnRow->addWidget(_fetchBtn);
     btnRow->addWidget(_cancelFetch);
+    btnRow->addWidget(_importCsvBtn);
+    btnRow->addSpacing(8);
     btnRow->addWidget(_fetchBusy, 1);
     btnRow->addWidget(_fetchStatus, 2);
     root->addLayout(btnRow);
 
-    connect(_fetchBtn,    &QPushButton::clicked, this, &LightcurveFetchDialog::onFetchClicked);
-    connect(_cancelFetch, &QPushButton::clicked, this, &LightcurveFetchDialog::onFetchCancelClicked);
+    connect(_fetchBtn,     &QPushButton::clicked, this, &LightcurveFetchDialog::onFetchClicked);
+    connect(_cancelFetch,  &QPushButton::clicked, this, &LightcurveFetchDialog::onFetchCancelClicked);
+    connect(_importCsvBtn, &QPushButton::clicked, this, &LightcurveFetchDialog::onImportCsvClicked);
 
-    // ── Log view ──
-    _fetchLog = new AnsiTerminalWidget;  
+    _fetchLog = new AnsiTerminalWidget;
     root->addWidget(_fetchLog, 1);
 
     AppSettings* settings = _controller ? _controller->settings() : nullptr;
@@ -294,7 +337,6 @@ QWidget* LightcurveFetchDialog::buildFetchTab()
         _fetcher->setAtlasToken(settings->atlasToken());
         _fetcher->setBlackgemScript(settings->blackgemScript());
 
-        // Live-update if the user changes settings while the dialog is open
         connect(settings, &AppSettings::lcquerySettingsChanged,
                 this, [this, settings] {
             _fetcher->setPython(settings->lcqueryPython());
@@ -882,8 +924,54 @@ void LightcurveFetchDialog::onFetchClicked()
     opt.ztfInnerArc = _ztfInner->value();
     opt.ztfOuterArc = _ztfOuter->value();
 
+    _wasReattempt = _reattemptAll && _reattemptAll->isChecked();
+
+    if (_wasReattempt) {
+        const auto ret = QMessageBox::warning(
+            this, tr("Reattempt everything"),
+            tr("This will delete the cached lightcurvequery output files for "
+               "the selected sources (%1) and fully replace any existing "
+               "lightcurves for those sources with the new results.\n\n"
+               "If the new fetch fails or returns no data, the previously "
+               "fetched lightcurves for those sources will be lost.\n\n"
+               "Continue?").arg(opt.sources.join(", ")),
+            QMessageBox::Yes | QMessageBox::No,
+            QMessageBox::No);
+        if (ret != QMessageBox::Yes) {
+            _wasReattempt = false;
+            return;
+        }
+
+        const QString gaiaId = _star->getSourceId();
+        const auto expected  = _fetcher->expectedOutputFiles(gaiaId);
+        for (const QString& src : opt.sources) {
+            const QString path = expected.value(src);
+            if (!path.isEmpty() && QFile::exists(path)) {
+                if (QFile::remove(path))
+                    _fetchLog->feed(tr("[reattempt] removed %1\n").arg(path).toUtf8());
+                else
+                    _fetchLog->feed(tr("[reattempt] WARNING: could not remove %1\n").arg(path).toUtf8());
+            }
+        }
+
+        // Per-source preview / aux files that we should also clear so stale
+        // ones don't get displayed for sources whose fetch fails.
+        const QString prevDir = previewDir();
+        QStringList auxFiles;
+        if (opt.sources.contains("TESS")) {
+            auxFiles << "tess_preview.png" << "tess_crowdsap.txt";
+        }
+        if (opt.sources.contains("ZTF"))      auxFiles << "ztf_preview.png";
+        for (const QString& f : auxFiles) {
+            const QString p = QDir(prevDir).absoluteFilePath(f);
+            if (QFile::exists(p)) QFile::remove(p);
+        }
+    }
+
     _fetchLog->clear();
-    _fetchLog->feed(tr("Fetching: %1\n").arg(opt.sources.join(", ")));
+    _fetchLog->feed(tr("Fetching: %1%2\n")
+                    .arg(opt.sources.join(", "))
+                    .arg(_wasReattempt ? tr("  (reattempt mode)") : QString()).toUtf8());
 
     const QString gaiaId = _star->getSourceId();
     _fetcher->start(gaiaId, opt);
@@ -943,7 +1031,6 @@ void LightcurveFetchDialog::onFetcherFinished(int code, bool ok)
         _star->setPhotometry(phot);
     }
 
-    // Pre-compute once whether we can do BJD conversion at all.
     const bool haveCoords =
         Star::isSet(_star->getRa()) && Star::isSet(_star->getDec());
     if (!haveCoords) {
@@ -962,7 +1049,6 @@ void LightcurveFetchDialog::onFetcherFinished(int code, bool ok)
         auto pts = LightcurveFetcher::parseOutputFile(path, source, &ts);
         if (pts.empty()) { empty << source; continue; }
 
-        // ── Compute BJD for sources whose native scale isn't BJD-derived ──
         const bool nativeIsBjd =
             (ts == TimeScale::BJD  ||
              ts == TimeScale::BTJD ||
@@ -970,8 +1056,6 @@ void LightcurveFetchDialog::onFetcherFinished(int code, bool ok)
              ts == TimeScale::GaiaTCB);
 
         if (!nativeIsBjd && haveCoords && _dbm) {
-            // Look up the canonical Instrument record for this source name.
-            // resolveInstrumentString matches "TESS"/"ZTF"/"ATLAS"/"Gaia"/...
             auto inst = _dbm->resolveInstrumentString(source);
             if (!inst) {
                 status(tr("[%1] no instrument record found — BJD not computed")
@@ -982,8 +1066,6 @@ void LightcurveFetchDialog::onFetcherFinished(int code, bool ok)
                     if (pt.time.hasBjd()) continue;
                     pt.time.setAutoConvertInfo(
                         inst, _star->getRa(), _star->getDec());
-                    // Force the lazy computation NOW so _bjd is cached and
-                    // gets serialized when we save the lightcurve to disk.
                     if (pt.time.bjd().has_value()) ++converted;
                 }
                 status(tr("[%1] computed BJD for %2 / %3 points")
@@ -991,15 +1073,18 @@ void LightcurveFetchDialog::onFetcherFinished(int code, bool ok)
             }
         }
 
-        // ── Merge into the star's Photometry ──
-        auto result = phot->mergeLightcurve(source, pts);
-
         QString verb;
-        switch (result) {
-            case Photometry::MergeResult::Identical: verb = tr("identical");  break;
-            case Photometry::MergeResult::Replaced:  verb = tr("replaced");   break;
-            case Photometry::MergeResult::Merged:    verb = tr("merged");     break;
-            case Photometry::MergeResult::Added:     verb = tr("added");      break;
+        if (_wasReattempt) {
+            phot->addLightcurve(source, pts);
+            verb = tr("replaced (reattempt)");
+        } else {
+            const auto result = phot->mergeLightcurve(source, pts);
+            switch (result) {
+                case Photometry::MergeResult::Identical: verb = tr("identical");  break;
+                case Photometry::MergeResult::Replaced:  verb = tr("replaced");   break;
+                case Photometry::MergeResult::Merged:    verb = tr("merged");     break;
+                case Photometry::MergeResult::Added:     verb = tr("added");      break;
+            }
         }
         status(tr("[%1] %2 points %3").arg(source).arg(pts.size()).arg(verb));
 
@@ -1011,7 +1096,6 @@ void LightcurveFetchDialog::onFetcherFinished(int code, bool ok)
         totalPoints += int(pts.size());
     }
 
-    // ── TESS crowding products (CROWDSAP + previews) ────────────────────
     {
         const QString crowdFile = previewPath("tess_crowdsap.txt");
         if (QFile::exists(crowdFile)) {
@@ -1033,6 +1117,7 @@ void LightcurveFetchDialog::onFetcherFinished(int code, bool ok)
                               .arg(totalPoints).arg(imported.join(", ")));
         if (_lcPanel)          _lcPanel->refresh();
         if (_periodogramPanel) pushSeriesIntoPanel();
+        refreshViewerSourceCombo();
     } else if (ok) {
         _fetchStatus->setStyleSheet("color: gray;");
         _fetchStatus->setText(tr("No data was produced."));
@@ -1043,6 +1128,28 @@ void LightcurveFetchDialog::onFetcherFinished(int code, bool ok)
 
     if (!empty.isEmpty())
         status(tr("(No data for: %1)").arg(empty.join(", ")));
+
+    _wasReattempt = false;
+}
+
+void LightcurveFetchDialog::onImportCsvClicked()
+{
+    ImportLightcurveDialog dlg(_star, _dbm, this);
+    if (dlg.exec() != QDialog::Accepted) return;
+    if (!dlg.wasImported()) return;
+
+    _fetchLog->feed(tr("[csv-import] %1 points imported under source \"%2\"\n")
+                    .arg(dlg.importedPoints().size())
+                    .arg(dlg.sourceKey()).toUtf8());
+
+    if (_lcPanel)          _lcPanel->refresh();
+    if (_periodogramPanel) pushSeriesIntoPanel();
+    refreshViewerSourceCombo();
+
+    _fetchStatus->setStyleSheet("color: #7dbd5e;");
+    _fetchStatus->setText(tr("Imported %1 CSV points (%2).")
+                          .arg(dlg.importedPoints().size())
+                          .arg(dlg.sourceKey()));
 }
 
 // ── Previews tab ──────────────────────────────────────────────────────────
@@ -1204,4 +1311,167 @@ void LightcurveFetchDialog::refreshPreviewsTab()
                 "<span style=\"color:gray;\">TESS CROWDSAP not available.</span>");
         }
     }
+}
+
+void LightcurveFetchDialog::refreshViewerSourceCombo()
+{
+    if (!_viewerSourceCombo) return;
+    const QString prev = _viewerSourceCombo->currentText();
+    QSignalBlocker b(_viewerSourceCombo);
+    _viewerSourceCombo->clear();
+
+    auto phot = _star ? _star->getPhotometry() : nullptr;
+    if (phot) {
+        auto sources = phot->getLightcurveSources();
+        std::sort(sources.begin(), sources.end());
+        for (const auto& src : sources)
+            _viewerSourceCombo->addItem(src);
+    }
+    if (!prev.isEmpty()) {
+        const int idx = _viewerSourceCombo->findText(prev);
+        if (idx >= 0) _viewerSourceCombo->setCurrentIndex(idx);
+    }
+    const bool any = _viewerSourceCombo->count() > 0;
+    _deleteLcBtn->setEnabled(any);
+    _recomputeBjdBtn->setEnabled(any);
+}
+
+void LightcurveFetchDialog::onDeleteLightcurveClicked()
+{
+    if (!_viewerSourceCombo || _viewerSourceCombo->count() == 0) return;
+    const QString source = _viewerSourceCombo->currentText();
+    auto phot = _star->getPhotometry();
+    if (!phot) return;
+
+    const auto pts = phot->getLightcurve(source);
+    const auto ret = QMessageBox::warning(this, tr("Delete lightcurve"),
+        tr("Delete the <b>%1</b> lightcurve for this star?\n\n"
+           "This will remove %2 points and cannot be undone.")
+            .arg(source.toHtmlEscaped()).arg(int(pts.size())),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (ret != QMessageBox::Yes) return;
+
+    _dbm->removeLightcurve(_star->getId(), source);
+
+    LOG_INFO("LCViewer",
+        QString("Deleted lightcurve \"%1\" for star %2 (%3 points)")
+            .arg(source).arg(_star->getId()).arg(int(pts.size())));
+
+    if (_lcPanel)          _lcPanel->refresh();
+    if (_periodogramPanel) pushSeriesIntoPanel();
+    refreshViewerSourceCombo();
+}
+
+void LightcurveFetchDialog::onRecomputeBjdClicked()
+{
+    if (!_viewerSourceCombo || _viewerSourceCombo->count() == 0) return;
+    const QString source = _viewerSourceCombo->currentText();
+    auto phot = _star->getPhotometry();
+    if (!phot) return;
+
+    auto pts = phot->getLightcurve(source);
+    if (pts.empty()) {
+        QMessageBox::information(this, tr("Recompute BJD"),
+            tr("No points loaded for source \"%1\".").arg(source));
+        return;
+    }
+    if (!Star::isSet(_star->getRa()) || !Star::isSet(_star->getDec())) {
+        QMessageBox::warning(this, tr("Recompute BJD"),
+            tr("Star has no RA/Dec — cannot compute BJD."));
+        return;
+    }
+    auto inst = _dbm ? _dbm->resolveInstrumentString(source) : nullptr;
+
+    // Build a small modal dialog with a time-scale selector.
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Recompute BJD — %1").arg(source));
+    auto* v = new QVBoxLayout(&dlg);
+
+    auto* hint = new QLabel(tr(
+        "Re-interpret the native timestamps of <b>%1</b> (%2 points) as the "
+        "time scale chosen below, then recompute BJD for every point using "
+        "the instrument's location and the star's coordinates.")
+            .arg(source).arg(int(pts.size())));
+    hint->setWordWrap(true);
+    v->addWidget(hint);
+
+    auto* form = new QFormLayout;
+    auto* scaleCombo = new QComboBox;
+    struct E { TimeScale ts; const char* label; };
+    static const QList<E> scales = {
+        { TimeScale::JD,      "JD" },
+        { TimeScale::MJD,     "MJD" },
+        { TimeScale::BJD,     "BJD" },
+        { TimeScale::HJD,     "HJD" },
+        { TimeScale::BTJD,    "BTJD (TESS, BJD − 2457000)" },
+        { TimeScale::BKJD,    "BKJD (Kepler, BJD − 2454833)" },
+        { TimeScale::GaiaTCB, "Gaia TCB (BJD − 2455197.5)" },
+    };
+    const TimeScale current = pts.front().time.nativeScale();
+    int preselect = 1; // MJD default
+    for (int i = 0; i < scales.size(); ++i) {
+        scaleCombo->addItem(scales[i].label, int(scales[i].ts));
+        if (scales[i].ts == current) preselect = i;
+    }
+    scaleCombo->setCurrentIndex(preselect);
+    form->addRow(tr("Original time scale:"), scaleCombo);
+    v->addLayout(form);
+
+    auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    v->addWidget(bb);
+    connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    const TimeScale chosen =
+        static_cast<TimeScale>(scaleCombo->currentData().toInt());
+
+    const bool nativeIsBjd =
+        (chosen == TimeScale::BJD  ||
+         chosen == TimeScale::BTJD ||
+         chosen == TimeScale::BKJD ||
+         chosen == TimeScale::GaiaTCB);
+
+    if (!nativeIsBjd && !inst) {
+        QMessageBox::warning(this, tr("Recompute BJD"),
+            tr("No instrument record matches source \"%1\" — cannot "
+               "compute BJD from a non-barycentric scale.").arg(source));
+        return;
+    }
+
+    // Rebuild the Time object on every point so any stale (e.g. zeroed)
+    // _bjd cache is dropped, then force the lazy computation now so it
+    // gets serialised to disk by saveLightcurveForStar.
+    int recomputed = 0;
+    for (auto& pt : pts) {
+        const double nv  = pt.time.nativeValue();
+        const double exp = pt.time.exposureTimeSec();
+        pt.time = Time(nv, chosen);
+        if (exp >= 0.0) pt.time.setExposureTime(exp);
+
+        if (!nativeIsBjd)
+            pt.time.setAutoConvertInfo(inst, _star->getRa(), _star->getDec());
+
+        if (pt.time.bjd().has_value()) ++recomputed;
+    }
+
+    // Replace outright — same points, but their Time objects have been rebuilt.
+    phot->addLightcurve(source, pts);
+    if (_dbm && !_dbm->saveLightcurveForStar(_star->getId(), source, phot.get())) {
+        QMessageBox::warning(this, tr("Recompute BJD"),
+            tr("Recomputed in memory but failed to persist to the database."));
+    }
+
+    LOG_INFO("LCViewer",
+        QString("Recomputed BJD for %1 (%2/%3 points) using scale %4")
+            .arg(source).arg(recomputed).arg(int(pts.size()))
+            .arg(Time::scaleToString(chosen)));
+
+    if (_lcPanel)          _lcPanel->refresh();
+    if (_periodogramPanel) pushSeriesIntoPanel();
+
+    QMessageBox::information(this, tr("Recompute BJD"),
+        tr("Recomputed BJD for %1 / %2 points of \"%3\".")
+            .arg(recomputed).arg(int(pts.size())).arg(source));
 }

@@ -565,3 +565,78 @@ std::vector<std::shared_ptr<LightcurveModel>> PhotometryRepository::loadLightcur
 
     return models;
 }
+
+
+bool PhotometryRepository::removeLightcurve(const QString& starId,
+                                             const QString& source)
+{
+    QSqlDatabase db = _db.threadConnection();
+
+    // ── Resolve photometry id for this star ──────────────────
+    QString photometryId;
+    {
+        QSqlQuery q(db);
+        q.prepare("SELECT id FROM photometry WHERE star_id = :star_id");
+        q.bindValue(":star_id", starId);
+        if (q.exec() && q.next())
+            photometryId = q.value(0).toString();
+    }
+    if (photometryId.isEmpty()) return false;
+
+    // ── Resolve lightcurve id and data file ──────────────────
+    QString lightcurveId, dataFile;
+    {
+        QSqlQuery q(db);
+        q.prepare(R"(
+            SELECT id, data_file FROM lightcurves
+            WHERE photometry_id = :pid AND source = :source
+        )");
+        q.bindValue(":pid", photometryId);
+        q.bindValue(":source", source);
+        if (q.exec() && q.next()) {
+            lightcurveId = q.value(0).toString();
+            dataFile     = q.value(1).toString();
+        }
+    }
+    if (lightcurveId.isEmpty()) return false;
+
+    // ── Delete associated lightcurve models (files + rows) ───
+    {
+        QSqlQuery q(db);
+        q.prepare("SELECT model_data_file FROM lightcurve_models "
+                  "WHERE lightcurve_id = :lcid");
+        q.bindValue(":lcid", lightcurveId);
+        if (q.exec()) {
+            while (q.next()) {
+                QString modelFile = q.value(0).toString();
+                if (!modelFile.isEmpty() && QFile::exists(modelFile))
+                    QFile::remove(modelFile);
+            }
+        }
+
+        QSqlQuery del(db);
+        del.prepare("DELETE FROM lightcurve_models WHERE lightcurve_id = :lcid");
+        del.bindValue(":lcid", lightcurveId);
+        if (!del.exec()) {
+            qDebug() << "Failed to delete lightcurve models:" << del.lastError();
+            return false;
+        }
+    }
+
+    // ── Delete the lightcurve row ────────────────────────────
+    {
+        QSqlQuery del(db);
+        del.prepare("DELETE FROM lightcurves WHERE id = :id");
+        del.bindValue(":id", lightcurveId);
+        if (!del.exec()) {
+            qDebug() << "Failed to delete lightcurve:" << del.lastError();
+            return false;
+        }
+    }
+
+    // ── Remove the binary data file ──────────────────────────
+    if (!dataFile.isEmpty() && QFile::exists(dataFile))
+        QFile::remove(dataFile);
+
+    return true;
+}

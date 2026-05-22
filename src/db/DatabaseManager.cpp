@@ -1157,6 +1157,11 @@ bool DatabaseManager::saveLightcurveForStar(const QString& starId, const QString
     return _photometry->saveLightcurveForStar(starId, source, photometry);
 }
 
+bool DatabaseManager::removeLightcurve(const QString& starId, const QString& source)
+{
+    return _photometry->removeLightcurve(starId, source);
+}
+
 void DatabaseManager::initializeInstruments()
 {
     _instruments->initializeInstruments();
