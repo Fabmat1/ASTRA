@@ -1,5 +1,3 @@
-// In src/views/ProjectView.cpp
-
 #include "ProjectView.h"
 #include "controllers/ApplicationController.h"
 #include "models/Project.h"
@@ -12,7 +10,10 @@
 #include "models/ColumnPreset.h"
 #include "BooleanColumnDelegate.h"
 #include "ColumnConfigDialog.h"
+#include "dialogs/AddStarDialog.h"
+#include "utils/BackgroundTaskManager.h"
 
+#include <QUuid>
 #include <QTableView>
 #include <QVBoxLayout>
 #include <QLabel>
@@ -411,7 +412,53 @@ void ProjectView::onStarDoubleClicked(const QModelIndex& index)
 
 void ProjectView::onAddStar()
 {
-    QMessageBox::information(this, "Add Star", "Add star functionality to be implemented");
+    if (!_currentProject) {
+        QMessageBox::warning(this, "No Project", "Please open a project first.");
+        return;
+    }
+
+    AddStarDialog dlg(this);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    auto star = dlg.buildStar();
+    if (!star) return;
+
+    // Require at least *some* identifying info.
+    if (star->getAlias().isEmpty() &&
+        star->getSourceId().isEmpty() &&
+        star->getTic().isEmpty() &&
+        star->getJName().isEmpty() &&
+        std::isnan(star->getRa()))
+    {
+        QMessageBox::warning(this, "Add Star",
+            "Please provide at least one identifier (alias, Gaia ID, TIC, "
+            "JName) or RA/Dec.");
+        return;
+    }
+
+    // Assign a fresh UUID and persist.
+    star->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    _controller->saveStarsToProject(_currentProject, { star });
+
+    // Optionally kick off a background bibliography query for the new star.
+    if (dlg.shouldQueryBibliography() && !star->getSourceId().isEmpty()) {
+        // NOTE: assumes ApplicationController exposes backgroundTaskManager().
+        // If your accessor has a different name, change it here.
+        if (auto* mgr = _controller->backgroundTaskManager()) {
+            std::vector<std::shared_ptr<Star>> stars{ star };
+            auto* task = new SimbadQueryTask(
+                stars, _currentProject->getId(), _controller);
+            mgr->queueTask(task);
+        }
+    }
+
+    refreshTable();
+
+    updateStatusBar(QString("Added star: %1")
+        .arg(!star->getAlias().isEmpty() ? star->getAlias()
+             : !star->getSourceId().isEmpty() ? ("Gaia DR3 " + star->getSourceId())
+             : star->getJName()));
 }
 
 void ProjectView::onImportStars()

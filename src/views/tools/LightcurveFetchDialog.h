@@ -151,9 +151,13 @@ private:
     QLabel*          _fetchStatus  = nullptr;
 
     int     _previewsTabIdx   = -1;
-    QLabel* _tessPreview       = nullptr;
-    QLabel* _ztfPreview       = nullptr;
-    QLabel* _atlasPreview     = nullptr;
-    QLabel* _gaiaPreview      = nullptr;
-    QLabel* _crowdsapTabLabel = nullptr;  
+    QLabel*      _previewTitle      = nullptr;
+    QLabel*      _previewDesc       = nullptr;
+    QLabel*      _previewImage      = nullptr;
+    QLabel*      _crowdsapTabLabel  = nullptr;   // already existed; keep it
+    QPushButton* _prevPreviewBtn    = nullptr;
+    QPushButton* _nextPreviewBtn    = nullptr;
+    int          _previewIndex      = 0;
+
+    void stepPreview(int delta);
 };

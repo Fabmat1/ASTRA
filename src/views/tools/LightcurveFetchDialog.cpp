@@ -14,6 +14,7 @@
 #include <QGroupBox>
 #include <QProgressBar>
 #include <QStandardPaths>
+#include <QShortcut>
 #include <QDir>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -46,6 +47,27 @@
 #include <cmath>
 
 namespace {
+
+struct PreviewEntry {
+    QString filename;     // file written by lightcurvequery
+    QString title;        // big title shown above image
+    QString description;  // smaller subtitle line
+};
+
+static const QList<PreviewEntry>& previewEntries()
+{
+    static const QList<PreviewEntry> entries = {
+        { "tess_preview.png", "TESS FFI cutout",
+          "TESScut FFI median image" },
+        { "ztf_preview.png",  "ZTF reference",
+          "ZTF reference image cutout" },
+        { "dss_preview.png",  "DSS2 Red",
+          "DSS2 Red BW image" },
+        { "ps1_preview.png",  "Pan-STARRS y/i/g",
+          "Pan-STARRS composite" },
+    };
+    return entries;
+}
 
 // Convert a single line of ANSI-coloured text to a safe HTML span.
 QString ansiToHtml(const QString& line)
@@ -1072,80 +1094,114 @@ QWidget* LightcurveFetchDialog::buildPreviewsTab()
     auto* page = new QWidget;
     auto* root = new QVBoxLayout(page);
     root->setContentsMargins(8, 8, 8, 8);
-    root->setSpacing(8);
+    root->setSpacing(6);
 
-    // Big CROWDSAP readout for the previews tab.
+    _previewTitle = new QLabel;
+    _previewTitle->setAlignment(Qt::AlignCenter);
+    _previewTitle->setStyleSheet("font-size: 16px; font-weight: bold;");
+    root->addWidget(_previewTitle);
+
+    _previewDesc = new QLabel;
+    _previewDesc->setAlignment(Qt::AlignCenter);
+    _previewDesc->setWordWrap(true);
+    _previewDesc->setStyleSheet("color: gray;");
+    root->addWidget(_previewDesc);
+
+    // CROWDSAP — only shown when the TESS image is on screen.
     _crowdsapTabLabel = new QLabel;
     _crowdsapTabLabel->setTextFormat(Qt::RichText);
+    _crowdsapTabLabel->setAlignment(Qt::AlignCenter);
     _crowdsapTabLabel->setStyleSheet(
         "QLabel { font-size: 13px; padding: 4px 6px; }");
     root->addWidget(_crowdsapTabLabel);
 
-    _tessPreview  = new QLabel("(TESS FFI preview not yet fetched)");
-    _ztfPreview   = new QLabel("(ZTF reference preview not yet fetched)");
-    _atlasPreview = new QLabel("(ATLAS / DSS2 Red preview not yet fetched)");
-    _gaiaPreview  = new QLabel("(Pan-STARRS r preview not yet fetched)");
+    _previewImage = new QLabel;
+    _previewImage->setAlignment(Qt::AlignCenter);
+    _previewImage->setMinimumSize(480, 480);
+    _previewImage->setStyleSheet("color: gray;");
+    root->addWidget(_previewImage, 1);
 
-    auto* grid = new QGridLayout;
-    grid->setSpacing(8);
-    grid->addWidget(wrapPreview("TESS FFI cutout",   _tessPreview ), 0, 0);
-    grid->addWidget(wrapPreview("ZTF reference",     _ztfPreview  ), 0, 1);
-    grid->addWidget(wrapPreview("ATLAS / DSS2 Red",  _atlasPreview), 1, 0);
-    grid->addWidget(wrapPreview("Gaia / Pan-STARRS r", _gaiaPreview), 1, 1);
-    root->addLayout(grid, 1);
+    auto* nav = new QHBoxLayout;
+    _prevPreviewBtn = new QPushButton("◀  Previous");
+    _nextPreviewBtn = new QPushButton("Next  ▶");
+    connect(_prevPreviewBtn, &QPushButton::clicked, this, [this]{ stepPreview(-1); });
+    connect(_nextPreviewBtn, &QPushButton::clicked, this, [this]{ stepPreview(+1); });
+    nav->addStretch();
+    nav->addWidget(_prevPreviewBtn);
+    nav->addWidget(_nextPreviewBtn);
+    nav->addStretch();
+    root->addLayout(nav);
 
+    // Left / Right arrow keys, scoped to this tab only.
+    auto* leftSC  = new QShortcut(QKeySequence(Qt::Key_Left),  page);
+    auto* rightSC = new QShortcut(QKeySequence(Qt::Key_Right), page);
+    leftSC ->setContext(Qt::WidgetWithChildrenShortcut);
+    rightSC->setContext(Qt::WidgetWithChildrenShortcut);
+    connect(leftSC,  &QShortcut::activated, this, [this]{ stepPreview(-1); });
+    connect(rightSC, &QShortcut::activated, this, [this]{ stepPreview(+1); });
+
+    _previewIndex = 0;
     refreshPreviewsTab();
     return page;
 }
 
+void LightcurveFetchDialog::stepPreview(int delta)
+{
+    const int n = previewEntries().size();
+    if (n <= 0) return;
+    _previewIndex = ((_previewIndex + delta) % n + n) % n;
+    refreshPreviewsTab();
+}
+
+
 void LightcurveFetchDialog::refreshPreviewsTab()
 {
-    if (!_tessPreview) return;     // tab not built yet
+    if (!_previewImage) return;   // tab not built yet
 
-    auto loadInto = [](QLabel* lbl, const QString& path, const QString& fallback) {
-        if (!lbl) return;
-        QPixmap pm;
-        if (QFileInfo::exists(path) && pm.load(path) && !pm.isNull()) {
-            const QSize tgt = lbl->size().isValid() && lbl->width() > 32
-                                ? lbl->size()
-                                : QSize(512, 512);
-            lbl->setPixmap(pm.scaled(tgt, Qt::KeepAspectRatio, Qt::SmoothTransformation));
-            lbl->setToolTip(path);
-            lbl->setStyleSheet("");
-        } else {
-            lbl->clear();
-            lbl->setText(fallback);
-            lbl->setToolTip(QString());
-            lbl->setStyleSheet("color: gray;");
-        }
-    };
+    const auto& entries = previewEntries();
+    if (_previewIndex < 0 || _previewIndex >= entries.size()) _previewIndex = 0;
+    const auto& e = entries[_previewIndex];
 
-    loadInto(_tessPreview,  previewPath("tess_preview.png"),  "(no TESS preview)");
-    loadInto(_ztfPreview,   previewPath("ztf_preview.png"),   "(no ZTF preview)");
-    loadInto(_atlasPreview, previewPath("atlas_preview.png"), "(no ATLAS preview)");
-    loadInto(_gaiaPreview,  previewPath("gaia_preview.png"),  "(no Pan-STARRS preview)");
+    _previewTitle->setText(QString("%1   (%2 / %3)")
+        .arg(e.title).arg(_previewIndex + 1).arg(entries.size()));
+    _previewDesc->setText(e.description);
 
-    // Bigger CROWDSAP readout for the tab.
-    if (_crowdsapTabLabel) {
+    const QString path = previewPath(e.filename);
+    QPixmap pm;
+    if (QFileInfo::exists(path) && pm.load(path) && !pm.isNull()) {
+        const QSize tgt = (_previewImage->size().isValid() && _previewImage->width() > 64)
+                            ? _previewImage->size()
+                            : QSize(640, 640);
+        _previewImage->setPixmap(
+            pm.scaled(tgt, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        _previewImage->setToolTip(path);
+        _previewImage->setStyleSheet("");
+    } else {
+        _previewImage->clear();
+        _previewImage->setText(QString("(no %1 preview yet)").arg(e.title));
+        _previewImage->setToolTip(QString());
+        _previewImage->setStyleSheet("color: gray;");
+    }
+
+    // CROWDSAP visible only when TESS preview is on screen.
+    const bool isTess = (e.filename == QLatin1String("tess_preview.png"));
+    _crowdsapTabLabel->setVisible(isTess);
+    if (isTess) {
         const double v = _star->getTessCrowdsap();
         if (Star::isSet(v)) {
             QString interp = "uncontaminated";
             QString color  = "#7dbd5e";
-            if (v < 0.5)      { interp = "heavily contaminated"; color = "#c46060"; }
-            else if (v < 0.8) { interp = "contaminated";         color = "#dca84d"; }
+            if      (v < 0.5)  { interp = "heavily contaminated";  color = "#c46060"; }
+            else if (v < 0.8)  { interp = "contaminated";          color = "#dca84d"; }
             else if (v < 0.95) { interp = "slightly contaminated"; color = "#dca84d"; }
             _crowdsapTabLabel->setText(
                 QString("TESS <b>CROWDSAP</b> = "
                         "<span style=\"color:%1;font-weight:bold;\">%2</span>  "
-                        "<span style=\"color:gray;\">(%3)</span>  "
-                        "<span style=\"color:gray;font-size:11px;\">"
-                        "- 1.0 means none from neighbours.</span>")
+                        "<span style=\"color:gray;\">(%3)</span>  ")
                     .arg(color).arg(v, 0, 'f', 3).arg(interp));
         } else {
             _crowdsapTabLabel->setText(
-                "<span style=\"color:gray;\">"
-                "TESS CROWDSAP not available — fetch TESS data with crowding "
-                "products enabled to populate this.</span>");
+                "<span style=\"color:gray;\">TESS CROWDSAP not available.</span>");
         }
     }
 }

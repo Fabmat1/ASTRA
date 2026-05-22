@@ -499,6 +499,22 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
     double globalXMax =  std::numeric_limits<double>::lowest();
     bool anyNorm = false;
 
+    const bool foldable = _folded && _foldPeriod > 0.0;
+
+    // ── Compute t_0 (earliest BJD across visible series) for unfolded view ──
+    double xOffset = 0.0;
+    if (!foldable) {
+        double minBjd = std::numeric_limits<double>::infinity();
+        for (int sIdx : seriesIdxs) {
+            const auto& s = _series[sIdx];
+            if (!_visible.value(s.key, true)) continue;
+            for (double t : s.bjd)
+                if (std::isfinite(t) && t < minBjd) minBjd = t;
+        }
+        if (std::isfinite(minBjd)) xOffset = minBjd;
+    }
+    _xOffsets[plot] = xOffset;
+
     int colorIdx = 0;
     for (int sIdx : seriesIdxs) {
         const auto& s = _series[sIdx];
@@ -513,11 +529,11 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
         QColor col = PanelUtils::kLCColors[colorIdx % PanelUtils::kNumLCColors];
         colorIdx++;
 
-        // x (BJD or phase)
+        // x (phase, or BJD − t_0)
         QVector<double> px(s.bjd.size());
-        bool foldable = _folded && _foldPeriod > 0.0;
         for (int i = 0; i < s.bjd.size(); ++i)
-            px[i] = foldable ? phaseOf(s.bjd[i], _foldT0, _foldPeriod) : s.bjd[i];
+            px[i] = foldable ? phaseOf(s.bjd[i], _foldT0, _foldPeriod)
+                             : (s.bjd[i] - xOffset);
 
         // Normalize by median of unflagged finite flux
         QVector<double> py = s.flux;
@@ -544,7 +560,7 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
         uPx.reserve(px.size()); uPy.reserve(px.size()); uPe.reserve(px.size());
         for (int i = 0; i < px.size(); ++i) {
             if (s.flagged.value(i, false)) {
-                if (foldable) continue;            // hide flagged in folded view
+                if (foldable) continue;
                 fPx.append(px[i]); fPy.append(py[i]);
             } else {
                 uPx.append(px[i]); uPy.append(py[i]);
@@ -579,7 +595,7 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
             }
         }
 
-        // y range tracking
+        // y/x range tracking
         for (int i = 0; i < bx.size(); ++i) {
             double e = std::isfinite(be[i]) ? be[i] : 0.0;
             globalYMin = std::min(globalYMin, by[i] - e);
@@ -602,14 +618,13 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
         g->setName(label);
         g->setLineStyle(QCPGraph::lsNone);
         g->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssDisc, col, col, 4));
-        g->setAdaptiveSampling(true);                     // huge perf win on 1M+
+        g->setAdaptiveSampling(true);
         g->setData(bx, by, /*alreadySorted*/ false);
-        g->setSelectable(QCP::stNone);                    // selection is handled manually
+        g->setSelectable(QCP::stNone);
         g->setProperty("seriesIdx", sIdx);
         g->setProperty("isFlaggedGraph", false);
         g->setProperty("isBinnedView",   doBin);
 
-        // Error bars only if reasonably few points
         if (bx.size() <= kErrorBarMax) {
             auto* err = new QCPErrorBars(plot->xAxis, plot->yAxis);
             err->removeFromLegend();
@@ -646,11 +661,18 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
     def.yLo = globalYMin - yMargin;
     def.yHi = globalYMax + yMargin;
 
-    if (_folded && _foldPeriod > 0.0) {
+    if (foldable) {
         plot->xAxis->setLabel("Phase");
-        def.xLo = -1.05; def.xHi = 1.05; 
+        plot->xAxis->setNumberFormat("gbd");
+        plot->xAxis->setNumberPrecision(6);
+        def.xLo = -1.05; def.xHi = 1.05;
     } else {
-        plot->xAxis->setLabel("BJD");
+        plot->xAxis->setLabel(xOffset > 0.0
+            ? QString("BJD \xe2\x88\x92 %1").arg(xOffset, 0, 'f', 4)   // "BJD − 2460123.4567"
+            : QString("BJD"));
+        plot->xAxis->setNumberFormat("f");
+        plot->xAxis->setNumberPrecision(3);
+
         double span = globalXMax - globalXMin;
         if (span <= 0) span = 1.0;
         def.xLo = globalXMin - span * 0.02;
@@ -694,10 +716,12 @@ void LCPanel::handleSelectionRect(QCustomPlot* plot, const QRect& rect)
 {
     if (!_flagMode || _folded) return;
 
-    double x1 = plot->xAxis->pixelToCoord(rect.left());
-    double x2 = plot->xAxis->pixelToCoord(rect.right());
+    const double xOff = _xOffsets.value(plot, 0.0);
+    double x1 = plot->xAxis->pixelToCoord(rect.left())   + xOff;
+    double x2 = plot->xAxis->pixelToCoord(rect.right())  + xOff;
     double y1 = plot->yAxis->pixelToCoord(rect.bottom());
     double y2 = plot->yAxis->pixelToCoord(rect.top());
+
     if (x2 < x1) std::swap(x1, x2);
     if (y2 < y1) std::swap(y1, y2);
 

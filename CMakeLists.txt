@@ -195,6 +195,7 @@ set(SOURCES
     src/dialogs/EditProjectDialog.cpp
     src/dialogs/NewProjectDialog.cpp
     src/dialogs/SettingsDialog.cpp
+    src/dialogs/AddStarDialog.cpp
 
     # importWizard
     src/importWizard/GeneralImportPage.cpp
@@ -306,6 +307,7 @@ set(HEADERS
     src/dialogs/EditProjectDialog.h
     src/dialogs/NewProjectDialog.h
     src/dialogs/SettingsDialog.h
+    src/dialogs/AddStarDialog.h
 
     # importWizard
     src/importWizard/GeneralImportPage.h

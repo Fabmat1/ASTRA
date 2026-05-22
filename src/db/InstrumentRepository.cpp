@@ -391,7 +391,7 @@ InstrumentRepository::resolveInstrumentString(const QString& input,
     struct Alias { const char* from; const char* instr; const char* mode; };
     static const Alias kAliases[] = {
         { "LAMOST_LORES", "LAMOST", "LRS" },
-        { "LAMOST_HIRES", "LAMOST", "MRS_blue" },  // ← confirm / split if needed
+        { "LAMOST_HIRES", "LAMOST", "MRS_blue" }, 
         { "EFOSC",        "EFOSC2", ""          },
     };
     for (const auto& a : kAliases) {

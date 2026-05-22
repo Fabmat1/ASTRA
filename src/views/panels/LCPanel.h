@@ -109,6 +109,7 @@ private:
     double   _foldT0        = 0.0;
     bool     _foldExternal  = false;
     bool     _syncingXAxis  = false;
+    QHash<QCustomPlot*, double> _xOffsets;   // per-plot BJD offset for unfolded view
 
     QList<SeriesCache>              _series;
     QList<QCustomPlot*>             _plots;
