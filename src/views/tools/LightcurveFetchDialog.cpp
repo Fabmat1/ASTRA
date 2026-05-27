@@ -385,13 +385,71 @@ QWidget* LightcurveFetchDialog::buildFetchTab()
 
 QWidget* LightcurveFetchDialog::buildFitTab()
 {
-    auto* w = new QWidget;
-    auto* l = new QVBoxLayout(w);
-    auto* ph = new QLabel("🚧  Fit tab — coming in Task 4.");
-    ph->setAlignment(Qt::AlignCenter);
-    ph->setStyleSheet("color: gray; font-size: 14px;");
-    l->addWidget(ph);
-    return w;
+    auto* page = new QWidget;
+    auto* root = new QHBoxLayout(page);
+    root->setContentsMargins(4, 4, 4, 4);
+    root->setSpacing(6);
+
+    DetailPanel::Context ctx;
+    ctx.star       = _star;
+    ctx.dbm        = _dbm;
+    ctx.controller = _controller;
+    ctx.projectId  = _projectId;
+    _fitLcPanel = new LCPanel(ctx);
+    root->addWidget(_fitLcPanel, 1);
+
+    auto* sidebar = new QWidget;
+    sidebar->setMinimumWidth(280);
+    sidebar->setMaximumWidth(380);
+    auto* sv = new QVBoxLayout(sidebar);
+    sv->setContentsMargins(4, 4, 4, 4);
+    sv->setSpacing(8);
+
+    auto* pBox = new QGroupBox(tr("Period"));
+    auto* pLay = new QVBoxLayout(pBox);
+    auto* pInfo = new QLabel(tr("Peaks collected in the Periodogram tab:"));
+    pInfo->setStyleSheet("color: gray;");
+    pLay->addWidget(pInfo);
+    _fitPeriodList = new QListWidget;
+    _fitPeriodList->setAlternatingRowColors(true);
+    _fitPeriodList->setSelectionMode(QAbstractItemView::SingleSelection);
+    connect(_fitPeriodList, &QListWidget::currentRowChanged,
+            this, [this](int){ onFitPeriodSelectionChanged(); });
+    pLay->addWidget(_fitPeriodList, 1);
+    sv->addWidget(pBox, 1);
+
+    auto* bBox = new QGroupBox(tr("Fit binning"));
+    auto* bLay = new QFormLayout(bBox);
+    _fitBinsSpin = new QSpinBox;
+    _fitBinsSpin->setRange(5, 5000);
+    _fitBinsSpin->setValue(100);
+    _fitBinsSpin->setToolTip(tr(
+        "Number of phase bins used as input data points for the LC fit."));
+    connect(_fitBinsSpin, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &LightcurveFetchDialog::onFitBinsChanged);
+    bLay->addRow(tr("N bins:"), _fitBinsSpin);
+    sv->addWidget(bBox);
+
+    _fitInfoLabel = new QLabel;
+    _fitInfoLabel->setWordWrap(true);
+    _fitInfoLabel->setStyleSheet("color: gray;");
+    sv->addWidget(_fitInfoLabel);
+
+    _fitRunBtn = new QPushButton;
+    _fitRunBtn->setEnabled(false);
+    _fitRunBtn->setToolTip(tr("Run a light-curve fit using the period selected "
+                              "above and the binning configured here."));
+    connect(_fitRunBtn, &QPushButton::clicked,
+            this, &LightcurveFetchDialog::onFitRunClicked);
+    sv->addWidget(_fitRunBtn);
+
+    root->addWidget(sidebar);
+
+    refreshFitPeriodList();
+    if (_fitLcPanel && _fitBinsSpin)
+        _fitLcPanel->setUniformFoldedBins(_fitBinsSpin->value());
+    onFitPeriodSelectionChanged();
+    return page;
 }
 
 // ── Periodogram tab (panel + right-side controls) ──────────────────
@@ -566,6 +624,22 @@ QWidget* LightcurveFetchDialog::buildPeriodogramControls()
     peakBtns->addWidget(_clearBtn);
     pLay->addLayout(peakBtns);
 
+    auto* quickRow = new QHBoxLayout;
+    _addRVPeriodBtn   = new QPushButton("Add RV period");
+    _addPhotPeriodBtn = new QPushButton("Add phot period");
+    _addRVPeriodBtn->setToolTip(
+        "Append the star's best RV-fit period to the peaks list.");
+    _addPhotPeriodBtn->setToolTip(
+        "Append the star's stored photometric best-fit period to the peaks list.");
+    connect(_addRVPeriodBtn,   &QPushButton::clicked,
+            this, &LightcurveFetchDialog::onAddRVPeriodClicked);
+    connect(_addPhotPeriodBtn, &QPushButton::clicked,
+            this, &LightcurveFetchDialog::onAddPhotPeriodClicked);
+    quickRow->addWidget(_addRVPeriodBtn);
+    quickRow->addWidget(_addPhotPeriodBtn);
+    quickRow->addStretch();
+    pLay->addLayout(quickRow);
+
     _peaksTable = new QTableWidget(0, 4);
     _peaksTable->setHorizontalHeaderLabels({"Period [d]", "± [d]", "Power", "Source"});
     _peaksTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
@@ -606,6 +680,13 @@ QWidget* LightcurveFetchDialog::buildPeriodogramControls()
     pLay->addWidget(_bestFitLabel);
 
     vlay->addWidget(peakBox, 1);
+    bool hasRVBest = false;
+    if (auto rv = _star ? _star->getRVCurve() : nullptr) {
+        if (auto bf = rv->getBestFit(); bf && bf->getPeriod() > 0)
+            hasRVBest = true;
+    }
+    _addRVPeriodBtn->setEnabled(hasRVBest);
+    _addPhotPeriodBtn->setEnabled(_star && Star::isSet(_star->getPhotPeriod()));
     vlay->addStretch();
 
     scroll->setWidget(inner);
@@ -848,7 +929,8 @@ void LightcurveFetchDialog::rebuildPeaksTable()
     _foldBtn->setEnabled(any);
     _bestFitBtn->setEnabled(any);
 
-    if (_periodogramPanel) _periodogramPanel->setMarkedPeaks(_peaks);   
+    if (_periodogramPanel) _periodogramPanel->setMarkedPeaks(_peaks);
+    refreshFitPeriodList();   
 }
 
 double LightcurveFetchDialog::currentSelectedPeriod() const
@@ -893,6 +975,8 @@ void LightcurveFetchDialog::onSetAsBestFitClicked()
         QString("Current best-fit P = %1 ± %2 d  (set just now)")
             .arg(pk.period,      0, 'g', 6)
             .arg(pk.periodError, 0, 'g', 2));
+    
+    refreshFitPeriodList();
 
     LOG_INFO("Periodogram",
         QString("Saved best-fit photometric period for %1: P=%2 ±%3")
@@ -1116,6 +1200,7 @@ void LightcurveFetchDialog::onFetcherFinished(int code, bool ok)
         _fetchStatus->setText(tr("Imported %1 points: %2")
                               .arg(totalPoints).arg(imported.join(", ")));
         if (_lcPanel)          _lcPanel->refresh();
+        if (_fitLcPanel)       _fitLcPanel->refresh();
         if (_periodogramPanel) pushSeriesIntoPanel();
         refreshViewerSourceCombo();
     } else if (ok) {
@@ -1143,6 +1228,7 @@ void LightcurveFetchDialog::onImportCsvClicked()
                     .arg(dlg.sourceKey()).toUtf8());
 
     if (_lcPanel)          _lcPanel->refresh();
+    if (_fitLcPanel)       _fitLcPanel->refresh();
     if (_periodogramPanel) pushSeriesIntoPanel();
     refreshViewerSourceCombo();
 
@@ -1358,6 +1444,7 @@ void LightcurveFetchDialog::onDeleteLightcurveClicked()
             .arg(source).arg(_star->getId()).arg(int(pts.size())));
 
     if (_lcPanel)          _lcPanel->refresh();
+    if (_fitLcPanel)       _fitLcPanel->refresh();
     if (_periodogramPanel) pushSeriesIntoPanel();
     refreshViewerSourceCombo();
 }
@@ -1469,9 +1556,284 @@ void LightcurveFetchDialog::onRecomputeBjdClicked()
             .arg(Time::scaleToString(chosen)));
 
     if (_lcPanel)          _lcPanel->refresh();
+    if (_fitLcPanel)       _fitLcPanel->refresh();
     if (_periodogramPanel) pushSeriesIntoPanel();
 
     QMessageBox::information(this, tr("Recompute BJD"),
         tr("Recomputed BJD for %1 / %2 points of \"%3\".")
             .arg(recomputed).arg(int(pts.size())).arg(source));
+}
+
+void LightcurveFetchDialog::refreshFitPeriodList()
+{
+    if (!_fitPeriodList) return;
+    const double prevP = selectedFitPeriod();
+
+    QSignalBlocker b(_fitPeriodList);
+    _fitPeriodList->clear();
+
+    QVector<double> added;
+    auto isDuplicate = [&](double P) {
+        for (double Q : added)
+            if (P > 0 && Q > 0 && std::abs(Q - P) / P < 1e-6) return true;
+        return false;
+    };
+
+    auto addItem = [&](double P, double sigma, const QString& source){
+        if (P <= 0 || isDuplicate(P)) return;
+        QString txt = (sigma > 0)
+            ? QString("P = %1 ± %2 d   [%3]")
+                .arg(P, 0, 'g', 8).arg(sigma, 0, 'g', 2).arg(source)
+            : QString("P = %1 d   [%2]")
+                .arg(P, 0, 'g', 8).arg(source);
+        auto* it = new QListWidgetItem(txt);
+        it->setData(Qt::UserRole, P);
+        _fitPeriodList->addItem(it);
+        added.append(P);
+    };
+
+    if (_star) {
+        if (auto rv = _star->getRVCurve()) {
+            if (auto bf = rv->getBestFit(); bf && bf->getPeriod() > 0)
+                addItem(bf->getPeriod(), bf->getPeriodError(), "RV best fit");
+        }
+    }
+    if (_star && Star::isSet(_star->getPhotPeriod())) {
+        addItem(_star->getPhotPeriod(),
+                Star::isSet(_star->getPhotEPeriod()) ? _star->getPhotEPeriod() : 0.0,
+                "Phot best fit");
+    }
+    for (const auto& pk : _peaks)
+        addItem(pk.period, pk.periodError, pk.sourceLabel);
+
+    int rowToSelect = 0;
+    if (prevP > 0) {
+        for (int i = 0; i < _fitPeriodList->count(); ++i) {
+            const double P = _fitPeriodList->item(i)->data(Qt::UserRole).toDouble();
+            if (P > 0 && std::abs(P - prevP) / prevP < 1e-9) {
+                rowToSelect = i; break;
+            }
+        }
+    }
+    if (_fitPeriodList->count() > 0)
+        _fitPeriodList->setCurrentRow(rowToSelect);
+
+    onFitPeriodSelectionChanged();
+}
+
+double LightcurveFetchDialog::selectedFitPeriod() const
+{
+    if (!_fitPeriodList) return 0.0;
+    auto* it = _fitPeriodList->currentItem();
+    if (!it) return 0.0;
+    return it->data(Qt::UserRole).toDouble();
+}
+
+void LightcurveFetchDialog::onFitPeriodSelectionChanged()
+{
+    const double P = selectedFitPeriod();
+
+    if (_fitLcPanel) {
+        if (P > 0) {
+            _fitLcPanel->setFoldPeriod(P);
+            _fitLcPanel->setFolded(true);
+            if (_fitBinsSpin)
+                _fitLcPanel->setUniformFoldedBins(_fitBinsSpin->value());
+        } else {
+            _fitLcPanel->setFolded(false);
+        }
+    }
+
+    const bool any = (P > 0);
+    if (_fitRunBtn) {
+        _fitRunBtn->setEnabled(any);
+        _fitRunBtn->setText(any
+            ? tr("Fit LC  (P = %1 d, %2 bins)")
+                .arg(P, 0, 'g', 6)
+                .arg(_fitBinsSpin ? _fitBinsSpin->value() : 0)
+            : tr("Fit LC"));
+    }
+
+    if (_fitInfoLabel) {
+        if (!any) {
+            _fitInfoLabel->setText(tr(
+                "Select a period to fold and bin.\n"
+                "Add peaks in the Periodogram tab if none are listed."));
+        } else {
+            const auto pts = computeBinnedFitLightcurve();
+            const int nReq = _fitBinsSpin ? _fitBinsSpin->value() : 0;
+            _fitInfoLabel->setText(tr(
+                "Folding on P = %1 d.\n"
+                "%2 / %3 phase bins will carry data points.")
+                .arg(P, 0, 'g', 8)
+                .arg(pts.size())
+                .arg(nReq));
+        }
+    }
+}
+
+void LightcurveFetchDialog::onFitBinsChanged()
+{
+    if (_fitLcPanel && _fitBinsSpin)
+        _fitLcPanel->setUniformFoldedBins(_fitBinsSpin->value());
+    onFitPeriodSelectionChanged();
+}
+
+
+QVector<LightcurveFetchDialog::BinnedFitPoint>
+LightcurveFetchDialog::computeBinnedFitLightcurve() const
+{
+    QVector<BinnedFitPoint> out;
+    const double P = selectedFitPeriod();
+    if (P <= 0 || !_fitLcPanel) return out;
+    const int nBins = _fitBinsSpin ? _fitBinsSpin->value() : 0;
+    if (nBins <= 0) return out;
+
+    struct Acc {
+        double sumW = 0.0, sumWY = 0.0;
+        double sumY = 0.0, sumY2 = 0.0;
+        int    n    = 0;
+    };
+    QVector<Acc> bins(nBins);
+
+    const auto series = _fitLcPanel->seriesData(/*includeFlagged*/ false);
+    bool anyData = false;
+
+    for (const auto& s : series) {
+        QVector<double> sample;
+        sample.reserve(s.y.size());
+        for (double v : s.y) if (std::isfinite(v)) sample.append(v);
+        double med = 1.0;
+        if (!sample.isEmpty()) {
+            std::sort(sample.begin(), sample.end());
+            med = sample[sample.size() / 2];
+            if (std::abs(med) < 1e-30) med = 1.0;
+        }
+
+        for (int i = 0; i < s.t.size(); ++i) {
+            const double t = s.t[i];
+            if (!std::isfinite(t) || !std::isfinite(s.y[i])) continue;
+            const double y = s.y[i] / med;
+            const double e = (std::isfinite(s.e[i]) && s.e[i] > 0.0)
+                                 ? s.e[i] / std::abs(med) : 0.0;
+
+            double ph = std::fmod(t / P, 1.0);
+            if (ph < 0.0) ph += 1.0;
+            int b = static_cast<int>(ph * nBins);
+            if (b < 0)       b = 0;
+            if (b >= nBins)  b = nBins - 1;
+
+            bins[b].sumY  += y;
+            bins[b].sumY2 += y * y;
+            bins[b].n++;
+            if (e > 0.0) {
+                const double w = 1.0 / (e * e);
+                bins[b].sumW  += w;
+                bins[b].sumWY += w * y;
+            }
+            anyData = true;
+        }
+    }
+    if (!anyData) return out;
+
+    const double dphase = 1.0 / nBins;
+    for (int b = 0; b < nBins; ++b) {
+        const auto& a = bins[b];
+        if (a.n == 0) continue;
+        double yMean, yErr;
+        if (a.sumW > 0.0) {
+            yMean = a.sumWY / a.sumW;
+            yErr  = 1.0 / std::sqrt(a.sumW);
+        } else {
+            yMean = a.sumY / a.n;
+            yErr  = (a.n > 1)
+                ? std::sqrt(std::max((a.sumY2 / a.n) - yMean * yMean, 0.0) / a.n)
+                : 0.0;
+        }
+        BinnedFitPoint p;
+        p.phase      = (b + 0.5) * dphase;
+        p.deltaPhase = dphase;
+        p.flux       = yMean;
+        p.fluxError  = yErr;
+        p.weight     = 1.0;
+        p.factor     = 1.0;
+        out.append(p);
+    }
+    return out;
+}
+
+bool LightcurveFetchDialog::writeBinnedFitLightcurve(const QString& path) const
+{
+    const auto pts = computeBinnedFitLightcurve();
+    if (pts.isEmpty()) return false;
+
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return false;
+    QTextStream s(&f);
+    s.setRealNumberNotation(QTextStream::SmartNotation);
+    s.setRealNumberPrecision(17);
+    for (const auto& p : pts) {
+        s << p.phase      << ' '
+          << p.deltaPhase << ' '
+          << p.flux       << ' '
+          << p.fluxError  << ' '
+          << p.weight     << ' '
+          << p.factor     << '\n';
+    }
+    return true;
+}
+
+void LightcurveFetchDialog::onFitRunClicked()
+{
+    const double P = selectedFitPeriod();
+    if (P <= 0) return;
+    const auto pts = computeBinnedFitLightcurve();
+    if (pts.isEmpty()) {
+        QMessageBox::warning(this, tr("Fit LC"),
+            tr("No usable binned data points were produced for P = %1 d.")
+                .arg(P, 0, 'g', 8));
+        return;
+    }
+    // Placeholder until the dedicated fitting dialog is wired up.
+    QMessageBox::information(this, tr("Fit LC"),
+        tr("Ready to fit:\n  Period = %1 d\n  Bins  = %2\n\n"
+           "The actual fitting dialog will be hooked up next.")
+            .arg(P, 0, 'g', 8)
+            .arg(pts.size()));
+}
+
+void LightcurveFetchDialog::onAddRVPeriodClicked()
+{
+    if (!_star) return;
+    auto rv = _star->getRVCurve();
+    auto bf = rv ? rv->getBestFit() : nullptr;
+    if (!bf || bf->getPeriod() <= 0) {
+        QMessageBox::information(this, tr("Add RV period"),
+            tr("No RV best-fit period available for this star."));
+        return;
+    }
+    PeriodogramPanel::PeriodPeak pk;
+    pk.period       = bf->getPeriod();
+    pk.periodError  = bf->getPeriodError();
+    pk.frequency    = (pk.period > 0) ? 1.0 / pk.period : 0.0;
+    pk.power        = 0.0;
+    pk.sourceLabel  = "RV best fit";
+    addPeak(pk);
+}
+
+void LightcurveFetchDialog::onAddPhotPeriodClicked()
+{
+    if (!_star || !Star::isSet(_star->getPhotPeriod())) {
+        QMessageBox::information(this, tr("Add photometric period"),
+            tr("No stored photometric best-fit period for this star."));
+        return;
+    }
+    PeriodogramPanel::PeriodPeak pk;
+    pk.period      = _star->getPhotPeriod();
+    pk.periodError = Star::isSet(_star->getPhotEPeriod())
+                       ? _star->getPhotEPeriod() : 0.0;
+    pk.frequency   = (pk.period > 0) ? 1.0 / pk.period : 0.0;
+    pk.power       = 0.0;
+    pk.sourceLabel = "Phot best fit";
+    addPeak(pk);
 }

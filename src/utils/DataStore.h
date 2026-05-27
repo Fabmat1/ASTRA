@@ -8,13 +8,14 @@ class DataStore
 {
 public:
     enum DataType : quint16 {
-        SpectrumData        = 1,
-        SpectralFitData     = 2,
-        SEDModelData        = 3,
-        LightcurveModelData = 4,
+        SpectrumData          = 1,
+        SpectralFitData       = 2,
+        SEDModelData          = 3,
+        LightcurveModelData   = 4,
         PhotometricPointsData = 5,
-        LightcurveData      = 6,
-        PeriodogramData     = 7
+        LightcurveData        = 6,
+        PeriodogramData       = 7,
+        LCFitData             = 8,
     };
 
     // Write payload compressed to filepath (creates parent dirs automatically).
@@ -45,6 +46,9 @@ public:
                                   const QString& photometryId, const QString& modelId);
     static QString periodogramPath(const QString& base, const QString& starId,
                                   const QString& periodogramId);
+    static QString lcFitPath(const QString& base, const QString& starId,
+                                  const QString& photometryId, const QString& fitId);
+
 
     // Create parent directories for filepath. Returns success.
     static bool ensureDirForFile(const QString& filepath);

@@ -256,31 +256,92 @@ private:
 // Lightcurve model fit (unchanged)
 // ══════════════════════════════════════════════════════════════
 
-class LightcurveModel
+struct LCFitDataPoint
+{
+    double phase     = 0.0;
+    double dPhase    = 0.0;
+    double flux      = 0.0;
+    double fluxError = 0.0;
+    double weight    = 1.0;
+    double factor    = 1.0;
+};
+
+class LCFitConfig
 {
 public:
-    LightcurveModel();
+    LCFitConfig() = default;
+    static LCFitConfig defaults();
 
-    QString getId() const { return _id; }
-    void setId(const QString& id) { _id = id; }
+    const QJsonObject& json() const { return _json; }
+    QJsonObject&       json()       { return _json; }
 
-    void    setModelDataFile(const QString& file) { _modelDataFile = file; }
-    QString getModelDataFile() const { return _modelDataFile; }
-    bool    saveDataToFile(const QString& filepath);
-    bool    loadDataFromFile(const QString& filepath);
+    QString toJsonString() const;
+    bool    fromJsonString(const QString& s);
 
+    QString modelParam(const QString& key) const;
+    void    setModelParam(const QString& key, const QString& v);
+    QString prior(const QString& key) const;
+    void    setPrior(const QString& key, const QString& v);
+
+    QString getString(const QString& key, const QString& def = {}) const;
+    void    setString(const QString& key, const QString& v);
+    double  getNumber(const QString& key, double def = 0.0) const;
+    void    setNumber(const QString& key, double v);
+    bool    getBool  (const QString& key, bool def = false) const;
+    void    setBool  (const QString& key, bool v);
+
+    // Convenience helpers for the value portion of a "v sNeg sPos vary use" string.
+    static bool parseParamLine(const QString& s, double& value,
+                               double& sigmaNeg, double& sigmaPos);
+
+private:
+    QJsonObject _json;
+};
+
+class LCFit
+{
+public:
+    LCFit();
+
+    QString getId() const           { return _id; }
+    void    setId(const QString& s) { _id = s; }
+
+    QString getModelDataFile() const           { return _modelDataFile; }
+    void    setModelDataFile(const QString& s) { _modelDataFile = s; }
+
+    bool saveDataToFile(const QString& filepath);
+    bool loadDataFromFile(const QString& filepath);
+
+    // Metadata
     QDateTime creationDate;
-    QString   modelId;
-    bool      isBestFit;
+    QString   label;
+    bool      isBestFit = false;
 
-    std::vector<double> modelTimes;
-    std::vector<double> modelFluxes;
+    // Hot posterior scalars (mirrored in DB columns)
+    double q                  = 0.0, qError                  = 0.0;
+    double inclination        = 0.0, inclinationError        = 0.0;
+    double r1                 = 0.0, r1Error                 = 0.0;
+    double r2                 = 0.0, r2Error                 = 0.0;
+    double velocityScale      = 0.0, velocityScaleError      = 0.0;
+    double t1                 = 0.0, t1Error                 = 0.0;
+    double t2                 = 0.0, t2Error                 = 0.0;
+    double period             = 0.0, periodError             = 0.0;
+    double t0BJD              = 0.0, t0BJDError              = 0.0;
 
-    double period;
-    double phase;
-    double inclination;
-    double massRatio;
-    double separation;
+    // Fit quality
+    double chi2 = 0.0;
+    double rms  = 0.0;
+
+    // Full configuration (serialised to JSON for the fitter)
+    LCFitConfig config;
+
+    // Heavy data (compressed to disk via DataStore)
+    std::vector<LCFitDataPoint> inputPoints;   // binned LC fed to the fitter
+    std::vector<LCFitDataPoint> modelPoints;   // best-fit model curve
+
+    // Convenience accessors
+    double   getPeriod()    const { return period; }
+    double   getT0BJD()     const { return t0BJD; }
 
 private:
     QString _id;
@@ -324,9 +385,11 @@ public:
     std::shared_ptr<SEDModel> getBestSEDModel() const;
     bool removeSEDModel(const QString& modelId);
 
-    void addLightcurveModel(const QString& source, std::shared_ptr<LightcurveModel> model);
-    std::vector<std::shared_ptr<LightcurveModel>> getLightcurveModels(const QString& source) const;
-    std::shared_ptr<LightcurveModel> getBestLightcurveModel(const QString& source) const;
+    void addLCFit(const QString& source, std::shared_ptr<LCFit> fit);
+    std::vector<std::shared_ptr<LCFit>> getLCFits(const QString& source) const;
+    std::shared_ptr<LCFit>              getBestLCFit(const QString& source) const;
+    bool removeLCFit(const QString& source, const QString& fitId);
+
 
 private:
     QString _id;
@@ -335,7 +398,7 @@ private:
     std::vector<PhotometricPoint> _photometricPoints;
     std::map<QString, std::vector<LightcurvePoint>> _lightcurves;
     std::vector<std::shared_ptr<SEDModel>> _sedModels;
-    std::map<QString, std::vector<std::shared_ptr<LightcurveModel>>> _lightcurveModels;
+    std::map<QString, std::vector<std::shared_ptr<LCFit>>> _lcFits;
 };
 
 #endif // PHOTOMETRY_H

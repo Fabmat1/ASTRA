@@ -440,90 +440,284 @@ std::shared_ptr<SEDModel> Photometry::getBestSEDModel() const
     return nullptr;
 }
 
-void Photometry::addLightcurveModel(const QString& source, std::shared_ptr<LightcurveModel> model)
+void Photometry::addLCFit(const QString& source, std::shared_ptr<LCFit> fit)
 {
-    // If this is set as best fit, unset others for this source
-    if (model->isBestFit) {
-        for (auto& existing : _lightcurveModels[source]) {
+    if (!fit) return;
+    if (fit->isBestFit) {
+        for (auto& existing : _lcFits[source])
             existing->isBestFit = false;
-        }
     }
-    _lightcurveModels[source].push_back(model);
+    _lcFits[source].push_back(fit);
 }
 
-std::vector<std::shared_ptr<LightcurveModel>> Photometry::getLightcurveModels(const QString& source) const
+std::vector<std::shared_ptr<LCFit>> Photometry::getLCFits(const QString& source) const
 {
-    auto it = _lightcurveModels.find(source);
-    if (it != _lightcurveModels.end()) {
-        return it->second;
-    }
-    return std::vector<std::shared_ptr<LightcurveModel>>();
+    auto it = _lcFits.find(source);
+    return (it != _lcFits.end()) ? it->second : std::vector<std::shared_ptr<LCFit>>{};
 }
 
-std::shared_ptr<LightcurveModel> Photometry::getBestLightcurveModel(const QString& source) const
+std::shared_ptr<LCFit> Photometry::getBestLCFit(const QString& source) const
 {
-    auto models = getLightcurveModels(source);
-    for (const auto& model : models) {
-        if (model->isBestFit) {
-            return model;
-        }
-    }
+    for (const auto& f : getLCFits(source))
+        if (f->isBestFit) return f;
     return nullptr;
 }
 
-// ══════════════════════════════════════════════════════════════
-// LightcurveModel
-// ══════════════════════════════════════════════════════════════
-
-LightcurveModel::LightcurveModel()
-    : isBestFit(false)
-    , period(0.0)
-    , phase(0.0)
-    , inclination(0.0)
-    , massRatio(0.0)
-    , separation(0.0)
+bool Photometry::removeLCFit(const QString& source, const QString& fitId)
 {
-    creationDate = QDateTime::currentDateTime();
+    auto it = _lcFits.find(source);
+    if (it == _lcFits.end()) return false;
+    auto& vec = it->second;
+    auto rm = std::remove_if(vec.begin(), vec.end(),
+        [&](const std::shared_ptr<LCFit>& f){ return f->getId() == fitId; });
+    if (rm == vec.end()) return false;
+    vec.erase(rm, vec.end());
+    return true;
 }
 
-bool LightcurveModel::saveDataToFile(const QString& filepath)
+// ══════════════════════════════════════════════════════════════
+// LCFitConfig
+// ══════════════════════════════════════════════════════════════
+
+LCFitConfig LCFitConfig::defaults()
+{
+    static const char* kDefaults = R"JSON({
+      "data_file_path": "input.txt",
+      "time1": 0, "time2": 1, "ntime": 1000000,
+      "expose": 0, "ndivide": 1, "noise": 0, "seed": 42, "nfile": 1,
+      "output_file_path": "output.txt",
+      "plot_device": "qt",
+      "residual_offset": 0.0,
+      "autoscale": true,
+      "sstar1": 1, "sstar2": 1, "sdisc": 1, "sspot": 1, "ssfac": 1,
+      "star1_type": "ms", "star2_type": "ms",
+      "mcmc_steps": 100000, "mcmc_burn_in": 25000, "mcmc_thin": 1,
+      "chain_out_path": "chain_out.txt",
+      "use_priors": true, "true_period": 1.0, "use_sin_i_prior": true,
+      "auto_consistent_init": true,
+      "adapt_enabled": true, "target_acceptance_rate": 0.234,
+      "adapt_interval": 100, "adapt_rate": 1.0, "adapt_decay": 0.6,
+      "adapt_min_stepscale": 1e-4, "adapt_max_stepscale": 1e4,
+      "adapt_covariance": true, "cov_warmup": 500, "cov_epsilon": 1e-6,
+      "anneal_enabled": true, "anneal_T0": 10.0, "anneal_steps": 12500,
+      "lm_max_iter": 200, "lm_gtol": 0.0, "lm_tau": 0.001, "lm_factor": 100.0,
+      "lm_fd_step_min": 1e-10, "lm_continuation": true,
+      "lm_continuation_stages": 6, "lm_auto_balance_priors": true,
+      "lm_prior_balance_target": 1.0,
+      "lm_log_path": "lm_iter_log.txt", "lm_verbose": true,
+      "prior_weight": 1.0,
+      "priors": {},
+      "model_parameters": {
+        "q":               "0.9 1.8 0.02 1 1",
+        "iangle":          "87.5 2.5 1.0 1 1",
+        "r1":              "0.84 0.01 0.008 1 1",
+        "r2":              "0.17 0.05 0.0025 1 1",
+        "velocity_scale":  "300.0 150.0 6.0 1 1",
+        "t1":              "12345.0 6000.0 60.0 0 1",
+        "t2":              "12345.0 6000.0 250.0 0 1",
+        "t0":              "0.0 0.1 1e-5 1 1",
+        "period":          "1.0 0.001 1e-8 0 1",
+        "pdot":            "0 0.01 1e-5 0 1",
+        "deltat":          "0 0.001 0.0001 0 1",
+        "absorb":          "1.0 0.5 0.01 0 1",
+        "ldc1_1":          "0 0.5 0.001 0 1",
+        "ldc2_1":          "0 0.5 0.001 0 1",
+        "ldc1_2":          "0 0.5 0.001 0 1",
+        "ldc2_2":          "0 0.5 0.001 0 1",
+        "ldc1_3":          "0 0.5 0.001 0 1",
+        "ldc2_3":          "0 0.5 0.001 0 1",
+        "ldc1_4":          "0 0.5 0.001 0 1",
+        "ldc2_4":          "0 0.5 0.001 0 1",
+        "beam_factor1":    "1.0 1 0.01 0 1",
+        "beam_factor2":    "1.0 1 0.01 0 1",
+        "gravity_dark1":   "0.4242 0.1 1e-6 0 1",
+        "gravity_dark2":   "0.4242 0.1 1e-6 0 1",
+        "cphi3":           "0.01 0.05 0.01 0 1",
+        "cphi4":           "0.055 0.05 0.01 0 1",
+        "spin1":           "1 0.1 0.01 0 1",
+        "spin2":           "1 0.1 0.01 0 1",
+        "slope":           "0 0.01 1e-5 0 1",
+        "quad":            "0 0.01 1e-5 0 1",
+        "cube":            "0 0.01 1e-5 0 1",
+        "third":           "0 0.01 1e-5 0 1",
+        "rdisc1":          "0 0.01 0.001 0 1",
+        "rdisc2":          "0 0.01 0.02 0 1",
+        "height_disc":     "0 0.01 1e-5 0 1",
+        "beta_disc":       "0 0.01 1e-5 0 1",
+        "temp_disc":       "0 50 40 0 1",
+        "texp_disc":       "0 0.2 0.001 0 1",
+        "lin_limb_disc":   "0 0.02 0.0001 0 1",
+        "quad_limb_disc":  "0 0.02 0.0001 0 1",
+        "radius_spot":     "0 0.01 0.01 0 1",
+        "length_spot":     "0 0.01 0.005 0 1",
+        "height_spot":     "0 0.01 1e-5 0 1",
+        "expon_spot":      "0 0.2 0.1 0 1",
+        "epow_spot":       "0 0.01 0.01 0 1",
+        "angle_spot":      "0 5 2 0 1",
+        "yaw_spot":        "0 5 2 0 1",
+        "temp_spot":       "0 500 200 0 1",
+        "tilt_spot":       "0 5 2 0 1",
+        "cfrac_spot":      "0 0.05 0.008 0 1",
+        "stsp11_long":     "0 0 0 0 0", "stsp11_lat": "0 0 0 0 0",
+        "stsp11_fwhm":     "0 0 0 0 0", "stsp11_tcen": "0 0 0 0 0",
+        "stsp21_long":     "0 0 0 0 0", "stsp21_lat": "0 0 0 0 0",
+        "stsp21_fwhm":     "0 0 0 0 0", "stsp21_tcen": "0 0 0 0 0",
+        "delta_phase":     "1e-7",
+        "nlat1f": "50", "nlat2f": "150", "nlat1c": "50", "nlat2c": "150",
+        "npole": "1", "nlatfill": "2", "nlngfill": "2",
+        "lfudge": "0", "llo": "90", "lhi": "-90",
+        "phase1": "0.1", "phase2": "0.4",
+        "roche1": "1", "roche2": "1",
+        "eclipse1": "1", "eclipse2": "1",
+        "glens1": "0", "use_radii": "1",
+        "gdark_bolom1": "1", "gdark_bolom2": "1",
+        "mucrit1": "0", "mucrit2": "0",
+        "limb1": "Claret", "limb2": "Claret",
+        "mirror": "0", "add_disc": "0", "nrad": "40", "opaque": "0",
+        "add_spot": "0", "nspot": "0", "iscale": "0",
+        "wavelength": "786.5", "tperiod": "1.0"
+      }
+    })JSON";
+
+    LCFitConfig c;
+    QJsonParseError err;
+    auto doc = QJsonDocument::fromJson(QByteArray(kDefaults), &err);
+    if (err.error == QJsonParseError::NoError && doc.isObject())
+        c._json = doc.object();
+    return c;
+}
+
+QString LCFitConfig::toJsonString() const
+{
+    return QString::fromUtf8(
+        QJsonDocument(_json).toJson(QJsonDocument::Indented));
+}
+
+bool LCFitConfig::fromJsonString(const QString& s)
+{
+    if (s.isEmpty()) { _json = {}; return true; }
+    QJsonParseError err;
+    auto doc = QJsonDocument::fromJson(s.toUtf8(), &err);
+    if (err.error != QJsonParseError::NoError || !doc.isObject()) return false;
+    _json = doc.object();
+    return true;
+}
+
+QString LCFitConfig::modelParam(const QString& key) const
+{
+    return _json.value("model_parameters").toObject().value(key).toString();
+}
+
+void LCFitConfig::setModelParam(const QString& key, const QString& v)
+{
+    QJsonObject mp = _json.value("model_parameters").toObject();
+    mp[key] = v;
+    _json["model_parameters"] = mp;
+}
+
+QString LCFitConfig::prior(const QString& key) const
+{
+    return _json.value("priors").toObject().value(key).toString();
+}
+
+void LCFitConfig::setPrior(const QString& key, const QString& v)
+{
+    QJsonObject pr = _json.value("priors").toObject();
+    pr[key] = v;
+    _json["priors"] = pr;
+}
+
+QString LCFitConfig::getString(const QString& k, const QString& def) const
+{
+    auto v = _json.value(k);
+    return v.isString() ? v.toString() : def;
+}
+void   LCFitConfig::setString(const QString& k, const QString& v) { _json[k] = v; }
+double LCFitConfig::getNumber(const QString& k, double def) const
+{
+    auto v = _json.value(k);
+    return v.isDouble() ? v.toDouble() : def;
+}
+void   LCFitConfig::setNumber(const QString& k, double v) { _json[k] = v; }
+bool   LCFitConfig::getBool(const QString& k, bool def) const
+{
+    auto v = _json.value(k);
+    return v.isBool() ? v.toBool() : def;
+}
+void   LCFitConfig::setBool(const QString& k, bool v) { _json[k] = v; }
+
+bool LCFitConfig::parseParamLine(const QString& s, double& value,
+                                 double& sigmaNeg, double& sigmaPos)
+{
+    const auto parts = s.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+    if (parts.size() < 3) return false;
+    bool a=false, b=false, c=false;
+    double v  = parts[0].toDouble(&a);
+    double sn = parts[1].toDouble(&b);
+    double sp = parts[2].toDouble(&c);
+    if (!(a && b && c)) return false;
+    value = v; sigmaNeg = sn; sigmaPos = sp;
+    return true;
+}
+
+// ══════════════════════════════════════════════════════════════
+// LCFit
+// ══════════════════════════════════════════════════════════════
+
+LCFit::LCFit()
+{
+    creationDate = QDateTime::currentDateTime();
+    config = LCFitConfig::defaults();
+}
+
+bool LCFit::saveDataToFile(const QString& filepath)
 {
     QByteArray buffer;
     {
         QDataStream s(&buffer, QIODevice::WriteOnly);
         s.setVersion(QDataStream::Qt_6_0);
-        s << static_cast<quint32>(modelTimes.size());
-        s << static_cast<quint32>(modelFluxes.size());
-        for (const auto& v : modelTimes)  s << v;
-        for (const auto& v : modelFluxes) s << v;
+
+        s << static_cast<quint16>(1);
+        s << static_cast<quint32>(inputPoints.size());
+        for (const auto& p : inputPoints)
+            s << p.phase << p.dPhase << p.flux << p.fluxError << p.weight << p.factor;
+
+        s << static_cast<quint32>(modelPoints.size());
+        for (const auto& p : modelPoints)
+            s << p.phase << p.dPhase << p.flux << p.fluxError << p.weight << p.factor;
     }
-    return DataStore::writeCompressed(filepath, DataStore::LightcurveModelData, buffer);
+    return DataStore::writeCompressed(filepath, DataStore::LCFitData, buffer);
 }
 
-
-bool LightcurveModel::loadDataFromFile(const QString& filepath)
+bool LCFit::loadDataFromFile(const QString& filepath)
 {
-    auto parse = [this](QDataStream& s) -> bool {
-        quint32 tN, fN;
-        s >> tN >> fN;
-        modelTimes.clear(); modelTimes.reserve(tN);
-        for (quint32 i = 0; i < tN; ++i) { double v; s >> v; modelTimes.push_back(v); }
-        modelFluxes.clear(); modelFluxes.reserve(fN);
-        for (quint32 i = 0; i < fN; ++i) { double v; s >> v; modelFluxes.push_back(v); }
-        return s.status() == QDataStream::Ok;
-    };
-
     QByteArray buf;
-    if (DataStore::readCompressed(filepath, DataStore::LightcurveModelData, buf)) {
-        QDataStream s(&buf, QIODevice::ReadOnly);
-        s.setVersion(QDataStream::Qt_6_0);
-        return parse(s);
+    if (!DataStore::readCompressed(filepath, DataStore::LCFitData, buf))
+        return false;
+
+    QDataStream s(&buf, QIODevice::ReadOnly);
+    s.setVersion(QDataStream::Qt_6_0);
+
+    quint16 version;
+    s >> version;
+    if (version != 1) {
+        qWarning() << "LCFit: unsupported data version" << version;
+        return false;
     }
-    QFile file(filepath);
-    if (!file.open(QIODevice::ReadOnly)) return false;
-    QDataStream s(&file);
-    s.setVersion(QDataStream::Qt_5_0);
-    return parse(s);
+
+    quint32 n;
+    auto readPts = [&](std::vector<LCFitDataPoint>& dst){
+        s >> n;
+        dst.clear(); dst.reserve(n);
+        for (quint32 i = 0; i < n; ++i) {
+            LCFitDataPoint p;
+            s >> p.phase >> p.dPhase >> p.flux >> p.fluxError >> p.weight >> p.factor;
+            dst.push_back(p);
+        }
+    };
+    readPts(inputPoints);
+    readPts(modelPoints);
+    return s.status() == QDataStream::Ok;
 }
 
 bool Photometry::savePhotometricPointsToFile(const QString& filepath)

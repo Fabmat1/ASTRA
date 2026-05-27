@@ -150,6 +150,13 @@ QString DataStore::periodogramPath(const QString& base, const QString& starId,
 return starDir(base, starId) + "/periodograms/" + periodogramId + FILE_EXT;
 }
 
+QString DataStore::lcFitPath(const QString& base, const QString& starId,
+                             const QString& photometryId, const QString& fitId)
+{
+    return starDir(base, starId) + "/photometry/lcfit_" + photometryId
+           + "_" + fitId + FILE_EXT;
+}
+
 bool DataStore::ensureDirForFile(const QString& filepath)
 {
     return QDir().mkpath(QFileInfo(filepath).absolutePath());

@@ -44,6 +44,12 @@ public:
     /// Snapshot of all series. Flagged points excluded by default.
     QList<SeriesData> seriesData(bool includeFlagged = false) const;
 
+    enum class T0Source { Auto = 0, LCFit = 1, RVFit = 2 };
+
+    void     setT0Source(T0Source s);
+    T0Source t0Source() const { return _t0Source; }
+    void setUniformFoldedBins(int nBins);
+
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;
 
@@ -53,6 +59,7 @@ private slots:
     void onFlagModeToggled(bool on);
     void onClearFlagsClicked();
     void onResetZoom();
+    void onT0SourceChanged(int idx);
 
 private:
     struct SeriesCache {
@@ -72,10 +79,11 @@ private:
     void replotAll(bool preserveZoom = false);
     void plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs);
     void wirePlotInteractions(QCustomPlot* plot);
-    void applyFlagModeInteractions(QCustomPlot* plot);
+    void applyFlagModeInteractions(QCustomPlot* plcot);
     void handleSelectionRect(QCustomPlot* plot, const QRect& rect);
     void persistFlagsForSource(const QString& source);
     void buildSettingsMenu();
+    void resolveAutoFoldParams();
 
     bool binEnabled(const QString& k) const {
         return _folded ? _binEnabledFolded.value(k, true)
@@ -122,4 +130,7 @@ private:
     QMap<QString, bool> _binEnabledFolded; 
     QMap<QString, bool> _binEnabledUnfolded;
     QMap<QString, bool> _visible;
+
+    QComboBox* _t0SourceCombo = nullptr;
+    T0Source   _t0Source      = T0Source::Auto;
 };

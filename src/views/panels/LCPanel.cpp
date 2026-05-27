@@ -201,6 +201,21 @@ void LCPanel::setupUi()
     connect(_toggleFoldBtn, &QPushButton::clicked, this, &LCPanel::onToggleFolded);
     tb->addWidget(_toggleFoldBtn);
 
+    tb->addSpacing(8);
+    tb->addWidget(new QLabel("T₀:"));
+    _t0SourceCombo = new QComboBox;
+    _t0SourceCombo->addItem("Auto",   static_cast<int>(T0Source::Auto));
+    _t0SourceCombo->addItem("LC fit", static_cast<int>(T0Source::LCFit));
+    _t0SourceCombo->addItem("RV fit", static_cast<int>(T0Source::RVFit));
+    _t0SourceCombo->setToolTip(
+        "Source of phase-0 reference time used when folding:\n"
+        "  Auto  – prefer an LC best fit, fall back to RV best fit\n"
+        "  LC fit – force best LC fit's T₀ (if any)\n"
+        "  RV fit – force RV best fit's T₀ (if any)");
+    connect(_t0SourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &LCPanel::onT0SourceChanged);
+    tb->addWidget(_t0SourceCombo);
+
     _flagBtn = new QToolButton;
     _flagBtn->setText("Flag");
     _flagBtn->setCheckable(true);
@@ -241,6 +256,74 @@ void LCPanel::setupUi()
     layout->addWidget(_content, 1);
 }
 
+void LCPanel::resolveAutoFoldParams()
+{
+    if (_foldExternal) return;
+
+    double foldP = 0.0, foldT0 = 0.0;
+
+    auto phot   = _ctx.star ? _ctx.star->getPhotometry() : nullptr;
+    auto rv     = _ctx.star ? _ctx.star->getRVCurve()    : nullptr;
+    auto rvBest = rv ? rv->getBestFit() : nullptr;
+
+    auto bestLCFit = [&]() -> std::shared_ptr<LCFit> {
+        if (!phot) return nullptr;
+        for (auto& src : phot->getLightcurveSources()) {
+            auto f = phot->getBestLCFit(src);
+            if (f && f->getPeriod() > 0) return f;
+        }
+        return nullptr;
+    };
+
+    auto applyLC = [&](std::shared_ptr<LCFit> f) {
+        foldP  = f->getPeriod();
+        foldT0 = f->getT0BJD();
+    };
+    auto applyRV = [&](std::shared_ptr<RVFit> bf) {
+        foldP = bf->getPeriod();
+        double T0 = bf->getT0BJD();
+        if (!std::isfinite(T0) || T0 == 0.0)
+            T0 = bf->getReferenceBJD() - bf->getPhi() * foldP;
+        foldT0 = T0;
+    };
+
+    switch (_t0Source) {
+        case T0Source::LCFit:
+            if (auto f = bestLCFit()) applyLC(f);
+            break;
+        case T0Source::RVFit:
+            if (rvBest && rvBest->getPeriod() > 0) applyRV(rvBest);
+            break;
+        case T0Source::Auto:
+        default:
+            if (auto f = bestLCFit())                       applyLC(f);
+            else if (rvBest && rvBest->getPeriod() > 0)     applyRV(rvBest);
+            break;
+    }
+
+    _foldPeriod = foldP;
+    _foldT0     = foldT0;
+}
+
+void LCPanel::setT0Source(T0Source s)
+{
+    if (_t0Source == s) return;
+    _t0Source = s;
+    if (_t0SourceCombo) {
+        QSignalBlocker b(_t0SourceCombo);
+        _t0SourceCombo->setCurrentIndex(static_cast<int>(s));
+    }
+    resolveAutoFoldParams();
+    if (_folded) replotAll();
+}
+
+void LCPanel::onT0SourceChanged(int)
+{
+    _t0Source = static_cast<T0Source>(_t0SourceCombo->currentData().toInt());
+    resolveAutoFoldParams();
+    if (_folded) replotAll();
+}
+
 // ── Population ──────────────────────────────────────────────────────
 
 void LCPanel::populate()
@@ -267,29 +350,8 @@ void LCPanel::populate()
     _resetZoomBtn->setEnabled(true);
     _settingsBtn->setEnabled(true);
 
-    // Determine fold period
-    double foldP  = _foldExternal ? _foldPeriod : 0.0;
-    double foldT0 = _foldExternal ? _foldT0     : 0.0;
-    if (!_foldExternal) {
-        auto phot = _ctx.star->getPhotometry();
-        if (phot) {
-            for (auto& src : phot->getLightcurveSources()) {
-                auto m = phot->getBestLightcurveModel(src);
-                if (m && m->period > 0) { foldP = m->period; foldT0 = m->phase; break; }
-            }
-        }
-        if (foldP <= 0) {
-            if (auto rv = _ctx.star->getRVCurve()) {
-                if (auto bf = rv->getBestFit(); bf && bf->getPeriod() > 0) {
-                    foldP  = bf->getPeriod();
-                    foldT0 = bf->getPhi();
-                }
-            }
-        }
-        _foldPeriod = foldP;
-        _foldT0     = foldT0;
-    }
-    bool canFold = foldP > 0;
+    resolveAutoFoldParams();
+    bool canFold = _foldPeriod > 0;
     _toggleFoldBtn->setEnabled(canFold);
     if (!canFold && _folded) {
         _folded = false;
@@ -959,4 +1021,14 @@ bool LCPanel::eventFilter(QObject* obj, QEvent* ev)
         }
     }
     return DetailPanel::eventFilter(obj, ev);
+}
+
+void LCPanel::setUniformFoldedBins(int nBins)
+{
+    if (nBins <= 0) return;
+    for (const auto& s : _series) {
+        _binsFolded[s.key]       = nBins;
+        _binEnabledFolded[s.key] = true;
+    }
+    if (_folded) replotAll(/*preserveZoom*/ true);
 }

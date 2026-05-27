@@ -280,16 +280,25 @@ bool DatabaseManager::createTables()
     )";
 
     // Create lightcurve models table
-    QString createLightcurveModelsTable = R"(
-        CREATE TABLE IF NOT EXISTS lightcurve_models (
+    QString createLCFitsTable = R"(
+        CREATE TABLE IF NOT EXISTS lc_fits (
             id TEXT PRIMARY KEY,
             lightcurve_id TEXT NOT NULL,
             creation_date TEXT,
-            model_id TEXT,
-            is_best_fit INTEGER,
-            period REAL,
-            phase REAL,
-            model_data_file TEXT,
+            label TEXT,
+            is_best_fit INTEGER DEFAULT 0,
+            q REAL DEFAULT 0,                 q_error REAL DEFAULT 0,
+            iangle REAL DEFAULT 0,            iangle_error REAL DEFAULT 0,
+            r1 REAL DEFAULT 0,                r1_error REAL DEFAULT 0,
+            r2 REAL DEFAULT 0,                r2_error REAL DEFAULT 0,
+            velocity_scale REAL DEFAULT 0,    velocity_scale_error REAL DEFAULT 0,
+            t1 REAL DEFAULT 0,                t1_error REAL DEFAULT 0,
+            t2 REAL DEFAULT 0,                t2_error REAL DEFAULT 0,
+            period REAL DEFAULT 0,            period_error REAL DEFAULT 0,
+            t0_bjd REAL DEFAULT 0,            t0_bjd_error REAL DEFAULT 0,
+            chi2 REAL DEFAULT 0,              rms REAL DEFAULT 0,
+            config_json TEXT,
+            data_file TEXT,
             FOREIGN KEY(lightcurve_id) REFERENCES lightcurves(id) ON DELETE CASCADE
         )
     )";
@@ -457,7 +466,7 @@ bool DatabaseManager::createTables()
         createPhotometricPointsTable,
         createLightcurvesTable,
         createSEDModelsTable,
-        createLightcurveModelsTable,
+        createLCFitsTable,
         createSpectraTable,
         createSpectralFitsTable,
         createRVCurvesTable,
@@ -617,6 +626,7 @@ bool DatabaseManager::createIndexes()
         "CREATE INDEX IF NOT EXISTS idx_spectra_instrument ON spectra(instrument_id, mode_key)",
         "CREATE INDEX IF NOT EXISTS idx_lightcurves_instrument ON lightcurves(instrument_id, mode_key)",
         "CREATE INDEX IF NOT EXISTS idx_periodograms_lookup ON periodograms(star_id, source, filter)",
+        "CREATE INDEX IF NOT EXISTS idx_lc_fits_lc ON lc_fits(lightcurve_id)",
     };
 
     for (const QString& query : indexQueries) {
@@ -1276,3 +1286,31 @@ double DatabaseManager::loadStarTessCrowdsap(const QString& starId)
         return std::numeric_limits<double>::quiet_NaN();
     return q.value(0).toDouble();
 }
+
+bool DatabaseManager::saveLCFitForStar(const QString& starId,
+                                       const QString& source,
+                                       std::shared_ptr<LCFit> fit)
+{ return _photometry->saveLCFitForStar(starId, source, fit); }
+
+std::vector<std::shared_ptr<LCFit>>
+DatabaseManager::loadLCFitsForSource(const QString& starId, const QString& source)
+{
+    // Resolve lightcurve id then forward to repo.
+    QSqlQuery q(_db->threadConnection());
+    q.prepare(R"(
+        SELECT lc.id FROM lightcurves lc
+        JOIN photometry p ON p.id = lc.photometry_id
+        WHERE p.star_id = :sid AND lc.source = :src
+    )");
+    q.bindValue(":sid", starId);
+    q.bindValue(":src", source);
+    if (!q.exec() || !q.next()) return {};
+    return _photometry->loadLCFitsForLightcurve(q.value(0).toString());
+}
+
+bool DatabaseManager::deleteLCFit(const QString& fitId)
+{ return _photometry->deleteLCFit(fitId); }
+
+bool DatabaseManager::setBestLCFit(const QString& starId, const QString& source,
+                                   const QString& fitId)
+{ return _photometry->setBestLCFit(starId, source, fitId); }

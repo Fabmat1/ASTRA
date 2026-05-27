@@ -43,6 +43,20 @@ public:
     LCPanel*          lcPanel()         const { return _lcPanel; }
     PeriodogramPanel* periodogramPanel() const { return _periodogramPanel; }
 
+    struct BinnedFitPoint {
+        double phase;
+        double deltaPhase;
+        double flux;
+        double fluxError;
+        double weight = 1.0;
+        double factor = 1.0;
+    };
+
+    double                       selectedFitPeriod() const;
+    QVector<BinnedFitPoint>      computeBinnedFitLightcurve() const;
+    bool                         writeBinnedFitLightcurve(const QString& path) const;
+    LCPanel*                     fitLcPanel() const { return _fitLcPanel; }
+
 private slots:
     // Periodogram tab
     void onPeriodogramTabActivated();
@@ -76,6 +90,12 @@ private slots:
     void onDeleteLightcurveClicked();
     void onRecomputeBjdClicked();
 
+    void onFitPeriodSelectionChanged();
+    void onFitBinsChanged();
+    void onFitRunClicked();
+    void onAddRVPeriodClicked();
+    void onAddPhotPeriodClicked();
+
 private:
     void     setupUi();
     QWidget* buildViewerTab();
@@ -97,6 +117,7 @@ private:
     void persistPeaks();
     void commitPeaks();  
 
+    void refreshFitPeriodList();
     void     refreshPreviewsTab();
     QString  previewDir() const;        
     QString  previewPath(const QString& filename) const;
@@ -140,6 +161,9 @@ private:
     QPushButton*  _bestFitBtn       = nullptr;
     QLabel*       _bestFitLabel     = nullptr;
 
+    QPushButton* _addRVPeriodBtn   = nullptr;
+    QPushButton* _addPhotPeriodBtn = nullptr;
+
     QList<PeriodogramPanel::PeriodPeak> _peaks;
 
     LightcurveFetcher* _fetcher = nullptr;
@@ -172,4 +196,11 @@ private:
     int          _previewIndex      = 0;
 
     void stepPreview(int delta);
+
+    // Fit tab widgets
+    LCPanel*     _fitLcPanel    = nullptr;
+    QListWidget* _fitPeriodList = nullptr;
+    QSpinBox*    _fitBinsSpin   = nullptr;
+    QPushButton* _fitRunBtn     = nullptr;
+    QLabel*      _fitInfoLabel  = nullptr;
 };
