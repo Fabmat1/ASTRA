@@ -18,6 +18,7 @@ constexpr const char* kLcqPython     = "lcquery/python";
 constexpr const char* kLcqScript     = "lcquery/script";
 constexpr const char* kAtlasToken    = "lcquery/atlasToken";
 constexpr const char* kBlackgemScr   = "lcquery/blackgemScript";
+constexpr const char* kLcurveDir = "lcurve/installDir";
 }
 
 QString AppSettings::panelName(DetailPanel p)
@@ -78,6 +79,14 @@ void AppSettings::applyDefaults()
     
     _atlasToken      = QString();   // user supplies
     _blackgemScript  = QString();   // optional
+
+    for (const char* probe : { "lcurve_levmarq", "lcurve_mcmc", "lcurve_simplex" }) {
+        QString p = QStandardPaths::findExecutable(probe);
+        if (!p.isEmpty()) {
+            _lcurveDir = QFileInfo(p).absolutePath();
+            break;
+        }
+    }
 }
 
 void AppSettings::load()
@@ -97,6 +106,7 @@ void AppSettings::load()
     _lcqueryScript   = s.value(kLcqScript,    _lcqueryScript  ).toString();
     _atlasToken      = s.value(kAtlasToken,   _atlasToken     ).toString();
     _blackgemScript  = s.value(kBlackgemScr,  _blackgemScript ).toString();
+    _lcurveDir = s.value(kLcurveDir, _lcurveDir).toString();
     s.endGroup();
 
     if (!flat.isEmpty()) {
@@ -132,6 +142,7 @@ void AppSettings::save() const
     s.setValue(kLcqScript,    _lcqueryScript);
     s.setValue(kAtlasToken,   _atlasToken);
     s.setValue(kBlackgemScr,  _blackgemScript);
+    s.setValue(kLcurveDir, _lcurveDir);
 
     s.endGroup();
     s.sync();
@@ -187,4 +198,27 @@ void AppSettings::setAtlasToken(const QString& t) {
 void AppSettings::setBlackgemScript(const QString& p) {
     if (_blackgemScript == p) return;
     _blackgemScript = p; save(); emit lcquerySettingsChanged();
+}
+
+void AppSettings::setLcurveDir(const QString &dir) {
+  if (_lcurveDir == dir)
+    return;
+  _lcurveDir = dir;
+  save();
+  emit lcurveSettingsChanged();
+}
+
+QString AppSettings::lcurveBinary(const QString &name) const {
+  if (!_lcurveDir.isEmpty()) {
+    const QString candidate = QDir(_lcurveDir).absoluteFilePath(name);
+    QFileInfo fi(candidate);
+    if (fi.exists() && fi.isExecutable())
+      return fi.absoluteFilePath();
+#ifdef Q_OS_WIN
+    QFileInfo fiExe(candidate + ".exe");
+    if (fiExe.exists())
+      return fiExe.absoluteFilePath();
+#endif
+  }
+  return QStandardPaths::findExecutable(name);
 }

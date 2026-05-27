@@ -14,5 +14,12 @@
         <file>fonts/FiraCode-Light.ttf</file>
         <file>fonts/FiraCode-SemiBold.ttf</file>
         <file>fonts/FiraCode-Medium.ttf</file>
+        <file>claret_tables/Claret2011_GDC_MS.dat</file>
+        <file>claret_tables/Claret2011_MS_multifilter_LDC.dat</file>
+        <file>claret_tables/Claret2018_MS_KEPLER_LDC.dat</file>
+        <file>claret_tables/Claret2020_beaming.dat</file>
+        <file>claret_tables/Claret2020_sd_GDC.dat</file>
+        <file>claret_tables/Claret2018_MS_TESS_LDC.dat</file>
+        <file>claret_tables/Claret2020_sd_LDC.dat</file>
     </qresource>
 </RCC>

@@ -172,13 +172,15 @@ void SettingsDialog::setupUi()
     _topicList->addItem("General");
     _topicList->addItem("Star Detail View");
     _topicList->addItem("Grid Paths");
-    _topicList->addItem("Lightcurve Fetching"); 
-    
+    _topicList->addItem("Lightcurve Fetching");
+    _topicList->addItem("Lightcurve Fitting");
+
     _pages = new QStackedWidget;
     _pages->addWidget(createGeneralPage());
     _pages->addWidget(createStarDetailPage());
     _pages->addWidget(createGridPathsPage());
     _pages->addWidget(createLightcurveFetchPage());
+    _pages->addWidget(createLightcurveFitPage());
 
     connect(_topicList, &QListWidget::currentRowChanged,
             _pages, &QStackedWidget::setCurrentIndex);
@@ -475,4 +477,109 @@ void SettingsDialog::apply()
     _settings->setLcqueryScript (_lcqScriptEdit->text().trimmed());
     _settings->setAtlasToken    (_atlasTokenEdit->text().trimmed());
     _settings->setBlackgemScript(_blackgemEdit->text().trimmed());
+    _settings->setLcurveDir(_lcurveDirEdit->text().trimmed());
+}
+
+QWidget *SettingsDialog::createLightcurveFitPage() {
+  auto *page = new QWidget;
+  auto *outer = new QVBoxLayout(page);
+  outer->setContentsMargins(16, 16, 16, 16);
+
+  auto *intro = new QLabel(
+      "Path to the directory containing the <code>lcurve_levmarq</code>, "
+      "<code>lcurve_mcmc</code> and <code>lcurve_simplex</code> binaries. "
+      "Leave blank to search <code>PATH</code> automatically.");
+  intro->setWordWrap(true);
+  outer->addWidget(intro);
+
+  auto *form = new QFormLayout;
+  form->setLabelAlignment(Qt::AlignRight);
+
+  auto *pathRow = new QHBoxLayout;
+  _lcurveDirEdit = new QLineEdit(_settings->lcurveDir());
+  _lcurveDirEdit->setPlaceholderText(
+      QStandardPaths::findExecutable("lcurve_levmarq").isEmpty()
+          ? "lcurve binaries not found in PATH — set explicitly"
+          : "Auto-detected from PATH");
+  auto *browse = new QPushButton("Browse…");
+  auto *reset = new QPushButton("Use PATH");
+  pathRow->addWidget(_lcurveDirEdit, 1);
+  pathRow->addWidget(browse);
+  pathRow->addWidget(reset);
+  form->addRow("Install dir:", pathRow);
+
+  connect(browse, &QPushButton::clicked, this, [this] {
+    QString start = _lcurveDirEdit->text().isEmpty() ? QDir::homePath()
+                                                     : _lcurveDirEdit->text();
+    QString d = QFileDialog::getExistingDirectory(
+        this, "Locate lcurve install directory", start);
+    if (!d.isEmpty()) {
+      _lcurveDirEdit->setText(d);
+    }
+  });
+  connect(reset, &QPushButton::clicked, this,
+          [this] { _lcurveDirEdit->clear(); });
+
+  outer->addLayout(form);
+
+  auto *testBtn = new QPushButton("Test");
+  testBtn->setToolTip("Check which lcurve binaries can be found "
+                      "in the configured directory or PATH.");
+  auto *row = new QHBoxLayout;
+  row->addWidget(testBtn);
+  row->addStretch();
+  outer->addLayout(row);
+
+  _lcurveStatusLbl = new QLabel;
+  _lcurveStatusLbl->setTextFormat(Qt::RichText);
+  _lcurveStatusLbl->setWordWrap(true);
+  _lcurveStatusLbl->setTextInteractionFlags(Qt::TextSelectableByMouse);
+  outer->addWidget(_lcurveStatusLbl);
+
+  auto refreshStatus = [this] {
+    const QString dir = _lcurveDirEdit->text().trimmed();
+    AppSettings probe;
+    probe.setLcurveDir(dir); // does not touch persisted settings of _settings
+    const QStringList bins = {"lcurve_levmarq", "lcurve_mcmc",
+                              "lcurve_simplex"};
+    QStringList rows;
+    int found = 0;
+    for (const QString &b : bins) {
+      const QString p = probe.lcurveBinary(b);
+      if (p.isEmpty()) {
+        rows << QString("<span style='color:#c46060;'>✗ %1</span> — not found")
+                    .arg(b);
+      } else {
+        rows << QString("<span style='color:#7dbd5e;'>✓ %1</span> — %2")
+                    .arg(b, p.toHtmlEscaped());
+        ++found;
+      }
+    }
+    QString colour = (found == bins.size()) ? "#7dbd5e"
+                     : (found > 0)          ? "#dca84d"
+                                            : "#c46060";
+    _lcurveStatusLbl->setText(
+        QString("<b style='color:%1;'>%2 / %3 binaries available</b><br>%4")
+            .arg(colour)
+            .arg(found)
+            .arg(bins.size())
+            .arg(rows.join("<br>")));
+  };
+
+  connect(testBtn, &QPushButton::clicked, this, refreshStatus);
+  connect(_lcurveDirEdit, &QLineEdit::textChanged, this, refreshStatus);
+  refreshStatus();
+
+  auto *hint = new QLabel(
+      "<i>The dialog launched from the Light Curves view runs one of "
+      "<code>lcurve_levmarq</code> (fast point fit), "
+      "<code>lcurve_simplex</code> (robust minimiser) or "
+      "<code>lcurve_mcmc</code> (full posterior) against a generated "
+      "<code>config.json</code> in a temporary directory.</i>");
+  hint->setWordWrap(true);
+  hint->setStyleSheet("color: gray;");
+  outer->addWidget(hint);
+
+  outer->addStretch();
+  return page;
 }

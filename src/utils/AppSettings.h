@@ -50,12 +50,21 @@ public:
     void setAtlasToken     (const QString& t);
     void setBlackgemScript (const QString& p);
 
+    // ── Lightcurve fitting (lcurve binaries) ─────────────────────────────
+    QString lcurveDir() const { return _lcurveDir; }
+    void    setLcurveDir(const QString& dir);
+
+    /// Resolve a binary name (e.g. "lcurve_levmarq") to an absolute path.
+    /// Uses _lcurveDir if set, otherwise searches PATH. Returns "" if not found.
+    QString lcurveBinary(const QString& name) const;
+
 
 signals:
     void isisBinaryPathChanged();
     void detailGridChanged();
     void gridBasePathsChanged();
     void lcquerySettingsChanged();
+    void lcurveSettingsChanged();
 
 private:
     void load();
@@ -71,6 +80,7 @@ private:
 
     QString _lcqueryPython;
     QString _lcqueryScript;
+    QString _lcurveDir;
     QString _atlasToken;
     QString _blackgemScript;
 };

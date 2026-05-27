@@ -25,7 +25,10 @@ private:
     QWidget* createStarDetailPage();
     QWidget* createGridPathsPage();
     QWidget* createLightcurveFetchPage();
+    QWidget *createLightcurveFitPage();
 
+    QLineEdit *_lcurveDirEdit = nullptr;
+    QLabel  *_lcurveStatusLbl = nullptr;
     AppSettings*   _settings;
 
     QListWidget*   _topicList = nullptr;
