@@ -197,6 +197,7 @@ set(SOURCES
     src/dialogs/SettingsDialog.cpp
     src/dialogs/AddStarDialog.cpp
     src/dialogs/ImportLightcurve.cpp
+    src/dialogs/LCFitDialog.cpp
 
     # importWizard
     src/importWizard/GeneralImportPage.cpp
@@ -236,7 +237,10 @@ set(SOURCES
     src/utils/ObservabilityCalculator.cpp
     src/utils/LightcurveFetcher.cpp
     src/utils/CheckStateDragger.cpp
-    
+    src/utils/ClaretTables.cpp
+    src/utils/LCFitPhysics.cpp
+    src/utils/LCFitRunner.cpp
+
     # views
     src/views/ColumnConfigDialog.cpp
     src/views/InstrumentConfigView.cpp
@@ -310,6 +314,7 @@ set(HEADERS
     src/dialogs/SettingsDialog.h
     src/dialogs/AddStarDialog.h
     src/dialogs/ImportLightcurve.h
+    src/dialogs/LCFitDialog.h
 
     # importWizard
     src/importWizard/GeneralImportPage.h
@@ -350,6 +355,9 @@ set(HEADERS
     src/utils/ObservabilityCalculator.h
     src/utils/LightcurveFetcher.h
     src/utils/CheckStateDragger.h
+    src/utils/ClaretTables.h
+    src/utils/LCFitPhysics.h
+    src/utils/LCFitRunner.h
 
     # views
     src/views/BooleanColumnDelegate.h

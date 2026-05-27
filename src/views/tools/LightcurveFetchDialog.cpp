@@ -9,6 +9,7 @@
 #include "utils/AppSettings.h"
 #include "controllers/ApplicationController.h"
 #include "dialogs/ImportLightcurve.h"
+#include "dialogs/LCFitDialog.h"
 
 #include <QPlainTextEdit>
 #include <QCheckBox>
@@ -1783,6 +1784,7 @@ bool LightcurveFetchDialog::writeBinnedFitLightcurve(const QString& path) const
     return true;
 }
 
+
 void LightcurveFetchDialog::onFitRunClicked()
 {
     const double P = selectedFitPeriod();
@@ -1794,12 +1796,49 @@ void LightcurveFetchDialog::onFitRunClicked()
                 .arg(P, 0, 'g', 8));
         return;
     }
-    // Placeholder until the dedicated fitting dialog is wired up.
-    QMessageBox::information(this, tr("Fit LC"),
-        tr("Ready to fit:\n  Period = %1 d\n  Bins  = %2\n\n"
-           "The actual fitting dialog will be hooked up next.")
-            .arg(P, 0, 'g', 8)
-            .arg(pts.size()));
+
+    // Determine which source is selected in the fit-period list
+    QString source;
+    if (auto* it = _fitPeriodList->currentItem())
+        source = it->text().section('[', 1, 1).section(']', 0, 0);  // best-effort label
+    if (source.isEmpty() || source.startsWith("RV") || source.startsWith("Phot")) {
+        // Fall back to the viewer combo's selection
+        if (_viewerSourceCombo && _viewerSourceCombo->count() > 0)
+            source = _viewerSourceCombo->currentText();
+    }
+    if (source.isEmpty()) source = "TESS";
+
+    // Try to grab a period error from the selected list item
+    double pErr = 0.0;
+    for (const auto& pk : _peaks)
+        if (std::abs(pk.period - P) / P < 1e-9) { pErr = pk.periodError; break; }
+
+    LCFitDialog::Inputs in;
+    in.star             = _star;
+    in.dbm              = _dbm;
+    in.controller       = _controller;
+    in.settings         = _controller ? _controller->settings() : nullptr;
+    in.projectId        = _projectId;
+    in.lightcurveSource = source;
+    in.period           = P;
+    in.periodError      = pErr;
+    in.binnedPoints.reserve(pts.size());
+    for (const auto& bp : pts) {
+        LCFitDataPoint d;
+        d.phase     = bp.phase;
+        d.dPhase    = bp.deltaPhase;
+        d.flux      = bp.flux;
+        d.fluxError = bp.fluxError;
+        d.weight    = bp.weight;
+        d.factor    = bp.factor;
+        in.binnedPoints.push_back(d);
+    }
+
+    LCFitDialog dlg(in, this);
+    if (dlg.exec() == QDialog::Accepted) {
+        if (_fitLcPanel) _fitLcPanel->refresh();
+        if (_lcPanel)    _lcPanel->refresh();
+    }
 }
 
 void LightcurveFetchDialog::onAddRVPeriodClicked()
