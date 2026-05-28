@@ -320,57 +320,69 @@ void RVPanel::populate()
               [](const RVDatum& a, const RVDatum& b) { return a.time < b.time; });
 
     // ── Branch: folded or broken-axis ──
-
     if (_folded && hasPeriod) {
         // =====================================================================
-        // FOLDED (phase) VIEW
+        // FOLDED (phase) VIEW — two phases shown by default, [-1, 1]
         // =====================================================================
         double P   = bestFit->getPeriod();
         double phi = bestFit->getPhi();
 
         std::vector<double> phases, rvs, errs;
-        for (auto& d : data) {
-            phases.push_back(bestFit->computePhase(d.tobj));
+        phases.reserve(data.size() * 2);
+        rvs.reserve(data.size() * 2);
+        errs.reserve(data.size() * 2);
+        for (auto &d : data) {
+            double ph = bestFit->computePhase(d.tobj);
+            phases.push_back(ph - 1.0);
+            rvs.push_back(d.rv);
+            errs.push_back(d.err);
+            phases.push_back(ph);
             rvs.push_back(d.rv);
             errs.push_back(d.err);
         }
 
-        QCustomPlot* plot = new QCustomPlot;
+        QCustomPlot *plot = new QCustomPlot;
         PanelUtils::stylePlot(plot);
         plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
         plot->legend->setVisible(false);
 
-        auto yRange = addRVDataToPlot(plot, phases, rvs, errs,
-                                      -0.05, 1.05,
-                                      PanelUtils::kPointColor,
+        constexpr double kPhaseLo = -1.05;
+        constexpr double kPhaseHi = 1.05;
+
+        auto yRange = addRVDataToPlot(plot, phases, rvs, errs, kPhaseLo,
+                                      kPhaseHi, PanelUtils::kPointColor,
                                       PanelUtils::kErrorBarColor);
 
-        // Model curve — span the full visible range so it joins continuously
-        // across the wrap and at phase 0.
-        constexpr int N = 240;
+        // Model curve spans the full visible range (two phases).
+        constexpr int   N = 480;
         QVector<double> fitX(N + 1), fitY(N + 1);
         for (int i = 0; i <= N; ++i) {
-            const double ph = -0.05 + (1.10 * i) / N;
-            fitX[i] = ph;
-            fitY[i] = bestFit->calculateRVAtPhase(ph);
+            const double ph = kPhaseLo + (kPhaseHi - kPhaseLo) * i / N;
+            fitX[i]         = ph;
+            fitY[i]         = bestFit->calculateRVAtPhase(ph);
         }
-        QCPGraph* fitGraph = plot->addGraph();
+        QCPGraph *fitGraph = plot->addGraph();
         fitGraph->setPen(QPen(PanelUtils::kFitCurveColor, 2.0));
         fitGraph->setData(fitX, fitY);
         fitGraph->removeFromLegend();
 
         plot->xAxis->setLabel("Phase");
-        plot->xAxis->setRange(-0.05, 1.05);
+        plot->xAxis->setRange(kPhaseLo, kPhaseHi);
         plot->yAxis->setLabel("RV [km/s]");
         double margin = (yRange.second - yRange.first) * 0.1;
-        if (margin < 1.0) margin = 1.0;
+        if (margin < 1.0)
+            margin = 1.0;
         plot->yAxis->setRange(yRange.first - margin, yRange.second + margin);
 
         plot->replot();
         _contentLayout->addWidget(plot);
 
-        LOG_INFO(CAT, QString("Star %1 — folded RV chart created with %2 points")
-            .arg(_ctx.star->getSourceId()).arg(data.size()));
+        LOG_INFO(
+            CAT,
+            QString(
+                "Star %1 — folded RV chart (2 phases) created with %2 points")
+                .arg(_ctx.star->getSourceId())
+                .arg(data.size()));
 
     } else {
         // =====================================================================

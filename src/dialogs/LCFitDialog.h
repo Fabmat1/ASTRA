@@ -17,6 +17,7 @@ class QPushButton;
 class QCheckBox;
 class QLabel;
 class QTableWidget;
+class QPlainTextEdit;
 class AnsiTerminalWidget;
 
 class Star;
@@ -93,6 +94,15 @@ class LCFitDialog : public QDialog {
                         const std::optional<LCFitPhysics::AsymMeasurement> &m);
     
     bool persistFit(bool asBest);
+
+    QWidget    *buildAdvancedPage();
+    QWidget    *buildReviewPage();
+    void        onRefreshReviewClicked();
+    void        onApplyReviewClicked();
+    void        onDiscardOverrideClicked();
+    void        applyAdvancedOverrides(QJsonObject &mp) const;
+    QJsonObject effectiveConfig() const;
+
     Inputs _in;
     LCFitRunner *_runner = nullptr;
     std::shared_ptr<LCFit> _result;
@@ -151,6 +161,32 @@ class LCFitDialog : public QDialog {
     QCheckBox *_lmCont = nullptr;
     QCheckBox *_sinIPrior = nullptr;
     QMap<QString, QCheckBox *> _vary;
+
+    // — Advanced page —
+    QSpinBox       *_nlat1f{}, *_nlat2f{}, *_nlat1c{}, *_nlat2c{};
+    QSpinBox       *_npole{}, *_nlatfill{}, *_nlngfill{};
+    QDoubleSpinBox *_deltaPhase{};
+    QDoubleSpinBox *_phase1{}, *_phase2{};
+    QDoubleSpinBox *_lfudge{}, *_llo{}, *_lhi{};
+    QCheckBox      *_roche1{}, *_roche2{}, *_eclipse1{}, *_eclipse2{};
+    QCheckBox      *_glens1{}, *_useRadii{}, *_mirror{};
+    QDoubleSpinBox *_mucrit1{}, *_mucrit2{};
+    QComboBox      *_limb1Sel{}, *_limb2Sel{};
+    QDoubleSpinBox *_gdarkBolom1{}, *_gdarkBolom2{};
+    QDoubleSpinBox *_spin1{}, *_spin2{};
+    QDoubleSpinBox *_pdot{}, *_deltat{};
+    QDoubleSpinBox *_absorb{}, *_slope{}, *_quad{}, *_cube{}, *_third{};
+    QCheckBox      *_addDisc{}, *_opaque{};
+    QSpinBox       *_nrad{};
+    QCheckBox      *_addSpot{};
+    QSpinBox       *_nspot{};
+    QSpinBox       *_iscale{};
+
+    // — Review page —
+    QPlainTextEdit            *_configReview{};
+    QLabel                    *_reviewStatus{};
+    std::optional<QJsonObject> _configOverride;
+
 
     // Run page
     QPushButton *_runBtn = nullptr, *_cancelBtn = nullptr, *_saveBtn = nullptr;

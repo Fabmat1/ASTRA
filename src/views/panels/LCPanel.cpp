@@ -422,13 +422,16 @@ void LCPanel::rebuildPlots()
 
     if (_series.isEmpty()) return;
 
-    auto makePlot = [this](QWidget* parent) -> QCustomPlot* {
-        auto* p = new QCustomPlot(parent);
+    auto makePlot = [this](QWidget *parent) -> QCustomPlot * {
+        auto *p = new QCustomPlot(parent);
         p->legend->setVisible(true);
-        p->axisRect()->insetLayout()->setInsetAlignment(0, Qt::AlignBottom | Qt::AlignRight);
+        p->axisRect()->insetLayout()->setInsetAlignment(0, Qt::AlignBottom |
+                                                               Qt::AlignRight);
         p->setMinimumHeight(180);
-        p->setNoAntialiasingOnDrag(true);                  // faster panning
+        p->setNoAntialiasingOnDrag(true);
         p->setPlottingHints(QCP::phFastPolylines | QCP::phCacheLabels);
+        // Error bars must render behind scatter markers
+        p->addLayer("errbars", p->layer("main"), QCustomPlot::limBelow);
         wirePlotInteractions(p);
         _plots.append(p);
         return p;
@@ -688,13 +691,14 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
         g->setProperty("isBinnedView",   doBin);
 
         if (bx.size() <= kErrorBarMax) {
-            auto* err = new QCPErrorBars(plot->xAxis, plot->yAxis);
+            auto *err = new QCPErrorBars(plot->xAxis, plot->yAxis);
             err->removeFromLegend();
             err->setDataPlottable(g);
             err->setErrorType(QCPErrorBars::etValueError);
             err->setPen(QPen(col.lighter(150), 0.8));
             err->setSymbolGap(0);
             err->setData(be);
+            err->setLayer("errbars"); 
         }
 
         // ── Overplot best-fit LC model in folded view ────────────────────

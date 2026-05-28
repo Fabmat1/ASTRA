@@ -28,7 +28,9 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QPlainTextEdit>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QStandardPaths>
@@ -148,12 +150,15 @@ void LCFitDialog::setupUi() {
     _pages = new QStackedWidget;
     _pageTitles = {
         tr("Stars"),   tr("Constraints"), tr("Limb/Gravity Darkening"),
-        tr("Beaming"), tr("Solver"),      tr("Run")};
+        tr("Beaming"), tr("Solver"),      tr("Advanced"),
+        tr("Review"),  tr("Run")};
     _pages->addWidget(buildStarsPage());
     _pages->addWidget(buildConstraintsPage());
     _pages->addWidget(buildDarkeningPage());
     _pages->addWidget(buildBeamingPage());
     _pages->addWidget(buildSolverPage());
+    _pages->addWidget(buildAdvancedPage());
+    _pages->addWidget(buildReviewPage());
     _pages->addWidget(buildRunPage());
     root->addWidget(_pages, 1);
 
@@ -759,6 +764,205 @@ QWidget *LCFitDialog::buildSolverPage() {
   return page;
 }
 
+QWidget *LCFitDialog::buildAdvancedPage() {
+    auto *scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    auto *page = new QWidget;
+    auto *root = new QVBoxLayout(page);
+
+    auto addInt = [&](QGridLayout *g, int r, int c, const QString &lbl,
+                      QSpinBox *&sb, int lo, int hi, int v) {
+        sb = new QSpinBox;
+        sb->setRange(lo, hi);
+        sb->setValue(v);
+        g->addWidget(new QLabel(lbl), r, c);
+        g->addWidget(sb, r, c + 1);
+    };
+    auto addDbl = [&](QGridLayout *g, int r, int c, const QString &lbl,
+                      QDoubleSpinBox *&sb, double lo, double hi, int dec,
+                      double step, double v) {
+        sb = mkSpin(lo, hi, dec, step, v);
+        g->addWidget(new QLabel(lbl), r, c);
+        g->addWidget(sb, r, c + 1);
+    };
+
+    // ── Grid resolution / integration ─────────────────────────────────
+    auto *gridBox = new QGroupBox(tr("Grid resolution & integration"));
+    auto *gg      = new QGridLayout(gridBox);
+    addInt(gg, 0, 0, tr("nlat1 fine:"), _nlat1f, 5, 4000, 50);
+    addInt(gg, 0, 2, tr("nlat2 fine:"), _nlat2f, 5, 4000, 150);
+    addInt(gg, 1, 0, tr("nlat1 coarse:"), _nlat1c, 5, 4000, 50);
+    addInt(gg, 1, 2, tr("nlat2 coarse:"), _nlat2c, 5, 4000, 150);
+    addInt(gg, 2, 0, tr("npole:"), _npole, 0, 10, 1);
+    addInt(gg, 2, 2, tr("nlatfill:"), _nlatfill, 0, 50, 2);
+    addInt(gg, 3, 0, tr("nlngfill:"), _nlngfill, 0, 50, 2);
+    addDbl(gg, 3, 2, tr("delta_phase:"), _deltaPhase, 1e-12, 1.0, 12, 1e-8,
+           1e-7);
+    addDbl(gg, 4, 0, tr("phase1 (fine band):"), _phase1, 0.0, 0.5, 4, 0.01,
+           0.1);
+    addDbl(gg, 4, 2, tr("phase2 (fine band):"), _phase2, 0.0, 0.5, 4, 0.01,
+           0.4);
+    addDbl(gg, 5, 0, tr("lfudge:"), _lfudge, -1.0, 1.0, 4, 0.01, 0.0);
+    addDbl(gg, 5, 2, tr("llo [°]:"), _llo, -90.0, 90.0, 2, 1.0, 90.0);
+    addDbl(gg, 6, 0, tr("lhi [°]:"), _lhi, -90.0, 90.0, 2, 1.0, -90.0);
+    root->addWidget(gridBox);
+
+    // ── Geometry / Roche ──────────────────────────────────────────────
+    auto *geoBox = new QGroupBox(tr("Geometry / Roche / limb model"));
+    auto *ggeo   = new QGridLayout(geoBox);
+    _roche1      = new QCheckBox(tr("Roche distortion (1)"));
+    _roche1->setChecked(true);
+    _roche2 = new QCheckBox(tr("Roche distortion (2)"));
+    _roche2->setChecked(true);
+    _eclipse1 = new QCheckBox(tr("Eclipses by star 1"));
+    _eclipse1->setChecked(true);
+    _eclipse2 = new QCheckBox(tr("Eclipses by star 2"));
+    _eclipse2->setChecked(true);
+    _glens1   = new QCheckBox(tr("Gravitational lensing"));
+    _useRadii = new QCheckBox(tr("Use radii (else volumes)"));
+    _useRadii->setChecked(true);
+    _mirror = new QCheckBox(tr("Mirror irradiation"));
+    ggeo->addWidget(_roche1, 0, 0);
+    ggeo->addWidget(_roche2, 0, 1);
+    ggeo->addWidget(_eclipse1, 1, 0);
+    ggeo->addWidget(_eclipse2, 1, 1);
+    ggeo->addWidget(_glens1, 2, 0);
+    ggeo->addWidget(_useRadii, 2, 1);
+    ggeo->addWidget(_mirror, 3, 0);
+    addDbl(ggeo, 4, 0, tr("mucrit1:"), _mucrit1, 0.0, 1.0, 4, 0.01, 0.0);
+    addDbl(ggeo, 4, 2, tr("mucrit2:"), _mucrit2, 0.0, 1.0, 4, 0.01, 0.0);
+    _limb1Sel = new QComboBox;
+    _limb1Sel->addItems({"Poly", "Claret"});
+    _limb2Sel = new QComboBox;
+    _limb2Sel->addItems({"Poly", "Claret"});
+    ggeo->addWidget(new QLabel(tr("Limb model 1:")), 5, 0);
+    ggeo->addWidget(_limb1Sel, 5, 1);
+    ggeo->addWidget(new QLabel(tr("Limb model 2:")), 5, 2);
+    ggeo->addWidget(_limb2Sel, 5, 3);
+    addDbl(ggeo, 6, 0, tr("gdark_bolom1:"), _gdarkBolom1, 0.0, 2.0, 4, 0.01,
+           1.0);
+    addDbl(ggeo, 6, 2, tr("gdark_bolom2:"), _gdarkBolom2, 0.0, 2.0, 4, 0.01,
+           1.0);
+    addDbl(ggeo, 7, 0, tr("spin1:"), _spin1, 0.0, 100.0, 4, 0.01, 1.0);
+    addDbl(ggeo, 7, 2, tr("spin2:"), _spin2, 0.0, 100.0, 4, 0.01, 1.0);
+    root->addWidget(geoBox);
+
+    // ── Period evolution & light-curve baseline ───────────────────────
+    auto *pBox = new QGroupBox(tr("Period evolution & light scaling"));
+    auto *gp   = new QGridLayout(pBox);
+    addDbl(gp, 0, 0, tr("pdot:"), _pdot, -1.0, 1.0, 12, 1e-8, 0.0);
+    addDbl(gp, 0, 2, tr("deltat:"), _deltat, -1.0, 1.0, 8, 1e-4, 0.0);
+    addDbl(gp, 1, 0, tr("absorb:"), _absorb, 0.0, 10.0, 4, 0.01, 1.0);
+    addDbl(gp, 1, 2, tr("slope:"), _slope, -1.0, 1.0, 6, 1e-3, 0.0);
+    addDbl(gp, 2, 0, tr("quadratic:"), _quad, -1.0, 1.0, 6, 1e-3, 0.0);
+    addDbl(gp, 2, 2, tr("cubic:"), _cube, -1.0, 1.0, 6, 1e-3, 0.0);
+    addDbl(gp, 3, 0, tr("third light:"), _third, -1.0, 1.0, 6, 1e-3, 0.0);
+    root->addWidget(pBox);
+
+    // ── Disc & spot ───────────────────────────────────────────────────
+    auto *exBox = new QGroupBox(tr("Accretion disc & hot spot"));
+    auto *ge    = new QGridLayout(exBox);
+    _addDisc    = new QCheckBox(tr("Include accretion disc"));
+    _opaque     = new QCheckBox(tr("Opaque disc"));
+    ge->addWidget(_addDisc, 0, 0);
+    ge->addWidget(_opaque, 0, 1);
+    addInt(ge, 1, 0, tr("nrad:"), _nrad, 0, 1000, 40);
+    _addSpot = new QCheckBox(tr("Include hot spot"));
+    ge->addWidget(_addSpot, 2, 0);
+    addInt(ge, 2, 2, tr("nspot:"), _nspot, 0, 100, 0);
+    addInt(ge, 3, 0, tr("iscale:"), _iscale, 0, 10, 0);
+    root->addWidget(exBox);
+
+    root->addStretch();
+    scroll->setWidget(page);
+
+    auto *outer = new QWidget;
+    auto *ol    = new QVBoxLayout(outer);
+    ol->setContentsMargins(0, 0, 0, 0);
+    ol->addWidget(scroll);
+    return outer;
+}
+
+QWidget *LCFitDialog::buildReviewPage() {
+    auto *page = new QWidget;
+    auto *root = new QVBoxLayout(page);
+
+    auto *info = new QLabel(
+        tr("<b>Final configuration preview.</b><br>"
+           "Press <i>Refresh from form</i> to regenerate the JSON from the "
+           "dialog inputs. Edit the JSON below and press <i>Apply override</i> "
+           "to use the edited document verbatim for the next run; "
+           "<i>Discard override</i> reverts to form-driven configuration."));
+    info->setWordWrap(true);
+    info->setTextFormat(Qt::RichText);
+    root->addWidget(info);
+
+    _configReview = new QPlainTextEdit;
+    QFont mono("Monospace");
+    mono.setStyleHint(QFont::TypeWriter);
+    _configReview->setFont(mono);
+    _configReview->setLineWrapMode(QPlainTextEdit::NoWrap);
+    root->addWidget(_configReview, 1);
+
+    auto *btnRow     = new QHBoxLayout;
+    auto *refreshBtn = new QPushButton(tr("Refresh from form"));
+    auto *applyBtn   = new QPushButton(tr("Apply override"));
+    auto *discardBtn = new QPushButton(tr("Discard override"));
+    _reviewStatus    = new QLabel(tr("No override active."));
+    _reviewStatus->setStyleSheet("color: gray;");
+    _reviewStatus->setWordWrap(true);
+    btnRow->addWidget(refreshBtn);
+    btnRow->addWidget(applyBtn);
+    btnRow->addWidget(discardBtn);
+    btnRow->addWidget(_reviewStatus, 1);
+    root->addLayout(btnRow);
+
+    connect(refreshBtn, &QPushButton::clicked, this,
+            &LCFitDialog::onRefreshReviewClicked);
+    connect(applyBtn, &QPushButton::clicked, this,
+            &LCFitDialog::onApplyReviewClicked);
+    connect(discardBtn, &QPushButton::clicked, this,
+            &LCFitDialog::onDiscardOverrideClicked);
+    return page;
+}
+
+void LCFitDialog::onRefreshReviewClicked() {
+    if (!_hasStart)
+        onComputeStartingClicked();
+    const QJsonObject cfg = buildFullConfig();
+    _configReview->setPlainText(
+        QString::fromUtf8(QJsonDocument(cfg).toJson(QJsonDocument::Indented)));
+    if (_configOverride) {
+        _configOverride.reset();
+        _reviewStatus->setStyleSheet("color: gray;");
+        _reviewStatus->setText(tr("Override discarded; using form values."));
+    } else {
+        _reviewStatus->setStyleSheet("color: gray;");
+        _reviewStatus->setText(tr("Generated from form (no override active)."));
+    }
+}
+
+void LCFitDialog::onApplyReviewClicked() {
+    QJsonParseError pe;
+    const auto      doc =
+        QJsonDocument::fromJson(_configReview->toPlainText().toUtf8(), &pe);
+    if (pe.error != QJsonParseError::NoError || !doc.isObject()) {
+        _reviewStatus->setStyleSheet("color: #c46060;");
+        _reviewStatus->setText(tr("Invalid JSON: %1").arg(pe.errorString()));
+        return;
+    }
+    _configOverride = doc.object();
+    _reviewStatus->setStyleSheet("color: #7dbd5e;");
+    _reviewStatus->setText(
+        tr("Override active - next run uses the edited JSON verbatim."));
+}
+
+void LCFitDialog::onDiscardOverrideClicked() {
+    _configOverride.reset();
+    _reviewStatus->setStyleSheet("color: gray;");
+    _reviewStatus->setText(tr("Override discarded; using form values."));
+}
+
 // ── Run tab ────────────────────────────────────────────────────────
 
 QWidget *LCFitDialog::buildRunPage() {
@@ -797,6 +1001,8 @@ QWidget *LCFitDialog::buildRunPage() {
   root->addLayout(btnRow);
 
   _term = new AnsiTerminalWidget;
+  if (_configOverride)
+      _term->feed(QByteArray("[info] using user-edited config override\n"));
   root->addWidget(_term, 1);
 
   auto *resBox = new QGroupBox(tr("Results"));
@@ -984,9 +1190,9 @@ QJsonObject LCFitDialog::buildFullConfig() const {
     cfg["priors"]       = toJsonMap(priors);
 
     QJsonObject mpJson = toJsonMap(mp);
-    if (_wlSpin) {
+    if (_wlSpin)
         mpJson["wavelength"] = QString::number(_wlSpin->value(), 'f', 2);
-    }
+    applyAdvancedOverrides(mpJson);
     cfg["model_parameters"] = mpJson;
     return cfg;
 }
@@ -1006,14 +1212,14 @@ bool LCFitDialog::writeInputDataFile(const QString &path) const {
 }
 
 bool LCFitDialog::writeConfigFile(const QString &path, QString *err) const {
-  QFile f(path);
-  if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
-    if (err)
-      *err = f.errorString();
-    return false;
-  }
-  f.write(QJsonDocument(buildFullConfig()).toJson(QJsonDocument::Indented));
-  return true;
+    QFile f(path);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        if (err)
+            *err = f.errorString();
+        return false;
+    }
+    f.write(QJsonDocument(effectiveConfig()).toJson(QJsonDocument::Indented));
+    return true;
 }
 
 // ── Run ────────────────────────────────────────────────────────────
@@ -1039,7 +1245,7 @@ void LCFitDialog::onRunClicked() {
   }
 
   _initialModelParameters =
-      buildFullConfig().value("model_parameters").toObject();
+      effectiveConfig().value("model_parameters").toObject();
 
   const auto m =
       static_cast<LCFitRunner::Method>(_method->currentData().toInt());
@@ -1552,6 +1758,9 @@ void LCFitDialog::onPageChanged(int index) {
         onQueryClaretClicked();
     } else if (title == tr("Beaming")) {
         onComputeBeamingClicked();
+    } else if (title == tr("Review")) {
+        if (!_configOverride)
+            onRefreshReviewClicked();
     }
 }
 
@@ -1665,4 +1874,114 @@ QString LCFitDialog::claretFilterKey() const {
         return k;
     // Final fallback so a query is still attempted.
     return QStringLiteral("TESS");
+}
+
+void LCFitDialog::applyAdvancedOverrides(QJsonObject &mp) const {
+    auto setRaw = [&](const QString &k, const QString &v) { mp[k] = v; };
+    auto setInt = [&](const QString &k, int v) { mp[k] = QString::number(v); };
+    auto setNum = [&](const QString &k, double v) {
+        mp[k] = QString::number(v, 'g', 10);
+    };
+    // For 5-field "value step1 step2 vary visible" parameters, only the
+    // value is replaced — step/vary/visible are preserved.
+    auto tweakVal = [&](const QString &k, double v) {
+        const QString cur   = mp.value(k).toString();
+        QStringList   parts = cur.split(' ', Qt::SkipEmptyParts);
+        if (parts.isEmpty()) {
+            mp[k] = QString::number(v, 'g', 10);
+            return;
+        }
+        parts[0] = QString::number(v, 'g', 10);
+        mp[k]    = parts.join(' ');
+    };
+
+    if (_nlat1f)
+        setInt("nlat1f", _nlat1f->value());
+    if (_nlat2f)
+        setInt("nlat2f", _nlat2f->value());
+    if (_nlat1c)
+        setInt("nlat1c", _nlat1c->value());
+    if (_nlat2c)
+        setInt("nlat2c", _nlat2c->value());
+    if (_npole)
+        setInt("npole", _npole->value());
+    if (_nlatfill)
+        setInt("nlatfill", _nlatfill->value());
+    if (_nlngfill)
+        setInt("nlngfill", _nlngfill->value());
+    if (_deltaPhase)
+        setNum("delta_phase", _deltaPhase->value());
+    if (_phase1)
+        setNum("phase1", _phase1->value());
+    if (_phase2)
+        setNum("phase2", _phase2->value());
+    if (_lfudge)
+        setNum("lfudge", _lfudge->value());
+    if (_llo)
+        setNum("llo", _llo->value());
+    if (_lhi)
+        setNum("lhi", _lhi->value());
+
+    if (_roche1)
+        setInt("roche1", _roche1->isChecked() ? 1 : 0);
+    if (_roche2)
+        setInt("roche2", _roche2->isChecked() ? 1 : 0);
+    if (_eclipse1)
+        setInt("eclipse1", _eclipse1->isChecked() ? 1 : 0);
+    if (_eclipse2)
+        setInt("eclipse2", _eclipse2->isChecked() ? 1 : 0);
+    if (_glens1)
+        setInt("glens1", _glens1->isChecked() ? 1 : 0);
+    if (_useRadii)
+        setInt("use_radii", _useRadii->isChecked() ? 1 : 0);
+    if (_mirror)
+        setInt("mirror", _mirror->isChecked() ? 1 : 0);
+    if (_mucrit1)
+        setNum("mucrit1", _mucrit1->value());
+    if (_mucrit2)
+        setNum("mucrit2", _mucrit2->value());
+    if (_limb1Sel)
+        setRaw("limb1", _limb1Sel->currentText());
+    if (_limb2Sel)
+        setRaw("limb2", _limb2Sel->currentText());
+    if (_gdarkBolom1)
+        setNum("gdark_bolom1", _gdarkBolom1->value());
+    if (_gdarkBolom2)
+        setNum("gdark_bolom2", _gdarkBolom2->value());
+    if (_spin1)
+        tweakVal("spin1", _spin1->value());
+    if (_spin2)
+        tweakVal("spin2", _spin2->value());
+
+    if (_pdot)
+        tweakVal("pdot", _pdot->value());
+    if (_deltat)
+        tweakVal("deltat", _deltat->value());
+    if (_absorb)
+        tweakVal("absorb", _absorb->value());
+    if (_slope)
+        tweakVal("slope", _slope->value());
+    if (_quad)
+        tweakVal("quad", _quad->value());
+    if (_cube)
+        tweakVal("cube", _cube->value());
+    if (_third)
+        tweakVal("third", _third->value());
+
+    if (_addDisc)
+        setInt("add_disc", _addDisc->isChecked() ? 1 : 0);
+    if (_opaque)
+        setInt("opaque", _opaque->isChecked() ? 1 : 0);
+    if (_nrad)
+        setInt("nrad", _nrad->value());
+    if (_addSpot)
+        setInt("add_spot", _addSpot->isChecked() ? 1 : 0);
+    if (_nspot)
+        setInt("nspot", _nspot->value());
+    if (_iscale)
+        setInt("iscale", _iscale->value());
+}
+
+QJsonObject LCFitDialog::effectiveConfig() const {
+    return _configOverride ? *_configOverride : buildFullConfig();
 }
