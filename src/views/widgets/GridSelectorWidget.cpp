@@ -32,13 +32,25 @@ QHash<QString, QVector<DiscoveredGrid>> &gridScanCache() {
 void clearGridScanCache() { gridScanCache().clear(); }
 
 struct DirListing {
-    QStringList subdirs; // immediate subdirectories (no symlinks, no hidden)
-    bool        markerFound = false;
+    QStringList subdirs;
+    int         entryCount   = 0;
+    int         unknownCount = 0;
+    // markerFound removed: detection now done by dirHasMarker()
 };
 
-// Single readdir pass: collects subdirectories and whether a marker file is
-// present, using dirent::d_type so regular files are skipped WITHOUT stat().
-DirListing listDir(const QString &path, const QSet<QString> &markerSet) {
+// Cheap marker probe: a few stat() calls, no directory enumeration.
+bool dirHasMarker(const QString &path, const QStringList &markers) {
+    for (const QString &m : markers) {
+        struct stat      st;
+        const QByteArray full = QFile::encodeName(path + "/" + m);
+        if (::stat(full.constData(), &st) == 0 && S_ISREG(st.st_mode))
+            return true;
+    }
+    return false;
+}
+
+// readdir pass to enumerate subdirectories only.
+DirListing listDir(const QString &path) {
     DirListing out;
     DIR       *dir = ::opendir(QFile::encodeName(path).constData());
     if (!dir)
@@ -49,12 +61,10 @@ DirListing listDir(const QString &path, const QSet<QString> &markerSet) {
         const QString name = QString::fromLocal8Bit(ent->d_name);
         if (name == "." || name == "..")
             continue;
-
-        if (!out.markerFound && markerSet.contains(name))
-            out.markerFound = true;
+        ++out.entryCount;
 
         if (name.startsWith('.'))
-            continue; // don't descend into hidden dirs
+            continue; // skip hidden
 
         bool isDir = false;
         switch (ent->d_type) {
@@ -63,8 +73,9 @@ DirListing listDir(const QString &path, const QSet<QString> &markerSet) {
             break;
         case DT_LNK:
             isDir = false;
-            break;         // NoSymLinks behaviour
-        case DT_UNKNOWN: { // FS didn't report type -> lstat
+            break;
+        case DT_UNKNOWN: {
+            ++out.unknownCount;
             struct stat      st;
             const QByteArray full = QFile::encodeName(path + "/" + name);
             if (::lstat(full.constData(), &st) == 0 && !S_ISLNK(st.st_mode))
@@ -73,7 +84,7 @@ DirListing listDir(const QString &path, const QSet<QString> &markerSet) {
         }
         default:
             isDir = false;
-            break; // regular files etc. -> skip, no stat
+            break;
         }
         if (isDir)
             out.subdirs << name;
@@ -243,7 +254,7 @@ void GridSelectorWidget::scanPaths() {
 
     _discovered.clear();
     QSet<QString>       seen;
-    const QSet<QString> markerSet(_markers.begin(), _markers.end());
+    long                unknownTotal = 0; 
 
     for (const QString &raw : _basePaths) {
         QString base = raw.trimmed();
@@ -263,14 +274,15 @@ void GridSelectorWidget::scanPaths() {
         QElapsedTimer baseTimer;
         baseTimer.start();
         const int beforeCount = _discovered.size();
+        long      unknownTotal = 0; // declare alongside dirsVisited/dirsPruned
 
         std::function<void(const QString &, int)> scan = [&](const QString &dir,
                                                              int depth) {
             ++dirsVisited;
-            const DirListing listing = listDir(dir, markerSet);
 
-            // ── Prune: a directory that *is* a grid is a leaf. ──
-            if (listing.markerFound) {
+            // ── Is this directory itself a grid? (cheap stat, no enumeration)
+            // ──
+            if (dirHasMarker(dir, _markers)) {
                 ++dirsPruned;
                 const QString canon = QDir::cleanPath(dir);
                 if (!seen.contains(canon)) {
@@ -315,6 +327,21 @@ void GridSelectorWidget::scanPaths() {
             if (depth >= 5)
                 return;
 
+            // ── Container directory: enumerate children (this is the timed
+            // part) ──
+            QElapsedTimer t;
+            t.start();
+            const DirListing listing = listDir(dir);
+            const qint64     ms      = t.elapsed();
+            unknownTotal += listing.unknownCount;
+            if (ms > 200)
+                LOG_DEBUG("GridScan",
+                          QString("SLOW %1 ms (entries=%2, unknownType=%3): %4")
+                              .arg(ms)
+                              .arg(listing.entryCount)
+                              .arg(listing.unknownCount)
+                              .arg(dir));
+
             for (const QString &sub : listing.subdirs)
                 scan(dir + "/" + sub, depth + 1);
         };
@@ -327,12 +354,13 @@ void GridSelectorWidget::scanPaths() {
                                   .arg(baseTimer.elapsed()));
     }
 
-    LOG_DEBUG("GridScan", QString("DONE: visited %1 dirs, pruned %2, "
-                                  "found %3 grids in %4 ms")
+    LOG_DEBUG("GridScan", QString("DONE: visited %1 dirs, pruned %2, found %3 "
+                                  "grids in %4 ms (lstat-from-UNKNOWN=%5)")
                               .arg(dirsVisited)
                               .arg(dirsPruned)
                               .arg(_discovered.size())
-                              .arg(timer.elapsed()));
+                              .arg(timer.elapsed())
+                              .arg(unknownTotal));
 
     gridScanCache().insert(cacheKey, _discovered);
 }
