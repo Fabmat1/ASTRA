@@ -40,7 +40,7 @@ set(ASTRA_DATA_DIR "" CACHE PATH
 message(STATUS "ASTRA data storage location set to: ${ASTRA_DATA_DIR}")
 
 # Qt
-find_package(Qt6 REQUIRED COMPONENTS
+find_package(Qt6 6.10 REQUIRED COMPONENTS
     Core Widgets Sql Network Concurrent PrintSupport)
 qt_standard_project_setup()
 
