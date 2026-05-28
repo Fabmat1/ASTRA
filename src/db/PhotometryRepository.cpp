@@ -397,17 +397,18 @@ QString PhotometryRepository::resolveLightcurveId(const QString& starId,
     return {};
 }
 
-bool PhotometryRepository::saveLCFit(const QString& starId,
-                                     const QString& photometryId,
-                                     const QString& lightcurveId,
-                                     std::shared_ptr<LCFit> fit)
-{
-    if (!fit || lightcurveId.isEmpty()) return false;
-    if (fit->getId().isEmpty()) fit->setId(_db.generateUUID());
+bool PhotometryRepository::saveLCFit(const QString         &starId,
+                                     const QString         &photometryId,
+                                     const QString         &lightcurveId,
+                                     std::shared_ptr<LCFit> fit) {
+    if (!fit || lightcurveId.isEmpty())
+        return false;
+    if (fit->getId().isEmpty())
+        fit->setId(_db.generateUUID());
 
     QString dataDir = QFileInfo(_db.databasePath()).absolutePath() + "/data";
-    QString dataFile = DataStore::lcFitPath(dataDir, starId,
-                                            photometryId, fit->getId());
+    QString dataFile =
+        DataStore::lcFitPath(dataDir, starId, photometryId, fit->getId());
     if (!fit->saveDataToFile(dataFile)) {
         qDebug() << "Failed to write LCFit data file:" << dataFile;
         return false;
@@ -419,11 +420,14 @@ bool PhotometryRepository::saveLCFit(const QString& starId,
 
     QSqlDatabase db = _db.threadConnection();
 
-    // Enforce single best-fit per lightcurve.
+    // Best-fit is per (lightcurve, filter): only clear siblings with same
+    // filter.
     if (fit->isBestFit) {
         QSqlQuery q(db);
-        q.prepare("UPDATE lc_fits SET is_best_fit = 0 WHERE lightcurve_id = :lcid");
+        q.prepare("UPDATE lc_fits SET is_best_fit = 0 "
+                  "WHERE lightcurve_id = :lcid AND IFNULL(filter,'') = :flt");
         q.bindValue(":lcid", lightcurveId);
+        q.bindValue(":flt", fit->filter);
         q.exec();
     }
 
@@ -431,6 +435,7 @@ bool PhotometryRepository::saveLCFit(const QString& starId,
     q.prepare(R"(
         INSERT OR REPLACE INTO lc_fits (
             id, lightcurve_id, creation_date, label, is_best_fit,
+            filter, wavelength_nm,
             q, q_error, iangle, iangle_error,
             r1, r1_error, r2, r2_error,
             velocity_scale, velocity_scale_error,
@@ -439,6 +444,7 @@ bool PhotometryRepository::saveLCFit(const QString& starId,
             chi2, rms, config_json, data_file
         ) VALUES (
             :id, :lcid, :cdate, :label, :best,
+            :flt, :wl,
             :q, :qe, :i, :ie,
             :r1, :r1e, :r2, :r2e,
             :vs, :vse,
@@ -447,63 +453,64 @@ bool PhotometryRepository::saveLCFit(const QString& starId,
             :chi2, :rms, :json, :df
         )
     )");
-    q.bindValue(":id",    fit->getId());
-    q.bindValue(":lcid",  lightcurveId);
+    q.bindValue(":id", fit->getId());
+    q.bindValue(":lcid", lightcurveId);
     q.bindValue(":cdate", fit->creationDate.toString(Qt::ISODate));
     q.bindValue(":label", fit->label);
-    q.bindValue(":best",  fit->isBestFit ? 1 : 0);
-    q.bindValue(":q",     fit->q);                  q.bindValue(":qe",  fit->qError);
-    q.bindValue(":i",     fit->inclination);        q.bindValue(":ie",  fit->inclinationError);
-    q.bindValue(":r1",    fit->r1);                 q.bindValue(":r1e", fit->r1Error);
-    q.bindValue(":r2",    fit->r2);                 q.bindValue(":r2e", fit->r2Error);
-    q.bindValue(":vs",    fit->velocityScale);      q.bindValue(":vse", fit->velocityScaleError);
-    q.bindValue(":t1",    fit->t1);                 q.bindValue(":t1e", fit->t1Error);
-    q.bindValue(":t2",    fit->t2);                 q.bindValue(":t2e", fit->t2Error);
-    q.bindValue(":p",     fit->period);             q.bindValue(":pe",  fit->periodError);
-    q.bindValue(":t0",    fit->t0BJD);              q.bindValue(":t0e", fit->t0BJDError);
-    q.bindValue(":chi2",  fit->chi2);
-    q.bindValue(":rms",   fit->rms);
-    q.bindValue(":json",  fit->config.toJsonString());
-    q.bindValue(":df",    dataFile);
+    q.bindValue(":best", fit->isBestFit ? 1 : 0);
+    q.bindValue(":flt", fit->filter);
+    q.bindValue(":wl", fit->wavelengthNm);
+    q.bindValue(":q", fit->q);
+    q.bindValue(":qe", fit->qError);
+    q.bindValue(":i", fit->inclination);
+    q.bindValue(":ie", fit->inclinationError);
+    q.bindValue(":r1", fit->r1);
+    q.bindValue(":r1e", fit->r1Error);
+    q.bindValue(":r2", fit->r2);
+    q.bindValue(":r2e", fit->r2Error);
+    q.bindValue(":vs", fit->velocityScale);
+    q.bindValue(":vse", fit->velocityScaleError);
+    q.bindValue(":t1", fit->t1);
+    q.bindValue(":t1e", fit->t1Error);
+    q.bindValue(":t2", fit->t2);
+    q.bindValue(":t2e", fit->t2Error);
+    q.bindValue(":p", fit->period);
+    q.bindValue(":pe", fit->periodError);
+    q.bindValue(":t0", fit->t0BJD);
+    q.bindValue(":t0e", fit->t0BJDError);
+    q.bindValue(":chi2", fit->chi2);
+    q.bindValue(":rms", fit->rms);
+    q.bindValue(":json", fit->config.toJsonString());
+    q.bindValue(":df", dataFile);
 
     if (!q.exec()) {
         qDebug() << "Failed to save LCFit:" << q.lastError();
         return false;
     }
+
+    if (fit->isBestFit)
+        propagateBestLCFitToStar(starId, fit->getId());
     return true;
 }
 
-bool PhotometryRepository::saveLCFitForStar(const QString& starId,
-                                            const QString& source,
-                                            std::shared_ptr<LCFit> fit)
-{
-    if (!fit || source.isEmpty()) return false;
-    QString pid;
-    QString lcid = resolveLightcurveId(starId, source, &pid);
-    if (lcid.isEmpty()) {
-        qWarning() << "saveLCFitForStar: no lightcurve row for"
-                   << starId << "/" << source;
-        return false;
-    }
-    return saveLCFit(starId, pid, lcid, fit);
-}
-
 std::vector<std::shared_ptr<LCFit>>
-PhotometryRepository::loadLCFitsForLightcurve(const QString& lightcurveId)
-{
+PhotometryRepository::loadLCFitsForLightcurve(const QString &lightcurveId) {
     std::vector<std::shared_ptr<LCFit>> out;
-    QSqlQuery q(_db.threadConnection());
+    QSqlQuery                           q(_db.threadConnection());
     q.prepare("SELECT * FROM lc_fits WHERE lightcurve_id = :lcid");
     q.bindValue(":lcid", lightcurveId);
-    if (!q.exec()) return out;
+    if (!q.exec())
+        return out;
 
     while (q.next()) {
         auto f = std::make_shared<LCFit>();
         f->setId(q.value("id").toString());
-        f->creationDate = QDateTime::fromString(q.value("creation_date").toString(),
-                                                Qt::ISODate);
+        f->creationDate = QDateTime::fromString(
+            q.value("creation_date").toString(), Qt::ISODate);
         f->label              = q.value("label").toString();
         f->isBestFit          = q.value("is_best_fit").toInt() == 1;
+        f->filter             = q.value("filter").toString();
+        f->wavelengthNm       = q.value("wavelength_nm").toDouble();
         f->q                  = q.value("q").toDouble();
         f->qError             = q.value("q_error").toDouble();
         f->inclination        = q.value("iangle").toDouble();
@@ -531,6 +538,62 @@ PhotometryRepository::loadLCFitsForLightcurve(const QString& lightcurveId)
     return out;
 }
 
+void PhotometryRepository::propagateBestLCFitToStar(const QString &starId,
+                                                    const QString &fitId) {
+    QSqlDatabase db = _db.threadConnection();
+
+    QSqlQuery q(db);
+    q.prepare(R"(
+        SELECT period, period_error,
+               iangle, iangle_error,
+               q,      q_error,
+               filter, wavelength_nm
+        FROM lc_fits WHERE id = :id
+    )");
+    q.bindValue(":id", fitId);
+    if (!q.exec() || !q.next())
+        return;
+
+    const double period  = q.value(0).toDouble();
+    const double ePeriod = q.value(1).toDouble();
+    const double incl    = q.value(2).toDouble();
+    const double eIncl   = q.value(3).toDouble();
+    const double qMass   = q.value(4).toDouble();
+    const double eQMass  = q.value(5).toDouble();
+
+    QSqlQuery upd(db);
+    upd.prepare(R"(
+        UPDATE stars SET
+            phot_period   = :p,  phot_e_period = :pe,
+            phot_incl     = :i,  phot_e_incl   = :ie,
+            phot_q        = :q,  phot_e_q      = :qe
+        WHERE id = :sid
+    )");
+    upd.bindValue(":p", period);
+    upd.bindValue(":pe", ePeriod);
+    upd.bindValue(":i", incl);
+    upd.bindValue(":ie", eIncl);
+    upd.bindValue(":q", qMass);
+    upd.bindValue(":qe", eQMass);
+    upd.bindValue(":sid", starId);
+    upd.exec();
+}
+
+bool PhotometryRepository::saveLCFitForStar(const QString& starId,
+                                            const QString& source,
+                                            std::shared_ptr<LCFit> fit)
+{
+    if (!fit || source.isEmpty()) return false;
+    QString pid;
+    QString lcid = resolveLightcurveId(starId, source, &pid);
+    if (lcid.isEmpty()) {
+        qWarning() << "saveLCFitForStar: no lightcurve row for"
+                   << starId << "/" << source;
+        return false;
+    }
+    return saveLCFit(starId, pid, lcid, fit);
+}
+
 bool PhotometryRepository::deleteLCFit(const QString& fitId)
 {
     QSqlDatabase db = _db.threadConnection();
@@ -556,23 +619,31 @@ bool PhotometryRepository::deleteLCFit(const QString& fitId)
     return true;
 }
 
-bool PhotometryRepository::setBestLCFit(const QString& starId,
-                                        const QString& source,
-                                        const QString& fitId)
-{
+bool PhotometryRepository::setBestLCFit(const QString &starId,
+                                        const QString &source,
+                                        const QString &filter,
+                                        const QString &fitId) {
     QString lcid = resolveLightcurveId(starId, source);
-    if (lcid.isEmpty()) return false;
+    if (lcid.isEmpty())
+        return false;
 
     QSqlDatabase db = _db.threadConnection();
-    QSqlQuery clr(db);
-    clr.prepare("UPDATE lc_fits SET is_best_fit = 0 WHERE lightcurve_id = :lcid");
+    QSqlQuery    clr(db);
+    clr.prepare("UPDATE lc_fits SET is_best_fit = 0 "
+                "WHERE lightcurve_id = :lcid AND IFNULL(filter,'') = :flt");
     clr.bindValue(":lcid", lcid);
-    if (!clr.exec()) return false;
+    clr.bindValue(":flt", filter);
+    if (!clr.exec())
+        return false;
 
     QSqlQuery set(db);
     set.prepare("UPDATE lc_fits SET is_best_fit = 1 WHERE id = :id");
     set.bindValue(":id", fitId);
-    return set.exec();
+    if (!set.exec())
+        return false;
+
+    propagateBestLCFitToStar(starId, fitId);
+    return true;
 }
 
 std::shared_ptr<Photometry> PhotometryRepository::loadPhotometry(const QString& starId)

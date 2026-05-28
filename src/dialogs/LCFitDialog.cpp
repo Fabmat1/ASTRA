@@ -1,11 +1,12 @@
 #include "LCFitDialog.h"
-
 #include "controllers/ApplicationController.h"
 #include "db/DatabaseManager.h"
 #include "models/Star.h"
 #include "utils/AppPaths.h"
 #include "utils/AppSettings.h"
+#include "utils/ClaretFilter.h"
 #include "utils/ClaretTables.h"
+#include "utils/FilterWavelength.h"
 #include "utils/LCFitRunner.h"
 #include "utils/Logger.h"
 #include "views/widgets/AnsiTerminalWidget.h"
@@ -29,12 +30,14 @@
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QStackedWidget>
 #include <QStandardPaths>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTextStream>
 #include <QUuid>
 #include <QVBoxLayout>
+#include <cmath>
 
 #include <algorithm>
 
@@ -133,135 +136,225 @@ LCFitDialog::~LCFitDialog() {
 // ── UI scaffolding ─────────────────────────────────────────────────
 
 void LCFitDialog::setupUi() {
-  auto *root = new QVBoxLayout(this);
-  root->setContentsMargins(8, 8, 8, 8);
-  root->setSpacing(6);
+    setWindowTitle(tr("Light-Curve Fit"));
+    resize(1100, 780);
 
-  root->addWidget(buildHeader());
+    auto *root = new QVBoxLayout(this);
+    root->setContentsMargins(8, 8, 8, 8);
+    root->setSpacing(6);
 
-  auto *tabs = new QTabWidget;
-  tabs->addTab(buildStarsTab(), tr("Stars"));
-  tabs->addTab(buildConstraintsTab(), tr("Constraints"));
-  tabs->addTab(buildDarkeningTab(), tr("Limb/Gravity Darkening"));
-  tabs->addTab(buildBeamingTab(), tr("Beaming && Ephemeris"));
-  tabs->addTab(buildSolverTab(), tr("Solver"));
-  tabs->addTab(buildRunTab(), tr("Run && Results"));
-  root->addWidget(tabs, 1);
+    root->addWidget(buildHeader());
 
-  auto *bb = new QDialogButtonBox(QDialogButtonBox::Close);
-  connect(bb, &QDialogButtonBox::rejected, this, &QDialog::reject);
-  root->addWidget(bb);
+    _pages = new QStackedWidget;
+    _pageTitles = {
+        tr("Stars"),   tr("Constraints"), tr("Limb/Gravity Darkening"),
+        tr("Beaming"), tr("Solver"),      tr("Run")};
+    _pages->addWidget(buildStarsPage());
+    _pages->addWidget(buildConstraintsPage());
+    _pages->addWidget(buildDarkeningPage());
+    _pages->addWidget(buildBeamingPage());
+    _pages->addWidget(buildSolverPage());
+    _pages->addWidget(buildRunPage());
+    root->addWidget(_pages, 1);
+
+    // ── Navigation strip ────────────────────────────────────────────────
+    auto *nav = new QHBoxLayout;
+    _pageInfo = new QLabel;
+    _pageInfo->setStyleSheet("color: gray;");
+    _prevBtn = new QPushButton(tr("◀  Previous"));
+    _nextBtn = new QPushButton(tr("Next  ▶"));
+    _closeBtn = new QPushButton(tr("Close"));
+    _closeBtn->setAutoDefault(false);
+    nav->addWidget(_prevBtn);
+    nav->addWidget(_pageInfo);
+    nav->addStretch();
+    nav->addWidget(_nextBtn);
+    nav->addSpacing(16);
+    nav->addWidget(_closeBtn);
+    root->addLayout(nav);
+
+    connect(_prevBtn, &QPushButton::clicked, this, &LCFitDialog::onPrevPage);
+    connect(_nextBtn, &QPushButton::clicked, this, &LCFitDialog::onNextPage);
+    connect(_closeBtn, &QPushButton::clicked, this, &QDialog::reject);
+
+    _pages->setCurrentIndex(0);
+    connect(_pages, &QStackedWidget::currentChanged, this,
+            &LCFitDialog::onPageChanged);
+    updateNavButtons();
+
+    populateFromStar();
+}
+
+// ── Auto-populate from Star ────────────────────────────────────────────────
+
+void LCFitDialog::populateFromStar() {
+    if (!_in.star)
+        return;
+    const auto &s = *_in.star;
+
+    using AM = LCFitPhysics::AsymMeasurement;
+
+    auto setSym = [](QLineEdit *e, double v, double sig) {
+        if (!e || !e->text().trimmed().isEmpty())
+            return;
+        if (!Star::isSet(v) || v == 0.0)
+            return;
+        AM m;
+        m.value = v;
+        m.errLo = (Star::isSet(sig) && sig > 0.0) ? sig : 0.0;
+        m.errHi = m.errLo;
+        setMeas(e, m);
+    };
+
+    setSym(_T1, s.getTeff(), s.getETeff());
+    setSym(_logg1, s.getLogg(), s.getELogg());
+    setSym(_M1, s.getSedMass1(), s.getSedEMass1());
+    setSym(_R1, s.getSedRadius1(), s.getSedERadius1());
+    setSym(_M2, s.getSedMass2(), s.getSedEMass2());
+    setSym(_R2, s.getSedRadius2(), s.getSedERadius2());
+
+    if (_iOverride && Star::isSet(s.getPhotIncl()))
+        _iOverride->setValue(s.getPhotIncl());
+
+    setSym(_K1, s.getRVK(), s.getRVEK());
+    setSym(_qObs, s.getPhotQ(), s.getPhotEQ());
+
+    if (_t0 && Star::isSet(s.getRVT0()) && _t0->value() == _t0->minimum())
+        _t0->setValue(s.getRVT0());
+
+    recomputeMtot();
+    recomputeM2Min();
 }
 
 QWidget *LCFitDialog::buildHeader() {
-  auto *box = new QGroupBox;
-  auto *h = new QHBoxLayout(box);
-  h->setContentsMargins(8, 6, 8, 6);
+    auto *w = new QWidget;
+    auto *g = new QGridLayout(w);
+    g->setContentsMargins(0, 0, 0, 0);
 
-  _hdr = new QLabel(tr("<b>Star:</b> %1   <b>Source:</b> %2   "
-                       "<b>P:</b> %3 d   <b>Binned pts:</b> %4")
-                        .arg(_in.star ? _in.star->getSourceId() : "?")
-                        .arg(_in.lightcurveSource)
-                        .arg(fmt(_in.period, 8))
-                        .arg(int(_in.binnedPoints.size())));
-  h->addWidget(_hdr);
-  h->addStretch();
+    _hdr = new QLabel;
+    _hdr->setStyleSheet("font-weight: bold; font-size: 14px;");
+    const QString name =
+        _in.star ? (_in.star->getAlias().isEmpty() ? _in.star->getSourceId()
+                                                    : _in.star->getAlias())
+                : tr("(no star)");
+    _hdr->setText(tr("LC fit — %1   |   P = %2 ± %3 d  ·  %4 binned points")
+                    .arg(name)
+                    .arg(_in.period, 0, 'g', 8)
+                    .arg(_in.periodError, 0, 'g', 2)
+                    .arg(int(_in.binnedPoints.size())));
 
-  h->addWidget(new QLabel(tr("Band:")));
-  _bandCombo = new QComboBox;
-  for (const QString &b : ClaretTables::availableBands())
-    _bandCombo->addItem(b);
-  int idx = _bandCombo->findText("TESS");
-  if (idx >= 0)
-    _bandCombo->setCurrentIndex(idx);
-  connect(_bandCombo, QOverload<int>::of(&QComboBox::currentIndexChanged), this,
-          &LCFitDialog::onBandChanged);
-  h->addWidget(_bandCombo);
+    _sourceLabel = new QLabel(
+        tr("Source: <b>%1</b>").arg(_in.lightcurveSource.toHtmlEscaped()));
+    _filterLabel = new QLabel(tr("Filter: <b>%1</b>")
+                                .arg(_in.filter.isEmpty()
+                                            ? tr("(none)")
+                                            : _in.filter.toHtmlEscaped()));
 
-  _bandWl = new QLabel;
-  _bandWl->setStyleSheet("color: gray;");
-  h->addWidget(_bandWl);
-  onBandChanged(0);
+    _wlSpin = new QDoubleSpinBox;
+    _wlSpin->setRange(50.0, 50000.0);
+    _wlSpin->setDecimals(2);
+    _wlSpin->setSingleStep(10.0);
+    _wlSpin->setSuffix(" nm");
+    _wlSpin->setToolTip(
+        tr("Effective wavelength used by the LC fitter. "
+            "Auto-filled from the selected filter when known."));
+    double wl = _in.wavelengthNm;
+    if (wl <= 0.0)
+        wl = FilterWavelength::lookupNm(_in.filter);
+    if (wl <= 0.0)
+        wl = 600.0;
+    _wlSpin->setValue(wl);
 
-  return box;
-}
+    g->addWidget(_hdr, 0, 0, 1, 4);
+    g->addWidget(_sourceLabel, 1, 0);
+    g->addWidget(_filterLabel, 1, 1);
+    g->addWidget(new QLabel(tr("Effective λ:")), 1, 2, Qt::AlignRight);
+    g->addWidget(_wlSpin, 1, 3);
+    g->setColumnStretch(0, 1);
+    g->setColumnStretch(1, 1);
 
-void LCFitDialog::onBandChanged(int) {
-  if (!_bandCombo || !_bandWl)
-    return;
-  const double wl = ClaretTables::bandWavelengthNm(_bandCombo->currentText());
-  _bandWl->setText(QString("λ_eff = %1 nm").arg(wl, 0, 'f', 1));
-}
+    return w;
+  }
+
 
 // ── Stars tab ──────────────────────────────────────────────────────
 
-QWidget *LCFitDialog::buildStarsTab() {
-  auto *page = new QWidget;
-  auto *root = new QHBoxLayout(page);
+  QWidget *LCFitDialog::buildStarsPage() {
+      auto *page = new QWidget;
+      auto *root = new QHBoxLayout(page);
 
-  auto makeStarBox = [&](const QString &title, QComboBox *&type, QLineEdit *&T,
-                         QLineEdit *&logg, QLineEdit *&M,
-                         QLineEdit *&R) -> QGroupBox * {
-    auto *b = new QGroupBox(title);
-    auto *f = new QFormLayout(b);
-    type = new QComboBox;
-    type->addItems({"ms", "sd", "wd"});
-    T = mkMeasEdit(tr("e.g. 28100 500"));
-    logg = mkMeasEdit(tr("e.g. 5.4 0.2"));
-    M = mkMeasEdit();
-    R = mkMeasEdit();
-    f->addRow(tr("Type:"), type);
-    f->addRow(tr("T_eff [K]:"), T);
-    f->addRow(tr("log g [cgs]:"), logg);
-    f->addRow(tr("Mass [M☉]:"), M);
-    f->addRow(tr("Radius [R☉]:"), R);
-    return b;
-  };
+      auto makeStarBox = [&](const QString &title, QComboBox *&type,
+                             QLineEdit *&T, QLineEdit *&logg, QLineEdit *&M,
+                             QLineEdit *&R) -> QGroupBox * {
+          auto *b = new QGroupBox(title);
+          auto *f = new QFormLayout(b);
+          type    = new QComboBox;
+          type->addItems({"ms", "sd", "wd"});
+          T    = mkMeasEdit(tr("e.g. 28100 500"));
+          logg = mkMeasEdit(tr("e.g. 5.4 0.2"));
+          M    = mkMeasEdit();
+          R    = mkMeasEdit();
+          f->addRow(tr("Type:"), type);
+          f->addRow(tr("T_eff [K]:"), T);
+          f->addRow(tr("log g [cgs]:"), logg);
+          f->addRow(tr("Mass [M☉]:"), M);
+          f->addRow(tr("Radius [R☉]:"), R);
+          return b;
+      };
 
-  root->addWidget(makeStarBox(tr("Star 1 (primary / hotter)"), _type1, _T1,
-                              _logg1, _M1, _R1));
-  root->addWidget(makeStarBox(tr("Star 2 (secondary / cooler)"), _type2, _T2,
-                              _logg2, _M2, _R2));
+      root->addWidget(makeStarBox(tr("Star 1 (primary / hotter)"), _type1, _T1,
+                                  _logg1, _M1, _R1));
+      root->addWidget(makeStarBox(tr("Star 2 (secondary / cooler)"), _type2,
+                                  _T2, _logg2, _M2, _R2));
 
-  auto *side = new QVBoxLayout;
-  side->addStretch();
-  auto *msBtn = new QPushButton(tr("Guess MS companion"));
-  msBtn->setToolTip(tr("Fill Star 2 with low-mass main-sequence defaults "
-                       "and very wide errors."));
-  auto *wdBtn = new QPushButton(tr("Guess WD companion"));
-  wdBtn->setToolTip(
-      tr("Fill Star 2 with white-dwarf defaults and wide errors."));
-  connect(msBtn, &QPushButton::clicked, this, &LCFitDialog::onGuessMSClicked);
-  connect(wdBtn, &QPushButton::clicked, this, &LCFitDialog::onGuessWDClicked);
-  side->addWidget(msBtn);
-  side->addWidget(wdBtn);
-  side->addStretch();
-  root->addLayout(side);
+      // Subdwarf primary is the canonical case for this tool.
+      _type1->setCurrentText("sd");
+      _type2->setCurrentText("ms");
 
-  // TODO: auto-fill Star 1 from stored stellar parameters on _in.star
-  // e.g. setMeas(_T1, makeMeas(_in.star->getTeff(), _in.star->getTeffErr()));
+      auto *side = new QVBoxLayout;
+      side->addStretch();
+      auto *msBtn = new QPushButton(tr("Guess MS companion"));
+      msBtn->setToolTip(tr("Fill Star 2 atmospheric defaults for a "
+                           "low-mass main-sequence companion. "
+                           "Mass and radius are left blank on purpose."));
+      auto *wdBtn = new QPushButton(tr("Guess WD companion"));
+      wdBtn->setToolTip(tr("Fill Star 2 atmospheric defaults for a "
+                           "white-dwarf companion. "
+                           "Mass and radius are left blank on purpose."));
+      connect(msBtn, &QPushButton::clicked, this,
+              &LCFitDialog::onGuessMSClicked);
+      connect(wdBtn, &QPushButton::clicked, this,
+              &LCFitDialog::onGuessWDClicked);
+      connect(_M1, &QLineEdit::textChanged, this, &LCFitDialog::onM1M2Changed);
+      connect(_M2, &QLineEdit::textChanged, this, &LCFitDialog::onM1M2Changed);
+      side->addWidget(msBtn);
+      side->addWidget(wdBtn);
+      side->addStretch();
+      root->addLayout(side);
 
-  return page;
-}
+      return page;
+  }
 
-void LCFitDialog::onGuessMSClicked() {
-  _type2->setCurrentText("ms");
-  setMeas(_T2, LCFitPhysics::AsymMeasurement{3500, 1000, 1500});
-  setMeas(_logg2, LCFitPhysics::AsymMeasurement{4.7, 0.5, 0.5});
-  setMeas(_M2, LCFitPhysics::AsymMeasurement{0.3, 0.25, 0.4});
-  setMeas(_R2, LCFitPhysics::AsymMeasurement{0.35, 0.25, 0.35});
-}
-void LCFitDialog::onGuessWDClicked() {
-  _type2->setCurrentText("wd");
-  setMeas(_T2, LCFitPhysics::AsymMeasurement{20000, 15000, 30000});
-  setMeas(_logg2, LCFitPhysics::AsymMeasurement{8.0, 0.7, 0.7});
-  setMeas(_M2, LCFitPhysics::AsymMeasurement{0.6, 0.3, 0.6});
-  setMeas(_R2, LCFitPhysics::AsymMeasurement{0.012, 0.008, 0.02});
-}
+  void LCFitDialog::onGuessMSClicked() {
+      _type2->setCurrentText("ms");
+      setMeas(_T2, LCFitPhysics::AsymMeasurement{3500, 1000, 1500});
+      setMeas(_logg2, LCFitPhysics::AsymMeasurement{4.7, 0.5, 0.5});
+      // Mass and radius of the companion are intentionally left untouched.
+      recomputeMtot();
+      recomputeM2Min();
+  }
+
+  void LCFitDialog::onGuessWDClicked() {
+      _type2->setCurrentText("wd");
+      setMeas(_T2, LCFitPhysics::AsymMeasurement{20000, 15000, 30000});
+      setMeas(_logg2, LCFitPhysics::AsymMeasurement{8.0, 0.7, 0.7});
+      recomputeMtot();
+      recomputeM2Min();
+  }
 
 // ── Constraints tab ────────────────────────────────────────────────
 
-QWidget *LCFitDialog::buildConstraintsTab() {
+QWidget *LCFitDialog::buildConstraintsPage() {
   auto *page = new QWidget;
   auto *root = new QVBoxLayout(page);
 
@@ -331,79 +424,138 @@ QWidget *LCFitDialog::buildConstraintsTab() {
 }
 
 void LCFitDialog::onComputeStartingClicked() {
-  const auto obs = collectObservables();
-  if (obs.count() == 0) {
-    _spStart->setText(tr("<b>No constraints provided.</b> Using defaults: "
-                         "i=80°, q=1.0, v_scale=200 km/s, r₁=0.2."));
-    _lastStart = {80.0, 1.0, 200.0, 0.2};
-  } else {
-    const bool iFree = !_iLock->isChecked();
+    const auto   obs   = collectObservables();
+    const bool   iFree = !_iLock->isChecked();
     const double iInit = _iLock->isChecked() ? _iOverride->value() : 80.0;
-    _lastStart = LCFitPhysics::optimiseStart(iInit, _in.period, obs, iFree);
-    _spStart->setText(tr("<b>i</b> = %1°   <b>q</b> = %2   "
-                         "<b>v_scale</b> = %3 km/s   <b>r₁</b> = %4")
-                          .arg(_lastStart.i, 0, 'f', 2)
-                          .arg(_lastStart.q, 0, 'g', 6)
-                          .arg(_lastStart.vs, 0, 'f', 3)
-                          .arg(_lastStart.r1, 0, 'g', 6));
-  }
 
-  // Estimate r2
-  auto imp = LCFitPhysics::impliedFromParams(
-      _lastStart.i, _lastStart.q, _lastStart.vs, _lastStart.r1, _in.period);
-  const auto type2 = ClaretTables::parseStarType(_type2->currentText());
-  std::optional<double> M2est;
-  if (auto m = meas(_M2); m && m->value > 0)
-    M2est = m->value;
-  else
-    M2est = imp.M2;
-  double r2 = LCFitPhysics::estimateR2(M2est, _in.period, _lastStart.vs, type2);
+    bool usedExact = false;
 
-  // If user supplied R2, override
-  if (auto m = meas(_R2); m && m->value > 0) {
-    const double aKm =
-        _lastStart.vs * _in.period * LCFitPhysics::kDay2Sec / (2.0 * M_PI);
-    r2 = m->value * LCFitPhysics::kRsunKm / aKm;
-  }
+    // If user gave K1, M1, R1 we can solve (q, vs, r1) exactly at iInit.
+    // This guarantees the implied physical values match what they entered
+    // (the previous behaviour could let M1 drift from 0.3 → 1.18 etc.).
+    if (obs.K1 && obs.M1 && obs.R1 && obs.K1->value > 0 && obs.M1->value > 0 &&
+        obs.R1->value > 0 && _in.period > 0) {
+        if (auto sol =
+                LCFitPhysics::solveExact(iInit, obs.K1->value, obs.M1->value,
+                                         obs.R1->value, _in.period)) {
+            _lastStart.i  = iInit;
+            _lastStart.q  = std::get<0>(*sol);
+            _lastStart.vs = std::get<1>(*sol);
+            _lastStart.r1 = std::get<2>(*sol);
+            usedExact     = true;
+        }
+    }
 
-  _lastImplied = LCFitPhysics::impliedFromParams(
-      _lastStart.i, _lastStart.q, _lastStart.vs, _lastStart.r1, _in.period, r2);
-  QString lines = tr("<i>Derived: K₁=%1, K₂=%2 km/s   M₁=%3, M₂=%4 M☉   "
-                     "R₁=%5 R☉   a=%6 R☉")
-                      .arg(_lastImplied.K1, 0, 'f', 1)
-                      .arg(_lastImplied.K2, 0, 'f', 1)
-                      .arg(_lastImplied.M1, 0, 'f', 3)
-                      .arg(_lastImplied.M2, 0, 'f', 3)
-                      .arg(_lastImplied.R1, 0, 'f', 3)
-                      .arg(_lastImplied.aRs, 0, 'f', 2);
-  if (_lastImplied.R2)
-    lines += tr("   R₂=%1 R☉").arg(*_lastImplied.R2, 0, 'f', 3);
-  lines += "</i><br>";
+    if (!usedExact) {
+        if (obs.count() == 0) {
+            _spStart->setText(
+                tr("<b>No constraints provided.</b> Using defaults: "
+                   "i=80°, q=1.0, v_scale=200 km/s, r₁=0.2."));
+            _lastStart = {80.0, 1.0, 200.0, 0.2};
+        } else {
+            _lastStart =
+                LCFitPhysics::optimiseStart(iInit, _in.period, obs, iFree);
+        }
+    }
 
-  // Pulls against observables
-  auto pull = [&](const std::optional<LCFitPhysics::AsymMeasurement> &m,
-                  double val, const QString &name) {
-    if (!m || !m->isValid())
-      return QString();
-    return QString("%1: %2σ  ").arg(name).arg(m->pull(val), 0, 'f', 2);
-  };
-  QString pulls;
-  pulls += pull(obs.K1, _lastImplied.K1, "K₁");
-  pulls += pull(obs.K2, _lastImplied.K2, "K₂");
-  pulls += pull(obs.M1, _lastImplied.M1, "M₁");
-  pulls += pull(obs.M2, _lastImplied.M2, "M₂");
-  pulls += pull(obs.R1, _lastImplied.R1, "R₁");
-  pulls += pull(obs.Mt, _lastImplied.Mt, "M_t");
-  pulls += pull(obs.qObs, _lastStart.q, "q");
-  if (!pulls.isEmpty())
-    lines += "<i>" + pulls + "</i>";
-  _spImpl->setText(lines);
-  _hasStart = true;
+    if (usedExact) {
+        _spStart->setText(
+            tr("<b>Exact solution</b> (from K₁, M₁, R₁ at fixed i):<br>"
+               "<b>i</b> = %1°   <b>q</b> = %2   "
+               "<b>v_scale</b> = %3 km/s   <b>r₁</b> = %4")
+                .arg(_lastStart.i, 0, 'f', 2)
+                .arg(_lastStart.q, 0, 'g', 6)
+                .arg(_lastStart.vs, 0, 'f', 3)
+                .arg(_lastStart.r1, 0, 'g', 6));
+    } else {
+        _spStart->setText(tr("<b>i</b> = %1°   <b>q</b> = %2   "
+                             "<b>v_scale</b> = %3 km/s   <b>r₁</b> = %4")
+                              .arg(_lastStart.i, 0, 'f', 2)
+                              .arg(_lastStart.q, 0, 'g', 6)
+                              .arg(_lastStart.vs, 0, 'f', 3)
+                              .arg(_lastStart.r1, 0, 'g', 6));
+    }
+
+    // Estimate r2 from the chosen start point.
+    auto imp = LCFitPhysics::impliedFromParams(
+        _lastStart.i, _lastStart.q, _lastStart.vs, _lastStart.r1, _in.period);
+    const auto type2 = ClaretTables::parseStarType(_type2->currentText());
+    std::optional<double> M2est;
+    if (auto m = meas(_M2); m && m->value > 0)
+        M2est = m->value;
+    else
+        M2est = imp.M2;
+    double r2 =
+        LCFitPhysics::estimateR2(M2est, _in.period, _lastStart.vs, type2);
+
+    if (auto m = meas(_R2); m && m->value > 0) {
+        const double aKm =
+            _lastStart.vs * _in.period * LCFitPhysics::kDay2Sec / (2.0 * M_PI);
+        r2 = m->value * LCFitPhysics::kRsunKm / aKm;
+    }
+
+    _lastImplied = LCFitPhysics::impliedFromParams(_lastStart.i, _lastStart.q,
+                                                   _lastStart.vs, _lastStart.r1,
+                                                   _in.period, r2);
+    QString lines = tr("<i>Derived: K₁=%1, K₂=%2 km/s   M₁=%3, M₂=%4 M☉   "
+                       "R₁=%5 R☉   a=%6 R☉")
+                        .arg(_lastImplied.K1, 0, 'f', 1)
+                        .arg(_lastImplied.K2, 0, 'f', 1)
+                        .arg(_lastImplied.M1, 0, 'f', 3)
+                        .arg(_lastImplied.M2, 0, 'f', 3)
+                        .arg(_lastImplied.R1, 0, 'f', 3)
+                        .arg(_lastImplied.aRs, 0, 'f', 2);
+    if (_lastImplied.R2)
+        lines += tr("   R₂=%1 R☉").arg(*_lastImplied.R2, 0, 'f', 3);
+    lines += "</i><br>";
+
+    // Pull diagnostics + a warning when the implied value strays > 2σ.
+    auto pull = [&](const std::optional<LCFitPhysics::AsymMeasurement> &m,
+                    double val, const QString &name, bool &anyOver,
+                    double &maxAbs) {
+        if (!m || !m->isValid())
+            return QString();
+        const double p = m->pull(val);
+        if (std::abs(p) > std::abs(maxAbs))
+            maxAbs = p;
+        if (std::abs(p) > 2.0)
+            anyOver = true;
+        const QString colour = std::abs(p) > 3.0   ? "#c46060"
+                               : std::abs(p) > 1.5 ? "#dca84d"
+                                                   : "#7dbd5e";
+        return QString("<span style='color:%1;'>%2: %3σ</span>  ")
+            .arg(colour, name)
+            .arg(p, 0, 'f', 2);
+    };
+
+    bool    anyOver = false;
+    double  maxAbs  = 0.0;
+    QString pulls;
+    pulls += pull(obs.K1, _lastImplied.K1, "K₁", anyOver, maxAbs);
+    pulls += pull(obs.K2, _lastImplied.K2, "K₂", anyOver, maxAbs);
+    pulls += pull(obs.M1, _lastImplied.M1, "M₁", anyOver, maxAbs);
+    pulls += pull(obs.M2, _lastImplied.M2, "M₂", anyOver, maxAbs);
+    pulls += pull(obs.R1, _lastImplied.R1, "R₁", anyOver, maxAbs);
+    pulls += pull(obs.Mt, _lastImplied.Mt, "M_t", anyOver, maxAbs);
+    pulls += pull(obs.qObs, _lastStart.q, "q", anyOver, maxAbs);
+    if (!pulls.isEmpty())
+        lines += "<i>" + pulls + "</i>";
+
+    if (anyOver) {
+        lines += tr("<br><span style='color:#dca84d;'>⚠ Some implied "
+                    "quantities are >2σ from what you entered "
+                    "(worst: %1σ). Tighten the relevant errors, "
+                    "enter K₁/M₁/R₁ together for an exact solution, "
+                    "or fix the inclination.</span>")
+                     .arg(maxAbs, 0, 'f', 2);
+    }
+    _spImpl->setText(lines);
+    _hasStart = true;
 }
 
 // ── Darkening tab ──────────────────────────────────────────────────
 
-QWidget *LCFitDialog::buildDarkeningTab() {
+QWidget *LCFitDialog::buildDarkeningPage() {
   auto *page = new QWidget;
   auto *root = new QVBoxLayout(page);
 
@@ -443,85 +595,97 @@ QWidget *LCFitDialog::buildDarkeningTab() {
 }
 
 void LCFitDialog::onQueryClaretClicked() {
-  const QString band = _bandCombo->currentText();
-  QStringList lines;
+    const QString band       = claretFilterKey();
+    const QString mappedFrom = _in.filter;
+    QStringList   lines;
 
-  auto doStar = [&](const QString &tag, QComboBox *typeCb, QLineEdit *Tedit,
-                    QLineEdit *loggEdit, QDoubleSpinBox *(&ldcArr)[4],
-                    QDoubleSpinBox *gdSpin) {
-    const auto type = ClaretTables::parseStarType(typeCb->currentText());
-    const auto Tm = meas(Tedit);
-    if (!Tm) {
-      lines << QString("<b>%1:</b> no T_eff set, leaving values unchanged")
-                   .arg(tag);
-      return;
+    if (ClaretFilter::canonical(mappedFrom).isEmpty()) {
+        lines << QString(
+                     "<span style='color:#dca84d;'>⚠ Filter '%1' has no "
+                     "Claret table mapping — falling back to <b>%2</b>.</span>")
+                     .arg(mappedFrom.toHtmlEscaped(), band);
     }
-    const auto lm = meas(loggEdit);
-    std::optional<double> loggOpt =
-        lm ? std::optional<double>(lm->value) : std::nullopt;
 
-    const auto ldc = ClaretTables::queryLdc(Tm->value, loggOpt, type, band);
-    for (int i = 0; i < 4; ++i)
-      ldcArr[i]->setValue(ldc.coefficients[i]);
-    QString tag1 = ldc.usedFallback
-                       ? "<span style='color:#dca84d;'>⚠ fallback</span>"
-                       : "<span style='color:#7dbd5e;'>✓</span>";
-    lines << QString("<b>%1 LDC:</b> %2 — %3").arg(tag, tag1, ldc.diagnostic);
+    auto doStar = [&](const QString &tag, QComboBox *typeCb, QLineEdit *Tedit,
+                      QLineEdit      *loggEdit, QDoubleSpinBox *(&ldcArr)[4],
+                      QDoubleSpinBox *gdSpin) {
+        const auto type = ClaretTables::parseStarType(typeCb->currentText());
+        const auto Tm   = meas(Tedit);
+        if (!Tm) {
+            lines << QString(
+                         "<b>%1:</b> no T_eff set, leaving values unchanged")
+                         .arg(tag);
+            return;
+        }
+        const auto            lm = meas(loggEdit);
+        std::optional<double> loggOpt =
+            lm ? std::optional<double>(lm->value) : std::nullopt;
 
-    const auto gd = ClaretTables::queryGdc(Tm->value, loggOpt, type, band);
-    gdSpin->setValue(gd.value);
-    QString tag2 = gd.usedFallback
-                       ? "<span style='color:#dca84d;'>⚠ fallback</span>"
-                       : "<span style='color:#7dbd5e;'>✓</span>";
-    lines << QString("<b>%1 GDC:</b> y=%2  %3 — %4")
-                 .arg(tag)
-                 .arg(gd.value, 0, 'f', 4)
-                 .arg(tag2, gd.diagnostic);
-  };
+        const auto ldc = ClaretTables::queryLdc(Tm->value, loggOpt, type, band);
+        for (int i = 0; i < 4; ++i)
+            ldcArr[i]->setValue(ldc.coefficients[i]);
+        QString tag1 = ldc.usedFallback
+                           ? "<span style='color:#dca84d;'>⚠ fallback</span>"
+                           : "<span style='color:#7dbd5e;'>✓</span>";
+        lines
+            << QString("<b>%1 LDC:</b> %2 — %3").arg(tag, tag1, ldc.diagnostic);
 
-  doStar("Star 1", _type1, _T1, _logg1, _ldc1, _gd1);
-  doStar("Star 2", _type2, _T2, _logg2, _ldc2, _gd2);
-  _claretDiag->setText(lines.join("<br>"));
+        const auto gd = ClaretTables::queryGdc(Tm->value, loggOpt, type, band);
+        gdSpin->setValue(gd.value);
+        QString tag2 = gd.usedFallback
+                           ? "<span style='color:#dca84d;'>⚠ fallback</span>"
+                           : "<span style='color:#7dbd5e;'>✓</span>";
+        lines << QString("<b>%1 GDC:</b> y=%2  %3 — %4")
+                     .arg(tag)
+                     .arg(gd.value, 0, 'f', 4)
+                     .arg(tag2, gd.diagnostic);
+    };
+
+    doStar("Star 1", _type1, _T1, _logg1, _ldc1, _gd1);
+    doStar("Star 2", _type2, _T2, _logg2, _ldc2, _gd2);
+    _claretDiag->setText(lines.join("<br>"));
 }
 
 // ── Beaming tab ────────────────────────────────────────────────────
 
-QWidget *LCFitDialog::buildBeamingTab() {
-  auto *page = new QWidget;
-  auto *f = new QFormLayout(page);
-  _bf1 = mkSpin(0.0, 10.0, 4, 0.01, 1.0);
-  _bf2 = mkSpin(0.0, 10.0, 4, 0.01, 1.0);
-  _t0 = mkSpin(-1e6, 1e6, 6, 0.001, 0.0);
-  auto *btn = new QPushButton(tr("Compute B₁, B₂ from T_eff and band"));
-  connect(btn, &QPushButton::clicked, this,
-          &LCFitDialog::onComputeBeamingClicked);
+QWidget *LCFitDialog::buildBeamingPage() {
+    auto *page = new QWidget;
+    auto *f = new QFormLayout(page);
+    _bf1 = mkSpin(0.0, 10.0, 4, 0.01, 1.0);
+    _bf2 = mkSpin(0.0, 10.0, 4, 0.01, 1.0);
+    _t0 = mkSpin(-1e6, 1e6, 6, 0.001, 0.0);
+    auto *btn = new QPushButton(tr("Compute B₁, B₂ from T_eff and band"));
+    connect(btn, &QPushButton::clicked, this,
+            &LCFitDialog::onComputeBeamingClicked);
 
-  f->addRow(tr("Beaming B₁:"), _bf1);
-  f->addRow(tr("Beaming B₂:"), _bf2);
-  f->addRow(tr("t₀ (BJD, eclipse phase 0):"), _t0);
-  f->addRow(btn);
-  return page;
+    f->addRow(tr("Beaming B₁:"), _bf1);
+    f->addRow(tr("Beaming B₂:"), _bf2);
+    f->addRow(tr("t₀ (BJD, eclipse phase 0):"), _t0);
+    f->addRow(btn);
+    return page;
 }
 
 void LCFitDialog::onComputeBeamingClicked() {
-  const QString band = _bandCombo->currentText();
-  if (auto t = meas(_T1)) {
-    auto lm = meas(_logg1);
-    auto r = ClaretTables::queryBeaming(
-        t->value, lm ? std::optional<double>(lm->value) : std::nullopt, band);
-    _bf1->setValue(r.value);
-  }
-  if (auto t = meas(_T2)) {
-    auto lm = meas(_logg2);
-    auto r = ClaretTables::queryBeaming(
-        t->value, lm ? std::optional<double>(lm->value) : std::nullopt, band);
-    _bf2->setValue(r.value);
-  }
+    const QString band = claretFilterKey();
+    if (auto t = meas(_T1)) {
+        auto lm = meas(_logg1);
+        auto r  = ClaretTables::queryBeaming(
+            t->value, lm ? std::optional<double>(lm->value) : std::nullopt,
+            band);
+        _bf1->setValue(r.value);
+    }
+    if (auto t = meas(_T2)) {
+        auto lm = meas(_logg2);
+        auto r  = ClaretTables::queryBeaming(
+            t->value, lm ? std::optional<double>(lm->value) : std::nullopt,
+            band);
+        _bf2->setValue(r.value);
+    }
 }
 
 // ── Solver tab ─────────────────────────────────────────────────────
 
-QWidget *LCFitDialog::buildSolverTab() {
+QWidget *LCFitDialog::buildSolverPage() {
   auto *page = new QWidget;
   auto *root = new QVBoxLayout(page);
 
@@ -597,7 +761,7 @@ QWidget *LCFitDialog::buildSolverTab() {
 
 // ── Run tab ────────────────────────────────────────────────────────
 
-QWidget *LCFitDialog::buildRunTab() {
+QWidget *LCFitDialog::buildRunPage() {
   auto *page = new QWidget;
   auto *root = new QVBoxLayout(page);
 
@@ -688,127 +852,132 @@ QSet<QString> LCFitDialog::collectVaried() const {
 }
 
 LCFitPhysics::ModelInputs LCFitDialog::collectModelInputs() const {
-  LCFitPhysics::ModelInputs in;
-  in.period = _in.period;
-  in.wavelengthNm = ClaretTables::bandWavelengthNm(_bandCombo->currentText());
-  in.t0 = _t0->value();
-  in.bf1 = _bf1->value();
-  in.bf2 = _bf2->value();
-  in.gd1 = _gd1->value();
-  in.gd2 = _gd2->value();
-  for (int i = 0; i < 4; ++i) {
-    in.ldc1[i] = _ldc1[i]->value();
-    in.ldc2[i] = _ldc2[i]->value();
-  }
-  if (auto t = meas(_T1))
-    in.t1 = t->value;
-  if (auto t = meas(_T2))
-    in.t2 = t->value;
-
-  if (_hasStart) {
-    in.q = _lastStart.q;
-    in.i = _lastStart.i;
-    in.r1 = _lastStart.r1;
-    in.vs = _lastStart.vs;
-    // r2: from last implied or estimate
-    auto type2 = ClaretTables::parseStarType(_type2->currentText());
-    std::optional<double> M2est;
-    if (auto m = meas(_M2); m && m->value > 0)
-      M2est = m->value;
-    in.r2 = LCFitPhysics::estimateR2(M2est, _in.period, _lastStart.vs, type2);
-    if (auto m = meas(_R2); m && m->value > 0) {
-      const double aKm =
-          _lastStart.vs * _in.period * LCFitPhysics::kDay2Sec / (2.0 * M_PI);
-      in.r2 = m->value * LCFitPhysics::kRsunKm / aKm;
+    LCFitPhysics::ModelInputs in;
+    in.period       = _in.period;
+    in.wavelengthNm = _wlSpin ? _wlSpin->value() : _in.wavelengthNm;
+    in.t0           = _t0->value();
+    in.bf1          = _bf1->value();
+    in.bf2          = _bf2->value();
+    in.gd1          = _gd1->value();
+    in.gd2          = _gd2->value();
+    for (int i = 0; i < 4; ++i) {
+        in.ldc1[i] = _ldc1[i]->value();
+        in.ldc2[i] = _ldc2[i]->value();
     }
-  }
-  in.varied = collectVaried();
-  return in;
+    if (auto t = meas(_T1))
+        in.t1 = t->value;
+    if (auto t = meas(_T2))
+        in.t2 = t->value;
+
+    if (_hasStart) {
+        in.q       = _lastStart.q;
+        in.i       = _lastStart.i;
+        in.r1      = _lastStart.r1;
+        in.vs      = _lastStart.vs;
+        auto type2 = ClaretTables::parseStarType(_type2->currentText());
+        std::optional<double> M2est;
+        if (auto m = meas(_M2); m && m->value > 0)
+            M2est = m->value;
+        in.r2 =
+            LCFitPhysics::estimateR2(M2est, _in.period, _lastStart.vs, type2);
+        if (auto m = meas(_R2); m && m->value > 0) {
+            const double aKm = _lastStart.vs * _in.period *
+                               LCFitPhysics::kDay2Sec / (2.0 * M_PI);
+            in.r2            = m->value * LCFitPhysics::kRsunKm / aKm;
+        }
+    }
+    in.varied = collectVaried();
+    return in;
 }
 
 // ── Config builder ────────────────────────────────────────────────
 
 QJsonObject LCFitDialog::buildFullConfig() const {
-  const auto mi = collectModelInputs();
-  const auto priors = LCFitPhysics::buildPriors(collectPriors());
-  const auto mp = LCFitPhysics::buildModelParameters(mi);
-  const int nData = int(_in.binnedPoints.size());
-  const int nPrior = priors.size();
+    const auto mi     = collectModelInputs();
+    const auto priors = LCFitPhysics::buildPriors(collectPriors());
+    const auto mp     = LCFitPhysics::buildModelParameters(mi);
+    const int  nData  = int(_in.binnedPoints.size());
+    const int  nPrior = priors.size();
 
-  double priorWeight = 1.0;
-  if (nPrior > 0 && nData > 0)
-    priorWeight = std::clamp(double(nData) / double(nPrior), 1.0, 500.0);
+    double priorWeight = 1.0;
+    if (nPrior > 0 && nData > 0)
+        priorWeight = std::clamp(double(nData) / double(nPrior), 1.0, 500.0);
 
-  auto toJsonMap = [](const QMap<QString, QString> &m) {
-    QJsonObject o;
-    for (auto it = m.cbegin(); it != m.cend(); ++it)
-      o.insert(it.key(), it.value());
-    return o;
-  };
+    auto toJsonMap = [](const QMap<QString, QString> &m) {
+        QJsonObject o;
+        for (auto it = m.cbegin(); it != m.cend(); ++it)
+            o.insert(it.key(), it.value());
+        return o;
+    };
 
-  QJsonObject cfg;
-  cfg["data_file_path"] = _dataPath;
-  cfg["output_file_path"] = _outputPath;
-  cfg["chain_out_path"] = QDir(_tempDir).absoluteFilePath("chain_out.txt");
-  cfg["time1"] = 0;
-  cfg["time2"] = 1;
-  cfg["ntime"] = 1000000;
-  cfg["expose"] = 0;
-  cfg["ndivide"] = 1;
-  cfg["noise"] = 0;
-  cfg["seed"] = 42;
-  cfg["nfile"] = 1;
-  cfg["plot_device"] = "qt";
-  cfg["residual_offset"] = 0.0;
-  cfg["autoscale"] = true;
-  cfg["sstar1"] = 1;
-  cfg["sstar2"] = 1;
-  cfg["sdisc"] = 1;
-  cfg["sspot"] = 1;
-  cfg["ssfac"] = 1;
-  cfg["star1_type"] = _type1->currentText();
-  cfg["star2_type"] = _type2->currentText();
+    QJsonObject cfg;
+    cfg["data_file_path"]   = _dataPath;
+    cfg["output_file_path"] = _outputPath;
+    cfg["chain_out_path"]   = QDir(_tempDir).absoluteFilePath("chain_out.txt");
+    cfg["time1"]            = 0;
+    cfg["time2"]            = 1;
+    cfg["ntime"]            = 1000000;
+    cfg["expose"]           = 0;
+    cfg["ndivide"]          = 1;
+    cfg["noise"]            = 0;
+    cfg["seed"]             = 42;
+    cfg["nfile"]            = 1;
+    cfg["plot_device"]      = "qt";
+    cfg["residual_offset"]  = 0.0;
+    cfg["autoscale"]        = true;
+    cfg["sstar1"]           = 1;
+    cfg["sstar2"]           = 1;
+    cfg["sdisc"]            = 1;
+    cfg["sspot"]            = 1;
+    cfg["ssfac"]            = 1;
+    cfg["star1_type"]       = _type1->currentText();
+    cfg["star2_type"]       = _type2->currentText();
 
-  cfg["true_period"] = _in.period;
-  cfg["use_priors"] = nPrior > 0;
-  cfg["use_sin_i_prior"] = _sinIPrior->isChecked();
-  cfg["auto_consistent_init"] = true;
+    cfg["true_period"]          = _in.period;
+    cfg["use_priors"]           = nPrior > 0;
+    cfg["use_sin_i_prior"]      = _sinIPrior->isChecked();
+    cfg["auto_consistent_init"] = true;
 
-  // MCMC
-  cfg["mcmc_steps"] = _mcmcSteps->value();
-  cfg["mcmc_burn_in"] = _mcmcBurn->value();
-  cfg["mcmc_thin"] = _mcmcThin->value();
-  cfg["adapt_enabled"] = true;
-  cfg["adapt_covariance"] = true;
-  cfg["target_acceptance_rate"] = 0.234;
-  cfg["adapt_interval"] = 100;
-  cfg["adapt_rate"] = 1.0;
-  cfg["adapt_decay"] = 0.6;
-  cfg["adapt_min_stepscale"] = 1e-4;
-  cfg["adapt_max_stepscale"] = 1e4;
-  cfg["cov_warmup"] = std::max(500, 20 * (int)mi.varied.size());
-  cfg["cov_epsilon"] = 1e-6;
-  cfg["anneal_enabled"] = _anneal->isChecked();
-  cfg["anneal_T0"] = _annealT0->value();
-  cfg["anneal_steps"] = _mcmcBurn->value() / 2;
+    // MCMC
+    cfg["mcmc_steps"]             = _mcmcSteps->value();
+    cfg["mcmc_burn_in"]           = _mcmcBurn->value();
+    cfg["mcmc_thin"]              = _mcmcThin->value();
+    cfg["adapt_enabled"]          = true;
+    cfg["adapt_covariance"]       = true;
+    cfg["target_acceptance_rate"] = 0.234;
+    cfg["adapt_interval"]         = 100;
+    cfg["adapt_rate"]             = 1.0;
+    cfg["adapt_decay"]            = 0.6;
+    cfg["adapt_min_stepscale"]    = 1e-4;
+    cfg["adapt_max_stepscale"]    = 1e4;
+    cfg["cov_warmup"]             = std::max(500, 20 * (int)mi.varied.size());
+    cfg["cov_epsilon"]            = 1e-6;
+    cfg["anneal_enabled"]         = _anneal->isChecked();
+    cfg["anneal_T0"]              = _annealT0->value();
+    cfg["anneal_steps"]           = _mcmcBurn->value() / 2;
 
-  // LM
-  cfg["lm_max_iter"] = _lmMaxIter->value();
-  cfg["lm_gtol"] = 0.0;
-  cfg["lm_tau"] = 1e-3;
-  cfg["lm_factor"] = 100.0;
-  cfg["lm_fd_step_min"] = 1e-10;
-  cfg["lm_continuation"] = _lmCont->isChecked();
-  cfg["lm_continuation_stages"] = 6;
-  cfg["lm_auto_balance_priors"] = true;
-  cfg["lm_prior_balance_target"] = 1.0;
-  cfg["lm_log_path"] = QDir(_tempDir).absoluteFilePath("lm_iter_log.txt");
-  cfg["lm_verbose"] = true;
+    // LM
+    cfg["lm_max_iter"]             = _lmMaxIter->value();
+    cfg["lm_gtol"]                 = 0.0;
+    cfg["lm_tau"]                  = 1e-3;
+    cfg["lm_factor"]               = 100.0;
+    cfg["lm_fd_step_min"]          = 1e-10;
+    cfg["lm_continuation"]         = _lmCont->isChecked();
+    cfg["lm_continuation_stages"]  = 6;
+    cfg["lm_auto_balance_priors"]  = true;
+    cfg["lm_prior_balance_target"] = 1.0;
+    cfg["lm_log_path"] = QDir(_tempDir).absoluteFilePath("lm_iter_log.txt");
+    cfg["lm_verbose"]  = true;
 
-  cfg["prior_weight"] = priorWeight;
-  cfg["priors"] = toJsonMap(priors);
-  cfg["model_parameters"] = toJsonMap(mp);
-  return cfg;
+    cfg["prior_weight"] = priorWeight;
+    cfg["priors"]       = toJsonMap(priors);
+
+    QJsonObject mpJson = toJsonMap(mp);
+    if (_wlSpin) {
+        mpJson["wavelength"] = QString::number(_wlSpin->value(), 'f', 2);
+    }
+    cfg["model_parameters"] = mpJson;
+    return cfg;
 }
 
 bool LCFitDialog::writeInputDataFile(const QString &path) const {
@@ -1119,91 +1288,234 @@ void LCFitDialog::populateResultsView() {
 // ── Save as best fit ──────────────────────────────────────────────
 
 void LCFitDialog::onSaveBestClicked() {
-  if (!_hasResults || !_in.dbm)
-    return;
+    if (!_hasResults || !_in.dbm)
+        return;
 
-  auto fit = std::make_shared<LCFit>();
-  fit->creationDate = QDateTime::currentDateTimeUtc();
-  fit->label =
-      QString("%1 (%2)")
-          .arg(LCFitRunner::methodLabel(
-              static_cast<LCFitRunner::Method>(_method->currentData().toInt())))
-          .arg(fit->creationDate.toString(Qt::ISODate));
-  fit->isBestFit = true;
+    auto fit          = std::make_shared<LCFit>();
+    fit->creationDate = QDateTime::currentDateTimeUtc();
+    fit->label =
+        QString("%1 · %2 (%3)")
+            .arg(LCFitRunner::methodLabel(static_cast<LCFitRunner::Method>(
+                _method->currentData().toInt())))
+            .arg(_in.filter.isEmpty() ? tr("unfiltered") : _in.filter)
+            .arg(fit->creationDate.toString(Qt::ISODate));
+    fit->isBestFit = true;
 
-  // Config: full augmented JSON (post-fit) so reproducibility is preserved
-  fit->config.json() = _augmented;
+    fit->filter       = _in.filter;
+    fit->wavelengthNm = _wlSpin ? _wlSpin->value() : _in.wavelengthNm;
 
-  // Hot scalars from lm_summary.best_pars (+ sigmas if available)
-  const QJsonObject summary = _augmented.value("lm_summary").toObject();
-  const QJsonObject results = _augmented.value("lm_results").toObject();
-  const QJsonObject bestPars = summary.value("best_pars").toObject();
-  const QJsonObject sigmas = results.value("sigma").toObject();
+    // Config: full augmented JSON (post-fit) so reproducibility is preserved
+    fit->config.json() = _augmented;
 
-  auto set = [&](const QString &k, double &v, double &e) {
-    if (bestPars.contains(k))
-      v = bestPars.value(k).toDouble();
-    if (sigmas.contains(k))
-      e = sigmas.value(k).toDouble();
-  };
-  set("q", fit->q, fit->qError);
-  set("iangle", fit->inclination, fit->inclinationError);
-  set("r1", fit->r1, fit->r1Error);
-  set("r2", fit->r2, fit->r2Error);
-  set("velocity_scale", fit->velocityScale, fit->velocityScaleError);
-  set("t1", fit->t1, fit->t1Error);
-  set("t2", fit->t2, fit->t2Error);
-  set("t0", fit->t0BJD, fit->t0BJDError);
-  fit->period = _in.period;
-  fit->periodError = _in.periodError;
-  fit->chi2 = summary.value("best_chisq_lc")
-                  .toDouble(summary.value("best_sum_sq").toDouble());
-  fit->rms =
-      std::sqrt(std::max(0.0, results.value("residual_variance").toDouble()));
+    // Hot scalars from lm_summary.best_pars (+ sigmas if available)
+    const QJsonObject summary  = _augmented.value("lm_summary").toObject();
+    const QJsonObject results  = _augmented.value("lm_results").toObject();
+    const QJsonObject bestPars = summary.value("best_pars").toObject();
+    const QJsonObject sigmas   = results.value("sigma").toObject();
 
-  // Input points (binned, what we fed to the fitter)
-  fit->inputPoints.assign(_in.binnedPoints.begin(), _in.binnedPoints.end());
+    auto set = [&](const QString &k, double &v, double &e) {
+        if (bestPars.contains(k))
+            v = bestPars.value(k).toDouble();
+        if (sigmas.contains(k))
+            e = sigmas.value(k).toDouble();
+    };
+    set("q", fit->q, fit->qError);
+    set("iangle", fit->inclination, fit->inclinationError);
+    set("r1", fit->r1, fit->r1Error);
+    set("r2", fit->r2, fit->r2Error);
+    set("velocity_scale", fit->velocityScale, fit->velocityScaleError);
+    set("t1", fit->t1, fit->t1Error);
+    set("t2", fit->t2, fit->t2Error);
+    set("t0", fit->t0BJD, fit->t0BJDError);
+    fit->period      = _in.period;
+    fit->periodError = _in.periodError;
+    fit->chi2        = summary.value("best_chisq_lc")
+                           .toDouble(summary.value("best_sum_sq").toDouble());
+    fit->rms =
+        std::sqrt(std::max(0.0, results.value("residual_variance").toDouble()));
 
-  // Model points: parse output.txt if present
-  QFile mf(_outputPath);
-  if (mf.open(QIODevice::ReadOnly | QIODevice::Text)) {
-    QTextStream s(&mf);
-    static const QRegularExpression sp(R"(\s+)");
-    while (!s.atEnd()) {
-      const QString line = s.readLine().trimmed();
-      if (line.isEmpty() || line.startsWith('#') || line.startsWith('!'))
-        continue;
-      const auto parts = line.split(sp, Qt::SkipEmptyParts);
-      if (parts.size() < 4)
-        continue;
-      LCFitDataPoint p;
-      p.phase = parts[0].toDouble();
-      p.dPhase = parts[1].toDouble();
-      p.flux = parts[2].toDouble();
-      p.fluxError = parts[3].toDouble();
-      if (parts.size() >= 5)
-        p.weight = parts[4].toDouble();
-      if (parts.size() >= 6)
-        p.factor = parts[5].toDouble();
-      fit->modelPoints.push_back(p);
+    // Input points (binned, what we fed to the fitter)
+    fit->inputPoints.assign(_in.binnedPoints.begin(), _in.binnedPoints.end());
+
+    // Model points: parse output.txt if present
+    QFile mf(_outputPath);
+    if (mf.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        QTextStream                     s(&mf);
+        static const QRegularExpression sp(R"(\s+)");
+        while (!s.atEnd()) {
+            const QString line = s.readLine().trimmed();
+            if (line.isEmpty() || line.startsWith('#') || line.startsWith('!'))
+                continue;
+            const auto parts = line.split(sp, Qt::SkipEmptyParts);
+            if (parts.size() < 4)
+                continue;
+            LCFitDataPoint p;
+            p.phase     = parts[0].toDouble();
+            p.dPhase    = parts[1].toDouble();
+            p.flux      = parts[2].toDouble();
+            p.fluxError = parts[3].toDouble();
+            if (parts.size() >= 5)
+                p.weight = parts[4].toDouble();
+            if (parts.size() >= 6)
+                p.factor = parts[5].toDouble();
+            fit->modelPoints.push_back(p);
+        }
     }
-  }
 
-  if (!_in.dbm->saveLCFitForStar(_in.star->getId(), _in.lightcurveSource,
-                                 fit)) {
-    QMessageBox::warning(this, tr("Save fit"),
-                         tr("Failed to persist the fit to the database."));
-    return;
-  }
-  _in.dbm->setBestLCFit(_in.star->getId(), _in.lightcurveSource, fit->getId());
-  _result = fit;
+    if (!_in.dbm->saveLCFitForStar(_in.star->getId(), _in.lightcurveSource,
+                                   fit)) {
+        QMessageBox::warning(this, tr("Save fit"),
+                             tr("Failed to persist the fit to the database."));
+        return;
+    }
+    _in.dbm->setBestLCFit(_in.star->getId(), _in.lightcurveSource, _in.filter,
+                          fit->getId());
 
-  LOG_INFO("LCFit",
-           QString("Persisted LC fit for %1 / %2 (id=%3, χ²=%4)")
-               .arg(_in.star->getId(), _in.lightcurveSource, fit->getId())
-               .arg(fit->chi2));
+    if (_in.star) {
+        _in.star->setPhotPeriod(fit->period);
+        _in.star->setPhotEPeriod(fit->periodError);
+        _in.star->setPhotIncl(fit->inclination);
+        _in.star->setPhotEIncl(fit->inclinationError);
+        _in.star->setPhotQ(fit->q);
+        _in.star->setPhotEQ(fit->qError);
+        _in.star->markSummaryDirty();
+    }
+    _result = fit;
 
-  QMessageBox::information(this, tr("Save fit"),
-                           tr("Light-curve fit saved and marked as best fit."));
-  accept();
+    LOG_INFO(
+        "LCFit",
+        QString("Persisted LC fit for %1 / %2 / %3 (id=%4, χ²=%5, λ=%6 nm)")
+            .arg(_in.star->getId(), _in.lightcurveSource,
+                 _in.filter.isEmpty() ? "—" : _in.filter, fit->getId())
+            .arg(fit->chi2)
+            .arg(fit->wavelengthNm, 0, 'f', 1));
+
+    QMessageBox::information(
+        this, tr("Save fit"),
+        tr("Light-curve fit saved and marked as best fit."));
+    accept();
+}
+
+// ── Pagination ─────────────────────────────────────────────────────────────
+
+void LCFitDialog::onPageChanged(int index) {
+    updateNavButtons();
+    const QString title = _pageTitles.value(index);
+    if (title == tr("Limb/Gravity Darkening")) {
+        onQueryClaretClicked();
+    } else if (title == tr("Beaming")) {
+        onComputeBeamingClicked();
+    }
+}
+
+void LCFitDialog::onPrevPage() {
+    const int i = _pages->currentIndex();
+    if (i > 0)
+        _pages->setCurrentIndex(i - 1);
+    // currentChanged drives updateNavButtons()
+}
+
+void LCFitDialog::onNextPage() {
+    const int i = _pages->currentIndex();
+    if (i < _pages->count() - 1)
+        _pages->setCurrentIndex(i + 1);
+}
+
+void LCFitDialog::updateNavButtons() {
+    const int i = _pages->currentIndex();
+    const int n = _pages->count();
+    _prevBtn->setEnabled(i > 0);
+    _nextBtn->setEnabled(i < n - 1);
+    _pageInfo->setText(
+        tr("Step %1 / %2 — %3").arg(i + 1).arg(n).arg(_pageTitles.value(i)));
+}
+
+void LCFitDialog::onM1M2Changed() {
+    recomputeMtot();
+    recomputeM2Min();
+}
+void LCFitDialog::onK1OrM1Changed() { recomputeM2Min(); }
+
+void LCFitDialog::recomputeMtot() {
+    if (!_Mtot)
+        return;
+    const auto m1 = meas(_M1);
+    const auto m2 = meas(_M2);
+    if (!m1 || !m2)
+        return;
+
+    LCFitPhysics::AsymMeasurement t;
+    t.value = m1->value + m2->value;
+    t.errLo = std::sqrt(m1->errLo * m1->errLo + m2->errLo * m2->errLo);
+    t.errHi = std::sqrt(m1->errHi * m1->errHi + m2->errHi * m2->errHi);
+    setMeas(_Mtot, t);
+}
+
+
+void LCFitDialog::recomputeM2Min() {
+    if (!_M2min)
+        return;
+    const auto k1 = meas(_K1);
+    const auto m1 = meas(_M1);
+    if (!k1 || !m1 || _in.period <= 0.0)
+        return;
+
+    auto solveM2 = [](double f, double M1) -> double {
+        if (f <= 0.0 || M1 <= 0.0)
+            return 0.0;
+
+        // fixed-point pre-iteration: M2 = cbrt(f) * (M1+M2)^(2/3)
+        double M2 = std::cbrt(f) * std::cbrt(M1 * M1); // small-M2 seed
+        for (int i = 0; i < 5; ++i)
+            M2 =
+                std::cbrt(f * (M1 + M2) * (M1 + M2)); // converges monotonically
+
+        // Newton polish
+        for (int i = 0; i < 20; ++i) {
+            const double s  = M1 + M2;
+            const double F  = M2 * M2 * M2 - f * s * s;
+            const double dF = 3.0 * M2 * M2 - 2.0 * f * s;
+            if (dF <= 0.0)
+                break; // shouldn't happen near root
+            const double step = F / dF;
+            M2 -= step;
+            if (std::abs(step) < 1e-12 * std::max(M2, 1e-6))
+                break;
+        }
+        return M2;
+    };
+
+    const double K  = k1->value;
+    const double P  = _in.period;
+    const double M1 = m1->value;
+    const double f  = 1.0361e-7 * K * K * K * P;
+    const double M2 = solveM2(f, M1);
+
+    const double s       = M1 + M2;
+    const double D       = 3.0 * M2 * M2 - 2.0 * f * s;
+    const double dM2_dK  = 3.0 * 1.0361e-7 * K * K * P * s * s / D;
+    const double dM2_dP  = 1.0361e-7 * K * K * K * s * s / D;
+    const double dM2_dM1 = 2.0 * f * s / D;
+
+    const double sK  = 0.5 * (k1->errHi + k1->errLo); // or max, your choice
+    const double sP  = std::max(_in.periodError, 0.0);
+    const double sM1 = 0.5 * (m1->errHi + m1->errLo);
+
+    const double var = dM2_dK * dM2_dK * sK * sK + dM2_dP * dM2_dP * sP * sP +
+                       dM2_dM1 * dM2_dM1 * sM1 * sM1;
+    const double sig = std::sqrt(std::max(var, 0.0));
+
+    LCFitPhysics::AsymMeasurement out;
+    out.value = M2;
+    out.errLo = sig;
+    out.errHi = sig;
+    setMeas(_M2min, out);
+}
+
+QString LCFitDialog::claretFilterKey() const {
+    QString k = ClaretFilter::canonical(_in.filter);
+    if (!k.isEmpty())
+        return k;
+    // Final fallback so a query is still attempted.
+    return QStringLiteral("TESS");
 }

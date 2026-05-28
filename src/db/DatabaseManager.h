@@ -100,15 +100,22 @@ public:
     QString loadStarPhotPeaks(const QString& starId);
     bool   saveStarTessCrowdsap(const QString& starId, double value);
     double loadStarTessCrowdsap(const QString& starId);
-    bool saveLCFitForStar(const QString& starId, const QString& source,
-                      std::shared_ptr<LCFit> fit);
-    std::vector<std::shared_ptr<LCFit>> loadLCFitsForSource(const QString& starId,
-                                                            const QString& source);
-    bool deleteLCFit(const QString& fitId);
-    bool setBestLCFit(const QString& starId, const QString& source,
-                    const QString& fitId);
+    bool    saveLCFitForStar(const QString &starId, const QString &source,
+                             std::shared_ptr<LCFit> fit);
 
-private:
+    std::vector<std::shared_ptr<LCFit>>
+    loadLCFitsForSource(const QString &starId, const QString &source);
+
+    std::vector<std::shared_ptr<LCFit>>
+    loadLCFitsForSource(const QString &starId, const QString &source,
+                        const QString &filter);
+
+    bool deleteLCFit(const QString &fitId);
+
+    bool setBestLCFit(const QString &starId, const QString &source,
+                      const QString &filter, const QString &fitId);
+
+  private:
     void backfillSpectrumInstrumentIds();
     bool createTables();
     bool createIndexes();

@@ -1,45 +1,46 @@
 #include "SEDFitDialog.h"
-#include "models/Star.h"
-#include "models/Photometry.h"
 #include "db/DatabaseManager.h"
 #include "db/PhotometryRepository.h"
+#include "dialogs/SettingsDialog.h"
+#include "models/Photometry.h"
+#include "models/Star.h"
+#include "plotting/qcustomplot.h"
+#include "utils/AppSettings.h"
 #include "utils/ExtractSED.h"
 #include "utils/Logger.h"
-#include "plotting/qcustomplot.h"
+#include "utils/SystematicErrors.h"
 #include "views/widgets/GridSelectorWidget.h"
-#include "utils/AppSettings.h"
-#include "dialogs/SettingsDialog.h"
 
-#include <QVBoxLayout>
-#include <QHBoxLayout>
+#include <QApplication>
+#include <QCheckBox>
+#include <QComboBox>
+#include <QDir>
+#include <QDoubleSpinBox>
+#include <QFileDialog>
 #include <QFormLayout>
 #include <QGridLayout>
-#include <QSplitter>
-#include <QScrollArea>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QHeaderView>
 #include <QLabel>
+#include <QLineEdit>
+#include <QMessageBox>
+#include <QProcess>
+#include <QProgressBar>
 #include <QPushButton>
-#include <QToolButton>
-#include <QComboBox>
-#include <QCheckBox>
+#include <QScrollArea>
 #include <QSpinBox>
-#include <QDoubleSpinBox>
+#include <QSplitter>
+#include <QStandardPaths>
 #include <QTableWidget>
 #include <QTableWidgetItem>
-#include <QHeaderView>
-#include <QGroupBox>
-#include <QLineEdit>
-#include <QTextEdit>
-#include <QProgressBar>
-#include <QProcess>
-#include <QDir>
 #include <QTemporaryDir>
+#include <QTextEdit>
 #include <QTextStream>
-#include <QFileDialog>
-#include <QMessageBox>
-#include <QStandardPaths>
-#include <QApplication>
 #include <QTimer>
+#include <QToolButton>
 #include <QUuid>
+#include <QVBoxLayout>
 
 #include <cmath>
 #include <algorithm>
@@ -301,39 +302,9 @@ QWidget* SEDFitDialog::createNewFitPanel()
     auto* nfLay = new QVBoxLayout(scrollContent);
     nfLay->setContentsMargins(8, 4, 8, 4);
 
-    auto* headerLabel = new QLabel("<b>New Fit Configuration</b>");
+    auto *headerLabel = new QLabel("<b>New Fit Configuration</b>");
     headerLabel->setStyleSheet("font-size: 12pt; padding: 4px;");
     nfLay->addWidget(headerLabel);
-
-    // ── ISIS binary ──────────────────────────────────────────
-    auto* isisGroup = new QGroupBox("ISIS");
-    auto* iLay = new QHBoxLayout(isisGroup);
-
-    _isisStatusLabel = new QLabel;
-    iLay->addWidget(_isisStatusLabel, 1);
-
-    iLay->addWidget(new QLabel("Binary:"));
-    _isisPathEdit = new QLineEdit;
-    _isisPathEdit->setPlaceholderText("Leave empty for system PATH lookup");
-    iLay->addWidget(_isisPathEdit, 1);
-
-    auto* isisBrowse = new QPushButton("…");
-    isisBrowse->setMaximumWidth(30);
-    iLay->addWidget(isisBrowse);
-
-    nfLay->addWidget(isisGroup);
-
-    connect(isisBrowse, &QPushButton::clicked, this, [this] {
-        QString f = QFileDialog::getOpenFileName(
-            this, "Select ISIS binary", QDir::homePath());
-        if (!f.isEmpty()) {
-            _isisPathEdit->setText(f);
-            updateIsisStatus();
-        }
-    });
-    connect(_isisPathEdit, &QLineEdit::editingFinished,
-            this, &SEDFitDialog::updateIsisStatus);
-    updateIsisStatus();
 
     // ── Grid — Component 1 ─────────────────────────────────
     AppSettings settings;
@@ -524,21 +495,6 @@ QWidget* SEDFitDialog::createNewFitPanel()
     return _newFitScroll;
 }
 
-void SEDFitDialog::updateIsisStatus()
-{
-    QString bin = findIsisBinary();
-    if (!bin.isEmpty()) {
-        _isisStatusLabel->setText("✓ ISIS: " + bin);
-        _isisStatusLabel->setStyleSheet("color: green;");
-    } else {
-        _isisStatusLabel->setText(
-            "✗ ISIS not found — specify path or install to PATH");
-        _isisStatusLabel->setStyleSheet("color: #cc4444; font-style: italic;");
-    }
-    if (_runFitBtn)
-        _runFitBtn->setEnabled(!bin.isEmpty());
-}
-
 void SEDFitDialog::writePhotometryDat(const QString& filepath)
 {
     std::vector<SEDPhotometryPoint> points;
@@ -634,80 +590,85 @@ void SEDFitDialog::writePhotometryDat(const QString& filepath)
     }
 }
 
-void SEDFitDialog::populateParamsFromFit()
-{
-    if (_currentFitIndex < 0 || _currentFitIndex >= static_cast<int>(_fits.size()))
+void SEDFitDialog::populateParamsFromFit() {
+    if (_currentFitIndex < 0 ||
+        _currentFitIndex >= static_cast<int>(_fits.size()))
         return;
 
-    auto& model = _fits[_currentFitIndex];
-    bool multi = model->numComponents > 1;
+    auto &model = _fits[_currentFitIndex];
+    bool  multi = model->numComponents > 1;
 
     _enableComp2Cb->blockSignals(true);
     _enableComp2Cb->setChecked(multi);
     _enableComp2Cb->blockSignals(false);
-    if (_gridSelector2) _gridSelector2->setVisible(multi);
+    if (_gridSelector2)
+        _gridSelector2->setVisible(multi);
 
     _paramTableWidget->setRowCount(0);
 
-    auto addRow = [this](const QString& name, double value, bool frozen,
-                         double min, double max, bool hasRange)
-    {
+    auto addRow = [this](const QString &name, double value, bool frozen,
+                         double min, double max, bool hasRange) {
         int row = _paramTableWidget->rowCount();
         _paramTableWidget->insertRow(row);
         _paramTableWidget->setItem(row, PP_Name, new QTableWidgetItem(name));
-        _paramTableWidget->setItem(row, PP_Value,
+        _paramTableWidget->setItem(
+            row, PP_Value,
             new QTableWidgetItem(QString::number(value, 'g', 8)));
 
-        auto* fz = new QTableWidgetItem;
+        auto *fz = new QTableWidgetItem;
         fz->setFlags(fz->flags() | Qt::ItemIsUserCheckable);
         fz->setCheckState(frozen ? Qt::Checked : Qt::Unchecked);
         fz->setText("");
         _paramTableWidget->setItem(row, PP_Freeze, fz);
 
-        _paramTableWidget->setItem(row, PP_Min,
-            new QTableWidgetItem(
-                hasRange ? QString::number(min, 'g', 8) : QString()));
-        _paramTableWidget->setItem(row, PP_Max,
-            new QTableWidgetItem(
-                hasRange ? QString::number(max, 'g', 8) : QString()));
-    };
-
-    auto poly3 = [](double x, double a3, double a2, double a1, double a0) {
-        return std::abs(((a3 * x + a2) * x + a1) * x + a0);
+        _paramTableWidget->setItem(
+            row, PP_Min,
+            new QTableWidgetItem(hasRange ? QString::number(min, 'g', 8)
+                                          : QString()));
+        _paramTableWidget->setItem(
+            row, PP_Max,
+            new QTableWidgetItem(hasRange ? QString::number(max, 'g', 8)
+                                          : QString()));
     };
 
     for (int ci = 0; ci < static_cast<int>(model->components.size()); ++ci) {
-        const auto& c = model->components[ci];
-        QString prefix = multi ? QString("c%1_").arg(ci + 1) : "c*_";
+        const auto &c      = model->components[ci];
+        QString     prefix = multi ? QString("c%1_").arg(ci + 1) : "c*_";
 
         double teff = c.teff > 0 ? c.teff : 25000;
         double logg = c.logg > 0 ? c.logg : 5.5;
         double he   = c.heAbundance;
         double z    = c.metallicity;
 
+        // For the first (or single) component prefer the Star's spectroscopic
+        // values/errors so that re-fitting is anchored to the spectroscopic
+        // prior rather than the previous fit's posterior.
         double eTeff = (c.teffErrUp + c.teffErrDown) * 0.5;
         double eLogg = (c.loggErrUp + c.loggErrDown) * 0.5;
         double eHe   = (c.heAbundanceErrUp + c.heAbundanceErrDown) * 0.5;
 
-        double T_kK = teff / 1000.0;
-        bool heRich = (he > -1.0);
-        double sysTeff, sysLogg, sysHe;
-        if (heRich) {
-            sysTeff = poly3(T_kK,  1.47e-5, -1.73e-3,  6.84e-2, -8.91e-1) * teff;
-            sysLogg = poly3(T_kK,  2.68e-5, -3.30e-3,  1.37e-1, -1.82e+0);
-            sysHe   = poly3(T_kK, -6.92e-5,  8.49e-3, -3.40e-1,  4.50e+0);
-        } else {
-            sysTeff = poly3(T_kK,  1.09e-6, -5.37e-5,  4.13e-4,  1.68e-2) * teff;
-            sysLogg = poly3(T_kK, -2.75e-6,  3.11e-4, -1.07e-2,  1.79e-1);
-            sysHe   = poly3(T_kK, -1.64e-5,  2.08e-3, -8.17e-2,  1.07e+0);
+        if (ci == 0) {
+            if (Star::isSet(_star->getTeff())) {
+                teff = _star->getTeff();
+                eTeff =
+                    Star::isSet(_star->getETeff()) ? _star->getETeff() : 0.0;
+            }
+            if (Star::isSet(_star->getLogg())) {
+                logg = _star->getLogg();
+                eLogg =
+                    Star::isSet(_star->getELogg()) ? _star->getELogg() : 0.0;
+            }
+            if (Star::isSet(_star->getHe())) {
+                he  = _star->getHe();
+                eHe = Star::isSet(_star->getEHe()) ? _star->getEHe() : 0.0;
+            }
         }
 
-        double totTeff = std::sqrt(eTeff * eTeff + sysTeff * sysTeff);
-        double totLogg = std::sqrt(eLogg * eLogg + sysLogg * sysLogg);
-        double totHe   = std::sqrt(eHe   * eHe   + sysHe   * sysHe);
-        if (totTeff < 100)  totTeff = teff * 0.15;
-        if (totLogg < 0.01) totLogg = 0.3;
-        if (totHe   < 0.01) totHe   = 0.5;
+        bool heRich = (he > -1.0);
+
+        double totTeff = teffError(teff, eTeff, heRich);
+        double totLogg = loggError(teff, logg, eLogg, heRich);
+        double totHe   = heError(teff, he, eHe, heRich);
 
         bool frozenTeff = (c.teffStatus != SEDParamStatus::Fitted);
         bool frozenLogg = (c.loggStatus != SEDParamStatus::Fitted);
@@ -716,28 +677,18 @@ void SEDFitDialog::populateParamsFromFit()
         bool frozenXi   = (c.microturbulenceStatus != SEDParamStatus::Fitted);
 
         addRow(prefix + "xi", c.microturbulence, frozenXi, 0, 0, false);
-        addRow(prefix + "z",  z, frozenZ, 0, 0, false);
-
-        addRow(prefix + "HE", he, frozenHe,
-               std::max(he - totHe, -5.0),
-               std::min(he + totHe, 0.0),
-               !frozenHe);
-
-        addRow(prefix + "logg", logg, frozenLogg,
-               std::max(logg - totLogg, 0.0),
-               std::min(logg + totLogg, 9.5),
-               !frozenLogg);
-
+        addRow(prefix + "z", z, frozenZ, 0, 0, false);
+        addRow(prefix + "HE", he, frozenHe, std::max(he - totHe, -5.0),
+               std::min(he + totHe, 0.0), !frozenHe);
+        addRow(prefix + "logg", logg, frozenLogg, std::max(logg - totLogg, 0.0),
+               std::min(logg + totLogg, 9.5), !frozenLogg);
         addRow(prefix + "teff", teff, frozenTeff,
-               std::max(teff - totTeff, 3000.0),
-               teff + totTeff,
-               !frozenTeff);
+               std::max(teff - totTeff, 3000.0), teff + totTeff, !frozenTeff);
     }
 
     double r55 = model->r55 > 0 ? model->r55 : 3.02;
     addRow("R_55", r55, true, 2.5, 6.0, true);
 }
-
 
 // ── Advanced options sub-panel ───────────────────────────────────
 
@@ -844,24 +795,22 @@ QWidget* SEDFitDialog::createAdvancedOptions()
 // Default fit parameter table
 // ═══════════════════════════════════════════════════════════════════
 
-void SEDFitDialog::initDefaultFitParams()
-{
+void SEDFitDialog::initDefaultFitParams() {
     double teff = 25000, logg = 5.5, he = -3.0, z = 0.0;
     double eTeff = 0, eLogg = 0, eHe = 0;
-    bool hasSpectralValues = false;
+    bool   hasSpectralValues = false;
 
-    // Pre-fill from best SED fit (component 1)
-    for (const auto& f : _fits) {
+    for (const auto &f : _fits) {
         if (f->isBestFit && !f->components.empty()) {
-            auto& c1 = f->components[0];
+            auto &c1 = f->components[0];
             if (c1.teff > 0) {
-                teff  = c1.teff;
-                eTeff = (c1.teffErrUp + c1.teffErrDown) * 0.5;
+                teff              = c1.teff;
+                eTeff             = (c1.teffErrUp + c1.teffErrDown) * 0.5;
                 hasSpectralValues = true;
             }
             if (c1.logg > 0) {
-                logg  = c1.logg;
-                eLogg = (c1.loggErrUp + c1.loggErrDown) * 0.5;
+                logg              = c1.logg;
+                eLogg             = (c1.loggErrUp + c1.loggErrDown) * 0.5;
                 hasSpectralValues = true;
             }
             if (c1.heAbundance != 0) {
@@ -869,100 +818,84 @@ void SEDFitDialog::initDefaultFitParams()
                 eHe = (c1.heAbundanceErrUp + c1.heAbundanceErrDown) * 0.5;
                 hasSpectralValues = true;
             }
-            if (c1.metallicity != 0) z = c1.metallicity;
+            if (c1.metallicity != 0)
+                z = c1.metallicity;
             break;
         }
     }
 
-    // Fall back to star spectroscopic values
     if (Star::isSet(_star->getTeff())) {
         teff = _star->getTeff();
-        if (Star::isSet(_star->getETeff())) eTeff = _star->getETeff();
+        if (Star::isSet(_star->getETeff()))
+            eTeff = _star->getETeff();
         hasSpectralValues = true;
     }
     if (Star::isSet(_star->getLogg())) {
         logg = _star->getLogg();
-        if (Star::isSet(_star->getELogg())) eLogg = _star->getELogg();
+        if (Star::isSet(_star->getELogg()))
+            eLogg = _star->getELogg();
         hasSpectralValues = true;
     }
     if (Star::isSet(_star->getHe())) {
         he = _star->getHe();
-        if (Star::isSet(_star->getEHe())) eHe = _star->getEHe();
+        if (Star::isSet(_star->getEHe()))
+            eHe = _star->getEHe();
         hasSpectralValues = true;
     }
 
-    // ── Compute ranges only when we have spectral values ─────
     double teffMin = 0, teffMax = 0;
     double loggMin = 0, loggMax = 0;
-    double heMin   = 0, heMax   = 0;
-    bool hasRanges = false;
+    double heMin = 0, heMax = 0;
+    bool   hasRanges = false;
 
     if (hasSpectralValues) {
-        double T_kK = teff / 1000.0;
-        auto poly3 = [](double x, double a3, double a2, double a1, double a0) {
-            return std::abs(((a3 * x + a2) * x + a1) * x + a0);
-        };
-
         bool heRich = (he > -1.0);
-        double sysTeff, sysLogg, sysHe;
 
-        if (heRich) {
-            sysTeff = poly3(T_kK,  1.47e-5, -1.73e-3,  6.84e-2, -8.91e-1) * 1000.0;
-            sysLogg = poly3(T_kK,  2.68e-5, -3.30e-3,  1.37e-1, -1.82e+0);
-            sysHe   = poly3(T_kK, -6.92e-5,  8.49e-3, -3.40e-1,  4.50e+0);
-        } else {
-            sysTeff = poly3(T_kK,  1.09e-6, -5.37e-5,  4.13e-4,  1.68e-2) * 1000.0;
-            sysLogg = poly3(T_kK, -2.75e-6,  3.11e-4, -1.07e-2,  1.79e-1);
-            sysHe   = poly3(T_kK, -1.64e-5,  2.08e-3, -8.17e-2,  1.07e+0);
-        }
+        double totTeff = teffError(teff, eTeff, heRich);
+        double totLogg = loggError(teff, logg, eLogg, heRich);
+        double totHe   = heError(teff, he, eHe, heRich);
 
-        double totTeff = std::sqrt(eTeff * eTeff + sysTeff * sysTeff);
-        double totLogg = std::sqrt(eLogg * eLogg + sysLogg * sysLogg);
-        double totHe   = std::sqrt(eHe   * eHe   + sysHe   * sysHe);
-
-        if (totTeff < 100)  totTeff = teff * 0.15;
-        if (totLogg < 0.01) totLogg = 0.3;
-        if (totHe   < 0.01) totHe   = 0.5;
-
-        teffMin = std::max(teff - totTeff, 3000.0);
-        teffMax = teff + totTeff;
-        loggMin = std::max(logg - totLogg, 0.0);
-        loggMax = std::min(logg + totLogg, 9.5);
-        heMin   = std::max(he   - totHe,  -5.05);
-        heMax   = std::min(he   + totHe,   0.0);
+        teffMin   = std::max(teff - totTeff, 3000.0);
+        teffMax   = teff + totTeff;
+        loggMin   = std::max(logg - totLogg, 0.0);
+        loggMax   = std::min(logg + totLogg, 9.5);
+        heMin     = std::max(he - totHe, -5.0);
+        heMax     = std::min(he + totHe, 0.0);
         hasRanges = true;
     }
 
     _fitParams = {
-        {"c*_xi",   0.0,  true,  0,        0,        false},
-        {"c*_z",    z,    true,  0,        0,        false},
-        {"c*_HE",   he,   true,  heMin,    heMax,    hasRanges},
-        {"c*_logg", logg, true,  loggMin,  loggMax,  hasRanges},
-        {"c*_teff", teff, true,  teffMin,  teffMax,  hasRanges},
-        {"R_55",    3.02, true,  2.5,      6.0,      true},
+        {"c*_xi", 0.0, true, 0, 0, false},
+        {"c*_z", z, true, 0, 0, false},
+        {"c*_HE", he, true, heMin, heMax, hasRanges},
+        {"c*_logg", logg, true, loggMin, loggMax, hasRanges},
+        {"c*_teff", teff, true, teffMin, teffMax, hasRanges},
+        {"R_55", 3.02, true, 2.5, 6.0, true},
     };
 
     _paramTableWidget->setRowCount(static_cast<int>(_fitParams.size()));
     for (int i = 0; i < static_cast<int>(_fitParams.size()); ++i) {
-        const auto& p = _fitParams[i];
+        const auto &p = _fitParams[i];
 
-        _paramTableWidget->setItem(i, PP_Name,
-            new QTableWidgetItem(p.name));
-        _paramTableWidget->setItem(i, PP_Value,
+        _paramTableWidget->setItem(i, PP_Name, new QTableWidgetItem(p.name));
+        _paramTableWidget->setItem(
+            i, PP_Value,
             new QTableWidgetItem(QString::number(p.value, 'g', 8)));
 
-        auto* fzItem = new QTableWidgetItem;
+        auto *fzItem = new QTableWidgetItem;
         fzItem->setFlags(fzItem->flags() | Qt::ItemIsUserCheckable);
         fzItem->setCheckState(p.frozen ? Qt::Checked : Qt::Unchecked);
         fzItem->setText("");
         _paramTableWidget->setItem(i, PP_Freeze, fzItem);
 
-        _paramTableWidget->setItem(i, PP_Min,
-            new QTableWidgetItem(
-                p.hasRange ? QString::number(p.min, 'g', 8) : QString()));
-        _paramTableWidget->setItem(i, PP_Max,
-            new QTableWidgetItem(
-                p.hasRange ? QString::number(p.max, 'g', 8) : QString()));
+        _paramTableWidget->setItem(
+            i, PP_Min,
+            new QTableWidgetItem(p.hasRange ? QString::number(p.min, 'g', 8)
+                                            : QString()));
+        _paramTableWidget->setItem(
+            i, PP_Max,
+            new QTableWidgetItem(p.hasRange ? QString::number(p.max, 'g', 8)
+                                            : QString()));
     }
 }
 
@@ -1866,20 +1799,15 @@ void SEDFitDialog::onPhotometryFlagToggled(int row, int column)
 // ISIS integration
 // ═══════════════════════════════════════════════════════════════════
 
-bool SEDFitDialog::isIsisAvailable() const
-{
+bool SEDFitDialog::isIsisAvailable() const {
     return !findIsisBinary().isEmpty();
 }
 
-QString SEDFitDialog::findIsisBinary() const
-{
-    // Check custom path first
-    if (_isisPathEdit) {
-        QString custom = _isisPathEdit->text().trimmed();
-        if (!custom.isEmpty() && QFileInfo(custom).isExecutable())
-            return custom;
-    }
-    // Fall back to system PATH
+QString SEDFitDialog::findIsisBinary() const {
+    AppSettings s;
+    QString     custom = s.isisBinaryPath().trimmed();
+    if (!custom.isEmpty() && QFileInfo(custom).isExecutable())
+        return custom;
     return QStandardPaths::findExecutable("isis");
 }
 
@@ -2083,8 +2011,10 @@ QString SEDFitDialog::generateScript() const
 void SEDFitDialog::onRunFit()
 {
     if (!isIsisAvailable()) {
-        QMessageBox::warning(this, "ISIS Not Found",
-                             "Cannot run fit: ISIS is not installed or not in PATH.");
+        QMessageBox::warning(
+            this, "ISIS Not Found",
+            "Cannot run fit: ISIS binary not found. "
+            "Configure the path in Settings or install ISIS to your PATH.");
         return;
     }
 

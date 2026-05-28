@@ -95,8 +95,10 @@ private slots:
     void onFitRunClicked();
     void onAddRVPeriodClicked();
     void onAddPhotPeriodClicked();
+    void onFitSourceChanged();
+    void onFitFilterChanged();
 
-private:
+  private:
     void     setupUi();
     QWidget* buildViewerTab();
     QWidget* buildPeriodogramTab();
@@ -117,7 +119,9 @@ private:
     void persistPeaks();
     void commitPeaks();  
 
-    void refreshFitPeriodList();
+    void     refreshFitPeriodList();
+    void     refreshFitSourceCombo();
+    void     refreshFitFilterCombo();
     void     refreshPreviewsTab();
     QString  previewDir() const;        
     QString  previewPath(const QString& filename) const;
@@ -198,9 +202,11 @@ private:
     void stepPreview(int delta);
 
     // Fit tab widgets
-    LCPanel*     _fitLcPanel    = nullptr;
-    QListWidget* _fitPeriodList = nullptr;
-    QSpinBox*    _fitBinsSpin   = nullptr;
-    QPushButton* _fitRunBtn     = nullptr;
-    QLabel*      _fitInfoLabel  = nullptr;
+    LCPanel*     _fitLcPanel        = nullptr;
+    QListWidget* _fitPeriodList     = nullptr;
+    QComboBox*   _fitSourceCombo    = nullptr;
+    QComboBox*   _fitFilterCombo    = nullptr;
+    QSpinBox*    _fitBinsSpin       = nullptr;
+    QPushButton* _fitRunBtn         = nullptr;
+    QLabel*      _fitInfoLabel      = nullptr;
 };

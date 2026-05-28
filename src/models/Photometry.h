@@ -343,7 +343,10 @@ public:
     double   getPeriod()    const { return period; }
     double   getT0BJD()     const { return t0BJD; }
 
-private:
+    QString filter;            // e.g. "g", "r", "T", "BP", ...
+    double wavelengthNm = 0.0; // effective wavelength (nm), used by the fitter
+
+  private:
     QString _id;
     QString _modelDataFile;
 };
@@ -385,13 +388,16 @@ public:
     std::shared_ptr<SEDModel> getBestSEDModel() const;
     bool removeSEDModel(const QString& modelId);
 
-    void addLCFit(const QString& source, std::shared_ptr<LCFit> fit);
-    std::vector<std::shared_ptr<LCFit>> getLCFits(const QString& source) const;
-    std::shared_ptr<LCFit>              getBestLCFit(const QString& source) const;
-    bool removeLCFit(const QString& source, const QString& fitId);
+    void addLCFit(const QString &source, std::shared_ptr<LCFit> fit);
+    std::vector<std::shared_ptr<LCFit>> getLCFits(const QString &source) const;
+    std::vector<std::shared_ptr<LCFit>> getLCFits(const QString &source,
+                                                  const QString &filter) const;
+    std::shared_ptr<LCFit> getBestLCFit(const QString &source) const;
+    std::shared_ptr<LCFit> getBestLCFit(const QString &source,
+                                        const QString &filter) const;
+    bool removeLCFit(const QString &source, const QString &fitId);
 
-
-private:
+  private:
     QString _id;
     QString _photometricPointsFile;
     std::map<QString, QString> _lightcurveFiles;

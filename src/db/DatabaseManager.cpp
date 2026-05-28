@@ -287,6 +287,8 @@ bool DatabaseManager::createTables()
             creation_date TEXT,
             label TEXT,
             is_best_fit INTEGER DEFAULT 0,
+            filter TEXT DEFAULT '',
+            wavelength_nm REAL DEFAULT 0,
             q REAL DEFAULT 0,                 q_error REAL DEFAULT 0,
             iangle REAL DEFAULT 0,            iangle_error REAL DEFAULT 0,
             r1 REAL DEFAULT 0,                r1_error REAL DEFAULT 0,
@@ -494,9 +496,11 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE spectral_fits ADD COLUMN metallicity REAL DEFAULT 0",
         "ALTER TABLE spectral_fits ADD COLUMN metallicity_error REAL DEFAULT 0",
         "ALTER TABLE spectral_fits ADD COLUMN macroturbulence REAL DEFAULT 0",
-        "ALTER TABLE spectral_fits ADD COLUMN macroturbulence_error REAL DEFAULT 0",
+        "ALTER TABLE spectral_fits ADD COLUMN macroturbulence_error REAL "
+        "DEFAULT 0",
         "ALTER TABLE spectral_fits ADD COLUMN microturbulence REAL DEFAULT 0",
-        "ALTER TABLE spectral_fits ADD COLUMN microturbulence_error REAL DEFAULT 0",
+        "ALTER TABLE spectral_fits ADD COLUMN microturbulence_error REAL "
+        "DEFAULT 0",
 
         // SED model v2 migrations (for databases created before this version)
         "ALTER TABLE sed_models ADD COLUMN object_name TEXT",
@@ -517,7 +521,8 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE sed_models ADD COLUMN distance_mode REAL DEFAULT 0",
         "ALTER TABLE sed_models ADD COLUMN distance_mode_error REAL DEFAULT 0",
         "ALTER TABLE sed_models ADD COLUMN distance_median REAL DEFAULT 0",
-        "ALTER TABLE sed_models ADD COLUMN distance_median_error REAL DEFAULT 0",
+        "ALTER TABLE sed_models ADD COLUMN distance_median_error REAL DEFAULT "
+        "0",
         "ALTER TABLE sed_models ADD COLUMN chi2_reduced REAL DEFAULT 0",
         "ALTER TABLE sed_models ADD COLUMN excess_noise REAL DEFAULT 0",
         "ALTER TABLE sed_models ADD COLUMN component_params TEXT",
@@ -563,7 +568,7 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE stars ADD COLUMN has_blackgem INTEGER DEFAULT 0",
         "ALTER TABLE stars ADD COLUMN phot_peaks_json TEXT",
         "ALTER TABLE stars ADD COLUMN tess_crowdsap REAL",
-        
+
         // Instrument foreign key migrations for existing tables
         "ALTER TABLE spectra ADD COLUMN instrument_id TEXT",
         "ALTER TABLE spectra ADD COLUMN mode_key TEXT",
@@ -577,12 +582,17 @@ bool DatabaseManager::runMigrations()
 
         "ALTER TABLE rv_points      ADD COLUMN is_flagged INTEGER DEFAULT 0",
         "ALTER TABLE rv_points ADD COLUMN rv_manual REAL",
-        "ALTER TABLE rv_points ADD COLUMN rv_manual_error_formal REAL DEFAULT 0",
-        "ALTER TABLE rv_points ADD COLUMN rv_manual_error_systematic REAL DEFAULT 0",
+        "ALTER TABLE rv_points ADD COLUMN rv_manual_error_formal REAL DEFAULT "
+        "0",
+        "ALTER TABLE rv_points ADD COLUMN rv_manual_error_systematic REAL "
+        "DEFAULT 0",
         "ALTER TABLE rv_points ADD COLUMN rv_source INTEGER DEFAULT 0",
 
         "ALTER TABLE rv_points ADD COLUMN rv_error_formal REAL DEFAULT 0",
         "ALTER TABLE rv_points ADD COLUMN rv_error_systematic REAL DEFAULT 0",
+
+        "ALTER TABLE lc_fits ADD COLUMN filter TEXT DEFAULT ''",
+        "ALTER TABLE lc_fits ADD COLUMN wavelength_nm REAL DEFAULT 0",
     };
 
     for (const QString& sql : alterQueries) {
@@ -1293,9 +1303,8 @@ bool DatabaseManager::saveLCFitForStar(const QString& starId,
 { return _photometry->saveLCFitForStar(starId, source, fit); }
 
 std::vector<std::shared_ptr<LCFit>>
-DatabaseManager::loadLCFitsForSource(const QString& starId, const QString& source)
-{
-    // Resolve lightcurve id then forward to repo.
+DatabaseManager::loadLCFitsForSource(const QString &starId,
+                                     const QString &source) {
     QSqlQuery q(_db->threadConnection());
     q.prepare(R"(
         SELECT lc.id FROM lightcurves lc
@@ -1304,13 +1313,27 @@ DatabaseManager::loadLCFitsForSource(const QString& starId, const QString& sourc
     )");
     q.bindValue(":sid", starId);
     q.bindValue(":src", source);
-    if (!q.exec() || !q.next()) return {};
+    if (!q.exec() || !q.next())
+        return {};
     return _photometry->loadLCFitsForLightcurve(q.value(0).toString());
+}
+
+std::vector<std::shared_ptr<LCFit>> DatabaseManager::loadLCFitsForSource(
+    const QString &starId, const QString &source, const QString &filter) {
+    auto all = loadLCFitsForSource(starId, source);
+    std::vector<std::shared_ptr<LCFit>> out;
+    out.reserve(all.size());
+    for (auto &f : all)
+        if (f && f->filter == filter)
+            out.push_back(f);
+    return out;
+}
+
+bool DatabaseManager::setBestLCFit(const QString &starId, const QString &source,
+                                   const QString &filter,
+                                   const QString &fitId) {
+    return _photometry->setBestLCFit(starId, source, filter, fitId);
 }
 
 bool DatabaseManager::deleteLCFit(const QString& fitId)
 { return _photometry->deleteLCFit(fitId); }
-
-bool DatabaseManager::setBestLCFit(const QString& starId, const QString& source,
-                                   const QString& fitId)
-{ return _photometry->setBestLCFit(starId, source, fitId); }

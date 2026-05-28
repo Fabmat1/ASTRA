@@ -10,6 +10,7 @@
 #include "controllers/ApplicationController.h"
 #include "dialogs/ImportLightcurve.h"
 #include "dialogs/LCFitDialog.h"
+#include "utils/FilterWavelength.h"
 
 #include <QPlainTextEdit>
 #include <QCheckBox>
@@ -384,10 +385,9 @@ QWidget* LightcurveFetchDialog::buildFetchTab()
     return page;
 }
 
-QWidget* LightcurveFetchDialog::buildFitTab()
-{
-    auto* page = new QWidget;
-    auto* root = new QHBoxLayout(page);
+QWidget *LightcurveFetchDialog::buildFitTab() {
+    auto *page = new QWidget;
+    auto *root = new QHBoxLayout(page);
     root->setContentsMargins(4, 4, 4, 4);
     root->setSpacing(6);
 
@@ -396,38 +396,56 @@ QWidget* LightcurveFetchDialog::buildFitTab()
     ctx.dbm        = _dbm;
     ctx.controller = _controller;
     ctx.projectId  = _projectId;
-    _fitLcPanel = new LCPanel(ctx);
+    _fitLcPanel    = new LCPanel(ctx);
     root->addWidget(_fitLcPanel, 1);
 
-    auto* sidebar = new QWidget;
+    auto *sidebar = new QWidget;
     sidebar->setMinimumWidth(280);
     sidebar->setMaximumWidth(380);
-    auto* sv = new QVBoxLayout(sidebar);
+    auto *sv = new QVBoxLayout(sidebar);
     sv->setContentsMargins(4, 4, 4, 4);
     sv->setSpacing(8);
 
-    auto* pBox = new QGroupBox(tr("Period"));
-    auto* pLay = new QVBoxLayout(pBox);
-    auto* pInfo = new QLabel(tr("Peaks collected in the Periodogram tab:"));
+    // ── Data selection ──────────────────────────────────────────────────
+    auto *dBox      = new QGroupBox(tr("Data to fit"));
+    auto *dLay      = new QFormLayout(dBox);
+    _fitSourceCombo = new QComboBox;
+    _fitFilterCombo = new QComboBox;
+    _fitSourceCombo->setToolTip(tr("Lightcurve source (TESS, ZTF, ...)"));
+    _fitFilterCombo->setToolTip(
+        tr("Filter / passband. Each filter is fit independently because the "
+           "lightcurve amplitude varies with wavelength."));
+    dLay->addRow(tr("Source:"), _fitSourceCombo);
+    dLay->addRow(tr("Filter:"), _fitFilterCombo);
+    connect(_fitSourceCombo,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int) { onFitSourceChanged(); });
+    connect(_fitFilterCombo,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int) { onFitFilterChanged(); });
+    sv->addWidget(dBox);
+
+    // ── Period list (unchanged) ─────────────────────────────────────────
+    auto *pBox  = new QGroupBox(tr("Period"));
+    auto *pLay  = new QVBoxLayout(pBox);
+    auto *pInfo = new QLabel(tr("Peaks collected in the Periodogram tab:"));
     pInfo->setStyleSheet("color: gray;");
     pLay->addWidget(pInfo);
     _fitPeriodList = new QListWidget;
     _fitPeriodList->setAlternatingRowColors(true);
     _fitPeriodList->setSelectionMode(QAbstractItemView::SingleSelection);
-    connect(_fitPeriodList, &QListWidget::currentRowChanged,
-            this, [this](int){ onFitPeriodSelectionChanged(); });
+    connect(_fitPeriodList, &QListWidget::currentRowChanged, this,
+            [this](int) { onFitPeriodSelectionChanged(); });
     pLay->addWidget(_fitPeriodList, 1);
     sv->addWidget(pBox, 1);
 
-    auto* bBox = new QGroupBox(tr("Fit binning"));
-    auto* bLay = new QFormLayout(bBox);
+    auto *bBox   = new QGroupBox(tr("Fit binning"));
+    auto *bLay   = new QFormLayout(bBox);
     _fitBinsSpin = new QSpinBox;
     _fitBinsSpin->setRange(5, 5000);
     _fitBinsSpin->setValue(100);
-    _fitBinsSpin->setToolTip(tr(
-        "Number of phase bins used as input data points for the LC fit."));
-    connect(_fitBinsSpin, QOverload<int>::of(&QSpinBox::valueChanged),
-            this, &LightcurveFetchDialog::onFitBinsChanged);
+    connect(_fitBinsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            &LightcurveFetchDialog::onFitBinsChanged);
     bLay->addRow(tr("N bins:"), _fitBinsSpin);
     sv->addWidget(bBox);
 
@@ -438,19 +456,79 @@ QWidget* LightcurveFetchDialog::buildFitTab()
 
     _fitRunBtn = new QPushButton;
     _fitRunBtn->setEnabled(false);
-    _fitRunBtn->setToolTip(tr("Run a light-curve fit using the period selected "
-                              "above and the binning configured here."));
-    connect(_fitRunBtn, &QPushButton::clicked,
-            this, &LightcurveFetchDialog::onFitRunClicked);
+    connect(_fitRunBtn, &QPushButton::clicked, this,
+            &LightcurveFetchDialog::onFitRunClicked);
     sv->addWidget(_fitRunBtn);
 
     root->addWidget(sidebar);
 
+    refreshFitSourceCombo();
     refreshFitPeriodList();
     if (_fitLcPanel && _fitBinsSpin)
         _fitLcPanel->setUniformFoldedBins(_fitBinsSpin->value());
     onFitPeriodSelectionChanged();
     return page;
+}
+
+void LightcurveFetchDialog::refreshFitSourceCombo() {
+    if (!_fitSourceCombo)
+        return;
+    const QString  prev = _fitSourceCombo->currentText();
+    QSignalBlocker b(_fitSourceCombo);
+    _fitSourceCombo->clear();
+
+    auto phot = _star ? _star->getPhotometry() : nullptr;
+    if (phot) {
+        auto sources = phot->getLightcurveSources();
+        std::sort(sources.begin(), sources.end());
+        for (const auto &s : sources)
+            _fitSourceCombo->addItem(s);
+    }
+    if (!prev.isEmpty()) {
+        const int idx = _fitSourceCombo->findText(prev);
+        if (idx >= 0)
+            _fitSourceCombo->setCurrentIndex(idx);
+    }
+    refreshFitFilterCombo();
+}
+
+void LightcurveFetchDialog::refreshFitFilterCombo() {
+    if (!_fitFilterCombo || !_fitSourceCombo)
+        return;
+    const QString  prev = _fitFilterCombo->currentText();
+    QSignalBlocker b(_fitFilterCombo);
+    _fitFilterCombo->clear();
+
+    auto          phot = _star ? _star->getPhotometry() : nullptr;
+    const QString src  = _fitSourceCombo->currentText();
+    if (phot && !src.isEmpty()) {
+        const auto    pts = phot->getLightcurve(src);
+        QSet<QString> seen;
+        for (const auto &p : pts)
+            if (!p.filter.isEmpty())
+                seen.insert(p.filter);
+        QStringList filters(seen.begin(), seen.end());
+        std::sort(filters.begin(), filters.end());
+        if (filters.isEmpty())
+            filters << ""; // unfiltered series
+        for (const auto &f : filters)
+            _fitFilterCombo->addItem(f.isEmpty() ? tr("(unfiltered)") : f, f);
+    }
+    if (!prev.isEmpty()) {
+        const int idx = _fitFilterCombo->findText(prev);
+        if (idx >= 0)
+            _fitFilterCombo->setCurrentIndex(idx);
+    }
+}
+
+void LightcurveFetchDialog::onFitSourceChanged() {
+    refreshFitFilterCombo();
+    onFitFilterChanged();
+}
+
+void LightcurveFetchDialog::onFitFilterChanged() {
+    // Recompute the folded preview and bin counts for the new selection.
+    onFitPeriodSelectionChanged();
 }
 
 // ── Periodogram tab (panel + right-side controls) ──────────────────
@@ -1680,84 +1758,102 @@ void LightcurveFetchDialog::onFitBinsChanged()
     onFitPeriodSelectionChanged();
 }
 
-
 QVector<LightcurveFetchDialog::BinnedFitPoint>
-LightcurveFetchDialog::computeBinnedFitLightcurve() const
-{
+LightcurveFetchDialog::computeBinnedFitLightcurve() const {
     QVector<BinnedFitPoint> out;
-    const double P = selectedFitPeriod();
-    if (P <= 0 || !_fitLcPanel) return out;
+    const double            P = selectedFitPeriod();
+    if (P <= 0 || !_fitLcPanel)
+        return out;
     const int nBins = _fitBinsSpin ? _fitBinsSpin->value() : 0;
-    if (nBins <= 0) return out;
+    if (nBins <= 0)
+        return out;
+
+    const QString wantSource =
+        _fitSourceCombo ? _fitSourceCombo->currentText() : QString();
+    const QString wantFilter =
+        _fitFilterCombo ? _fitFilterCombo->currentData().toString() : QString();
 
     struct Acc {
-        double sumW = 0.0, sumWY = 0.0;
-        double sumY = 0.0, sumY2 = 0.0;
-        int    n    = 0;
+        double sumW = 0, sumWY = 0, sumY = 0, sumY2 = 0;
+        int    n = 0;
     };
     QVector<Acc> bins(nBins);
 
-    const auto series = _fitLcPanel->seriesData(/*includeFlagged*/ false);
-    bool anyData = false;
+    const auto series  = _fitLcPanel->seriesData(false);
+    bool       anyData = false;
 
-    for (const auto& s : series) {
+    for (const auto &s : series) {
+        if (!wantSource.isEmpty() && s.source != wantSource)
+            continue;
+        if (!wantFilter.isEmpty() && s.filter != wantFilter)
+            continue;
+
+        // (rest of normalisation/binning unchanged)
         QVector<double> sample;
         sample.reserve(s.y.size());
-        for (double v : s.y) if (std::isfinite(v)) sample.append(v);
+        for (double v : s.y)
+            if (std::isfinite(v))
+                sample.append(v);
         double med = 1.0;
         if (!sample.isEmpty()) {
             std::sort(sample.begin(), sample.end());
             med = sample[sample.size() / 2];
-            if (std::abs(med) < 1e-30) med = 1.0;
+            if (std::abs(med) < 1e-30)
+                med = 1.0;
         }
 
         for (int i = 0; i < s.t.size(); ++i) {
             const double t = s.t[i];
-            if (!std::isfinite(t) || !std::isfinite(s.y[i])) continue;
-            const double y = s.y[i] / med;
-            const double e = (std::isfinite(s.e[i]) && s.e[i] > 0.0)
-                                 ? s.e[i] / std::abs(med) : 0.0;
-
-            double ph = std::fmod(t / P, 1.0);
-            if (ph < 0.0) ph += 1.0;
+            if (!std::isfinite(t) || !std::isfinite(s.y[i]))
+                continue;
+            const double y  = s.y[i] / med;
+            const double e  = (std::isfinite(s.e[i]) && s.e[i] > 0.0)
+                                  ? s.e[i] / std::abs(med)
+                                  : 0.0;
+            double       ph = std::fmod(t / P, 1.0);
+            if (ph < 0.0)
+                ph += 1.0;
             int b = static_cast<int>(ph * nBins);
-            if (b < 0)       b = 0;
-            if (b >= nBins)  b = nBins - 1;
-
-            bins[b].sumY  += y;
+            if (b < 0)
+                b = 0;
+            if (b >= nBins)
+                b = nBins - 1;
+            bins[b].sumY += y;
             bins[b].sumY2 += y * y;
             bins[b].n++;
             if (e > 0.0) {
                 const double w = 1.0 / (e * e);
-                bins[b].sumW  += w;
+                bins[b].sumW += w;
                 bins[b].sumWY += w * y;
             }
             anyData = true;
         }
     }
-    if (!anyData) return out;
+    if (!anyData)
+        return out;
 
     const double dphase = 1.0 / nBins;
     for (int b = 0; b < nBins; ++b) {
-        const auto& a = bins[b];
-        if (a.n == 0) continue;
+        const auto &a = bins[b];
+        if (a.n == 0)
+            continue;
         double yMean, yErr;
         if (a.sumW > 0.0) {
             yMean = a.sumWY / a.sumW;
             yErr  = 1.0 / std::sqrt(a.sumW);
         } else {
             yMean = a.sumY / a.n;
-            yErr  = (a.n > 1)
-                ? std::sqrt(std::max((a.sumY2 / a.n) - yMean * yMean, 0.0) / a.n)
-                : 0.0;
+            yErr =
+                (a.n > 1)
+                    ? std::sqrt(std::max((a.sumY2 / a.n) - yMean * yMean, 0.0) /
+                                a.n)
+                    : 0.0;
         }
         BinnedFitPoint p;
         p.phase      = (b + 0.5) * dphase;
         p.deltaPhase = dphase;
         p.flux       = yMean;
         p.fluxError  = yErr;
-        p.weight     = 1.0;
-        p.factor     = 1.0;
         out.append(p);
     }
     return out;
@@ -1784,34 +1880,29 @@ bool LightcurveFetchDialog::writeBinnedFitLightcurve(const QString& path) const
     return true;
 }
 
-
-void LightcurveFetchDialog::onFitRunClicked()
-{
+void LightcurveFetchDialog::onFitRunClicked() {
     const double P = selectedFitPeriod();
-    if (P <= 0) return;
+    if (P <= 0)
+        return;
     const auto pts = computeBinnedFitLightcurve();
     if (pts.isEmpty()) {
         QMessageBox::warning(this, tr("Fit LC"),
-            tr("No usable binned data points were produced for P = %1 d.")
-                .arg(P, 0, 'g', 8));
+                             tr("No usable binned data points for the current "
+                                "source / filter / period."));
         return;
     }
 
-    // Determine which source is selected in the fit-period list
-    QString source;
-    if (auto* it = _fitPeriodList->currentItem())
-        source = it->text().section('[', 1, 1).section(']', 0, 0);  // best-effort label
-    if (source.isEmpty() || source.startsWith("RV") || source.startsWith("Phot")) {
-        // Fall back to the viewer combo's selection
-        if (_viewerSourceCombo && _viewerSourceCombo->count() > 0)
-            source = _viewerSourceCombo->currentText();
-    }
-    if (source.isEmpty()) source = "TESS";
+    const QString source =
+        _fitSourceCombo ? _fitSourceCombo->currentText() : QString("TESS");
+    const QString filter =
+        _fitFilterCombo ? _fitFilterCombo->currentData().toString() : QString();
 
-    // Try to grab a period error from the selected list item
     double pErr = 0.0;
-    for (const auto& pk : _peaks)
-        if (std::abs(pk.period - P) / P < 1e-9) { pErr = pk.periodError; break; }
+    for (const auto &pk : _peaks)
+        if (std::abs(pk.period - P) / P < 1e-9) {
+            pErr = pk.periodError;
+            break;
+        }
 
     LCFitDialog::Inputs in;
     in.star             = _star;
@@ -1820,10 +1911,12 @@ void LightcurveFetchDialog::onFitRunClicked()
     in.settings         = _controller ? _controller->settings() : nullptr;
     in.projectId        = _projectId;
     in.lightcurveSource = source;
+    in.filter           = filter;
+    in.wavelengthNm     = FilterWavelength::lookupNm(filter);
     in.period           = P;
     in.periodError      = pErr;
     in.binnedPoints.reserve(pts.size());
-    for (const auto& bp : pts) {
+    for (const auto &bp : pts) {
         LCFitDataPoint d;
         d.phase     = bp.phase;
         d.dPhase    = bp.deltaPhase;
@@ -1836,8 +1929,10 @@ void LightcurveFetchDialog::onFitRunClicked()
 
     LCFitDialog dlg(in, this);
     if (dlg.exec() == QDialog::Accepted) {
-        if (_fitLcPanel) _fitLcPanel->refresh();
-        if (_lcPanel)    _lcPanel->refresh();
+        if (_fitLcPanel)
+            _fitLcPanel->refresh();
+        if (_lcPanel)
+            _lcPanel->refresh();
     }
 }
 

@@ -81,7 +81,6 @@ private:
     void updatePhotometryTable();
     void updateFitSelector();
     void initDefaultFitParams();
-    void updateIsisStatus();
 
     bool isDarkTheme() const;
     QColor modelCurveColor() const;
@@ -133,9 +132,6 @@ private:
 
     QPushButton* _newFitToggleBtn = nullptr;
     QScrollArea* _newFitScroll    = nullptr;
-
-    QLineEdit* _isisPathEdit     = nullptr;
-    QLabel*    _isisStatusLabel  = nullptr;
 
     GridSelectorWidget* _gridSelector1 = nullptr;
     GridSelectorWidget* _gridSelector2 = nullptr;

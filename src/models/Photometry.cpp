@@ -440,26 +440,48 @@ std::shared_ptr<SEDModel> Photometry::getBestSEDModel() const
     return nullptr;
 }
 
-void Photometry::addLCFit(const QString& source, std::shared_ptr<LCFit> fit)
-{
-    if (!fit) return;
+std::vector<std::shared_ptr<LCFit>>
+Photometry::getLCFits(const QString &source) const {
+    auto it = _lcFits.find(source);
+    return (it != _lcFits.end()) ? it->second
+                                 : std::vector<std::shared_ptr<LCFit>>{};
+}
+
+std::shared_ptr<LCFit> Photometry::getBestLCFit(const QString &source) const {
+    for (const auto &f : getLCFits(source))
+        if (f->isBestFit)
+            return f;
+    return nullptr;
+}
+
+void Photometry::addLCFit(const QString &source, std::shared_ptr<LCFit> fit) {
+    if (!fit)
+        return;
     if (fit->isBestFit) {
-        for (auto& existing : _lcFits[source])
-            existing->isBestFit = false;
+        for (auto &existing : _lcFits[source])
+            if (existing->filter == fit->filter)
+                existing->isBestFit = false;
     }
     _lcFits[source].push_back(fit);
 }
 
-std::vector<std::shared_ptr<LCFit>> Photometry::getLCFits(const QString& source) const
-{
+std::vector<std::shared_ptr<LCFit>>
+Photometry::getLCFits(const QString &source, const QString &filter) const {
+    std::vector<std::shared_ptr<LCFit>> out;
     auto it = _lcFits.find(source);
-    return (it != _lcFits.end()) ? it->second : std::vector<std::shared_ptr<LCFit>>{};
+    if (it == _lcFits.end())
+        return out;
+    for (const auto &f : it->second)
+        if (f->filter == filter)
+            out.push_back(f);
+    return out;
 }
 
-std::shared_ptr<LCFit> Photometry::getBestLCFit(const QString& source) const
-{
-    for (const auto& f : getLCFits(source))
-        if (f->isBestFit) return f;
+std::shared_ptr<LCFit> Photometry::getBestLCFit(const QString &source,
+                                                const QString &filter) const {
+    for (const auto &f : getLCFits(source, filter))
+        if (f->isBestFit)
+            return f;
     return nullptr;
 }
 
