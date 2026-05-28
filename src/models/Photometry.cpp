@@ -7,6 +7,7 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <unordered_set>
 
 // ══════════════════════════════════════════════════════════════
 // SEDComponentParams JSON
