@@ -100,6 +100,8 @@ x86/
 *.swo
 *~
 .cache/
+.clangd
+.clang-format
 
 # Database files
 *.db
@@ -161,3 +163,5 @@ perf.data*
 scripts/
 
 !resources/scripts/out.svg
+
+*.pkl
