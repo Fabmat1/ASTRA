@@ -1,7 +1,10 @@
 #include "GridSelectorWidget.h"
+#include "utils/Logger.h"
 
 #include <QComboBox>
 #include <QDir>
+#include <QDirIterator>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QGridLayout>
@@ -216,10 +219,18 @@ void GridSelectorWidget::refresh()
 }
 
 void GridSelectorWidget::scanPaths() {
+    QElapsedTimer timer;
+    timer.start();
+    int dirsVisited = 0, dirsPruned = 0, netSkipped = 0;
+
     _discovered.clear();
     QSet<QString> seen;
 
     const QSet<QString> netMounts = networkMountPoints();
+    if (!netMounts.isEmpty())
+        LOG_DEBUG("GridScan",
+                  QString("Network mounts to skip: %1")
+                      .arg(QStringList(netMounts.values()).join(", ")));
 
     auto onNetworkMount = [&](const QString &path) {
         const QString clean = QDir::cleanPath(path);
@@ -229,9 +240,9 @@ void GridSelectorWidget::scanPaths() {
         return false;
     };
 
-    auto markerHit = [&](const QDir &d) {
+    auto markerHit = [&](const QString &dir) {
         for (const auto &m : _markers)
-            if (d.exists(m))
+            if (QFileInfo::exists(dir + "/" + m))
                 return true;
         return false;
     };
@@ -242,26 +253,32 @@ void GridSelectorWidget::scanPaths() {
             continue;
 
         QDir baseDir(base);
-        if (onNetworkMount(baseDir.absolutePath()))
-            continue; // never even touch it
-        if (!baseDir.exists())
+        if (onNetworkMount(baseDir.absolutePath())) {
+            ++netSkipped;
             continue;
+        }
+        if (!baseDir.exists()) {
+            LOG_DEBUG("GridScan", QString("Base does not exist: %1").arg(base));
+            continue;
+        }
 
-        // Avoid canonicalPath() on the whole subtree; clean the base once.
         QString baseCan = baseDir.canonicalPath();
         if (baseCan.isEmpty())
             baseCan = QDir::cleanPath(baseDir.absolutePath());
 
+        QElapsedTimer baseTimer;
+        baseTimer.start();
+        const int beforeCount = _discovered.size();
+
         std::function<void(const QString &, int)> scan = [&](const QString &dir,
                                                              int depth) {
-            if (depth > 5)
-                return;
-            QDir d(dir);
+            ++dirsVisited;
 
-            if (markerHit(d)) {
-                // NOTE: use cleanPath instead of canonicalPath() so we never
-                // resolve a symlink into a (possibly dead) network location.
-                const QString canon = QDir::cleanPath(d.absolutePath());
+            // ── Prune: a directory that *is* a grid is a leaf. Don't descend.
+            // ──
+            if (markerHit(dir)) {
+                ++dirsPruned;
+                const QString canon = QDir::cleanPath(dir);
                 if (!seen.contains(canon)) {
                     seen.insert(canon);
                     DiscoveredGrid dg;
@@ -294,24 +311,50 @@ void GridSelectorWidget::scanPaths() {
                         dg.category    = "Discovered";
                         dg.displayName = dg.relativePath;
                     }
+                    LOG_DEBUG("GridScan",
+                              QString("  + grid: %1").arg(dg.relativePath));
                     _discovered.append(std::move(dg));
                 }
+                return; // ← key change: stop here, don't walk the data files
             }
 
-            // NoSymLinks: never follow a symlink (could point at a dead mount).
-            const auto subs = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot |
-                                          QDir::NoSymLinks);
-            for (const auto &sub : subs) {
-                if (sub.startsWith('.'))
+            if (depth >= 5)
+                return;
+
+            QDirIterator it(
+                dir, QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks,
+                QDirIterator::NoIteratorFlags);
+            while (it.hasNext()) {
+                const QString child = it.next();
+                const QString name  = it.fileName();
+                if (name.startsWith('.'))
                     continue;
-                const QString child = dir + "/" + sub;
-                if (onNetworkMount(child))
-                    continue; // don't descend into network mounts
+                if (onNetworkMount(child)) {
+                    ++netSkipped;
+                    LOG_DEBUG("GridScan",
+                              QString("  skip network dir: %1").arg(child));
+                    continue;
+                }
                 scan(child, depth + 1);
             }
         };
+
         scan(baseCan, 0);
+
+        LOG_DEBUG("GridScan", QString("Base %1 -> %2 grids in %3 ms")
+                                  .arg(base)
+                                  .arg(_discovered.size() - beforeCount)
+                                  .arg(baseTimer.elapsed()));
     }
+
+    LOG_DEBUG("GridScan",
+              QString("DONE: visited %1 dirs, pruned %2 grid dirs, "
+                      "skipped %3 network dirs, found %4 grids in %5 ms")
+                  .arg(dirsVisited)
+                  .arg(dirsPruned)
+                  .arg(netSkipped)
+                  .arg(_discovered.size())
+                  .arg(timer.elapsed()));
 }
 
 void GridSelectorWidget::populateCategoryCombo()
