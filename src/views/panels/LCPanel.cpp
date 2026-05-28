@@ -35,7 +35,7 @@
 
 // ── helpers ─────────────────────────────────────────────────────────
 namespace {
-
+    
 inline QString keyFor(const QString& src, const QString& filt)
 {
     return src + "::" + filt;
@@ -709,43 +709,40 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
                 overlay =
                     phot ? phot->getBestLCFit(s.source, s.filter) : nullptr;
             }
-            if (overlay && !overlay->modelPoints.empty() &&
-                overlay->getPeriod() > 0) {
-                struct PP {
-                    double x, y;
-                };
+            if (overlay && !overlay->modelPoints.empty() && overlay->getPeriod() > 0) {
+                // Model phases are in the input fit frame (T0_input = 0). Shift into the
+                // panel's phase frame, which is folded with _foldT0.
+                const double phaseShift = (_foldPeriod > 0)
+                    ? std::fmod(_foldT0 / _foldPeriod, 1.0)
+                    : 0.0;
+
+                struct PP { double x, y; };
                 QVector<PP> samples;
                 samples.reserve(overlay->modelPoints.size());
-                for (const auto &mp : overlay->modelPoints) {
-                    if (!std::isfinite(mp.phase) || !std::isfinite(mp.flux))
-                        continue;
-                    double ph = std::fmod(mp.phase, 1.0);
-                    if (ph < 0.0)
-                        ph += 1.0;
-                    samples.push_back({ph, mp.flux});
+                for (const auto& mp : overlay->modelPoints) {
+                    if (!std::isfinite(mp.phase) || !std::isfinite(mp.flux)) continue;
+                    samples.push_back({mp.phase - phaseShift, mp.flux});
                 }
                 if (!samples.isEmpty()) {
-                    std::sort(
-                        samples.begin(), samples.end(),
-                        [](const PP &a, const PP &b) { return a.x < b.x; });
+                    // lcurve emits points in increasing input phase; a constant shift
+                    // preserves order, but sort to be defensive.
+                    std::sort(samples.begin(), samples.end(),
+                            [](const PP& a, const PP& b){ return a.x < b.x; });
 
-                    // Duplicate into [-1, 0] so the line spans both copies
-                    // of the folded view (matches the data display).
-                    const int       n = samples.size();
-                    QVector<double> mx;
-                    mx.reserve(2 * n);
-                    QVector<double> my;
-                    my.reserve(2 * n);
-                    for (int i = 0; i < n; ++i) {
-                        mx.append(samples[i].x - 1.0);
-                        my.append(samples[i].y);
-                    }
-                    for (int i = 0; i < n; ++i) {
-                        mx.append(samples[i].x);
-                        my.append(samples[i].y);
+                    // After shift the curve lives in [-phaseShift, 1-phaseShift]. The
+                    // plot range is [-1.05, 1.05], so emit three contiguous copies offset
+                    // by -1, 0, +1 to guarantee full coverage for any phaseShift ∈ [0, 1).
+                    const int n = samples.size();
+                    QVector<double> mx; mx.reserve(3 * n);
+                    QVector<double> my; my.reserve(3 * n);
+                    for (int k = -1; k <= 1; ++k) {
+                        for (int i = 0; i < n; ++i) {
+                            mx.append(samples[i].x + double(k));
+                            my.append(samples[i].y);
+                        }
                     }
 
-                    QCPGraph *mg = plot->addGraph();
+                    QCPGraph* mg = plot->addGraph();
                     mg->setName(label + " (best fit)");
                     mg->setLineStyle(QCPGraph::lsLine);
                     mg->setScatterStyle(QCPScatterStyle::ssNone);
@@ -757,11 +754,8 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
                     mg->setData(mx, my, /*alreadySorted*/ true);
                     mg->setSelectable(QCP::stNone);
 
-                    // Let the model influence the auto y-range so
-                    // spikes/dips remain visible after a Reset Zoom.
                     for (double v : my) {
-                        if (!std::isfinite(v))
-                            continue;
+                        if (!std::isfinite(v)) continue;
                         globalYMin = std::min(globalYMin, v);
                         globalYMax = std::max(globalYMax, v);
                     }

@@ -7,6 +7,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include "utils/DataStore.h"
+#include "utils/Logger.h"
 
 PhotometryRepository::PhotometryRepository(DBAccess& db) : _db(db) {}
 
@@ -533,7 +534,22 @@ PhotometryRepository::loadLCFitsForLightcurve(const QString &lightcurveId) {
         f->rms                = q.value("rms").toDouble();
         f->config.fromJsonString(q.value("config_json").toString());
         f->setModelDataFile(q.value("data_file").toString());
+
+
+        const QString df = f->getModelDataFile();
+        if (!df.isEmpty() && QFile::exists(df)) {
+            if (!f->loadDataFromFile(df)) {
+                qWarning() << "PhotometryRepository: failed to load LCFit data"
+                           << "for fit" << f->getId() << "from" << df;
+            }
+        }
+
         out.push_back(f);
+        LOG_INFO("LCFit",
+                 QString("Loaded fit %1: inputPoints=%2 modelPoints=%3")
+                     .arg(f->getId())
+                     .arg(int(f->inputPoints.size()))
+                     .arg(int(f->modelPoints.size())));
     }
     return out;
 }

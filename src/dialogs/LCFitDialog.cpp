@@ -92,7 +92,7 @@ void LCFitDialog::setMeas(
 
 LCFitDialog::LCFitDialog(Inputs in, QWidget *parent)
     : QDialog(parent), _in(std::move(in)) {
-  setWindowTitle(tr("Fit Light Curve — %1 / %2")
+  setWindowTitle(tr("Fit Light Curve - %1 / %2")
                      .arg(_in.star ? _in.star->getSourceId() : "?")
                      .arg(_in.lightcurveSource));
   resize(1200, 820);
@@ -237,7 +237,7 @@ QWidget *LCFitDialog::buildHeader() {
         _in.star ? (_in.star->getAlias().isEmpty() ? _in.star->getSourceId()
                                                     : _in.star->getAlias())
                 : tr("(no star)");
-    _hdr->setText(tr("LC fit — %1   |   P = %2 ± %3 d  ·  %4 binned points")
+    _hdr->setText(tr("LC fit - %1   |   P = %2 ± %3 d  ·  %4 binned points")
                     .arg(name)
                     .arg(_in.period, 0, 'g', 8)
                     .arg(_in.periodError, 0, 'g', 2)
@@ -602,7 +602,7 @@ void LCFitDialog::onQueryClaretClicked() {
     if (ClaretFilter::canonical(mappedFrom).isEmpty()) {
         lines << QString(
                      "<span style='color:#dca84d;'>⚠ Filter '%1' has no "
-                     "Claret table mapping — falling back to <b>%2</b>.</span>")
+                     "Claret table mapping - falling back to <b>%2</b>.</span>")
                      .arg(mappedFrom.toHtmlEscaped(), band);
     }
 
@@ -628,14 +628,14 @@ void LCFitDialog::onQueryClaretClicked() {
                            ? "<span style='color:#dca84d;'>⚠ fallback</span>"
                            : "<span style='color:#7dbd5e;'>✓</span>";
         lines
-            << QString("<b>%1 LDC:</b> %2 — %3").arg(tag, tag1, ldc.diagnostic);
+            << QString("<b>%1 LDC:</b> %2 - %3").arg(tag, tag1, ldc.diagnostic);
 
         const auto gd = ClaretTables::queryGdc(Tm->value, loggOpt, type, band);
         gdSpin->setValue(gd.value);
         QString tag2 = gd.usedFallback
                            ? "<span style='color:#dca84d;'>⚠ fallback</span>"
                            : "<span style='color:#7dbd5e;'>✓</span>";
-        lines << QString("<b>%1 GDC:</b> y=%2  %3 — %4")
+        lines << QString("<b>%1 GDC:</b> y=%2  %3 - %4")
                      .arg(tag)
                      .arg(gd.value, 0, 'f', 4)
                      .arg(tag2, gd.diagnostic);
@@ -1109,7 +1109,7 @@ void LCFitDialog::onRunFinished(int code, bool ok) {
   }
 
   _runStat->setStyleSheet("color: #7dbd5e;");
-  _runStat->setText(tr("Solver finished — results parsed."));
+  _runStat->setText(tr("Solver finished - results parsed."));
   populateResultsView();
   _saveBtn->setEnabled(true);
   _saveFitBtn->setEnabled(true);
@@ -1170,14 +1170,14 @@ void LCFitDialog::populateResultsView() {
            "χ²(LC) = %3 &nbsp; reduced χ² = %4 &nbsp; iters = %5")
             .arg(conv ? "<span style='color:#7dbd5e;'>✓ converged</span>"
                       : "<span style='color:#c46060;'>✗ not converged</span>")
-            .arg(stop.isEmpty() ? "—" : stop)
-            .arg(std::isnan(chi2) ? "—" : QString::number(chi2, 'g', 6))
-            .arg(redChi2 > 0 ? QString::number(redChi2, 'g', 4) : "—")
+            .arg(stop.isEmpty() ? "-" : stop)
+            .arg(std::isnan(chi2) ? "-" : QString::number(chi2, 'g', 6))
+            .arg(redChi2 > 0 ? QString::number(redChi2, 'g', 4) : "-")
             .arg(summary.value("iter").toInt(
                 summary.value("iterations").toInt()));
     if (!results.contains("sigma"))
         q += tr(
-            "<br><span style='color:#dca84d;'>⚠ Covariance inversion failed — "
+            "<br><span style='color:#dca84d;'>⚠ Covariance inversion failed - "
             "no parameter σ available.</span>");
     _quality->setText(q);
 
@@ -1229,7 +1229,7 @@ void LCFitDialog::populateResultsView() {
 
     auto setDeltaCell = [&](int row, double best, double sig, double storedVal,
                             double storedSig, bool haveStored) {
-        QString delta = "—";
+        QString delta = "-";
         if (haveStored && (storedSig > 0 || (std::isfinite(sig) && sig > 0))) {
             const double d = best - storedVal;
             const double s =
@@ -1274,12 +1274,12 @@ void LCFitDialog::populateResultsView() {
         _results->setItem(
             row, 2,
             new QTableWidgetItem(
-                std::isnan(sig) ? "—" : QString::number(sig * scale, 'g', 3)));
+                std::isnan(sig) ? "-" : QString::number(sig * scale, 'g', 3)));
         _results->setItem(
             row, 3,
             new QTableWidgetItem(std::isfinite(initial)
                                      ? QString::number(initial * scale, 'g', 6)
-                                     : "—"));
+                                     : "-"));
         setDeltaCell(row, best * scale,
                      std::isnan(sig) ? std::nan("") : sig * scale, storedVal,
                      storedSig, haveStored);
@@ -1350,15 +1350,35 @@ void LCFitDialog::populateResultsView() {
         const int row = _results->rowCount();
         _results->insertRow(row);
         _results->setItem(row, 0, new QTableWidgetItem("R₁ [R☉] (derived)"));
+
+        if (bestPars.contains("t0")) {
+            const double t0_ph      = bestPars.value("t0").toDouble();
+            const double t0_ph_sig  = sigmas.contains("t0") ? sigmas.value("t0").toDouble() : 0.0;
+            const double t0_bjd     = t0_ph * _in.period;
+            const double t0_bjd_sig = std::hypot(t0_ph_sig * _in.period,
+                                                t0_ph * _in.periodError);
+            const double init_t0_ph  = firstFloat(mp.value("t0").toString());
+            const double init_t0_bjd = std::isfinite(init_t0_ph) ? init_t0_ph * _in.period
+                                                                : std::nan("");
+            const int row = _results->rowCount();
+            _results->insertRow(row);
+            _results->setItem(row, 0, new QTableWidgetItem("t₀ [BJD] (derived)"));
+            _results->setItem(row, 1, new QTableWidgetItem(QString::number(t0_bjd, 'g', 10)));
+            _results->setItem(row, 2, new QTableWidgetItem(t0_bjd_sig > 0
+                ? QString::number(t0_bjd_sig, 'g', 3) : "-"));
+            _results->setItem(row, 3, new QTableWidgetItem(
+                std::isfinite(init_t0_bjd) ? QString::number(init_t0_bjd, 'g', 10) : "-"));
+            _results->setItem(row, 4, new QTableWidgetItem("-"));
+        }
         _results->setItem(row, 1,
                           new QTableWidgetItem(QString::number(R1, 'g', 4)));
         _results->setItem(
             row, 2,
-            new QTableWidgetItem(sR1 > 0 ? QString::number(sR1, 'g', 3) : "—"));
+            new QTableWidgetItem(sR1 > 0 ? QString::number(sR1, 'g', 3) : "-"));
         _results->setItem(
             row, 3,
             new QTableWidgetItem(
-                std::isfinite(initR1) ? QString::number(initR1, 'g', 4) : "—"));
+                std::isfinite(initR1) ? QString::number(initR1, 'g', 4) : "-"));
         setDeltaCell(row, R1, sR1, storedR1, storedR1s, haveR1);
     }
 }
@@ -1400,7 +1420,18 @@ bool LCFitDialog::persistFit(bool asBest) {
     set("velocity_scale", fit->velocityScale, fit->velocityScaleError);
     set("t1", fit->t1, fit->t1Error);
     set("t2", fit->t2, fit->t2Error);
-    set("t0", fit->t0BJD, fit->t0BJDError);
+
+    // lcurve returns t0 in the same units as its time axis. We folded the input
+    // at T0_input = 0 (computeBinnedFitLightcurve uses fmod(t/P, 1)), so t0 from
+    // the fit is a phase. Convert to BJD: T0_BJD = T0_input + t0_phase · P.
+    double t0_phase = 0.0, t0_phase_err = 0.0;
+    if (bestPars.contains("t0"))
+        t0_phase = bestPars.value("t0").toDouble();
+    if (sigmas.contains("t0"))
+        t0_phase_err = sigmas.value("t0").toDouble();
+    fit->t0BJD = t0_phase * _in.period;
+    fit->t0BJDError = std::hypot(t0_phase_err * _in.period, t0_phase * _in.periodError);
+
     fit->period      = _in.period;
     fit->periodError = _in.periodError;
     fit->chi2        = summary.value("best_chisq_lc")
@@ -1441,6 +1472,18 @@ bool LCFitDialog::persistFit(bool asBest) {
         return false;
     }
 
+    LOG_INFO(
+        "LCFit",
+        QString(
+            "Saved fit %1: inputPoints=%2 modelPoints=%3 dataFile=%4 size=%5")
+            .arg(fit->getId())
+            .arg(int(fit->inputPoints.size()))
+            .arg(int(fit->modelPoints.size()))
+            .arg(fit->getModelDataFile())
+            .arg(QFile::exists(fit->getModelDataFile())
+                     ? QFileInfo(fit->getModelDataFile()).size()
+                     : -1));
+
     // ── Mirror the new fit in the in-memory Photometry so other views
     //    (LCPanel overplot, Existing-fits tree) see it without a reload.
     if (auto phot = _in.star->getPhotometry()) {
@@ -1471,7 +1514,7 @@ bool LCFitDialog::persistFit(bool asBest) {
         QString(
             "Persisted LC fit for %1/%2/%3 (id=%4, χ²=%5, λ=%6 nm, best=%7)")
             .arg(_in.star->getId(), _in.lightcurveSource,
-                 _in.filter.isEmpty() ? "—" : _in.filter, fit->getId())
+                 _in.filter.isEmpty() ? "-" : _in.filter, fit->getId())
             .arg(fit->chi2)
             .arg(fit->wavelengthNm, 0, 'f', 1)
             .arg(asBest ? "yes" : "no"));
@@ -1531,7 +1574,7 @@ void LCFitDialog::updateNavButtons() {
     _prevBtn->setEnabled(i > 0);
     _nextBtn->setEnabled(i < n - 1);
     _pageInfo->setText(
-        tr("Step %1 / %2 — %3").arg(i + 1).arg(n).arg(_pageTitles.value(i)));
+        tr("Step %1 / %2 - %3").arg(i + 1).arg(n).arg(_pageTitles.value(i)));
 }
 
 void LCFitDialog::onM1M2Changed() {
