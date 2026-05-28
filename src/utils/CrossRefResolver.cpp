@@ -108,6 +108,41 @@ BibcodeInfo CrossRefResolver::lookupCache(const QString& bibcode)
     return info;
 }
 
+QMap<QString, BibcodeInfo>
+CrossRefResolver::lookupCacheBatch(const QStringList &bibcodes) {
+    QMap<QString, BibcodeInfo> out;
+    QSqlDatabase db = QSqlDatabase::database(_connectionName, false);
+    if (!db.isOpen() || bibcodes.isEmpty())
+        return out;
+
+    // Single SELECT … WHERE bibcode IN (?,?,…). SQLite's variable limit
+    // (999) is far above any realistic per-star reference count.
+    QStringList placeholders;
+    placeholders.reserve(bibcodes.size());
+    for (int i = 0; i < bibcodes.size(); ++i)
+        placeholders << "?";
+
+    QSqlQuery q(db);
+    q.prepare("SELECT bibcode, title, abstract, authors, doi "
+              "FROM bibcode_cache WHERE bibcode IN (" +
+              placeholders.join(",") + ")");
+    for (const QString &b : bibcodes)
+        q.addBindValue(b);
+
+    if (q.exec()) {
+        while (q.next()) {
+            BibcodeInfo info;
+            info.bibcode  = q.value(0).toString();
+            info.title    = q.value(1).toString();
+            info.abstract = q.value(2).toString();
+            info.authors  = q.value(3).toString();
+            info.doi      = q.value(4).toString();
+            out.insert(info.bibcode, info);
+        }
+    }
+    return out;
+}
+
 void CrossRefResolver::storeInCache(const BibcodeInfo& info)
 {
     QSqlDatabase db = QSqlDatabase::database(_connectionName, false);

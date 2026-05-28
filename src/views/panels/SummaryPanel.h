@@ -17,6 +17,13 @@ class SummaryPanel : public DetailPanel {
     void refreshTheme() override;
 
   private:
+    void     addReferenceCards(QWidget *host, const QStringList &bibcodes);
+    void     appendReferenceBatch(); // build the next page now
+    void     onSummaryScrolled();    // scroll-to-bottom trigger
+    QWidget *makeLoadingRow();       // the spinner row
+
+    static constexpr int kRefBatchSize = 10;
+
     void setupUi();
     void rebuild();
 
@@ -64,4 +71,12 @@ class SummaryPanel : public DetailPanel {
 
     QScrollArea      *_scroll      = nullptr;
     CrossRefResolver *_refResolver = nullptr;
+
+    void buildReferenceCards(QWidget *host, const QStringList &bibcodes);
+    bool _builtDark = false; // theme the current widget tree was built with
+
+    QWidget    *_refCardHost = nullptr; // cards go here
+    QWidget    *_refSpinner  = nullptr; // busy row, shown while more remain
+    QStringList _pendingRefs;           // not-yet-shown bibcodes
+    bool        _loadingMoreRefs = false;
 };

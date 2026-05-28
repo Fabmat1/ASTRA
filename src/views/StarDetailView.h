@@ -42,6 +42,7 @@ private:
     void tearDownGrid();
     QWidget* createButtonSidebar();
     void refreshAllThemes();
+    void     scheduleThemeRefresh();
 
     std::shared_ptr<Star>  _star;
     DatabaseManager*       _dbm = nullptr;
@@ -62,4 +63,6 @@ private:
     QPushButton* _cmdButton           = nullptr;
     QPushButton* _observabilityButton = nullptr;
     QPushButton* _calcOrbitButton     = nullptr;
+
+    bool _themeRefreshPending = false;
 };

@@ -16,8 +16,11 @@
 #include <QComboBox>
 #include <QDir>
 #include <QDoubleSpinBox>
+#include <QElapsedTimer>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
+#include <QFuture>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -32,18 +35,20 @@
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStandardPaths>
+#include <QStorageInfo>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTemporaryDir>
 #include <QTextEdit>
 #include <QTextStream>
+#include <QThread>
 #include <QTimer>
 #include <QToolButton>
 #include <QUuid>
 #include <QVBoxLayout>
-
-#include <cmath>
+#include <QtConcurrent>
 #include <algorithm>
+#include <cmath>
 
 // ═══════════════════════════════════════════════════════════════════
 // Helper: format an asymmetric value as HTML
@@ -51,12 +56,61 @@
 
 namespace {
 
-enum PhotomCol { PC_Include=0, PC_System, PC_Band, PC_Lambda, PC_Mag,
-                 PC_MagErr, PC_Residual, PC_Catalog, PC_COUNT };
+enum PhotomCol {
+    PC_Include = 0,
+    PC_System,
+    PC_Band,
+    PC_Lambda,
+    PC_Mag,
+    PC_MagErr,
+    PC_Residual,
+    PC_Catalog,
+    PC_COUNT
+};
 
-enum ParamCol  { PP_Name=0, PP_Value, PP_Freeze, PP_Min, PP_Max, PP_COUNT };
+enum ParamCol { PP_Name = 0, PP_Value, PP_Freeze, PP_Min, PP_Max, PP_COUNT };
 
-} // anon
+// Returns true if `path` is reachable within `timeoutMs`.
+// The (potentially blocking) probe runs in a worker thread so an
+// unreachable network path can never freeze the GUI thread for more
+// than `timeoutMs`.
+bool pathReachable(const QString &path, int timeoutMs = 1500) {
+    QFuture<bool> probe = QtConcurrent::run([path]() -> bool {
+        QStorageInfo info(path);
+        if (info.isValid() && info.isReady())
+            return true;
+        // Fallback for raw UNC paths that QStorageInfo doesn't resolve.
+        return QFileInfo::exists(path);
+    });
+
+    QElapsedTimer timer;
+    timer.start();
+    while (!probe.isFinished() && timer.elapsed() < timeoutMs)
+        QThread::msleep(20);
+
+    if (!probe.isFinished())
+        return false; // timed out -> treat as unreachable
+    return probe.result();
+}
+
+// Filters a list of grid base paths down to those that respond quickly.
+QStringList reachableGridPaths(const QStringList &paths) {
+    QStringList ok;
+    for (const QString &p : paths) {
+        if (p.trimmed().isEmpty())
+            continue;
+        if (pathReachable(p)) {
+            ok << p;
+        } else {
+            LOG_WARNING(
+                "SED",
+                QString("Skipping unreachable grid base path: %1").arg(p));
+        }
+    }
+    return ok;
+}
+
+} // namespace
 
 // ═══════════════════════════════════════════════════════════════════
 // Construction
@@ -307,10 +361,12 @@ QWidget* SEDFitDialog::createNewFitPanel()
     nfLay->addWidget(headerLabel);
 
     // ── Grid — Component 1 ─────────────────────────────────
-    AppSettings settings;
+    AppSettings       settings;
+    const QStringList gridPaths = reachableGridPaths(settings.gridBasePaths());
+
     _gridSelector1 = new GridSelectorWidget;
     _gridSelector1->setTitle("Model Grid — Component 1");
-    _gridSelector1->setBasePaths(settings.gridBasePaths());
+    _gridSelector1->setBasePaths(gridPaths); // <— filtered
     _gridSelector1->setShowConfigureButton(true);
     nfLay->addWidget(_gridSelector1);
 
@@ -320,7 +376,7 @@ QWidget* SEDFitDialog::createNewFitPanel()
 
     _gridSelector2 = new GridSelectorWidget;
     _gridSelector2->setTitle("Model Grid — Component 2");
-    _gridSelector2->setBasePaths(settings.gridBasePaths());
+    _gridSelector2->setBasePaths(gridPaths); // <— filtered
     _gridSelector2->setShowConfigureButton(true);
     _gridSelector2->setVisible(false);
     nfLay->addWidget(_gridSelector2);
@@ -330,13 +386,14 @@ QWidget* SEDFitDialog::createNewFitPanel()
     connect(_enableComp2Cb, &QCheckBox::toggled,
             this,           &SEDFitDialog::onComp2Toggled);
 
-    auto reconfigurePaths = [this]{
-        AppSettings s;
+    auto reconfigurePaths = [this] {
+        AppSettings    s;
         SettingsDialog dlg(&s, this);
         if (dlg.exec() == QDialog::Accepted) {
-            AppSettings fresh;
-            _gridSelector1->setBasePaths(fresh.gridBasePaths());
-            _gridSelector2->setBasePaths(fresh.gridBasePaths());
+            AppSettings       fresh;
+            const QStringList paths = reachableGridPaths(fresh.gridBasePaths());
+            _gridSelector1->setBasePaths(paths);
+            _gridSelector2->setBasePaths(paths);
         }
     };
     connect(_gridSelector1, &GridSelectorWidget::configurePathsRequested,

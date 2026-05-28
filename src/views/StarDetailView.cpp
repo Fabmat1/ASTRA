@@ -53,8 +53,6 @@ StarDetailView::StarDetailView(std::shared_ptr<Star> star,
         connect(_controller->settings(), &AppSettings::detailGridChanged,
                 this, &StarDetailView::onSettingsGridChanged);
     }
-
-    QTimer::singleShot(0, this, &StarDetailView::refreshAllThemes);
 }
 
 
@@ -161,10 +159,19 @@ void StarDetailView::buildGrid()
     });
 }
 
-void StarDetailView::onSettingsGridChanged()
-{
+void StarDetailView::scheduleThemeRefresh() {
+    if (_themeRefreshPending)
+        return;
+    _themeRefreshPending = true;
+    QTimer::singleShot(0, this, [this] {
+        _themeRefreshPending = false;
+        refreshAllThemes();
+    });
+}
+
+void StarDetailView::onSettingsGridChanged() {
     buildGrid();
-    QTimer::singleShot(0, this, &StarDetailView::refreshAllThemes);
+    scheduleThemeRefresh();
 }
 
 void StarDetailView::refreshAllThemes()
@@ -221,12 +228,10 @@ QWidget* StarDetailView::createButtonSidebar()
     return sidebar;
 }
 
-
-bool StarDetailView::event(QEvent* e)
-{
+bool StarDetailView::event(QEvent *e) {
     if (e->type() == QEvent::ApplicationPaletteChange ||
         e->type() == QEvent::StyleChange) {
-        QTimer::singleShot(0, this, &StarDetailView::refreshAllThemes);
+        scheduleThemeRefresh(); 
     }
     return QWidget::event(e);
 }

@@ -30,6 +30,8 @@ public:
     void resolve(const QStringList& bibcodes);
     void resolveViaADS(const QString& bibcode);
     BibcodeInfo lookupCache(const QString& bibcode);
+    QMap<QString, BibcodeInfo> lookupCacheBatch(const QStringList &bibcodes);
+
     bool isPending(const QString& bibcode)     const;
     bool wasAttempted(const QString& bibcode)  const;
     bool isKnownFailed(const QString& bibcode); 

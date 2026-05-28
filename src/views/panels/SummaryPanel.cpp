@@ -18,8 +18,10 @@
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMap>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSet>
 #include <QTimer>
 #include <QUrl>
@@ -239,31 +241,47 @@ SummaryPanel::SummaryPanel(const Context& ctx, QWidget* parent)
     rebuild();
 }
 
-void SummaryPanel::setupUi()
-{
-    auto* box = new QGroupBox("Summary", this);
-    auto* outer = new QVBoxLayout(this);
+void SummaryPanel::setupUi() {
+    auto *box   = new QGroupBox("Summary", this);
+    auto *outer = new QVBoxLayout(this);
     outer->setContentsMargins(0, 0, 0, 0);
     outer->addWidget(box);
 
-    auto* bl = new QVBoxLayout(box);
-    _scroll = new QScrollArea;
+    auto *bl = new QVBoxLayout(box);
+    _scroll  = new QScrollArea;
     _scroll->setWidgetResizable(true);
     _scroll->setFrameShape(QFrame::NoFrame);
     _scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     bl->addWidget(_scroll);
 
     _refResolver = new CrossRefResolver(AppPaths::database(), this);
+
+    connect(_scroll->verticalScrollBar(), &QScrollBar::valueChanged, this,
+            &SummaryPanel::onSummaryScrolled);
 }
 
-void SummaryPanel::rebuild()      { _scroll->setWidget(buildDashboard()); }
-void SummaryPanel::refresh()      { rebuild(); }
-void SummaryPanel::refreshTheme() { rebuild(); }
+void SummaryPanel::rebuild() {
+    _builtDark = PanelUtils::isDarkTheme();
+    _scroll->setWidget(buildDashboard());
+}
+void SummaryPanel::refresh() { rebuild(); }
+
+void SummaryPanel::refreshTheme() {
+    if (_builtDark == PanelUtils::isDarkTheme())
+        return; 
+    rebuild();
+}
 
 QWidget *SummaryPanel::buildDashboard() {
-    ensureCompanionMasses(); // cheap on cache hit
+    ensureCompanionMasses();
 
-    QWidget     *container = new QWidget;
+    _refCardHost     = nullptr;
+    _refSpinner      = nullptr;
+    _loadingMoreRefs = false;
+    _pendingRefs.clear();
+
+    QWidget *container = new QWidget;
+
     QVBoxLayout *layout    = new QVBoxLayout(container);
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(10);
@@ -891,80 +909,105 @@ QWidget* SummaryPanel::createDataInventorySection()
     return createSectionFrame("Data Inventory", content);
 }
 
-QWidget* SummaryPanel::createReferencesSection()
-{
-    bool dark = PanelUtils::isDarkTheme();
-    QColor accentColor = dark ? QColor(100, 130, 200) : QColor(60, 100, 180);
-    QColor cardBg      = dark ? QColor(48, 50, 56)    : QColor(250, 250, 252);
-    QColor cardBorder  = dark ? QColor(65, 68, 75)     : QColor(215, 218, 225);
-    QColor titleColor  = dark ? QColor(225, 228, 235)  : QColor(25, 25, 30);
-    QColor subtitleCol = dark ? QColor(145, 150, 160)  : QColor(100, 105, 115);
-    QColor bodyCol     = dark ? QColor(190, 195, 205)  : QColor(55, 60, 70);
-    QColor abstractBg  = dark ? QColor(42, 44, 50)     : QColor(243, 244, 248);
-    QColor linkColor   = dark ? QColor(120, 160, 230)  : QColor(40, 90, 180);
-    QColor loadingCol  = dark ? QColor(110, 115, 125)  : QColor(150, 155, 165);
+QWidget *SummaryPanel::createReferencesSection() {
+    QStringList bibcodes;
+    for (const auto &b : _ctx.star->getBibcodes())
+        bibcodes << b;
+    std::sort(bibcodes.begin(), bibcodes.end(), std::greater<QString>());
 
-    QWidget* content = new QWidget;
-    QVBoxLayout* layout = new QVBoxLayout(content);
+    QWidget     *content = new QWidget;
+    QVBoxLayout *layout  = new QVBoxLayout(content);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(6);
 
-    auto bibcodes = _ctx.star->getBibcodes();
-    std::sort(bibcodes.begin(), bibcodes.end(),
-              [](const QString& a, const QString& b) { return a > b; });
+    _refCardHost     = new QWidget;
+    auto *cardLayout = new QVBoxLayout(_refCardHost);
+    cardLayout->setContentsMargins(0, 0, 0, 0);
+    cardLayout->setSpacing(6);
+    layout->addWidget(_refCardHost);
+
+    _refSpinner = makeLoadingRow();
+    _refSpinner->setVisible(false);
+    layout->addWidget(_refSpinner);
+
+    _pendingRefs = bibcodes;
+    appendReferenceBatch(); // first kRefBatchSize cards, synchronously
+
+    return createSectionFrame("References", content);
+}
+
+void SummaryPanel::buildReferenceCards(QWidget           *host,
+                                       const QStringList &bibcodes) {
+    bool   dark        = PanelUtils::isDarkTheme();
+    QColor accentColor = dark ? QColor(100, 130, 200) : QColor(60, 100, 180);
+    QColor cardBg      = dark ? QColor(48, 50, 56) : QColor(250, 250, 252);
+    QColor cardBorder  = dark ? QColor(65, 68, 75) : QColor(215, 218, 225);
+    QColor titleColor  = dark ? QColor(225, 228, 235) : QColor(25, 25, 30);
+    QColor subtitleCol = dark ? QColor(145, 150, 160) : QColor(100, 105, 115);
+    QColor bodyCol     = dark ? QColor(190, 195, 205) : QColor(55, 60, 70);
+    QColor abstractBg  = dark ? QColor(42, 44, 50) : QColor(243, 244, 248);
+    QColor linkColor   = dark ? QColor(120, 160, 230) : QColor(40, 90, 180);
+    QColor loadingCol  = dark ? QColor(110, 115, 125) : QColor(150, 155, 165);
+
+    QVBoxLayout *layout = qobject_cast<QVBoxLayout *>(host->layout());
+    if (!layout)
+        return;
+
+    QString cardStyle =
+        QString("QFrame#refCard { background: %1; border: 1px solid %2; "
+                "border-left: 3px solid %3; border-radius: 5px; }")
+            .arg(cardBg.name(), cardBorder.name(), accentColor.name());
+
+    QString linkBtnStyle =
+        QString("QPushButton { font-size: 10px; color: %1; border: none; "
+                "background: transparent; padding: 0 4px; }"
+                "QPushButton:hover { color: %2; }")
+            .arg(linkColor.name(), titleColor.name());
+
+    // ── ONE DB read for all bibcodes instead of N. ──
+    const QMap<QString, BibcodeInfo> cache =
+        _refResolver->lookupCacheBatch(bibcodes);
 
     QStringList toResolve;
 
-    QString cardStyle = QString(
-        "QFrame#refCard { background: %1; border: 1px solid %2; "
-        "border-left: 3px solid %3; border-radius: 5px; }"
-    ).arg(cardBg.name(), cardBorder.name(), accentColor.name());
-
-    QString linkBtnStyle = QString(
-        "QPushButton { font-size: 10px; color: %1; border: none; "
-        "background: transparent; padding: 0 4px; }"
-        "QPushButton:hover { color: %2; }"
-    ).arg(linkColor.name(), titleColor.name());
-
-    for (const auto& bib : bibcodes) {
-        QString adsUrl  = QString("https://ui.adsabs.harvard.edu/abs/%1/abstract").arg(bib);
+    for (const auto &bib : bibcodes) {
+        QString adsUrl =
+            QString("https://ui.adsabs.harvard.edu/abs/%1/abstract").arg(bib);
         QString metaStr = formatBibcodeMeta(bib);
 
-        QFrame* card = new QFrame;
+        QFrame *card = new QFrame;
         card->setObjectName("refCard");
         card->setStyleSheet(cardStyle);
         card->setToolTip(bib);
 
-        QVBoxLayout* cardLayout = new QVBoxLayout(card);
+        QVBoxLayout *cardLayout = new QVBoxLayout(card);
         cardLayout->setContentsMargins(10, 8, 10, 8);
         cardLayout->setSpacing(3);
 
-        // Title — initially shows bibcode, replaced when resolved
-        QLabel* titleLabel = new QLabel(bib);
+        QLabel *titleLabel = new QLabel(bib);
         titleLabel->setTextFormat(Qt::PlainText);
         titleLabel->setWordWrap(true);
-        titleLabel->setStyleSheet(QString(
-            "font-size: 12px; font-weight: 600; color: %1; "
-            "background: transparent; border: none;"
-        ).arg(titleColor.name()));
+        titleLabel->setStyleSheet(
+            QString("font-size: 12px; font-weight: 600; color: %1; "
+                    "background: transparent; border: none;")
+                .arg(titleColor.name()));
         cardLayout->addWidget(titleLabel);
 
-        // Subtitle — authors + metadata
-        QLabel* subtitleLabel = new QLabel(metaStr);
+        QLabel *subtitleLabel = new QLabel(metaStr);
         subtitleLabel->setTextFormat(Qt::PlainText);
         subtitleLabel->setWordWrap(true);
-        subtitleLabel->setStyleSheet(QString(
-            "font-size: 10px; color: %1; background: transparent; border: none;"
-        ).arg(subtitleCol.name()));
+        subtitleLabel->setStyleSheet(
+            QString("font-size: 10px; color: %1; background: transparent; "
+                    "border: none;")
+                .arg(subtitleCol.name()));
         cardLayout->addWidget(subtitleLabel);
 
-        // Button row
-        QWidget* btnRow = new QWidget;
-        QHBoxLayout* btnLayout = new QHBoxLayout(btnRow);
+        QWidget     *btnRow    = new QWidget;
+        QHBoxLayout *btnLayout = new QHBoxLayout(btnRow);
         btnLayout->setContentsMargins(0, 2, 0, 0);
         btnLayout->setSpacing(8);
 
-        QPushButton* abstractBtn = new QPushButton("▸ Abstract");
+        QPushButton *abstractBtn = new QPushButton("\u25b8 Abstract");
         abstractBtn->setFlat(true);
         abstractBtn->setFixedHeight(20);
         abstractBtn->setCursor(Qt::PointingHandCursor);
@@ -972,128 +1015,375 @@ QWidget* SummaryPanel::createReferencesSection()
         abstractBtn->setVisible(false);
         btnLayout->addWidget(abstractBtn);
 
-        QPushButton* adsScrapeBtn = new QPushButton("↻ Fetch from NASA/ADS");
+        QPushButton *adsScrapeBtn =
+            new QPushButton("\u21bb Fetch from NASA/ADS");
         adsScrapeBtn->setFlat(true);
         adsScrapeBtn->setFixedHeight(20);
         adsScrapeBtn->setCursor(Qt::PointingHandCursor);
-        adsScrapeBtn->setToolTip("CrossRef has no record. Click to scrape the ADS page once.");
+        adsScrapeBtn->setToolTip(
+            "CrossRef has no record. Click to scrape the ADS page once.");
         adsScrapeBtn->setStyleSheet(linkBtnStyle);
         adsScrapeBtn->setVisible(false);
         btnLayout->addWidget(adsScrapeBtn);
 
         btnLayout->addStretch();
 
-        QPushButton* adsBtn = new QPushButton("Open on ADS ↗");
+        QPushButton *adsBtn = new QPushButton("Open on ADS \u2197");
         adsBtn->setFlat(true);
         adsBtn->setFixedHeight(20);
         adsBtn->setCursor(Qt::PointingHandCursor);
         adsBtn->setToolTip(adsUrl);
         adsBtn->setStyleSheet(linkBtnStyle);
-        connect(adsBtn, &QPushButton::clicked, this, [adsUrl]() {
-            QDesktopServices::openUrl(QUrl(adsUrl));
-        });
+        connect(adsBtn, &QPushButton::clicked, this,
+                [adsUrl]() { QDesktopServices::openUrl(QUrl(adsUrl)); });
         btnLayout->addWidget(adsBtn);
 
         cardLayout->addWidget(btnRow);
 
-        // Loading label
-        QLabel* loadingLabel = new QLabel("Resolving…");
+        QLabel *loadingLabel = new QLabel("Resolving\u2026");
         loadingLabel->setTextFormat(Qt::PlainText);
-        loadingLabel->setStyleSheet(QString(
-            "font-size: 10px; font-style: italic; color: %1; "
-            "background: transparent; border: none;"
-        ).arg(loadingCol.name()));
+        loadingLabel->setStyleSheet(
+            QString("font-size: 10px; font-style: italic; color: %1; "
+                    "background: transparent; border: none;")
+                .arg(loadingCol.name()));
         loadingLabel->setVisible(false);
         cardLayout->addWidget(loadingLabel);
 
-        // Abstract area (hidden until toggled)
-        QLabel* abstractLabel = new QLabel;
+        QLabel *abstractLabel = new QLabel;
         abstractLabel->setTextFormat(Qt::PlainText);
         abstractLabel->setWordWrap(true);
-        abstractLabel->setStyleSheet(QString(
-            "font-size: 11px; color: %1; background: %2; "
-            "border: none; border-radius: 3px; padding: 6px 8px;"
-        ).arg(bodyCol.name(), abstractBg.name()));
+        abstractLabel->setStyleSheet(
+            QString("font-size: 11px; color: %1; background: %2; "
+                    "border: none; border-radius: 3px; padding: 6px 8px;")
+                .arg(bodyCol.name(), abstractBg.name()));
         abstractLabel->setVisible(false);
         cardLayout->addWidget(abstractLabel);
 
         connect(abstractBtn, &QPushButton::clicked, this,
                 [abstractBtn, abstractLabel]() {
-            bool show = !abstractLabel->isVisible();
-            abstractLabel->setVisible(show);
-            abstractBtn->setText(show ? "▾ Abstract" : "▸ Abstract");
-        });
+                    bool show = !abstractLabel->isVisible();
+                    abstractLabel->setVisible(show);
+                    abstractBtn->setText(show ? "\u25be Abstract"
+                                              : "\u25b8 Abstract");
+                });
 
         layout->addWidget(card);
 
-        // Populate callback
         auto populateCard = [titleLabel, subtitleLabel, loadingLabel,
-                             abstractLabel, abstractBtn,
-                             titleColor, subtitleCol, metaStr]
-                            (const BibcodeInfo& info) {
+                             abstractLabel, abstractBtn, titleColor,
+                             subtitleCol, metaStr](const BibcodeInfo &info) {
             titleLabel->setText(info.title);
-            titleLabel->setStyleSheet(QString(
-                "font-size: 12px; font-weight: 600; color: %1; "
-                "background: transparent; border: none;"
-            ).arg(titleColor.name()));
+            titleLabel->setStyleSheet(
+                QString("font-size: 12px; font-weight: 600; color: %1; "
+                        "background: transparent; border: none;")
+                    .arg(titleColor.name()));
             titleLabel->setCursor(Qt::PointingHandCursor);
             makeCopyable(titleLabel, info.title);
 
-            QString meta;
-            if (!info.authors.isEmpty())
-                meta = info.authors + "  ·  " + metaStr;
-            else
-                meta = metaStr;
-            subtitleLabel->setText(meta);
-
+            subtitleLabel->setText(info.authors.isEmpty()
+                                       ? metaStr
+                                       : info.authors + "  \u00b7  " + metaStr);
             if (!info.abstract.isEmpty()) {
                 abstractLabel->setText(info.abstract);
                 abstractBtn->setVisible(true);
             }
-
             loadingLabel->setVisible(false);
         };
 
-        BibcodeInfo cached = _refResolver->lookupCache(bib);
-        if (!cached.title.isEmpty()) {
-            populateCard(cached);
+        auto it = cache.find(bib);
+        if (it != cache.end() && !it->title.isEmpty()) {
+            populateCard(*it);
         } else {
             loadingLabel->setVisible(true);
             toResolve << bib;
 
-            connect(_refResolver, &CrossRefResolver::resolved,
-                    card, [bib, populateCard, adsScrapeBtn]
-                        (const QString& resolvedBib, const BibcodeInfo& info) {
-                if (resolvedBib != bib) return;
-                adsScrapeBtn->setVisible(false);
-                populateCard(info);
-            });
+            connect(_refResolver, &CrossRefResolver::resolved, card,
+                    [bib, populateCard, adsScrapeBtn](
+                        const QString &resolvedBib, const BibcodeInfo &info) {
+                        if (resolvedBib != bib)
+                            return;
+                        adsScrapeBtn->setVisible(false);
+                        populateCard(info);
+                    });
 
-            connect(_refResolver, &CrossRefResolver::fetchFailed,
-                    card, [bib, loadingLabel, adsScrapeBtn]
-                        (const QString& failedBib) {
-                if (failedBib != bib) return;
-                loadingLabel->setVisible(false);
-                loadingLabel->setText("Resolving…");
-                adsScrapeBtn->setVisible(true);
-                adsScrapeBtn->setEnabled(true);
-            });
+            connect(
+                _refResolver, &CrossRefResolver::fetchFailed, card,
+                [bib, loadingLabel, adsScrapeBtn](const QString &failedBib) {
+                    if (failedBib != bib)
+                        return;
+                    loadingLabel->setVisible(false);
+                    loadingLabel->setText("Resolving\u2026");
+                    adsScrapeBtn->setVisible(true);
+                    adsScrapeBtn->setEnabled(true);
+                });
 
             connect(adsScrapeBtn, &QPushButton::clicked, this,
                     [this, bib, loadingLabel, adsScrapeBtn]() {
-                adsScrapeBtn->setEnabled(false);
-                adsScrapeBtn->setVisible(false);
-                loadingLabel->setText("Fetching from NASA/ADS…");
-                loadingLabel->setVisible(true);
-                _refResolver->resolveViaADS(bib);
-            });
+                        adsScrapeBtn->setEnabled(false);
+                        adsScrapeBtn->setVisible(false);
+                        loadingLabel->setText("Fetching from NASA/ADS\u2026");
+                        loadingLabel->setVisible(true);
+                        _refResolver->resolveViaADS(bib);
+                    });
         }
     }
 
     if (!toResolve.isEmpty())
         _refResolver->resolve(toResolve);
+}
 
-    return createSectionFrame("References", content);
+void SummaryPanel::addReferenceCards(QWidget           *host,
+                                     const QStringList &bibcodes) {
+    QVBoxLayout *layout = qobject_cast<QVBoxLayout *>(host->layout());
+    if (!layout || bibcodes.isEmpty())
+        return;
+
+    bool   dark        = PanelUtils::isDarkTheme();
+    QColor accentColor = dark ? QColor(100, 130, 200) : QColor(60, 100, 180);
+    QColor cardBg      = dark ? QColor(48, 50, 56) : QColor(250, 250, 252);
+    QColor cardBorder  = dark ? QColor(65, 68, 75) : QColor(215, 218, 225);
+    QColor titleColor  = dark ? QColor(225, 228, 235) : QColor(25, 25, 30);
+    QColor subtitleCol = dark ? QColor(145, 150, 160) : QColor(100, 105, 115);
+    QColor bodyCol     = dark ? QColor(190, 195, 205) : QColor(55, 60, 70);
+    QColor abstractBg  = dark ? QColor(42, 44, 50) : QColor(243, 244, 248);
+    QColor linkColor   = dark ? QColor(120, 160, 230) : QColor(40, 90, 180);
+    QColor loadingCol  = dark ? QColor(110, 115, 125) : QColor(150, 155, 165);
+
+    QString cardStyle =
+        QString("QFrame#refCard { background: %1; border: 1px solid %2; "
+                "border-left: 3px solid %3; border-radius: 5px; }")
+            .arg(cardBg.name(), cardBorder.name(), accentColor.name());
+
+    QString linkBtnStyle =
+        QString("QPushButton { font-size: 10px; color: %1; border: none; "
+                "background: transparent; padding: 0 4px; }"
+                "QPushButton:hover { color: %2; }")
+            .arg(linkColor.name(), titleColor.name());
+
+    // One DB read for this page.
+    const QMap<QString, BibcodeInfo> cache =
+        _refResolver->lookupCacheBatch(bibcodes);
+
+    QStringList toResolve;
+
+    for (const auto &bib : bibcodes) {
+        QString adsUrl =
+            QString("https://ui.adsabs.harvard.edu/abs/%1/abstract").arg(bib);
+        QString metaStr = formatBibcodeMeta(bib);
+
+        QFrame *card = new QFrame;
+        card->setObjectName("refCard");
+        card->setStyleSheet(cardStyle);
+        card->setToolTip(bib);
+
+        QVBoxLayout *cardLayout = new QVBoxLayout(card);
+        cardLayout->setContentsMargins(10, 8, 10, 8);
+        cardLayout->setSpacing(3);
+
+        QLabel *titleLabel = new QLabel(bib);
+        titleLabel->setTextFormat(Qt::PlainText);
+        titleLabel->setWordWrap(true);
+        titleLabel->setStyleSheet(
+            QString("font-size: 12px; font-weight: 600; color: %1; "
+                    "background: transparent; border: none;")
+                .arg(titleColor.name()));
+        cardLayout->addWidget(titleLabel);
+
+        QLabel *subtitleLabel = new QLabel(metaStr);
+        subtitleLabel->setTextFormat(Qt::PlainText);
+        subtitleLabel->setWordWrap(true);
+        subtitleLabel->setStyleSheet(
+            QString("font-size: 10px; color: %1; background: transparent; "
+                    "border: none;")
+                .arg(subtitleCol.name()));
+        cardLayout->addWidget(subtitleLabel);
+
+        QWidget     *btnRow    = new QWidget;
+        QHBoxLayout *btnLayout = new QHBoxLayout(btnRow);
+        btnLayout->setContentsMargins(0, 2, 0, 0);
+        btnLayout->setSpacing(8);
+
+        QPushButton *abstractBtn = new QPushButton("\u25b8 Abstract");
+        abstractBtn->setFlat(true);
+        abstractBtn->setFixedHeight(20);
+        abstractBtn->setCursor(Qt::PointingHandCursor);
+        abstractBtn->setStyleSheet(linkBtnStyle);
+        abstractBtn->setVisible(false);
+        btnLayout->addWidget(abstractBtn);
+
+        QPushButton *adsScrapeBtn =
+            new QPushButton("\u21bb Fetch from NASA/ADS");
+        adsScrapeBtn->setFlat(true);
+        adsScrapeBtn->setFixedHeight(20);
+        adsScrapeBtn->setCursor(Qt::PointingHandCursor);
+        adsScrapeBtn->setToolTip(
+            "CrossRef has no record. Click to scrape the ADS page once.");
+        adsScrapeBtn->setStyleSheet(linkBtnStyle);
+        adsScrapeBtn->setVisible(false);
+        btnLayout->addWidget(adsScrapeBtn);
+
+        btnLayout->addStretch();
+
+        QPushButton *adsBtn = new QPushButton("Open on ADS \u2197");
+        adsBtn->setFlat(true);
+        adsBtn->setFixedHeight(20);
+        adsBtn->setCursor(Qt::PointingHandCursor);
+        adsBtn->setToolTip(adsUrl);
+        adsBtn->setStyleSheet(linkBtnStyle);
+        connect(adsBtn, &QPushButton::clicked, this,
+                [adsUrl]() { QDesktopServices::openUrl(QUrl(adsUrl)); });
+        btnLayout->addWidget(adsBtn);
+
+        cardLayout->addWidget(btnRow);
+
+        QLabel *loadingLabel = new QLabel("Resolving\u2026");
+        loadingLabel->setTextFormat(Qt::PlainText);
+        loadingLabel->setStyleSheet(
+            QString("font-size: 10px; font-style: italic; color: %1; "
+                    "background: transparent; border: none;")
+                .arg(loadingCol.name()));
+        loadingLabel->setVisible(false);
+        cardLayout->addWidget(loadingLabel);
+
+        QLabel *abstractLabel = new QLabel;
+        abstractLabel->setTextFormat(Qt::PlainText);
+        abstractLabel->setWordWrap(true);
+        abstractLabel->setStyleSheet(
+            QString("font-size: 11px; color: %1; background: %2; "
+                    "border: none; border-radius: 3px; padding: 6px 8px;")
+                .arg(bodyCol.name(), abstractBg.name()));
+        abstractLabel->setVisible(false);
+        cardLayout->addWidget(abstractLabel);
+
+        connect(abstractBtn, &QPushButton::clicked, this,
+                [abstractBtn, abstractLabel]() {
+                    bool show = !abstractLabel->isVisible();
+                    abstractLabel->setVisible(show);
+                    abstractBtn->setText(show ? "\u25be Abstract"
+                                              : "\u25b8 Abstract");
+                });
+
+        layout->addWidget(card);
+
+        auto populateCard = [titleLabel, subtitleLabel, loadingLabel,
+                             abstractLabel, abstractBtn, titleColor,
+                             subtitleCol, metaStr](const BibcodeInfo &info) {
+            titleLabel->setText(info.title);
+            titleLabel->setStyleSheet(
+                QString("font-size: 12px; font-weight: 600; color: %1; "
+                        "background: transparent; border: none;")
+                    .arg(titleColor.name()));
+            titleLabel->setCursor(Qt::PointingHandCursor);
+            makeCopyable(titleLabel, info.title);
+
+            subtitleLabel->setText(info.authors.isEmpty()
+                                       ? metaStr
+                                       : info.authors + "  \u00b7  " + metaStr);
+            if (!info.abstract.isEmpty()) {
+                abstractLabel->setText(info.abstract);
+                abstractBtn->setVisible(true);
+            }
+            loadingLabel->setVisible(false);
+        };
+
+        auto it = cache.find(bib);
+        if (it != cache.end() && !it->title.isEmpty()) {
+            populateCard(*it);
+        } else {
+            loadingLabel->setVisible(true);
+            toResolve << bib;
+
+            connect(_refResolver, &CrossRefResolver::resolved, card,
+                    [bib, populateCard, adsScrapeBtn](
+                        const QString &resolvedBib, const BibcodeInfo &info) {
+                        if (resolvedBib != bib)
+                            return;
+                        adsScrapeBtn->setVisible(false);
+                        populateCard(info);
+                    });
+
+            connect(
+                _refResolver, &CrossRefResolver::fetchFailed, card,
+                [bib, loadingLabel, adsScrapeBtn](const QString &failedBib) {
+                    if (failedBib != bib)
+                        return;
+                    loadingLabel->setVisible(false);
+                    loadingLabel->setText("Resolving\u2026");
+                    adsScrapeBtn->setVisible(true);
+                    adsScrapeBtn->setEnabled(true);
+                });
+
+            connect(adsScrapeBtn, &QPushButton::clicked, this,
+                    [this, bib, loadingLabel, adsScrapeBtn]() {
+                        adsScrapeBtn->setEnabled(false);
+                        adsScrapeBtn->setVisible(false);
+                        loadingLabel->setText("Fetching from NASA/ADS\u2026");
+                        loadingLabel->setVisible(true);
+                        _refResolver->resolveViaADS(bib);
+                    });
+        }
+    }
+
+    if (!toResolve.isEmpty())
+        _refResolver->resolve(toResolve);
+}
+
+void SummaryPanel::appendReferenceBatch() {
+    if (!_refCardHost || _pendingRefs.isEmpty())
+        return;
+
+    QStringList batch;
+    for (int i = 0; i < kRefBatchSize && !_pendingRefs.isEmpty(); ++i)
+        batch << _pendingRefs.takeFirst();
+
+    addReferenceCards(_refCardHost, batch);
+
+    if (_refSpinner)
+        _refSpinner->setVisible(!_pendingRefs.isEmpty());
+}
+
+void SummaryPanel::onSummaryScrolled() {
+    if (!_refCardHost || _pendingRefs.isEmpty() || _loadingMoreRefs)
+        return;
+
+    QScrollBar   *sb         = _scroll->verticalScrollBar();
+    constexpr int kTriggerPx = 120; // start loading a bit early
+    if (sb->value() < sb->maximum() - kTriggerPx)
+        return;
+
+    _loadingMoreRefs = true;
+    if (_refSpinner)
+        _refSpinner->setVisible(true);
+
+    // Defer so the spinner actually paints before the (synchronous) card build.
+    QTimer::singleShot(120, this, [this]() {
+        appendReferenceBatch();
+        _loadingMoreRefs = false;
+    });
+}
+
+QWidget *SummaryPanel::makeLoadingRow() {
+    const bool dark = PanelUtils::isDarkTheme();
+
+    QWidget     *row = new QWidget;
+    QHBoxLayout *l   = new QHBoxLayout(row);
+    l->setContentsMargins(0, 4, 0, 6);
+    l->setSpacing(8);
+
+    // Indeterminate progress bar = built-in animated busy indicator.
+    QProgressBar *spin = new QProgressBar;
+    spin->setRange(0, 0);
+    spin->setFixedSize(90, 6);
+    spin->setTextVisible(false);
+    l->addWidget(spin, 0, Qt::AlignVCenter);
+
+    QLabel *lbl = new QLabel("Loading more references\u2026");
+    lbl->setStyleSheet(QString("font-size: 10px; font-style: italic; color: %1;"
+                               " background: transparent; border: none;")
+                           .arg(dark ? "#8a8f99" : "#969aa3"));
+    l->addWidget(lbl);
+    l->addStretch();
+    return row;
 }
 
 QFrame* SummaryPanel::createSectionFrame(const QString& title, QWidget* content)
