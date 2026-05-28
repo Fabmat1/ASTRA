@@ -50,7 +50,16 @@ sudo apt install build-essential cmake git wget pkg-config gfortran \
                  python3-dev python3-numpy gnuplot
 ```
 
-> **Note:** Ubuntu 22.04 ships Qt 6.2 in repos, which is too old. Either upgrade to Ubuntu 24.04+, install Qt 6.10+ via [`aqtinstall`](https://github.com/miurahr/aqtinstall), or use Qt's official online installer.
+> **Installing Qt 6.10+ on Ubuntu 22.04 / 24.04:**
+> ```bash
+> pip install aqtinstall
+> aqt install-qt linux desktop 6.11.1 linux_gcc_64 -O ~/Qt
+>
+> # Make CMake aware of it
+> export CMAKE_PREFIX_PATH=$HOME/Qt/6.11.1/gcc_64:$CMAKE_PREFIX_PATH
+> export PATH=$HOME/Qt/6.11.1/gcc_64/bin:$PATH
+> ```
+> Add the two `export` lines to your `~/.bashrc` if you want them persistent.
 
 **Arch Linux:**
 ```bash
@@ -90,6 +99,16 @@ The compiled binary will be at `build/ASTRA`. Run it directly:
 ```bash
 ./build/ASTRA
 ```
+
+#### 4. (Optional) System-wide Install
+
+To install ASTRA system-wide — which also registers desktop files so it appears in your application menu:
+
+```bash
+sudo cmake --install build --prefix /usr/local
+```
+
+After install, launch it from your application menu or run `ASTRA` from any terminal.
 
 ## License
 
