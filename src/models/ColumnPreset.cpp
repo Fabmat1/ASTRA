@@ -49,116 +49,117 @@ ColumnPresetManager::ColumnPresetManager()
 // ─────────────────────────────────────────────────────────────────────────────
 // All columns the application knows about
 // ─────────────────────────────────────────────────────────────────────────────
-void ColumnPresetManager::buildColumnRegistry()
-{
-    // The order here defines the order inside each category group in the dialog.
-    //                       key                 display              category         bool?
+void ColumnPresetManager::buildColumnRegistry() {
     _allColumns = {
         // ── Identification ──────────────────────────────────────────────────
-        { "alias",           "Alias",             "Identification",    false },
-        { "source_id",       "Source ID",         "Identification",    false },
-        { "tic",             "TIC",               "Identification",    false },
-        { "jname",           "J-Name",            "Identification",    false },
+        {"alias", "Alias", "Identification", false},
+        {"source_id", "Source ID", "Identification", false},
+        {"tic", "TIC", "Identification", false},
+        {"jname", "J-Name", "Identification", false},
 
         // ── Astrometry ──────────────────────────────────────────────────────
-        { "ra",              "RA",                "Astrometry",        false },
-        { "dec",             "Dec",               "Astrometry",        false },
-        { "plx",             "Parallax",          "Astrometry",        false },
-        { "e_plx",           "e_Parallax",        "Astrometry",        false },
-        { "pmra",            "PM RA",             "Astrometry",        false },
-        { "pmdec",           "PM Dec",            "Astrometry",        false },
-        { "e_pmra",          "e_PM RA",           "Astrometry",        false },
-        { "e_pmdec",         "e_PM Dec",          "Astrometry",        false },
+        {"ra", "RA", "Astrometry", false},
+        {"dec", "Dec", "Astrometry", false},
+        {"plx", "Parallax", "Astrometry", false},
+        {"e_plx", "e_Parallax", "Astrometry", false},
+        {"pmra", "PM RA", "Astrometry", false},
+        {"pmdec", "PM Dec", "Astrometry", false},
+        {"e_pmra", "e_PM RA", "Astrometry", false},
+        {"e_pmdec", "e_PM Dec", "Astrometry", false},
+        {"pmra_pmdec_corr", "ρ(μα, μδ)", "Astrometry", false},
+        {"plx_pmra_corr", "ρ(ϖ, μα)", "Astrometry", false},
+        {"plx_pmdec_corr", "ρ(ϖ, μδ)", "Astrometry", false},
 
         // ── Gaia Photometry ─────────────────────────────────────────────────
-        { "gmag",            "G mag",             "Gaia Photometry",   false },
-        { "e_gmag",          "e_G mag",           "Gaia Photometry",   false },
-        { "bp",              "BP",                "Gaia Photometry",   false },
-        { "e_bp",            "e_BP",              "Gaia Photometry",   false },
-        { "rp",              "RP",                "Gaia Photometry",   false },
-        { "e_rp",            "e_RP",              "Gaia Photometry",   false },
-        { "bp_rp",           "BP–RP",             "Gaia Photometry",   false },
+        {"gmag", "G mag", "Gaia Photometry", false},
+        {"e_gmag", "e_G mag", "Gaia Photometry", false},
+        {"bp", "BP", "Gaia Photometry", false},
+        {"e_bp", "e_BP", "Gaia Photometry", false},
+        {"rp", "RP", "Gaia Photometry", false},
+        {"e_rp", "e_RP", "Gaia Photometry", false},
+        {"bp_rp", "BP–RP", "Gaia Photometry", false},
 
         // ── Atmospheric / Spectroscopy ──────────────────────────────────────
-        { "spec_class",      "Spec. Class",       "Atmospheric",       false },
-        { "teff",            "Teff",              "Atmospheric",       false },
-        { "e_teff",          "e_Teff",            "Atmospheric",       false },
-        { "logg",            "log g",             "Atmospheric",       false },
-        { "e_logg",          "e_log g",           "Atmospheric",       false },
-        { "he",              "He",                "Atmospheric",       false },
-        { "e_he",            "e_He",              "Atmospheric",       false },
-        { "n_spectra",       "N Spectra",         "Atmospheric",       false },
-        { "n_fit_spectra",   "N Fit Spectra",     "Atmospheric",       false },
+        {"spec_class", "Spec. Class", "Atmospheric", false},
+        {"teff", "Teff", "Atmospheric", false},
+        {"e_teff", "e_Teff", "Atmospheric", false},
+        {"logg", "log g", "Atmospheric", false},
+        {"e_logg", "e_log g", "Atmospheric", false},
+        {"he", "He", "Atmospheric", false},
+        {"e_he", "e_He", "Atmospheric", false},
+        {"n_spectra", "N Spectra", "Atmospheric", false},
+        {"n_fit_spectra", "N Fit Spectra", "Atmospheric", false},
 
         // ── Radial Velocity ─────────────────────────────────────────────────
-        { "logp",            "log p",             "Radial Velocity",   false },
-        { "delta_rv",        "ΔRV max",           "Radial Velocity",   false },
-        { "e_delta_rv",      "e_ΔRV max",         "Radial Velocity",   false },
-        { "rv_avg",          "RV avg",            "Radial Velocity",   false },
-        { "e_rv_avg",        "e_RV avg",          "Radial Velocity",   false },
-        { "rv_med",          "RV med",            "Radial Velocity",   false },
-        { "e_rv_med",        "e_RV med",          "Radial Velocity",   false },
-        { "rv_timespan",     "Timespan [d]",      "Radial Velocity",   false },
-        { "rv_npoints",      "N Datapoints",      "Radial Velocity",   false },
-        { "rv_k",            "K [km/s]",          "Radial Velocity",   false },
-        { "rv_e_k",          "e_K",               "Radial Velocity",   false },
-        { "rv_period",       "Period [d]",        "Radial Velocity",   false },
-        { "rv_e_period",     "e_Period",          "Radial Velocity",   false },
-        { "rv_gamma",        "γ [km/s]",          "Radial Velocity",   false },
-        { "rv_e_gamma",      "e_γ",               "Radial Velocity",   false },
-        { "rv_ecc",          "Eccentricity",      "Radial Velocity",   false },
-        { "rv_phi",          "φ",                 "Radial Velocity",   false },
-        { "rv_t0",           "T₀",                "Radial Velocity",   false },
-        { "rv_chi2",         "RV χ²",             "Radial Velocity",   false },
-        { "rv_rms",          "RV rms",            "Radial Velocity",   false },
+        {"logp", "log p", "Radial Velocity", false},
+        {"delta_rv", "ΔRV max", "Radial Velocity", false},
+        {"e_delta_rv", "e_ΔRV max", "Radial Velocity", false},
+        {"rv_avg", "RV avg", "Radial Velocity", false},
+        {"e_rv_avg", "e_RV avg", "Radial Velocity", false},
+        {"rv_med", "RV med", "Radial Velocity", false},
+        {"e_rv_med", "e_RV med", "Radial Velocity", false},
+        {"rv_timespan", "Timespan [d]", "Radial Velocity", false},
+        {"rv_npoints", "N Datapoints", "Radial Velocity", false},
+        {"rv_k", "K [km/s]", "Radial Velocity", false},
+        {"rv_e_k", "e_K", "Radial Velocity", false},
+        {"rv_period", "Period [d]", "Radial Velocity", false},
+        {"rv_e_period", "e_Period", "Radial Velocity", false},
+        {"rv_gamma", "γ [km/s]", "Radial Velocity", false},
+        {"rv_e_gamma", "e_γ", "Radial Velocity", false},
+        {"rv_ecc", "Eccentricity", "Radial Velocity", false},
+        {"rv_phi", "φ", "Radial Velocity", false},
+        {"rv_t0", "T₀", "Radial Velocity", false},
+        {"rv_chi2", "RV χ²", "Radial Velocity", false},
+        {"rv_rms", "RV rms", "Radial Velocity", false},
 
         // ── SED ─────────────────────────────────────────────────────────────
-        { "sed_mass1",       "Mass₁ [M☉]",        "SED",              false },
-        { "sed_e_mass1",     "e_Mass₁",           "SED",              false },
-        { "sed_radius1",     "Radius₁ [R☉]",      "SED",              false },
-        { "sed_e_radius1",   "e_Radius₁",         "SED",              false },
-        { "sed_lum1",        "L₁ [L☉]",           "SED",              false },
-        { "sed_e_lum1",      "e_L₁",              "SED",              false },
-        { "sed_mass2",       "Mass₂ [M☉]",        "SED",              false },
-        { "sed_e_mass2",     "e_Mass₂",           "SED",              false },
-        { "sed_radius2",     "Radius₂ [R☉]",      "SED",              false },
-        { "sed_e_radius2",   "e_Radius₂",         "SED",              false },
-        { "sed_lum2",        "L₂ [L☉]",           "SED",              false },
-        { "sed_e_lum2",      "e_L₂",              "SED",              false },
+        {"sed_mass1", "Mass₁ [M☉]", "SED", false},
+        {"sed_e_mass1", "e_Mass₁", "SED", false},
+        {"sed_radius1", "Radius₁ [R☉]", "SED", false},
+        {"sed_e_radius1", "e_Radius₁", "SED", false},
+        {"sed_lum1", "L₁ [L☉]", "SED", false},
+        {"sed_e_lum1", "e_L₁", "SED", false},
+        {"sed_mass2", "Mass₂ [M☉]", "SED", false},
+        {"sed_e_mass2", "e_Mass₂", "SED", false},
+        {"sed_radius2", "Radius₂ [R☉]", "SED", false},
+        {"sed_e_radius2", "e_Radius₂", "SED", false},
+        {"sed_lum2", "L₂ [L☉]", "SED", false},
+        {"sed_e_lum2", "e_L₂", "SED", false},
+
+        // ── Companion Mass (derived) ────────────────────────────────────────
+        {"comp_mass_min", "M₂ sin i [M☉]", "Companion Mass", false},
+        {"e_comp_mass_min", "e_M₂ sin i", "Companion Mass", false},
+        {"comp_mass_true", "M₂ [M☉]", "Companion Mass", false},
+        {"e_comp_mass_true", "e_M₂", "Companion Mass", false},
 
         // ── Photometric LC ──────────────────────────────────────────────────
-        { "phot_period",     "Phot. Period [d]",  "Light Curve",       false },
-        { "phot_e_period",   "e_Phot. Period",    "Light Curve",       false },
-        { "phot_incl",       "Inclination [°]",   "Light Curve",       false },
-        { "phot_e_incl",     "e_Inclination",     "Light Curve",       false },
-        { "phot_q",          "Mass Ratio q",      "Light Curve",       false },
-        { "phot_e_q",        "e_q",               "Light Curve",       false },
-        { "has_tess",        "TESS",              "Dataset Availability", true },
-        { "has_gaia",        "Gaia",              "Dataset Availability", true },
-        { "has_ztf",         "ZTF",               "Dataset Availability", true },
-        { "has_atlas",       "ATLAS",             "Dataset Availability", true },
-        { "has_blackgem",    "BlackGEM",          "Dataset Availability", true },
+        {"phot_period", "Phot. Period [d]", "Light Curve", false},
+        {"phot_e_period", "e_Phot. Period", "Light Curve", false},
+        {"phot_incl", "Inclination [°]", "Light Curve", false},
+        {"phot_e_incl", "e_Inclination", "Light Curve", false},
+        {"phot_q", "Mass Ratio q", "Light Curve", false},
+        {"phot_e_q", "e_q", "Light Curve", false},
+        {"tess_crowdsap", "TESS CROWDSAP", "Light Curve", false},
+        {"has_tess", "TESS", "Dataset Availability", true},
+        {"has_gaia", "Gaia", "Dataset Availability", true},
+        {"has_ztf", "ZTF", "Dataset Availability", true},
+        {"has_atlas", "ATLAS", "Dataset Availability", true},
+        {"has_blackgem", "BlackGEM", "Dataset Availability", true},
     };
 
-    // Build fast-lookup index
     _columnIndex.clear();
-    for (const auto& c : _allColumns)
+    for (const auto &c : _allColumns)
         _columnIndex[c.key] = c;
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Built-in presets – all start with alias, source_id, gmag
-// ─────────────────────────────────────────────────────────────────────────────
-void ColumnPresetManager::buildBuiltInPresets()
-{
-    const std::vector<QString> common = { "alias", "source_id", "gmag" };
+void ColumnPresetManager::buildBuiltInPresets() {
+    const std::vector<QString> common = {"alias", "source_id", "gmag"};
 
-    auto makePreset = [&](const QString& id, const QString& name,
-                          const std::vector<QString>& extra) -> ColumnPreset
-    {
+    auto makePreset = [&](const QString &id, const QString &name,
+                          const std::vector<QString> &extra) -> ColumnPreset {
         ColumnPreset p;
-        p.id   = id;
-        p.name = name;
+        p.id         = id;
+        p.name       = name;
         p.columnKeys = common;
         p.columnKeys.insert(p.columnKeys.end(), extra.begin(), extra.end());
         p.isBuiltIn = true;
@@ -167,41 +168,57 @@ void ColumnPresetManager::buildBuiltInPresets()
 
     _builtInPresets.clear();
 
-    // 1. Radial Velocity
+    // 0. Default — sensible factory default (a bit of everything)
     _builtInPresets.push_back(makePreset(
-        "preset_rv", "Radial Velocity",
-        { "logp", "delta_rv", "rv_med", "e_rv_med",
-          "rv_timespan", "rv_npoints",
-          "rv_k", "rv_e_k", "rv_period", "rv_e_period",
-          "rv_gamma", "rv_e_gamma", "rv_ecc", "rv_phi", "rv_t0",
-          "rv_chi2", "rv_rms" }
-    ));
+        "preset_default", "Default",
+        {"ra", "dec", "plx", "teff", "logg", "spec_class", "logp", "delta_rv",
+         "rv_period", "rv_k", "sed_mass1", "comp_mass_min", "comp_mass_true",
+         "n_spectra", "has_tess", "has_gaia"}));
+
+    // 1. Radial Velocity
+    _builtInPresets.push_back(makePreset("preset_rv", "Radial Velocity",
+                                         {"logp",
+                                          "delta_rv",
+                                          "rv_med",
+                                          "e_rv_med",
+                                          "rv_timespan",
+                                          "rv_npoints",
+                                          "rv_k",
+                                          "rv_e_k",
+                                          "rv_period",
+                                          "rv_e_period",
+                                          "rv_gamma",
+                                          "rv_e_gamma",
+                                          "rv_ecc",
+                                          "rv_phi",
+                                          "rv_t0",
+                                          "rv_chi2",
+                                          "rv_rms",
+                                          "comp_mass_min",
+                                          "e_comp_mass_min",
+                                          "comp_mass_true",
+                                          "e_comp_mass_true"}));
 
     // 2. Atmospheric
-    _builtInPresets.push_back(makePreset(
-        "preset_atm", "Atmospheric",
-        { "teff", "e_teff", "logg", "e_logg",
-          "he", "e_he", "spec_class",
-          "n_spectra", "n_fit_spectra" }
-    ));
+    _builtInPresets.push_back(
+        makePreset("preset_atm", "Atmospheric",
+                   {"teff", "e_teff", "logg", "e_logg", "he", "e_he",
+                    "spec_class", "n_spectra", "n_fit_spectra"}));
 
     // 3. SED
-    _builtInPresets.push_back(makePreset(
-        "preset_sed", "SED",
-        { "sed_mass1", "sed_e_mass1", "sed_radius1", "sed_e_radius1",
-          "sed_lum1", "sed_e_lum1",
-          "sed_mass2", "sed_e_mass2", "sed_radius2", "sed_e_radius2",
-          "sed_lum2", "sed_e_lum2" }
-    ));
+    _builtInPresets.push_back(
+        makePreset("preset_sed", "SED",
+                   {"sed_mass1", "sed_e_mass1", "sed_radius1", "sed_e_radius1",
+                    "sed_lum1", "sed_e_lum1", "sed_mass2", "sed_e_mass2",
+                    "sed_radius2", "sed_e_radius2", "sed_lum2", "sed_e_lum2",
+                    "comp_mass_min", "comp_mass_true"}));
 
     // 4. Photometric
-    _builtInPresets.push_back(makePreset(
-        "preset_phot", "Photometric",
-        { "phot_period", "phot_e_period",
-          "phot_incl", "phot_e_incl",
-          "phot_q", "phot_e_q",
-          "has_tess", "has_gaia", "has_ztf", "has_atlas", "has_blackgem" }
-    ));
+    _builtInPresets.push_back(
+        makePreset("preset_phot", "Photometric",
+                   {"phot_period", "phot_e_period", "phot_incl", "phot_e_incl",
+                    "phot_q", "phot_e_q", "tess_crowdsap", "has_tess",
+                    "has_gaia", "has_ztf", "has_atlas", "has_blackgem"}));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -334,10 +351,11 @@ void ColumnPresetManager::renameCustomPreset(const QString& id, const QString& n
     }
 }
 
-std::vector<QString> ColumnPresetManager::defaultColumns() const
-{
-    // Radial Velocity preset as default
+std::vector<QString> ColumnPresetManager::defaultColumns() const {
+    for (const auto &p : _builtInPresets)
+        if (p.id == "preset_default")
+            return p.columnKeys;
     if (!_builtInPresets.empty())
         return _builtInPresets[0].columnKeys;
-    return { "alias", "source_id", "gmag" };
+    return {"alias", "source_id", "gmag"};
 }

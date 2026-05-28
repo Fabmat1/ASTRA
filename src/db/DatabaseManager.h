@@ -116,7 +116,7 @@ public:
                       const QString &filter, const QString &fitId);
 
   private:
-    void backfillSpectrumInstrumentIds();
+    //void backfillSpectrumInstrumentIds();
     bool createTables();
     bool createIndexes();
     bool runMigrations();

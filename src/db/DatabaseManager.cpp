@@ -89,7 +89,7 @@ bool DatabaseManager::openDatabase(const QString& path)
     }
 
     _instruments->initializeInstruments();
-    backfillSpectrumInstrumentIds();
+    //backfillSpectrumInstrumentIds();
 
     return true;
 }
@@ -202,6 +202,10 @@ bool DatabaseManager::createTables()
             has_atlas INTEGER DEFAULT 0,
             has_blackgem INTEGER DEFAULT 0,
             tess_crowdsap REAL,
+            comp_mass_min REAL,
+            comp_e_mass_min REAL,
+            comp_mass_true REAL,
+            comp_e_mass_true REAL,
             phot_peaks_json TEXT,
             FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
         )
@@ -593,6 +597,11 @@ bool DatabaseManager::runMigrations()
 
         "ALTER TABLE lc_fits ADD COLUMN filter TEXT DEFAULT ''",
         "ALTER TABLE lc_fits ADD COLUMN wavelength_nm REAL DEFAULT 0",
+
+        "ALTER TABLE stars ADD COLUMN comp_mass_min REAL",
+        "ALTER TABLE stars ADD COLUMN comp_e_mass_min REAL",
+        "ALTER TABLE stars ADD COLUMN comp_mass_true REAL",
+        "ALTER TABLE stars ADD COLUMN comp_e_mass_true REAL",
     };
 
     for (const QString& sql : alterQueries) {
@@ -952,7 +961,7 @@ bool DatabaseManager::saveStar(const QString& projectId, std::shared_ptr<Star> s
     return true;
 }
 
-void DatabaseManager::backfillSpectrumInstrumentIds()
+/* void DatabaseManager::backfillSpectrumInstrumentIds()
 {
     QSqlQuery q(_db->threadConnection());
     if (!q.exec("SELECT id, instrument FROM spectra "
@@ -1027,7 +1036,7 @@ void DatabaseManager::backfillSpectrumInstrumentIds()
 
     LOG_INFO("DB", QString("Instrument backfill: %1 resolved, %2 unresolved (of %3 legacy rows)")
         .arg(resolved).arg(missed).arg(int(rows.size())));
-}
+} */
 
 bool DatabaseManager::saveStars(const QString& projectId, const std::vector<std::shared_ptr<Star>>& stars)
 {

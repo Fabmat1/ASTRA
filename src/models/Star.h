@@ -171,6 +171,16 @@ public:
     double getSedELum2() const       { return _sedELum2; }
     void   setSedELum2(double v)     { _sedELum2 = v; }
 
+    // ── Companion mass ──────────────────────────────────────────────────────
+    double getCompMassMin() const { return _compMassMin; }
+    void   setCompMassMin(double v) { _compMassMin = v; }
+    double getECompMassMin() const { return _eCompMassMin; }
+    void   setECompMassMin(double v) { _eCompMassMin = v; }
+    double getCompMassTrue() const { return _compMassTrue; }
+    void   setCompMassTrue(double v) { _compMassTrue = v; }
+    double getECompMassTrue() const { return _eCompMassTrue; }
+    void   setECompMassTrue(double v) { _eCompMassTrue = v; }
+
     // ── Photometric light-curve parameters ──────────────────────────────────
     double getPhotPeriod() const     { return _photPeriod; }
     void   setPhotPeriod(double v)   { _photPeriod = v; }
@@ -378,6 +388,12 @@ private:
     double _sedERadius2 = std::numeric_limits<double>::quiet_NaN();
     double _sedLum2     = std::numeric_limits<double>::quiet_NaN();
     double _sedELum2    = std::numeric_limits<double>::quiet_NaN();
+
+    // Companion mass
+    double _compMassMin   = std::numeric_limits<double>::quiet_NaN();
+    double _eCompMassMin  = std::numeric_limits<double>::quiet_NaN();
+    double _compMassTrue  = std::numeric_limits<double>::quiet_NaN();
+    double _eCompMassTrue = std::numeric_limits<double>::quiet_NaN();
 
     // Photometric light-curve
     double _photPeriod  = std::numeric_limits<double>::quiet_NaN();

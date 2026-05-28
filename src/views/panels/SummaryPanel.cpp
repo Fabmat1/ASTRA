@@ -8,27 +8,34 @@
 #include "utils/CrossRefResolver.h"
 #include "utils/AppPaths.h"
 
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QGridLayout>
-#include <QGroupBox>
-#include <QScrollArea>
-#include <QLabel>
-#include <QFrame>
-#include <QPushButton>
 #include <QApplication>
 #include <QClipboard>
 #include <QCursor>
-#include <QTimer>
 #include <QDesktopServices>
-#include <QUrl>
-#include <QSet>
+#include <QFrame>
+#include <QGridLayout>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QLabel>
 #include <QMap>
+#include <QPushButton>
+#include <QScrollArea>
+#include <QSet>
+#include <QTimer>
+#include <QUrl>
+#include <QVBoxLayout>
 
 #include <algorithm>
 #include <cmath>
+#include <random>
 
 namespace {
+
+struct PropRow {
+    QString label;
+    QString value;
+    QString copyValue;
+};
 
 class CopyEventFilter : public QObject
 {
@@ -106,6 +113,122 @@ QString formatBibcodeMeta(const QString& bib)
     }
     return parts.join(", ");
 }
+struct ValDisp {
+    QString display;
+    QString copy;
+};
+inline ValDisp fmtValErr(double v, double err, int prec,
+                         const QString &unit = "") {
+    QString num = QString::number(v, 'f', prec);
+    QString s   = num;
+    if (std::isfinite(err) && err > 0.0)
+        s += QString(" ± %1").arg(err, 0, 'f', prec);
+    if (!unit.isEmpty())
+        s += " " + unit;
+    return {s, num};
+}
+
+// Mass function (M_sun) with K [km/s], P [days]
+inline double massFunctionMsun(double K_kms, double P_days, double e) {
+    constexpr double C  = 1.0361e-7;
+    const double     ef = std::max(0.0, 1.0 - e * e);
+    return C * std::pow(K_kms, 3) * P_days * std::pow(ef, 1.5);
+}
+
+// Solve  M2³·sin³i = f·(M1+M2)²
+double solveCompanionMass(double f, double M1, double sini) {
+    if (!std::isfinite(f) || f <= 0.0 || !std::isfinite(M1) || M1 <= 0.0 ||
+        !std::isfinite(sini) || sini <= 0.0)
+        return std::numeric_limits<double>::quiet_NaN();
+
+    const double s3 = sini * sini * sini;
+    double       M2 = std::cbrt(f * M1 * M1) / sini;
+    if (M2 <= 0.0)
+        M2 = 0.1;
+
+    for (int i = 0; i < 80; ++i) {
+        const double sum = M1 + M2;
+        const double g   = M2 * M2 * M2 * s3 - f * sum * sum;
+        const double gp  = 3.0 * M2 * M2 * s3 - 2.0 * f * sum;
+        if (std::abs(gp) < 1e-30)
+            break;
+        const double dM = g / gp;
+        M2 -= dM;
+        if (M2 <= 0.0)
+            M2 = 1e-6;
+        if (std::abs(dM) < 1e-12)
+            break;
+    }
+    return M2;
+}
+
+inline double m2Of(double P, double K, double M1, double e, double sini) {
+    return solveCompanionMass(massFunctionMsun(K, P, e), M1, sini);
+}
+
+// Linearised error propagation via central differences.
+// Roughly 10 solver calls — microseconds vs. milliseconds for the MC.
+double propagateM2Error(double P, double eP, double K, double eK, double M1,
+                        double eM1, double e, double ee, double sini,
+                        double esini) {
+    double var = 0.0;
+    auto   add = [&](double v, double err, auto &&eval) {
+        if (!std::isfinite(err) || err <= 0.0)
+            return;
+        const double h  = std::max(1e-7, 1e-4 * std::abs(v));
+        const double up = eval(v + h);
+        const double dn = eval(v - h);
+        if (!std::isfinite(up) || !std::isfinite(dn))
+            return;
+        const double d = (up - dn) / (2.0 * h);
+        var += d * d * err * err;
+    };
+    add(P, eP, [&](double x) { return m2Of(x, K, M1, e, sini); });
+    add(K, eK, [&](double x) { return m2Of(P, x, M1, e, sini); });
+    add(M1, eM1, [&](double x) { return m2Of(P, K, x, e, sini); });
+    add(e, ee, [&](double x) { return m2Of(P, K, M1, x, sini); });
+    add(sini, esini, [&](double x) { return m2Of(P, K, M1, e, x); });
+    return std::sqrt(var);
+}
+
+QWidget *buildPropertyGrid(const std::vector<PropRow> &rows,
+                           const QColor &valCol, const QColor &labelCol) {
+    QWidget     *grid = new QWidget;
+    QGridLayout *gl   = new QGridLayout(grid);
+    gl->setContentsMargins(0, 0, 0, 0);
+    gl->setHorizontalSpacing(16);
+    gl->setVerticalSpacing(4);
+    if (rows.empty())
+        return grid;
+
+    int maxPerCol = static_cast<int>((rows.size() + 1) / 2);
+    for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
+        int     col = (i < maxPerCol) ? 0 : 2;
+        int     row = (i < maxPerCol) ? i : i - maxPerCol;
+        QString copyText =
+            rows[i].copyValue.isEmpty() ? rows[i].value : rows[i].copyValue;
+
+        QLabel *lbl = new QLabel(rows[i].label);
+        lbl->setStyleSheet(
+            QString("font-size: 11px; font-weight: 600; color: %1; "
+                    "background: transparent; border: none;")
+                .arg(labelCol.name()));
+        makeCopyable(lbl, copyText);
+
+        QLabel *val = new QLabel(rows[i].value);
+        val->setStyleSheet(QString("font-size: 12px; color: %1; background: "
+                                   "transparent; border: none;")
+                               .arg(valCol.name()));
+        makeCopyable(val, copyText);
+
+        gl->addWidget(lbl, row, col);
+        gl->addWidget(val, row, col + 1);
+    }
+    gl->setColumnStretch(1, 1);
+    if (rows.size() > static_cast<size_t>(maxPerCol))
+        gl->setColumnStretch(3, 1);
+    return grid;
+}
 
 } // anonymous namespace
 
@@ -137,10 +260,11 @@ void SummaryPanel::rebuild()      { _scroll->setWidget(buildDashboard()); }
 void SummaryPanel::refresh()      { rebuild(); }
 void SummaryPanel::refreshTheme() { rebuild(); }
 
-QWidget* SummaryPanel::buildDashboard()
-{
-    QWidget* container = new QWidget;
-    QVBoxLayout* layout = new QVBoxLayout(container);
+QWidget *SummaryPanel::buildDashboard() {
+    ensureCompanionMasses(); // cheap on cache hit
+
+    QWidget     *container = new QWidget;
+    QVBoxLayout *layout    = new QVBoxLayout(container);
     layout->setContentsMargins(8, 8, 8, 8);
     layout->setSpacing(10);
 
@@ -148,17 +272,17 @@ QWidget* SummaryPanel::buildDashboard()
     layout->addWidget(createMetricCardsRow());
     layout->addWidget(createPropertiesSection());
 
-    // Orbital fit — only if we have one
-    auto rvCurve = _ctx.star->getRVCurve();
-    std::shared_ptr<RVFit> bestFit;
-    if (rvCurve) bestFit = rvCurve->getBestFit();
+    auto                   rvCurve = _ctx.star->getRVCurve();
+    std::shared_ptr<RVFit> bestFit = rvCurve ? rvCurve->getBestFit() : nullptr;
     if (bestFit && bestFit->getPeriod() > 0)
         layout->addWidget(createOrbitalFitSection());
 
+    if (QWidget *comp = createCompanionSection())
+        layout->addWidget(comp);
+
     layout->addWidget(createDataInventorySection());
 
-    auto bibcodes = _ctx.star->getBibcodes();
-    if (!bibcodes.empty())
+    if (!_ctx.star->getBibcodes().empty())
         layout->addWidget(createReferencesSection());
 
     layout->addStretch();
@@ -230,108 +354,72 @@ QWidget* SummaryPanel::createNameHeader()
     return header;
 }
 
-QWidget* SummaryPanel::createMetricCardsRow()
-{
-    QWidget* row = new QWidget;
-    QHBoxLayout* layout = new QHBoxLayout(row);
+QWidget *SummaryPanel::createMetricCardsRow() {
+    QWidget     *row    = new QWidget;
+    QHBoxLayout *layout = new QHBoxLayout(row);
     layout->setContentsMargins(0, 0, 0, 0);
     layout->setSpacing(8);
 
-    auto has = [](double v) { return !std::isnan(v) && v != 0.0; };
+    auto has = [](double v) { return std::isfinite(v) && v != 0.0; };
+
+    Star        &S    = *_ctx.star;
+    const bool   dark = PanelUtils::isDarkTheme();
+    const QColor inactive =
+        dark ? QColor(100, 100, 100) : QColor(180, 180, 180);
 
     // ── log(p)
     {
-        double logP = 0.0;
-        int nSpectra = 0;
-        QString subtitle;
-
-        auto rvCurve = _ctx.star->getRVCurve();
-        if (rvCurve && rvCurve->getNumPoints() >= 2) {
-            logP = rvCurve->getLogP();
-            nSpectra = static_cast<int>(rvCurve->getNumPoints());
-            subtitle = QString("from %1 points").arg(nSpectra);
-        } else if (has(_ctx.star->getLogP())) {
-            logP = _ctx.star->getLogP();
-            auto spectra = _ctx.star->getSpectra();
-            nSpectra = static_cast<int>(spectra.size());
-            if (nSpectra > 0)
-                subtitle = QString("from %1 spectra").arg(nSpectra);
-        }
+        const double logP    = S.getLogP();
+        const int    nPoints = S.getRVNPoints();
+        const int    nSpec   = S.getNSpectra();
+        QString      subtitle;
+        if (nPoints > 0)
+            subtitle = QString("from %1 points").arg(nPoints);
+        else if (nSpec > 0)
+            subtitle = QString("from %1 spectra").arg(nSpec);
 
         QString value = has(logP) ? QString::number(logP, 'f', 2) : "—";
-        QColor accent = logPColor(logP);
-        layout->addWidget(createMetricCard(value, "log(p)", subtitle, accent));
+        layout->addWidget(
+            createMetricCard(value, "log(p)", subtitle, logPColor(logP)));
     }
 
     // ── ΔRV_max
     {
-        double drv = 0.0;
-        QString subtitle;
-
-        auto rvCurve = _ctx.star->getRVCurve();
-        if (rvCurve && rvCurve->getNumPoints() >= 2) {
-            drv = rvCurve->getRVAmplitude();
-        } else if (has(_ctx.star->getDeltaRV())) {
-            drv = _ctx.star->getDeltaRV();
-        }
-
-        QString value;
+        const double drv   = S.getDeltaRV();
+        const double edrv  = S.getEDeltaRV();
+        QString      value = has(drv) ? QString::number(drv, 'f', 1) : "—";
+        QString      subtitle;
         if (has(drv)) {
-            value = QString::number(drv, 'f', 1);
-            subtitle = "km/s";
-            if (has(_ctx.star->getEDeltaRV()))
-                subtitle = QString("± %1 km/s").arg(_ctx.star->getEDeltaRV(), 0, 'f', 1);
-        } else {
-            value = "—";
+            subtitle = has(edrv) ? QString("± %1 km/s").arg(edrv, 0, 'f', 1)
+                                 : QString("km/s");
         }
-
-        QColor accent = deltaRVColor(drv);
-        layout->addWidget(createMetricCard(value, "ΔRV_max", subtitle, accent));
+        layout->addWidget(
+            createMetricCard(value, "ΔRV_max", subtitle, deltaRVColor(drv)));
     }
 
-    // ── N spectra
+    // ── N spectra (cached; no lazy load)
     {
-        auto spectra = _ctx.star->getSpectra();
-        int n = static_cast<int>(spectra.size());
+        const int n = S.getNSpectra();
+        QString   subtitle;
+        if (S.getNFitSpectra() > 0)
+            subtitle = QString("%1 fitted").arg(S.getNFitSpectra());
 
-        // Count instruments
-        QSet<QString> instruments;
-        for (auto& sp : spectra)
-            if (!sp->getInstrument().isEmpty())
-                instruments.insert(sp->getInstrument());
-
-        QString subtitle;
-        if (instruments.size() == 1)
-            subtitle = *instruments.begin();
-        else if (instruments.size() > 1)
-            subtitle = QString("%1 instruments").arg(instruments.size());
-
-        bool dark = PanelUtils::isDarkTheme();
-        QColor accent = (n > 0) ? QColor(86, 156, 214) :
-                         (dark ? QColor(100, 100, 100) : QColor(180, 180, 180));
-
-        layout->addWidget(createMetricCard(
-            QString::number(n), "Spectra", subtitle, accent));
+        QColor accent = (n > 0) ? QColor(86, 156, 214) : inactive;
+        layout->addWidget(
+            createMetricCard(QString::number(n), "Spectra", subtitle, accent));
     }
 
-    // ── N RV points
+    // ── N RV points (cached)
     {
-        auto rvCurve = _ctx.star->getRVCurve();
-        int n = rvCurve ? static_cast<int>(rvCurve->getNumPoints()) : 0;
+        const int    n    = S.getRVNPoints();
+        const double span = S.getRVTimespan();
+        QString      subtitle;
+        if (n > 0 && std::isfinite(span) && span > 0)
+            subtitle = QString("%1 d span").arg(span, 0, 'f', 0);
 
-        QString subtitle;
-        if (rvCurve && n > 0) {
-            double span = rvCurve->getTimeSpan();
-            if (span > 0)
-                subtitle = QString("%1 d span").arg(span, 0, 'f', 0);
-        }
-
-        bool dark = PanelUtils::isDarkTheme();
-        QColor accent = (n > 0) ? QColor(86, 180, 120) :
-                         (dark ? QColor(100, 100, 100) : QColor(180, 180, 180));
-
-        layout->addWidget(createMetricCard(
-            QString::number(n), "RV Points", subtitle, accent));
+        QColor accent = (n > 0) ? QColor(86, 180, 120) : inactive;
+        layout->addWidget(createMetricCard(QString::number(n), "RV Points",
+                                           subtitle, accent));
     }
 
     return row;
@@ -388,266 +476,244 @@ QWidget* SummaryPanel::createMetricCard(const QString& value, const QString& lab
     return card;
 }
 
-QWidget* SummaryPanel::createPropertiesSection()
-{
-    auto has = [](double v) { return !std::isnan(v) && v != 0.0; };
+QWidget *SummaryPanel::createPropertiesSection() {
+    auto has = [](double v) { return std::isfinite(v) && v != 0.0; };
 
-    struct ValResult { QString display; QString copy; };
-    auto valErr = [](double val, double err, int prec, const QString& unit = "") -> ValResult {
-        QString num = QString::number(val, 'f', prec);
-        QString s = num;
-        if (!std::isnan(err) && err > 0.0)
-            s += QString(" ± %1").arg(err, 0, 'f', prec);
-        if (!unit.isEmpty())
-            s += " " + unit;
-        return {s, num};
+    const bool   dark   = PanelUtils::isDarkTheme();
+    const QColor valCol = dark ? QColor(220, 220, 225) : QColor(30, 30, 35);
+    const QColor labelCol =
+        dark ? QColor(140, 140, 145) : QColor(100, 100, 105);
+
+    auto addV = [&](std::vector<PropRow> &rows, const QString &l, double v,
+                    double err, int prec, const QString &unit = "") {
+        if (!has(v))
+            return;
+        auto d = fmtValErr(v, err, prec, unit);
+        rows.push_back({l, d.display, d.copy});
+    };
+    auto addPlain = [&](std::vector<PropRow> &rows, const QString &l, double v,
+                        int prec, const QString &unit = "") {
+        if (!has(v))
+            return;
+        QString n = QString::number(v, 'f', prec);
+        rows.push_back({l, unit.isEmpty() ? n : n + " " + unit, n});
     };
 
-    bool dark = PanelUtils::isDarkTheme();
-    QColor valCol   = dark ? QColor(220, 220, 225) : QColor(30, 30, 35);
-    QColor labelCol = dark ? QColor(140, 140, 145) : QColor(100, 100, 105);
+    Star &S = *_ctx.star;
 
-    struct PropRow { QString label; QString value; QString copyValue; };
-    std::vector<PropRow> astroRows, photoRows, atmosRows;
+    // ── Astrometry ─────────────────────────────────────────────────────────
+    std::vector<PropRow> astroC, astroF;
+    if (has(S.getRa()) && has(S.getDec())) {
+        QString raNum  = QString::number(S.getRa(), 'f', 6);
+        QString decNum = QString::number(S.getDec(), 'f', 6);
+        astroC.push_back({"RA", raNum + "°", raNum});
+        astroC.push_back({"Dec", decNum + "°", decNum});
+        astroF.push_back({"RA", raNum + "°", raNum});
+        astroF.push_back({"Dec", decNum + "°", decNum});
+    }
+    addV(astroC, "Parallax", S.getPlx(), S.getEPlx(), 3, "mas");
+    addV(astroC, "μ_RA", S.getPmra(), S.getEPmra(), 3, "mas/yr");
+    addV(astroC, "μ_Dec", S.getPmdec(), S.getEPmdec(), 3, "mas/yr");
 
-    // Astrometry
-    if (has(_ctx.star->getRa()) && has(_ctx.star->getDec())) {
-        QString raNum  = QString::number(_ctx.star->getRa(), 'f', 6);
-        QString decNum = QString::number(_ctx.star->getDec(), 'f', 6);
-        astroRows.push_back({"RA",  raNum + "°", raNum});
-        astroRows.push_back({"Dec", decNum + "°", decNum});
-    }
-    if (has(_ctx.star->getPlx())) {
-        auto [d, c] = valErr(_ctx.star->getPlx(), _ctx.star->getEPlx(), 3, "mas");
-        astroRows.push_back({"Parallax", d, c});
-    }
-    if (has(_ctx.star->getPmra())) {
-        auto [d, c] = valErr(_ctx.star->getPmra(), _ctx.star->getEPmra(), 3, "mas/yr");
-        astroRows.push_back({"μ_RA", d, c});
-    }
-    if (has(_ctx.star->getPmdec())) {
-        auto [d, c] = valErr(_ctx.star->getPmdec(), _ctx.star->getEPmdec(), 3, "mas/yr");
-        astroRows.push_back({"μ_Dec", d, c});
-    }
+    addV(astroF, "Parallax", S.getPlx(), S.getEPlx(), 4, "mas");
+    addV(astroF, "μ_RA", S.getPmra(), S.getEPmra(), 4, "mas/yr");
+    addV(astroF, "μ_Dec", S.getPmdec(), S.getEPmdec(), 4, "mas/yr");
+    addPlain(astroF, "ρ(μα,μδ)", S.getPmraPmdecCorr(), 3);
+    addPlain(astroF, "ρ(ϖ,μα)", S.getPlxPmraCorr(), 3);
+    addPlain(astroF, "ρ(ϖ,μδ)", S.getPlxPmdecCorr(), 3);
 
-    // Photometry
-    if (has(_ctx.star->getGmag())) {
-        auto [d, c] = valErr(_ctx.star->getGmag(), _ctx.star->getEGmag(), 3, "mag");
-        photoRows.push_back({"G", d, c});
-    }
-    if (has(_ctx.star->getBpRp())) {
-        QString num = QString::number(_ctx.star->getBpRp(), 'f', 3);
-        photoRows.push_back({"BP−RP", num + " mag", num});
-    }
-    if (has(_ctx.star->getBp())) {
-        auto [d, c] = valErr(_ctx.star->getBp(), _ctx.star->getEBp(), 3, "mag");
-        photoRows.push_back({"BP", d, c});
-    }
-    if (has(_ctx.star->getRp())) {
-        auto [d, c] = valErr(_ctx.star->getRp(), _ctx.star->getERp(), 3, "mag");
-        photoRows.push_back({"RP", d, c});
-    }
+    // ── Photometry ─────────────────────────────────────────────────────────
+    std::vector<PropRow> photoC, photoF;
+    addV(photoC, "G", S.getGmag(), S.getEGmag(), 3, "mag");
+    addPlain(photoC, "BP−RP", S.getBpRp(), 3, "mag");
+    addV(photoC, "BP", S.getBp(), S.getEBp(), 3, "mag");
+    addV(photoC, "RP", S.getRp(), S.getERp(), 3, "mag");
 
-    // Atmospheric
-    if (has(_ctx.star->getTeff())) {
-        auto [d, c] = valErr(_ctx.star->getTeff(), _ctx.star->getETeff(), 0, "K");
-        atmosRows.push_back({"T_eff", d, c});
-    }
-    if (has(_ctx.star->getLogg())) {
-        auto [d, c] = valErr(_ctx.star->getLogg(), _ctx.star->getELogg(), 2, "dex");
-        atmosRows.push_back({"log g", d, c});
-    }
-    if (has(_ctx.star->getHe())) {
-        auto [d, c] = valErr(_ctx.star->getHe(), _ctx.star->getEHe(), 2, "");
-        atmosRows.push_back({"log(He/H)", d, c});
-    }
+    addV(photoF, "G", S.getGmag(), S.getEGmag(), 4, "mag");
+    addV(photoF, "BP", S.getBp(), S.getEBp(), 4, "mag");
+    addV(photoF, "RP", S.getRp(), S.getERp(), 4, "mag");
+    addPlain(photoF, "BP−RP", S.getBpRp(), 4, "mag");
 
-    // RV summary (if no orbital fit)
-    auto rvCurve = _ctx.star->getRVCurve();
-    std::shared_ptr<RVFit> bestFit;
-    if (rvCurve) bestFit = rvCurve->getBestFit();
-
-    std::vector<PropRow> rvRows;
-    if (!(bestFit && bestFit->getPeriod() > 0)) {
-        if (has(_ctx.star->getRVMed())) {
-            auto [d, c] = valErr(_ctx.star->getRVMed(), _ctx.star->getERVMed(), 2, "km/s");
-            rvRows.push_back({"RV_med", d, c});
-        } else if (has(_ctx.star->getRVAvg())) {
-            auto [d, c] = valErr(_ctx.star->getRVAvg(), _ctx.star->getERVAvg(), 2, "km/s");
-            rvRows.push_back({"RV_avg", d, c});
-        }
-
-        if (rvCurve && rvCurve->getNumPoints() > 0) {
-            double minRV = rvCurve->getMinRV();
-            double maxRV = rvCurve->getMaxRV();
-            if (has(minRV) && has(maxRV)) {
-                double mid = minRV + (maxRV - minRV) / 2.0;
-                QString num = QString::number(mid, 'f', 2);
-                rvRows.push_back({"RV_mid", num + " km/s", num});
+    // ── Light-curve fit (shown in expanded photometry) ─────────────────────
+    std::shared_ptr<LCFit> bestLC;
+    if (auto phot = S.getPhotometry()) {
+        for (const auto &src : phot->getLightcurveSources()) {
+            if (auto f = phot->getBestLCFit(src)) {
+                if (!bestLC || (f->chi2 > 0 &&
+                                (bestLC->chi2 <= 0 || f->chi2 < bestLC->chi2)))
+                    bestLC = f;
             }
         }
     }
+    if (bestLC) {
+        addV(photoF, "LC Period", bestLC->period, bestLC->periodError, 6, "d");
+        addV(photoF, "T₀ (BJD)", bestLC->t0BJD, bestLC->t0BJDError, 6, "");
+        addV(photoF, "Inclination", bestLC->inclination,
+             bestLC->inclinationError, 2, "°");
+        addV(photoF, "q (M₂/M₁)", bestLC->q, bestLC->qError, 3, "");
+        addV(photoF, "r₁/a", bestLC->r1, bestLC->r1Error, 4, "");
+        addV(photoF, "r₂/a", bestLC->r2, bestLC->r2Error, 4, "");
+        addV(photoF, "T₁", bestLC->t1, bestLC->t1Error, 0, "K");
+        addV(photoF, "T₂", bestLC->t2, bestLC->t2Error, 0, "K");
+        addV(photoF, "v_scale", bestLC->velocityScale,
+             bestLC->velocityScaleError, 2, "km/s");
+        addPlain(photoF, "LC χ²", bestLC->chi2, 2);
+        addPlain(photoF, "LC rms", bestLC->rms, 4);
 
-    // Build grid widget with click-to-copy
-    auto buildGrid = [&](const std::vector<PropRow>& rows) -> QWidget* {
-        if (rows.empty()) return nullptr;
-        QWidget* grid = new QWidget;
-        QGridLayout* gl = new QGridLayout(grid);
-        gl->setContentsMargins(0, 0, 0, 0);
-        gl->setHorizontalSpacing(16);
-        gl->setVerticalSpacing(4);
+        // Orbital separation a [R☉] from r₁/a together with SED radius R₁
+        if (std::isfinite(bestLC->r1) && bestLC->r1 > 0 &&
+            std::isfinite(S.getSedRadius1()) && S.getSedRadius1() > 0) {
+            const double a = S.getSedRadius1() / bestLC->r1;
+            QString      n = QString::number(a, 'f', 2);
+            photoF.push_back({"Sep. a (LC)", n + " R☉", n});
+        }
+    }
 
-        int maxPerCol = static_cast<int>((rows.size() + 1) / 2);
+    // ── Atmospheric ────────────────────────────────────────────────────────
+    std::vector<PropRow> atmosC, atmosF;
+    addV(atmosC, "T_eff", S.getTeff(), S.getETeff(), 0, "K");
+    addV(atmosC, "log g", S.getLogg(), S.getELogg(), 2, "dex");
+    addV(atmosC, "log(He/H)", S.getHe(), S.getEHe(), 2);
 
-        for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
-            int col = (i < maxPerCol) ? 0 : 2;
-            int row = (i < maxPerCol) ? i : i - maxPerCol;
+    if (!S.getSpecClass().isEmpty())
+        atmosF.push_back({"Spec. Class", S.getSpecClass(), S.getSpecClass()});
+    addV(atmosF, "T_eff", S.getTeff(), S.getETeff(), 0, "K");
+    addV(atmosF, "log g", S.getLogg(), S.getELogg(), 3, "dex");
+    addV(atmosF, "log(He/H)", S.getHe(), S.getEHe(), 3);
+    if (S.getNSpectra() > 0)
+        atmosF.push_back({"N Spectra", QString::number(S.getNSpectra()),
+                          QString::number(S.getNSpectra())});
+    if (S.getNFitSpectra() > 0)
+        atmosF.push_back({"N Fit Spectra", QString::number(S.getNFitSpectra()),
+                          QString::number(S.getNFitSpectra())});
 
-            QString copyText = rows[i].copyValue.isEmpty()
-                                   ? rows[i].value : rows[i].copyValue;
+    // ── Radial velocity (when no orbital section is shown) ─────────────────
+    auto                   rvCurve = S.getRVCurve();
+    std::shared_ptr<RVFit> bestFit;
+    if (rvCurve)
+        bestFit = rvCurve->getBestFit();
+    const bool hasOrbital = bestFit && bestFit->getPeriod() > 0;
 
-            QLabel* lbl = new QLabel(rows[i].label);
-            lbl->setStyleSheet(QString(
-                "font-size: 11px; font-weight: 600; color: %1; background: transparent; border: none;"
-            ).arg(labelCol.name()));
-            makeCopyable(lbl, copyText);
-
-            QLabel* val = new QLabel(rows[i].value);
-            val->setStyleSheet(QString(
-                "font-size: 12px; color: %1; background: transparent; border: none;"
-            ).arg(valCol.name()));
-            makeCopyable(val, copyText);
-
-            gl->addWidget(lbl, row, col);
-            gl->addWidget(val, row, col + 1);
+    std::vector<PropRow> rvC, rvF;
+    if (!hasOrbital) {
+        addV(rvC, "RV_med", S.getRVMed(), S.getERVMed(), 2, "km/s");
+        if (!has(S.getRVMed()))
+            addV(rvC, "RV_avg", S.getRVAvg(), S.getERVAvg(), 2, "km/s");
+        if (rvCurve && rvCurve->getNumPoints() > 0) {
+            double minRV = rvCurve->getMinRV(), maxRV = rvCurve->getMaxRV();
+            if (std::isfinite(minRV) && std::isfinite(maxRV)) {
+                double  mid = minRV + (maxRV - minRV) / 2.0;
+                QString n   = QString::number(mid, 'f', 2);
+                rvC.push_back({"RV_mid", n + " km/s", n});
+            }
         }
 
-        gl->setColumnStretch(1, 1);
-        if (rows.size() > static_cast<size_t>(maxPerCol))
-            gl->setColumnStretch(3, 1);
+        addV(rvF, "RV_med", S.getRVMed(), S.getERVMed(), 2, "km/s");
+        addV(rvF, "RV_avg", S.getRVAvg(), S.getERVAvg(), 2, "km/s");
+        addV(rvF, "ΔRV_max", S.getDeltaRV(), S.getEDeltaRV(), 2, "km/s");
+        addPlain(rvF, "log p", S.getLogP(), 2);
+        addPlain(rvF, "Timespan", S.getRVTimespan(), 1, "d");
+        if (S.getRVNPoints() > 0)
+            rvF.push_back({"N RV points", QString::number(S.getRVNPoints()),
+                           QString::number(S.getRVNPoints())});
+    }
 
-        return grid;
-    };
-
-    // Build combined properties widget
-    QWidget* container = new QWidget;
-    QVBoxLayout* vLayout = new QVBoxLayout(container);
+    // ── Compose container with expandable subsections ─────────────────────
+    QWidget     *container = new QWidget;
+    QVBoxLayout *vLayout   = new QVBoxLayout(container);
     vLayout->setContentsMargins(0, 0, 0, 0);
     vLayout->setSpacing(6);
 
-    auto addSubSection = [&](const QString& title, const std::vector<PropRow>& rows) {
-        if (rows.empty()) return;
-        QWidget* grid = buildGrid(rows);
-        if (grid)
-            vLayout->addWidget(createSectionFrame(title, grid));
+    auto addSub = [&](const QString &title, const std::vector<PropRow> &c,
+                      const std::vector<PropRow> &f) {
+        if (c.empty() && f.empty())
+            return;
+        QWidget *compactGrid = buildPropertyGrid(c, valCol, labelCol);
+        QWidget *fullGrid    = (f.size() > c.size())
+                                   ? buildPropertyGrid(f, valCol, labelCol)
+                                   : nullptr;
+        vLayout->addWidget(
+            createExpandableSectionFrame(title, compactGrid, fullGrid));
     };
 
-    addSubSection("Astrometry", astroRows);
-    addSubSection("Photometry", photoRows);
-    addSubSection("Atmospheric Parameters", atmosRows);
-    addSubSection("Radial Velocity", rvRows);
+    addSub("Astrometry", astroC, astroF);
+    addSub("Photometry", photoC, photoF);
+    addSub("Atmospheric Parameters", atmosC, atmosF);
+    addSub("Radial Velocity", rvC, rvF);
 
     if (vLayout->count() == 0) {
-        QLabel* empty = new QLabel("No catalog data available yet.");
-        empty->setStyleSheet("color: gray; font-style: italic; background: transparent;");
+        QLabel *empty = new QLabel("No catalog data available yet.");
+        empty->setStyleSheet(
+            "color: gray; font-style: italic; background: transparent;");
         vLayout->addWidget(empty);
     }
 
     return container;
 }
 
-QWidget* SummaryPanel::createOrbitalFitSection()
-{
-    bool dark = PanelUtils::isDarkTheme();
-    QColor valCol   = dark ? QColor(220, 220, 225) : QColor(30, 30, 35);
-    QColor labelCol = dark ? QColor(140, 140, 145) : QColor(100, 100, 105);
-
-    struct ValResult { QString display; QString copy; };
-    auto valErr = [](double val, double err, int prec, const QString& unit = "") -> ValResult {
-        QString num = QString::number(val, 'f', prec);
-        QString s = num;
-        if (!std::isnan(err) && err > 0.0)
-            s += QString(" ± %1").arg(err, 0, 'f', prec);
-        if (!unit.isEmpty())
-            s += " " + unit;
-        return {s, num};
-    };
-    auto has = [](double v) { return !std::isnan(v) && v != 0.0; };
+QWidget *SummaryPanel::createOrbitalFitSection() {
+    const bool   dark   = PanelUtils::isDarkTheme();
+    const QColor valCol = dark ? QColor(220, 220, 225) : QColor(30, 30, 35);
+    const QColor labelCol =
+        dark ? QColor(140, 140, 145) : QColor(100, 100, 105);
+    auto has = [](double v) { return std::isfinite(v) && v != 0.0; };
 
     auto rvCurve = _ctx.star->getRVCurve();
     auto bestFit = rvCurve->getBestFit();
 
-    struct Row { QString label; QString value; QString copyValue; };
-    std::vector<Row> rows;
+    std::vector<PropRow> compact, full;
+    auto pushV = [&](std::vector<PropRow> &rows, const QString &l, double v,
+                     double e, int p, const QString &u = "") {
+        auto d = fmtValErr(v, e, p, u);
+        rows.push_back({l, d.display, d.copy});
+    };
 
-    {
-        auto [d, c] = valErr(bestFit->getPeriod(), bestFit->getPeriodError(), 6, "d");
-        rows.push_back({"Period", d, c});
-    }
-    {
-        auto [d, c] = valErr(bestFit->getK(), bestFit->getKError(), 2, "km/s");
-        rows.push_back({"K", d, c});
-    }
-    {
-        auto [d, c] = valErr(bestFit->getGamma(), bestFit->getGammaError(), 2, "km/s");
-        rows.push_back({"γ", d, c});
-    }
-    {
-        auto [d, c] = valErr(bestFit->getPhi(), bestFit->getPhiError(), 4, "");
-        rows.push_back({"T₀ (ϕ)", d, c});
-    }
-
+    pushV(compact, "Period", bestFit->getPeriod(), bestFit->getPeriodError(), 6,
+          "d");
+    pushV(compact, "K", bestFit->getK(), bestFit->getKError(), 2, "km/s");
+    pushV(compact, "γ", bestFit->getGamma(), bestFit->getGammaError(), 2,
+          "km/s");
+    pushV(compact, "T₀ (ϕ)", bestFit->getPhi(), bestFit->getPhiError(), 4);
     if (bestFit->isEccentric()) {
-        auto [d1, c1] = valErr(bestFit->getEccentricity(), bestFit->getEccentricityError(), 4, "");
-        rows.push_back({"e", d1, c1});
-        auto [d2, c2] = valErr(bestFit->getOmega(), bestFit->getOmegaError(), 1, "°");
-        rows.push_back({"ω", d2, c2});
+        pushV(compact, "e", bestFit->getEccentricity(),
+              bestFit->getEccentricityError(), 4);
+        pushV(compact, "ω", bestFit->getOmega(), bestFit->getOmegaError(), 1,
+              "°");
     }
-
     if (has(bestFit->getRms())) {
-        QString num = QString::number(bestFit->getRms(), 'f', 2);
-        rows.push_back({"RMS", num + " km/s", num});
+        QString n = QString::number(bestFit->getRms(), 'f', 2);
+        compact.push_back({"RMS", n + " km/s", n});
     }
-    if (!bestFit->getFitMethod().isEmpty()) {
-        QString m = bestFit->getFitMethod();
-        rows.push_back({"Method", m, m});
+    if (!bestFit->getFitMethod().isEmpty())
+        compact.push_back(
+            {"Method", bestFit->getFitMethod(), bestFit->getFitMethod()});
+
+    // Full set: everything compact has, plus χ², T0 (BJD), reference epoch, t0
+    // raw, etc.
+    full = compact;
+    if (has(bestFit->getChi2())) {
+        QString n = QString::number(bestFit->getChi2(), 'f', 2);
+        full.push_back({"χ²", n, n});
+    }
+    if (has(bestFit->getT0BJD())) {
+        QString n = QString::number(bestFit->getT0BJD(), 'f', 6);
+        full.push_back({"T₀ (BJD)", n, n});
+    }
+    if (has(bestFit->getReferenceBJD())) {
+        QString n = QString::number(bestFit->getReferenceBJD(), 'f', 6);
+        full.push_back({"Ref. BJD", n, n});
+    }
+    if (!bestFit->isEccentric()) {
+        full.push_back({"e", "0 (circular)", "0"});
     }
 
-    // Build grid
-    QWidget* grid = new QWidget;
-    QGridLayout* gl = new QGridLayout(grid);
-    gl->setContentsMargins(0, 0, 0, 0);
-    gl->setHorizontalSpacing(16);
-    gl->setVerticalSpacing(4);
+    QWidget *compactGrid = buildPropertyGrid(compact, valCol, labelCol);
+    QWidget *fullGrid    = (full.size() > compact.size())
+                               ? buildPropertyGrid(full, valCol, labelCol)
+                               : nullptr;
 
-    int maxPerCol = static_cast<int>((rows.size() + 1) / 2);
-    for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
-        int col = (i < maxPerCol) ? 0 : 2;
-        int row = (i < maxPerCol) ? i : i - maxPerCol;
-
-        QString copyText = rows[i].copyValue.isEmpty()
-                               ? rows[i].value : rows[i].copyValue;
-
-        QLabel* lbl = new QLabel(rows[i].label);
-        lbl->setStyleSheet(QString(
-            "font-size: 11px; font-weight: 600; color: %1; background: transparent; border: none;"
-        ).arg(labelCol.name()));
-        makeCopyable(lbl, copyText);
-
-        QLabel* val = new QLabel(rows[i].value);
-        val->setStyleSheet(QString(
-            "font-size: 12px; color: %1; background: transparent; border: none;"
-        ).arg(valCol.name()));
-        makeCopyable(val, copyText);
-
-        gl->addWidget(lbl, row, col);
-        gl->addWidget(val, row, col + 1);
-    }
-    gl->setColumnStretch(1, 1);
-    if (rows.size() > static_cast<size_t>(maxPerCol))
-        gl->setColumnStretch(3, 1);
-
-    return createSectionFrame("Orbital Solution", grid);
+    return createExpandableSectionFrame("Orbital Solution", compactGrid,
+                                        fullGrid);
 }
 
 QWidget* SummaryPanel::createDataInventorySection()
@@ -673,22 +739,25 @@ QWidget* SummaryPanel::createDataInventorySection()
 
     // Spectra
     {
-        int n = static_cast<int>(spectra.size());
-        int nFitted = 0;
-        QSet<QString> instruments;
-        for (auto& sp : spectra) {
-            if (sp->getBestFit()) nFitted++;
-            if (!sp->getInstrument().isEmpty()) instruments.insert(sp->getInstrument());
-        }
-        QString detail;
+        const int n       = _ctx.star->getNSpectra();
+        const int nFitted = _ctx.star->getNFitSpectra();
+        QString   detail;
         if (n > 0) {
             QStringList parts;
             parts << QString("%1 total").arg(n);
-            if (nFitted > 0) parts << QString("%1 fitted").arg(nFitted);
-            if (!instruments.isEmpty()) {
-                QStringList instList(instruments.begin(), instruments.end());
-                instList.sort();
-                parts << instList.join(", ");
+            if (nFitted > 0)
+                parts << QString("%1 fitted").arg(nFitted);
+            if (_ctx.star->hasSpectraLoaded()) {
+                QSet<QString> instruments;
+                for (auto &sp : _ctx.star->getSpectra())
+                    if (!sp->getInstrument().isEmpty())
+                        instruments.insert(sp->getInstrument());
+                if (!instruments.isEmpty()) {
+                    QStringList instList(instruments.begin(),
+                                         instruments.end());
+                    instList.sort();
+                    parts << instList.join(", ");
+                }
             }
             detail = parts.join(" · ");
         }
@@ -697,15 +766,16 @@ QWidget* SummaryPanel::createDataInventorySection()
 
     // RV curve
     {
-        int n = rvCurve ? static_cast<int>(rvCurve->getNumPoints()) : 0;
-        int nFits = rvCurve ? static_cast<int>(rvCurve->getNumFits()) : 0;
-        QString detail;
+        const int    n    = _ctx.star->getRVNPoints();
+        const double span = _ctx.star->getRVTimespan();
+        QString      detail;
         if (n > 0) {
             QStringList parts;
             parts << QString("%1 points").arg(n);
-            if (nFits > 0) parts << QString("%1 fit(s)").arg(nFits);
-            if (rvCurve->getTimeSpan() > 0)
-                parts << QString("%1 d span").arg(rvCurve->getTimeSpan(), 0, 'f', 0);
+            if (rvCurve && rvCurve->getNumFits() > 0)
+                parts << QString("%1 fit(s)").arg(rvCurve->getNumFits());
+            if (std::isfinite(span) && span > 0)
+                parts << QString("%1 d span").arg(span, 0, 'f', 0);
             detail = parts.join(" · ");
         }
         items.push_back({"RV Curve", n > 0, detail});
@@ -1058,6 +1128,65 @@ QFrame* SummaryPanel::createSectionFrame(const QString& title, QWidget* content)
     return frame;
 }
 
+QWidget *SummaryPanel::createCompanionSection() {
+    const double mMin    = _ctx.star->getCompMassMin();
+    const double eMin    = _ctx.star->getECompMassMin();
+    const double mTrue   = _ctx.star->getCompMassTrue();
+    const double eTrue   = _ctx.star->getECompMassTrue();
+    const bool   hasMin  = std::isfinite(mMin) && mMin > 0.0;
+    const bool   hasTrue = std::isfinite(mTrue) && mTrue > 0.0;
+
+    // Also gather inputs for f(M) and a, so the section can show *something*
+    // even when only some pieces are present.
+    const MassInputs &in = _cachedMassInputs;
+
+    const bool hasMassFunc   = in.valid;
+    const bool hasSeparation = in.valid && std::isfinite(in.P) && in.P > 0.0;
+    const bool hasQ          = Star::isSet(_ctx.star->getPhotQ());
+
+    if (!hasMin && !hasTrue && !hasMassFunc && !hasSeparation && !hasQ)
+        return nullptr;
+
+    const bool   dark   = PanelUtils::isDarkTheme();
+    const QColor valCol = dark ? QColor(220, 220, 225) : QColor(30, 30, 35);
+    const QColor labelCol =
+        dark ? QColor(140, 140, 145) : QColor(100, 100, 105);
+
+    std::vector<PropRow> rows;
+
+    if (hasMin) {
+        auto d = fmtValErr(mMin, eMin, 3, "M☉");
+        rows.push_back({"M₂ (min)", d.display, d.copy});
+    }
+    if (hasTrue) {
+        auto d = fmtValErr(mTrue, eTrue, 3, "M☉");
+        rows.push_back({"M₂ (true)", d.display, d.copy});
+    }
+    if (hasMassFunc) {
+        const double f = massFunctionMsun(in.K, in.P, in.e);
+        QString      n = QString::number(f, 'f', 5);
+        rows.push_back({"f(M)", n + " M☉", n});
+    }
+    if (hasSeparation) {
+        const double M2    = hasTrue ? mTrue : (hasMin ? mMin : 0.0);
+        const double Mtot  = in.M1 + M2;
+        const double Py    = in.P / 365.25;
+        const double aAU   = std::cbrt(Mtot * Py * Py);
+        const double aRsun = aAU * 215.032;
+        QString      n     = QString::number(aRsun, 'f', 2);
+        QString      unit  = hasTrue ? " R☉" : " R☉ (min)";
+        rows.push_back({"a", n + unit, n});
+    }
+    if (hasQ) {
+        auto d =
+            fmtValErr(_ctx.star->getPhotQ(), _ctx.star->getPhotEQ(), 3, "");
+        rows.push_back({"q (LC)", d.display, d.copy});
+    }
+
+    QWidget *grid = buildPropertyGrid(rows, valCol, labelCol);
+    return createSectionFrame("Companion", grid);
+}
+
 QColor SummaryPanel::logPColor(double logP) const
 {
     // Very negative = highly variable = important
@@ -1106,4 +1235,155 @@ QColor SummaryPanel::accentTextColor(const QColor& accent) const
 {
     // Return white or black text depending on accent luminance
     return (accent.lightnessF() > 0.55) ? QColor(20, 20, 20) : QColor(240, 240, 240);
+}
+
+QFrame *SummaryPanel::createExpandableSectionFrame(const QString &title,
+                                                   QWidget *compactContent,
+                                                   QWidget *expandedContent) {
+    // No expansion if no extra content
+    if (!expandedContent)
+        return createSectionFrame(title, compactContent);
+
+    QFrame      *frame  = createSectionFrame(title, compactContent);
+    QVBoxLayout *layout = qobject_cast<QVBoxLayout *>(frame->layout());
+    if (!layout)
+        return frame;
+
+    expandedContent->setVisible(false);
+    layout->addWidget(expandedContent);
+
+    const bool   dark   = PanelUtils::isDarkTheme();
+    QPushButton *toggle = new QPushButton("Show all ▾");
+    toggle->setFlat(true);
+    toggle->setCursor(Qt::PointingHandCursor);
+    toggle->setStyleSheet(
+        QString("QPushButton { font-size: 10px; color: %1; background: "
+                "transparent; "
+                "border: none; padding: 2px 0; text-align: left; }"
+                "QPushButton:hover { color: %2; }")
+            .arg(dark ? "#8aa3c8" : "#3a5a90", dark ? "#cfdaee" : "#1d3160"));
+    layout->addWidget(toggle, 0, Qt::AlignLeft);
+
+    QObject::connect(toggle, &QPushButton::clicked, this,
+                     [compactContent, expandedContent, toggle]() {
+                         const bool showAll = !expandedContent->isVisible();
+                         compactContent->setVisible(!showAll);
+                         expandedContent->setVisible(showAll);
+                         toggle->setText(showAll ? "Show less ▴"
+                                                 : "Show all ▾");
+                     });
+
+    return frame;
+}
+
+bool SummaryPanel::MassInputs::sameAs(const MassInputs &o) const noexcept {
+    auto eq = [](double a, double b) {
+        if (std::isnan(a) && std::isnan(b))
+            return true;
+        if (std::isnan(a) || std::isnan(b))
+            return false;
+        return std::abs(a - b) <= 1e-12 * std::max(1.0, std::abs(a));
+    };
+    return valid == o.valid && hasIncl == o.hasIncl && eq(P, o.P) &&
+           eq(eP, o.eP) && eq(K, o.K) && eq(eK, o.eK) && eq(M1, o.M1) &&
+           eq(eM1, o.eM1) && eq(e, o.e) && eq(ee, o.ee) && eq(sini, o.sini) &&
+           eq(esini, o.esini);
+}
+
+void SummaryPanel::ensureCompanionMasses() {
+    MassInputs in;
+
+    auto                   rvCurve = _ctx.star->getRVCurve();
+    std::shared_ptr<RVFit> fit     = rvCurve ? rvCurve->getBestFit() : nullptr;
+
+    if (fit && fit->getPeriod() > 0) {
+        in.P  = fit->getPeriod();
+        in.eP = fit->getPeriodError();
+        in.K  = fit->getK();
+        in.eK = fit->getKError();
+        if (fit->isEccentric()) {
+            in.e  = fit->getEccentricity();
+            in.ee = fit->getEccentricityError();
+        }
+    } else {
+        in.P  = _ctx.star->getRVPeriod();
+        in.eP = _ctx.star->getRVEPeriod();
+        in.K  = _ctx.star->getRVK();
+        in.eK = _ctx.star->getRVEK();
+        if (Star::isSet(_ctx.star->getRVEcc()))
+            in.e = _ctx.star->getRVEcc();
+    }
+    in.M1  = _ctx.star->getSedMass1();
+    in.eM1 = _ctx.star->getSedEMass1();
+
+    const double iDeg = _ctx.star->getPhotIncl();
+    if (Star::isSet(iDeg) && iDeg > 0.0) {
+        constexpr double D2R   = M_PI / 180.0;
+        const double     iRad  = iDeg * D2R;
+        const double     eiDeg = _ctx.star->getPhotEIncl();
+        in.hasIncl             = true;
+        in.sini                = std::sin(iRad);
+        in.esini               = (std::isfinite(eiDeg) && eiDeg > 0.0)
+                                     ? std::abs(std::cos(iRad)) * eiDeg * D2R
+                                     : 0.0;
+    }
+
+    in.valid = std::isfinite(in.P) && in.P > 0.0 && std::isfinite(in.K) &&
+               in.K > 0.0 && std::isfinite(in.M1) && in.M1 > 0.0;
+
+    if (_hasMassCache && _cachedMassInputs.sameAs(in))
+        return;
+
+    _cachedMassInputs = in;
+    _hasMassCache     = true;
+
+    if (!in.valid) {
+        _cachedMassMin  = {};
+        _cachedMassTrue = {};
+    } else {
+        const double mMin = m2Of(in.P, in.K, in.M1, in.e, 1.0);
+        const double sMin = propagateM2Error(in.P, in.eP, in.K, in.eK, in.M1,
+                                             in.eM1, in.e, in.ee, 1.0, 0.0);
+        _cachedMassMin    = {mMin, sMin};
+
+        if (in.hasIncl) {
+            const double mT = m2Of(in.P, in.K, in.M1, in.e, in.sini);
+            const double sT =
+                propagateM2Error(in.P, in.eP, in.K, in.eK, in.M1, in.eM1, in.e,
+                                 in.ee, in.sini, in.esini);
+            _cachedMassTrue = {mT, sT};
+        } else {
+            _cachedMassTrue = {};
+        }
+    }
+
+    // Persist to Star only when truly different.
+    Star &s   = *_ctx.star;
+    auto  neq = [](double a, double b) {
+        if (std::isnan(a) && std::isnan(b))
+            return false;
+        if (std::isnan(a) || std::isnan(b))
+            return true;
+        return std::abs(a - b) > 1e-9 * std::max(1.0, std::abs(a));
+    };
+
+    bool changed = false;
+    if (neq(s.getCompMassMin(), _cachedMassMin.value)) {
+        s.setCompMassMin(_cachedMassMin.value);
+        changed = true;
+    }
+    if (neq(s.getECompMassMin(), _cachedMassMin.error)) {
+        s.setECompMassMin(_cachedMassMin.error);
+        changed = true;
+    }
+    if (neq(s.getCompMassTrue(), _cachedMassTrue.value)) {
+        s.setCompMassTrue(_cachedMassTrue.value);
+        changed = true;
+    }
+    if (neq(s.getECompMassTrue(), _cachedMassTrue.error)) {
+        s.setECompMassTrue(_cachedMassTrue.error);
+        changed = true;
+    }
+    if (changed)
+        s.markSummaryDirty();
 }

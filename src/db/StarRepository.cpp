@@ -78,7 +78,9 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
             sed_lum2, sed_e_lum2,
             phot_period, phot_e_period, phot_incl, phot_e_incl,
             phot_q, phot_e_q,
-            has_tess, has_gaia, has_ztf, has_atlas, has_blackgem,
+            has_tess, has_gaia, has_ztf, has_atlas, has_blackgem, 
+            tess_crowdsap, phot_peaks_json,
+            comp_mass_min, comp_e_mass_min, comp_mass_true, comp_e_mass_true,  
             bibcodes
         ) VALUES (
             :id, :project_id, :alias, :source_id, :tic, :jname,
@@ -98,6 +100,8 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
             :phot_period, :phot_e_period, :phot_incl, :phot_e_incl,
             :phot_q, :phot_e_q,
             :has_tess, :has_gaia, :has_ztf, :has_atlas, :has_blackgem,
+            :tess_crowdsap, :phot_peaks_json,
+            :comp_mass_min, :comp_e_mass_min, :comp_mass_true, :comp_e_mass_true, 
             :bibcodes
         )
     )");
@@ -187,7 +191,14 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
     query.bindValue(":has_ztf", star->getHasZtf() ? 1 : 0);
     query.bindValue(":has_atlas", star->getHasAtlas() ? 1 : 0);
     query.bindValue(":has_blackgem", star->getHasBlackgem() ? 1 : 0);
-    
+
+    query.bindValue(":tess_crowdsap", star->getTessCrowdsap());
+
+    query.bindValue(":comp_mass_min", star->getCompMassMin());
+    query.bindValue(":comp_e_mass_min", star->getECompMassMin());
+    query.bindValue(":comp_mass_true", star->getCompMassTrue());
+    query.bindValue(":comp_e_mass_true", star->getECompMassTrue());
+
     // Convert bibcodes to JSON array
     QJsonArray bibcodesArray;
     for (const auto& bibcode : star->getBibcodes()) {
