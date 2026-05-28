@@ -1,6 +1,7 @@
 #include "GridSelectorWidget.h"
 #include "utils/Logger.h"
 
+#include "utils/Logger.h"
 #include <QComboBox>
 #include <QDir>
 #include <QDirIterator>
@@ -10,71 +11,75 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QHash>
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
 #include <QSet>
 #include <QVBoxLayout>
+#include <dirent.h>
 #include <functional>
+#include <sys/stat.h>
 
 namespace {
 
-// mountinfo escapes spaces/tabs as octal (\040 etc.) — undo that.
-QString unescapeMountPath(const QByteArray &s) {
-    QString out;
-    for (int i = 0; i < s.size(); ++i) {
-        if (s[i] == '\\' && i + 3 < s.size()) {
-            bool ok   = false;
-            int  code = s.mid(i + 1, 3).toInt(&ok, 8);
-            if (ok) {
-                out += QChar(code);
-                i += 3;
-                continue;
-            }
-        }
-        out += QChar(s[i]);
-    }
-    return out;
+// Process-wide cache of scan results, keyed by base paths + markers.
+QHash<QString, QVector<DiscoveredGrid>> &gridScanCache() {
+    static QHash<QString, QVector<DiscoveredGrid>> cache;
+    return cache;
 }
 
-// Returns the set of mount points whose filesystem type is a network/remote
-// type. Reads /proc/self/mountinfo directly, which does NOT stat the (possibly
-// dead) mounts, so it can never block.
-QSet<QString> networkMountPoints() {
-    QSet<QString> result;
-#ifdef Q_OS_LINUX
-    QFile f("/proc/self/mountinfo");
-    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        static const QList<QByteArray> net = {
-            "nfs",       "nfs4", "cifs",       "smbfs",           "smb2",
-            "smb3",      "afs",  "ncpfs",      "afpfs",           "glusterfs",
-            "ceph",      "9p",   "fuse.sshfs", "fuse.gvfsd-fuse", "fuse.rclone",
-            "fuse.s3fs", "davfs"};
-        while (!f.atEnd()) {
-            const QByteArray line = f.readLine();
-            const int        sep  = line.indexOf(" - ");
-            if (sep < 0)
-                continue;
-            const QList<QByteArray> pre  = line.left(sep).split(' ');
-            const QList<QByteArray> post = line.mid(sep + 3).split(' ');
-            if (pre.size() < 5 || post.isEmpty())
-                continue;
+void clearGridScanCache() { gridScanCache().clear(); }
 
-            const QByteArray fsType = post[0].toLower();
-            bool             isNet  = false;
-            for (const auto &n : net)
-                if (fsType == n || fsType.startsWith(n)) {
-                    isNet = true;
-                    break;
-                }
-            if (!isNet)
-                continue;
+struct DirListing {
+    QStringList subdirs; // immediate subdirectories (no symlinks, no hidden)
+    bool        markerFound = false;
+};
 
-            result.insert(QDir::cleanPath(unescapeMountPath(pre[4])));
+// Single readdir pass: collects subdirectories and whether a marker file is
+// present, using dirent::d_type so regular files are skipped WITHOUT stat().
+DirListing listDir(const QString &path, const QSet<QString> &markerSet) {
+    DirListing out;
+    DIR       *dir = ::opendir(QFile::encodeName(path).constData());
+    if (!dir)
+        return out;
+
+    struct dirent *ent;
+    while ((ent = ::readdir(dir)) != nullptr) {
+        const QString name = QString::fromLocal8Bit(ent->d_name);
+        if (name == "." || name == "..")
+            continue;
+
+        if (!out.markerFound && markerSet.contains(name))
+            out.markerFound = true;
+
+        if (name.startsWith('.'))
+            continue; // don't descend into hidden dirs
+
+        bool isDir = false;
+        switch (ent->d_type) {
+        case DT_DIR:
+            isDir = true;
+            break;
+        case DT_LNK:
+            isDir = false;
+            break;         // NoSymLinks behaviour
+        case DT_UNKNOWN: { // FS didn't report type -> lstat
+            struct stat      st;
+            const QByteArray full = QFile::encodeName(path + "/" + name);
+            if (::lstat(full.constData(), &st) == 0 && !S_ISLNK(st.st_mode))
+                isDir = S_ISDIR(st.st_mode);
+            break;
         }
+        default:
+            isDir = false;
+            break; // regular files etc. -> skip, no stat
+        }
+        if (isDir)
+            out.subdirs << name;
     }
-#endif
-    return result;
+    ::closedir(dir);
+    return out;
 }
 
 } // namespace
@@ -181,8 +186,10 @@ void GridSelectorWidget::buildUi()
             this, [this](int){ emit selectionChanged(); });
     connect(_overrideEdit, &QLineEdit::editingFinished,
             this, [this]{ emit selectionChanged(); });
-    connect(_refreshBtn, &QPushButton::clicked,
-            this, &GridSelectorWidget::refresh);
+    connect(_refreshBtn, &QPushButton::clicked, this, [this] {
+        clearGridScanCache();
+        refresh();
+    });
     connect(_configBtn, &QPushButton::clicked,
             this, &GridSelectorWidget::configurePathsRequested);
 }
@@ -219,33 +226,24 @@ void GridSelectorWidget::refresh()
 }
 
 void GridSelectorWidget::scanPaths() {
+    const QString cacheKey = _basePaths.join('|') + "##" + _markers.join('|');
+
+    auto cacheIt = gridScanCache().constFind(cacheKey);
+    if (cacheIt != gridScanCache().constEnd()) {
+        _discovered = cacheIt.value();
+        LOG_DEBUG(
+            "GridScan",
+            QString("Using cached scan (%1 grids)").arg(_discovered.size()));
+        return;
+    }
+
     QElapsedTimer timer;
     timer.start();
-    int dirsVisited = 0, dirsPruned = 0, netSkipped = 0;
+    int dirsVisited = 0, dirsPruned = 0;
 
     _discovered.clear();
-    QSet<QString> seen;
-
-    const QSet<QString> netMounts = networkMountPoints();
-    if (!netMounts.isEmpty())
-        LOG_DEBUG("GridScan",
-                  QString("Network mounts to skip: %1")
-                      .arg(QStringList(netMounts.values()).join(", ")));
-
-    auto onNetworkMount = [&](const QString &path) {
-        const QString clean = QDir::cleanPath(path);
-        for (const QString &mp : netMounts)
-            if (clean == mp || clean.startsWith(mp + "/"))
-                return true;
-        return false;
-    };
-
-    auto markerHit = [&](const QString &dir) {
-        for (const auto &m : _markers)
-            if (QFileInfo::exists(dir + "/" + m))
-                return true;
-        return false;
-    };
+    QSet<QString>       seen;
+    const QSet<QString> markerSet(_markers.begin(), _markers.end());
 
     for (const QString &raw : _basePaths) {
         QString base = raw.trimmed();
@@ -253,10 +251,6 @@ void GridSelectorWidget::scanPaths() {
             continue;
 
         QDir baseDir(base);
-        if (onNetworkMount(baseDir.absolutePath())) {
-            ++netSkipped;
-            continue;
-        }
         if (!baseDir.exists()) {
             LOG_DEBUG("GridScan", QString("Base does not exist: %1").arg(base));
             continue;
@@ -273,10 +267,10 @@ void GridSelectorWidget::scanPaths() {
         std::function<void(const QString &, int)> scan = [&](const QString &dir,
                                                              int depth) {
             ++dirsVisited;
+            const DirListing listing = listDir(dir, markerSet);
 
-            // ── Prune: a directory that *is* a grid is a leaf. Don't descend.
-            // ──
-            if (markerHit(dir)) {
+            // ── Prune: a directory that *is* a grid is a leaf. ──
+            if (listing.markerFound) {
                 ++dirsPruned;
                 const QString canon = QDir::cleanPath(dir);
                 if (!seen.contains(canon)) {
@@ -315,28 +309,14 @@ void GridSelectorWidget::scanPaths() {
                               QString("  + grid: %1").arg(dg.relativePath));
                     _discovered.append(std::move(dg));
                 }
-                return; // ← key change: stop here, don't walk the data files
+                return; // grids don't nest -> stop here
             }
 
             if (depth >= 5)
                 return;
 
-            QDirIterator it(
-                dir, QDir::Dirs | QDir::NoDotAndDotDot | QDir::NoSymLinks,
-                QDirIterator::NoIteratorFlags);
-            while (it.hasNext()) {
-                const QString child = it.next();
-                const QString name  = it.fileName();
-                if (name.startsWith('.'))
-                    continue;
-                if (onNetworkMount(child)) {
-                    ++netSkipped;
-                    LOG_DEBUG("GridScan",
-                              QString("  skip network dir: %1").arg(child));
-                    continue;
-                }
-                scan(child, depth + 1);
-            }
+            for (const QString &sub : listing.subdirs)
+                scan(dir + "/" + sub, depth + 1);
         };
 
         scan(baseCan, 0);
@@ -347,14 +327,14 @@ void GridSelectorWidget::scanPaths() {
                                   .arg(baseTimer.elapsed()));
     }
 
-    LOG_DEBUG("GridScan",
-              QString("DONE: visited %1 dirs, pruned %2 grid dirs, "
-                      "skipped %3 network dirs, found %4 grids in %5 ms")
-                  .arg(dirsVisited)
-                  .arg(dirsPruned)
-                  .arg(netSkipped)
-                  .arg(_discovered.size())
-                  .arg(timer.elapsed()));
+    LOG_DEBUG("GridScan", QString("DONE: visited %1 dirs, pruned %2, "
+                                  "found %3 grids in %4 ms")
+                              .arg(dirsVisited)
+                              .arg(dirsPruned)
+                              .arg(_discovered.size())
+                              .arg(timer.elapsed()));
+
+    gridScanCache().insert(cacheKey, _discovered);
 }
 
 void GridSelectorWidget::populateCategoryCombo()

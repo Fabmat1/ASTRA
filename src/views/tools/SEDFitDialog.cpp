@@ -362,11 +362,10 @@ QWidget* SEDFitDialog::createNewFitPanel()
 
     // ── Grid — Component 1 ─────────────────────────────────
     AppSettings       settings;
-    const QStringList gridPaths = reachableGridPaths(settings.gridBasePaths());
 
     _gridSelector1 = new GridSelectorWidget;
     _gridSelector1->setTitle("Model Grid — Component 1");
-    _gridSelector1->setBasePaths(gridPaths); // <— filtered
+    _gridSelector1->setBasePaths(settings.gridBasePaths());
     _gridSelector1->setShowConfigureButton(true);
     nfLay->addWidget(_gridSelector1);
 
@@ -376,7 +375,7 @@ QWidget* SEDFitDialog::createNewFitPanel()
 
     _gridSelector2 = new GridSelectorWidget;
     _gridSelector2->setTitle("Model Grid — Component 2");
-    _gridSelector2->setBasePaths(gridPaths); // <— filtered
+    _gridSelector2->setBasePaths(settings.gridBasePaths());
     _gridSelector2->setShowConfigureButton(true);
     _gridSelector2->setVisible(false);
     nfLay->addWidget(_gridSelector2);
@@ -390,10 +389,9 @@ QWidget* SEDFitDialog::createNewFitPanel()
         AppSettings    s;
         SettingsDialog dlg(&s, this);
         if (dlg.exec() == QDialog::Accepted) {
-            AppSettings       fresh;
-            const QStringList paths = reachableGridPaths(fresh.gridBasePaths());
-            _gridSelector1->setBasePaths(paths);
-            _gridSelector2->setBasePaths(paths);
+            AppSettings fresh;
+            _gridSelector1->setBasePaths(fresh.gridBasePaths());
+            _gridSelector2->setBasePaths(fresh.gridBasePaths());
         }
     };
     connect(_gridSelector1, &GridSelectorWidget::configurePathsRequested,
