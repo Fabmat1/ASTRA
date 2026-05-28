@@ -7,13 +7,16 @@
 #include <QDirIterator>
 #include <QElapsedTimer>
 #include <QFile>
+#include <QtConcurrent>
 #include <QFileInfo>
+#include <QFutureWatcher>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHash>
 #include <QLabel>
 #include <QLineEdit>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QSet>
 #include <QVBoxLayout>
@@ -178,6 +181,13 @@ void GridSelectorWidget::buildUi()
     _statusLabel->setStyleSheet("color: gray; font-style: italic;");
     bar->addWidget(_statusLabel, 1);
 
+    _spinner = new QProgressBar;
+    _spinner->setRange(0, 0); // indeterminate "busy" animation
+    _spinner->setMaximumWidth(90);
+    _spinner->setTextVisible(false);
+    _spinner->setVisible(false);
+    bar->addWidget(_spinner);
+
     _refreshBtn = new QPushButton(QString::fromUtf8("\xE2\x9F\xB3"));
     _refreshBtn->setToolTip("Rescan grid base paths");
     _refreshBtn->setMaximumWidth(30);
@@ -220,9 +230,72 @@ void GridSelectorWidget::setTitle(const QString& title)
 void GridSelectorWidget::setShowConfigureButton(bool show)
 { _configBtn->setVisible(show); }
 
-void GridSelectorWidget::refresh()
-{
-    scanPaths();
+void GridSelectorWidget::refresh() { startScan(); }
+
+void GridSelectorWidget::startScan() {
+    const QString cacheKey = _basePaths.join('|') + "##" + _markers.join('|') +
+                             "##" + _skipTokens.join('|');
+
+    // Cache hit -> synchronous, instant.
+    auto it = gridScanCache().constFind(cacheKey);
+    if (it != gridScanCache().constEnd()) {
+        _discovered = it.value();
+        LOG_DEBUG(
+            "GridScan",
+            QString("Using cached scan (%1 grids)").arg(_discovered.size()));
+        finishPopulate();
+        return;
+    }
+
+    if (_scanWatcher && _scanWatcher->isRunning())
+        return; // a scan is already in flight
+
+    setLoading(true);
+
+    auto *watcher = new QFutureWatcher<QVector<DiscoveredGrid>>(this);
+    _scanWatcher  = watcher;
+    connect(watcher, &QFutureWatcher<QVector<DiscoveredGrid>>::finished, this,
+            &GridSelectorWidget::onScanFinished);
+
+    // Snapshot inputs by value so the worker touches nothing on `this`.
+    const QStringList         basePaths = _basePaths;
+    const QStringList         markers   = _markers;
+    const QStringList         skip      = _skipTokens;
+    const QVector<GridPreset> presets   = _presets;
+
+    watcher->setFuture(QtConcurrent::run([basePaths, markers, skip, presets] {
+        return performScan(basePaths, markers, skip, presets);
+    }));
+}
+
+void GridSelectorWidget::onScanFinished() {
+    if (!_scanWatcher)
+        return;
+    _discovered = _scanWatcher->result();
+
+    const QString cacheKey = _basePaths.join('|') + "##" + _markers.join('|') +
+                             "##" + _skipTokens.join('|');
+    gridScanCache().insert(cacheKey,
+                           _discovered); // main thread: QHash safe here
+
+    _scanWatcher->deleteLater();
+    _scanWatcher = nullptr;
+
+    setLoading(false);
+    finishPopulate();
+}
+
+void GridSelectorWidget::setLoading(bool on) {
+    _spinner->setVisible(on);
+    _catCombo->setEnabled(!on);
+    _gridCombo->setEnabled(!on);
+    _overrideEdit->setEnabled(!on);
+    _refreshBtn->setEnabled(!on);
+    if (on)
+        _statusLabel->setText("Scanning grids…");
+}
+
+void GridSelectorWidget::finishPopulate() {
     populateCategoryCombo();
     populateGridCombo();
 
@@ -230,33 +303,39 @@ void GridSelectorWidget::refresh()
         _statusLabel->setText("No base paths configured");
     else if (_discovered.isEmpty())
         _statusLabel->setText(QString("No grids found under %1 path%2")
-            .arg(_basePaths.size()).arg(_basePaths.size() == 1 ? "" : "s"));
+                                  .arg(_basePaths.size())
+                                  .arg(_basePaths.size() == 1 ? "" : "s"));
     else
         _statusLabel->setText(QString("%1 grid%2 found")
-            .arg(_discovered.size()).arg(_discovered.size() == 1 ? "" : "s"));
+                                  .arg(_discovered.size())
+                                  .arg(_discovered.size() == 1 ? "" : "s"));
+
+    // Apply any selection requested before the scan completed.
+    if (_scanPending) {
+        _scanPending = false;
+        applySelection(_pendingCat, _pendingSel);
+    }
 }
 
-void GridSelectorWidget::scanPaths() {
-    const QString cacheKey = _basePaths.join('|') + "##" + _markers.join('|');
-
-    auto cacheIt = gridScanCache().constFind(cacheKey);
-    if (cacheIt != gridScanCache().constEnd()) {
-        _discovered = cacheIt.value();
-        LOG_DEBUG(
-            "GridScan",
-            QString("Using cached scan (%1 grids)").arg(_discovered.size()));
-        return;
-    }
-
+QVector<DiscoveredGrid> GridSelectorWidget::performScan(
+    const QStringList &basePaths, const QStringList &markers,
+    const QStringList &skipTokens, const QVector<GridPreset> &presets) {
     QElapsedTimer timer;
     timer.start();
-    int dirsVisited = 0, dirsPruned = 0;
+    int  dirsVisited = 0, dirsPruned = 0, dirsSkipped = 0;
+    long unknownTotal = 0;
 
-    _discovered.clear();
-    QSet<QString>       seen;
-    long                unknownTotal = 0; 
+    QVector<DiscoveredGrid> discovered;
+    QSet<QString>           seen;
 
-    for (const QString &raw : _basePaths) {
+    auto shouldSkipDir = [&](const QString &name) {
+        for (const QString &tok : skipTokens)
+            if (name.contains(tok, Qt::CaseInsensitive))
+                return true;
+        return false;
+    };
+
+    for (const QString &raw : basePaths) {
         QString base = raw.trimmed();
         if (base.isEmpty())
             continue;
@@ -266,23 +345,19 @@ void GridSelectorWidget::scanPaths() {
             LOG_DEBUG("GridScan", QString("Base does not exist: %1").arg(base));
             continue;
         }
-
         QString baseCan = baseDir.canonicalPath();
         if (baseCan.isEmpty())
             baseCan = QDir::cleanPath(baseDir.absolutePath());
 
         QElapsedTimer baseTimer;
         baseTimer.start();
-        const int beforeCount = _discovered.size();
-        long      unknownTotal = 0; // declare alongside dirsVisited/dirsPruned
+        const int before = discovered.size();
 
         std::function<void(const QString &, int)> scan = [&](const QString &dir,
                                                              int depth) {
             ++dirsVisited;
 
-            // ── Is this directory itself a grid? (cheap stat, no enumeration)
-            // ──
-            if (dirHasMarker(dir, _markers)) {
+            if (dirHasMarker(dir, markers)) {
                 ++dirsPruned;
                 const QString canon = QDir::cleanPath(dir);
                 if (!seen.contains(canon)) {
@@ -294,22 +369,22 @@ void GridSelectorWidget::scanPaths() {
                     if (!dg.relativePath.endsWith('/'))
                         dg.relativePath += '/';
 
-                    for (int pi = 0; pi < _presets.size(); ++pi) {
-                        QString suf = _presets[pi].path;
+                    for (int pi = 0; pi < presets.size(); ++pi) {
+                        QString suf = presets[pi].path;
                         while (suf.endsWith('/'))
                             suf.chop(1);
                         if (canon.endsWith(suf)) {
                             dg.presetIndex = pi;
-                            dg.category    = _presets[pi].category;
-                            dg.displayName = _presets[pi].name;
-                            dg.teffMin     = _presets[pi].teffMin;
-                            dg.teffMax     = _presets[pi].teffMax;
-                            dg.loggMin     = _presets[pi].loggMin;
-                            dg.loggMax     = _presets[pi].loggMax;
-                            dg.heMin       = _presets[pi].heMin;
-                            dg.heMax       = _presets[pi].heMax;
-                            dg.zMin        = _presets[pi].zMin;
-                            dg.zMax        = _presets[pi].zMax;
+                            dg.category    = presets[pi].category;
+                            dg.displayName = presets[pi].name;
+                            dg.teffMin     = presets[pi].teffMin;
+                            dg.teffMax     = presets[pi].teffMax;
+                            dg.loggMin     = presets[pi].loggMin;
+                            dg.loggMax     = presets[pi].loggMax;
+                            dg.heMin       = presets[pi].heMin;
+                            dg.heMax       = presets[pi].heMax;
+                            dg.zMin        = presets[pi].zMin;
+                            dg.zMax        = presets[pi].zMax;
                             break;
                         }
                     }
@@ -319,16 +394,14 @@ void GridSelectorWidget::scanPaths() {
                     }
                     LOG_DEBUG("GridScan",
                               QString("  + grid: %1").arg(dg.relativePath));
-                    _discovered.append(std::move(dg));
+                    discovered.append(std::move(dg));
                 }
-                return; // grids don't nest -> stop here
+                return;
             }
 
             if (depth >= 5)
                 return;
 
-            // ── Container directory: enumerate children (this is the timed
-            // part) ──
             QElapsedTimer t;
             t.start();
             const DirListing listing = listDir(dir);
@@ -342,27 +415,33 @@ void GridSelectorWidget::scanPaths() {
                               .arg(listing.unknownCount)
                               .arg(dir));
 
-            for (const QString &sub : listing.subdirs)
+            for (const QString &sub : listing.subdirs) {
+                if (shouldSkipDir(sub)) {
+                    ++dirsSkipped;
+                    continue;
+                }
                 scan(dir + "/" + sub, depth + 1);
+            }
         };
 
         scan(baseCan, 0);
-
         LOG_DEBUG("GridScan", QString("Base %1 -> %2 grids in %3 ms")
                                   .arg(base)
-                                  .arg(_discovered.size() - beforeCount)
+                                  .arg(discovered.size() - before)
                                   .arg(baseTimer.elapsed()));
     }
 
-    LOG_DEBUG("GridScan", QString("DONE: visited %1 dirs, pruned %2, found %3 "
-                                  "grids in %4 ms (lstat-from-UNKNOWN=%5)")
-                              .arg(dirsVisited)
-                              .arg(dirsPruned)
-                              .arg(_discovered.size())
-                              .arg(timer.elapsed())
-                              .arg(unknownTotal));
+    LOG_DEBUG("GridScan",
+              QString("DONE: visited %1 dirs, pruned %2, skipped %3, found %4 "
+                      "grids in %5 ms (lstat-from-UNKNOWN=%6)")
+                  .arg(dirsVisited)
+                  .arg(dirsPruned)
+                  .arg(dirsSkipped)
+                  .arg(discovered.size())
+                  .arg(timer.elapsed())
+                  .arg(unknownTotal));
 
-    gridScanCache().insert(cacheKey, _discovered);
+    return discovered;
 }
 
 void GridSelectorWidget::populateCategoryCombo()
@@ -449,8 +528,22 @@ std::optional<DiscoveredGrid> GridSelectorWidget::selectedGrid() const
     return std::nullopt;
 }
 
-void GridSelectorWidget::setSelection(const QString& category,
-                                      const QString& relativePathOrOverride)
+void GridSelectorWidget::setSelection(const QString &category,
+                                      const QString &relativePathOrOverride) {
+    if (relativePathOrOverride.isEmpty())
+        return;
+
+    if (_scanWatcher && _scanWatcher->isRunning()) {
+        _pendingCat  = category;
+        _pendingSel  = relativePathOrOverride;
+        _scanPending = true;
+        return; // applied in finishPopulate()
+    }
+    applySelection(category, relativePathOrOverride);
+}
+
+void GridSelectorWidget::applySelection(const QString &category,
+                                        const QString &relativePathOrOverride) 
 {
     if (relativePathOrOverride.isEmpty()) return;
 

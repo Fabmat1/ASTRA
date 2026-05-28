@@ -1,10 +1,12 @@
 #pragma once
 
-#include <QWidget>
-#include <QVector>
+#include <QFutureWatcher>
 #include <QStringList>
+#include <QVector>
+#include <QWidget>
 #include <optional>
 
+class QProgressBar;
 class QComboBox;
 class QLineEdit;
 class QLabel;
@@ -68,10 +70,23 @@ signals:
     void configurePathsRequested();
 
 private:
+
+    bool    _scanPending = false;
     void buildUi();
     void scanPaths();
     void populateCategoryCombo();
     void populateGridCombo();
+
+    void    startScan();
+    void    onScanFinished();
+    void    finishPopulate(); 
+    void    setLoading(bool on);
+    void    applySelection(const QString &category, const QString &rel);
+    static QVector<DiscoveredGrid> performScan( // runs on worker thread
+        const QStringList &basePaths, const QStringList &markers,
+        const QStringList &skipTokens, const QVector<GridPreset> &presets);
+
+    QStringList _skipTokens{"raw"};
 
     QStringList             _basePaths;
     QStringList             _markers{"grid.fits"};
@@ -85,4 +100,9 @@ private:
     QLabel*      _statusLabel  = nullptr;
     QPushButton* _refreshBtn   = nullptr;
     QPushButton* _configBtn    = nullptr;
+
+    QFutureWatcher<QVector<DiscoveredGrid>> *_scanWatcher = nullptr;
+    QProgressBar                            *_spinner     = nullptr;
+
+    QString _pendingCat, _pendingSel;
 };
