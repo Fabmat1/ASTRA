@@ -1,16 +1,80 @@
 #include "GridSelectorWidget.h"
 
-#include <QVBoxLayout>
-#include <QHBoxLayout>
+#include <QComboBox>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QGridLayout>
 #include <QGroupBox>
-#include <QComboBox>
-#include <QLineEdit>
+#include <QHBoxLayout>
 #include <QLabel>
+#include <QLineEdit>
 #include <QPushButton>
-#include <QDir>
 #include <QSet>
+#include <QVBoxLayout>
 #include <functional>
+
+namespace {
+
+// mountinfo escapes spaces/tabs as octal (\040 etc.) — undo that.
+QString unescapeMountPath(const QByteArray &s) {
+    QString out;
+    for (int i = 0; i < s.size(); ++i) {
+        if (s[i] == '\\' && i + 3 < s.size()) {
+            bool ok   = false;
+            int  code = s.mid(i + 1, 3).toInt(&ok, 8);
+            if (ok) {
+                out += QChar(code);
+                i += 3;
+                continue;
+            }
+        }
+        out += QChar(s[i]);
+    }
+    return out;
+}
+
+// Returns the set of mount points whose filesystem type is a network/remote
+// type. Reads /proc/self/mountinfo directly, which does NOT stat the (possibly
+// dead) mounts, so it can never block.
+QSet<QString> networkMountPoints() {
+    QSet<QString> result;
+#ifdef Q_OS_LINUX
+    QFile f("/proc/self/mountinfo");
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        static const QList<QByteArray> net = {
+            "nfs",       "nfs4", "cifs",       "smbfs",           "smb2",
+            "smb3",      "afs",  "ncpfs",      "afpfs",           "glusterfs",
+            "ceph",      "9p",   "fuse.sshfs", "fuse.gvfsd-fuse", "fuse.rclone",
+            "fuse.s3fs", "davfs"};
+        while (!f.atEnd()) {
+            const QByteArray line = f.readLine();
+            const int        sep  = line.indexOf(" - ");
+            if (sep < 0)
+                continue;
+            const QList<QByteArray> pre  = line.left(sep).split(' ');
+            const QList<QByteArray> post = line.mid(sep + 3).split(' ');
+            if (pre.size() < 5 || post.isEmpty())
+                continue;
+
+            const QByteArray fsType = post[0].toLower();
+            bool             isNet  = false;
+            for (const auto &n : net)
+                if (fsType == n || fsType.startsWith(n)) {
+                    isNet = true;
+                    break;
+                }
+            if (!isNet)
+                continue;
+
+            result.insert(QDir::cleanPath(unescapeMountPath(pre[4])));
+        }
+    }
+#endif
+    return result;
+}
+
+} // namespace
 
 const QVector<GridPreset>& GridSelectorWidget::defaultPresets()
 {
@@ -151,42 +215,66 @@ void GridSelectorWidget::refresh()
             .arg(_discovered.size()).arg(_discovered.size() == 1 ? "" : "s"));
 }
 
-void GridSelectorWidget::scanPaths()
-{
+void GridSelectorWidget::scanPaths() {
     _discovered.clear();
     QSet<QString> seen;
 
-    auto markerHit = [&](const QDir& d) {
-        for (const auto& m : _markers) if (d.exists(m)) return true;
+    const QSet<QString> netMounts = networkMountPoints();
+
+    auto onNetworkMount = [&](const QString &path) {
+        const QString clean = QDir::cleanPath(path);
+        for (const QString &mp : netMounts)
+            if (clean == mp || clean.startsWith(mp + "/"))
+                return true;
         return false;
     };
 
-    for (const QString& raw : _basePaths) {
-        QString base = raw.trimmed();
-        if (base.isEmpty()) continue;
-        QDir baseDir(base);
-        if (!baseDir.exists()) continue;
-        QString baseCan = baseDir.canonicalPath();
+    auto markerHit = [&](const QDir &d) {
+        for (const auto &m : _markers)
+            if (d.exists(m))
+                return true;
+        return false;
+    };
 
-        std::function<void(const QString&, int)> scan =
-            [&](const QString& dir, int depth)
-        {
-            if (depth > 5) return;
+    for (const QString &raw : _basePaths) {
+        QString base = raw.trimmed();
+        if (base.isEmpty())
+            continue;
+
+        QDir baseDir(base);
+        if (onNetworkMount(baseDir.absolutePath()))
+            continue; // never even touch it
+        if (!baseDir.exists())
+            continue;
+
+        // Avoid canonicalPath() on the whole subtree; clean the base once.
+        QString baseCan = baseDir.canonicalPath();
+        if (baseCan.isEmpty())
+            baseCan = QDir::cleanPath(baseDir.absolutePath());
+
+        std::function<void(const QString &, int)> scan = [&](const QString &dir,
+                                                             int depth) {
+            if (depth > 5)
+                return;
             QDir d(dir);
 
             if (markerHit(d)) {
-                QString canon = QDir(dir).canonicalPath();
+                // NOTE: use cleanPath instead of canonicalPath() so we never
+                // resolve a symlink into a (possibly dead) network location.
+                const QString canon = QDir::cleanPath(d.absolutePath());
                 if (!seen.contains(canon)) {
                     seen.insert(canon);
                     DiscoveredGrid dg;
                     dg.fullPath     = canon;
                     dg.basePath     = baseCan;
-                    dg.relativePath = baseDir.relativeFilePath(canon);
-                    if (!dg.relativePath.endsWith('/')) dg.relativePath += '/';
+                    dg.relativePath = QDir(baseCan).relativeFilePath(canon);
+                    if (!dg.relativePath.endsWith('/'))
+                        dg.relativePath += '/';
 
                     for (int pi = 0; pi < _presets.size(); ++pi) {
                         QString suf = _presets[pi].path;
-                        while (suf.endsWith('/')) suf.chop(1);
+                        while (suf.endsWith('/'))
+                            suf.chop(1);
                         if (canon.endsWith(suf)) {
                             dg.presetIndex = pi;
                             dg.category    = _presets[pi].category;
@@ -209,9 +297,17 @@ void GridSelectorWidget::scanPaths()
                     _discovered.append(std::move(dg));
                 }
             }
-            for (const auto& sub : d.entryList(QDir::Dirs | QDir::NoDotAndDotDot)) {
-                if (sub.startsWith('.')) continue;
-                scan(dir + "/" + sub, depth + 1);
+
+            // NoSymLinks: never follow a symlink (could point at a dead mount).
+            const auto subs = d.entryList(QDir::Dirs | QDir::NoDotAndDotDot |
+                                          QDir::NoSymLinks);
+            for (const auto &sub : subs) {
+                if (sub.startsWith('.'))
+                    continue;
+                const QString child = dir + "/" + sub;
+                if (onNetworkMount(child))
+                    continue; // don't descend into network mounts
+                scan(child, depth + 1);
             }
         };
         scan(baseCan, 0);
