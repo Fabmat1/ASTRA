@@ -16,6 +16,7 @@ class QMenu;
 class QCustomPlot;
 class QCPGraph;
 class QCPRange;
+class LCFit;
 
 class LCPanel : public DetailPanel
 {
@@ -49,6 +50,9 @@ public:
     void     setT0Source(T0Source s);
     T0Source t0Source() const { return _t0Source; }
     void setUniformFoldedBins(int nBins);
+    void     setPreviewFit(const QString &source, const QString &filter,
+                           std::shared_ptr<LCFit> fit);
+    void     clearPreviewFit();
 
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;
@@ -133,4 +137,8 @@ private:
 
     QComboBox* _t0SourceCombo = nullptr;
     T0Source   _t0Source      = T0Source::Auto;
+
+    std::shared_ptr<LCFit> _previewFit;
+    QString                _previewFitSource;
+    QString                _previewFitFilter;
 };

@@ -774,13 +774,24 @@ QWidget *LCFitDialog::buildRunPage() {
   _saveBtn->setEnabled(false);
   _runStat = new QLabel;
   _runStat->setStyleSheet("color: gray;");
+
+  _saveBtn = new QPushButton(tr("Save as best fit"));
+  _saveBtn->setEnabled(false);
+  _saveFitBtn = new QPushButton(tr("Save fit"));
+  _saveFitBtn->setEnabled(false);
+  _saveFitBtn->setToolTip(
+      tr("Persist this fit alongside any existing fits, "
+         "without marking it as the best fit for this source/filter."));
   connect(_runBtn, &QPushButton::clicked, this, &LCFitDialog::onRunClicked);
   connect(_cancelBtn, &QPushButton::clicked, this,
           &LCFitDialog::onCancelRunClicked);
   connect(_saveBtn, &QPushButton::clicked, this,
           &LCFitDialog::onSaveBestClicked);
+  connect(_saveFitBtn, &QPushButton::clicked, this,
+          &LCFitDialog::onSaveFitClicked);
   btnRow->addWidget(_runBtn);
   btnRow->addWidget(_cancelBtn);
+  btnRow->addWidget(_saveFitBtn);
   btnRow->addWidget(_saveBtn);
   btnRow->addWidget(_runStat, 1);
   root->addLayout(btnRow);
@@ -1027,6 +1038,9 @@ void LCFitDialog::onRunClicked() {
     return;
   }
 
+  _initialModelParameters =
+      buildFullConfig().value("model_parameters").toObject();
+
   const auto m =
       static_cast<LCFitRunner::Method>(_method->currentData().toInt());
   const QString bin =
@@ -1098,6 +1112,7 @@ void LCFitDialog::onRunFinished(int code, bool ok) {
   _runStat->setText(tr("Solver finished — results parsed."));
   populateResultsView();
   _saveBtn->setEnabled(true);
+  _saveFitBtn->setEnabled(true);
   _hasResults = true;
 }
 
@@ -1138,158 +1153,221 @@ bool LCFitDialog::parseAugmentedConfig(const QString &path, QString *err) {
 // ── Results display ───────────────────────────────────────────────
 
 void LCFitDialog::populateResultsView() {
-  _results->setRowCount(0);
-  const QJsonObject summary = _augmented.value("lm_summary").toObject();
-  const QJsonObject results = _augmented.value("lm_results").toObject();
-  const QJsonObject mp = _augmented.value("model_parameters").toObject();
+    _results->setRowCount(0);
+    const QJsonObject summary = _augmented.value("lm_summary").toObject();
+    const QJsonObject results = _augmented.value("lm_results").toObject();
+    const QJsonObject mp =
+        _initialModelParameters; // ← was _augmented.value("model_parameters")
 
-  const bool conv = summary.value("converged").toBool(false);
-  const QString stop = summary.value("stop_reason").toString();
-  const double chi2 = summary.value("best_chisq_lc")
-                          .toDouble(summary.value("best_sum_sq").toDouble());
-  const double redChi2 = results.value("reduced_chi2").toDouble();
+    const bool    conv = summary.value("converged").toBool(false);
+    const QString stop = summary.value("stop_reason").toString();
+    const double  chi2 = summary.value("best_chisq_lc")
+                             .toDouble(summary.value("best_sum_sq").toDouble());
+    const double  redChi2 = results.value("reduced_chi2").toDouble();
 
-  QString q =
-      tr("<b>%1</b> &nbsp; stop: <i>%2</i> &nbsp; "
-         "χ²(LC) = %3 &nbsp; reduced χ² = %4 &nbsp; iters = %5")
-          .arg(conv ? "<span style='color:#7dbd5e;'>✓ converged</span>"
-                    : "<span style='color:#c46060;'>✗ not converged</span>")
-          .arg(stop.isEmpty() ? "—" : stop)
-          .arg(std::isnan(chi2) ? "—" : QString::number(chi2, 'g', 6))
-          .arg(redChi2 > 0 ? QString::number(redChi2, 'g', 4) : "—")
-          .arg(
-              summary.value("iter").toInt(summary.value("iterations").toInt()));
-  if (!results.contains("sigma"))
-    q += tr("<br><span style='color:#dca84d;'>⚠ Covariance inversion failed — "
+    QString q =
+        tr("<b>%1</b> &nbsp; stop: <i>%2</i> &nbsp; "
+           "χ²(LC) = %3 &nbsp; reduced χ² = %4 &nbsp; iters = %5")
+            .arg(conv ? "<span style='color:#7dbd5e;'>✓ converged</span>"
+                      : "<span style='color:#c46060;'>✗ not converged</span>")
+            .arg(stop.isEmpty() ? "—" : stop)
+            .arg(std::isnan(chi2) ? "—" : QString::number(chi2, 'g', 6))
+            .arg(redChi2 > 0 ? QString::number(redChi2, 'g', 4) : "—")
+            .arg(summary.value("iter").toInt(
+                summary.value("iterations").toInt()));
+    if (!results.contains("sigma"))
+        q += tr(
+            "<br><span style='color:#dca84d;'>⚠ Covariance inversion failed — "
             "no parameter σ available.</span>");
-  _quality->setText(q);
+    _quality->setText(q);
 
-  // Stored Star Teff/R for σ comparison
-  //
-  // TODO: Wire in real getters from your Star class. Replace the four
-  // calls below with the actual accessors and `isSet` checks.
-  //
-  //   storedT1   = _in.star->getTeff();        storedT1Err   =
-  //   _in.star->getTeffError(); storedR1Rs = _in.star->getRadius(); storedR1Err
-  //   = _in.star->getRadiusError();
-  //
-  // If you have separate "from spectrum" vs "from SED" fields, decide
-  // which one (or both) to compare against and add extra rows.
-  auto starHas = [&](const QString &) -> bool { return false; };
-  auto starVal = [&](const QString &, double &v, double &s) {
-    v = 0;
-    s = 0;
-  };
+    auto starHas = [&](const QString &key) -> bool {
+        if (!_in.star)
+            return false;
+        const auto &s = *_in.star;
+        if (key == "T1")
+            return Star::isSet(s.getTeff());
+        if (key == "R1")
+            return Star::isSet(s.getSedRadius1());
+        if (key == "q")
+            return Star::isSet(s.getPhotQ());
+        if (key == "iangle")
+            return Star::isSet(s.getPhotIncl());
+        if (key == "period")
+            return _in.periodError > 0 || Star::isSet(s.getPhotPeriod());
+        return false;
+    };
+    auto starVal = [&](const QString &key, double &v, double &s) {
+        v = 0;
+        s = 0;
+        if (!_in.star)
+            return;
+        const auto &st = *_in.star;
+        auto pick = [](double e) { return Star::isSet(e) && e > 0 ? e : 0.0; };
+        if (key == "T1") {
+            v = st.getTeff();
+            s = pick(st.getETeff());
+        } else if (key == "R1") {
+            v = st.getSedRadius1();
+            s = pick(st.getSedERadius1());
+        } else if (key == "q") {
+            v = st.getPhotQ();
+            s = pick(st.getPhotEQ());
+        } else if (key == "iangle") {
+            v = st.getPhotIncl();
+            s = pick(st.getPhotEIncl());
+        } else if (key == "period") {
+            v = Star::isSet(st.getPhotPeriod()) ? st.getPhotPeriod()
+                                                : _in.period;
+            s = _in.periodError > 0 ? _in.periodError
+                                    : pick(st.getPhotEPeriod());
+        }
+    };
 
-  const QJsonObject bestPars = summary.value("best_pars").toObject();
-  const QJsonObject sigmas = results.value("sigma").toObject();
+    const QJsonObject bestPars = summary.value("best_pars").toObject();
+    const QJsonObject sigmas   = results.value("sigma").toObject();
 
-  auto addRow = [&](const QString &name, const QString &displayName,
-                    double initial, double storedVal = 0, double storedSig = 0,
-                    bool haveStored = false, double scale = 1.0,
-                    const QString &units = {}) {
-    if (!bestPars.contains(name))
-      return;
-    const double best = bestPars.value(name).toDouble();
-    double sig = std::nan("");
-    if (sigmas.contains(name))
-      sig = sigmas.value(name).toDouble();
+    auto setDeltaCell = [&](int row, double best, double sig, double storedVal,
+                            double storedSig, bool haveStored) {
+        QString delta = "—";
+        if (haveStored && (storedSig > 0 || (std::isfinite(sig) && sig > 0))) {
+            const double d = best - storedVal;
+            const double s =
+                std::hypot(std::isfinite(sig) ? sig : 0.0, storedSig);
+            if (s > 0) {
+                const double  n      = d / s;
+                const QString colour = std::abs(n) > 3.0   ? "#c46060"
+                                       : std::abs(n) > 1.5 ? "#dca84d"
+                                                           : "#7dbd5e";
+                delta = QString("<span style='color:%1;'>%2 (%3σ)</span>")
+                            .arg(colour)
+                            .arg(d, 0, 'g', 3)
+                            .arg(n, 0, 'f', 2);
+            }
+        }
+        _results->setItem(row, 4, new QTableWidgetItem);
+        auto *lbl = new QLabel(delta);
+        lbl->setTextFormat(Qt::RichText);
+        _results->setCellWidget(row, 4, lbl);
+    };
 
-    const int row = _results->rowCount();
-    _results->insertRow(row);
-    _results->setItem(row, 0,
-                      new QTableWidgetItem(
-                          displayName + (units.isEmpty() ? "" : " " + units)));
-    _results->setItem(
-        row, 1, new QTableWidgetItem(QString::number(best * scale, 'g', 6)));
-    _results->setItem(
-        row, 2,
-        new QTableWidgetItem(
-            std::isnan(sig) ? "—" : QString::number(sig * scale, 'g', 3)));
-    _results->setItem(
-        row, 3, new QTableWidgetItem(QString::number(initial * scale, 'g', 6)));
+    auto addRow = [&](const QString &name, const QString &displayName,
+                      double initial, double storedVal = 0,
+                      double storedSig = 0, bool haveStored = false,
+                      double scale = 1.0, const QString &units = {}) {
+        if (!bestPars.contains(name))
+            return;
+        const double best = bestPars.value(name).toDouble();
+        double       sig  = std::nan("");
+        if (sigmas.contains(name))
+            sig = sigmas.value(name).toDouble();
 
-    QString delta = "—";
-    if (haveStored && (storedSig > 0 || !std::isnan(sig))) {
-      const double d = best * scale - storedVal;
-      const double s =
-          std::hypot(std::isnan(sig) ? 0.0 : sig * scale, storedSig);
-      if (s > 0) {
-        const double n = d / s;
-        QString colour = std::abs(n) > 3.0   ? "#c46060"
-                         : std::abs(n) > 1.5 ? "#dca84d"
-                                             : "#7dbd5e";
-        delta = QString("<span style='color:%1;'>%2 (%3σ)</span>")
-                    .arg(colour)
-                    .arg(d, 0, 'g', 3)
-                    .arg(n, 0, 'f', 2);
-      }
+        const int row = _results->rowCount();
+        _results->insertRow(row);
+        _results->setItem(
+            row, 0,
+            new QTableWidgetItem(displayName +
+                                 (units.isEmpty() ? "" : " " + units)));
+        _results->setItem(
+            row, 1,
+            new QTableWidgetItem(QString::number(best * scale, 'g', 6)));
+        _results->setItem(
+            row, 2,
+            new QTableWidgetItem(
+                std::isnan(sig) ? "—" : QString::number(sig * scale, 'g', 3)));
+        _results->setItem(
+            row, 3,
+            new QTableWidgetItem(std::isfinite(initial)
+                                     ? QString::number(initial * scale, 'g', 6)
+                                     : "—"));
+        setDeltaCell(row, best * scale,
+                     std::isnan(sig) ? std::nan("") : sig * scale, storedVal,
+                     storedSig, haveStored);
+    };
+
+    auto initOf = [&](const QString &n) {
+        return firstFloat(mp.value(n).toString());
+    };
+
+    auto addStoredRow = [&](const QString &key, const QString &display,
+                            double initial, double scale = 1.0,
+                            const QString &units = {}) {
+        double sv = 0, ssv = 0;
+        bool   have = starHas(key);
+        if (have)
+            starVal(key, sv, ssv);
+        addRow(key, display, initial, sv, ssv, have, scale, units);
+    };
+
+    addStoredRow("q", "q", initOf("q"));
+    addStoredRow("iangle", "iangle", initOf("iangle"), 1.0, "°");
+    addRow("r1", "r1 (= R₁/a)", initOf("r1"));
+    addRow("r2", "r2 (= R₂/a)", initOf("r2"));
+    addRow("velocity_scale", "velocity_scale", initOf("velocity_scale"), 0, 0,
+           false, 1.0, "km/s");
+    addStoredRow("t1", "T₁", initOf("t1"), 1.0, "K");
+    addRow("t2", "T₂", initOf("t2"), 0, 0, false, 1.0, "K");
+    addRow("t0", "t₀", initOf("t0"));
+    addStoredRow("period", "period", initOf("period"), 1.0, "d");
+
+    // ── Derived R₁ in R☉ with proper σ, initial and Δ vs stored ───────
+    if (bestPars.contains("r1") && bestPars.contains("velocity_scale")) {
+        const double r1 = bestPars.value("r1").toDouble();
+        const double vs = bestPars.value("velocity_scale").toDouble();
+        const double aKm =
+            vs * _in.period * LCFitPhysics::kDay2Sec / (2.0 * M_PI);
+        const double R1 = r1 * aKm / LCFitPhysics::kRsunKm;
+
+        const double sR =
+            sigmas.contains("r1") ? sigmas.value("r1").toDouble() : 0.0;
+        const double sV  = sigmas.contains("velocity_scale")
+                               ? sigmas.value("velocity_scale").toDouble()
+                               : 0.0;
+        const double sP  = std::max(_in.periodError, 0.0);
+        double       sR1 = 0.0;
+        if (R1 > 0) {
+            const double rel = std::sqrt(
+                (r1 > 0 ? (sR / r1) * (sR / r1) : 0.0) +
+                (vs > 0 ? (sV / vs) * (sV / vs) : 0.0) +
+                (_in.period > 0 ? (sP / _in.period) * (sP / _in.period) : 0.0));
+            sR1 = R1 * rel;
+        }
+
+        const double initR1c = firstFloat(mp.value("r1").toString());
+        const double initVs = firstFloat(mp.value("velocity_scale").toString());
+        double       initR1 = std::nan("");
+        if (std::isfinite(initR1c) && std::isfinite(initVs)) {
+            const double initA =
+                initVs * _in.period * LCFitPhysics::kDay2Sec / (2.0 * M_PI);
+            initR1 = initR1c * initA / LCFitPhysics::kRsunKm;
+        }
+
+        double storedR1 = 0, storedR1s = 0;
+        bool   haveR1 = starHas("R1");
+        if (haveR1)
+            starVal("R1", storedR1, storedR1s);
+
+        const int row = _results->rowCount();
+        _results->insertRow(row);
+        _results->setItem(row, 0, new QTableWidgetItem("R₁ [R☉] (derived)"));
+        _results->setItem(row, 1,
+                          new QTableWidgetItem(QString::number(R1, 'g', 4)));
+        _results->setItem(
+            row, 2,
+            new QTableWidgetItem(sR1 > 0 ? QString::number(sR1, 'g', 3) : "—"));
+        _results->setItem(
+            row, 3,
+            new QTableWidgetItem(
+                std::isfinite(initR1) ? QString::number(initR1, 'g', 4) : "—"));
+        setDeltaCell(row, R1, sR1, storedR1, storedR1s, haveR1);
     }
-    auto *dItem = new QTableWidgetItem;
-    QLabel *lbl = new QLabel(delta);
-    lbl->setTextFormat(Qt::RichText);
-    _results->setItem(row, 4, dItem);
-    _results->setCellWidget(row, 4, lbl);
-  };
-
-  // Helpers to read initial value from the original model_parameters block
-  auto initOf = [&](const QString &n) {
-    return firstFloat(mp.value(n).toString());
-  };
-
-  addRow("q", "q", initOf("q"));
-  addRow("iangle", "iangle", initOf("iangle"), 0, 0, false, 1.0, "°");
-  addRow("r1", "r1 (= R₁/a)", initOf("r1"));
-  addRow("r2", "r2 (= R₂/a)", initOf("r2"));
-  addRow("velocity_scale", "velocity_scale", initOf("velocity_scale"), 0, 0,
-         false, 1.0, "km/s");
-
-  // T1 — compare to stored if available (TODO)
-  {
-    double storedT = 0, storedTs = 0;
-    bool have = false;
-    if (starHas("T1")) {
-      starVal("T1", storedT, storedTs);
-      have = true;
-    }
-    addRow("t1", "T₁", initOf("t1"), storedT, storedTs, have, 1.0, "K");
-  }
-  {
-    double storedT = 0, storedTs = 0;
-    bool have = false;
-    if (starHas("T2")) {
-      starVal("T2", storedT, storedTs);
-      have = true;
-    }
-    addRow("t2", "T₂", initOf("t2"), storedT, storedTs, have, 1.0, "K");
-  }
-  addRow("t0", "t₀", initOf("t0"));
-  addRow("period", "period", initOf("period"), _in.period, _in.periodError,
-         _in.periodError > 0, 1.0, "d");
-
-  // Derived row: R₁ in R☉ (= r1 · a)
-  if (bestPars.contains("r1") && bestPars.contains("velocity_scale")) {
-    const double r1 = bestPars.value("r1").toDouble();
-    const double vs = bestPars.value("velocity_scale").toDouble();
-    const double aKm = vs * _in.period * LCFitPhysics::kDay2Sec / (2.0 * M_PI);
-    const double R1 = r1 * aKm / LCFitPhysics::kRsunKm;
-    const int row = _results->rowCount();
-    _results->insertRow(row);
-    _results->setItem(row, 0, new QTableWidgetItem("R₁ [R☉] (derived)"));
-    _results->setItem(row, 1,
-                      new QTableWidgetItem(QString::number(R1, 'g', 4)));
-    _results->setItem(row, 2, new QTableWidgetItem("—"));
-    _results->setItem(row, 3, new QTableWidgetItem("—"));
-    _results->setItem(row, 4, new QTableWidgetItem("—"));
-    // TODO: compare to stored radius and replace last cell with a σ widget
-  }
 }
 
 // ── Save as best fit ──────────────────────────────────────────────
 
-void LCFitDialog::onSaveBestClicked() {
-    if (!_hasResults || !_in.dbm)
-        return;
+bool LCFitDialog::persistFit(bool asBest) {
+    if (!_hasResults || !_in.dbm || !_in.star)
+        return false;
 
     auto fit          = std::make_shared<LCFit>();
     fit->creationDate = QDateTime::currentDateTimeUtc();
@@ -1299,15 +1377,11 @@ void LCFitDialog::onSaveBestClicked() {
                 _method->currentData().toInt())))
             .arg(_in.filter.isEmpty() ? tr("unfiltered") : _in.filter)
             .arg(fit->creationDate.toString(Qt::ISODate));
-    fit->isBestFit = true;
-
-    fit->filter       = _in.filter;
-    fit->wavelengthNm = _wlSpin ? _wlSpin->value() : _in.wavelengthNm;
-
-    // Config: full augmented JSON (post-fit) so reproducibility is preserved
+    fit->isBestFit     = asBest;
+    fit->filter        = _in.filter;
+    fit->wavelengthNm  = _wlSpin ? _wlSpin->value() : _in.wavelengthNm;
     fit->config.json() = _augmented;
 
-    // Hot scalars from lm_summary.best_pars (+ sigmas if available)
     const QJsonObject summary  = _augmented.value("lm_summary").toObject();
     const QJsonObject results  = _augmented.value("lm_results").toObject();
     const QJsonObject bestPars = summary.value("best_pars").toObject();
@@ -1334,10 +1408,8 @@ void LCFitDialog::onSaveBestClicked() {
     fit->rms =
         std::sqrt(std::max(0.0, results.value("residual_variance").toDouble()));
 
-    // Input points (binned, what we fed to the fitter)
     fit->inputPoints.assign(_in.binnedPoints.begin(), _in.binnedPoints.end());
 
-    // Model points: parse output.txt if present
     QFile mf(_outputPath);
     if (mf.open(QIODevice::ReadOnly | QIODevice::Text)) {
         QTextStream                     s(&mf);
@@ -1366,12 +1438,23 @@ void LCFitDialog::onSaveBestClicked() {
                                    fit)) {
         QMessageBox::warning(this, tr("Save fit"),
                              tr("Failed to persist the fit to the database."));
-        return;
+        return false;
     }
-    _in.dbm->setBestLCFit(_in.star->getId(), _in.lightcurveSource, _in.filter,
-                          fit->getId());
 
-    if (_in.star) {
+    // ── Mirror the new fit in the in-memory Photometry so other views
+    //    (LCPanel overplot, Existing-fits tree) see it without a reload.
+    if (auto phot = _in.star->getPhotometry()) {
+        if (asBest) {
+            for (const auto &f :
+                 phot->getLCFits(_in.lightcurveSource, _in.filter))
+                f->isBestFit = false;
+        }
+        phot->addLCFit(_in.lightcurveSource, fit);
+    }
+
+    if (asBest) {
+        _in.dbm->setBestLCFit(_in.star->getId(), _in.lightcurveSource,
+                              _in.filter, fit->getId());
         _in.star->setPhotPeriod(fit->period);
         _in.star->setPhotEPeriod(fit->periodError);
         _in.star->setPhotIncl(fit->inclination);
@@ -1380,20 +1463,41 @@ void LCFitDialog::onSaveBestClicked() {
         _in.star->setPhotEQ(fit->qError);
         _in.star->markSummaryDirty();
     }
+
     _result = fit;
 
     LOG_INFO(
         "LCFit",
-        QString("Persisted LC fit for %1 / %2 / %3 (id=%4, χ²=%5, λ=%6 nm)")
+        QString(
+            "Persisted LC fit for %1/%2/%3 (id=%4, χ²=%5, λ=%6 nm, best=%7)")
             .arg(_in.star->getId(), _in.lightcurveSource,
                  _in.filter.isEmpty() ? "—" : _in.filter, fit->getId())
             .arg(fit->chi2)
-            .arg(fit->wavelengthNm, 0, 'f', 1));
+            .arg(fit->wavelengthNm, 0, 'f', 1)
+            .arg(asBest ? "yes" : "no"));
 
-    QMessageBox::information(
-        this, tr("Save fit"),
-        tr("Light-curve fit saved and marked as best fit."));
-    accept();
+    return true;
+}
+
+void LCFitDialog::onSaveBestClicked() {
+    if (persistFit(true)) {
+        QMessageBox::information(
+            this, tr("Save fit"),
+            tr("Light-curve fit saved and marked as best fit."));
+        accept();
+    }
+}
+
+void LCFitDialog::onSaveFitClicked() {
+    if (persistFit(false)) {
+        _runStat->setStyleSheet("color: #7dbd5e;");
+        _runStat->setText(tr("Fit saved (not marked as best fit)."));
+        QMessageBox::information(
+            this, tr("Save fit"),
+            tr("Light-curve fit saved.\n\nIt is now visible in the "
+               "'Existing fits' list and can later be promoted to best."));
+        accept();
+    }
 }
 
 // ── Pagination ─────────────────────────────────────────────────────────────

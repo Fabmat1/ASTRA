@@ -1,51 +1,54 @@
 #include "LightcurveFetchDialog.h"
-#include "views/panels/LCPanel.h"
-#include "views/panels/PeriodogramPanel.h"
-#include "views/panels/DetailPanel.h"
-#include "models/Star.h"
-#include "utils/Logger.h"
-#include "utils/AppPaths.h"
-#include "db/DatabaseManager.h"
-#include "utils/AppSettings.h"
 #include "controllers/ApplicationController.h"
+#include "db/DatabaseManager.h"
 #include "dialogs/ImportLightcurve.h"
 #include "dialogs/LCFitDialog.h"
+#include "models/Photometry.h"
+#include "models/Star.h"
+#include "utils/AppPaths.h"
+#include "utils/AppSettings.h"
 #include "utils/FilterWavelength.h"
+#include "utils/Logger.h"
+#include "views/panels/DetailPanel.h"
+#include "views/panels/LCPanel.h"
+#include "views/panels/PeriodogramPanel.h"
 
-#include <QPlainTextEdit>
 #include <QCheckBox>
-#include <QGroupBox>
-#include <QProgressBar>
-#include <QStandardPaths>
-#include <QShortcut>
-#include <QDir>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QFormLayout>
-#include <QSplitter>
-#include <QTabWidget>
-#include <QLabel>
+#include <QComboBox>
 #include <QDialogButtonBox>
+#include <QDir>
+#include <QDoubleSpinBox>
+#include <QFileInfo>
+#include <QFormLayout>
+#include <QFrame>
+#include <QGridLayout>
 #include <QGroupBox>
-#include <QScrollArea>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QInputDialog>
+#include <QLabel>
 #include <QListWidget>
 #include <QListWidgetItem>
-#include <QTableWidget>
-#include <QHeaderView>
-#include <QPushButton>
-#include <QToolButton>
-#include <QComboBox>
-#include <QDoubleSpinBox>
-#include <QSpinBox>
-#include <QInputDialog>
 #include <QMessageBox>
-#include <QSignalBlocker>
-#include <QRegularExpression>
-#include <QTextCursor>
-#include <QGridLayout>
 #include <QPixmap>
-#include <QFrame>
-#include <QFileInfo>
+#include <QPlainTextEdit>
+#include <QProgressBar>
+#include <QPushButton>
+#include <QRegularExpression>
+#include <QScrollArea>
+#include <QShortcut>
+#include <QSignalBlocker>
+#include <QSpinBox>
+#include <QSplitter>
+#include <QStandardPaths>
+#include <QTabWidget>
+#include <QTableWidget>
+#include <QTextCursor>
+#include <QToolButton>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
+#include <QTreeWidgetItemIterator>
+#include <QVBoxLayout>
 
 #include <cmath>
 
@@ -454,11 +457,63 @@ QWidget *LightcurveFetchDialog::buildFitTab() {
     _fitInfoLabel->setStyleSheet("color: gray;");
     sv->addWidget(_fitInfoLabel);
 
+    auto *fitsBox = new QGroupBox(tr("Existing fits"));
+    auto *fitsLay = new QVBoxLayout(fitsBox);
+    fitsLay->setContentsMargins(4, 4, 4, 4);
+    fitsLay->setSpacing(4);
+
+    _existingFitsTree = new QTreeWidget;
+    _existingFitsTree->setHeaderLabels({tr("Fit"), tr("P [d]"), tr("χ²")});
+    _existingFitsTree->setSelectionMode(QAbstractItemView::SingleSelection);
+    _existingFitsTree->setAlternatingRowColors(true);
+    _existingFitsTree->setRootIsDecorated(true);
+    _existingFitsTree->header()->setStretchLastSection(false);
+    _existingFitsTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    _existingFitsTree->header()->setSectionResizeMode(
+        1, QHeaderView::ResizeToContents);
+    _existingFitsTree->header()->setSectionResizeMode(
+        2, QHeaderView::ResizeToContents);
+    _existingFitsTree->setToolTip(
+        tr("All LC fits stored for this star, grouped by source/filter. "
+           "Double-click a fit to fold the Viewer on its period & T₀. "
+           "The current best fit per (source, filter) is highlighted."));
+    connect(_existingFitsTree, &QTreeWidget::itemDoubleClicked, this,
+            [this](QTreeWidgetItem *, int) { onPlotExistingFitClicked(); });
+    fitsLay->addWidget(_existingFitsTree, 1);
+
+    auto *fitBtnRow = new QHBoxLayout;
+    _plotFitBtn     = new QPushButton(tr("Plot in Viewer"));
+    _setBestFitBtn  = new QPushButton(tr("Set as Best"));
+    _deleteFitBtn   = new QPushButton(tr("Delete…"));
+    connect(_plotFitBtn, &QPushButton::clicked, this,
+            &LightcurveFetchDialog::onPlotExistingFitClicked);
+    connect(_setBestFitBtn, &QPushButton::clicked, this,
+            &LightcurveFetchDialog::onSetSelectedAsBestClicked);
+    connect(_deleteFitBtn, &QPushButton::clicked, this,
+            &LightcurveFetchDialog::onDeleteSelectedFitClicked);
+    fitBtnRow->addWidget(_plotFitBtn);
+    fitBtnRow->addWidget(_setBestFitBtn);
+    fitBtnRow->addWidget(_deleteFitBtn);
+    fitsLay->addLayout(fitBtnRow);
+
+    sv->addWidget(fitsBox, 1);
+
     _fitRunBtn = new QPushButton;
     _fitRunBtn->setEnabled(false);
     connect(_fitRunBtn, &QPushButton::clicked, this,
             &LightcurveFetchDialog::onFitRunClicked);
     sv->addWidget(_fitRunBtn);
+
+    connect(_existingFitsTree, &QTreeWidget::itemSelectionChanged, this,
+            [this] {
+                const bool any = selectedExistingFit() != nullptr;
+                if (_plotFitBtn)
+                    _plotFitBtn->setEnabled(any);
+                if (_setBestFitBtn)
+                    _setBestFitBtn->setEnabled(any);
+                if (_deleteFitBtn)
+                    _deleteFitBtn->setEnabled(any);
+            });
 
     root->addWidget(sidebar);
 
@@ -467,6 +522,9 @@ QWidget *LightcurveFetchDialog::buildFitTab() {
     if (_fitLcPanel && _fitBinsSpin)
         _fitLcPanel->setUniformFoldedBins(_fitBinsSpin->value());
     onFitPeriodSelectionChanged();
+
+    refreshExistingFitsTree();
+
     return page;
 }
 
@@ -1970,4 +2028,222 @@ void LightcurveFetchDialog::onAddPhotPeriodClicked()
     pk.power       = 0.0;
     pk.sourceLabel = "Phot best fit";
     addPeak(pk);
+}
+
+void LightcurveFetchDialog::refreshExistingFitsTree() {
+    if (!_existingFitsTree)
+        return;
+    _existingFitsTree->clear();
+    _plotFitBtn->setEnabled(false);
+    _setBestFitBtn->setEnabled(false);
+    _deleteFitBtn->setEnabled(false);
+
+    auto phot = _star ? _star->getPhotometry() : nullptr;
+    if (!phot)
+        return;
+
+    auto sources = phot->getLightcurveSources();
+    std::sort(sources.begin(), sources.end());
+
+    for (const auto &src : sources) {
+        auto allInSrc = phot->getLCFits(src);
+        if (allInSrc.empty())
+            continue;
+
+        QSet<QString> filtSet;
+        for (const auto &f : allInSrc)
+            filtSet.insert(f->filter);
+        QStringList filters(filtSet.begin(), filtSet.end());
+        std::sort(filters.begin(), filters.end());
+
+        auto *srcItem = new QTreeWidgetItem(_existingFitsTree);
+        srcItem->setText(0, src);
+        srcItem->setFirstColumnSpanned(true);
+        QFont f = srcItem->font(0);
+        f.setBold(true);
+        srcItem->setFont(0, f);
+        srcItem->setExpanded(true);
+
+        for (const auto &filt : filters) {
+            auto fits = phot->getLCFits(src, filt);
+            if (fits.empty())
+                continue;
+
+            std::sort(fits.begin(), fits.end(),
+                      [](const std::shared_ptr<LCFit> &a,
+                         const std::shared_ptr<LCFit> &b) {
+                          return a->creationDate > b->creationDate;
+                      });
+
+            auto *filtItem = new QTreeWidgetItem(srcItem);
+            filtItem->setText(0, filt.isEmpty() ? tr("(unfiltered)")
+                                                : tr("Filter: %1").arg(filt));
+            filtItem->setFirstColumnSpanned(true);
+            filtItem->setExpanded(true);
+
+            for (const auto &fit : fits) {
+                auto   *it = new QTreeWidgetItem(filtItem);
+                QString lbl =
+                    fit->label.isEmpty()
+                        ? fit->creationDate.toString("yyyy-MM-dd hh:mm")
+                        : fit->label;
+                if (fit->isBestFit)
+                    lbl = QString::fromUtf8("★ ") + lbl;
+                it->setText(0, lbl);
+                it->setText(1, QString::number(fit->period, 'g', 8));
+                it->setText(2, fit->chi2 > 0
+                                   ? QString::number(fit->chi2, 'g', 4)
+                                   : "—");
+                it->setData(0, Qt::UserRole, fit->getId());
+                it->setData(0, Qt::UserRole + 1, src);
+                it->setData(0, Qt::UserRole + 2, filt);
+                if (fit->isBestFit) {
+                    QFont bf = it->font(0);
+                    bf.setBold(true);
+                    it->setFont(0, bf);
+                    it->setFont(1, bf);
+                    it->setFont(2, bf);
+                }
+                it->setToolTip(
+                    0,
+                    tr("P = %1 d\nT₀ = %2 BJD\nχ² = %3\nRMS = %4\nCreated: %5")
+                        .arg(fit->period, 0, 'g', 8)
+                        .arg(fit->t0BJD, 0, 'g', 12)
+                        .arg(fit->chi2, 0, 'g', 4)
+                        .arg(fit->rms, 0, 'g', 4)
+                        .arg(fit->creationDate.toString(Qt::ISODate)));
+            }
+        }
+    }
+
+    // Auto-select the first leaf fit so the buttons enable immediately and
+    // the feature is discoverable.
+    bool                    selected = false;
+    QTreeWidgetItemIterator it(_existingFitsTree);
+    while (*it) {
+        if (!(*it)->data(0, Qt::UserRole).toString().isEmpty()) {
+            _existingFitsTree->setCurrentItem(*it);
+            selected = true;
+            break;
+        }
+        ++it;
+    }
+    if (!selected) {
+        if (_plotFitBtn)
+            _plotFitBtn->setEnabled(false);
+        if (_setBestFitBtn)
+            _setBestFitBtn->setEnabled(false);
+        if (_deleteFitBtn)
+            _deleteFitBtn->setEnabled(false);
+    }
+
+    connect(
+        _existingFitsTree, &QTreeWidget::itemSelectionChanged, this,
+        [this] {
+            const bool any = selectedExistingFit() != nullptr;
+            _plotFitBtn->setEnabled(any);
+            _setBestFitBtn->setEnabled(any);
+            _deleteFitBtn->setEnabled(any);
+        },
+        Qt::UniqueConnection);
+}
+
+std::shared_ptr<LCFit>
+LightcurveFetchDialog::selectedExistingFit(QString *outSource,
+                                           QString *outFilter) const {
+    if (!_existingFitsTree)
+        return nullptr;
+    auto *it = _existingFitsTree->currentItem();
+    if (!it)
+        return nullptr;
+    const QString id   = it->data(0, Qt::UserRole).toString();
+    const QString src  = it->data(0, Qt::UserRole + 1).toString();
+    const QString filt = it->data(0, Qt::UserRole + 2).toString();
+    if (id.isEmpty() || src.isEmpty())
+        return nullptr;
+
+    auto phot = _star ? _star->getPhotometry() : nullptr;
+    if (!phot)
+        return nullptr;
+    // Search the whole source bucket — don't rely on filter equality semantics.
+    for (const auto &f : phot->getLCFits(src)) {
+        if (f->getId() == id) {
+            if (outSource)
+                *outSource = src;
+            if (outFilter)
+                *outFilter = filt;
+            return f;
+        }
+    }
+    return nullptr;
+}
+
+void LightcurveFetchDialog::onPlotExistingFitClicked() {
+    QString src, filt;
+    auto    fit = selectedExistingFit(&src, &filt);
+    if (!fit || fit->period <= 0 || !_lcPanel)
+        return;
+    _lcPanel->setPreviewFit(src, filt, fit);
+    _lcPanel->setFoldPeriod(fit->period, fit->t0BJD);
+    _lcPanel->setFolded(true);
+    _lcPanel->refresh();
+    _tabs->setCurrentIndex(0);
+}
+
+void LightcurveFetchDialog::onSetSelectedAsBestClicked() {
+    QString src, filt;
+    auto    fit = selectedExistingFit(&src, &filt);
+    if (!fit || !_dbm || !_star)
+        return;
+    if (!_dbm->setBestLCFit(_star->getId(), src, filt, fit->getId())) {
+        QMessageBox::warning(
+            this, tr("Set best fit"),
+            tr("Failed to update best-fit selection in the database."));
+        return;
+    }
+    if (auto phot = _star->getPhotometry()) {
+        for (const auto &f : phot->getLCFits(src, filt))
+            f->isBestFit = (f->getId() == fit->getId());
+    }
+    if (_lcPanel)
+        _lcPanel->clearPreviewFit();
+    if (_fitLcPanel)
+        _fitLcPanel->clearPreviewFit();
+    refreshExistingFitsTree();
+    if (_lcPanel)
+        _lcPanel->refresh();
+    if (_fitLcPanel)
+        _fitLcPanel->refresh();
+    LOG_INFO("LCFit", QString("Set best LC fit for %1/%2/%3 → %4")
+                          .arg(_star->getId(), src, filt.isEmpty() ? "—" : filt,
+                               fit->getId()));
+}
+
+void LightcurveFetchDialog::onDeleteSelectedFitClicked() {
+    QString src, filt;
+    auto    fit = selectedExistingFit(&src, &filt);
+    if (!fit || !_dbm || !_star)
+        return;
+
+    const auto ret = QMessageBox::warning(
+        this, tr("Delete fit"),
+        tr("Delete this LC fit?\n\n%1\n\nThis cannot be undone.")
+            .arg(fit->label.isEmpty() ? fit->getId() : fit->label),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (ret != QMessageBox::Yes)
+        return;
+
+    if (!_dbm->deleteLCFit(fit->getId())) {
+        QMessageBox::warning(this, tr("Delete fit"),
+                             tr("Failed to delete the fit from the database."));
+        return;
+    }
+    if (auto phot = _star->getPhotometry())
+        phot->removeLCFit(src, fit->getId());
+
+    refreshExistingFitsTree();
+    if (_lcPanel)
+        _lcPanel->refresh();
+    if (_fitLcPanel)
+        _fitLcPanel->refresh();
 }

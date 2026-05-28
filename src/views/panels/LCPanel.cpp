@@ -697,6 +697,78 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
             err->setData(be);
         }
 
+        // ── Overplot best-fit LC model in folded view ────────────────────
+        if (foldable && _ctx.star) {
+            std::shared_ptr<LCFit> overlay;
+            if (_previewFit && _previewFitSource == s.source &&
+                (_previewFitFilter == s.filter ||
+                 _previewFitFilter.isEmpty())) {
+                overlay = _previewFit;
+            } else {
+                auto phot = _ctx.star->getPhotometry();
+                overlay =
+                    phot ? phot->getBestLCFit(s.source, s.filter) : nullptr;
+            }
+            if (overlay && !overlay->modelPoints.empty() &&
+                overlay->getPeriod() > 0) {
+                struct PP {
+                    double x, y;
+                };
+                QVector<PP> samples;
+                samples.reserve(overlay->modelPoints.size());
+                for (const auto &mp : overlay->modelPoints) {
+                    if (!std::isfinite(mp.phase) || !std::isfinite(mp.flux))
+                        continue;
+                    double ph = std::fmod(mp.phase, 1.0);
+                    if (ph < 0.0)
+                        ph += 1.0;
+                    samples.push_back({ph, mp.flux});
+                }
+                if (!samples.isEmpty()) {
+                    std::sort(
+                        samples.begin(), samples.end(),
+                        [](const PP &a, const PP &b) { return a.x < b.x; });
+
+                    // Duplicate into [-1, 0] so the line spans both copies
+                    // of the folded view (matches the data display).
+                    const int       n = samples.size();
+                    QVector<double> mx;
+                    mx.reserve(2 * n);
+                    QVector<double> my;
+                    my.reserve(2 * n);
+                    for (int i = 0; i < n; ++i) {
+                        mx.append(samples[i].x - 1.0);
+                        my.append(samples[i].y);
+                    }
+                    for (int i = 0; i < n; ++i) {
+                        mx.append(samples[i].x);
+                        my.append(samples[i].y);
+                    }
+
+                    QCPGraph *mg = plot->addGraph();
+                    mg->setName(label + " (best fit)");
+                    mg->setLineStyle(QCPGraph::lsLine);
+                    mg->setScatterStyle(QCPScatterStyle::ssNone);
+                    QPen mpen(col.darker(140));
+                    mpen.setWidthF(2.0);
+                    mpen.setCosmetic(true);
+                    mg->setPen(mpen);
+                    mg->setAdaptiveSampling(true);
+                    mg->setData(mx, my, /*alreadySorted*/ true);
+                    mg->setSelectable(QCP::stNone);
+
+                    // Let the model influence the auto y-range so
+                    // spikes/dips remain visible after a Reset Zoom.
+                    for (double v : my) {
+                        if (!std::isfinite(v))
+                            continue;
+                        globalYMin = std::min(globalYMin, v);
+                        globalYMax = std::max(globalYMax, v);
+                    }
+                }
+            }
+        }
+
         // ── Flagged ghost graph ──
         if (!fPx.isEmpty()) {
             QCPGraph* gf = plot->addGraph();
@@ -1031,4 +1103,23 @@ void LCPanel::setUniformFoldedBins(int nBins)
         _binEnabledFolded[s.key] = true;
     }
     if (_folded) replotAll(/*preserveZoom*/ true);
+}
+
+void LCPanel::setPreviewFit(const QString &source, const QString &filter,
+                            std::shared_ptr<LCFit> fit) {
+    _previewFit       = std::move(fit);
+    _previewFitSource = source;
+    _previewFitFilter = filter;
+    if (_folded)
+        replotAll(/*preserveZoom*/ true);
+}
+
+void LCPanel::clearPreviewFit() {
+    if (!_previewFit)
+        return;
+    _previewFit.reset();
+    _previewFitSource.clear();
+    _previewFitFilter.clear();
+    if (_folded)
+        replotAll(/*preserveZoom*/ true);
 }

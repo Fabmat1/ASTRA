@@ -28,6 +28,9 @@ class Star;
 class DatabaseManager;
 class ApplicationController;
 class LCPanel;
+class QTreeWidget;
+class QTreeWidgetItem;
+class LCFit;
 
 class LightcurveFetchDialog : public QDialog
 {
@@ -98,6 +101,10 @@ private slots:
     void onFitSourceChanged();
     void onFitFilterChanged();
 
+    void onPlotExistingFitClicked();
+    void onSetSelectedAsBestClicked();
+    void onDeleteSelectedFitClicked();
+
   private:
     void     setupUi();
     QWidget* buildViewerTab();
@@ -126,6 +133,11 @@ private slots:
     QString  previewDir() const;        
     QString  previewPath(const QString& filename) const;
     double   readCrowdsapFile(const QString& path) const;
+
+    void     refreshExistingFitsTree();
+    std::shared_ptr<LCFit>
+    selectedExistingFit(QString *outSource = nullptr,
+                        QString *outFilter = nullptr) const;
 
     std::shared_ptr<Star>  _star;
     DatabaseManager*       _dbm        = nullptr;
@@ -209,4 +221,9 @@ private slots:
     QSpinBox*    _fitBinsSpin       = nullptr;
     QPushButton* _fitRunBtn         = nullptr;
     QLabel*      _fitInfoLabel      = nullptr;
+
+    QTreeWidget *_existingFitsTree = nullptr;
+    QPushButton *_plotFitBtn       = nullptr;
+    QPushButton *_setBestFitBtn    = nullptr;
+    QPushButton *_deleteFitBtn     = nullptr;
 };

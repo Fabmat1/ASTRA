@@ -61,6 +61,7 @@ class LCFitDialog : public QDialog {
     void onNextPage();
     void onM1M2Changed();
     void onK1OrM1Changed();
+    void onSaveFitClicked();
 
   private:
     void setupUi();
@@ -90,7 +91,8 @@ class LCFitDialog : public QDialog {
     static std::optional<LCFitPhysics::AsymMeasurement> meas(QLineEdit *e);
     static void setMeas(QLineEdit *e,
                         const std::optional<LCFitPhysics::AsymMeasurement> &m);
-
+    
+    bool persistFit(bool asBest);
     Inputs _in;
     LCFitRunner *_runner = nullptr;
     std::shared_ptr<LCFit> _result;
@@ -160,6 +162,9 @@ class LCFitDialog : public QDialog {
     LCFitPhysics::StartParams _lastStart;
     LCFitPhysics::Implied _lastImplied;
     bool _hasStart = false;
+
+    QJsonObject  _initialModelParameters; // snapshot taken before the run
+    QPushButton *_saveFitBtn = nullptr;   // "Save fit" (non-best)
 
     void    recomputeMtot();
     void    recomputeM2Min();

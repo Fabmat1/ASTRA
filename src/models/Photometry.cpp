@@ -1,5 +1,6 @@
 #include "Photometry.h"
 #include "utils/DataStore.h"
+#include "utils/Logger.h"
 #include <QFile>
 #include <QDataStream>
 #include <QDebug>
@@ -692,54 +693,98 @@ LCFit::LCFit()
     config = LCFitConfig::defaults();
 }
 
-bool LCFit::saveDataToFile(const QString& filepath)
-{
+bool LCFit::saveDataToFile(const QString &filepath) {
     QByteArray buffer;
     {
         QDataStream s(&buffer, QIODevice::WriteOnly);
         s.setVersion(QDataStream::Qt_6_0);
 
-        s << static_cast<quint16>(1);
-        s << static_cast<quint32>(inputPoints.size());
-        for (const auto& p : inputPoints)
-            s << p.phase << p.dPhase << p.flux << p.fluxError << p.weight << p.factor;
+        auto writePts = [&](const std::vector<LCFitDataPoint> &src) {
+            const quint32 n = static_cast<quint32>(src.size());
+            s << n << n << n << n << n << n;
+            for (const auto &p : src)
+                s << p.phase;
+            for (const auto &p : src)
+                s << p.dPhase;
+            for (const auto &p : src)
+                s << p.flux;
+            for (const auto &p : src)
+                s << p.fluxError;
+            for (const auto &p : src)
+                s << p.weight;
+            for (const auto &p : src)
+                s << p.factor;
+        };
 
-        s << static_cast<quint32>(modelPoints.size());
-        for (const auto& p : modelPoints)
-            s << p.phase << p.dPhase << p.flux << p.fluxError << p.weight << p.factor;
+        writePts(inputPoints);
+        writePts(modelPoints);
     }
     return DataStore::writeCompressed(filepath, DataStore::LCFitData, buffer);
 }
 
-bool LCFit::loadDataFromFile(const QString& filepath)
-{
+bool LCFit::loadDataFromFile(const QString &filepath) {
+    auto readDoubles = [](QDataStream &s, std::vector<double> &vec, quint32 n) {
+        vec.clear();
+        vec.reserve(n);
+        for (quint32 i = 0; i < n; ++i) {
+            double v;
+            s >> v;
+            vec.push_back(v);
+        }
+    };
+
+    auto parse = [&](QDataStream &s) -> bool {
+        auto readPts = [&](std::vector<LCFitDataPoint> &dst) -> bool {
+            quint32 phN, dphN, fN, feN, wN, facN;
+            s >> phN >> dphN >> fN >> feN >> wN >> facN;
+            if (s.status() != QDataStream::Ok)
+                return false;
+
+            std::vector<double> phase, dPhase, flux, fluxError, weight, factor;
+            readDoubles(s, phase, phN);
+            readDoubles(s, dPhase, dphN);
+            readDoubles(s, flux, fN);
+            readDoubles(s, fluxError, feN);
+            readDoubles(s, weight, wN);
+            readDoubles(s, factor, facN);
+            if (s.status() != QDataStream::Ok)
+                return false;
+
+            const quint32 n = phN;
+            if (dphN != n || fN != n || feN != n || wN != n || facN != n) {
+                LOG_ERROR("LCFit", "Mismatched column sizes in LCFit data");
+                return false;
+            }
+
+            dst.clear();
+            dst.reserve(n);
+            for (quint32 i = 0; i < n; ++i) {
+                LCFitDataPoint p;
+                p.phase     = phase[i];
+                p.dPhase    = dPhase[i];
+                p.flux      = flux[i];
+                p.fluxError = fluxError[i];
+                p.weight    = weight[i];
+                p.factor    = factor[i];
+                dst.push_back(p);
+            }
+            return true;
+        };
+
+        if (!readPts(inputPoints))
+            return false;
+        if (!readPts(modelPoints))
+            return false;
+        return s.status() == QDataStream::Ok;
+    };
+
     QByteArray buf;
     if (!DataStore::readCompressed(filepath, DataStore::LCFitData, buf))
         return false;
 
     QDataStream s(&buf, QIODevice::ReadOnly);
     s.setVersion(QDataStream::Qt_6_0);
-
-    quint16 version;
-    s >> version;
-    if (version != 1) {
-        qWarning() << "LCFit: unsupported data version" << version;
-        return false;
-    }
-
-    quint32 n;
-    auto readPts = [&](std::vector<LCFitDataPoint>& dst){
-        s >> n;
-        dst.clear(); dst.reserve(n);
-        for (quint32 i = 0; i < n; ++i) {
-            LCFitDataPoint p;
-            s >> p.phase >> p.dPhase >> p.flux >> p.fluxError >> p.weight >> p.factor;
-            dst.push_back(p);
-        }
-    };
-    readPts(inputPoints);
-    readPts(modelPoints);
-    return s.status() == QDataStream::Ok;
+    return parse(s);
 }
 
 bool Photometry::savePhotometricPointsToFile(const QString& filepath)
