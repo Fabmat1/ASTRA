@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)   # PROJECT_IS_TOP_LEVEL needs ≥3.21
-project(ASTRA VERSION 0.1.0 LANGUAGES CXX)
+project(ASTRA VERSION 0.1.1 LANGUAGES CXX)
 
 # ── Build type (refuse typos like "Relase") ─────────────────────────────────
 set(_allowed_build_types Debug Release RelWithDebInfo MinSizeRel)

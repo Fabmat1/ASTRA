@@ -25,8 +25,8 @@ sudo pacman -S fuse2 libglvnd libxkbcommon dbus fontconfig \
 
 Then:
 ```bash
-chmod +x astra-0.1.0-x86_64.AppImage
-./astra-0.1.0-x86_64.AppImage
+chmod +x astra-0.1.1-x86_64.AppImage
+./astra-0.1.1-x86_64.AppImage
 ```
 
 ---

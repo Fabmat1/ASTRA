@@ -63,8 +63,22 @@ void Project::setModifiedDate(const QDateTime& date)
     _modifiedDate = date;
 }
 
-void Project::addStar(std::shared_ptr<Star> star)
-{
+void Project::addStar(std::shared_ptr<Star> star) {
+    if (!star)
+        return;
+
+    const QString id = star->getId();
+    if (!id.isEmpty()) {
+        auto it = std::find_if(_stars.begin(), _stars.end(),
+                               [&](const std::shared_ptr<Star> &s) {
+                                   return s && s->getId() == id;
+                               });
+        if (it != _stars.end()) {
+            *it = star;
+            _modifiedDate = QDateTime::currentDateTime();
+            return;
+        }
+    }
     _stars.push_back(star);
     _modifiedDate = QDateTime::currentDateTime();
 }
