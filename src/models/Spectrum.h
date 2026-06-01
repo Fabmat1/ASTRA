@@ -68,6 +68,11 @@ private:
     QString _modelDataFile;
 };
 
+struct SpectrumIndexRow {
+    QString starId;
+    QString spectrumId;
+    QString file;
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Main spectrum class

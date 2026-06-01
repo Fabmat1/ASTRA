@@ -204,7 +204,6 @@ set(SOURCES
     src/importWizard/ImportStagingArea.cpp
     src/importWizard/LightcurveImportPage.cpp
     src/importWizard/RadialVelocityImportPage.cpp
-    src/importWizard/RVPhotometryPages.cpp
     src/importWizard/SEDImportPage.cpp
     src/importWizard/SpectraImportPage.cpp
     src/importWizard/SpectralFitImportPage.cpp
@@ -325,7 +324,6 @@ set(HEADERS
     src/importWizard/ImportStagingArea.h
     src/importWizard/LightcurveImportPage.h
     src/importWizard/RadialVelocityImportPage.h
-    src/importWizard/RVPhotometryPages.h
     src/importWizard/SEDImportPage.h
     src/importWizard/SpectraImportPage.h
     src/importWizard/SpectralFitImportPage.h

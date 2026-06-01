@@ -1,12 +1,12 @@
 #ifndef SPECTRAIMPORTPAGE_H
 #define SPECTRAIMPORTPAGE_H
 
+#include "../utils/SpectrumReader.h"
+#include <QFutureWatcher>
 #include <QWizardPage>
 #include <memory>
-#include <vector>
 #include <optional>
-
-#include "../utils/SpectrumReader.h"
+#include <vector>
 
 class Star;
 class Spectrum;
@@ -103,8 +103,10 @@ private slots:
     // Async completion slots
     void onScanComplete(std::vector<SpectrumMetadata> metadata);
     void onFullMappingComplete(std::vector<SpectrumMatchResult> results);
-    
-    
+
+signals:
+    void seedProgress(int done, int total);
+
 private:
     void setupUi();
     void setupFitsPage();
@@ -153,7 +155,10 @@ private:
     
     // Queue background import task
     void queueImportTask(std::vector<SpectrumImportEntry> entries);
-    
+
+    void startBackgroundSeed();
+    QFutureWatcher<void> *_seedWatcher = nullptr;
+
     // UI - Mode selection
     QRadioButton* _fitsRadio;
     QRadioButton* _mappingRadio;

@@ -22,6 +22,7 @@ class Project;
 class Star;
 class Photometry;
 class Spectrum;
+class SpectrumIndexRow;
 class SpectralFit;
 class SEDModel;
 class LightcurveModel;
@@ -56,6 +57,7 @@ public:
     bool importCSV(const QString& filepath, std::shared_ptr<Project> project);
     std::shared_ptr<Photometry> loadPhotometry(const QString& starId);
     std::vector<std::shared_ptr<Spectrum>> loadSpectra(const QString& starId);
+    std::vector<SpectrumIndexRow> loadSpectraIndex(const QString &projectId);
     bool saveSpectrum(const QString& starId, std::shared_ptr<Spectrum> spectrum);
     bool deleteSpectrum(const QString& spectrumId);
     bool deleteSpectralFit(const QString& fitId);

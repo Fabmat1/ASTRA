@@ -1697,27 +1697,36 @@ void RVExtractionTask::executeFromFits()
     int fitsWithZeroRV = 0, fitsWithNonZeroRV = 0;
     int bestFitNull = 0, bestFitFound = 0;
 
-    // Only use DB fallback in legacy (non-staging) mode
-    DatabaseManager* dbm = _stagingArea ? nullptr : _controller->databaseManager();
+    DatabaseManager *dbm = _controller->databaseManager();
 
-    for (const auto& star : _stars) {
-        if (++starsProcessed % 200 == 0) {
+    for (const auto &star : _stars) {
+        if (++starsProcessed % 200 == 0)
             emit progress(QString("RV Extraction: %1/%2 stars...")
-                .arg(starsProcessed).arg(total));
-        }
+                              .arg(starsProcessed)
+                              .arg(total));
 
+        // Start with whatever is in memory (e.g. spectra added this session).
         auto spectra = star->getSpectra();
 
-        // Legacy mode only: load from DB if not in memory
-        if (spectra.empty() && dbm) {
-            spectra = dbm->loadSpectra(star->getId());
-            for (const auto& sp : spectra)
-                star->addSpectrum(sp);
+        // Pull existing DB spectra if this star isn't fully loaded.
+        // Skip the query entirely for stars known to have none (shell summary).
+        if (dbm && !star->hasSpectraLoaded() && star->getNSpectra() > 0) {
+            std::unordered_set<QString> have;
+            have.reserve(spectra.size());
+            for (const auto &sp : spectra)
+                have.insert(sp->getId());
+
+            for (const auto &sp : dbm->loadSpectra(star->getId()))
+                if (have.insert(sp->getId()).second) // dedup by id
+                    star->addSpectrum(sp);
+
+            spectra = star->getSpectra();
         }
 
-        if (spectra.empty()) continue;
+        if (spectra.empty())
+            continue;
 
-        starsWithSpectra++;
+            starsWithSpectra++;
         totalSpectra += static_cast<int>(spectra.size());
 
         auto curve = std::make_shared<RadialVelocityCurve>();
@@ -1725,11 +1734,9 @@ void RVExtractionTask::executeFromFits()
 
         for (const auto& spectrum : spectra) {
             auto fits = spectrum->getSpectralFits();
-
-            // Legacy mode only: load fits from DB if not in memory
             if (fits.empty() && dbm) {
                 fits = dbm->loadSpectralFits(spectrum->getId());
-                for (const auto& f : fits)
+                for (const auto &f : fits)
                     spectrum->addSpectralFit(f);
             }
 

@@ -546,39 +546,38 @@ void RadialVelocityImportPage::setupFitParamsGroup(QVBoxLayout* parentLayout)
 // Lifecycle
 // ════════════════════════════════════════════════════════════════
 
-void RadialVelocityImportPage::initializePage()
-{
+void RadialVelocityImportPage::initializePage() {
     LOG_INFO("RVImport", "Initializing RadialVelocityImportPage");
 
-    StarImportWizard* wiz = qobject_cast<StarImportWizard*>(wizard());
-    if (!wiz) return;
+    StarImportWizard *wiz = qobject_cast<StarImportWizard *>(wizard());
+    if (!wiz)
+        return;
 
-    auto controller = wiz->controller();
-    ImportStagingArea* staging = wiz->stagingArea();
-    DatabaseManager* dbm = controller->databaseManager();
+    auto               controller = wiz->controller();
+    ImportStagingArea *staging    = wiz->stagingArea();
+    DatabaseManager   *dbm        = controller->databaseManager();
+    const QString      projectId  = wiz->project()->getId();
 
-    // Pull spectra and fits from DB (needed for "From Fits" mode).
-    // Stars that already have them loaded will be skipped.
-    staging->pullSpectraFromDB(dbm);
-    staging->pullFitsFromDB(dbm);
-    staging->pullRVFromDB(dbm);
-
-    // Single source of truth
+    if (!staging->isDbSeeded()) {
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        staging->seedFromDB(dbm, projectId);
+        QApplication::restoreOverrideCursor();
+    }
     _importedStars = staging->allStars();
 
     _resultsReady = false;
-    _asyncBusy = false;
-    _indexBuilt = false;
+    _asyncBusy    = false;
+    _indexBuilt   = false;
     _previewTree->clear();
 
-    buildStarLookupIndex();
+    buildStarLookupIndex(); // shell-only (sourceId/alias) — no DB I/O
 
     // If background tasks still running, poll
     if (isBackgroundBusy()) {
         _extractFitsBtn->setEnabled(false);
         _statusLabel->setText(
             "⏳ Background import tasks still running. Please wait...");
-        auto* timer = new QTimer(this);
+        auto *timer = new QTimer(this);
         timer->setInterval(500);
         connect(timer, &QTimer::timeout, this, [this, timer]() {
             if (!isBackgroundBusy()) {
@@ -589,7 +588,7 @@ void RadialVelocityImportPage::initializePage()
                 buildStarLookupIndex();
                 _statusLabel->setText(
                     QString("Ready — %1 stars available for RV import.")
-                    .arg(_importedStars.size()));
+                        .arg(_importedStars.size()));
                 updatePreviewFromProject();
             }
         });
@@ -601,7 +600,7 @@ void RadialVelocityImportPage::initializePage()
 
     _statusLabel->setText(
         QString("Ready — %1 stars available. Select a data source.")
-        .arg(_importedStars.size()));
+            .arg(_importedStars.size()));
 }
 
 bool RadialVelocityImportPage::isBackgroundBusy() const
@@ -1036,18 +1035,31 @@ void RadialVelocityImportPage::onProcessTable()
     wiz->controller()->backgroundTaskManager()->queueTask(task);
 }
 
-
-void RadialVelocityImportPage::updatePreviewFromProject()
-{
+void RadialVelocityImportPage::updatePreviewFromProject() {
     _previewTree->clear();
 
-    // Use working set stars — they have RV curves attached in-memory
-    for (const auto& star : _importedStars) {
+    StarImportWizard *wiz = qobject_cast<StarImportWizard *>(wizard());
+    DatabaseManager  *dbm = (wiz && wiz->controller())
+                                ? wiz->controller()->databaseManager()
+                                : nullptr;
+
+    for (const auto &star : _importedStars) {
+        // In-memory curve (e.g. just extracted). Shells have no loader, so this
+        // is a cheap null-check, never a DB hit.
         auto curve = star->getRVCurve();
+
+        // Existing DB curve: load only for the few stars that have one.
+        if ((!curve || curve->getNumPoints() == 0) && dbm &&
+            star->getRVNPoints() > 0) {
+            curve = dbm->loadRadialVelocityCurve(star->getId());
+            if (curve)
+                star->setRVCurve(curve);
+        }
+
         if (!curve || curve->getNumPoints() == 0)
             continue;
 
-        QTreeWidgetItem* item = new QTreeWidgetItem;
+        QTreeWidgetItem *item = new QTreeWidgetItem;
 
         QString name = star->getAlias();
         if (name.isEmpty()) name = star->getSourceId();

@@ -881,18 +881,18 @@ void SpectralFitImportPage::initializePage()
         return;
     }
 
-    auto controller = importWizard->controller();
-    ImportStagingArea* staging = importWizard->stagingArea();
+    auto               controller = importWizard->controller();
+    ImportStagingArea *staging    = importWizard->stagingArea();
     DatabaseManager   *dbm        = controller->databaseManager();
-    const QString projectId = importWizard->project()->getId(); // ← need this
+    const QString      projectId  = importWizard->project()->getId();
 
-    // Seed the working set with ALL project stars so fit matching sees
-    // both staging (new) stars and DB stars not touched by the import file.
-    staging->pullAllStarsFromDB(dbm, projectId);
-
-    staging->pullSpectraFromDB(dbm); 
-    staging->pullFitsFromDB(dbm);
-
+    // Star SHELLS only (DB ∪ new staging stars). Normally already seeded
+    // off-thread by the Spectra page; safety net otherwise.
+    if (!staging->isDbSeeded()) {
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        staging->seedFromDB(dbm, projectId);
+        QApplication::restoreOverrideCursor();
+    }
     _importedStars = staging->allStars();
 
     LOG_INFO("FitImport", QString("Using %1 stars for fit matching")
@@ -955,70 +955,116 @@ bool SpectralFitImportPage::isSpectraImportRunning() const
 // Index building
 // ════════════════════════════════════════════════════════════════
 
-SpectralFitImportPage::SpectrumIndex SpectralFitImportPage::buildSpectrumLookupIndex()
-{
-    LOG_INFO("FitImport", "=== Building spectrum lookup index ===");
+SpectralFitImportPage::SpectrumIndex
+SpectralFitImportPage::buildSpectrumLookupIndex() {
+    LOG_INFO("FitImport",
+             "=== Building (lightweight) spectrum lookup index ===");
 
-    SpectrumIndex idx;
+    SpectrumIndex      idx;
     QRegularExpression numericRe("(\\d{10,})");
 
-    LOG_INFO("FitImport", QString("Indexing %1 stars").arg(_importedStars.size()));
+    // starId -> shell, for attaching spectra to the right star
+    QHash<QString, std::shared_ptr<Star>> starById;
+    starById.reserve(_importedStars.size());
 
-    for (const auto& star : _importedStars) {
-        QString starId   = star->getId();
-        QString sourceId = star->getSourceId();
-        QString alias    = star->getAlias();
+    // ── 1) Star identity index (shells only — no spectra touched) ──────────
+    for (const auto &star : _importedStars) {
+        const QString starId   = star->getId();
+        const QString sourceId = star->getSourceId();
+        const QString alias    = star->getAlias();
+        starById.insert(starId, star);
 
-        // Source-ID / alias index (multiple keys per star)
         if (!sourceId.isEmpty()) {
-            idx.sourceIdIndex[sourceId] = star;
+            idx.sourceIdIndex[sourceId]           = star;
             idx.sourceIdIndex[sourceId.toLower()] = star;
-            QRegularExpressionMatch m = numericRe.match(sourceId);
+            auto m                                = numericRe.match(sourceId);
             if (m.hasMatch())
                 idx.sourceIdIndex[m.captured(1)] = star;
         }
         if (!alias.isEmpty()) {
-            idx.sourceIdIndex[alias] = star;
+            idx.sourceIdIndex[alias]           = star;
             idx.sourceIdIndex[alias.toLower()] = star;
         }
         if (!starId.isEmpty())
             idx.sourceIdIndex[starId] = star;
+    }
 
-        // Spectra are already on the star objects (loaded by staging)
-        auto spectra = star->getSpectra();
-        if (spectra.empty())
-            continue;
+    // Helper: register one (star, spectrum) into filename + starSpectra indices
+    auto registerSpectrum = [&](const std::shared_ptr<Star>     &star,
+                                const std::shared_ptr<Spectrum> &sp) {
+        idx.starSpectraIndex[star->getId()].push_back(sp);
+        idx.totalSpectra++;
 
-        idx.totalSpectra += static_cast<int>(spectra.size());
-        idx.starSpectraIndex[starId] = spectra;
+        const QString rawFile = sp->getFile();
+        if (rawFile.isEmpty())
+            return;
 
-        // Filename index — multiple keys per spectrum
-        for (const auto& spectrum : spectra) {
-            QString rawFile = spectrum->getFile();
-            if (rawFile.isEmpty()) continue;
+        QFileInfo     fi(rawFile);
+        const QString completeBase = fi.completeBaseName().toLower();
+        const QString base         = fi.baseName().toLower();
+        const QString fileName     = fi.fileName().toLower();
 
-            QFileInfo fi(rawFile);
-            QString completeBase = fi.completeBaseName().toLower();
-            QString base         = fi.baseName().toLower();
-            QString fileName     = fi.fileName().toLower();
+        auto pair = qMakePair(star, sp);
+        if (!completeBase.isEmpty())
+            idx.filenameIndex.insert(completeBase, pair);
+        if (!base.isEmpty() && base != completeBase)
+            idx.filenameIndex.insert(base, pair);
+        if (!fileName.isEmpty() && fileName != completeBase)
+            idx.filenameIndex.insert(fileName, pair);
+    };
 
-            auto pair = qMakePair(star, spectrum);
-            if (!completeBase.isEmpty())
-                idx.filenameIndex.insert(completeBase, pair);
-            if (!base.isEmpty() && base != completeBase)
-                idx.filenameIndex.insert(base, pair);
-            if (!fileName.isEmpty() && fileName != completeBase)
-                idx.filenameIndex.insert(fileName, pair);
+    // ── 2) In-memory spectra (staged this session OR already loaded) ───────
+    //     NOTE: do NOT gate on hasSpectraLoaded(). That flag only means
+    //     "lazy-loaded from DB"; staged spectra are attached via addSpectrum()
+    //     WITHOUT setting it. The shells from loadStars carry no spectra
+    //     loader, so getSpectra() here never triggers DB I/O — it returns
+    //     in-memory only.
+    QSet<QString> inMemoryIds;
+    for (const auto &star : _importedStars) {
+        for (const auto &sp : star->getSpectra()) { // in-memory, no I/O
+            if (!sp)
+                continue;
+            inMemoryIds.insert(sp->getId());
+            registerSpectrum(star, sp);
         }
+    }
+
+    // ── 3) DB spectra (lightweight): id + file only → build shells ─────────
+    StarImportWizard *wiz = qobject_cast<StarImportWizard *>(wizard());
+    if (wiz) {
+        DatabaseManager *dbm       = wiz->controller()->databaseManager();
+        const QString    projectId = wiz->project()->getId();
+
+        const auto rows   = dbm->loadSpectraIndex(projectId); // one cheap query
+        int        shells = 0;
+        for (const auto &row : rows) {
+            // ⚠ adjust field names to match your SpectrumIndexRow struct
+            if (inMemoryIds.contains(row.spectrumId))
+                continue; // already have the real object
+            auto starIt = starById.find(row.starId);
+            if (starIt == starById.end())
+                continue; // star not in working set
+
+            auto shell = std::make_shared<Spectrum>();
+            shell->setId(row.spectrumId);
+            shell->setFile(row.file);
+            registerSpectrum(starIt.value(), shell);
+            ++shells;
+        }
+        LOG_INFO(
+            "FitImport",
+            QString("Lightweight index: %1 DB shells + %2 in-memory spectra")
+                .arg(shells)
+                .arg(inMemoryIds.size()));
     }
 
     LOG_INFO("FitImport",
              QString("=== Index complete: %1 sourceId keys, %2 filename keys, "
                      "%3 spectra across %4 stars ===")
-             .arg(idx.sourceIdIndex.size())
-             .arg(idx.filenameIndex.size())
-             .arg(idx.totalSpectra)
-             .arg(idx.starSpectraIndex.size()));
+                 .arg(idx.sourceIdIndex.size())
+                 .arg(idx.filenameIndex.size())
+                 .arg(idx.totalSpectra)
+                 .arg(idx.starSpectraIndex.size()));
 
     return idx;
 }

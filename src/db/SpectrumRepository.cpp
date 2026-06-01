@@ -183,6 +183,40 @@ std::vector<std::shared_ptr<Spectrum>> SpectrumRepository::loadSpectra(const QSt
     return spectra;
 }
 
+std::vector<SpectrumIndexRow>
+SpectrumRepository::loadSpectraIndex(const QString &projectId) {
+    std::vector<SpectrumIndexRow> rows;
+
+    QSqlQuery query(_db.threadConnection());
+    query.prepare(R"(
+        SELECT s.id, s.star_id, s.file
+        FROM spectra s
+        JOIN stars st ON st.id = s.star_id
+        WHERE st.project_id = :project_id
+    )");
+    query.bindValue(":project_id", projectId);
+
+    if (!query.exec()) {
+        qDebug() << "Failed to load spectra index:" << query.lastError();
+        return rows;
+    }
+
+    // Use positional indices: fastest, avoids column-name hashing per row
+    const int idCol     = 0; // s.id
+    const int starIdCol = 1; // s.star_id
+    const int fileCol   = 2; // s.file
+
+    while (query.next()) {
+        SpectrumIndexRow row;
+        row.spectrumId = query.value(idCol).toString();
+        row.starId     = query.value(starIdCol).toString();
+        row.file       = query.value(fileCol).toString();
+        rows.push_back(std::move(row));
+    }
+
+    return rows;
+}
+
 std::vector<std::shared_ptr<SpectralFit>> SpectrumRepository::loadSpectralFits(const QString& spectrumId)
 {
     std::vector<std::shared_ptr<SpectralFit>> fits;

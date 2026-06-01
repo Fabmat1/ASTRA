@@ -364,8 +364,14 @@ void SEDImportPage::matchEntriesToStars() {
         return;
     const QString projectId = proj->getId();
 
-    // Seed working set with every project star → unified matching pool.
-    _staging->pullAllStarsFromDB(dbm, projectId);
+    // Unified matching pool of star SHELLS (DB ∪ new staging stars).
+    // Normally already seeded off-thread by the Spectra page; this is just a
+    // cheap safety net (single bulk query, no spectra/flux loaded).
+    if (!_staging->isDbSeeded()) {
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        _staging->seedFromDB(dbm, projectId);
+        QApplication::restoreOverrideCursor();
+    }
 
     for (auto &entry : _entries) {
         if (entry.hasError)
@@ -377,11 +383,10 @@ void SEDImportPage::matchEntriesToStars() {
 
         // Extract Gaia DR3 source_id from object name
         if (!entry.objectName.isEmpty()) {
-            static QRegularExpression gaiaRe(
-                R"(Gaia\s+DR\d\s+(\d+))");
-            auto m = gaiaRe.match(entry.objectName);
+            static QRegularExpression gaiaRe(R"(Gaia\s+DR\d\s+(\d+))");
+            auto                      m = gaiaRe.match(entry.objectName);
             if (m.hasMatch())
-                sourceId = entry.objectName;   // full "Gaia DR3 ..."
+                sourceId = entry.objectName; // full "Gaia DR3 ..."
         }
 
         // Try to extract J-name from folder identifier
@@ -396,7 +401,7 @@ void SEDImportPage::matchEntriesToStars() {
         auto star =
             _staging->findMatchingStar(sourceId, alias, tic, jname, ra, dec);
 
-        // Optional safety net (should be redundant after pullAll):
+        // Safety net: should be redundant now that the whole project is seeded.
         if (!star) {
             QString matchId = dbm->findMatchingStarId(
                 projectId, sourceId, alias, tic, jname, ra, dec);

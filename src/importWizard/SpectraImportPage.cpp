@@ -2,43 +2,43 @@
 
 #include "../importWizard/SpectraImportPage.h"
 #include "../importWizard/StarImportWizard.h"
-#include "controllers/ApplicationController.h"
-#include "models/Project.h"
-#include "models/Star.h"
-#include "models/Spectrum.h"
-#include "../utils/Logger.h"
 #include "../utils/BackgroundTaskManager.h"
+#include "../utils/Logger.h"
+#include "controllers/ApplicationController.h"
 #include "db/DatabaseManager.h"
-
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QGridLayout>
-#include <QLabel>
-#include <QLineEdit>
-#include <QPushButton>
+#include "models/Project.h"
+#include "models/Spectrum.h"
+#include "models/Star.h"
+#include <QApplication>
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDir>
+#include <QDoubleSpinBox>
+#include <QFileDialog>
+#include <QFileInfo>
+#include <QFutureWatcher>
+#include <QGridLayout>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QLabel>
+#include <QLineEdit>
+#include <QListWidget>
+#include <QMessageBox>
+#include <QProgressBar>
+#include <QProgressDialog>
+#include <QPushButton>
 #include <QRadioButton>
+#include <QRegularExpression>
+#include <QSpinBox>
 #include <QStackedWidget>
+#include <QTextStream>
+#include <QTimer>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
-#include <QDoubleSpinBox>
-#include <QSpinBox>
-#include <QProgressBar>
-#include <QButtonGroup>
-#include <QListWidget>
-#include <QGroupBox>
-#include <QFileDialog>
-#include <QMessageBox>
-#include <QDir>
-#include <QFileInfo>
-#include <QTextStream>
-#include <QApplication>
-#include <QRegularExpression>
-#include <QHeaderView>  
-#include <QTimer>
+#include <QVBoxLayout>
 #include <QtConcurrent>
-#include <QFutureWatcher>
 
 #include <cmath>
 #include <algorithm>
@@ -460,39 +460,109 @@ void SpectraImportPage::setupMappingPage()
     layout->addStretch();
 }
 
-void SpectraImportPage::initializePage()
-{
-    LOG_DEBUG("SpectraImport", "Initializing SpectraImportPage");
+void SpectraImportPage::initializePage() {
+    StarImportWizard *wiz = qobject_cast<StarImportWizard *>(wizard());
+    if (!wiz)
+        return;
+    ImportStagingArea *staging = wiz->stagingArea();
 
-    StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
-    if (!importWizard) return;
-
-    auto controller = importWizard->controller();
-    ImportStagingArea* staging = importWizard->stagingArea();
-    DatabaseManager* dbm = controller->databaseManager();
-
-    // Pull existing spectra from DB for all stars in the working set.
-    // This makes the staging area the single source of truth.
-    staging->pullSpectraFromDB(dbm);
-
-    // Read stars from staging — this is the ONLY source of stars for this page
-    _importedStars = staging->allStars();
-
-    LOG_INFO("SpectraImport", QString("Working set: %1 stars for spectrum matching")
-             .arg(_importedStars.size()));
-
-    // Reset state
+    // Reset per-visit state
     _fullResultsReady = false;
-    _asyncBusy = false;
-    _indexBuilt = false;
+    _asyncBusy        = false;
+    _indexBuilt       = false;
     _matchResults.clear();
     _fullMatchResults.clear();
 
-    buildStarLookupIndex();
+    // If we already loaded the full working set on a previous visit,
+    // this is a cheap, in-memory refresh — no DB I/O, no freeze.
+    if (staging->isDbSeeded()) {
+        _importedStars = staging->allStars();
+        buildStarLookupIndex();
+        _statusLabel->setText(tr("Ready to import spectra for %1 stars.")
+                                  .arg(_importedStars.size()));
+        return;
+    }
 
-    _statusLabel->setText(QString("Ready to import spectra for %1 stars. "
-                                  "Select FITS files to scan or load a mapping file.")
-                          .arg(_importedStars.size()));
+    // First time: pull DB stars + spectra off-thread, with a progress bar.
+    _statusLabel->setText(tr("Loading existing stars and spectra…"));
+    startBackgroundSeed();
+}
+
+void SpectraImportPage::startBackgroundSeed() {
+    StarImportWizard *wiz = qobject_cast<StarImportWizard *>(wizard());
+    if (!wiz)
+        return;
+
+    ImportStagingArea *staging   = wiz->stagingArea();
+    DatabaseManager   *dbm       = wiz->controller()->databaseManager();
+    const QString      projectId = wiz->project()->getId();
+
+    _asyncBusy = true;
+
+    // Modal, non-cancellable progress dialog
+    auto *dlg = new QProgressDialog(
+        tr("Loading existing stars and spectra from the database…"), QString(),
+        0, 0, this);
+    dlg->setWindowTitle(tr("Preparing import"));
+    dlg->setWindowModality(Qt::WindowModal);
+    dlg->setMinimumDuration(0);
+    dlg->setAutoClose(false);
+    dlg->setAutoReset(false);
+    dlg->setValue(0);
+
+    // Progress updates arrive from the worker via a queued signal (GUI-safe)
+    connect(this, &SpectraImportPage::seedProgress, dlg,
+            [dlg](int done, int total) {
+                if (total > 0) {
+                    dlg->setRange(0, total);
+                    dlg->setValue(done);
+                }
+            });
+
+    // Block wizard navigation while seeding
+    if (auto *b = wizard()->button(QWizard::NextButton))
+        b->setEnabled(false);
+    if (auto *b = wizard()->button(QWizard::BackButton))
+        b->setEnabled(false);
+
+    _seedWatcher = new QFutureWatcher<void>(this);
+    connect(_seedWatcher, &QFutureWatcher<void>::finished, this,
+            [this, dlg, staging]() {
+                dlg->close();
+                dlg->deleteLater();
+                _seedWatcher->deleteLater();
+                _seedWatcher = nullptr;
+
+                // Back on GUI thread, DB work finished — now touch
+                // widgets/data.
+                _importedStars = staging->allStars();
+                buildStarLookupIndex();
+
+                _asyncBusy = false;
+                if (auto *b = wizard()->button(QWizard::NextButton))
+                    b->setEnabled(true);
+                if (auto *b = wizard()->button(QWizard::BackButton))
+                    b->setEnabled(true);
+
+                _statusLabel->setText(
+                    tr("Ready to import spectra for %1 stars. "
+                       "Select FITS files to scan or load a mapping file.")
+                        .arg(_importedStars.size()));
+            });
+
+    // The heavy work, off the GUI thread.
+    QFuture<void> fut = QtConcurrent::run([this, staging, dbm, projectId]() {
+        int lastPct = -1;
+        staging->seedFromDB(
+            dbm, projectId, [this, &lastPct](int done, int total) {
+                const int pct = (total > 0) ? (done * 100 / total) : 0;
+                if (pct != lastPct) { // throttle event flood
+                    lastPct = pct;
+                    emit seedProgress(done, total); // auto → queued to GUI
+                }
+            });
+    });
+    _seedWatcher->setFuture(fut);
 }
 
 void SpectraImportPage::buildStarLookupIndex()

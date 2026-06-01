@@ -131,45 +131,24 @@ void ImportStagingArea::seedFromDB(DatabaseManager *dbm,
     {
         QMutexLocker lock(&_mutex);
         if (_dbSeeded)
-            return; // already done
+            return;
     }
 
-    // Phase 1: load all star rows (single cheap query). Children stay lazy.
+    if (progress)
+        progress(0, 0);
+
     auto allDbStars = dbm->loadStars(projectId);
+
     {
         QMutexLocker lock(&_mutex);
         for (const auto &star : allDbStars)
             if (star && !_workingStars.contains(star->getId()))
                 _workingStars[star->getId()] = star; // not new, not dirty
+        _dbSeeded = true;
     }
 
-    // Snapshot the working set without holding the lock during DB I/O.
-    std::vector<std::shared_ptr<Star>> stars;
-    {
-        QMutexLocker lock(&_mutex);
-        stars.reserve(_workingStars.size());
-        for (auto it = _workingStars.cbegin(); it != _workingStars.cend(); ++it)
-            stars.push_back(it.value());
-    }
-
-    const int total = static_cast<int>(stars.size());
-    int       done  = 0;
     if (progress)
-        progress(0, total);
-
-    // Phase 2: eagerly load spectra (+fits, loadSpectra already cascades).
-    for (auto &star : stars) {
-        if (star && !star->hasSpectraLoaded()) {
-            auto spectra = dbm->loadSpectra(star->getId());
-            for (const auto &sp : spectra)
-                star->addSpectrum(sp);
-        }
-        if (progress)
-            progress(++done, total);
-    }
-
-    QMutexLocker lock(&_mutex);
-    _dbSeeded = true;
+        progress(1, 1);
 }
 
 void ImportStagingArea::pullSpectraFromDB(DatabaseManager* dbm)

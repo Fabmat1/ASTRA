@@ -252,10 +252,7 @@ bool LightcurveImportPage::isComplete() const
     return true;
 }
 
-int LightcurveImportPage::nextId() const
-{
-    return StarImportWizard::Page_Photometry;
-}
+int LightcurveImportPage::nextId() const { return -1; }
 
 // ══════════════════════════════════════════════════════════════
 // Mode & browsing

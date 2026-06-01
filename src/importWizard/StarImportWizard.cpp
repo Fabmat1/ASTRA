@@ -29,7 +29,6 @@ StarImportWizard::StarImportWizard(ApplicationController* controller,
     auto* lcPage = new LightcurveImportPage;
     lcPage->setStagingArea(&_staging);
     setPage(Page_LightcurveImport, lcPage);
-    setPage(Page_Photometry, new PhotometryImportPage);
 
     setOptions(QWizard::NoBackButtonOnStartPage |
                QWizard::NoCancelButtonOnLastPage);

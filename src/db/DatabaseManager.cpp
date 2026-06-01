@@ -1073,6 +1073,10 @@ std::vector<std::shared_ptr<Spectrum>> DatabaseManager::loadSpectra(const QStrin
     return _spectra->loadSpectra(starId);
 }
 
+std::vector<SpectrumIndexRow> DatabaseManager::loadSpectraIndex(const QString &projectId) {
+    return _spectra->loadSpectraIndex(projectId);
+}
+
 bool DatabaseManager::saveSpectrum(const QString& starId, std::shared_ptr<Spectrum> spectrum)
 {
     return _spectra->saveSpectrum(starId, spectrum);
