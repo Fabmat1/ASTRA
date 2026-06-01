@@ -83,6 +83,58 @@ struct DiggaFitDirectory {
     QString parseError;
 };
 
+// ── Transient: raw ISIS filesystem scan result ──────────────────────
+struct IsisScanResult {
+    QString dirPath;
+    QString gridDirName; // directory name (fallback grid label)
+    QString parentDirName;
+
+    QByteArray propertiesContent; // spectrum_properties.txt
+    QByteArray resultsTexContent; // spectroscopy_results.tex
+
+    // spec index (1-based) → path of <id>_id_<N>.dat
+    QMap<int, QString> modelDataFiles;
+
+    bool    valid = true;
+    QString error;
+};
+
+// ── Persistent: parsed ISIS directory with matching results ─────────
+struct IsisFitDirectory {
+    QString dirPath;
+    QString gridDirName;
+    QString parentDirName;
+    QString grid; // grid name parsed from .tex (preferred modelId)
+    double  chi2 = 0.0;
+
+    struct SpecMatch {
+        int     specIndex = 0; // 1-based
+        QString isisFilename;  // from spectrum_properties.txt
+        QString modelDataFile; // path to <id>_id_<N>.dat ("" if absent)
+
+        // Per-spectrum parameters (tied values fall through from .tex)
+        double teff = 0, teffError = 0;
+        double logg = 0, loggError = 0;
+        double he = 0, heError = 0;
+        double vsini = 0, vsiniError = 0;
+        double zeta = 0, zetaError = 0; // macroturbulence
+        double xi = 0, xiError = 0;     // microturbulence
+        double z = 0, zError = 0;       // metallicity
+        double vrad = 0, vradError = 0;
+
+        std::shared_ptr<Star>     matchedStar;
+        std::shared_ptr<Spectrum> matchedSpectrum;
+        bool                      matched = false;
+    };
+    std::vector<SpecMatch> specMatches;
+
+    int     totalSpectra   = 0;
+    int     matchedSpectra = 0;
+    bool    parseOk        = true;
+    QString parseError;
+};
+
+
 // ═════════════════════════════════════════════════════════════════════
 class SpectralFitImportPage : public QWizardPage
 {
@@ -103,11 +155,21 @@ public:
                              std::vector<double>& rebinnedSigmas,
                              std::vector<double>& modelSplines,
                              std::vector<uint8_t>& modelIgnore);
+    // ISIS model-data loader (used by the import task)
+    static bool loadIsisModelData(const QString        &filepath,
+                                  std::vector<double>  &wavelengths,
+                                  std::vector<double>  &modelFluxes,
+                                  std::vector<double>  &rebinnedFluxes,
+                                  std::vector<double>  &rebinnedSigmas,
+                                  std::vector<double>  &modelSplines,
+                                  std::vector<uint8_t> &modelIgnore);
 
-private slots:
+  private slots:
     void onImportModeChanged();
     void onBrowseDiggaFolder();
     void onScanDigga();
+    void onBrowseIsisFolder();
+    void onScanIsis();
 
 private:
     void setupUi();
@@ -145,6 +207,13 @@ private:
     // Check spectra import task
     bool isSpectraImportRunning() const;
 
+    // ISIS parsing (pure — background-safe)
+    static IsisFitDirectory parseIsisDirectory(const IsisScanResult &scan);
+    static void matchIsisDirectories(std::vector<IsisFitDirectory> &dirs,
+                                     const SpectrumIndex           &index);
+    void        updateIsisPreviewTable();
+    void        importIsisFits();
+
     // ── UI: Mode selection ───────────────────────────────────────
     QRadioButton* _diggaRadio;
     QRadioButton* _isisRadio;
@@ -157,8 +226,13 @@ private:
     QPushButton* _diggaScanButton;
     QProgressBar* _diggaProgress;
 
-    // ── UI: ISIS mode (stub) ────────────────────────────────────
-    QWidget* _isisPage;
+    // ── UI: ISIS mode ───────────────────────────────────────────
+    QWidget                      *_isisPage;
+    QLineEdit                    *_isisFolderEdit = nullptr;
+    QPushButton                  *_isisScanButton = nullptr;
+    QProgressBar                 *_isisProgress   = nullptr;
+    QString                       _isisRootFolder;
+    std::vector<IsisFitDirectory> _isisDirs;
 
     // ── UI: Raw mapping mode (stub) ─────────────────────────────
     QWidget* _mappingPage;
@@ -172,7 +246,8 @@ private:
     std::vector<std::shared_ptr<Star>> _importedStars;
     std::vector<DiggaFitDirectory> _diggaDirs;
     QString _diggaRootFolder;   // for relative-path display
-    bool _asyncBusy = false;
+    QProgressBar *_indexBar  = nullptr; 
+    bool          _asyncBusy = false;
 
     // ── Spectrum lookup index ───────────────────────────────────
     SpectrumIndex _specIndex;

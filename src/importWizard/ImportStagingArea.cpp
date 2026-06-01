@@ -39,6 +39,139 @@ void ImportStagingArea::pullStarsFromDB(DatabaseManager* dbm, const QString& pro
     }
 }
 
+void ImportStagingArea::pullAllStarsFromDB(DatabaseManager *dbm,
+                                           const QString   &projectId) {
+    if (!dbm)
+        return;
+    auto allDbStars = dbm->loadStars(projectId); // children stay lazy
+
+    QMutexLocker lock(&_mutex);
+    for (const auto &star : allDbStars) {
+        if (!star)
+            continue;
+        const QString id = star->getId();
+        if (!_workingStars.contains(id))
+            _workingStars[id] = star; // existing DB star: not new, not dirty
+    }
+}
+
+std::shared_ptr<Star> ImportStagingArea::findMatchingStar(
+    const QString &sourceId, const QString &alias, const QString &tic,
+    const QString &jname, double ra, double dec) const {
+    QMutexLocker lock(&_mutex);
+    auto         norm = [](QString s) { return s.trimmed().toLower(); };
+
+    auto scanId = [&](auto pred) -> std::shared_ptr<Star> {
+        for (auto it = _workingStars.cbegin(); it != _workingStars.cend(); ++it)
+            if (it.value() && pred(it.value()))
+                return it.value();
+        return nullptr;
+    };
+
+    // Strongest identifiers first — keep this order identical to
+    // findMatchingStarId
+    if (!sourceId.isEmpty())
+        if (auto s = scanId([&](auto &st) {
+                return norm(st->getSourceId()) == norm(sourceId);
+            }))
+            return s;
+    if (!tic.isEmpty())
+        if (auto s = scanId([&](auto &st) {
+                return !st->getTic().isEmpty() &&
+                       norm(st->getTic()) == norm(tic);
+            }))
+            return s;
+    if (!jname.isEmpty())
+        if (auto s = scanId([&](auto &st) {
+                return !st->getJName().isEmpty() &&
+                       norm(st->getJName()) == norm(jname);
+            }))
+            return s;
+    if (!alias.isEmpty())
+        if (auto s = scanId([&](auto &st) {
+                return !st->getAlias().isEmpty() &&
+                       norm(st->getAlias()) == norm(alias);
+            }))
+            return s;
+
+    // Coordinate fallback — tolerance MUST match findMatchingStarId
+    if (Star::isSet(ra) && Star::isSet(dec)) {
+        const double tolDeg = 2.0 / 3600.0; // 2 arcsec — align with DB matcher
+        std::shared_ptr<Star> best;
+        double                bestSep = tolDeg;
+        for (auto it = _workingStars.cbegin(); it != _workingStars.cend();
+             ++it) {
+            const auto &s = it.value();
+            if (!s || !Star::isSet(s->getRa()) || !Star::isSet(s->getDec()))
+                continue;
+            const double dra = (s->getRa() - ra) * std::cos(dec * M_PI / 180.0);
+            const double ddec = s->getDec() - dec;
+            const double sep  = std::sqrt(dra * dra + ddec * ddec);
+            if (sep < bestSep) {
+                bestSep = sep;
+                best    = s;
+            }
+        }
+        if (best)
+            return best;
+    }
+    return nullptr;
+}
+
+bool ImportStagingArea::isDbSeeded() const {
+    QMutexLocker lock(&_mutex);
+    return _dbSeeded;
+}
+
+void ImportStagingArea::seedFromDB(DatabaseManager *dbm,
+                                   const QString   &projectId,
+                                   ProgressCallback progress) {
+    if (!dbm)
+        return;
+    {
+        QMutexLocker lock(&_mutex);
+        if (_dbSeeded)
+            return; // already done
+    }
+
+    // Phase 1: load all star rows (single cheap query). Children stay lazy.
+    auto allDbStars = dbm->loadStars(projectId);
+    {
+        QMutexLocker lock(&_mutex);
+        for (const auto &star : allDbStars)
+            if (star && !_workingStars.contains(star->getId()))
+                _workingStars[star->getId()] = star; // not new, not dirty
+    }
+
+    // Snapshot the working set without holding the lock during DB I/O.
+    std::vector<std::shared_ptr<Star>> stars;
+    {
+        QMutexLocker lock(&_mutex);
+        stars.reserve(_workingStars.size());
+        for (auto it = _workingStars.cbegin(); it != _workingStars.cend(); ++it)
+            stars.push_back(it.value());
+    }
+
+    const int total = static_cast<int>(stars.size());
+    int       done  = 0;
+    if (progress)
+        progress(0, total);
+
+    // Phase 2: eagerly load spectra (+fits, loadSpectra already cascades).
+    for (auto &star : stars) {
+        if (star && !star->hasSpectraLoaded()) {
+            auto spectra = dbm->loadSpectra(star->getId());
+            for (const auto &sp : spectra)
+                star->addSpectrum(sp);
+        }
+        if (progress)
+            progress(++done, total);
+    }
+
+    QMutexLocker lock(&_mutex);
+    _dbSeeded = true;
+}
+
 void ImportStagingArea::pullSpectraFromDB(DatabaseManager* dbm)
 {
     if (!dbm) return;
@@ -255,6 +388,7 @@ void ImportStagingArea::clear()
     _newRVCurveIds.clear();
     _newSEDModelIds.clear();
     _dirtyLightcurveStarIds.clear();
+    _dbSeeded = false;
 }
 
 #include <QUuid>

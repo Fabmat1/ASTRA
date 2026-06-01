@@ -57,7 +57,338 @@ inline bool parseLong(const char*& p, const char* end, long& out)
     return true;
 }
 
+// ── .tex value parser (mirrors IsisBackend) ─────────────────────────
+QPair<double, double> parseTexValue(const QString &raw) {
+    QString s = raw;
+    s.remove(QRegularExpression(R"(\\color\{[^}]*\})"));
+    s.remove(QRegularExpression(R"(\\mathrm\{[^}]*\})"));
+    s.remove(QRegularExpression(R"(\\,)"));
+    s.remove('$');
+
+    static const QRegularExpression rePm(
+        R"(([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*\\pm\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?))");
+    if (auto m = rePm.match(s); m.hasMatch())
+        return {m.captured(1).toDouble(), m.captured(2).toDouble()};
+
+    static const QRegularExpression reAsym(
+        R"(([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*\^\{\+\{?([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\}?\}_\{-\{?([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\}?\})");
+    if (auto m = reAsym.match(s); m.hasMatch())
+        return {m.captured(1).toDouble(),
+                0.5 * (m.captured(2).toDouble() + m.captured(3).toDouble())};
+
+    static const QRegularExpression reNum(R"([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)");
+    if (auto m = reNum.match(s); m.hasMatch())
+        return {m.captured(0).toDouble(), 0.0};
+    return {0.0, 0.0};
+}
+
+struct IsisTexResults {
+    QString grid;
+    double  chi2 = 0.0;
+    QHash<QString, QPair<double, double>>
+        tied; // teff, logg, vsini, zeta, xi, z, he
+};
+
+void parseIsisTex(const QByteArray &bytes, IsisTexResults &out) {
+    const QString     content = QString::fromUtf8(bytes);
+    const QStringList lines   = content.split('\n');
+
+    auto rowExpr = [&](const QString &contains) -> std::optional<QString> {
+        for (const QString &ln : lines) {
+            if (!ln.contains(contains))
+                continue;
+            const int amp = ln.indexOf('&');
+            const int end = ln.lastIndexOf("\\\\");
+            if (amp > 0 && end > amp)
+                return ln.mid(amp + 1, end - amp - 1).trimmed();
+        }
+        return std::nullopt;
+    };
+
+    if (auto e = rowExpr("Grid ")) {
+        QString g = *e;
+        g.remove('$');
+        out.grid = g.trimmed();
+    }
+    if (auto e = rowExpr(R"(\chi^2_\mathrm{red,final})"))
+        out.chi2 = parseTexValue(*e).first;
+
+    struct Row {
+        const char *marker;
+        const char *key;
+    };
+    const Row rows[] = {
+        {"Effective temperature", "teff"},
+        {"Surface gravity", "logg"},
+        {"Projected rotational velocity", "vsini"},
+        {"Macroturbulence", "zeta"},
+        {"Microturbulence", "xi"},
+        {"Metallicity", "z"},
+        {"He abundance", "he"},
+    };
+    for (const auto &r : rows)
+        if (auto e = rowExpr(QString::fromLatin1(r.marker)))
+            out.tied[QString::fromLatin1(r.key)] = parseTexValue(*e);
+}
+
+// ── spectrum_properties.txt parser (lowercased headers) ─────────────
+struct IsisPropRow {
+    QString                filename;
+    QString                spectype;
+    QHash<QString, double> values; // key lowercased, e.g. "c1_vrad_min"
+};
+
+QVector<IsisPropRow> parseIsisProperties(const QByteArray &bytes) {
+    QVector<IsisPropRow> rows;
+    const QString        text  = QString::fromUtf8(bytes);
+    const QStringList    lines = text.split('\n');
+    if (lines.isEmpty())
+        return rows;
+
+    static const QRegularExpression reWS(R"(\s+)");
+    int                             headerLine = -1;
+    QStringList                     headers;
+    for (int i = 0; i < lines.size(); ++i) {
+        const QString t = lines[i].trimmed();
+        if (t.isEmpty())
+            continue;
+        headers    = t.split(reWS, Qt::SkipEmptyParts);
+        headerLine = i;
+        break;
+    }
+    if (headerLine < 0 || headers.isEmpty())
+        return rows;
+    for (QString &h : headers)
+        h = h.toLower();
+
+    for (int i = headerLine + 1; i < lines.size(); ++i) {
+        const QString t = lines[i].trimmed();
+        if (t.isEmpty())
+            continue;
+        const QStringList tok = t.split(reWS, Qt::SkipEmptyParts);
+        if (tok.size() != headers.size())
+            continue;
+
+        IsisPropRow r;
+        for (int c = 0; c < headers.size(); ++c) {
+            const QString &h = headers[c];
+            const QString &v = tok[c];
+            if (h == "filename")
+                r.filename = v;
+            else if (h == "spectype")
+                r.spectype = v;
+            else {
+                bool   ok = false;
+                double dv = v.toDouble(&ok);
+                if (ok)
+                    r.values.insert(h, dv);
+            }
+        }
+        rows.append(r);
+    }
+    return rows;
+}
+
 } // anonymous namespace
+
+// ════════════════════════════════════════════════════════════════
+// ISIS: parsing + matching  (file scope — NOT in anonymous namespace)
+// ════════════════════════════════════════════════════════════════
+
+IsisFitDirectory
+SpectralFitImportPage::parseIsisDirectory(const IsisScanResult &scan) {
+    IsisFitDirectory dir;
+    dir.dirPath       = scan.dirPath;
+    dir.gridDirName   = scan.gridDirName;
+    dir.parentDirName = scan.parentDirName;
+
+    if (!scan.valid) {
+        dir.parseOk    = false;
+        dir.parseError = scan.error;
+        return dir;
+    }
+
+    IsisTexResults tex;
+    parseIsisTex(scan.resultsTexContent, tex);
+    dir.grid = tex.grid;
+    dir.chi2 = tex.chi2;
+
+    const QVector<IsisPropRow> rows =
+        parseIsisProperties(scan.propertiesContent);
+    if (rows.isEmpty()) {
+        dir.parseOk    = false;
+        dir.parseError = "No spectrum rows found in spectrum_properties.txt";
+        return dir;
+    }
+
+    auto tiedOf = [&](const char *key) -> QPair<double, double> {
+        return tex.tied.value(QString::fromLatin1(key), {0.0, 0.0});
+    };
+
+    auto fill = [](const IsisPropRow &r, const QString &name, double tiedV,
+                   double tiedE, double &ov, double &oe) {
+        auto get = [&](const QString &k) -> std::optional<double> {
+            auto it = r.values.find(k);
+            return it != r.values.end() ? std::optional<double>(it.value())
+                                        : std::nullopt;
+        };
+        for (const QString &col : {"c1_" + name, name}) {
+            if (auto v = get(col)) {
+                ov      = *v;
+                auto mn = get(col + "_min");
+                auto mx = get(col + "_max");
+                oe      = (mn && mx) ? 0.5 * (*mx - *mn) : tiedE;
+                return;
+            }
+        }
+        ov = tiedV;
+        oe = tiedE;
+    };
+
+    for (int i = 0; i < rows.size(); ++i) {
+        const IsisPropRow          &r = rows[i];
+        IsisFitDirectory::SpecMatch sm;
+        sm.specIndex     = i + 1;
+        sm.isisFilename  = r.filename;
+        sm.modelDataFile = scan.modelDataFiles.value(i + 1);
+
+        fill(r, "teff", tiedOf("teff").first, tiedOf("teff").second, sm.teff,
+             sm.teffError);
+        fill(r, "logg", tiedOf("logg").first, tiedOf("logg").second, sm.logg,
+             sm.loggError);
+        fill(r, "vsini", tiedOf("vsini").first, tiedOf("vsini").second,
+             sm.vsini, sm.vsiniError);
+        fill(r, "he", tiedOf("he").first, tiedOf("he").second, sm.he,
+             sm.heError);
+        fill(r, "zeta", tiedOf("zeta").first, tiedOf("zeta").second, sm.zeta,
+             sm.zetaError);
+        fill(r, "xi", tiedOf("xi").first, tiedOf("xi").second, sm.xi,
+             sm.xiError);
+        fill(r, "z", tiedOf("z").first, tiedOf("z").second, sm.z, sm.zError);
+        fill(r, "vrad", 0.0, 0.0, sm.vrad, sm.vradError);
+
+        dir.specMatches.push_back(std::move(sm));
+    }
+
+    dir.totalSpectra = static_cast<int>(dir.specMatches.size());
+    return dir;
+}
+
+void SpectralFitImportPage::matchIsisDirectories(
+    std::vector<IsisFitDirectory> &dirs, const SpectrumIndex &index) {
+    int totalMatched = 0;
+    int loggedDirs   = 0;
+
+    for (auto &dir : dirs) {
+        dir.matchedSpectra = 0;
+        if (!dir.parseOk)
+            continue;
+
+        // ── DIAGNOSTIC: dump the first few dirs ──────────────────
+        const bool logThis = (loggedDirs++ < 5);
+        if (logThis) {
+            LOG_INFO("FitImport", QString("ISIS dir '%1' parent='%2' grid='%3' "
+                                          "spectra=%4")
+                                      .arg(dir.dirPath)
+                                      .arg(dir.parentDirName)
+                                      .arg(dir.gridDirName)
+                                      .arg(dir.specMatches.size()));
+        }
+
+        std::shared_ptr<Star> dirStar;
+        auto                  trySourceId = [&](const QString &key) -> bool {
+            auto it = index.sourceIdIndex.find(key);
+            if (it != index.sourceIdIndex.end()) {
+                dirStar = it.value();
+                return true;
+            }
+            return false;
+        };
+        trySourceId(dir.parentDirName) ||
+            trySourceId(dir.parentDirName.toLower()) ||
+            trySourceId(dir.gridDirName) ||
+            trySourceId(dir.gridDirName.toLower());
+
+        if (logThis)
+            LOG_INFO("FitImport", QString("  star-by-dir: %1")
+                                      .arg(dirStar ? dirStar->getId()
+                                                   : QStringLiteral("(none)")));
+
+        for (auto &sm : dir.specMatches) {
+            QFileInfo     fi(sm.isisFilename);
+            const QString completeBase = fi.completeBaseName().toLower();
+            const QString base         = fi.baseName().toLower();
+            const QString fullName     = fi.fileName().toLower();
+
+            bool matched = false;
+            for (const QString &key :
+                 {completeBase, base, fullName, sm.isisFilename.toLower()}) {
+                if (key.isEmpty())
+                    continue;
+                auto fnIt = index.filenameIndex.find(key);
+                if (fnIt != index.filenameIndex.end()) {
+                    sm.matchedStar     = fnIt.value().first;
+                    sm.matchedSpectrum = fnIt.value().second;
+                    sm.matched = matched = true;
+                    if (!dirStar)
+                        dirStar = sm.matchedStar;
+                    break;
+                }
+            }
+
+            if (!matched && dirStar) {
+                auto sIt = index.starSpectraIndex.find(dirStar->getId());
+                if (sIt != index.starSpectraIndex.end()) {
+                    for (const auto &sp : sIt.value()) {
+                        QFileInfo     spFi(sp->getFile());
+                        const QString spCB = spFi.completeBaseName().toLower();
+                        const QString spB  = spFi.baseName().toLower();
+                        const QString spFN = spFi.fileName().toLower();
+                        if (spCB == completeBase || spB == base ||
+                            spB == completeBase || spCB == base ||
+                            spFN == fullName) {
+                            sm.matchedStar     = dirStar;
+                            sm.matchedSpectrum = sp;
+                            sm.matched = matched = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (logThis) {
+                LOG_INFO("FitImport",
+                         QString("  spec %1 isisFilename='%2' "
+                                 "keys[%3 | %4 | %5] -> %6")
+                             .arg(sm.specIndex)
+                             .arg(sm.isisFilename)
+                             .arg(completeBase)
+                             .arg(base)
+                             .arg(fullName)
+                             .arg(sm.matched ? "MATCH" : "no match"));
+            }
+
+            if (sm.matched)
+                ++dir.matchedSpectra;
+        }
+        totalMatched += dir.matchedSpectra;
+    }
+
+    // One-time dump of a sample of index keys to compare against
+    {
+        int         n = 0;
+        QStringList sample;
+        for (auto it = index.filenameIndex.cbegin();
+             it != index.filenameIndex.cend() && n < 20; ++it, ++n)
+            sample << it.key();
+        LOG_INFO("FitImport", QString("filenameIndex sample (%1 total): %2")
+                                  .arg(index.filenameIndex.size())
+                                  .arg(sample.join(", ")));
+    }
+
+    LOG_INFO("FitImport",
+             QString("ISIS matching complete: %1 matched").arg(totalMatched));
+}
 
 // ════════════════════════════════════════════════════════════════
 // Construction & UI setup
@@ -191,13 +522,336 @@ void SpectralFitImportPage::setupIsisPage()
 {
     _isisPage = new QWidget;
     QVBoxLayout* layout = new QVBoxLayout(_isisPage);
-    QLabel* stub = new QLabel(
-        "<i>ISIS fit import is not yet implemented. "
-        "This will be available in a future version.</i>");
-    stub->setWordWrap(true);
-    stub->setAlignment(Qt::AlignCenter);
-    layout->addWidget(stub);
+
+    QGroupBox* folderGroup = new QGroupBox("ISIS Output Root Folder");
+    QVBoxLayout* folderLayout = new QVBoxLayout;
+
+    QHBoxLayout* pathLayout = new QHBoxLayout;
+    _isisFolderEdit = new QLineEdit;
+    _isisFolderEdit->setPlaceholderText(
+        "Select root folder containing ISIS spectroscopy output directories...");
+    pathLayout->addWidget(_isisFolderEdit);
+
+    QPushButton *browseBtn = new QPushButton("Browse...");
+    connect(browseBtn, &QPushButton::clicked, this,
+            &SpectralFitImportPage::onBrowseIsisFolder);
+    pathLayout->addWidget(browseBtn);
+    folderLayout->addLayout(pathLayout);
+
+    QLabel *helpLabel = new QLabel(
+        "Recursively searches for subdirectories containing both "
+        "<b>spectrum_properties.txt</b> and <b>spectroscopy_results.tex</b>. "
+        "Per-spectrum model curves are read from the matching "
+        "<b>&lt;id&gt;_id_&lt;N&gt;.dat</b> files at import time.");
+    helpLabel->setWordWrap(true);
+    folderLayout->addWidget(helpLabel);
+
+    QHBoxLayout *scanLayout = new QHBoxLayout;
+    _isisScanButton         = new QPushButton("Scan for ISIS Outputs");
+    _isisScanButton->setEnabled(false);
+    connect(_isisScanButton, &QPushButton::clicked, this,
+            &SpectralFitImportPage::onScanIsis);
+    scanLayout->addWidget(_isisScanButton);
+
+    _isisProgress = new QProgressBar;
+    _isisProgress->setVisible(false);
+    scanLayout->addWidget(_isisProgress);
+    scanLayout->addStretch();
+    folderLayout->addLayout(scanLayout);
+
+    folderGroup->setLayout(folderLayout);
+    layout->addWidget(folderGroup);
     layout->addStretch();
+}
+
+void SpectralFitImportPage::onBrowseIsisFolder() {
+    QString folder = QFileDialog::getExistingDirectory(
+        this, "Select ISIS Output Root Folder", _isisFolderEdit->text());
+    if (folder.isEmpty())
+        return;
+
+    _isisFolderEdit->setText(folder);
+    _isisScanButton->setEnabled(_indexBuilt);
+    _isisDirs.clear();
+    _previewTree->clear();
+    _statusLabel->setText(
+        _indexBuilt ? "Click 'Scan for ISIS Outputs' to search."
+                    : "⏳ Waiting for spectrum index to finish building...");
+}
+
+void SpectralFitImportPage::onScanIsis() {
+    if (_asyncBusy)
+        return;
+
+    if (isSpectraImportRunning() || !_indexBuilt) {
+        _statusLabel->setText("⏳ Spectrum index not ready yet. Please wait "
+                              "for spectra import to finish.");
+        return;
+    }
+
+    QString rootFolder = _isisFolderEdit->text().trimmed();
+    if (rootFolder.isEmpty())
+        return;
+
+    _asyncBusy = true;
+    _isisScanButton->setEnabled(false);
+    _isisProgress->setVisible(true);
+    _isisProgress->setRange(0, 0);
+    _isisRootFolder = rootFolder;
+    _statusLabel->setText("Scanning for ISIS output directories...");
+
+    SpectrumIndex indexSnapshot = _specIndex; // cheap shared_ptr refcount bump
+
+    auto future = QtConcurrent::run(
+        [rootFolder,
+         indexSnapshot]() mutable -> QPair<std::vector<IsisFitDirectory>, int> {
+            // ── Phase 1: lightweight filesystem scan ───────────────
+            // Only existence checks + tiny text files + dat *paths*.
+            std::vector<IsisScanResult>     scanResults;
+            static const QRegularExpression reIdDat(R"(_id_(\d+)\.dat$)");
+
+            auto considerDir = [&](const QString &dirPath) {
+                QDir dir(dirPath);
+                if (!dir.exists("spectrum_properties.txt") ||
+                    !dir.exists("spectroscopy_results.tex"))
+                    return;
+
+                IsisScanResult scan;
+                scan.dirPath     = dirPath;
+                scan.gridDirName = dir.dirName();
+                QDir parent(dirPath);
+                parent.cdUp();
+                scan.parentDirName = parent.dirName();
+
+                {
+                    QFile f(dir.filePath("spectrum_properties.txt"));
+                    if (f.open(QIODevice::ReadOnly))
+                        scan.propertiesContent = f.readAll();
+                    else {
+                        scan.valid = false;
+                        scan.error = "Cannot read spectrum_properties.txt";
+                    }
+                }
+                {
+                    QFile f(dir.filePath("spectroscopy_results.tex"));
+                    if (f.open(QIODevice::ReadOnly))
+                        scan.resultsTexContent = f.readAll();
+                }
+
+                const QStringList datFiles =
+                    dir.entryList({"*_id_*.dat"}, QDir::Files);
+                for (const QString &d : datFiles) {
+                    auto m = reIdDat.match(d);
+                    if (m.hasMatch())
+                        scan.modelDataFiles[m.captured(1).toInt()] =
+                            dir.filePath(d);
+                }
+
+                scanResults.push_back(std::move(scan));
+            };
+
+            considerDir(rootFolder); // include root itself
+
+            QDirIterator it(rootFolder, QDir::Dirs | QDir::NoDotAndDotDot,
+                            QDirIterator::Subdirectories);
+            while (it.hasNext())
+                considerDir(it.next());
+
+            int scanCount = static_cast<int>(scanResults.size());
+
+            // ── Phase 2: parse all dirs in parallel ────────────────
+            std::vector<IsisFitDirectory> dirs =
+                QtConcurrent::blockingMapped<std::vector<IsisFitDirectory>>(
+                    scanResults, [](const IsisScanResult &s) {
+                        return parseIsisDirectory(s);
+                    });
+
+            // ── Phase 3: match against the spectrum index ──────────
+            matchIsisDirectories(dirs, indexSnapshot);
+
+            return qMakePair(std::move(dirs), scanCount);
+        });
+
+    auto *watcher =
+        new QFutureWatcher<QPair<std::vector<IsisFitDirectory>, int>>(this);
+
+    connect(
+        watcher,
+        &QFutureWatcher<QPair<std::vector<IsisFitDirectory>, int>>::finished,
+        this, [this, watcher]() {
+            auto result = watcher->result();
+            watcher->deleteLater();
+
+            _isisDirs     = std::move(result.first);
+            int scanCount = result.second;
+
+            _asyncBusy = false;
+            _isisScanButton->setEnabled(true);
+            _isisProgress->setVisible(false);
+
+            LOG_INFO("FitImport",
+                     QString("ISIS scan complete: %1 directories found")
+                         .arg(scanCount));
+
+            if (_isisDirs.empty()) {
+                _statusLabel->setText("No ISIS output directories found. Each "
+                                      "directory must contain "
+                                      "both spectrum_properties.txt and "
+                                      "spectroscopy_results.tex.");
+                return;
+            }
+            updateIsisPreviewTable();
+        });
+
+    watcher->setFuture(future);
+}
+
+void SpectralFitImportPage::updateIsisPreviewTable() {
+    _previewTree->clear();
+    _previewTree->setUpdatesEnabled(false);
+
+    static constexpr int MAX_PREVIEW_DIRS     = 200;
+    static constexpr int MAX_CHILDREN_PER_DIR = 10;
+
+    int totalDirs    = static_cast<int>(_isisDirs.size());
+    int fullyMatched = 0, partialMatched = 0, unmatched = 0;
+    int totalSpecMatch = 0, totalSpecAll = 0;
+
+    for (const auto &dir : _isisDirs) {
+        totalSpecAll += dir.totalSpectra;
+        totalSpecMatch += dir.matchedSpectra;
+        if (!dir.parseOk || dir.matchedSpectra == 0)
+            unmatched++;
+        else if (dir.matchedSpectra == dir.totalSpectra)
+            fullyMatched++;
+        else
+            partialMatched++;
+    }
+
+    int dirsShown = 0;
+    for (const auto &dir : _isisDirs) {
+        if (dirsShown >= MAX_PREVIEW_DIRS)
+            break;
+        dirsShown++;
+
+        QTreeWidgetItem *dirItem = new QTreeWidgetItem;
+
+        QString relPath = dir.dirPath;
+        if (!_isisRootFolder.isEmpty() && relPath.startsWith(_isisRootFolder)) {
+            relPath = relPath.mid(_isisRootFolder.length());
+            if (relPath.startsWith('/') || relPath.startsWith('\\'))
+                relPath = relPath.mid(1);
+        }
+        if (relPath.isEmpty())
+            relPath = dir.gridDirName;
+        dirItem->setText(0, relPath);
+        dirItem->setText(1, dir.grid.isEmpty() ? dir.gridDirName : dir.grid);
+
+        if (!dir.parseOk) {
+            dirItem->setText(2, "(parse error)");
+            dirItem->setForeground(2, QBrush(Qt::red));
+        } else if (!dir.specMatches.empty() &&
+                   dir.specMatches.front().matchedStar) {
+            auto    star = dir.specMatches.front().matchedStar;
+            QString name = star->getAlias();
+            if (name.isEmpty())
+                name = star->getSourceId();
+            if (name.isEmpty())
+                name = star->getId();
+            dirItem->setText(2, name);
+        } else {
+            dirItem->setText(2, "(no star found)");
+            dirItem->setForeground(2, QBrush(Qt::red));
+        }
+
+        if (dir.parseOk && !dir.specMatches.empty()) {
+            const auto &s = dir.specMatches.front();
+            QStringList params;
+            if (s.teff > 0)
+                params << QString("Teff=%1").arg(s.teff, 0, 'f', 0);
+            if (s.logg > 0)
+                params << QString("logg=%1").arg(s.logg, 0, 'f', 2);
+            if (s.he != 0)
+                params << QString("He=%1").arg(s.he, 0, 'f', 2);
+            if (dir.chi2 > 0)
+                params << QString("χ²=%1").arg(dir.chi2, 0, 'f', 2);
+            dirItem->setText(3, params.join(", "));
+        }
+
+        if (!dir.parseOk) {
+            dirItem->setText(4, dir.parseError);
+            dirItem->setForeground(4, QBrush(Qt::red));
+        } else if (dir.matchedSpectra == dir.totalSpectra &&
+                   dir.totalSpectra > 0) {
+            dirItem->setText(4, QString("%1/%1 matched").arg(dir.totalSpectra));
+            dirItem->setForeground(4, QBrush(QColor(0, 150, 0)));
+        } else if (dir.matchedSpectra > 0) {
+            dirItem->setText(4, QString("%1/%2 matched")
+                                    .arg(dir.matchedSpectra)
+                                    .arg(dir.totalSpectra));
+            dirItem->setForeground(4, QBrush(QColor(200, 150, 0)));
+        } else {
+            dirItem->setText(4, QString("0/%1 matched").arg(dir.totalSpectra));
+            dirItem->setForeground(4, QBrush(Qt::red));
+        }
+
+        int childrenShown = 0;
+        for (const auto &sm : dir.specMatches) {
+            if (childrenShown >= MAX_CHILDREN_PER_DIR) {
+                int remaining =
+                    static_cast<int>(dir.specMatches.size()) - childrenShown;
+                QTreeWidgetItem *more = new QTreeWidgetItem;
+                more->setText(
+                    0, QString("... and %1 more spectra").arg(remaining));
+                more->setForeground(0, QBrush(Qt::gray));
+                dirItem->addChild(more);
+                break;
+            }
+            childrenShown++;
+
+            QTreeWidgetItem *specItem = new QTreeWidgetItem;
+            specItem->setText(
+                0,
+                QString("spec %1: %2").arg(sm.specIndex).arg(sm.isisFilename));
+            if (sm.matched && sm.matchedSpectrum) {
+                QString n = QFileInfo(sm.matchedSpectrum->getFile()).fileName();
+                if (n.isEmpty())
+                    n = sm.matchedSpectrum->getId();
+                specItem->setText(2, n);
+            } else {
+                specItem->setText(2, "(no match)");
+                specItem->setForeground(2, QBrush(Qt::red));
+            }
+            specItem->setText(3, QString("vrad=%1±%2")
+                                     .arg(sm.vrad, 0, 'f', 1)
+                                     .arg(sm.vradError, 0, 'f', 1));
+            QString status = sm.matched ? "✓" : "✗";
+            status += sm.modelDataFile.isEmpty() ? " model ✗" : " model ✓";
+            specItem->setText(4, status);
+            if (!sm.matched)
+                specItem->setForeground(4, QBrush(Qt::red));
+            dirItem->addChild(specItem);
+        }
+        _previewTree->addTopLevelItem(dirItem);
+    }
+
+    for (int i = 0; i < _previewTree->columnCount(); ++i)
+        _previewTree->resizeColumnToContents(i);
+    _previewTree->setUpdatesEnabled(true);
+
+    QString statusText = QString("Found %1 ISIS directories — %2 fully "
+                                 "matched, %3 partial, %4 unmatched "
+                                 "(%5/%6 spectra matched)")
+                             .arg(totalDirs)
+                             .arg(fullyMatched)
+                             .arg(partialMatched)
+                             .arg(unmatched)
+                             .arg(totalSpecMatch)
+                             .arg(totalSpecAll);
+    if (totalDirs > MAX_PREVIEW_DIRS)
+        statusText +=
+            QString(" — showing first %1 directories").arg(MAX_PREVIEW_DIRS);
+    _statusLabel->setText(statusText);
 }
 
 void SpectralFitImportPage::setupMappingPage()
@@ -229,17 +883,16 @@ void SpectralFitImportPage::initializePage()
 
     auto controller = importWizard->controller();
     ImportStagingArea* staging = importWizard->stagingArea();
-    DatabaseManager* dbm = controller->databaseManager();
+    DatabaseManager   *dbm        = controller->databaseManager();
+    const QString projectId = importWizard->project()->getId(); // ← need this
 
-    // Pull spectra from DB for any stars that don't have them yet.
-    // Stars that already got spectra from SpectraImportPage will be skipped
-    // inside pullSpectraFromDB (it checks hasSpectraLoaded).
-    staging->pullSpectraFromDB(dbm);
+    // Seed the working set with ALL project stars so fit matching sees
+    // both staging (new) stars and DB stars not touched by the import file.
+    staging->pullAllStarsFromDB(dbm, projectId);
 
-    // Pull existing fits from DB for spectra that don't have them yet.
+    staging->pullSpectraFromDB(dbm); 
     staging->pullFitsFromDB(dbm);
 
-    // Single source of truth
     _importedStars = staging->allStars();
 
     LOG_INFO("FitImport", QString("Using %1 stars for fit matching")
@@ -266,6 +919,7 @@ void SpectralFitImportPage::initializePage()
                 _specIndex = buildSpectrumLookupIndex();
                 _indexBuilt = true;
                 _diggaScanButton->setEnabled(!_diggaFolderEdit->text().trimmed().isEmpty());
+                _isisScanButton->setEnabled(!_isisFolderEdit->text().trimmed().isEmpty());
                 _statusLabel->setText(
                     QString("Ready — %1 stars, %2 spectra indexed.")
                     .arg(_specIndex.sourceIdIndex.size())
@@ -373,14 +1027,17 @@ SpectralFitImportPage::SpectrumIndex SpectralFitImportPage::buildSpectrumLookupI
 // Mode switching
 // ════════════════════════════════════════════════════════════════
 
-void SpectralFitImportPage::onImportModeChanged()
-{
-    if (_diggaRadio->isChecked())        _modeStack->setCurrentIndex(0);
-    else if (_isisRadio->isChecked())    _modeStack->setCurrentIndex(1);
-    else                                 _modeStack->setCurrentIndex(2);
+void SpectralFitImportPage::onImportModeChanged() {
+    if (_diggaRadio->isChecked())
+        _modeStack->setCurrentIndex(0);
+    else if (_isisRadio->isChecked())
+        _modeStack->setCurrentIndex(1);
+    else
+        _modeStack->setCurrentIndex(2);
 
     _previewTree->clear();
     _diggaDirs.clear();
+    _isisDirs.clear();
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -848,6 +1505,178 @@ void SpectralFitImportPage::matchDiggaDirectories(
              .arg(totalMatched));
 }
 
+bool SpectralFitImportPage::loadIsisModelData(
+    const QString &filepath, std::vector<double> &wavelengths,
+    std::vector<double> &modelFluxes, std::vector<double> &rebinnedFluxes,
+    std::vector<double> &rebinnedSigmas, std::vector<double> &modelSplines,
+    std::vector<uint8_t> &modelIgnore) {
+    QFile file(filepath);
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    const QByteArray data = file.readAll();
+    file.close();
+
+    wavelengths.clear();
+    modelFluxes.clear();
+    rebinnedFluxes.clear();
+    rebinnedSigmas.clear();
+    modelSplines.clear();
+    modelIgnore.clear();
+
+    const char *p   = data.constData();
+    const char *end = p + data.size();
+
+    auto skipWs = [&] {
+        while (p < end && (*p == ' ' || *p == '\t'))
+            ++p;
+    };
+    auto nextLine = [&] {
+        while (p < end && *p != '\n')
+            ++p;
+        if (p < end)
+            ++p;
+    };
+
+    while (p < end) {
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n'))
+            ++p;
+        if (p >= end)
+            break;
+
+        double wl, model, cont, flux, sig;
+        long   flag;
+        skipWs;
+        if (!parseDouble(p, end, wl)) {
+            nextLine();
+            continue;
+        }
+        skipWs;
+        if (!parseDouble(p, end, model)) {
+            nextLine();
+            continue;
+        }
+        skipWs;
+        if (!parseDouble(p, end, cont)) {
+            nextLine();
+            continue;
+        }
+        skipWs;
+        if (!parseDouble(p, end, flux)) {
+            nextLine();
+            continue;
+        }
+        skipWs;
+        if (!parseDouble(p, end, sig)) {
+            nextLine();
+            continue;
+        }
+        skipWs;
+        if (!parseLong(p, end, flag)) {
+            nextLine();
+            continue;
+        }
+        nextLine();
+
+        wavelengths.push_back(wl);
+        modelFluxes.push_back(model);
+        modelSplines.push_back(cont); // continuum
+        rebinnedFluxes.push_back(flux);
+        rebinnedSigmas.push_back(sig);
+        modelIgnore.push_back(static_cast<uint8_t>(flag != 0 ? 1 : 0));
+    }
+    return !wavelengths.empty();
+}
+
+void SpectralFitImportPage::importIsisFits() {
+    StarImportWizard *importWizard = qobject_cast<StarImportWizard *>(wizard());
+    if (!importWizard || !importWizard->controller())
+        return;
+    auto *controller = importWizard->controller();
+    bool  autoBest   = _markBestFitCheck->isChecked();
+
+    std::vector<IsisFitImportEntry> entries;
+
+    for (const auto &dir : _isisDirs) {
+        if (!dir.parseOk)
+            continue;
+        const QString modelId = dir.grid.isEmpty() ? dir.gridDirName : dir.grid;
+
+        for (const auto &sm : dir.specMatches) {
+            if (!sm.matched || !sm.matchedStar || !sm.matchedSpectrum)
+                continue;
+
+            auto fit                  = std::make_shared<SpectralFit>();
+            fit->teff                 = sm.teff;
+            fit->teffError            = sm.teffError;
+            fit->logg                 = sm.logg;
+            fit->loggError            = sm.loggError;
+            fit->he                   = sm.he;
+            fit->heError              = sm.heError;
+            fit->vsini                = sm.vsini;
+            fit->vsiniError           = sm.vsiniError;
+            fit->macroturbulence      = sm.zeta;
+            fit->macroturbulenceError = sm.zetaError;
+            fit->microturbulence      = sm.xi;
+            fit->microturbulenceError = sm.xiError;
+            fit->metallicity          = sm.z;
+            fit->metallicityError     = sm.zError;
+            fit->radialVelocity       = sm.vrad;
+            fit->radialVelocityError  = sm.vradError;
+            fit->chi2                 = dir.chi2;
+            fit->modelId              = modelId;
+
+            IsisFitImportEntry e;
+            e.starId        = sm.matchedStar->getId();
+            e.spectrumId    = sm.matchedSpectrum->getId();
+            e.spectrum      = sm.matchedSpectrum;
+            e.fit           = fit;
+            e.modelDataPath = sm.modelDataFile;
+            entries.push_back(std::move(e));
+        }
+    }
+
+    if (entries.empty()) {
+        _statusLabel->setText("No matched ISIS fits to import.");
+        return;
+    }
+
+    // Auto-best per spectrum (lowest reduced χ²) — identical policy to DIGGA
+    if (autoBest) {
+        QHash<QString, std::vector<int>> specGroups;
+        for (int i = 0; i < (int)entries.size(); ++i)
+            specGroups[entries[i].spectrumId].push_back(i);
+
+        for (auto it = specGroups.cbegin(); it != specGroups.cend(); ++it) {
+            double bestChi2 = std::numeric_limits<double>::max();
+            auto existing = entries[it.value().front()].spectrum->getBestFit();
+            if (existing && existing->chi2 > 0.0)
+                bestChi2 = existing->chi2;
+
+            int bestIdx = -1;
+            for (int idx : it.value()) {
+                double c = entries[idx].fit->chi2;
+                if (c > 0.0 && c < bestChi2) {
+                    bestChi2 = c;
+                    bestIdx  = idx;
+                }
+            }
+            if (bestIdx >= 0)
+                entries[bestIdx].fit->isBestFit = true;
+        }
+    }
+
+    int count = static_cast<int>(entries.size());
+    _statusLabel->setText(
+        QString("Queued %1 ISIS spectral fits for background import.")
+            .arg(count));
+    LOG_INFO("FitImport",
+             QString("Queuing %1 ISIS fits for background import").arg(count));
+
+    auto *task = new IsisFitImportTask(std::move(entries), controller);
+    task->setStagingArea(importWizard->stagingArea());
+    controller->backgroundTaskManager()->queueTask(task);
+}
+
 // ════════════════════════════════════════════════════════════════
 // Plotdata loading
 // ════════════════════════════════════════════════════════════════
@@ -1213,12 +2042,44 @@ void SpectralFitImportPage::importDiggaFits()
 // Validation (Next button)
 // ════════════════════════════════════════════════════════════════
 
-bool SpectralFitImportPage::validatePage()
-{
+bool SpectralFitImportPage::validatePage() {
     if (_asyncBusy) {
-        QMessageBox::information(this, "Processing",
+        QMessageBox::information(
+            this, "Processing",
             "Background scanning is still running. Please wait.");
         return false;
+    }
+
+    if (_isisRadio->isChecked()) {
+        if (_isisDirs.empty()) {
+            auto reply = QMessageBox::question(
+                this, "No Fits Scanned",
+                "No ISIS fit directories have been scanned.\n\n"
+                "Skip this step and continue?",
+                QMessageBox::Yes | QMessageBox::No);
+            return reply == QMessageBox::Yes;
+        }
+        int matched = 0, unmatched = 0, total = 0;
+        for (const auto &dir : _isisDirs)
+            for (const auto &sm : dir.specMatches) {
+                ++total;
+                sm.matched ? ++matched : ++unmatched;
+            }
+        QString msg =
+            QString("%1 ISIS directories scanned, %2 total spectra.\n\n"
+                    "• %3 matched (will receive fit data)\n"
+                    "• %4 unmatched (skipped)\n\n"
+                    "Import will run in the background. Continue?")
+                .arg(_isisDirs.size())
+                .arg(total)
+                .arg(matched)
+                .arg(unmatched);
+        if (QMessageBox::question(this, "Confirm Import", msg,
+                                  QMessageBox::Yes | QMessageBox::No) !=
+            QMessageBox::Yes)
+            return false;
+        importIsisFits();
+        return true;
     }
 
     if (!_diggaRadio->isChecked())

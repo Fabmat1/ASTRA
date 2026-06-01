@@ -62,6 +62,9 @@ public:
     // ── Lifecycle ───────────────────────────────────────────────
     void clear();
     using ProgressCallback = std::function<void(int done, int total)>;
+    void seedFromDB(DatabaseManager *dbm, const QString &projectId,
+                    ProgressCallback progress = {});
+    bool isDbSeeded() const;
 
     bool commitAll(DatabaseManager* dbm,
                 const QString& projectId,
@@ -71,9 +74,19 @@ public:
     bool stageLightcurve(const QString& starId,
                          const QString& instrument,
                          const std::vector<LightcurvePoint>& points);
+    
+    // Pull ALL project stars into the working set (lightweight: children
+    // lazy-load). Stars added this way are NOT marked new/dirty.
+    void pullAllStarsFromDB(DatabaseManager *dbm, const QString &projectId);
 
+    // In-memory match across the unified working set (DB + new staging stars).
+    std::shared_ptr<Star> findMatchingStar(const QString &sourceId,
+                                           const QString &alias,
+                                           const QString &tic,
+                                           const QString &jname, double ra,
+                                           double dec) const;
 
-private:
+  private:
     void deduplicateStars();
     mutable QMutex _mutex;
 
@@ -85,7 +98,8 @@ private:
     QSet<QString> _newFitIds;
     QSet<QString> _newRVCurveIds;
     QSet<QString> _newSEDModelIds;
-    QSet<QString> _dirtyLightcurveStarIds;                  // ← NEW
+    QSet<QString> _dirtyLightcurveStarIds;
+    bool          _dbSeeded = false;
 };
 
 #endif // IMPORTSTAGINGAREA_H

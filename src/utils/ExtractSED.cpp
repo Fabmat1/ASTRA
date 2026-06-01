@@ -16,6 +16,37 @@
 
 namespace {
 
+// Whitespace tokenizer over a byte range — produces views, no allocations.
+inline int splitWhitespace(const char *b, const char *e, std::string_view *out,
+                           int maxTok) {
+    int n = 0;
+    while (b < e && n < maxTok) {
+        while (b < e && (*b == ' ' || *b == '\t' || *b == '\r'))
+            ++b;
+        if (b >= e)
+            break;
+        const char *s = b;
+        while (b < e && *b != ' ' && *b != '\t' && *b != '\r')
+            ++b;
+        out[n++] = std::string_view(s, static_cast<size_t>(b - s));
+    }
+    return n;
+}
+
+inline bool toDouble(std::string_view sv, double &out) {
+    auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), out);
+    return ec == std::errc();
+}
+
+inline bool toInt(std::string_view sv, int &out) {
+    auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), out);
+    return ec == std::errc();
+}
+
+inline QString toQString(std::string_view sv) {
+    return QString::fromUtf8(sv.data(), static_cast<int>(sv.size()));
+}
+
 // ── Whitespace-delimited tokenizer that respects quoted strings ─
 QStringList tokenizeLine(const QString& line)
 {
@@ -23,108 +54,118 @@ QStringList tokenizeLine(const QString& line)
 }
 
 // ── Parse photometry_fit_mag.txt ─────────────────────────────
-bool parseObservedPhotometry(const QString& filepath,
-                             std::vector<SEDPhotometryPoint>& points)
-{
+bool parseObservedPhotometry(const QString                   &filepath,
+                             std::vector<SEDPhotometryPoint> &points) {
     QFile file(filepath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+    if (!file.open(QIODevice::ReadOnly))
         return false;
+    const QByteArray data = file.readAll();
+    file.close();
 
-    QTextStream in(&file);
-    bool headerSkipped = false;
+    const char *p   = data.constData();
+    const char *end = p + data.size();
+    points.reserve(static_cast<size_t>(std::count(p, end, '\n')));
 
-    while (!in.atEnd()) {
-        QString line = in.readLine().trimmed();
-        if (line.isEmpty()) continue;
+    bool             headerChecked = false;
+    std::string_view tok[16];
 
-        // Skip header line(s) — detect by first token being non-numeric
-        if (!headerSkipped) {
-            bool ok;
-            tokenizeLine(line).first().toDouble(&ok);
-            if (!ok) {
-                headerSkipped = true;
-                continue;
-            }
-            headerSkipped = true;
+    while (p < end) {
+        const char *nl   = static_cast<const char *>(memchr(p, '\n', end - p));
+        const char *beg  = p;
+        const char *lend = nl ? nl : end;
+        p                = nl ? nl + 1 : end;
+
+        const int nt = splitWhitespace(beg, lend, tok, 16);
+        if (nt == 0)
+            continue;
+
+        if (!headerChecked) { // detect header by non-numeric col 0
+            headerChecked = true;
+            double probe;
+            if (!toDouble(tok[0], probe))
+                continue; // header row → skip
+            // otherwise it's data; fall through
         }
 
-        QStringList tok = tokenizeLine(line);
-        if (tok.size() < 12) continue;
+        if (nt < 12)
+            continue;
 
-        SEDPhotometryPoint p;
-        p.lambdaMin    = tok[0].toDouble();
-        p.lambda       = tok[1].toDouble();
-        p.lambdaMax    = tok[2].toDouble();
-        p.fluxMin      = tok[3].toDouble();
-        p.flux         = tok[4].toDouble();
-        p.fluxMax      = tok[5].toDouble();
-        p.diff         = tok[6].toDouble();
-        p.diffErr      = tok[7].toDouble();
-        p.passband     = tok[8];
-        p.system       = tok[9];
-        p.flag         = tok[10].toInt();
-        p.vizierCatalog = tok[11];
+        SEDPhotometryPoint pt;
+        toDouble(tok[0], pt.lambdaMin);
+        toDouble(tok[1], pt.lambda);
+        toDouble(tok[2], pt.lambdaMax);
+        toDouble(tok[3], pt.fluxMin);
+        toDouble(tok[4], pt.flux);
+        toDouble(tok[5], pt.fluxMax);
+        toDouble(tok[6], pt.diff);
+        toDouble(tok[7], pt.diffErr);
+        pt.passband = toQString(tok[8]);
+        pt.system   = toQString(tok[9]);
+        toInt(tok[10], pt.flag);
+        pt.vizierCatalog = toQString(tok[11]);
 
-        points.push_back(p);
+        points.push_back(std::move(pt));
     }
     return !points.empty();
 }
 
 // ── Parse photometry_fit.txt ─────────────────────────────────
-bool parseModelCurve(const QString& filepath,
-                     std::vector<double>& wavelengths,
-                     std::vector<double>& totalFlux,
-                     std::vector<std::vector<double>>& compFluxes,
-                     int& numComponents)
-{
+bool parseModelCurve(const QString &filepath, std::vector<double> &wavelengths,
+                     std::vector<double>              &totalFlux,
+                     std::vector<std::vector<double>> &compFluxes,
+                     int                              &numComponents) {
     QFile file(filepath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
+    if (!file.open(QIODevice::ReadOnly)) // no Text flag: we handle \r ourselves
         return false;
+    const QByteArray data = file.readAll();
+    file.close();
 
-    QTextStream in(&file);
+    const char *p   = data.constData();
+    const char *end = p + data.size();
 
-    // Read header to determine column count
-    QString headerLine;
-    while (!in.atEnd()) {
-        headerLine = in.readLine().trimmed();
-        if (!headerLine.isEmpty()) break;
-    }
+    const int approxLines = static_cast<int>(std::count(p, end, '\n'));
+    wavelengths.reserve(approxLines);
+    totalFlux.reserve(approxLines);
 
-    QStringList headerTok = tokenizeLine(headerLine);
+    numComponents               = 0;
+    bool             haveHeader = false;
+    std::string_view tok[32];
 
-    // Determine number of columns: "l f" = 1 comp, "l f f_c1 f_c2" = 2 comp
-    int numCols = headerTok.size();
-    if (numCols >= 4) {
-        numComponents = numCols - 2;   // l, f, f_c1, f_c2, ...
-    } else {
-        numComponents = 1;             // l, f only
-    }
+    while (p < end) {
+        const char *nl   = static_cast<const char *>(memchr(p, '\n', end - p));
+        const char *beg  = p;
+        const char *lend = nl ? nl : end;
+        p                = nl ? nl + 1 : end;
 
-    compFluxes.resize(numComponents);
+        const int nt = splitWhitespace(beg, lend, tok, 32);
+        if (nt == 0)
+            continue;
 
-    while (!in.atEnd()) {
-        QString line = in.readLine().trimmed();
-        if (line.isEmpty()) continue;
+        if (!haveHeader) { // first non-empty line = header
+            numComponents = (nt >= 4) ? (nt - 2) : 1;
+            compFluxes.assign(numComponents, {});
+            for (auto &v : compFluxes)
+                v.reserve(approxLines);
+            haveHeader = true;
+            continue;
+        }
 
-        QStringList tok = tokenizeLine(line);
-        if (tok.size() < 2) continue;
-
-        bool ok1, ok2;
-        double wl = tok[0].toDouble(&ok1);
-        double fl = tok[1].toDouble(&ok2);
-        if (!ok1 || !ok2) continue;
+        if (nt < 2)
+            continue;
+        double wl, fl;
+        if (!toDouble(tok[0], wl) || !toDouble(tok[1], fl))
+            continue;
 
         wavelengths.push_back(wl);
         totalFlux.push_back(fl);
 
         for (int c = 0; c < numComponents; ++c) {
-            int col = 2 + c;
-            if (col < tok.size()) {
-                compFluxes[c].push_back(tok[col].toDouble());
-            } else {
-                // If 1-component and we have no f_c1 column, mirror the total
-                compFluxes[c].push_back(fl);
-            }
+            const int col = 2 + c;
+            double    v;
+            if (col < nt && toDouble(tok[col], v))
+                compFluxes[c].push_back(v);
+            else
+                compFluxes[c].push_back(fl); // mirror total (original behavior)
         }
     }
 
@@ -577,95 +618,85 @@ bool ExtractSED::isSEDFitDirectory(const QString& dirPath)
            dir.exists("photometry_fit_mag.txt");
 }
 
-SEDExtractResult ExtractSED::extractFromDirectory(const QString& dirPath)
-{
+SEDExtractResult ExtractSED::extractFromDirectory(const QString &dirPath) {
     SEDExtractResult result;
     result.folderName = QFileInfo(dirPath).fileName();
 
     QDir dir(dirPath);
-    if (!dir.exists()) {
-        result.errorMessage = "Directory does not exist: " + dirPath;
+
+    // Single readdir() instead of a dozen exists()/stat() calls.
+    const QStringList listing =
+        dir.entryList(QDir::Files | QDir::NoDotAndDotDot);
+    const QSet<QString> files(listing.cbegin(), listing.cend());
+
+    const auto has = [&files](const char *name) {
+        return files.contains(QLatin1String(name));
+    };
+
+    // We already validated this in findSEDDirectories, but cheap to confirm
+    // now that it's just an in-memory lookup:
+    if (!has("photometry_fit.txt") && !has("photometry_fit_mag.txt")) {
+        result.errorMessage =
+            "Not an ISIS SED fit directory (missing photometry_fit*.txt)";
         return result;
     }
 
-    // Check minimum requirements
-    if (!isSEDFitDirectory(dirPath)) {
-        result.errorMessage = "Not an ISIS SED fit directory (missing photometry_fit*.txt)";
-        return result;
-    }
-
-    auto model = std::make_shared<SEDModel>();
+    auto model          = std::make_shared<SEDModel>();
     model->creationDate = QDateTime::currentDateTime();
 
-    // ── 1. Parse model SED curve ─────────────────────────────
-    {
-        QString fitPath = dir.filePath("photometry_fit.txt");
-        if (QFile::exists(fitPath)) {
-            int nc = 1;
-            if (!parseModelCurve(fitPath,
-                                 model->modelWavelengths,
-                                 model->modelFluxes,
-                                 model->componentFluxes,
-                                 nc)) {
-                result.errorMessage = "Failed to parse photometry_fit.txt";
-                return result;
-            }
-            model->numComponents = nc;
+    // ── 1. Model SED curve ───────────────────────────────────
+    if (has("photometry_fit.txt")) {
+        int nc = 1;
+        if (!parseModelCurve(dir.filePath("photometry_fit.txt"),
+                             model->modelWavelengths, model->modelFluxes,
+                             model->componentFluxes, nc)) {
+            result.errorMessage = "Failed to parse photometry_fit.txt";
+            return result;
         }
+        model->numComponents = nc;
     }
 
-    // ── 2. Parse observed photometry ─────────────────────────
-    {
-        QString obsPath = dir.filePath("photometry_fit_mag.txt");
-        if (QFile::exists(obsPath)) {
-            parseObservedPhotometry(obsPath, model->observedPoints);
-        }
-    }
+    // ── 2. Observed photometry ───────────────────────────────
+    if (has("photometry_fit_mag.txt"))
+        parseObservedPhotometry(dir.filePath("photometry_fit_mag.txt"),
+                                model->observedPoints);
 
-    // ── 3. Parse stellar component files ─────────────────────
+    // ── 3. Stellar component files ───────────────────────────
     for (int c = 1; c <= 2; ++c) {
-        QString cPath = dir.filePath(
-            QString("photometry_results_stellar_c%1.txt").arg(c));
-        if (!QFile::exists(cPath)) continue;
+        const QString name =
+            QStringLiteral("photometry_results_stellar_c%1.txt").arg(c);
+        if (!files.contains(name))
+            continue;
 
-        // Ensure component vector is large enough
         while (static_cast<int>(model->components.size()) < c) {
             SEDComponentParams cp;
             cp.componentIndex = static_cast<int>(model->components.size()) + 1;
             model->components.push_back(cp);
         }
-
-        parseStellarComponent(cPath, model->components[c - 1]);
-
+        parseStellarComponent(dir.filePath(name), model->components[c - 1]);
         if (c > model->numComponents)
             model->numComponents = c;
     }
 
-    // ── 4. Parse TeX results (overrides/supplements above) ───
-    {
-        QString texPath = dir.filePath("photometry_results.tex");
-        if (QFile::exists(texPath)) {
-            parseTexResults(texPath, model);
-        }
-    }
+    // ── 4. TeX results ───────────────────────────────────────
+    if (has("photometry_results.tex"))
+        parseTexResults(dir.filePath("photometry_results.tex"), model);
 
-    // ── 5. Set component indices ─────────────────────────────
-    for (int i = 0; i < static_cast<int>(model->components.size()); ++i) {
+    // ── 5. Component indices ─────────────────────────────────
+    for (int i = 0; i < static_cast<int>(model->components.size()); ++i)
         model->components[i].componentIndex = i + 1;
-    }
 
-    // ── 6. Build simplified photometric points ───────────────
+    // ── 6. Photometric points ────────────────────────────────
     buildPhotometricPoints(model->observedPoints, result.photometricPoints);
 
-    // ── 7. Populate result ───────────────────────────────────
-    result.model       = model;
-    result.objectName  = model->objectName;
-    result.success     = true;
+    // ── 7. Result + photometry.dat merge ─────────────────────
+    result.model      = model;
+    result.objectName = model->objectName;
+    result.success    = true;
 
-    // Merge magnitude data from photometry.dat if present
-    QString photDat = dirPath + "/photometry.dat";
-    if (QFile::exists(photDat) && result.model)
-        mergePhotometryDat(photDat, result.model->observedPoints);
+    if (has("photometry.dat"))
+        mergePhotometryDat(dir.filePath("photometry.dat"),
+                           model->observedPoints);
 
     return result;
 }

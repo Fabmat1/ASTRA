@@ -1,6 +1,11 @@
 #ifndef BACKGROUNDTASKMANAGER_H
 #define BACKGROUNDTASKMANAGER_H
+
 #pragma once
+
+#include "controllers/ApplicationController.h"
+#include "importWizard/ImportStagingArea.h"
+#include "utils/Logger.h"
 
 #include <QObject>
 #include <QThread>
@@ -11,7 +16,6 @@
 #include <QHash>          
 #include <QTimer>
 #include <QLabel>
-
 #include <memory>
 #include <vector>
 #include <atomic>
@@ -308,6 +312,39 @@ private:
 };
 
 // ============================================================================
+// IsisFitImportTask - Background task for importing ISIS spectral fits
+// ============================================================================
+
+struct IsisFitImportEntry {
+    QString                      starId;
+    QString                      spectrumId;
+    std::shared_ptr<Spectrum>    spectrum;
+    std::shared_ptr<SpectralFit> fit;
+    QString                      modelDataPath; // <id>_id_<N>.dat
+};
+
+class IsisFitImportTask : public BackgroundTask {
+    Q_OBJECT
+
+  public:
+    IsisFitImportTask(std::vector<IsisFitImportEntry> entries,
+                      ApplicationController          *controller,
+                      QObject                        *parent = nullptr);
+
+    QString taskName() const override { return "ISIS Fit Import"; }
+
+  public slots:
+    void execute() override;
+
+  signals:
+    void importComplete(int imported, int failed);
+
+  private:
+    std::vector<IsisFitImportEntry> _entries;
+    ApplicationController          *_controller;
+};
+
+// ============================================================================
 // RVExtractionTask — Extract RV from spectral fits in background
 // ============================================================================
 
@@ -453,6 +490,38 @@ private:
     std::vector<std::shared_ptr<Instrument>> _instruments;
     double resolveResolutionForSpectrum(const std::shared_ptr<Spectrum>& spectrum) const;
     double determineSystematicForSpectrum(const std::shared_ptr<Spectrum>& spectrum) const;
+};
+
+class StagingSeedTask : public BackgroundTask {
+    Q_OBJECT
+  public:
+    StagingSeedTask(ImportStagingArea *staging, QString projectId,
+                    ApplicationController *controller,
+                    QObject               *parent = nullptr)
+        : BackgroundTask(parent), _staging(staging),
+          _projectId(std::move(projectId)), _controller(controller) {}
+
+    QString taskName() const override { return "Loading project stars"; }
+
+  public slots:
+    void execute() override {
+        LOG_SET_THREAD_NAME("StagingSeed");
+        _staging->seedFromDB(
+            _controller->databaseManager(), _projectId,
+            [this](int done, int total) {
+                const int pct = total > 0 ? done * 100 / total : 100;
+                emit progress(QString("Loading stars & spectra: %1 / %2 (%3%)")
+                                  .arg(done)
+                                  .arg(total)
+                                  .arg(pct));
+            });
+        emit finished(true, "Project stars loaded");
+    }
+
+  private:
+    ImportStagingArea     *_staging;
+    QString                _projectId;
+    ApplicationController *_controller;
 };
 
 #endif // BACKGROUNDTASKMANAGER_H

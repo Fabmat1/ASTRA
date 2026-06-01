@@ -287,20 +287,23 @@ void SEDImportPage::scanDirectories()
     emit completeChanged();
 }
 
-void SEDImportPage::findSEDDirectories(const QString& rootPath,
-                                       QStringList& out)
-{
-    QDirIterator it(rootPath, QDir::Dirs | QDir::NoDotAndDotDot,
-                    QDirIterator::Subdirectories);
+void SEDImportPage::findSEDDirectories(const QString &rootPath,
+                                       QStringList   &out) {
+    static const QStringList markers{QStringLiteral("photometry_fit.txt"),
+                                     QStringLiteral("photometry_fit_mag.txt")};
+
+    // Name-filtered iteration: matching happens on the names returned by
+    // readdir(), so there are NO extra stat() calls per directory.
+    QSet<QString> dirs;
+    QDirIterator  it(rootPath, markers, QDir::Files,
+                     QDirIterator::Subdirectories);
     while (it.hasNext()) {
-        QString path = it.next();
-        if (ExtractSED::isSEDFitDirectory(path))
-            out.append(path);
+        it.next();
+        dirs.insert(it.fileInfo().absolutePath()); // dedupe: 2 markers → 1 dir
     }
 
-    // Also check the root itself
-    if (ExtractSED::isSEDFitDirectory(rootPath))
-        out.append(rootPath);
+    for (const auto &d : dirs)
+        out.append(d);
 }
 
 bool SEDImportPage::parsePhotometryDatCoords(const QString& dirPath,
@@ -350,31 +353,26 @@ QString SEDImportPage::extractStarIdentifier(const QString& sedDir)
 // Star matching
 // ══════════════════════════════════════════════════════════════
 
-void SEDImportPage::matchEntriesToStars()
-{
-    auto* importWizard = qobject_cast<StarImportWizard*>(wizard());
-    if (!importWizard || !importWizard->controller()) return;
+void SEDImportPage::matchEntriesToStars() {
+    auto *importWizard = qobject_cast<StarImportWizard *>(wizard());
+    if (!importWizard || !importWizard->controller())
+        return;
 
-    auto* dbm = importWizard->controller()->databaseManager();
+    auto *dbm  = importWizard->controller()->databaseManager();
     auto  proj = importWizard->project();
-    if (!dbm || !proj) return;
+    if (!dbm || !proj || !_staging)
+        return;
     const QString projectId = proj->getId();
 
-    // Pre-load all project stars for display-name lookup
-    auto allStars = dbm->loadStars(projectId);
-    QHash<QString, std::shared_ptr<Star>> starMap;
-    for (const auto& s : allStars)
-        starMap[s->getId()] = s;
+    // Seed working set with every project star → unified matching pool.
+    _staging->pullAllStarsFromDB(dbm, projectId);
 
-    for (auto& entry : _entries) {
-        if (entry.hasError) continue;
+    for (auto &entry : _entries) {
+        if (entry.hasError)
+            continue;
 
-        // Build match identifiers
-        QString sourceId;
-        QString alias = entry.starIdentifier;
-        QString jname;
-        QString tic;
-        double  ra  = entry.coordsValid ? entry.ra  : std::nan("");
+        QString sourceId, alias = entry.starIdentifier, jname, tic;
+        double  ra  = entry.coordsValid ? entry.ra : std::nan("");
         double  dec = entry.coordsValid ? entry.dec : std::nan("");
 
         // Extract Gaia DR3 source_id from object name
@@ -395,16 +393,20 @@ void SEDImportPage::matchEntriesToStars()
                 jname = m.captured(1);
         }
 
-        QString matchId = dbm->findMatchingStarId(
-            projectId, sourceId, alias, tic, jname, ra, dec);
+        auto star =
+            _staging->findMatchingStar(sourceId, alias, tic, jname, ra, dec);
 
-        if (!matchId.isEmpty()) {
-            entry.matchedStarId = matchId;
-            auto it = starMap.find(matchId);
-            if (it != starMap.end())
-                entry.matchedStarDisplay = starDisplayName(it.value());
-            else
-                entry.matchedStarDisplay = matchId;
+        // Optional safety net (should be redundant after pullAll):
+        if (!star) {
+            QString matchId = dbm->findMatchingStarId(
+                projectId, sourceId, alias, tic, jname, ra, dec);
+            if (!matchId.isEmpty())
+                star = _staging->getStar(matchId);
+        }
+
+        if (star) {
+            entry.matchedStarId      = star->getId();
+            entry.matchedStarDisplay = starDisplayName(star);
         }
     }
 }

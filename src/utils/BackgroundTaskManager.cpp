@@ -1374,6 +1374,8 @@ void DiggaFitImportTask::execute()
                 entry.fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
             entry.spectrum->addSpectralFit(entry.fit);
             _stagingArea->markFitNew(entry.fit->getId());
+            _stagingArea->markStarDirty(
+                entry.starId);
             imported++;
 
             if ((i & 1023) == 0)  // every 1024
@@ -1404,6 +1406,130 @@ void DiggaFitImportTask::execute()
         emit importComplete(imported, failed);
         emit finished(failed == 0,
                       QString("Imported %1 fits (%2 failed)").arg(imported).arg(failed));
+    }
+}
+
+// ════════════════════════════════════════════════════════════════
+// IsisFitImportTask
+// ════════════════════════════════════════════════════════════════
+
+IsisFitImportTask::IsisFitImportTask(std::vector<IsisFitImportEntry> entries,
+                                     ApplicationController          *controller,
+                                     QObject                        *parent)
+    : BackgroundTask(parent), _entries(std::move(entries)),
+      _controller(controller) {}
+
+void IsisFitImportTask::execute() {
+    LOG_SET_THREAD_NAME("IsisFitImport");
+
+    const int total = static_cast<int>(_entries.size());
+    if (total == 0) {
+        emit importComplete(0, 0);
+        emit finished(true, "ISIS Fit Import: nothing to do");
+        return;
+    }
+
+    emit progress(QString("Loading model data for %1 fits...").arg(total));
+
+    // ── Phase 1: PARALLEL model-data loading ────────────────────
+    // Each entry owns a unique `fit` shared_ptr (created in
+    // SpectralFitImportPage::importIsisFits), so writing into
+    // entry.fit->modelWavelengths etc. from different threads is
+    // race-free as long as no two entries share a fit.
+    //
+    // entry.spectrum may be shared between entries, but we never
+    // touch it here — only in Phase 2 (sequential).
+
+    std::atomic<int> loadedCount{0};
+    std::atomic<int> loadFailed{0};
+
+    auto loadFn = [&loadedCount, &loadFailed](IsisFitImportEntry &entry) {
+        if (!entry.modelDataPath.isEmpty()) {
+            std::vector<double>  wl, mf, rbf, rbs, spl;
+            std::vector<uint8_t> ign;
+            if (SpectralFitImportPage::loadIsisModelData(
+                    entry.modelDataPath, wl, mf, rbf, rbs, spl, ign)) {
+                entry.fit->modelWavelengths = std::move(wl);
+                entry.fit->modelFluxes      = std::move(mf);
+                entry.fit->rebinnedFluxes   = std::move(rbf);
+                entry.fit->rebinnedSigmas   = std::move(rbs);
+                entry.fit->modelSplines     = std::move(spl);
+                entry.fit->modelIgnore      = std::move(ign);
+            } else {
+                loadFailed.fetch_add(1, std::memory_order_relaxed);
+            }
+        }
+        loadedCount.fetch_add(1, std::memory_order_relaxed);
+    };
+
+    auto future = QtConcurrent::map(_entries, loadFn);
+
+    while (!future.isFinished()) {
+        QThread::msleep(250);
+        const int done = loadedCount.load(std::memory_order_relaxed);
+        const int pct  = total > 0 ? (done * 100 / total) : 100;
+        emit      progress(QString("Loading model data: %1/%2 (%3%)")
+                               .arg(done)
+                               .arg(total)
+                               .arg(pct));
+    }
+    future.waitForFinished();
+
+    // ── Phase 2: SEQUENTIAL linking + staging/DB ────────────────
+    // Anything that mutates shared objects (Spectrum::addSpectralFit,
+    // staging area, DB) stays single-threaded.
+
+    emit progress(QString("Processing %1 fits...").arg(total));
+
+    int imported = 0;
+    int failed   = loadFailed.load(std::memory_order_relaxed);
+
+    if (_stagingArea) {
+        for (int i = 0; i < total; ++i) {
+            auto &entry = _entries[i];
+            if (entry.fit->getId().isEmpty())
+                entry.fit->setId(
+                    QUuid::createUuid().toString(QUuid::WithoutBraces));
+            entry.spectrum->addSpectralFit(entry.fit);
+            _stagingArea->markFitNew(entry.fit->getId());
+            _stagingArea->markStarDirty(
+                entry.starId); // ← NEW: refresh summary + star row
+            imported++;
+
+            if ((i & 1023) == 0) // every 1024
+                emit progress(QString("Staged %1/%2 fits").arg(i).arg(total));
+        }
+
+        emit importComplete(imported, failed);
+        emit finished(
+            true,
+            QString("Staged %1 fits (%2 failed)").arg(imported).arg(failed));
+    } else {
+        // Legacy mode: direct DB writes
+        emit  progress(QString("Saving %1 fits to database...").arg(total));
+        auto *dbManager = _controller->databaseManager();
+
+        for (int i = 0; i < total; ++i) {
+            auto &entry = _entries[i];
+            if (entry.fit->getId().isEmpty())
+                entry.fit->setId(
+                    QUuid::createUuid().toString(QUuid::WithoutBraces));
+            entry.spectrum->addSpectralFit(entry.fit);
+
+            if (dbManager->saveSpectralFit(entry.starId, entry.spectrumId,
+                                           entry.fit))
+                imported++;
+            else
+                failed++;
+
+            if ((i & 511) == 0)
+                emit progress(QString("Saved %1/%2 fits").arg(i).arg(total));
+        }
+
+        emit importComplete(imported, failed);
+        emit finished(
+            failed == 0,
+            QString("Imported %1 fits (%2 failed)").arg(imported).arg(failed));
     }
 }
 
