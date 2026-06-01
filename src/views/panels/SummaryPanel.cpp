@@ -1444,15 +1444,28 @@ QWidget *SummaryPanel::createCompanionSection() {
     const bool   hasMin  = std::isfinite(mMin) && mMin > 0.0;
     const bool   hasTrue = std::isfinite(mTrue) && mTrue > 0.0;
 
+    // SED primary mass
+    const double m1    = _ctx.star->getSedMass1();
+    const double eM1   = _ctx.star->getSedEMass1();
+    const bool   hasM1 = std::isfinite(m1) && m1 > 0.0;
+
+    // Light-curve inclination
+    const double incl    = _ctx.star->getPhotIncl();
+    const double eIncl   = _ctx.star->getPhotEIncl();
+    const bool   hasIncl = Star::isSet(incl) && incl > 0.0;
+
     // Also gather inputs for f(M) and a, so the section can show *something*
     // even when only some pieces are present.
     const MassInputs &in = _cachedMassInputs;
 
     const bool hasMassFunc   = in.valid;
     const bool hasSeparation = in.valid && std::isfinite(in.P) && in.P > 0.0;
-    const bool hasQ          = Star::isSet(_ctx.star->getPhotQ());
+    // q must be genuinely set AND non-zero — isSet() only rejects NaN.
+    const bool hasQ =
+        Star::isSet(_ctx.star->getPhotQ()) && _ctx.star->getPhotQ() > 0.0;
 
-    if (!hasMin && !hasTrue && !hasMassFunc && !hasSeparation && !hasQ)
+    if (!hasMin && !hasTrue && !hasMassFunc && !hasSeparation && !hasQ &&
+        !hasM1 && !hasIncl)
         return nullptr;
 
     const bool   dark   = PanelUtils::isDarkTheme();
@@ -1462,6 +1475,10 @@ QWidget *SummaryPanel::createCompanionSection() {
 
     std::vector<PropRow> rows;
 
+    if (hasM1) {
+        auto d = fmtValErr(m1, eM1, 3, "M☉");
+        rows.push_back({"M₁ (SED)", d.display, d.copy});
+    }
     if (hasMin) {
         auto d = fmtValErr(mMin, eMin, 3, "M☉");
         rows.push_back({"M₂ (min)", d.display, d.copy});
@@ -1484,6 +1501,10 @@ QWidget *SummaryPanel::createCompanionSection() {
         QString      n     = QString::number(aRsun, 'f', 2);
         QString      unit  = hasTrue ? " R☉" : " R☉ (min)";
         rows.push_back({"a", n + unit, n});
+    }
+    if (hasIncl) {
+        auto d = fmtValErr(incl, eIncl, 2, "°");
+        rows.push_back({"i (LC)", d.display, d.copy});
     }
     if (hasQ) {
         auto d =
