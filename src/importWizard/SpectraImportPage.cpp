@@ -880,8 +880,8 @@ std::vector<SpectrumMatchResult> SpectraImportPage::matchSpectraToStars()
             result.warnings << "File not found on disk";
             result.hasWarnings = true;
         }
-        result.hasWarnings = !metadata.warnings.isEmpty();
-        result.warnings = metadata.warnings;
+        result.warnings += metadata.warnings;
+        result.hasWarnings   = !result.warnings.isEmpty();
         result.matchDistance = -1.0;
         
         QString sourceId = metadata.sourceId.value_or("");

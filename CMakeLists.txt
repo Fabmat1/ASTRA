@@ -243,6 +243,7 @@ set(SOURCES
     src/utils/FilterWavelength.cpp
     src/utils/SystematicErrors.cpp
     src/utils/ClaretFilter.cpp
+    src/utils/matchSpectraToInstrument.cpp
 
     # views
     src/views/ColumnConfigDialog.cpp
@@ -364,6 +365,7 @@ set(HEADERS
     src/utils/FilterWavelength.h
     src/utils/SystematicErrors.h
     src/utils/ClaretFilter.h
+    src/utils/matchSpectraToInstrument.h
 
     # views
     src/views/BooleanColumnDelegate.h

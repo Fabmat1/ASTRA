@@ -11,6 +11,7 @@
 #include "models/Spectrum.h"
 #include "models/Star.h"
 #include "models/Time.h"
+#include "utils/matchSpectraToInstrument.h"
 #include <QDebug>
 #include <QEventLoop>
 #include <QFutureSynchronizer>
@@ -1180,26 +1181,17 @@ void SpectraImportTask::execute()
             readResult.spectrum->setInstrument(entry.instrument.value());
         }
 
-        // Auto-detect instrument and mode from spectral properties
-        if (_autoDetectInstrument && !_instruments.empty()
-            && readResult.spectrum->hasData())
-        {
-            auto wl = readResult.spectrum->getWavelengths();
-            if (wl.size() >= 2) {
-                double specWlMin = std::min(wl.front(), wl.back());
-                double specWlMax = std::max(wl.front(), wl.back());
-                int nPoints = static_cast<int>(wl.size());
-                QString hint = readResult.spectrum->getInstrument();
+        auto wl = readResult.spectrum->getWavelengths();
+        if (wl.size() >= 2) {
+            QString hint  = readResult.spectrum->getInstrument();
+            auto    match = matchSpectrumToInstrument(
+                _instruments, hint, wl);
 
-                auto match = InstrumentRepository::matchSpectralProperties(
-                    _instruments, hint, specWlMin, specWlMax, nPoints);
-
-                static constexpr double kMinConfidence = 0.25;
-                if (match.instrument && match.confidence >= kMinConfidence) {
-                    readResult.spectrum->setInstrument(match.displayString);
-                    readResult.spectrum->setInstrumentId(match.instrument->getId());
-                    readResult.spectrum->setModeKey(match.modeKey);
-                }
+            static constexpr double kMinConfidence = 0.25;
+            if (match.instrument && match.confidence >= kMinConfidence) {
+                readResult.spectrum->setInstrument(match.displayString);
+                readResult.spectrum->setInstrumentId(match.instrument->getId());
+                readResult.spectrum->setModeKey(match.modeKey);
             }
         }
 

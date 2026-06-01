@@ -290,6 +290,169 @@
             ]
         },
         {
+            "name": "WiFeS",
+            "full_name": "Wide Field Spectrograph (ANU 2.3m)",
+            "latitude": -31.27336,
+            "longitude": 149.0612,
+            "altitude": 1149.0,
+            "modes": [
+                {
+                    "key": "B3000",
+                    "display_name": "WiFeS B3000",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "B3000",
+                        "resolution_coefficients": [
+                            3000.0
+                        ],
+                        "wavelength_min": 3200.0,
+                        "wavelength_max": 5900.0
+                    }
+                },
+                {
+                    "key": "R3000",
+                    "display_name": "WiFeS R3000",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "R3000",
+                        "resolution_coefficients": [
+                            3000.0
+                        ],
+                        "wavelength_min": 5300.0,
+                        "wavelength_max": 9800.0
+                    }
+                },
+                {
+                    "key": "B7000",
+                    "display_name": "WiFeS B7000",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "B7000",
+                        "resolution_coefficients": [
+                            7000.0
+                        ],
+                        "wavelength_min": 4180.0,
+                        "wavelength_max": 5580.0
+                    }
+                },
+                {
+                    "key": "R7000",
+                    "display_name": "WiFeS R7000",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "R7000",
+                        "resolution_coefficients": [
+                            7000.0
+                        ],
+                        "wavelength_min": 5300.0,
+                        "wavelength_max": 7060.0
+                    }
+                },
+                {
+                    "key": "B3000-R3000",
+                    "display_name": "WiFeS B3000+R3000",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "B3000+R3000",
+                        "resolution_coefficients": [
+                            3000.0
+                        ],
+                        "wavelength_min": 3200.0,
+                        "wavelength_max": 9800.0,
+                        "common_setups": [
+                            {
+                                "label": "blue",
+                                "central_wavelength": 4550.0,
+                                "wavelength_min": 3200.0,
+                                "wavelength_max": 5900.0
+                            },
+                            {
+                                "label": "red",
+                                "central_wavelength": 7550.0,
+                                "wavelength_min": 5300.0,
+                                "wavelength_max": 9800.0
+                            }
+                        ]
+                    }
+                },
+                {
+                    "key": "B7000-R7000",
+                    "display_name": "WiFeS B7000+R7000",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "B7000+R7000",
+                        "resolution_coefficients": [
+                            7000.0
+                        ],
+                        "wavelength_min": 4180.0,
+                        "wavelength_max": 7060.0,
+                        "common_setups": [
+                            {
+                                "label": "blue",
+                                "central_wavelength": 4880.0,
+                                "wavelength_min": 4180.0,
+                                "wavelength_max": 5580.0
+                            },
+                            {
+                                "label": "red",
+                                "central_wavelength": 6180.0,
+                                "wavelength_min": 5300.0,
+                                "wavelength_max": 7060.0
+                            }
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "name": "Ondrejov 2m",
+            "full_name": "Ondřejov 2-m Perek Telescope (Coudé / OES)",
+            "latitude": 49.9092,
+            "longitude": 14.7822,
+            "altitude": 528.0,
+            "modes": [
+                {
+                    "key": "coude-700-Ha",
+                    "display_name": "Coudé 700 l/mm (Hα)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "700",
+                        "resolution_coefficients": [
+                            13000.0
+                        ],
+                        "wavelength_min": 6253.0,
+                        "wavelength_max": 6764.0
+                    }
+                },
+                {
+                    "key": "coude-830",
+                    "display_name": "Coudé 830 l/mm",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "830",
+                        "resolution_coefficients": [
+                            18000.0
+                        ],
+                        "wavelength_min": 6260.0,
+                        "wavelength_max": 6760.0
+                    }
+                },
+                {
+                    "key": "OES",
+                    "display_name": "OES Echelle",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "echelle",
+                        "resolution_coefficients": [
+                            51600.0
+                        ],
+                        "wavelength_min": 3753.0,
+                        "wavelength_max": 9195.0
+                    }
+                }
+            ]
+        },
+        {
             "name": "ZTF",
             "full_name": "Zwicky Transient Facility (Palomar Observatory)",
             "latitude": 33.3564,

@@ -50,6 +50,75 @@ bool DefaultFitsSpectrumReader::canRead(const QString& filepath) const
     return supportedExtensions().contains(ext);
 }
 
+// Parse "DD:MM:SS(.s)" / "DD MM SS" / "DDhMMmSSs" / plain decimal into a value.
+// Sign is taken from the raw string so "-00:41:43" survives the leading-zero
+// trap. Does NOT apply any hours->degrees conversion.
+static std::optional<double> parseSexagesimal(const QString &rawIn) {
+    QString s = rawIn.trimmed();
+    if (s.isEmpty())
+        return std::nullopt;
+
+    const double sign = s.startsWith('-') ? -1.0 : 1.0;
+
+    // Normalise all the common separators to spaces.
+    static const QRegularExpression sep(R"([:hHdDmMsS'""°’″\s]+)");
+    const QStringList               parts = s.split(sep, Qt::SkipEmptyParts);
+    if (parts.isEmpty())
+        return std::nullopt;
+
+    bool         ok = false;
+    const double a  = std::abs(parts[0].toDouble(&ok));
+    if (!ok)
+        return std::nullopt;
+
+    if (parts.size() == 1) // plain decimal value
+        return sign * a;
+
+    const double m = parts[1].toDouble(&ok);
+    if (!ok)
+        return std::nullopt;
+    const double sec = (parts.size() > 2) ? parts[2].toDouble(&ok) : 0.0;
+    if (parts.size() > 2 && !ok)
+        return std::nullopt;
+
+    return sign * (a + m / 60.0 + sec / 3600.0);
+}
+
+// Reads a coord keyword that may be a numeric value (degrees) OR a sexagesimal
+// string. For RA, sexagesimal values are treated as hours and converted to deg.
+static std::optional<double>
+findCoordinateHeader(fitsfile *fptr, const QStringList &keywords, bool isRA) {
+    for (const QString &key : keywords) {
+        int  status                = 0;
+        char value[FLEN_VALUE]     = {0};
+        char comment[FLEN_COMMENT] = {0};
+        if (fits_read_keyword(fptr, key.toUtf8().constData(), value, comment,
+                              &status) != 0)
+            continue; // keyword absent -> try next alias
+
+        QString raw = QString::fromLatin1(value).trimmed();
+        if (raw.startsWith('\'') && raw.endsWith('\'')) // unquote string cards
+            raw = raw.mid(1, raw.length() - 2).trimmed();
+        if (raw.isEmpty())
+            continue;
+
+        const bool looksSexagesimal =
+            raw.contains(':') ||
+            raw.contains(QRegularExpression(R"([hHdD])")) ||
+            raw.contains(QRegularExpression(R"(\d\s+\d)"));
+
+        auto parsed = parseSexagesimal(raw);
+        if (!parsed.has_value())
+            continue;
+
+        double deg = parsed.value();
+        if (isRA && looksSexagesimal)
+            deg *= 15.0; // hours -> degrees
+        return deg;
+    }
+    return std::nullopt;
+}
+
 std::optional<double> DefaultFitsSpectrumReader::findDoubleHeader(void* fptr, const QStringList& keywords) const
 {
     fitsfile* fits = static_cast<fitsfile*>(fptr);
@@ -105,8 +174,8 @@ SpectrumMetadata DefaultFitsSpectrumReader::readMetadata(const QString& filepath
     fits_movabs_hdu(fptr, 1, nullptr, &status);
     
     // Read metadata from header
-    metadata.ra = findDoubleHeader(fptr, RA_KEYWORDS);
-    metadata.dec = findDoubleHeader(fptr, DEC_KEYWORDS);
+    metadata.ra  = findCoordinateHeader(fptr, RA_KEYWORDS, /*isRA=*/true);
+    metadata.dec = findCoordinateHeader(fptr, DEC_KEYWORDS, /*isRA=*/false);
     metadata.mjd = findDoubleHeader(fptr, MJD_KEYWORDS);
     metadata.bjd = findDoubleHeader(fptr, BJD_KEYWORDS);
     metadata.exposureTime = findDoubleHeader(fptr, EXPTIME_KEYWORDS);
@@ -132,10 +201,16 @@ SpectrumMetadata DefaultFitsSpectrumReader::readMetadata(const QString& filepath
     
     // Check for Gaia source ID in header
     auto sourceId = findStringHeader(fptr, {"GAIA_ID", "GAIAID", "SOURCE_ID", "SOURCEID", "GAIA_DR3"});
-    if (sourceId.has_value()) {
-        metadata.sourceId = sourceId.value();
+    if (!metadata.sourceId.has_value() && metadata.objectName.has_value()) {
+        // Gaia DR2/DR3 source ids are long integer runs; ignore short numeric
+        // tokens.
+        static const QRegularExpression gaiaRe(R"((\d{10,19}))");
+        auto m = gaiaRe.match(metadata.objectName.value());
+        if (m.hasMatch())
+            metadata.sourceId = m.captured(
+                1);
     }
-    
+
     // Add warnings for missing critical data
     if (!metadata.ra.has_value()) {
         metadata.warnings << "RA not found in header";
