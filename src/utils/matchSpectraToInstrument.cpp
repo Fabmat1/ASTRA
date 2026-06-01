@@ -109,14 +109,27 @@ SpectrumShape analyzeWavelengthShape(const std::vector<double> &wavelengthsIn) {
 InstrumentMatch matchSpectrumToInstrument(
     const std::vector<std::shared_ptr<Instrument>> &instruments,
     const QString &instrumentHint, const std::vector<double> &wavelengths) {
+
     InstrumentMatch     best;
     const SpectrumShape shape = analyzeWavelengthShape(wavelengths);
     if (shape.nPoints < 2 || shape.coveredSpan <= 0.0)
         return best;
 
-    const double obsDispersion =
-        shape.coveredSpan / std::max(1, shape.nPoints - 1);
     const QString hint = instrumentHint.trimmed().toLower();
+    const double  refWl =
+        0.5 * (shape.wlMin + shape.wlMax); // common probe point
+
+    // A single contiguous range that spans a real interior gap in the data is
+    // implausible (a continuous spectrograph can't leave a hole in the middle).
+    auto straddlesInteriorGap = [&](const ModeRange &rng) -> bool {
+        for (size_t i = 0; i + 1 < shape.segments.size(); ++i) {
+            const double gapLo = shape.segments[i].maxWl;
+            const double gapHi = shape.segments[i + 1].minWl;
+            if (rng.wlMin <= gapLo && rng.wlMax >= gapHi)
+                return true;
+        }
+        return false;
+    };
 
     for (const auto &instPtr : instruments) {
         if (!instPtr)
@@ -126,45 +139,116 @@ InstrumentMatch matchSpectrumToInstrument(
         const bool        hintMatches =
             !hint.isEmpty() && instName.toLower().contains(hint);
 
+        // Gather all spectroscopic candidate ranges for this instrument.
+        struct Cand {
+            ModeRange             rng;
+            const InstrumentMode *mode;
+        };
+        std::vector<Cand> cands;
         for (const InstrumentMode &mode : inst.modes()) {
             if (!modeIsSpectroscopic(mode))
                 continue;
+            for (const ModeRange &rng : modeCandidateRanges(mode))
+                cands.push_back({rng, &mode});
+        }
+        if (cands.empty())
+            continue;
 
-            for (const ModeRange &rng : modeCandidateRanges(mode)) {
-                // (1) Span agreement (IoU on global extremes): prefers the
-                //     tightest range, so MRS beats LRS for a merged spectrum.
-                const double overlap =
-                    std::max(0.0, std::min(shape.wlMax, rng.wlMax) -
-                                      std::max(shape.wlMin, rng.wlMin));
-                const double uni       = std::max(shape.wlMax, rng.wlMax) -
-                                         std::min(shape.wlMin, rng.wlMin);
-                const double spanScore = uni > 0.0 ? overlap / uni : 0.0;
+        // Explain each data segment with the best single mode of this
+        // instrument, then aggregate weighted by segment width.
+        double      totalW = 0.0, accum = 0.0;
+        QStringList usedLabels;
+        QString     bestModeKey;
+        double      joinRes       = -1.0;
+        bool        resConsistent = true;
 
-                // (2) Resolution agreement: strong LRS vs MRS discriminator,
-                //     using dispersion over COVERED pixels only.
+        for (const WavelengthSegment &seg : shape.segments) {
+            const double segW = seg.width();
+            if (segW <= 0.0)
+                continue;
+
+            const double segCtr  = 0.5 * (seg.minWl + seg.maxWl);
+            const double obsDisp = seg.medianStep > 0.0
+                                       ? seg.medianStep
+                                       : segW / std::max(1, seg.nPoints - 1);
+
+            double  bestSeg = 0.0;
+            QString bestLbl, bestKey;
+            double  bestRefRes = -1.0;
+
+            for (const Cand &c : cands) {
+                const ModeRange &rng = c.rng;
+
+                const double ov =
+                    std::max(0.0, std::min(seg.maxWl, rng.wlMax) -
+                                      std::max(seg.minWl, rng.wlMin));
+                if (ov <= 0.0)
+                    continue;
+
+                // Per-segment IoU: rewards a range that matches the arm extent,
+                // punishes one that merely engulfs it.
+                const double recall = ov / segW;
+                const double precision =
+                    ov / std::max(rng.wlMax - rng.wlMin, 1e-9);
+                const double spanScore = recall * precision;
+
+                // Resolution agreement from the actual per-segment sampling.
                 double       resScore = 0.5;
-                const double R        = mode.resolutionAt(rng.centralWl);
-                if (R > 0.0 && obsDispersion > 0.0) {
-                    const double expDispersion =
-                        rng.centralWl / (R * 2.5); // ~2.5 px/res-elem
+                const double R        = c.mode->resolutionAt(segCtr);
+                if (R > 0.0 && obsDisp > 0.0) {
+                    const double expDisp = segCtr / (R * 2.5);
                     const double logr =
-                        std::log(std::max(expDispersion / obsDispersion, 1e-6));
-                    resScore = std::exp(-(logr * logr) / (2.0 * 0.5 * 0.5));
+                        std::log(std::max(expDisp / obsDisp, 1e-6));
+                    resScore = std::exp(-(logr * logr) / (2.0 * 0.35 * 0.35));
                 }
 
-                double score = 0.55 * spanScore + 0.35 * resScore + 0.10;
-                if (hintMatches)
-                    score += 0.15;
-                score = std::clamp(score, 0.0, 1.0);
+                const double gapPenalty = straddlesInteriorGap(rng) ? 0.4 : 1.0;
+                const double segScore =
+                    (0.7 * spanScore + 0.3 * resScore) * gapPenalty;
 
-                if (score > best.confidence) {
-                    best.instrument = instPtr.get();
-                    best.modeKey    = mode.key();
-                    best.displayString =
-                        rng.label.isEmpty() ? instName : rng.label;
-                    best.confidence = score;
+                if (segScore > bestSeg) {
+                    bestSeg    = segScore;
+                    bestLbl    = rng.label.isEmpty() ? instName : rng.label;
+                    bestKey    = c.mode->key();
+                    bestRefRes = c.mode->resolutionAt(refWl);
                 }
             }
+
+            if (bestSeg <= 0.0)
+                continue;
+
+            // Refuse to join segments produced by different gratings: the
+            // resolution at a common wavelength must agree.
+            if (joinRes < 0.0)
+                joinRes = bestRefRes;
+            else if (std::abs(bestRefRes - joinRes) >
+                     1e-3 * std::max(
+                                {std::abs(joinRes), std::abs(bestRefRes), 1.0}))
+                resConsistent = false;
+
+            accum += bestSeg * segW;
+            totalW += segW;
+            if (!bestLbl.isEmpty() && !usedLabels.contains(bestLbl))
+                usedLabels << bestLbl;
+            if (bestModeKey.isEmpty())
+                bestModeKey = bestKey;
+        }
+
+        if (totalW <= 0.0 || !resConsistent)
+            continue;
+
+        double instScore = accum / totalW;
+        if (hintMatches)
+            instScore = std::min(1.0, instScore + 0.10);
+
+        if (instScore > best.confidence) {
+            best.instrument    = instPtr.get();
+            best.modeKey       = bestModeKey;
+            best.displayString = usedLabels.isEmpty()
+                                     ? instName
+                                     : QStringLiteral("%1 (%2)").arg(
+                                           instName, usedLabels.join(" + "));
+            best.confidence    = instScore;
         }
     }
     return best;

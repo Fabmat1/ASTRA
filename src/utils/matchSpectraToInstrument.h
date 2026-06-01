@@ -7,9 +7,9 @@
 
 // One contiguous block of samples (an "arm") within a spectrum.
 struct WavelengthSegment {
-    double minWl   = 0.0;
-    double maxWl   = 0.0;
-    int    nPoints = 0;
+    double minWl = 0, maxWl = 0;
+    int    nPoints    = 0;
+    double medianStep = 0; // NEW
     double width() const { return maxWl - minWl; }
 };
 
