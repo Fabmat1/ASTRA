@@ -24,19 +24,22 @@ class CrossRefResolver : public QObject
     Q_OBJECT
 
 public:
-    explicit CrossRefResolver(const QString& dbPath, QObject* parent = nullptr);
+    explicit CrossRefResolver(const QString &dbPath, const QString &adsApiToken,
+                                QObject *parent = nullptr);
     ~CrossRefResolver() override;
 
-    void resolve(const QStringList& bibcodes);
-    void resolveViaADS(const QString& bibcode);
-    BibcodeInfo lookupCache(const QString& bibcode);
+    void                       resolve(const QStringList &bibcodes);
+    void                       resolveViaADS(const QString &bibcode);
+    BibcodeInfo                lookupCache(const QString &bibcode);
     QMap<QString, BibcodeInfo> lookupCacheBatch(const QStringList &bibcodes);
 
-    bool isPending(const QString& bibcode)     const;
-    bool wasAttempted(const QString& bibcode)  const;
-    bool isKnownFailed(const QString& bibcode); 
-
-signals:
+    bool isPending(const QString &bibcode) const;
+    bool wasAttempted(const QString &bibcode) const;
+    bool isKnownFailed(const QString &bibcode);
+    void setAdsApiToken(const QString &token) { _adsApiToken = token; };
+    bool hasAdsApiToken() const { return !_adsApiToken.isEmpty(); }
+    
+  signals:
     void resolved(const QString& bibcode, const BibcodeInfo& info);
     void fetchFailed(const QString& bibcode);
 
@@ -50,6 +53,7 @@ private:
 
     void applyRateLimitHeaders(QNetworkReply* reply);
     void handleADSReply(QNetworkReply* reply, const QString& bibcode);
+    BibcodeInfo parseADSJson(const QString &bibcode, const QByteArray &data);
     static BibcodeInfo parseADSHtml(const QString& bibcode, const QString& html);
 
     struct ParsedBibcode {
@@ -84,4 +88,5 @@ private:
     int              _minIntervalMs  = 100;     
     QElapsedTimer    _lastDispatch;
     QTimer*          _pumpTimer      = nullptr;
+    QString          _adsApiToken;
 };

@@ -31,19 +31,16 @@ static QString cleanTitle(const QString& raw)
     return s.trimmed();
 }
 
-CrossRefResolver::CrossRefResolver(const QString& dbPath, QObject* parent)
-    : QObject(parent)
-    , _nam(new QNetworkAccessManager(this))
-    , _dbPath(dbPath)
-    , _connectionName(QString("crossref_cache_%1").arg(quintptr(this), 0, 16))
-{
-    connect(_nam, &QNetworkAccessManager::finished,
-            this, &CrossRefResolver::onNetworkReply);
-
+CrossRefResolver::CrossRefResolver(const QString &dbPath,
+                                   const QString &adsApiToken, QObject *parent)
+    : QObject(parent), _nam(new QNetworkAccessManager(this)), _dbPath(dbPath),
+      _connectionName(QString("crossref_cache_%1").arg(quintptr(this), 0, 16)),
+      _adsApiToken(adsApiToken) {
+    connect(_nam, &QNetworkAccessManager::finished, this,
+            &CrossRefResolver::onNetworkReply);
     _pumpTimer = new QTimer(this);
     _pumpTimer->setSingleShot(true);
     connect(_pumpTimer, &QTimer::timeout, this, &CrossRefResolver::pumpQueue);
-
     openCache();
 }
 
@@ -481,34 +478,39 @@ void CrossRefResolver::markFailed(const QString& bibcode, const QString& reason)
         LOG_WARNING(CAT, "Failed-lookup store failed for " + bibcode + ": " + q.lastError().text());
 }
 
-void CrossRefResolver::resolveViaADS(const QString& bibcode)
-{
+void CrossRefResolver::resolveViaADS(const QString &bibcode) {
     BibcodeInfo cached = lookupCache(bibcode);
     if (!cached.title.isEmpty()) {
         emit resolved(bibcode, cached);
         return;
     }
-
-    if (_inProgress.contains(bibcode)) {
-        // CrossRef or a previous ADS click is already in flight — just wait.
+    if (_inProgress.contains(bibcode))
         return;
-    }
 
     _attempted.insert(bibcode);
     _inProgress.insert(bibcode);
 
-    QUrl url(QString("https://ui.adsabs.harvard.edu/abs/%1/abstract").arg(bibcode));
+    // Bibcode needs percent-encoding for use as a query value
+    // (the & in e.g. "A&AS" must become %26)
+    const QString encoded = QString::fromUtf8(QUrl::toPercentEncoding(bibcode));
+
+    QUrl      url("https://api.adsabs.harvard.edu/v1/search/query");
+    QUrlQuery q;
+    q.addQueryItem("q", "identifier:" + encoded);
+    q.addQueryItem("fl", "title,author,doi,abstract,bibcode");
+    q.addQueryItem("rows", "1");
+    url.setQuery(q);
 
     QNetworkRequest request(url);
-    request.setRawHeader("Accept", "text/html");
+    request.setRawHeader("Authorization",
+                         "Bearer " +
+                             _adsApiToken.toUtf8()); // store token in a member
+    request.setRawHeader("Accept", "application/json");
     request.setTransferTimeout(20000);
-    request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                         QNetworkRequest::NoLessSafeRedirectPolicy);
 
-    QNetworkReply* reply = _nam->get(request);
-    _adsRequests[reply] = bibcode;
-
-    LOG_DEBUG(CAT, QString("Scraping ADS for %1: %2").arg(bibcode, url.toString()));
+    QNetworkReply *reply = _nam->get(request);
+    _adsRequests[reply]  = bibcode;
+    LOG_DEBUG(CAT, QString("ADS API query for %1").arg(bibcode));
 }
 
 static QString unescapeHtml(QString s)
@@ -613,30 +615,70 @@ void CrossRefResolver::clearFailed(const QString& bibcode)
     q.exec();
 }
 
-void CrossRefResolver::handleADSReply(QNetworkReply* reply, const QString& bibcode)
-{
+void CrossRefResolver::handleADSReply(QNetworkReply *reply,
+                                      const QString &bibcode) {
     _inProgress.remove(bibcode);
-
     if (reply->error() != QNetworkReply::NoError) {
-        LOG_WARNING(CAT, QString("ADS scrape failed for %1: %2")
-            .arg(bibcode, reply->errorString()));
+        LOG_WARNING(CAT, QString("ADS API failed for %1: %2")
+                             .arg(bibcode, reply->errorString()));
         emit fetchFailed(bibcode);
         return;
     }
 
-    const QString html = QString::fromUtf8(reply->readAll());
-    BibcodeInfo info = parseADSHtml(bibcode, html);
-
+    BibcodeInfo info = parseADSJson(bibcode, reply->readAll());
     if (info.title.isEmpty()) {
-        LOG_WARNING(CAT, "ADS HTML had no parseable title for " + bibcode);
+        LOG_WARNING(CAT, "ADS API returned no title for " + bibcode);
         emit fetchFailed(bibcode);
         return;
     }
 
     storeInCache(info);
-    clearFailed(bibcode);   // it's no longer a failure
+    clearFailed(bibcode);
     emit resolved(bibcode, info);
-    LOG_INFO(CAT, QString("Resolved %1 via ADS → \"%2\"").arg(bibcode, info.title));
+    LOG_INFO(
+        CAT,
+        QString("Resolved %1 via ADS API → \"%2\"").arg(bibcode, info.title));
+}
+
+BibcodeInfo CrossRefResolver::parseADSJson(const QString    &bibcode,
+                                           const QByteArray &data) {
+    BibcodeInfo info;
+    info.bibcode = bibcode;
+
+    const QJsonDocument doc = QJsonDocument::fromJson(data);
+    if (doc.isNull())
+        return info;
+
+    const QJsonArray docs = doc["response"]["docs"].toArray();
+    if (docs.isEmpty())
+        return info;
+
+    const QJsonObject rec = docs[0].toObject();
+
+    // Title is a JSON array (can have translated variants), take first
+    const QJsonArray titles = rec["title"].toArray();
+    if (!titles.isEmpty())
+        info.title = cleanTitle(titles[0].toString());
+
+    // Authors
+    const QJsonArray authors = rec["author"].toArray();
+    QStringList      authorList;
+    const int        maxA = std::min<int>(5, authors.size());
+    for (int i = 0; i < maxA; ++i)
+        authorList << authors[i].toString().trimmed();
+    if (authors.size() > 5)
+        authorList << "et al.";
+    info.authors = authorList.join("; ");
+
+    // DOI — also an array in ADS
+    const QJsonArray dois = rec["doi"].toArray();
+    if (!dois.isEmpty())
+        info.doi = dois[0].toString().trimmed();
+
+    // Abstract
+    info.abstract = cleanTitle(rec["abstract"].toString());
+
+    return info;
 }
 
 void CrossRefResolver::pumpQueue()

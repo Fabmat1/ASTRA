@@ -1,31 +1,33 @@
 #include "BackgroundTaskManager.h"
-#include "controllers/ApplicationController.h"
-#include "models/Star.h"
-#include "models/Spectrum.h"
-#include "models/RadialVelocity.h"    
-#include "models/Project.h"        
-#include "Logger.h"
-#include "db/DatabaseManager.h"
 #include "../importWizard/ImportStagingArea.h"
-#include "models/Time.h"
+#include "../importWizard/SpectralFitImportPage.h"
+#include "Logger.h"
+#include "SpectrumReader.h"
+#include "controllers/ApplicationController.h"
+#include "db/DatabaseManager.h"
 #include "db/InstrumentRepository.h"
-
+#include "models/Project.h"
+#include "models/RadialVelocity.h"
+#include "models/Spectrum.h"
+#include "models/Star.h"
+#include "models/Time.h"
+#include <QDebug>
+#include <QEventLoop>
+#include <QFutureSynchronizer>
+#include <QHBoxLayout>
+#include <QHttpMultiPart>
+#include <QLabel>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
-#include <QUrlQuery>
-#include <QEventLoop>
-#include <QTimer>
 #include <QRegularExpression>
-#include <QHttpMultiPart>
-#include <QDebug>
 #include <QStatusBar>
-#include <QLabel>
-#include <QHBoxLayout>
+#include <QTextStream>
+#include <QTimer>
+#include <QUrlQuery>
 #include <QtConcurrent>
-#include <QFutureSynchronizer>
-#include "SpectrumReader.h"
-#include "../importWizard/SpectralFitImportPage.h" 
+#include <cmath>
+#include <limits>
 
 // ============================================================================
 // TaskStatusWidget Implementation
@@ -337,62 +339,30 @@ GaiaQueryTask::GaiaQueryTask(std::vector<std::shared_ptr<Star>> stars,
 {
 }
 
-bool GaiaQueryTask::starNeedsGaiaData(const std::shared_ptr<Star>& star) const
-{
-    if (star->getSourceId().isEmpty()) return false;
+bool GaiaQueryTask::starNeedsGaiaData(const std::shared_ptr<Star> &star) const {
+    // We can identify a star to Gaia either by source id, or by coordinates.
+    const bool hasId = !star->getSourceId().trimmed().isEmpty();
+    const bool hasPos =
+        Star::isSet(star->getRa()) && Star::isSet(star->getDec());
+    if (!hasId && !hasPos)
+        return false;
 
-    return !Star::isSet(star->getRa()) ||
-           !Star::isSet(star->getDec()) ||
-           !Star::isSet(star->getPmra()) ||
-           !Star::isSet(star->getPmdec()) ||
-           !Star::isSet(star->getPlx()) ||
-           !Star::isSet(star->getGmag()) ||
-           !Star::isSet(star->getBp()) ||
-           !Star::isSet(star->getRp()) ||
-           !Star::isSet(star->getEPmra()) ||
-           !Star::isSet(star->getEPmdec()) ||
+    // Coordinate-only stars always want a query (to resolve a source id +
+    // fill astrometry/photometry). ID stars only need it if something is
+    // missing.
+    if (!hasId)
+        return true;
+
+    return !Star::isSet(star->getPmra()) || !Star::isSet(star->getPmdec()) ||
+           !Star::isSet(star->getPlx()) || !Star::isSet(star->getGmag()) ||
+           !Star::isSet(star->getEGmag()) ||                             
+           !Star::isSet(star->getBp()) || !Star::isSet(star->getEBp()) || 
+           !Star::isSet(star->getRp()) || !Star::isSet(star->getERp()) || 
+           !Star::isSet(star->getEPmra()) || !Star::isSet(star->getEPmdec()) ||
            !Star::isSet(star->getEPlx());
 }
 
-QString GaiaQueryTask::buildADQLQuery()
-{
-    QStringList sourceIds;
-    
-    for (const auto& star : _stars) {
-        if (!starNeedsGaiaData(star)) continue;
-        
-        QString sourceId = star->getSourceId().trimmed();
-        
-        if (sourceId.contains("DR3", Qt::CaseInsensitive)) {
-            QRegularExpression re("(\\d{10,})");
-            QRegularExpressionMatch match = re.match(sourceId);
-            if (match.hasMatch()) {
-                sourceId = match.captured(1);
-            }
-        }
-        
-        if (!sourceId.isEmpty()) {
-            sourceIds << sourceId;
-        }
-    }
-    
-    if (sourceIds.isEmpty()) {
-        return QString();
-    }
-    
-    QString query = "SELECT Source, RA_ICRS, DE_ICRS, pmRA, pmDE, e_pmRA, e_pmDE, "
-                   "Plx, e_Plx, Gmag, BPmag, RPmag, "
-                   "pmRApmDEcor, PlxpmRAcor, PlxpmDEcor "
-                   "FROM \"I/355/gaiadr3\" WHERE Source IN (";
-    
-    query += sourceIds.join(",");
-    query += ")";
-    
-    return query;
-}
-
-void GaiaQueryTask::execute()
-{
+void GaiaQueryTask::execute() {
     LOG_SET_THREAD_NAME("GaiaQuery");
     LOG_INFO("Gaia", "Starting Gaia DR3 query task");
 
@@ -400,44 +370,129 @@ void GaiaQueryTask::execute()
 
     emit progress("Gaia: Checking which stars need data...");
 
-    int starsNeedingData = 0;
-    for (const auto& star : _stars) {
-        if (starNeedsGaiaData(star))
-            starsNeedingData++;
+    std::vector<std::shared_ptr<Star>> idStars, posStars;
+    for (const auto &star : _stars) {
+        if (!starNeedsGaiaData(star))
+            continue;
+        if (!star->getSourceId().trimmed().isEmpty())
+            idStars.push_back(star);
+        else
+            posStars.push_back(star); // guaranteed to have ra/dec
     }
 
-    if (starsNeedingData == 0) {
-        emit finished(true, "Gaia: All stars already have complete astrometry data");
+    if (idStars.empty() && posStars.empty()) {
+        emit finished(true,
+                      "Gaia: All stars already have complete astrometry data");
         _networkManager->deleteLater();
         return;
     }
 
-    emit progress(QString("Gaia: Building query for %1 stars...").arg(starsNeedingData));
+    std::vector<std::shared_ptr<Star>> modifiedStars;
+    QString                            lastError;
+    constexpr int                      kBatch = 5000;
 
-    QString adqlQuery = buildADQLQuery();
-    if (adqlQuery.isEmpty()) {
-        emit finished(true, "Gaia: No valid source IDs to query");
+    // ── Path 1: query by Gaia source id ───────────────────────────────
+    for (int start = 0; start < static_cast<int>(idStars.size());
+         start += kBatch) {
+        int end = std::min(start + kBatch, static_cast<int>(idStars.size()));
+        std::vector<std::shared_ptr<Star>> batch(idStars.begin() + start,
+                                                 idStars.begin() + end);
+
+        emit progress(QString("Gaia: Querying source IDs %1-%2 of %3...")
+                          .arg(start + 1)
+                          .arg(end)
+                          .arg(idStars.size()));
+
+        QString adql = buildSourceIdQuery(batch);
+        if (adql.isEmpty())
+            continue;
+
+        QString err;
+        QString response = sendSyncQuery(adql, err);
+        if (!err.isEmpty()) {
+            lastError = err;
+            continue;
+        }
+
+        parseSourceIdResponse(response, batch, modifiedStars);
+    }
+
+    // ── Path 2: positional cross-match (TAP upload) ───────────────────
+    for (int start = 0; start < static_cast<int>(posStars.size());
+         start += kBatch) {
+        int end = std::min(start + kBatch, static_cast<int>(posStars.size()));
+        std::vector<std::shared_ptr<Star>> batch(posStars.begin() + start,
+                                                 posStars.begin() + end);
+
+        emit progress(QString("Gaia: Cross-matching coordinates %1-%2 of %3...")
+                          .arg(start + 1)
+                          .arg(end)
+                          .arg(posStars.size()));
+
+        QString    adql  = buildPositionalQuery();
+        QByteArray votbl = buildPositionVOTable(batch);
+
+        QString err;
+        QString response = sendUploadQuery(adql, votbl, err);
+        if (!err.isEmpty()) {
+            lastError = err;
+            continue;
+        }
+
+        parsePositionalResponse(response, batch, modifiedStars);
+    }
+
+    if (modifiedStars.empty() && !lastError.isEmpty()) {
+        emit finished(false, QString("Gaia: %1").arg(lastError));
         _networkManager->deleteLater();
         return;
     }
 
-    emit progress(QString("Gaia: Querying VizieR for %1 stars...").arg(starsNeedingData));
+    if (_stagingArea) {
+        for (const auto &star : modifiedStars)
+            _stagingArea->markStarDirty(star->getId());
+        LOG_INFO("Gaia",
+                 QString("Marked %1 stars dirty").arg(modifiedStars.size()));
+        emit finished(true, QString("Gaia: Updated %1 stars (staged)")
+                                .arg(modifiedStars.size()));
+    } else {
+        if (!modifiedStars.empty() && _controller) {
+            emit progress(QString("Gaia: Saving %1 updated stars...")
+                              .arg(modifiedStars.size()));
+            QMetaObject::invokeMethod(
+                _controller,
+                [this, modifiedStars]() {
+                    auto project = _controller->getCurrentProject();
+                    if (project)
+                        _controller->saveStarsToProject(project, modifiedStars);
+                },
+                Qt::QueuedConnection);
+        }
+        emit finished(
+            true, QString("Gaia: Updated %1 stars").arg(modifiedStars.size()));
+    }
 
-    QUrl url("http://tapvizier.u-strasbg.fr/TAPVizieR/tap/sync");
+    _networkManager->deleteLater();
+}
+
+QString GaiaQueryTask::sendSyncQuery(const QString &adql, QString &error) {
+    QUrl            url("http://tapvizier.u-strasbg.fr/TAPVizieR/tap/sync");
     QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
+    request.setHeader(QNetworkRequest::ContentTypeHeader,
+                      "application/x-www-form-urlencoded");
     request.setRawHeader("User-Agent", "ASTRA/1.0");
 
     QUrlQuery postParams;
     postParams.addQueryItem("REQUEST", "doQuery");
     postParams.addQueryItem("LANG", "ADQL");
     postParams.addQueryItem("FORMAT", "csv");
-    postParams.addQueryItem("QUERY", adqlQuery);
+    postParams.addQueryItem("QUERY", adql);
 
-    QNetworkReply* reply = _networkManager->post(request, postParams.toString(QUrl::FullyEncoded).toUtf8());
+    QNetworkReply *reply = _networkManager->post(
+        request, postParams.toString(QUrl::FullyEncoded).toUtf8());
 
     QEventLoop loop;
-    QTimer timeoutTimer;
+    QTimer     timeoutTimer;
     timeoutTimer.setSingleShot(true);
     connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
@@ -446,129 +501,338 @@ void GaiaQueryTask::execute()
 
     if (!timeoutTimer.isActive()) {
         reply->abort();
-        emit finished(false, "Gaia: Query timed out");
+        error = "Query timed out";
         reply->deleteLater();
-        _networkManager->deleteLater();
-        return;
+        return QString();
     }
-
     if (reply->error() != QNetworkReply::NoError) {
-        emit finished(false, QString("Gaia: Network error - %1").arg(reply->errorString()));
+        error = QString("Network error - %1").arg(reply->errorString());
         reply->deleteLater();
-        _networkManager->deleteLater();
-        return;
+        return QString();
     }
-
-    emit progress("Gaia: Parsing response...");
     QString response = QString::fromUtf8(reply->readAll());
     reply->deleteLater();
-
-    auto modifiedStars = parseVizierResponse(response);
-
-    if (_stagingArea) {
-        for (const auto& star : modifiedStars)
-            _stagingArea->markStarDirty(star->getId());
-        LOG_INFO("Gaia", QString("Marked %1 stars dirty").arg(modifiedStars.size()));
-        emit finished(true, QString("Gaia: Updated %1 stars (staged)").arg(modifiedStars.size()));
-    } else {
-        // Legacy: save directly
-        if (!modifiedStars.empty() && _controller) {
-            emit progress(QString("Gaia: Saving %1 updated stars...").arg(modifiedStars.size()));
-            QMetaObject::invokeMethod(_controller, [this, modifiedStars]() {
-                auto project = _controller->getCurrentProject();
-                if (project)
-                    _controller->saveStarsToProject(project, modifiedStars);
-            }, Qt::QueuedConnection);
-        }
-        emit finished(true, QString("Gaia: Updated %1 stars").arg(modifiedStars.size()));
-    }
-
-    _networkManager->deleteLater();
+    return response;
 }
 
-std::vector<std::shared_ptr<Star>> GaiaQueryTask::parseVizierResponse(const QString& response)
-{
-    std::vector<std::shared_ptr<Star>> modifiedStars;
+QString GaiaQueryTask::sendUploadQuery(const QString    &adql,
+                                       const QByteArray &votable,
+                                       QString          &error) {
+    QUrl            url("http://tapvizier.u-strasbg.fr/TAPVizieR/tap/sync");
+    QNetworkRequest request(url);
+    request.setRawHeader("User-Agent", "ASTRA/1.0");
 
+    QHttpMultiPart *multiPart =
+        new QHttpMultiPart(QHttpMultiPart::FormDataType);
+
+    auto addField = [multiPart](const QString &name, const QString &value) {
+        QHttpPart part;
+        part.setHeader(QNetworkRequest::ContentDispositionHeader,
+                       QVariant(QString("form-data; name=\"%1\"").arg(name)));
+        part.setBody(value.toUtf8());
+        multiPart->append(part);
+    };
+
+    addField("REQUEST", "doQuery");
+    addField("LANG", "ADQL");
+    addField("FORMAT", "csv");
+    addField("UPLOAD", "stars,param:upltable");
+    addField("QUERY", adql);
+
+    QHttpPart tablePart;
+    tablePart.setHeader(QNetworkRequest::ContentTypeHeader,
+                        QVariant("application/x-votable+xml"));
+    tablePart.setHeader(
+        QNetworkRequest::ContentDispositionHeader,
+        QVariant("form-data; name=\"upltable\"; filename=\"upltable.xml\""));
+    tablePart.setBody(votable);
+    multiPart->append(tablePart);
+
+    QNetworkReply *reply = _networkManager->post(request, multiPart);
+    multiPart->setParent(reply);
+
+    QEventLoop loop;
+    QTimer     timeoutTimer;
+    timeoutTimer.setSingleShot(true);
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timeoutTimer.start(300000);
+    loop.exec();
+
+    if (!timeoutTimer.isActive()) {
+        reply->abort();
+        error = "Cross-match query timed out";
+        reply->deleteLater();
+        return QString();
+    }
+    if (reply->error() != QNetworkReply::NoError) {
+        error = QString("Network error - %1").arg(reply->errorString());
+        reply->deleteLater();
+        return QString();
+    }
+    QString response = QString::fromUtf8(reply->readAll());
+    reply->deleteLater();
+    return response;
+}
+
+QString GaiaQueryTask::buildSourceIdQuery(
+    const std::vector<std::shared_ptr<Star>> &stars) const {
+    QStringList sourceIds;
+    for (const auto &star : stars) {
+        QString sourceId = star->getSourceId().trimmed();
+        if (sourceId.contains("DR3", Qt::CaseInsensitive)) {
+            QRegularExpression      re("(\\d{10,})");
+            QRegularExpressionMatch match = re.match(sourceId);
+            if (match.hasMatch())
+                sourceId = match.captured(1);
+        }
+        if (!sourceId.isEmpty())
+            sourceIds << sourceId;
+    }
+    if (sourceIds.isEmpty())
+        return QString();
+
+    QString query =
+        "SELECT Source, RA_ICRS, DE_ICRS, pmRA, pmDE, e_pmRA, e_pmDE, "
+        "Plx, e_Plx, Gmag, e_Gmag, BPmag, e_BPmag, RPmag, e_RPmag, "
+        "pmRApmDEcor, PlxpmRAcor, PlxpmDEcor "
+        "FROM \"I/355/gaiadr3\" WHERE Source IN (";
+    query += sourceIds.join(",");
+    query += ")";
+    return query;
+}
+
+QString GaiaQueryTask::buildPositionalQuery() const {
+    // 2 arcsec match radius (0.000556 deg). Server-side spatial join against
+    // the uploaded coordinate table -> one query per batch.
+    return QStringLiteral(
+        "SELECT tup.idx AS idx, g.Source, g.RA_ICRS, g.DE_ICRS, "
+        "g.pmRA, g.pmDE, g.e_pmRA, g.e_pmDE, g.Plx, g.e_Plx, "
+        "g.Gmag, g.e_Gmag, g.BPmag, g.e_BPmag, g.RPmag, g.e_RPmag, "
+        "g.pmRApmDEcor, g.PlxpmRAcor, g.PlxpmDEcor "
+        "FROM \"I/355/gaiadr3\" AS g, TAP_UPLOAD.stars AS tup "
+        "WHERE 1=CONTAINS(POINT('ICRS', g.RA_ICRS, g.DE_ICRS), "
+        "CIRCLE('ICRS', tup.ra, tup.dec, 0.000556))");
+}
+
+QByteArray GaiaQueryTask::buildPositionVOTable(
+    const std::vector<std::shared_ptr<Star>> &stars) const {
+    QString     xml;
+    QTextStream ts(&xml);
+    ts << "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n"
+       << "<VOTABLE version=\"1.3\" "
+          "xmlns=\"http://www.ivoa.net/xml/VOTable/v1.3\">\n"
+       << " <RESOURCE>\n  <TABLE>\n"
+       << "   <FIELD name=\"idx\" datatype=\"int\"/>\n"
+       << "   <FIELD name=\"ra\"  datatype=\"double\" unit=\"deg\"/>\n"
+       << "   <FIELD name=\"dec\" datatype=\"double\" unit=\"deg\"/>\n"
+       << "   <DATA>\n    <TABLEDATA>\n";
+
+    for (int i = 0; i < static_cast<int>(stars.size()); ++i) {
+        ts << "     <TR><TD>" << i << "</TD><TD>"
+           << QString::number(stars[i]->getRa(), 'f', 8) << "</TD><TD>"
+           << QString::number(stars[i]->getDec(), 'f', 8) << "</TD></TR>\n";
+    }
+
+    ts << "    </TABLEDATA>\n   </DATA>\n  </TABLE>\n "
+          "</RESOURCE>\n</VOTABLE>\n";
+    ts.flush();
+    return xml.toUtf8();
+}
+
+bool GaiaQueryTask::applyGaiaRow(const std::shared_ptr<Star> &star,
+                                 const QMap<QString, int>    &colIndex,
+                                 const QStringList &values, bool setSourceId) {
+    auto getValue = [&](const QString &col) -> double {
+        int idx = colIndex.value(col.toLower(), -1);
+        if (idx >= 0 && idx < values.size()) {
+            QString valStr = values[idx].trimmed().remove('"');
+            if (valStr.isEmpty())
+                return std::numeric_limits<double>::quiet_NaN();
+            bool   ok;
+            double val = valStr.toDouble(&ok);
+            return ok ? val : std::numeric_limits<double>::quiet_NaN();
+        }
+        return std::numeric_limits<double>::quiet_NaN();
+    };
+
+    bool updated = false;
+
+    if (setSourceId && star->getSourceId().trimmed().isEmpty()) {
+        int idx = colIndex.value("source", -1);
+        if (idx >= 0 && idx < values.size()) {
+            QString sid = values[idx].trimmed().remove('"');
+            if (!sid.isEmpty()) {
+                star->setSourceId(sid);
+                updated = true;
+            }
+        }
+    }
+
+    auto setIfMissing = [&](bool missing, const QString &col,
+                            void (Star::*setter)(double)) {
+        if (!missing)
+            return;
+        double v = getValue(col);
+        if (!std::isnan(v)) {
+            (star.get()->*setter)(v);
+            updated = true;
+        }
+    };
+
+    setIfMissing(!Star::isSet(star->getRa()), "ra_icrs", &Star::setRa);
+    setIfMissing(!Star::isSet(star->getDec()), "de_icrs", &Star::setDec);
+    setIfMissing(!Star::isSet(star->getPmra()), "pmra", &Star::setPmra);
+    setIfMissing(!Star::isSet(star->getPmdec()), "pmde", &Star::setPmdec);
+    setIfMissing(!Star::isSet(star->getEPmra()), "e_pmra", &Star::setEPmra);
+    setIfMissing(!Star::isSet(star->getEPmdec()), "e_pmde", &Star::setEPmdec);
+    setIfMissing(!Star::isSet(star->getPlx()), "plx", &Star::setPlx);
+    setIfMissing(!Star::isSet(star->getEPlx()), "e_plx", &Star::setEPlx);
+    setIfMissing(!Star::isSet(star->getGmag()), "gmag", &Star::setGmag);
+    setIfMissing(!Star::isSet(star->getEGmag()), "e_gmag", &Star::setEGmag); 
+    setIfMissing(!Star::isSet(star->getBp()), "bpmag", &Star::setBp);
+    setIfMissing(!Star::isSet(star->getEBp()), "e_bpmag", &Star::setEBp); 
+    setIfMissing(!Star::isSet(star->getRp()), "rpmag", &Star::setRp);
+    setIfMissing(!Star::isSet(star->getERp()), "e_rpmag", &Star::setERp); 
+    setIfMissing(!Star::isSet(star->getPmraPmdecCorr()), "pmrapmdecor",
+                 &Star::setPmraPmdecCorr);
+    setIfMissing(!Star::isSet(star->getPlxPmraCorr()), "plxpmracor",
+                 &Star::setPlxPmraCorr);
+    setIfMissing(!Star::isSet(star->getPlxPmdecCorr()), "plxpmdecor",
+                 &Star::setPlxPmdecCorr);
+
+    if (!Star::isSet(star->getBpRp()) && Star::isSet(star->getBp()) &&
+        Star::isSet(star->getRp())) {
+        star->setBpRp(star->getBp() - star->getRp());
+        updated = true;
+    }
+
+    return updated;
+}
+
+int GaiaQueryTask::parseSourceIdResponse(
+    const QString &response, const std::vector<std::shared_ptr<Star>> &stars,
+    std::vector<std::shared_ptr<Star>> &modified) {
     QStringList lines = response.split('\n', Qt::SkipEmptyParts);
-
     if (lines.size() < 2) {
-        LOG_WARNING("Gaia", "No matching data found in Gaia DR3");
-        return modifiedStars;
+        LOG_WARNING("Gaia",
+                    "No matching data found in Gaia DR3 (source query)");
+        return 0;
     }
 
-    QStringList headers = lines[0].split(',');
+    QStringList        headers = lines[0].split(',');
     QMap<QString, int> colIndex;
-    for (int i = 0; i < headers.size(); ++i) {
-        QString header = headers[i].trimmed().toLower().remove('"');
-        colIndex[header] = i;
-    }
+    for (int i = 0; i < headers.size(); ++i)
+        colIndex[headers[i].trimmed().toLower().remove('"')] = i;
 
     QMap<QString, QStringList> gaiaData;
+    int                        sourceIdx = colIndex.value("source", -1);
     for (int i = 1; i < lines.size(); ++i) {
-        QString line = lines[i].trimmed();
-        if (line.isEmpty()) continue;
-        QStringList values = line.split(',');
-        int sourceIdx = colIndex.value("source", -1);
+        QStringList values = lines[i].split(',');
         if (sourceIdx >= 0 && sourceIdx < values.size()) {
-            QString sourceId = values[sourceIdx].trimmed().remove('"');
+            QString sourceId   = values[sourceIdx].trimmed().remove('"');
             gaiaData[sourceId] = values;
         }
     }
 
-    for (auto& star : _stars) {
+    int updatedCount = 0;
+    for (const auto &star : stars) {
         QString sourceId = star->getSourceId().trimmed();
         if (sourceId.contains("DR3", Qt::CaseInsensitive)) {
-            QRegularExpression re("(\\d{10,})");
+            QRegularExpression      re("(\\d{10,})");
             QRegularExpressionMatch match = re.match(sourceId);
-            if (match.hasMatch()) sourceId = match.captured(1);
+            if (match.hasMatch())
+                sourceId = match.captured(1);
         }
+        if (!gaiaData.contains(sourceId))
+            continue;
 
-        if (!gaiaData.contains(sourceId)) continue;
-
-        const QStringList& values = gaiaData[sourceId];
-        bool updated = false;
-
-        auto getValue = [&](const QString& col) -> double {
-            int idx = colIndex.value(col.toLower(), -1);
-            if (idx >= 0 && idx < values.size()) {
-                QString valStr = values[idx].trimmed().remove('"');
-                if (valStr.isEmpty()) return 0.0;
-                bool ok;
-                double val = valStr.toDouble(&ok);
-                return ok ? val : 0.0;
-            }
-            return 0.0;
-        };
-
-        if (!Star::isSet(star->getRa()))            { double v = getValue("ra_icrs");     if (v != 0.0) { star->setRa(v);            updated = true; } }
-        if (!Star::isSet(star->getDec()))           { double v = getValue("de_icrs");     if (v != 0.0) { star->setDec(v);           updated = true; } }
-        if (!Star::isSet(star->getPmra()))          { double v = getValue("pmra");        if (v != 0.0) { star->setPmra(v);          updated = true; } }
-        if (!Star::isSet(star->getPmdec()))         { double v = getValue("pmde");        if (v != 0.0) { star->setPmdec(v);         updated = true; } }
-        if (!Star::isSet(star->getEPmra()))         { double v = getValue("e_pmra");      if (v != 0.0) { star->setEPmra(v);         updated = true; } }
-        if (!Star::isSet(star->getEPmdec()))        { double v = getValue("e_pmde");      if (v != 0.0) { star->setEPmdec(v);        updated = true; } }
-        if (!Star::isSet(star->getPlx()))           { double v = getValue("plx");         if (v != 0.0) { star->setPlx(v);           updated = true; } }
-        if (!Star::isSet(star->getEPlx()))          { double v = getValue("e_plx");       if (v != 0.0) { star->setEPlx(v);          updated = true; } }
-        if (!Star::isSet(star->getGmag()))          { double v = getValue("gmag");        if (v != 0.0) { star->setGmag(v);          updated = true; } }
-        if (!Star::isSet(star->getBp()))            { double v = getValue("bpmag");       if (v != 0.0) { star->setBp(v);            updated = true; } }
-        if (!Star::isSet(star->getRp()))            { double v = getValue("rpmag");       if (v != 0.0) { star->setRp(v);            updated = true; } }
-        if (!Star::isSet(star->getPmraPmdecCorr())) { double v = getValue("pmrapmdecor"); if (v != 0.0) { star->setPmraPmdecCorr(v); updated = true; } }
-        if (!Star::isSet(star->getPlxPmraCorr()))   { double v = getValue("plxpmracor");  if (v != 0.0) { star->setPlxPmraCorr(v);  updated = true; } }
-        if (!Star::isSet(star->getPlxPmdecCorr()))  { double v = getValue("plxpmdecor");  if (v != 0.0) { star->setPlxPmdecCorr(v); updated = true; } }
-
-        if (!Star::isSet(star->getBpRp()) && Star::isSet(star->getBp()) && Star::isSet(star->getRp())) {
-            star->setBpRp(star->getBp() - star->getRp());
-            updated = true;
-        }
-
-        if (updated) {
-            modifiedStars.push_back(star);
+        if (applyGaiaRow(star, colIndex, gaiaData[sourceId],
+                         /*setSourceId=*/false)) {
+            modified.push_back(star);
+            updatedCount++;
         }
     }
 
-    LOG_INFO("Gaia", QString("Updated %1 stars from VizieR response").arg(modifiedStars.size()));
-    // ── FIX: NO emit finished() here, NO direct DB save ──
-    return modifiedStars;
+    LOG_INFO("Gaia",
+             QString("Source-id path updated %1 stars").arg(updatedCount));
+    return updatedCount;
+}
+
+int GaiaQueryTask::parsePositionalResponse(
+    const QString &response, const std::vector<std::shared_ptr<Star>> &posStars,
+    std::vector<std::shared_ptr<Star>> &modified) {
+    QStringList lines = response.split('\n', Qt::SkipEmptyParts);
+    if (lines.size() < 2) {
+        LOG_WARNING("Gaia",
+                    "No matching data found in Gaia DR3 (positional query)");
+        return 0;
+    }
+
+    QStringList        headers = lines[0].split(',');
+    QMap<QString, int> colIndex;
+    for (int i = 0; i < headers.size(); ++i)
+        colIndex[headers[i].trimmed().toLower().remove('"')] = i;
+
+    const int idxCol = colIndex.value("idx", -1);
+    const int raCol  = colIndex.value("ra_icrs", -1);
+    const int deCol  = colIndex.value("de_icrs", -1);
+    if (idxCol < 0) {
+        LOG_WARNING("Gaia", "Positional response missing idx column");
+        return 0;
+    }
+
+    // A given upload position can match several Gaia sources within the
+    // radius — keep the nearest one per input star.
+    struct Cand {
+        QStringList values;
+        double      dist;
+    };
+    QHash<int, Cand> best;
+
+    for (int i = 1; i < lines.size(); ++i) {
+        QStringList values = lines[i].split(',');
+        if (idxCol >= values.size())
+            continue;
+
+        bool okIdx;
+        int  starIdx = values[idxCol].trimmed().remove('"').toInt(&okIdx);
+        if (!okIdx || starIdx < 0 ||
+            starIdx >= static_cast<int>(posStars.size()))
+            continue;
+
+        double dist = std::numeric_limits<double>::max();
+        if (raCol >= 0 && deCol >= 0 && raCol < values.size() &&
+            deCol < values.size()) {
+            bool   okr, okd;
+            double gra = values[raCol].trimmed().remove('"').toDouble(&okr);
+            double gde = values[deCol].trimmed().remove('"').toDouble(&okd);
+            if (okr && okd) {
+                const auto &star = posStars[starIdx];
+                double      dRa  = (gra - star->getRa()) *
+                                   std::cos(star->getDec() * M_PI / 180.0);
+                double      dDe  = gde - star->getDec();
+                dist             = std::sqrt(dRa * dRa + dDe * dDe);
+            }
+        }
+
+        auto it = best.find(starIdx);
+        if (it == best.end() || dist < it->dist)
+            best[starIdx] = Cand{values, dist};
+    }
+
+    int updatedCount = 0;
+    for (auto it = best.cbegin(); it != best.cend(); ++it) {
+        const auto &star = posStars[it.key()];
+        if (applyGaiaRow(star, colIndex, it->values, /*setSourceId=*/true)) {
+            modified.push_back(star);
+            updatedCount++;
+        }
+    }
+
+    LOG_INFO("Gaia",
+             QString("Positional path matched %1 stars").arg(updatedCount));
+    return updatedCount;
 }
 
 // ============================================================================

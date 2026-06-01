@@ -180,7 +180,7 @@ void GeneralImportPage::updateSimbadWarning()
 void GeneralImportPage::setupColumnAliases()
 {
     // Define common aliases for each field (case-insensitive)
-    _columnAliases["source_id"] = {"source_id", "gaia_id", "gaia_source_id", "id", "gaia dr3", "gaiaid", "gaia"};
+    _columnAliases["source_id"] = {"source_id", "gaia_id", "gaia_source_id", "id", "gaia dr3", "gaiaid", "gaia"}; //, "gaiaedr3"};
     _columnAliases["alias"] = {"alias", "name", "star_name", "identifier", "star", "object"};
     _columnAliases["tic"] = {"tic", "tic_id", "tess_id", "tessid"};
     _columnAliases["jname"] = {"jname", "2mass", "2mass_id", "j2000_name", "2massid", "twomass"};
@@ -1282,16 +1282,30 @@ bool GeneralImportPage::validatePage()
              .arg(newCount).arg(matchedCount));
 
     // Fire background tasks — they work on staging->allStars()
-    BackgroundTaskManager* taskManager = controller->backgroundTaskManager();
+    BackgroundTaskManager *taskManager = controller->backgroundTaskManager();
 
-    if (_gaiaCheckBox->isChecked()) {
-        auto* gaiaTask = new GaiaQueryTask(staging, projectId, controller);
-        taskManager->queueTask(gaiaTask);
-    }
+    const bool wantGaia   = _gaiaCheckBox->isChecked();
+    const bool wantSimbad = _simbadCheckBox->isChecked();
 
-    if (_simbadCheckBox->isChecked()) {
-        auto* simbadTask = new SimbadQueryTask(staging, projectId, controller);
+    auto queueSimbad = [taskManager, staging, projectId, controller]() {
+        auto *simbadTask = new SimbadQueryTask(staging, projectId, controller);
         taskManager->queueTask(simbadTask);
+    };
+
+    if (wantGaia) {
+        auto *gaiaTask = new GaiaQueryTask(staging, projectId, controller);
+
+        if (wantSimbad) {
+            QObject::connect(
+                gaiaTask, &BackgroundTask::finished, taskManager,
+                [queueSimbad](bool /*ok*/, const QString & /*msg*/) {
+                    queueSimbad();
+                });
+        }
+
+        taskManager->queueTask(gaiaTask);
+    } else if (wantSimbad) {
+        queueSimbad();
     }
 
     return true;
@@ -1350,164 +1364,9 @@ void GeneralImportPage::updateStarFromParsed(std::shared_ptr<Star> existing,
             existing->addBibcode(bib);
     }
 }
-
-void GeneralImportPage::queryGaiaData(std::vector<std::shared_ptr<Star>>& stars)
-{
-    QProgressDialog* progress = new QProgressDialog("Querying Gaia DR3 via VizieR...", 
-                                                    "Cancel", 0, 100, this);
-    progress->setWindowModality(Qt::WindowModal);
-    progress->setMinimumDuration(0);
-    progress->show();
-    
-    _gaiaThread = new QThread;
-    _gaiaWorker = new GaiaWorker(stars);
-    _gaiaWorker->moveToThread(_gaiaThread);
-    
-    QEventLoop loop;
-    
-    connect(_gaiaThread, &QThread::started, _gaiaWorker, &GaiaWorker::process);
-    
-    connect(_gaiaWorker, &GaiaWorker::progress, this,
-            [progress](int current, int total, const QString& message) {
-        progress->setValue(current);
-        progress->setMaximum(total);
-        progress->setLabelText(message);
-        QApplication::processEvents();
-    }, Qt::QueuedConnection);
-    
-    connect(_gaiaWorker, &GaiaWorker::finished, this,
-            [this, progress, &loop](int updatedCount) {
-        progress->close();
-        progress->deleteLater();
-        
-        if (updatedCount > 0) {
-            QMessageBox::information(this, "Gaia Query Complete",
-                QString("Updated astrometry data for %1 stars from Gaia DR3.")
-                .arg(updatedCount));
-        }
-        
-        _gaiaThread->quit();
-        _gaiaThread->wait();
-        _gaiaThread->deleteLater();
-        _gaiaWorker->deleteLater();
-        _gaiaThread = nullptr;
-        _gaiaWorker = nullptr;
-        
-        loop.quit();
-    }, Qt::QueuedConnection);
-    
-    connect(_gaiaWorker, &GaiaWorker::error, this,
-            [this, progress, &loop](const QString& error) {
-        QMessageBox::warning(this, "Gaia Query Error", error);
-        progress->close();
-        progress->deleteLater();
-        
-        _gaiaThread->quit();
-        _gaiaThread->wait();
-        _gaiaThread->deleteLater();
-        _gaiaWorker->deleteLater();
-        _gaiaThread = nullptr;
-        _gaiaWorker = nullptr;
-        
-        loop.quit();
-    }, Qt::QueuedConnection);
-    
-    connect(progress, &QProgressDialog::canceled, [this, &loop]() {
-        if (_gaiaThread && _gaiaThread->isRunning()) {
-            _gaiaThread->quit();
-            _gaiaThread->wait();
-        }
-        loop.quit();
-    });
-    
-    _gaiaThread->start();
-    loop.exec();
-}
-
 int GeneralImportPage::nextId() const
 {
     return StarImportWizard::Page_Spectra;
-}
-
-void GeneralImportPage::querySimbadBibcodes(const std::vector<std::shared_ptr<Star>>& stars)
-{
-    QProgressDialog* progress = new QProgressDialog("Querying SIMBAD for bibliography codes...", 
-                                                    "Cancel", 0, stars.size(), this);
-    progress->setWindowModality(Qt::WindowModal);
-    progress->setMinimumDuration(0);
-    progress->show();
-    
-    _simbadThread = new QThread;
-    _simbadWorker = new SimbadWorker(stars);
-    _simbadWorker->moveToThread(_simbadThread);
-    
-    connect(_simbadThread, &QThread::started, _simbadWorker, &SimbadWorker::process);
-    
-    connect(_simbadWorker, &SimbadWorker::progress, this,
-            [progress](int current, int total, const QString& message) {
-        progress->setValue(current);
-        progress->setMaximum(total);
-        progress->setLabelText(message);
-        QApplication::processEvents();
-    }, Qt::QueuedConnection);
-    
-    connect(_simbadWorker, &SimbadWorker::finished, this,
-            [this, stars, progress](const QMap<QString, QStringList>& bibcodes) {
-        StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
-        if (importWizard) {
-            auto controller = importWizard->controller();
-            auto project = importWizard->project();
-            
-            int updatedCount = 0;
-            for (auto& star : stars) {
-                QString sourceId = star->getSourceId();
-                if (bibcodes.contains(sourceId)) {
-                    const QStringList& starBibcodes = bibcodes[sourceId];
-                    for (const QString& bibcode : starBibcodes) {
-                        star->addBibcode(bibcode);
-                    }
-                    updatedCount++;
-                }
-            }
-            
-            if (updatedCount > 0) {
-                if (!controller->saveStarsToProject(project, stars)) {
-                    QMessageBox::warning(this, "Update Error", 
-                        "Failed to update stars with bibliography codes");
-                } else {
-                    QMessageBox::information(this, "SIMBAD Query Complete",
-                        QString("Successfully retrieved bibliography codes for %1 stars")
-                        .arg(updatedCount));
-                }
-            }
-        }
-        
-        progress->close();
-        progress->deleteLater();
-        
-        _simbadThread->quit();
-        _simbadThread->wait();
-        _simbadThread->deleteLater();
-        _simbadWorker->deleteLater();
-        _simbadThread = nullptr;
-        _simbadWorker = nullptr;
-    }, Qt::QueuedConnection);
-    
-    connect(_simbadWorker, &SimbadWorker::error, this,
-            [progress](const QString& error) {
-        QMessageBox::warning(nullptr, "SIMBAD Error", error);
-        progress->close();
-        progress->deleteLater();
-    }, Qt::QueuedConnection);
-    
-    connect(progress, &QProgressDialog::canceled, [this]() {
-        if (_simbadThread && _simbadThread->isRunning()) {
-            _simbadThread->quit();
-            _simbadThread->wait();
-        }
-    });
-    
-    _simbadThread->start();
 }
 
 // ============================================================================

@@ -10,6 +10,7 @@
 namespace {
 constexpr const char* kGroup      = "AppSettings";
 constexpr const char* kIsisBinary = "general/isisBinary";
+constexpr const char *kADStoken   = "general/adsToken";
 constexpr const char* kRows       = "starDetail/rows";
 constexpr const char* kCols       = "starDetail/cols";
 constexpr const char* kGrid       = "starDetail/grid";
@@ -104,6 +105,7 @@ void AppSettings::load()
 
     _lcqueryPython   = s.value(kLcqPython,    _lcqueryPython  ).toString();
     _lcqueryScript   = s.value(kLcqScript,    _lcqueryScript  ).toString();
+    _adsApiToken     = s.value(kADStoken,   _adsApiToken     ).toString();
     _atlasToken      = s.value(kAtlasToken,   _atlasToken     ).toString();
     _blackgemScript  = s.value(kBlackgemScr,  _blackgemScript ).toString();
     _lcurveDir = s.value(kLcurveDir, _lcurveDir).toString();
@@ -140,6 +142,7 @@ void AppSettings::save() const
 
     s.setValue(kLcqPython,    _lcqueryPython);
     s.setValue(kLcqScript,    _lcqueryScript);
+    s.setValue(kADStoken,   _adsApiToken);
     s.setValue(kAtlasToken,   _atlasToken);
     s.setValue(kBlackgemScr,  _blackgemScript);
     s.setValue(kLcurveDir, _lcurveDir);
@@ -194,6 +197,10 @@ void AppSettings::setLcqueryScript(const QString& p) {
 void AppSettings::setAtlasToken(const QString& t) {
     if (_atlasToken == t) return;
     _atlasToken = t; save(); emit lcquerySettingsChanged();
+}
+void AppSettings::setAdsApiToken(const QString &t) {
+    if (_adsApiToken == t) return;
+    _adsApiToken = t; save(); emit adsApiTokenChanged();
 }
 void AppSettings::setBlackgemScript(const QString& p) {
     if (_blackgemScript == p) return;

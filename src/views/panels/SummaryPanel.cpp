@@ -1,12 +1,13 @@
 #include "SummaryPanel.h"
 #include "PanelUtils.h"
 
-#include "models/Star.h"
+#include "controllers/ApplicationController.h"
 #include "models/Photometry.h"
 #include "models/RadialVelocity.h"
 #include "models/Spectrum.h"
-#include "utils/CrossRefResolver.h"
+#include "models/Star.h"
 #include "utils/AppPaths.h"
+#include "utils/CrossRefResolver.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -16,6 +17,7 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
+#include <QMessageBox>
 #include <QLabel>
 #include <QMap>
 #include <QProgressBar>
@@ -254,8 +256,13 @@ void SummaryPanel::setupUi() {
     _scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     bl->addWidget(_scroll);
 
-    _refResolver = new CrossRefResolver(AppPaths::database(), this);
+    _refResolver = new CrossRefResolver(AppPaths::database(), _ctx.controller->settings()->adsApiToken(), this);
 
+    connect(_ctx.controller->settings(), &AppSettings::adsApiTokenChanged,
+            _refResolver, [this]() {
+                _refResolver->setAdsApiToken(
+                    _ctx.controller->settings()->adsApiToken());
+            });
     connect(_scroll->verticalScrollBar(), &QScrollBar::valueChanged, this,
             &SummaryPanel::onSummaryScrolled);
 }
@@ -1315,6 +1322,17 @@ void SummaryPanel::addReferenceCards(QWidget           *host,
 
             connect(adsScrapeBtn, &QPushButton::clicked, this,
                     [this, bib, loadingLabel, adsScrapeBtn]() {
+                        if (!_refResolver->hasAdsApiToken()) {
+                            QMessageBox::information(
+                                this, "ADS API Token Required",
+                                "Please provide your NASA ADS API token in the "
+                                "Settings "
+                                "to fetch references from NASA ADS.\n\n"
+                                "You can get a free token at:\n"
+                                "https://ui.adsabs.harvard.edu/user/settings/"
+                                "token");
+                            return;
+                        }
                         adsScrapeBtn->setEnabled(false);
                         adsScrapeBtn->setVisible(false);
                         loadingLabel->setText("Fetching from NASA/ADS\u2026");

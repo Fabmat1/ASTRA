@@ -266,45 +266,64 @@ QWidget* SettingsDialog::createGridPathsPage()
     return page;
 }
 
-
-QWidget* SettingsDialog::createGeneralPage()
-{
-    auto* page = new QWidget;
-    auto* outer = new QVBoxLayout(page);
+QWidget *SettingsDialog::createGeneralPage() {
+    auto *page  = new QWidget;
+    auto *outer = new QVBoxLayout(page);
     outer->setContentsMargins(16, 16, 16, 16);
 
-    auto* form = new QFormLayout;
+    auto *form = new QFormLayout;
     form->setRowWrapPolicy(QFormLayout::DontWrapRows);
     form->setLabelAlignment(Qt::AlignRight);
 
-    auto* pathRow = new QHBoxLayout;
-    _isisEdit = new QLineEdit(_settings->isisBinaryPath());
+    // ── ISIS binary ───────────────────────────────────────────────────────
+    auto *pathRow = new QHBoxLayout;
+    _isisEdit     = new QLineEdit(_settings->isisBinaryPath());
     _isisEdit->setPlaceholderText(
-    QStandardPaths::findExecutable("isis").isEmpty()
-        ? "isis not found in PATH — set explicitly"
-        : "Auto-detected from PATH");
-    auto* browseBtn = new QPushButton("Browse…");
+        QStandardPaths::findExecutable("isis").isEmpty()
+            ? "isis not found in PATH — set explicitly"
+            : "Auto-detected from PATH");
+    auto *browseBtn = new QPushButton("Browse…");
     pathRow->addWidget(_isisEdit, 1);
     pathRow->addWidget(browseBtn);
-
     connect(browseBtn, &QPushButton::clicked, this, [this] {
         QString f = QFileDialog::getOpenFileName(this, "Locate ISIS binary",
                                                  _isisEdit->text());
-        if (!f.isEmpty()) _isisEdit->setText(f);
+        if (!f.isEmpty())
+            _isisEdit->setText(f);
     });
-
-    auto* resetBtn = new QPushButton("Use PATH");
+    auto *resetBtn = new QPushButton("Use PATH");
     resetBtn->setToolTip("Auto-locate 'isis' on your PATH");
     pathRow->addWidget(resetBtn);
     connect(resetBtn, &QPushButton::clicked, this, [this] {
         _isisEdit->setText(QStandardPaths::findExecutable("isis"));
     });
-
     form->addRow("ISIS binary:", pathRow);
+
+    // ── ADS API token ─────────────────────────────────────────────────────
+    _adsTokenEdit = new QLineEdit(_settings->adsApiToken());
+    _adsTokenEdit->setEchoMode(QLineEdit::Password);
+    _adsTokenEdit->setPlaceholderText("ADS API token (optional)");
+    auto *showAdsToken = new QCheckBox("Show");
+    connect(showAdsToken, &QCheckBox::toggled, this, [this](bool on) {
+        _adsTokenEdit->setEchoMode(on ? QLineEdit::Normal
+                                      : QLineEdit::Password);
+    });
+    auto *adsLink = new QLabel(
+        "<a href=\"https://ui.adsabs.harvard.edu/user/settings/token\">"
+        "Get token</a>");
+    adsLink->setOpenExternalLinks(true);
+    {
+        auto *row = new QHBoxLayout;
+        row->addWidget(_adsTokenEdit, 1);
+        row->addWidget(showAdsToken);
+        row->addWidget(adsLink);
+        form->addRow("ADS API token:", row);
+    }
+
     outer->addLayout(form);
 
-    auto* hint = new QLabel(
-        "<i>Path to the ISIS executable used e.g. for spectal and SED fitting</i>");
+    auto *hint = new QLabel("<i>Path to the ISIS executable used e.g. for "
+                            "spectral and SED fitting</i>");
     hint->setStyleSheet("color: gray;");
     outer->addWidget(hint);
 
@@ -475,6 +494,7 @@ void SettingsDialog::apply()
     // Lightcurve fetching
     _settings->setLcqueryPython (_lcqPythonEdit->text().trimmed());
     _settings->setLcqueryScript (_lcqScriptEdit->text().trimmed());
+    _settings->setAdsApiToken   (_adsTokenEdit->text().trimmed());
     _settings->setAtlasToken    (_atlasTokenEdit->text().trimmed());
     _settings->setBlackgemScript(_blackgemEdit->text().trimmed());
     _settings->setLcurveDir(_lcurveDirEdit->text().trimmed());

@@ -45,6 +45,7 @@ private:
     QLineEdit*       _lcqPythonEdit    = nullptr;
     QLineEdit*       _lcqScriptEdit    = nullptr;
     QLineEdit*       _atlasTokenEdit   = nullptr;
+    QLineEdit*       _adsTokenEdit     = nullptr;
     QLineEdit*       _blackgemEdit     = nullptr;
     QLabel*          _lcqTestResult    = nullptr;
 };

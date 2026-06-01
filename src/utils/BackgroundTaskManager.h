@@ -80,15 +80,37 @@ signals:
     void queryComplete(int updated, int failed);
 
 private:
-    bool starNeedsGaiaData(const std::shared_ptr<Star>& star) const;
-    QString buildADQLQuery();
-    std::vector<std::shared_ptr<Star>> parseVizierResponse(const QString& response);
+    bool starNeedsGaiaData(const std::shared_ptr<Star> &star) const;
+
+    // Source-id based query (batched)
+    QString
+    buildSourceIdQuery(const std::vector<std::shared_ptr<Star>> &stars) const;
+    int parseSourceIdResponse(const QString &response,
+                              const std::vector<std::shared_ptr<Star>> &stars,
+                              std::vector<std::shared_ptr<Star>> &modified);
+
+    // Positional cross-match (stars without a Gaia source id), via TAP upload
+    QString buildPositionalQuery() const;
+    QByteArray
+    buildPositionVOTable(const std::vector<std::shared_ptr<Star>> &stars) const;
+    int
+    parsePositionalResponse(const QString                            &response,
+                            const std::vector<std::shared_ptr<Star>> &posStars,
+                            std::vector<std::shared_ptr<Star>>       &modified);
+
+    // Shared
+    bool    applyGaiaRow(const std::shared_ptr<Star> &star,
+                         const QMap<QString, int>    &colIndex,
+                         const QStringList &values, bool setSourceId);
+    QString sendSyncQuery(const QString &adql, QString &error);
+    QString sendUploadQuery(const QString &adql, const QByteArray &votable,
+                            QString &error);
 
     std::vector<std::shared_ptr<Star>> _stars;
-    ImportStagingArea* _stagingArea = nullptr;
-    QString _projectId;
-    ApplicationController* _controller;
-    QNetworkAccessManager* _networkManager = nullptr;
+    ImportStagingArea                 *_stagingArea = nullptr;
+    QString                            _projectId;
+    ApplicationController             *_controller;
+    QNetworkAccessManager             *_networkManager = nullptr;
 };
 
 class SimbadQueryTask : public BackgroundTask

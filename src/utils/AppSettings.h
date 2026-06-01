@@ -43,6 +43,8 @@ public:
     QString lcqueryPython()    const { return _lcqueryPython; }
     QString lcqueryScript()    const { return _lcqueryScript; }
     QString atlasToken()       const { return _atlasToken; }
+    QString adsApiToken() const { return _adsApiToken; }
+    void    setAdsApiToken(const QString &t);
     QString blackgemScript()   const { return _blackgemScript; }
 
     void setLcqueryPython  (const QString& p);
@@ -65,8 +67,9 @@ signals:
     void gridBasePathsChanged();
     void lcquerySettingsChanged();
     void lcurveSettingsChanged();
+    void adsApiTokenChanged();
 
-private:
+  private:
     void load();
     void save() const;
     void applyDefaults();
@@ -83,4 +86,5 @@ private:
     QString _lcurveDir;
     QString _atlasToken;
     QString _blackgemScript;
+    QString _adsApiToken;
 };
