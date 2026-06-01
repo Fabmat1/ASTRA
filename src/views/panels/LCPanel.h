@@ -121,7 +121,8 @@ private:
     double   _foldT0        = 0.0;
     bool     _foldExternal  = false;
     bool     _syncingXAxis  = false;
-    QHash<QCustomPlot*, double> _xOffsets;   // per-plot BJD offset for unfolded view
+    QHash<QCustomPlot*, double> _xOffsets;
+    bool _foldDefaultApplied = false; // ensures "folded by default" runs once
 
     QList<SeriesCache>              _series;
     QList<QCustomPlot*>             _plots;
@@ -134,6 +135,7 @@ private:
     QMap<QString, bool> _binEnabledFolded; 
     QMap<QString, bool> _binEnabledUnfolded;
     QMap<QString, bool> _visible;
+    QHash<QString, bool> _showFit;
 
     QComboBox* _t0SourceCombo = nullptr;
     T0Source   _t0Source      = T0Source::Auto;

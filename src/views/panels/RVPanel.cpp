@@ -258,6 +258,16 @@ void RVPanel::populate()
         .arg(hasPeriod));
 
     _toggleButton->setEnabled(hasData && hasPeriod);
+
+    // Default to folded view the first time folding is possible.
+    if (hasData && hasPeriod && !_foldDefaultApplied) {
+        _foldDefaultApplied = true;
+        _folded             = true;
+        QSignalBlocker b(_toggleButton);
+        _toggleButton->setChecked(true);
+        _toggleButton->setText("Show Timeline");
+    }
+
     if (!hasPeriod) {
         _toggleButton->setChecked(false);
         _folded = false;

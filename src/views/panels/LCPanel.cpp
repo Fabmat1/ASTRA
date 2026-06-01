@@ -353,6 +353,15 @@ void LCPanel::populate()
     resolveAutoFoldParams();
     bool canFold = _foldPeriod > 0;
     _toggleFoldBtn->setEnabled(canFold);
+
+    if (canFold && !_foldDefaultApplied) {
+        _foldDefaultApplied = true;
+        _folded             = true;
+        QSignalBlocker b(_toggleFoldBtn);
+        _toggleFoldBtn->setChecked(true);
+        _toggleFoldBtn->setText("Show Timeline");
+    }
+
     if (!canFold && _folded) {
         _folded = false;
         QSignalBlocker b(_toggleFoldBtn);
@@ -361,13 +370,21 @@ void LCPanel::populate()
     }
 
     // Defaults
-    for (const auto& s : _series) {
-        if (!_binsFolded.contains(s.key))   _binsFolded[s.key]   = 200;
-        if (!_binsUnfolded.contains(s.key)) _binsUnfolded[s.key] = 1000;
-        if (!_normalize.contains(s.key))    _normalize[s.key]    = true;
-        if (!_binEnabledFolded.contains(s.key))   _binEnabledFolded[s.key]   = true;
-        if (!_binEnabledUnfolded.contains(s.key)) _binEnabledUnfolded[s.key] = false;
-        if (!_visible.contains(s.key))      _visible[s.key]      = true;
+    for (const auto &s : _series) {
+        if (!_binsFolded.contains(s.key))
+            _binsFolded[s.key] = 200;
+        if (!_binsUnfolded.contains(s.key))
+            _binsUnfolded[s.key] = 1000;
+        if (!_normalize.contains(s.key))
+            _normalize[s.key] = true;
+        if (!_binEnabledFolded.contains(s.key))
+            _binEnabledFolded[s.key] = true;
+        if (!_binEnabledUnfolded.contains(s.key))
+            _binEnabledUnfolded[s.key] = false;
+        if (!_visible.contains(s.key))
+            _visible[s.key] = true;
+        if (!_showFit.contains(s.key))
+            _showFit[s.key] = true; // ← add
     }
 
     rebuildPlots();
@@ -708,7 +725,7 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
                 (_previewFitFilter == s.filter ||
                  _previewFitFilter.isEmpty())) {
                 overlay = _previewFit;
-            } else {
+            } else if (_showFit.value(s.key, true)) { 
                 auto phot = _ctx.star->getPhotometry();
                 overlay =
                     phot ? phot->getBestLCFit(s.source, s.filter) : nullptr;
@@ -1040,11 +1057,23 @@ void LCPanel::buildSettingsMenu()
                 [this, k=s.key](bool on){ _visible[k] = on; replotAll(); });
         ctrl->addWidget(visCb);
 
-        auto* normCb = new QCheckBox("Norm");
+        auto *normCb = new QCheckBox("Norm");
         normCb->setChecked(_normalize.value(s.key, true));
-        connect(normCb, &QCheckBox::toggled, this,
-                [this, k=s.key](bool on){ _normalize[k] = on; replotAll(); });
+        connect(normCb, &QCheckBox::toggled, this, [this, k = s.key](bool on) {
+            _normalize[k] = on;
+            replotAll();
+        });
         ctrl->addWidget(normCb);
+
+        auto *fitCb = new QCheckBox("Fit");
+        fitCb->setChecked(_showFit.value(s.key, true));
+        fitCb->setToolTip(
+            "Overlay this series' best-fit LC model (folded view)");
+        connect(fitCb, &QCheckBox::toggled, this, [this, k = s.key](bool on) {
+            _showFit[k] = on;
+            replotAll();
+        });
+        ctrl->addWidget(fitCb);
 
         auto* binCb = new QCheckBox("Bin");
         binCb->setChecked(binEnabled(s.key));

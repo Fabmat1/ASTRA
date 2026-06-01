@@ -37,6 +37,8 @@ private:
     QCheckBox* _showFlaggedCheck = nullptr;
     bool       _showFlagged      = false;
 
+    bool _foldDefaultApplied = false; 
+
     RadialVelocityCurve::ListenerToken _rvChangeToken =
         RadialVelocityCurve::kInvalidToken;
 };
