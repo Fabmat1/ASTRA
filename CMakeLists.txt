@@ -406,6 +406,7 @@ set(HEADERS
     src/views/widgets/TerminalView.h
     src/views/widgets/AnsiTerminalWidget.h
     src/views/widgets/IsisMacroPanel.h
+    src/views/widgets/PreciseDoubleSpinBox.h
 
     #DIGGA fitting
     src/fitting/FitTypes.h

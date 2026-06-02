@@ -288,7 +288,7 @@ variable i, l, f, chisqr_red = _NaN, norm_chi_red = 0;
                 apply_ZPO_corr=apply_ZPO_corr,
                 conf_level=conf_level, fit_verbose=0, verbose=1, set_par_full=par_full,
                 set_par=par, no_clean, chisqr_red=&chisqr_red, norm_chi_red=&norm_chi_red,
-                remove_outliers=5);
+                remove_outliers=remove_outliers);
   variable tfit_end = _ftime;
   vmessage(sprintf("- fit done in %.1fs", tfit_end-tfit_start));
 #elseif % Provide SED and fit only 'logtheta', 'E_44m55', and 'R_55'
@@ -297,7 +297,7 @@ variable i, l, f, chisqr_red = _NaN, norm_chi_red = 0;
                                    conf_level=conf_level, fit_verbose=0, verbose=1,
                                    set_par_full=par_full, no_clean,
                                    chisqr_red=&chisqr_red, norm_chi_red=&norm_chi_red,
-                                   remove_outliers=5);
+                                   remove_outliers=remove_outliers);
 #endif
 
 % example of how to add a 'fake' companion after the fit
@@ -423,7 +423,7 @@ if(derive_logg or derive_sr or derive_logg_c2){
                 apply_ZPO_corr=apply_ZPO_corr,
                 conf_level=conf_level, fit_verbose=0, verbose=1, set_par_full=par_full,
                 set_par=par, no_clean, chisqr_red=&chisqr_red, norm_chi_red=&norm_chi_red,
-                remove_outliers=5);
+                remove_outliers=remove_outliers);
 }
 
 %

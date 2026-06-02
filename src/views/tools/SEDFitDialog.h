@@ -175,4 +175,9 @@ private:
     QProgressBar* _isisProgress   = nullptr;
     QProcess*     _isisProcess    = nullptr;
     QString       _workDir;
+
+    QDoubleSpinBox *_rejectionSpin = nullptr;
+
+    bool _paramsUserModified = false; // user manually edited the param table
+    bool _populatingParams = false; // we're programmatically filling the table
 };

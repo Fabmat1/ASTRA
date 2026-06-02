@@ -1,9 +1,10 @@
 #pragma once
 
+#include "rv_mcmc/api.h" // from external/rv_mcmc
+#include "views/widgets/PreciseDoubleSpinBox.h"
 #include <QDialog>
 #include <memory>
 #include <vector>
-#include "rv_mcmc/api.h"   // from external/rv_mcmc
 
 class Star;
 class RadialVelocityCurve;
@@ -86,9 +87,10 @@ private:
     QComboBox      *_lcPriorSource = nullptr;
     QCheckBox      *_lcPriorEllipsoidal = nullptr;
     QLabel         *_lcPriorInfo  = nullptr;
-    QCheckBox      *_mcmcLimitPeak      = nullptr;
-    QComboBox      *_mcmcPeakCombo      = nullptr;
-    QDoubleSpinBox *_mcmcPeakSigmaMul   = nullptr;
+    QCheckBox      *_mcmcLimitPeak       = nullptr;
+    QComboBox      *_mcmcPeakCombo       = nullptr;
+    QDoubleSpinBox *_mcmcPeakSigmaMul    = nullptr;
+    QCheckBox      *_mcmcPeakEllipsoidal = nullptr;
 
     // ── Photometry tab
     QListWidget*    _photPeaksList = nullptr;

@@ -1,38 +1,39 @@
 #include "RVAddFitDialog.h"
 #include "RVMCMCResultsDialog.h"
 
-#include "models/Star.h"
-#include "models/RadialVelocity.h"
-#include "models/PeriodogramRecord.h"
 #include "db/DatabaseManager.h"
-#include "views/panels/PeriodogramPanel.h"
+#include "models/PeriodogramRecord.h"
+#include "models/RadialVelocity.h"
+#include "models/Star.h"
 #include "utils/Logger.h"
+#include "views/panels/PeriodogramPanel.h"
+#include "views/widgets/PreciseDoubleSpinBox.h"
 
-#include <QVBoxLayout>
-#include <QFormLayout>
-#include <QHBoxLayout>
-#include <QGridLayout>
-#include <QTabWidget>
-#include <QGroupBox>
-#include <QDoubleSpinBox>
-#include <QSpinBox>
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
-#include <QPushButton>
 #include <QDialogButtonBox>
-#include <QProgressDialog>
-#include <QListWidget>
-#include <QLabel>
-#include <QPointer>
-#include <QApplication>
-#include <QMessageBox>
-#include <QUuid>
-#include <QTimer>
+#include <QDoubleSpinBox>
 #include <QElapsedTimer>
-#include <thread>
-#include <memory>
-#include <cmath>
+#include <QFormLayout>
+#include <QGridLayout>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QListWidget>
+#include <QMessageBox>
+#include <QPointer>
+#include <QProgressDialog>
+#include <QPushButton>
+#include <QSpinBox>
+#include <QTabWidget>
+#include <QTimer>
+#include <QUuid>
+#include <QVBoxLayout>
 #include <algorithm>
+#include <cmath>
+#include <memory>
+#include <thread>
 
 // ───────────────────────────────────────────────────────────────────
 RVAddFitDialog::RVAddFitDialog(std::shared_ptr<Star> star,
@@ -75,15 +76,24 @@ RVAddFitDialog::RVAddFitDialog(std::shared_ptr<Star> star,
 }
 
 // ───────────────────────────────────────────────────────────────────
-void RVAddFitDialog::buildManualTab(QWidget* parent)
-{
-    auto* lay  = new QVBoxLayout(parent);
-    auto* form = new QFormLayout;
+void RVAddFitDialog::buildManualTab(QWidget *parent) {
+    auto *lay  = new QVBoxLayout(parent);
+    auto *form = new QFormLayout;
 
+    // Regular fields: precise (=> pasteable) but with limited display decimals.
     auto mk = [](double mn, double mx, int dec, double step) {
-        auto* s = new QDoubleSpinBox; s->setRange(mn, mx);
-        s->setDecimals(dec); s->setSingleStep(step);
-        s->setKeyboardTracking(false); return s;
+        auto *s = new PreciseDoubleSpinBox; // pasteable everywhere
+        s->setRange(mn, mx);
+        s->setDecimals(dec);
+        s->setSingleStep(step);
+        return s; // keyboardTracking already off
+    };
+    // Period field: keep full 15-digit precision (do NOT setDecimals!)
+    auto mkPeriod = [](double mn, double mx, double step) {
+        auto *s = new PreciseDoubleSpinBox;
+        s->setRange(mn, mx);
+        s->setSingleStep(step);
+        return s;
     };
 
     const double minRV = _curve ? _curve->getMinRV() : 0.0;
@@ -91,63 +101,79 @@ void RVAddFitDialog::buildManualTab(QWidget* parent)
     const double mean  = _curve ? _curve->getMeanRV() : 0.0;
     const double span  = _curve ? _curve->getTimeSpan() : 0.0;
 
-    _mPeriod = mk(0.001, 1.0e7, 6, 0.001);
-    _mK      = mk(-1.0e4, 1.0e4, 4, 0.1);
-    _mGamma  = mk(-1.0e4, 1.0e4, 4, 0.1);
-    _mPhi    = mk(0.0, 1.0, 6, 0.001);
+    _mPeriod   = mkPeriod(1e-6, 1.0e9, 0.0001);
+    _mK        = mk(-1.0e4, 1.0e4, 4, 0.1);
+    _mGamma    = mk(-1.0e4, 1.0e4, 4, 0.1);
+    _mPhi      = mk(0.0, 1.0, 6, 0.001);
     _mEccCheck = new QCheckBox("Eccentric orbit");
-    _mEcc    = mk(0.0, 0.999, 4, 0.01);   _mEcc->setEnabled(false);
-    _mOmega  = mk(0.0, 360.0, 2, 1.0);    _mOmega->setEnabled(false);
+    _mEcc      = mk(0.0, 0.999, 4, 0.01);
+    _mEcc->setEnabled(false);
+    _mOmega = mk(0.0, 360.0, 2, 1.0);
+    _mOmega->setEnabled(false);
 
     _mPeriod->setValue(span > 0 ? std::max(0.1, span * 0.1) : 1.0);
-    _mK     ->setValue(std::isnan(maxRV - minRV) ? 50.0 : std::max(1.0,(maxRV-minRV)*0.5));
-    _mGamma ->setValue(std::isnan(mean) ? 0.0 : mean);
+    _mK->setValue(std::isnan(maxRV - minRV)
+                      ? 50.0
+                      : std::max(1.0, (maxRV - minRV) * 0.5));
+    _mGamma->setValue(std::isnan(mean) ? 0.0 : mean);
 
-    form->addRow("Period [d]",    _mPeriod);
-    form->addRow("K [km/s]",      _mK);
-    form->addRow("γ [km/s]",      _mGamma);
-    form->addRow("φ (phase)",     _mPhi);
+    form->addRow("Period [d]", _mPeriod);
+    form->addRow("K [km/s]", _mK);
+    form->addRow("γ [km/s]", _mGamma);
+    form->addRow("φ (phase)", _mPhi);
     form->addRow(_mEccCheck);
-    form->addRow("e",             _mEcc);
-    form->addRow("ω [°]",         _mOmega);
+    form->addRow("e", _mEcc);
+    form->addRow("ω [°]", _mOmega);
     lay->addLayout(form);
     lay->addStretch();
 
-    connect(_mEccCheck, &QCheckBox::toggled, [this](bool on){
-        _mEcc->setEnabled(on); _mOmega->setEnabled(on);
+    connect(_mEccCheck, &QCheckBox::toggled, [this](bool on) {
+        _mEcc->setEnabled(on);
+        _mOmega->setEnabled(on);
     });
 }
 
 // ───────────────────────────────────────────────────────────────────
 //   MCMC tab — 2-column layout
 // ───────────────────────────────────────────────────────────────────
-void RVAddFitDialog::buildMCMCTab(QWidget* parent)
-{
-    auto* lay = new QVBoxLayout(parent);
+void RVAddFitDialog::buildMCMCTab(QWidget *parent) {
+    auto *lay = new QVBoxLayout(parent);
 
     auto mk = [](double mn, double mx, int dec, double step) {
-        auto* s = new QDoubleSpinBox; s->setRange(mn, mx);
-        s->setDecimals(dec); s->setSingleStep(step);
-        s->setKeyboardTracking(false); return s;
+        auto *s = new PreciseDoubleSpinBox;
+        s->setRange(mn, mx);
+        s->setDecimals(dec);
+        s->setSingleStep(step);
+        return s;
     };
-    auto mki = [](int mn, int mx, int step){
-        auto* s = new QSpinBox; s->setRange(mn, mx); s->setSingleStep(step);
+    auto mkPeriod = [](double mn, double mx, double step) {
+        auto *s = new PreciseDoubleSpinBox; // full 15-digit precision + paste
+        s->setRange(mn, mx);
+        s->setSingleStep(step);
+        return s;
+    };
+    auto mki = [](int mn, int mx, int step) {
+        auto *s = new QSpinBox;
+        s->setRange(mn, mx);
+        s->setSingleStep(step);
         return s;
     };
 
     // ── Two-column container ─────────────────────────────────────
-    auto* twoCol = new QHBoxLayout;
-    auto* leftCol  = new QVBoxLayout;
-    auto* rightCol = new QVBoxLayout;
-    twoCol->addLayout(leftCol,  1);
+    auto *twoCol   = new QHBoxLayout;
+    auto *leftCol  = new QVBoxLayout;
+    auto *rightCol = new QVBoxLayout;
+    twoCol->addLayout(leftCol, 1);
     twoCol->addLayout(rightCol, 1);
     lay->addLayout(twoCol);
 
     // ─── LEFT: Search range ──────────────────────────────────────
-    auto* gP = new QGroupBox("Search range");
-    auto* fP = new QFormLayout(gP);
-    _minP = mk(1e-4, 1e6, 4, 0.01);  _minP->setValue(0.05);
-    _maxP = mk(1e-4, 1e6, 4, 0.1);   _maxP->setValue(50.0);
+    auto *gP = new QGroupBox("Search range");
+    auto *fP = new QFormLayout(gP);
+    _minP    = mkPeriod(1e-6, 1e9, 0.01);
+    _minP->setValue(0.05);
+    _maxP = mkPeriod(1e-6, 1e9, 0.1);
+    _maxP->setValue(50.0);
     fP->addRow("Min period [d]", _minP);
     fP->addRow("Max period [d]", _maxP);
 
@@ -157,7 +183,7 @@ void RVAddFitDialog::buildMCMCTab(QWidget* parent)
     _mcmcPeakSigmaMul->setSuffix(" σ");
     _mcmcPeakSigmaMul->setEnabled(false);
 
-    auto* limRow = new QHBoxLayout;
+    auto *limRow = new QHBoxLayout;
     limRow->addWidget(_mcmcLimitPeak);
     limRow->addWidget(_mcmcPeakSigmaMul);
     fP->addRow(limRow);
@@ -166,46 +192,67 @@ void RVAddFitDialog::buildMCMCTab(QWidget* parent)
     _mcmcPeakCombo->setEnabled(false);
     fP->addRow("Peak", _mcmcPeakCombo);
 
-    connect(_mcmcLimitPeak, &QCheckBox::toggled,
-            this, &RVAddFitDialog::onMcmcLimitPeakToggled);
+    // NEW: ellipsoidal toggle — use twice the photometric peak period.
+    _mcmcPeakEllipsoidal = new QCheckBox("Ellipsoidal: use 2× peak period");
+    _mcmcPeakEllipsoidal->setEnabled(false);
+    _mcmcPeakEllipsoidal->setToolTip(
+        "For ellipsoidal variables the light-curve peak appears at P/2; "
+        "centre the period search on 2× the photometric peak period.");
+    fP->addRow(_mcmcPeakEllipsoidal);
+
+    connect(_mcmcLimitPeak, &QCheckBox::toggled, this,
+            &RVAddFitDialog::onMcmcLimitPeakToggled);
 
     leftCol->addWidget(gP);
 
     // ─── LEFT: Sampler ───────────────────────────────────────────
-    auto* gS = new QGroupBox("Sampler");
-    auto* fS = new QFormLayout(gS);
-    _nSamples = mki(1000, 200'000'000, 100'000); _nSamples->setValue(5'000'000);
-    _nBurnIn  = mki(0,    50'000'000,  100'000); _nBurnIn ->setValue(1'000'000);
-    _nThin    = mki(1,    1000, 1);              _nThin   ->setValue(10);
-    _nTemp    = mki(1,    64,   1);              _nTemp   ->setValue(16);
-    _maxTemp  = mk(1.0, 10000.0, 1, 1.0);        _maxTemp ->setValue(100.0);
-    fS->addRow("Samples",          _nSamples);
-    fS->addRow("Burn-in",          _nBurnIn);
-    fS->addRow("Thin",             _nThin);
-    fS->addRow("Temperatures (PT)",_nTemp);
-    fS->addRow("Max temperature",  _maxTemp);
+    auto *gS  = new QGroupBox("Sampler");
+    auto *fS  = new QFormLayout(gS);
+    _nSamples = mki(1000, 200'000'000, 100'000);
+    _nSamples->setValue(5'000'000);
+    _nBurnIn = mki(0, 50'000'000, 100'000);
+    _nBurnIn->setValue(1'000'000);
+    _nThin = mki(1, 1000, 1);
+    _nThin->setValue(10);
+    _nTemp = mki(1, 64, 1);
+    _nTemp->setValue(16);
+    _maxTemp = mk(1.0, 10000.0, 1, 1.0);
+    _maxTemp->setValue(100.0);
+    fS->addRow("Samples", _nSamples);
+    fS->addRow("Burn-in", _nBurnIn);
+    fS->addRow("Thin", _nThin);
+    fS->addRow("Temperatures (PT)", _nTemp);
+    fS->addRow("Max temperature", _maxTemp);
     leftCol->addWidget(gS);
     leftCol->addStretch();
 
     // ─── RIGHT: Parameter bounds ─────────────────────────────────
-    auto* gB = new QGroupBox("Parameter bounds");
-    auto* fB = new QFormLayout(gB);
-    _ampMin = mk(-1e4, 1e4, 2, 1.0);   _ampMin->setValue(0.0);
-    _ampMax = mk(-1e4, 1e4, 2, 1.0);   _ampMax->setValue(500.0);
-    _offMin = mk(-1e4, 1e4, 2, 1.0);   _offMin->setValue(-500.0);
-    _offMax = mk(-1e4, 1e4, 2, 1.0);   _offMax->setValue(500.0);
-    _eccMin = mk(0.0, 0.9999, 4, 0.01); _eccMin->setValue(0.0);
-    _eccMax = mk(0.0, 0.9999, 4, 0.01); _eccMax->setValue(0.9);
-    _omegaMin = mk(0.0, 360.0, 2, 1.0); _omegaMin->setValue(0.0);
-    _omegaMax = mk(0.0, 360.0, 2, 1.0); _omegaMax->setValue(360.0);
-    fB->addRow("K min [km/s]",   _ampMin);
-    fB->addRow("K max [km/s]",   _ampMax);
-    fB->addRow("γ min [km/s]",   _offMin);
-    fB->addRow("γ max [km/s]",   _offMax);
-    fB->addRow("e min",          _eccMin);
-    fB->addRow("e max",          _eccMax);
-    fB->addRow("ω min [°]",      _omegaMin);
-    fB->addRow("ω max [°]",      _omegaMax);
+    auto *gB = new QGroupBox("Parameter bounds");
+    auto *fB = new QFormLayout(gB);
+    _ampMin  = mk(-1e4, 1e4, 2, 1.0);
+    _ampMin->setValue(0.0);
+    _ampMax = mk(-1e4, 1e4, 2, 1.0);
+    _ampMax->setValue(500.0);
+    _offMin = mk(-1e4, 1e4, 2, 1.0);
+    _offMin->setValue(-500.0);
+    _offMax = mk(-1e4, 1e4, 2, 1.0);
+    _offMax->setValue(500.0);
+    _eccMin = mk(0.0, 0.9999, 4, 0.01);
+    _eccMin->setValue(0.0);
+    _eccMax = mk(0.0, 0.9999, 4, 0.01);
+    _eccMax->setValue(0.9);
+    _omegaMin = mk(0.0, 360.0, 2, 1.0);
+    _omegaMin->setValue(0.0);
+    _omegaMax = mk(0.0, 360.0, 2, 1.0);
+    _omegaMax->setValue(360.0);
+    fB->addRow("K min [km/s]", _ampMin);
+    fB->addRow("K max [km/s]", _ampMax);
+    fB->addRow("γ min [km/s]", _offMin);
+    fB->addRow("γ max [km/s]", _offMax);
+    fB->addRow("e min", _eccMin);
+    fB->addRow("e max", _eccMax);
+    fB->addRow("ω min [°]", _omegaMin);
+    fB->addRow("ω max [°]", _omegaMax);
     rightCol->addWidget(gB);
     rightCol->addStretch();
 
@@ -213,8 +260,8 @@ void RVAddFitDialog::buildMCMCTab(QWidget* parent)
     _mcmcEccentric = new QCheckBox("Use Keplerian (eccentric) RV model");
     lay->addWidget(_mcmcEccentric);
 
-    auto* gLC = new QGroupBox("Light-curve periodogram prior");
-    auto* fLC = new QFormLayout(gLC);
+    auto *gLC           = new QGroupBox("Light-curve periodogram prior");
+    auto *fLC           = new QFormLayout(gLC);
     _lcPriorEnable      = new QCheckBox("Use as prior on period");
     _lcPriorSource      = new QComboBox;
     _lcPriorEllipsoidal = new QCheckBox(
@@ -229,17 +276,18 @@ void RVAddFitDialog::buildMCMCTab(QWidget* parent)
     fLC->addRow(_lcPriorEllipsoidal);
     fLC->addRow(_lcPriorInfo);
     lay->addWidget(gLC);
-    connect(_lcPriorEnable, &QCheckBox::toggled,
-            this, &RVAddFitDialog::onLcPriorToggled);
+    connect(_lcPriorEnable, &QCheckBox::toggled, this,
+            &RVAddFitDialog::onLcPriorToggled);
 
     _runMCMCBtn = new QPushButton("Run MCMC…");
     _runMCMCBtn->setDefault(true);
-    auto* runRow = new QHBoxLayout;
+    auto *runRow = new QHBoxLayout;
     runRow->addStretch();
     runRow->addWidget(_runMCMCBtn);
     lay->addLayout(runRow);
 
-    connect(_runMCMCBtn, &QPushButton::clicked, this, &RVAddFitDialog::onRunMCMC);
+    connect(_runMCMCBtn, &QPushButton::clicked, this,
+            &RVAddFitDialog::onRunMCMC);
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -267,11 +315,12 @@ void RVAddFitDialog::buildPhotTab(QWidget* parent)
     auto* form = new QFormLayout(opts);
 
     auto mk = [](double mn, double mx, int dec, double step) {
-        auto* s = new QDoubleSpinBox; s->setRange(mn, mx);
-        s->setDecimals(dec); s->setSingleStep(step);
-        s->setKeyboardTracking(false); return s;
+        auto *s = new PreciseDoubleSpinBox; // pasteable
+        s->setRange(mn, mx);
+        s->setDecimals(dec);
+        s->setSingleStep(step);
+        return s;
     };
-
     _photPeriodTol = mk(0.1, 10.0, 2, 0.1);
     _photPeriodTol->setValue(1.0);
     _photPeriodTol->setToolTip("Prior width in multiples of the reported σ_P.");
@@ -396,12 +445,17 @@ void RVAddFitDialog::onLcPriorToggled(bool on)
     if (_lcPriorEllipsoidal) _lcPriorEllipsoidal->setEnabled(on);
 }
 
-void RVAddFitDialog::onMcmcLimitPeakToggled(bool on)
-{
-    if (_mcmcPeakCombo)    _mcmcPeakCombo->setEnabled(on);
-    if (_mcmcPeakSigmaMul) _mcmcPeakSigmaMul->setEnabled(on);
-    if (_minP) _minP->setEnabled(!on);
-    if (_maxP) _maxP->setEnabled(!on);
+void RVAddFitDialog::onMcmcLimitPeakToggled(bool on) {
+    if (_mcmcPeakCombo)
+        _mcmcPeakCombo->setEnabled(on);
+    if (_mcmcPeakSigmaMul)
+        _mcmcPeakSigmaMul->setEnabled(on);
+    if (_mcmcPeakEllipsoidal)
+        _mcmcPeakEllipsoidal->setEnabled(on);
+    if (_minP)
+        _minP->setEnabled(!on);
+    if (_maxP)
+        _maxP->setEnabled(!on);
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -469,16 +523,23 @@ rv_mcmc::MCMCConfig RVAddFitDialog::collectMCMCConfig() const
     rv_mcmc::MCMCConfig c = rv_mcmc::default_config(_mcmcEccentric->isChecked());
 
     // ── Period range: peak-limited or explicit ─────────────────
-    if (_mcmcLimitPeak && _mcmcLimitPeak->isChecked()
-        && _mcmcPeakCombo && _mcmcPeakCombo->count() > 0)
-    {
+    if (_mcmcLimitPeak && _mcmcLimitPeak->isChecked() && _mcmcPeakCombo &&
+        _mcmcPeakCombo->count() > 0) {
         const int idx = _mcmcPeakCombo->currentIndex();
-        const double P     = _mcmcPeakCombo->itemData(idx, Qt::UserRole + 0).toDouble();
-        const double sigma = _mcmcPeakCombo->itemData(idx, Qt::UserRole + 1).toDouble();
-        const double k     = _mcmcPeakSigmaMul->value();
-        const double half  = std::max(1e-6, k * sigma);
-        c.min_period = std::max(1e-6, P - half);
-        c.max_period = P + half;
+        double P = _mcmcPeakCombo->itemData(idx, Qt::UserRole + 0).toDouble();
+        double sigma =
+            _mcmcPeakCombo->itemData(idx, Qt::UserRole + 1).toDouble();
+
+        // Ellipsoidal: orbital period is twice the photometric peak.
+        if (_mcmcPeakEllipsoidal && _mcmcPeakEllipsoidal->isChecked()) {
+            P *= 2.0;
+            sigma *= 2.0;
+        }
+
+        const double k    = _mcmcPeakSigmaMul->value();
+        const double half = std::max(1e-6, k * sigma);
+        c.min_period      = std::max(1e-6, P - half);
+        c.max_period      = P + half;
     } else {
         c.min_period = _minP->value();
         c.max_period = _maxP->value();

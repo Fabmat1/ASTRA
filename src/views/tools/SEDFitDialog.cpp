@@ -3,6 +3,7 @@
 #include "db/PhotometryRepository.h"
 #include "dialogs/SettingsDialog.h"
 #include "models/Photometry.h"
+#include "models/Spectrum.h"
 #include "models/Star.h"
 #include "plotting/qcustomplot.h"
 #include "utils/AppSettings.h"
@@ -110,6 +111,19 @@ QStringList reachableGridPaths(const QStringList &paths) {
     return ok;
 }
 
+std::shared_ptr<SpectralFit>
+findBestSpectralFit(const std::shared_ptr<Star> &star) {
+    if (!star)
+        return nullptr;
+    for (auto &spec : star->getSpectra()) {
+        if (!spec)
+            continue;
+        if (auto bf = spec->getBestFit())
+            return bf;
+    }
+    return nullptr;
+}
+
 } // namespace
 
 // ═══════════════════════════════════════════════════════════════════
@@ -186,11 +200,10 @@ void SEDFitDialog::setupUi()
 
     mainSplit->addWidget(leftWidget);
 
-    // Right side: new fit configuration
     mainSplit->addWidget(createNewFitPanel());
-    mainSplit->setStretchFactor(0, 3);
-    mainSplit->setStretchFactor(1, 1);
-
+    mainSplit->setStretchFactor(0, 5);
+    mainSplit->setStretchFactor(1, 2);
+    mainSplit->setSizes({940, 560});
     root->addWidget(mainSplit, 1);
 }
 
@@ -349,7 +362,8 @@ QWidget* SEDFitDialog::createNewFitPanel()
 {
     _newFitScroll = new QScrollArea;
     _newFitScroll->setWidgetResizable(true);
-    _newFitScroll->setMinimumWidth(340);
+    _newFitScroll->setMinimumWidth(200); 
+    _newFitScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     _newFitScroll->setFrameShape(QFrame::NoFrame);
 
     auto* scrollContent = new QWidget;
@@ -466,38 +480,58 @@ QWidget* SEDFitDialog::createNewFitPanel()
     connect(_removeParamBtn, &QPushButton::clicked,
             this, &SEDFitDialog::onRemoveParameter);
 
-    // ── Options row ──────────────────────────────────────────
-    auto* optGroup = new QGroupBox("Options");
-    auto* oLay = new QHBoxLayout(optGroup);
+    // ── Options ──────────────────────────────────────────────
+    auto *optGroup = new QGroupBox("Options");
+    auto *oLay     = new QGridLayout(optGroup);
+    oLay->setHorizontalSpacing(8);
+    oLay->setVerticalSpacing(4);
+    int orow = 0;
 
-    oLay->addWidget(new QLabel("Confidence:"));
+    oLay->addWidget(new QLabel("Confidence:"), orow, 0);
     _confLevelCombo = new QComboBox;
     _confLevelCombo->addItem("None", -1);
-    _confLevelCombo->addItem("68%",   0);
-    _confLevelCombo->addItem("90%",   1);
-    _confLevelCombo->addItem("99%",   2);
+    _confLevelCombo->addItem("68%", 0);
+    _confLevelCombo->addItem("90%", 1);
+    _confLevelCombo->addItem("99%", 2);
     _confLevelCombo->setCurrentIndex(1);
-    oLay->addWidget(_confLevelCombo);
+    oLay->addWidget(_confLevelCombo, orow, 1);
 
-    oLay->addWidget(new QLabel("MC trials:"));
+    oLay->addWidget(new QLabel("MC trials:"), orow, 2);
     _nmcSpin = new QSpinBox;
     _nmcSpin->setRange(1000, 50000000);
     _nmcSpin->setValue(2000000);
     _nmcSpin->setSingleStep(100000);
-    oLay->addWidget(_nmcSpin);
+    _nmcSpin->setGroupSeparatorShown(true);
+    oLay->addWidget(_nmcSpin, orow++, 3);
+
+    oLay->addWidget(new QLabel("Outlier reject (σ):"), orow, 0);
+    _rejectionSpin = new QDoubleSpinBox;
+    _rejectionSpin->setRange(0.0, 1000.0);
+    _rejectionSpin->setDecimals(1);
+    _rejectionSpin->setSingleStep(1.0);
+    _rejectionSpin->setValue(5.0);
+    _rejectionSpin->setToolTip(
+        "σ threshold passed to photometric_fitting(remove_outliers=...).\n"
+        "Lower = rejects discrepant points more aggressively; "
+        "higher = more lenient. 5 is the upstream default.");
+    oLay->addWidget(_rejectionSpin, orow++, 1);
 
     _writeModelCb = new QCheckBox("Write model");
     _writeModelCb->setChecked(true);
-    oLay->addWidget(_writeModelCb);
+    oLay->addWidget(_writeModelCb, orow, 0, 1, 2);
+
     _saveMCCb = new QCheckBox("Save MC");
     _saveMCCb->setChecked(false);
-    oLay->addWidget(_saveMCCb);
+    oLay->addWidget(_saveMCCb, orow, 2);
+
     _applyZPOCb = new QCheckBox("Apply ZPO");
     _applyZPOCb->setChecked(true);
     _applyZPOCb->setToolTip(
         "Apply empirical corrections to photometric zero-point offsets");
-    oLay->addWidget(_applyZPOCb);
-    oLay->addStretch();
+    oLay->addWidget(_applyZPOCb, orow++, 3);
+
+    oLay->setColumnStretch(1, 1);
+    oLay->setColumnStretch(3, 1);
     nfLay->addWidget(optGroup);
 
     // ── Advanced options ─────────────────────────────────────
@@ -851,80 +885,128 @@ QWidget* SEDFitDialog::createAdvancedOptions()
 // ═══════════════════════════════════════════════════════════════════
 
 void SEDFitDialog::initDefaultFitParams() {
-    double teff = 25000, logg = 5.5, he = -3.0, z = 0.0;
-    double eTeff = 0, eLogg = 0, eHe = 0;
-    bool   hasSpectralValues = false;
+    _populatingParams = true;
 
-    for (const auto &f : _fits) {
-        if (f->isBestFit && !f->components.empty()) {
-            auto &c1 = f->components[0];
-            if (c1.teff > 0) {
-                teff              = c1.teff;
-                eTeff             = (c1.teffErrUp + c1.teffErrDown) * 0.5;
-                hasSpectralValues = true;
-            }
-            if (c1.logg > 0) {
-                logg              = c1.logg;
-                eLogg             = (c1.loggErrUp + c1.loggErrDown) * 0.5;
-                hasSpectralValues = true;
-            }
-            if (c1.heAbundance != 0) {
-                he  = c1.heAbundance;
-                eHe = (c1.heAbundanceErrUp + c1.heAbundanceErrDown) * 0.5;
-                hasSpectralValues = true;
-            }
-            if (c1.metallicity != 0)
-                z = c1.metallicity;
-            break;
+    // ── Lowest priority: reasonable defaults ───────────────────────────
+    double teff = 25000.0, logg = 5.5, he = -2.5, z = 0.0;
+    double eTeff = 0.0, eLogg = 0.0, eHe = 0.0;
+    bool   teffFromValue = false, loggFromValue = false, heFromValue = false;
+
+    // ── Third priority: midpoint of the selected grid's boundaries ─────
+    bool   gridOk   = false;
+    double gTeffMin = 0, gTeffMax = 0, gLoggMin = 0, gLoggMax = 0, gHeMin = 0,
+           gHeMax = 0;
+    if (_gridSelector1) {
+        if (auto g = _gridSelector1->selectedGrid()) {
+            gridOk   = true;
+            gTeffMin = g->teffMin;
+            gTeffMax = g->teffMax;
+            gLoggMin = g->loggMin;
+            gLoggMax = g->loggMax;
+            gHeMin   = g->heMin;
+            gHeMax   = g->heMax;
+            if (gTeffMax > gTeffMin)
+                teff = 0.5 * (gTeffMin + gTeffMax);
+            if (gLoggMax > gLoggMin)
+                logg = 0.5 * (gLoggMin + gLoggMax);
+            if (gHeMax > gHeMin)
+                he = 0.5 * (gHeMin + gHeMax);
         }
     }
 
+    // ── Second priority: Star spectroscopic fields (manual input) ──────
     if (Star::isSet(_star->getTeff())) {
-        teff = _star->getTeff();
-        if (Star::isSet(_star->getETeff()))
-            eTeff = _star->getETeff();
-        hasSpectralValues = true;
+        teff  = _star->getTeff();
+        eTeff = Star::isSet(_star->getETeff()) ? _star->getETeff() : 0.0;
+        teffFromValue = true;
     }
     if (Star::isSet(_star->getLogg())) {
-        logg = _star->getLogg();
-        if (Star::isSet(_star->getELogg()))
-            eLogg = _star->getELogg();
-        hasSpectralValues = true;
+        logg  = _star->getLogg();
+        eLogg = Star::isSet(_star->getELogg()) ? _star->getELogg() : 0.0;
+        loggFromValue = true;
     }
     if (Star::isSet(_star->getHe())) {
-        he = _star->getHe();
-        if (Star::isSet(_star->getEHe()))
-            eHe = _star->getEHe();
-        hasSpectralValues = true;
+        he          = _star->getHe();
+        eHe         = Star::isSet(_star->getEHe()) ? _star->getEHe() : 0.0;
+        heFromValue = true;
     }
 
+    // ── Highest priority: best-fit spectrum ────────────────────────────
+    if (auto sf = findBestSpectralFit(_star)) {
+        if (sf->teff > 0) {
+            teff          = sf->teff;
+            eTeff         = sf->teffError;
+            teffFromValue = true;
+        }
+        if (sf->logg > 0) {
+            logg          = sf->logg;
+            eLogg         = sf->loggError;
+            loggFromValue = true;
+        }
+        if (Star::isSet(sf->he) && sf->he != 0.0) {
+            he          = sf->he;
+            eHe         = sf->heError;
+            heFromValue = true;
+        }
+        if (sf->metallicity != 0.0)
+            z = sf->metallicity;
+    }
+
+    bool heRich = (he > -1.0);
+
+    // ── Resolve range + freeze state per parameter ─────────────────────
     double teffMin = 0, teffMax = 0;
+    bool   teffRange = false, teffFrozen = false;
     double loggMin = 0, loggMax = 0;
+    bool   loggRange = false, loggFrozen = false;
     double heMin = 0, heMax = 0;
-    bool   hasRanges = false;
+    bool   heRange = false, heFrozen = false;
 
-    if (hasSpectralValues) {
-        bool heRich = (he > -1.0);
+    if (teffFromValue) {
+        double tot = teffError(teff, eTeff, heRich);
+        teffMin    = std::max(teff - tot, 3000.0);
+        teffMax    = teff + tot;
+        teffRange  = true;
+        teffFrozen = true;
+    } else if (gridOk && gTeffMax > gTeffMin) {
+        teffMin    = gTeffMin;
+        teffMax    = gTeffMax;
+        teffRange  = true;
+        teffFrozen = false;
+    } // else: pure default -> no range, unfrozen
 
-        double totTeff = teffError(teff, eTeff, heRich);
-        double totLogg = loggError(teff, logg, eLogg, heRich);
-        double totHe   = heError(teff, he, eHe, heRich);
+    if (loggFromValue) {
+        double tot = loggError(teff, logg, eLogg, heRich);
+        loggMin    = std::max(logg - tot, 0.0);
+        loggMax    = std::min(logg + tot, 9.5);
+        loggRange  = true;
+        loggFrozen = true;
+    } else if (gridOk && gLoggMax > gLoggMin) {
+        loggMin    = gLoggMin;
+        loggMax    = gLoggMax;
+        loggRange  = true;
+        loggFrozen = false;
+    }
 
-        teffMin   = std::max(teff - totTeff, 3000.0);
-        teffMax   = teff + totTeff;
-        loggMin   = std::max(logg - totLogg, 0.0);
-        loggMax   = std::min(logg + totLogg, 9.5);
-        heMin     = std::max(he - totHe, -5.0);
-        heMax     = std::min(he + totHe, 0.0);
-        hasRanges = true;
+    if (heFromValue) {
+        double tot = heError(teff, he, eHe, heRich);
+        heMin      = std::max(he - tot, -5.0);
+        heMax      = std::min(he + tot, 0.0);
+        heRange    = true;
+        heFrozen   = true;
+    } else if (gridOk && gHeMax > gHeMin) {
+        heMin    = gHeMin;
+        heMax    = gHeMax;
+        heRange  = true;
+        heFrozen = false;
     }
 
     _fitParams = {
         {"c*_xi", 0.0, true, 0, 0, false},
         {"c*_z", z, true, 0, 0, false},
-        {"c*_HE", he, true, heMin, heMax, hasRanges},
-        {"c*_logg", logg, true, loggMin, loggMax, hasRanges},
-        {"c*_teff", teff, true, teffMin, teffMax, hasRanges},
+        {"c*_HE", he, heFrozen, heMin, heMax, heRange},
+        {"c*_logg", logg, loggFrozen, loggMin, loggMax, loggRange},
+        {"c*_teff", teff, teffFrozen, teffMin, teffMax, teffRange},
         {"R_55", 3.02, true, 2.5, 6.0, true},
     };
 
@@ -952,10 +1034,26 @@ void SEDFitDialog::initDefaultFitParams() {
             new QTableWidgetItem(p.hasRange ? QString::number(p.max, 'g', 8)
                                             : QString()));
     }
+
+    connect(_paramTableWidget, &QTableWidget::cellChanged, this,
+            [this](int, int) {
+                if (!_populatingParams)
+                    _paramsUserModified = true;
+            });
+
+    connect(_gridSelector1, &GridSelectorWidget::selectionChanged, this,
+            [this] {
+                if (!_paramsUserModified && !_enableComp2Cb->isChecked())
+                    initDefaultFitParams();
+            });
+
+    _paramsUserModified = false;
+    _populatingParams   = false;
 }
 
 void SEDFitDialog::onAddParameter()
 {
+    _paramsUserModified = true;
     int row = _paramTableWidget->rowCount();
     _paramTableWidget->insertRow(row);
 
@@ -975,6 +1073,7 @@ void SEDFitDialog::onAddParameter()
 
 void SEDFitDialog::onRemoveParameter()
 {
+    _paramsUserModified = true;
     auto sel = _paramTableWidget->selectedItems();
     if (sel.isEmpty()) return;
     QSet<int> rows;
@@ -987,6 +1086,7 @@ void SEDFitDialog::onRemoveParameter()
 
 void SEDFitDialog::onComp2Toggled(bool enabled)
 {
+    _paramsUserModified = true;
     if (enabled) {
         // Rename c*_ → c1_
         for (int r = 0; r < _paramTableWidget->rowCount(); ++r) {
@@ -1153,8 +1253,7 @@ void SEDFitDialog::updateFitSelector()
 // Fit selection
 // ═══════════════════════════════════════════════════════════════════
 
-void SEDFitDialog::onFitSelected(int index)
-{
+void SEDFitDialog::onFitSelected(int index) {
     if (index < 0 || index >= static_cast<int>(_fits.size())) {
         _currentFitIndex = -1;
     } else {
@@ -1165,7 +1264,6 @@ void SEDFitDialog::onFitSelected(int index)
     updateResidualPlot();
     updateParameterDisplay();
     updatePhotometryTable();
-    populateParamsFromFit();
 }
 
 void SEDFitDialog::onSetBestFit()
@@ -2017,10 +2115,11 @@ QString SEDFitDialog::generateScript() const
       << (_writeModelCb->isChecked() ? 1 : 0) << ";\n";
     s << "variable save_MC = "
       << (_saveMCCb->isChecked() ? 1 : 0) << ";\n";
-    s << "variable apply_ZPO_corr = "
-      << (_applyZPOCb->isChecked() ? 1 : 0) << ";\n";
+    s << "variable apply_ZPO_corr = " << (_applyZPOCb->isChecked() ? 1 : 0)
+      << ";\n";
+    s << "variable remove_outliers = " << _rejectionSpin->value()
+      << ";\n";
     s << "variable nMC = nint(" << _nmcSpin->value() << ");\n";
-
     s << "variable stilism_distance_simple = "
       << (_stilDistSimpleCb->isChecked() ? 1 : 0) << ";\n";
     s << "variable stilism_ebmv_simple = "
