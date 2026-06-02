@@ -1,36 +1,37 @@
 #include "RVInspectorDialog.h"
 
-#include "models/Star.h"
-#include "models/RadialVelocity.h"
-#include "models/Spectrum.h"
-#include "models/Instrument.h"
-#include "models/Time.h"
-#include "db/DatabaseManager.h"
-#include "views/panels/RVPanel.h"
-#include "views/panels/DetailPanel.h"
-#include "utils/Logger.h"
 #include "RVAddFitDialog.h"
 #include "RVAddPointDialog.h"
+#include "db/DatabaseManager.h"
+#include "models/Instrument.h"
+#include "models/RadialVelocity.h"
+#include "models/Spectrum.h"
+#include "models/Star.h"
+#include "models/Time.h"
+#include "utils/Logger.h"
+#include "views/panels/DetailPanel.h"
+#include "views/panels/RVPanel.h"
+#include "views/widgets/PreciseDoubleSpinBox.h"
 
-#include <QItemSelectionModel>
-#include <QVBoxLayout>
-#include <QHBoxLayout>
-#include <QFormLayout>
-#include <QSplitter>
-#include <QGroupBox>
-#include <QListWidget>
-#include <QTableView>
-#include <QHeaderView>
-#include <QDialogButtonBox>
-#include <QPushButton>
-#include <QCheckBox>
-#include <QDoubleSpinBox>
-#include <QLabel>
-#include <QFont>
-#include <QMenu>
 #include <QAction>
-#include <QUuid>
+#include <QCheckBox>
 #include <QDateTime>
+#include <QDialogButtonBox>
+#include <QDoubleSpinBox>
+#include <QFont>
+#include <QFormLayout>
+#include <QGroupBox>
+#include <QHBoxLayout>
+#include <QHeaderView>
+#include <QItemSelectionModel>
+#include <QLabel>
+#include <QListWidget>
+#include <QMenu>
+#include <QPushButton>
+#include <QSplitter>
+#include <QTableView>
+#include <QUuid>
+#include <QVBoxLayout>
 
 #include <cmath>
 
@@ -359,33 +360,48 @@ void RVSolutionsWidget::buildUi()
     auto* paramBox = new QGroupBox("Parameters");
     auto* form = new QFormLayout(paramBox);
 
+    // Pasteable + full precision (15 significant digits, no rounding):
+    // do NOT call setDecimals or the stored value gets truncated on paste.
+    auto mkPrecise = [](double mn, double mx, double step = 0.0) {
+        auto *s = new PreciseDoubleSpinBox;
+        s->setRange(mn, mx);
+        if (step > 0)
+            s->setSingleStep(step);
+        return s; // keyboardTracking off, decimals=15 from ctor
+    };
+    // Pasteable but limited display decimals (bounded angle / eccentricity).
     auto mkSpin = [](double mn, double mx, int dec, double step = 0.0) {
-        auto* s = new QDoubleSpinBox;
+        auto *s = new PreciseDoubleSpinBox;
         s->setRange(mn, mx);
         s->setDecimals(dec);
-        if (step > 0) s->setSingleStep(step);
-        s->setKeyboardTracking(false);
+        if (step > 0)
+            s->setSingleStep(step);
         return s;
     };
 
-    _periodSpin = mkSpin(0.0,    1.0e7, 6, 0.001);
-    _kSpin      = mkSpin(-1.0e4, 1.0e4, 4, 0.1);
-    _gammaSpin  = mkSpin(-1.0e4, 1.0e4, 4, 0.1);
-    _phiSpin    = mkSpin(0.0,    1.0,   6, 0.001);
+    _periodSpin = mkPrecise(0.0, 1.0e7, 0.001);
+    _kSpin      = mkPrecise(-1.0e4, 1.0e4, 0.1);
+    _gammaSpin  = mkPrecise(-1.0e4, 1.0e4, 0.1);
+    _phiSpin    = mkPrecise(0.0, 1.0, 0.001);
+    _t0Spin     = mkPrecise(0.0, 1.0e7, 0.001);
+    _useT0Check = new QCheckBox("Edit T₀ (BJD) instead of phase");
     _eccCheck   = new QCheckBox("Eccentric orbit");
-    _eccSpin    = mkSpin(0.0,    0.999, 4, 0.01);
-    _omegaSpin  = mkSpin(0.0,    360.0, 2, 1.0);
+    _eccSpin    = mkSpin(0.0, 0.999, 4, 0.01);
+    _omegaSpin  = mkSpin(0.0, 360.0, 2, 1.0);
 
-    _eccSpin  ->setEnabled(false);
+    _eccSpin->setEnabled(false);
     _omegaSpin->setEnabled(false);
+    _t0Spin->setEnabled(false); // start in phase mode
 
-    form->addRow("Period [d]",            _periodSpin);
-    form->addRow("K [km/s]",              _kSpin);
-    form->addRow("γ [km/s]",              _gammaSpin);
+    form->addRow("Period [d]", _periodSpin);
+    form->addRow("K [km/s]", _kSpin);
+    form->addRow("γ [km/s]", _gammaSpin);
+    form->addRow(_useT0Check);
     form->addRow("φ (phase at first pt)", _phiSpin);
+    form->addRow("T₀ [BJD]", _t0Spin);
     form->addRow(_eccCheck);
-    form->addRow("e",                     _eccSpin);
-    form->addRow("ω [°]",                 _omegaSpin);
+    form->addRow("e", _eccSpin);
+    form->addRow("ω [°]", _omegaSpin);
 
     v->addWidget(paramBox);
 
@@ -410,11 +426,18 @@ void RVSolutionsWidget::buildUi()
     connect(_applyBtn,  &QPushButton::clicked, this, &RVSolutionsWidget::onApply);
     connect(_revertBtn, &QPushButton::clicked, this, &RVSolutionsWidget::onRevert);
     connect(_eccCheck,  &QCheckBox::toggled,   this, &RVSolutionsWidget::onEccentricToggled);
+    connect(_useT0Check, &QCheckBox::toggled, this, [this](bool on) {
+        _t0Spin->setEnabled(on);
+        _phiSpin->setEnabled(!on);
+        if (_suppressSignals)
+            return;
+        onParamChanged(); 
+    });
 
-    for (auto* s : {_periodSpin, _kSpin, _gammaSpin, _phiSpin,
-            _eccSpin, _omegaSpin}) {
-    connect(s, qOverload<double>(&QDoubleSpinBox::valueChanged),
-        this, &RVSolutionsWidget::onParamChanged);
+    for (auto *s : {_periodSpin, _kSpin, _gammaSpin, _phiSpin, _t0Spin,
+                    _eccSpin, _omegaSpin}) {
+        connect(s, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
+                &RVSolutionsWidget::onParamChanged);
     }
 }
 
@@ -492,7 +515,9 @@ void RVSolutionsWidget::loadIntoEditor(std::shared_ptr<RVFit> fit)
         _periodSpin->setValue(fit->getPeriod());
         _kSpin     ->setValue(fit->getK());
         _gammaSpin ->setValue(fit->getGamma());
-        _phiSpin   ->setValue(fit->getPhi());
+        _phiSpin->setValue(fit->getPhi());
+        const double t0 = fit->getT0BJD();
+        _t0Spin->setValue(std::isnan(t0) ? 0.0 : t0);
         _eccCheck  ->setChecked(fit->isEccentric());
         _eccSpin   ->setValue(fit->getEccentricity());
         _omegaSpin ->setValue(fit->getOmega());
@@ -503,23 +528,70 @@ void RVSolutionsWidget::loadIntoEditor(std::shared_ptr<RVFit> fit)
     updateStatsLabel(fit);
 }
 
-void RVSolutionsWidget::writeBackToFit(std::shared_ptr<RVFit> fit)
-{
-    if (!fit) return;
-    fit->setPeriod(_periodSpin->value());
-    fit->setK     (_kSpin     ->value());
-    fit->setGamma (_gammaSpin ->value());
-    fit->setPhi   (_phiSpin   ->value());
+double RVSolutionsWidget::phiFromT0BJD(const std::shared_ptr<RVFit> &fit,
+                                       double targetT0, double P) const {
+    if (!fit || !(P > 0.0) || std::isnan(targetT0))
+        return fit ? fit->getPhi() : 0.0;
+
+    const double savedPhi = fit->getPhi();
+
+    auto wrap01 = [](double x) {
+        x = std::fmod(x, 1.0);
+        if (x < 0.0)
+            x += 1.0;
+        return x;
+    };
+    // Distance to nearest period multiple (T0 is only defined mod P).
+    auto modErr = [&](double t) {
+        double d = std::fmod(t - targetT0, P);
+        if (d < 0.0)
+            d += P;
+        return std::min(d, P - d);
+    };
+
+    fit->setPhi(0.0);
+    const double A0 = fit->getT0BJD(); // T0BJD at φ = 0
+    if (std::isnan(A0)) {
+        fit->setPhi(savedPhi);
+        return savedPhi;
+    }
+
+    const double cand1 = wrap01((A0 - targetT0) / P); // slope −P
+    const double cand2 = wrap01((targetT0 - A0) / P); // slope +P
+
+    fit->setPhi(cand1);
+    const double e1 = modErr(fit->getT0BJD());
+    fit->setPhi(cand2);
+    const double e2 = modErr(fit->getT0BJD());
+
+    fit->setPhi(savedPhi); // restore; caller sets final φ
+    return (e1 <= e2) ? cand1 : cand2;
+}
+
+void RVSolutionsWidget::writeBackToFit(std::shared_ptr<RVFit> fit) {
+    if (!fit)
+        return;
+    const double P = _periodSpin->value();
+    fit->setPeriod(P);
+    fit->setK(_kSpin->value());
+    fit->setGamma(_gammaSpin->value());
+
+    if (_useT0Check && _useT0Check->isChecked()) {
+        fit->setPhi(phiFromT0BJD(fit, _t0Spin->value(), P));
+    } else {
+        fit->setPhi(_phiSpin->value());
+    }
+
     const bool ecc = _eccCheck->isChecked();
     fit->setEccentric(ecc);
     if (ecc) {
         fit->setEccentricity(_eccSpin->value());
-        fit->setOmega       (_omegaSpin->value());
+        fit->setOmega(_omegaSpin->value());
     }
-    // Back-compat: keep the (derived) _t0 field in sync for any external
-    // readers that still consult RVFit::getT0().
+    // Back-compat: keep the (derived) _t0 field in sync.
     const double t0 = fit->getT0BJD();
-    if (!std::isnan(t0)) fit->setT0(t0);
+    if (!std::isnan(t0))
+        fit->setT0(t0);
 }
 
 void RVSolutionsWidget::recomputeStats(std::shared_ptr<RVFit> fit)
@@ -566,13 +638,26 @@ void RVSolutionsWidget::takeSnapshot(std::shared_ptr<RVFit> fit)
     _snapshot.ecc   = fit->isEccentric();
 }
 
-void RVSolutionsWidget::onParamChanged()
-{
-    if (_suppressSignals) return;
+void RVSolutionsWidget::onParamChanged() {
+    if (_suppressSignals)
+        return;
     auto fit = currentFit();
-    if (!fit) return;
+    if (!fit)
+        return;
     writeBackToFit(fit);
     recomputeStats(fit);
+
+    // Mirror the value into the non-edited phase/T0 box for display.
+    _suppressSignals = true;
+    if (_useT0Check && _useT0Check->isChecked()) {
+        _phiSpin->setValue(fit->getPhi());
+    } else {
+        const double t0 = fit->getT0BJD();
+        if (!std::isnan(t0))
+            _t0Spin->setValue(t0);
+    }
+    _suppressSignals = false;
+
     updateStatsLabel(fit);
     emit displayedFitChanged(fit);
 }

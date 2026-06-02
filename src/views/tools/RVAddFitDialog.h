@@ -72,6 +72,8 @@ private:
     QDoubleSpinBox *_mPeriod, *_mK, *_mGamma, *_mPhi;
     QCheckBox      *_mEccCheck;
     QDoubleSpinBox *_mEcc, *_mOmega;
+    QCheckBox *_mUseT0   = nullptr; 
+    QDoubleSpinBox *_mT0 = nullptr; 
 
     // ── MCMC tab
     QDoubleSpinBox *_minP, *_maxP;

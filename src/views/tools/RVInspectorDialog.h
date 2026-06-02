@@ -112,7 +112,9 @@ private slots:
     void updateStatsLabel(std::shared_ptr<RVFit> fit);
     void takeSnapshot(std::shared_ptr<RVFit> fit);
     std::shared_ptr<RVFit> currentFit() const;
-
+    double phiFromT0BJD(const std::shared_ptr<RVFit> &fit, double targetT0,
+                        double P) const;
+                        
     std::shared_ptr<Star>   _star;
     DatabaseManager*        _dbm = nullptr;
 
@@ -131,6 +133,8 @@ private slots:
     QDoubleSpinBox* _eccSpin     = nullptr;
     QDoubleSpinBox* _omegaSpin   = nullptr;
     QLabel*         _statsLabel  = nullptr;
+    QCheckBox      *_useT0Check  = nullptr; // edit T0 (BJD) instead of phase
+    QDoubleSpinBox *_t0Spin      = nullptr; // T0 in BJD
 
     std::shared_ptr<RVFit> _displayed;
     bool _suppressSignals = false;

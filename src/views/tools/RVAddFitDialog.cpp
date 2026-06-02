@@ -80,18 +80,20 @@ void RVAddFitDialog::buildManualTab(QWidget *parent) {
     auto *lay  = new QVBoxLayout(parent);
     auto *form = new QFormLayout;
 
-    // Regular fields: precise (=> pasteable) but with limited display decimals.
-    auto mk = [](double mn, double mx, int dec, double step) {
-        auto *s = new PreciseDoubleSpinBox; // pasteable everywhere
+    // Full-precision, pasteable box: keeps the 15 significant digits set in
+    // the PreciseDoubleSpinBox ctor (do NOT call setDecimals, or the stored
+    // value gets rounded and pasted precision is lost).
+    auto mkPrecise = [](double mn, double mx, double step) {
+        auto *s = new PreciseDoubleSpinBox;
         s->setRange(mn, mx);
-        s->setDecimals(dec);
         s->setSingleStep(step);
         return s; // keyboardTracking already off
     };
-    // Period field: keep full 15-digit precision (do NOT setDecimals!)
-    auto mkPeriod = [](double mn, double mx, double step) {
+    // Limited-display box (still pasteable) for bounded angles / eccentricity.
+    auto mk = [](double mn, double mx, int dec, double step) {
         auto *s = new PreciseDoubleSpinBox;
         s->setRange(mn, mx);
+        s->setDecimals(dec);
         s->setSingleStep(step);
         return s;
     };
@@ -101,10 +103,16 @@ void RVAddFitDialog::buildManualTab(QWidget *parent) {
     const double mean  = _curve ? _curve->getMeanRV() : 0.0;
     const double span  = _curve ? _curve->getTimeSpan() : 0.0;
 
-    _mPeriod   = mkPeriod(1e-6, 1.0e9, 0.0001);
-    _mK        = mk(-1.0e4, 1.0e4, 4, 0.1);
-    _mGamma    = mk(-1.0e4, 1.0e4, 4, 0.1);
-    _mPhi      = mk(0.0, 1.0, 6, 0.001);
+    // High precision for period, RV (K, γ) and phase.
+    _mPeriod = mkPrecise(1e-6, 1.0e9, 0.0001);
+    _mK      = mkPrecise(-1.0e4, 1.0e4, 0.1);
+    _mGamma  = mkPrecise(-1.0e4, 1.0e4, 0.1);
+    _mPhi    = mkPrecise(0.0, 1.0, 0.001);
+    _mT0     = mkPrecise(0.0, 1.0e9, 0.001); // T0 in BJD
+    _mUseT0  = new QCheckBox("Specify T₀ (BJD) instead of phase");
+    _mT0->setToolTip("Epoch of zero phase, in BJD.\n"
+                     "Converted internally to phase φ = frac(−T₀ / P).");
+
     _mEccCheck = new QCheckBox("Eccentric orbit");
     _mEcc      = mk(0.0, 0.999, 4, 0.01);
     _mEcc->setEnabled(false);
@@ -120,14 +128,23 @@ void RVAddFitDialog::buildManualTab(QWidget *parent) {
     form->addRow("Period [d]", _mPeriod);
     form->addRow("K [km/s]", _mK);
     form->addRow("γ [km/s]", _mGamma);
+    form->addRow(_mUseT0);
     form->addRow("φ (phase)", _mPhi);
+    form->addRow("T₀ [BJD]", _mT0);
     form->addRow(_mEccCheck);
     form->addRow("e", _mEcc);
     form->addRow("ω [°]", _mOmega);
     lay->addLayout(form);
     lay->addStretch();
 
-    connect(_mEccCheck, &QCheckBox::toggled, [this](bool on) {
+    // Start in phase mode.
+    _mT0->setEnabled(false);
+    connect(_mUseT0, &QCheckBox::toggled, this, [this](bool on) {
+        _mT0->setEnabled(on);
+        _mPhi->setEnabled(!on);
+    });
+
+    connect(_mEccCheck, &QCheckBox::toggled, this, [this](bool on) {
         _mEcc->setEnabled(on);
         _mOmega->setEnabled(on);
     });
@@ -473,23 +490,34 @@ void RVAddFitDialog::onAccept()
 }
 
 // ───────────────────────────────────────────────────────────────────
-std::shared_ptr<RVFit> RVAddFitDialog::buildManualFit() const
-{
-    if (!_curve) return nullptr;
+std::shared_ptr<RVFit> RVAddFitDialog::buildManualFit() const {
+    if (!_curve)
+        return nullptr;
     auto fit = std::make_shared<RVFit>();
     fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
     fit->setCurveId(_curve->getId());
     fit->setCreationDate(QDateTime::currentDateTime());
     fit->setFitMethod("manual");
-    fit->setPeriod(_mPeriod->value());
-    fit->setK     (_mK     ->value());
-    fit->setGamma (_mGamma ->value());
-    fit->setPhi   (_mPhi   ->value());
+
+    const double P = _mPeriod->value();
+    fit->setPeriod(P);
+    fit->setK(_mK->value());
+    fit->setGamma(_mGamma->value());
+
+    // Phase, either entered directly or derived from a T0 (BJD) epoch.
+    double phi = _mPhi->value();
+    if (_mUseT0 && _mUseT0->isChecked() && P > 0.0) {
+        phi = std::fmod(-_mT0->value() / P, 1.0);
+        if (phi < 0.0)
+            phi += 1.0;
+    }
+    fit->setPhi(phi);
+
     const bool ecc = _mEccCheck->isChecked();
     fit->setEccentric(ecc);
     if (ecc) {
         fit->setEccentricity(_mEcc->value());
-        fit->setOmega       (_mOmega->value());
+        fit->setOmega(_mOmega->value());
     }
     fit->setBestFit(false);
     return fit;
