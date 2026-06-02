@@ -205,8 +205,14 @@ bool Spectrum::loadDataFromFile(const QString& filepath)
     return parse(s);
 }
 
-bool SpectralFit::saveDataToFile(const QString& filepath)
-{
+bool SpectralFit::saveDataToFile(const QString &filepath) {
+    if (!hasData()) {
+        LOG_ERROR("SpectralFit",
+                  QString("REFUSING to save empty fit data to %1 (id=%2)")
+                      .arg(filepath)
+                      .arg(_id));
+        return false;
+    }
     QByteArray buffer;
     {
         QDataStream s(&buffer, QIODevice::WriteOnly);
@@ -226,7 +232,8 @@ bool SpectralFit::saveDataToFile(const QString& filepath)
         for (const auto& v : modelSplines)     s << v;
         for (const auto& v : modelIgnore)      s << static_cast<quint8>(v);
     }
-    return DataStore::writeCompressed(filepath, DataStore::SpectralFitData, buffer);
+    return DataStore::writeCompressed(filepath, DataStore::SpectralFitData,
+                                      buffer);
 }
 
 bool SpectralFit::loadDataFromFile(const QString& filepath)

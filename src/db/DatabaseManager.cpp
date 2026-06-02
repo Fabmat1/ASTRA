@@ -1077,7 +1077,9 @@ std::vector<SpectrumIndexRow> DatabaseManager::loadSpectraIndex(const QString &p
     return _spectra->loadSpectraIndex(projectId);
 }
 
-bool DatabaseManager::saveSpectrum(const QString& starId, std::shared_ptr<Spectrum> spectrum)
+bool DatabaseManager::saveSpectrum(const QString            &starId,
+                                   std::shared_ptr<Spectrum> spectrum,
+                                   bool cascadeFits)
 {
     return _spectra->saveSpectrum(starId, spectrum);
 }

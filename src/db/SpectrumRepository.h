@@ -20,8 +20,8 @@ class SpectrumRepository {
     // NEW: one query, project-wide, no blobs / no per-spectrum subqueries
     std::vector<SpectrumIndexRow> loadSpectraIndex(const QString &projectId);
 
-    bool saveSpectrum(const QString            &starId,
-                      std::shared_ptr<Spectrum> spectrum);
+    bool saveSpectrum(const QString &starId, std::shared_ptr<Spectrum> spectrum,
+                      bool cascadeFits = true);
     bool saveSpectralFit(const QString &starId, const QString &spectrumId,
                          std::shared_ptr<SpectralFit> fit);
     bool deleteSpectrum(const QString &spectrumId);

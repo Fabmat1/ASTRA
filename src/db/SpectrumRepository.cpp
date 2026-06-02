@@ -1,6 +1,7 @@
 #include "SpectrumRepository.h"
 #include "DBAccess.h"
 #include "models/Spectrum.h"
+#include "utils/Logger.h"
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QFile>
@@ -9,24 +10,40 @@
 
 SpectrumRepository::SpectrumRepository(DBAccess& db) : _db(db) {}
 
-bool SpectrumRepository::saveSpectrum(const QString& starId, std::shared_ptr<Spectrum> spectrum)
-{
+bool SpectrumRepository::saveSpectrum(const QString            &starId,
+                                    std::shared_ptr<Spectrum> spectrum,
+                                    bool cascadeFits) {
     if (spectrum->getId().isEmpty()) {
         spectrum->setId(_db.generateUUID());
     }
 
     QString dataDir = QFileInfo(_db.databasePath()).absolutePath() + "/data";
-    QString dataFile = DataStore::spectrumPath(dataDir, starId, spectrum->getId());
+    QString dataFile =
+        DataStore::spectrumPath(dataDir, starId, spectrum->getId());
+    const QString existingFile = spectrum->getDataFile();
 
-    // Save compressed spectral data
-    spectrum->saveDataToFile(dataFile);
-
-    // Clean up old file if path changed (legacy migration)
-    QString oldFile = spectrum->getDataFile();
-    if (!oldFile.isEmpty() && oldFile != dataFile && QFile::exists(oldFile)) {
-        QFile::remove(oldFile);
+    if (spectrum->hasData()) {
+        if (!spectrum->saveDataToFile(dataFile)) {
+            LOG_ERROR("SpectrumRepo", QString("Refused/failed to write data "
+                                              "for spectrum %1; aborting save")
+                                          .arg(spectrum->getId()));
+            return false;
+        }
+        if (!existingFile.isEmpty() && existingFile != dataFile &&
+            QFile::exists(existingFile))
+            QFile::remove(existingFile);
+        spectrum->setDataFile(dataFile);
+    } else {
+        if (!existingFile.isEmpty()) {
+            dataFile = existingFile;
+        } else {
+            LOG_WARNING("SpectrumRepo",
+                        QString("Spectrum %1 has no data and no existing file; "
+                                "row will reference "
+                                "a missing data file")
+                            .arg(spectrum->getId()));
+        }
     }
-    spectrum->setDataFile(dataFile);
 
     QSqlQuery query(_db.threadConnection());
     query.prepare(R"(
@@ -67,8 +84,10 @@ bool SpectrumRepository::saveSpectrum(const QString& starId, std::shared_ptr<Spe
         return false;
     }
 
-    for (const auto& fit : spectrum->getSpectralFits()) {
-        saveSpectralFit(starId, spectrum->getId(), fit);
+    if (cascadeFits) {
+        for (const auto &fit : spectrum->getSpectralFits()) {
+            saveSpectralFit(starId, spectrum->getId(), fit);
+        }
     }
     return true;
 }

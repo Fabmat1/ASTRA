@@ -1,23 +1,26 @@
 #include "DataStore.h"
-#include <QFile>
-#include <QDir>
-#include <QFileInfo>
 #include <QDataStream>
-#include <QRegularExpression>
 #include <QDebug>
+#include <QDir>
+#include <QFile>
+#include <QFileInfo>
+#include <QRegularExpression>
+#include <QSaveFile>
 #include <cstring>
 
 // ── Compressed I/O ──────────────────────────────────────────────
 
-bool DataStore::writeCompressed(const QString& filepath, DataType type,
-                                const QByteArray& payload)
-{
+
+
+bool DataStore::writeCompressed(const QString &filepath, DataType type,
+                                const QByteArray &payload) {
     if (!ensureDirForFile(filepath)) {
         qWarning() << "DataStore: cannot create directory for" << filepath;
         return false;
     }
 
-    QFile file(filepath);
+    // Atomic write: nothing touches `filepath` until commit() succeeds.
+    QSaveFile file(filepath);
     if (!file.open(QIODevice::WriteOnly)) {
         qWarning() << "DataStore: cannot open for writing:" << filepath;
         return false;
@@ -30,14 +33,22 @@ bool DataStore::writeCompressed(const QString& filepath, DataType type,
     out << FORMAT_VERSION;
     out << static_cast<quint16>(type);
 
-    // Don't bother compressing tiny payloads — zlib overhead dwarfs the savings.
     QByteArray compressed = (payload.size() < 256)
-        ? qCompress(payload, 1)           
-        : qCompress(payload, COMPRESSION_LEVEL);
-
+                                ? qCompress(payload, 1)
+                                : qCompress(payload, COMPRESSION_LEVEL);
     out << compressed;
-    file.close();
-    return file.error() == QFileDevice::NoError;
+
+    if (out.status() != QDataStream::Ok) {
+        file.cancelWriting(); // original preserved
+        qWarning() << "DataStore: stream error writing" << filepath;
+        return false;
+    }
+
+    if (!file.commit()) { // atomic rename happens here
+        qWarning() << "DataStore: commit failed for" << filepath;
+        return false;
+    }
+    return true;
 }
 
 bool DataStore::readCompressed(const QString& filepath, DataType expectedType,

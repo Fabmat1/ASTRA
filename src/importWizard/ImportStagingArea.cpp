@@ -1,12 +1,55 @@
 #include "../importWizard/ImportStagingArea.h"
 
 #include "../db/DatabaseManager.h"
-#include "models/Star.h"
-#include "models/Spectrum.h"
-#include "models/RadialVelocity.h"
 #include "../utils/Logger.h"
 #include "models/Photometry.h"
+#include "models/RadialVelocity.h"
+#include "models/Spectrum.h"
+#include "models/Star.h"
 #include <QUuid>
+#include <algorithm>
+#include <cmath>
+
+namespace {
+
+static bool sameNum(double a, double b, double rel = 1e-9) {
+    if (std::isnan(a) && std::isnan(b))
+        return true;
+    if (std::isnan(a) || std::isnan(b))
+        return false;
+    const double scale = std::max({1.0, std::fabs(a), std::fabs(b)});
+    return std::fabs(a - b) <= rel * scale;
+}
+
+// Identity for spectra: star_id + file + instrument(+mode) + times.
+static bool sameSpectrumMetadata(const Spectrum &a, const Spectrum &b) {
+    return a.getFile() == b.getFile() &&
+           a.getInstrument() == b.getInstrument() &&
+           a.getInstrumentId() == b.getInstrumentId() &&
+           a.getModeKey() == b.getModeKey() &&
+           sameNum(a.getMJD(), b.getMJD()) && sameNum(a.getBJD(), b.getBJD()) &&
+           sameNum(a.getExposureTime(), b.getExposureTime());
+}
+
+// Identity = modelId + all scientific params (excludes id, dates, flags,
+// arrays).
+static bool sameFitMetadata(const SpectralFit &a, const SpectralFit &b) {
+    return a.modelId == b.modelId && sameNum(a.teff, b.teff) &&
+           sameNum(a.teffError, b.teffError) && sameNum(a.logg, b.logg) &&
+           sameNum(a.loggError, b.loggError) && sameNum(a.he, b.he) &&
+           sameNum(a.heError, b.heError) && sameNum(a.vsini, b.vsini) &&
+           sameNum(a.vsiniError, b.vsiniError) &&
+           sameNum(a.radialVelocity, b.radialVelocity) &&
+           sameNum(a.radialVelocityError, b.radialVelocityError) &&
+           sameNum(a.chi2, b.chi2) && sameNum(a.metallicity, b.metallicity) &&
+           sameNum(a.metallicityError, b.metallicityError) &&
+           sameNum(a.macroturbulence, b.macroturbulence) &&
+           sameNum(a.macroturbulenceError, b.macroturbulenceError) &&
+           sameNum(a.microturbulence, b.microturbulence) &&
+           sameNum(a.microturbulenceError, b.microturbulenceError);
+}
+
+}
 
 // ── Working set management ──────────────────────────────────────
 
@@ -545,6 +588,7 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm,
     // Initial report so the UI gets the correct maximum immediately
     if (progress) progress(0, total);
 
+
     LOG_INFO("Staging", QString("Commit plan: %1 total operations").arg(total));
 
     try {
@@ -557,6 +601,63 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm,
             const bool isNew    = _newStarIds.contains(starId);
             const bool isDirty  = _dirtyStarIds.contains(starId);
             const bool hasNewLC = _dirtyLightcurveStarIds.contains(starId);
+
+            auto commitNewFits =
+                [&](const QString                   &spectrumId,
+                    const std::shared_ptr<Spectrum> &sp) -> bool {
+                std::vector<std::shared_ptr<SpectralFit>> dbFits;
+                bool                                      dbFitsLoaded = false;
+
+                for (const auto &fit : sp->getSpectralFits()) {
+                    if (!_newFitIds.contains(fit->getId()))
+                        continue;
+
+                    if (!dbFitsLoaded) {
+                        dbFits =
+                            dbm->loadSpectralFits(spectrumId); // metadata only
+                        dbFitsLoaded = true;
+                    }
+
+                    std::shared_ptr<SpectralFit> existing;
+                    for (const auto &ex : dbFits) {
+                        if (!ex || ex->getId() == fit->getId())
+                            continue;
+                        if (sameFitMetadata(*ex, *fit)) {
+                            existing = ex;
+                            break;
+                        }
+                    }
+
+                    if (existing) {
+                        bool          existingEmpty = true;
+                        const QString exFile = existing->getModelDataFile();
+                        if (!exFile.isEmpty() &&
+                            existing->loadDataFromFile(exFile))
+                            existingEmpty = !existing->hasData();
+
+                        if (existingEmpty) {
+                            LOG_INFO("Staging",
+                                     QString("Healing empty fit %1 (discarding "
+                                             "%2) on spectrum %3")
+                                         .arg(existing->getId(), fit->getId(),
+                                              spectrumId));
+                            fit->setId(existing->getId()); // reuse id → REPLACE
+                            if (!dbm->saveSpectralFit(starId, spectrumId, fit))
+                                return false;
+                        } else {
+                            LOG_INFO("Staging",
+                                     QString("Skipping duplicate fit on "
+                                             "spectrum %1 (healthy %2)")
+                                         .arg(spectrumId, existing->getId()));
+                        }
+                    } else {
+                        if (!dbm->saveSpectralFit(starId, spectrumId, fit))
+                            return false;
+                    }
+                    tick();
+                }
+                return true;
+            };
 
             // Recompute summary metrics before persisting
             if (isNew || isDirty || hasNewLC)
@@ -592,28 +693,85 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm,
             // For new stars, saveStar() already cascaded to all spectra/fits.
             // For existing stars, save new spectra and new fits on old spectra.
             if (!isNew) {
-                for (const auto& sp : star->getSpectra()) {
+                std::vector<std::shared_ptr<Spectrum>> dbSpectra;
+                bool                                   dbSpectraLoaded = false;
+
+                for (const auto &sp : star->getSpectra()) {
+
                     if (_newSpectrumIds.contains(sp->getId())) {
-                        // New spectrum — saveSpectrum cascades to its fits
-                        if (!dbm->saveSpectrum(starId, sp)) {
-                            LOG_ERROR("Staging",
-                                QString("Failed to save spectrum %1").arg(sp->getId()));
-                            dbm->rollbackTransaction();
-                            return false;
+                        // ── Candidate "new" spectrum: dedup/heal against the
+                        // DB ──
+                        if (!dbSpectraLoaded) {
+                            dbSpectra       = dbm->loadSpectra(starId);
+                            dbSpectraLoaded = true;
                         }
-                        tick(1 + static_cast<int>(sp->getSpectralFits().size()));
-                    } else {
-                        // Existing spectrum — check for new fits only
-                        for (const auto& fit : sp->getSpectralFits()) {
-                            if (_newFitIds.contains(fit->getId())) {
-                                if (!dbm->saveSpectralFit(starId, sp->getId(), fit)) {
-                                    LOG_ERROR("Staging",
-                                        QString("Failed to save fit %1").arg(fit->getId()));
+
+                        std::shared_ptr<Spectrum> existing;
+                        for (const auto &ex : dbSpectra) {
+                            if (!ex || ex->getId() == sp->getId())
+                                continue;
+                            if (sameSpectrumMetadata(*ex, *sp)) {
+                                existing = ex;
+                                break;
+                            }
+                        }
+
+                        if (existing) {
+                            // Is the on-disk spectrum data empty?
+                            bool          existingEmpty = true;
+                            const QString exFile = existing->getDataFile();
+                            if (!exFile.isEmpty() &&
+                                existing->loadDataFromFile(exFile))
+                                existingEmpty = !existing->hasData();
+
+                            // Reuse the existing id for the row AND the fit
+                            // cascade below.
+                            sp->setId(existing->getId());
+
+                            if (existingEmpty && sp->hasData()) {
+                                // Heal data only — DO NOT cascade fits (the
+                                // loop owns them).
+                                if (!dbm->saveSpectrum(starId, sp, false)) {
+                                    LOG_ERROR(
+                                        "Staging",
+                                        QString("Failed to heal spectrum %1")
+                                            .arg(existing->getId()));
                                     dbm->rollbackTransaction();
                                     return false;
                                 }
-                                tick();
+                            } else {
+                                LOG_INFO("Staging",
+                                         QString("Skipping duplicate spectrum "
+                                                 "(healthy %1)")
+                                             .arg(existing->getId()));
                             }
+
+                            // Route this spectrum's NEW fits through
+                            // heal/dedup.
+                            if (!commitNewFits(existing->getId(), sp)) {
+                                dbm->rollbackTransaction();
+                                return false;
+                            }
+                            tick(); // the spectrum unit
+                        } else {
+                            // Genuinely new spectrum — cascade fits as before.
+                            if (!dbm->saveSpectrum(starId, sp)) {
+                                LOG_ERROR("Staging",
+                                          QString("Failed to save spectrum %1")
+                                              .arg(sp->getId()));
+                                dbm->rollbackTransaction();
+                                return false;
+                            }
+                            tick(1 + static_cast<int>(
+                                         sp->getSpectralFits().size()));
+                        }
+
+                    } else {
+                        // ── Existing spectrum — only its new fits, heal/dedup
+                        // ──
+                        if (!commitNewFits(sp->getId(), sp)) {
+                            dbm->rollbackTransaction();
+                            return false;
                         }
                     }
                 }

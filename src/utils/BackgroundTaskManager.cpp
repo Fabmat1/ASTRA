@@ -1368,23 +1368,80 @@ void DiggaFitImportTask::execute()
     int failed   = loadFailed.load(std::memory_order_relaxed);
 
     if (_stagingArea) {
+        auto *dbManager = _controller->databaseManager();
+
+        // Stars whose DB spectra we've already pulled into the working set
+        // during THIS task run (avoid reloading / clobbering).
+        QSet<QString> materialized;
+
         for (int i = 0; i < total; ++i) {
-            auto& entry = _entries[i];
+            auto &entry = _entries[i];
+
             if (entry.fit->getId().isEmpty())
-                entry.fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
-            entry.spectrum->addSpectralFit(entry.fit);
+                entry.fit->setId(
+                    QUuid::createUuid().toString(QUuid::WithoutBraces));
+
+            // 1) Authoritative working-set star (the object commitAll
+            // iterates).
+            auto star = _stagingArea->getStar(entry.starId);
+            if (!star) {
+                LOG_WARNING("DiggaFitImport",
+                            QString("Star %1 not in working set; skipping fit")
+                                .arg(entry.starId));
+                failed++;
+                continue;
+            }
+
+            // 2) Make sure the working star actually holds its spectra, MERGING
+            //    DB spectra with any already in memory (don't drop staged
+            //    ones).
+            if (!materialized.contains(entry.starId)) {
+                QSet<QString> have;
+                for (const auto &sp : star->getSpectra())
+                    if (sp)
+                        have.insert(sp->getId());
+
+                const auto dbSpectra = dbManager->loadSpectra(
+                    entry.starId); // metadata + fit shells
+                for (const auto &sp : dbSpectra)
+                    if (sp && !have.contains(sp->getId()))
+                        star->addSpectrum(sp);
+
+                materialized.insert(entry.starId);
+            }
+
+            // 3) Find the target spectrum INSIDE the working star.
+            std::shared_ptr<Spectrum> target;
+            for (const auto &sp : star->getSpectra()) {
+                if (sp && sp->getId() == entry.spectrumId) {
+                    target = sp;
+                    break;
+                }
+            }
+            if (!target) {
+                LOG_WARNING(
+                    "DiggaFitImport",
+                    QString("Spectrum %1 not found on star %2; skipping fit")
+                        .arg(entry.spectrumId, entry.starId));
+                failed++;
+                continue;
+            }
+
+            // 4) Attach the populated fit to the WORKING spectrum + register
+            // it.
+            target->addSpectralFit(entry.fit);
             _stagingArea->markFitNew(entry.fit->getId());
-            _stagingArea->markStarDirty(
-                entry.starId);
+            _stagingArea->markStarDirty(entry.starId);
             imported++;
 
-            if ((i & 1023) == 0)  // every 1024
+            if ((i & 1023) == 0)
                 emit progress(QString("Staged %1/%2 fits").arg(i).arg(total));
         }
 
         emit importComplete(imported, failed);
-        emit finished(true, QString("Staged %1 fits (%2 failed)")
-                      .arg(imported).arg(failed));
+        emit finished(
+            true,
+            QString("Staged %1 fits (%2 failed)").arg(imported).arg(failed));
     } else {
         // Legacy mode: direct DB writes (unchanged behavior)
         emit progress(QString("Saving %1 fits to database...").arg(total));

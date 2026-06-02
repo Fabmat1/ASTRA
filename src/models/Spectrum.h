@@ -30,6 +30,12 @@ public:
 
     void setFlagged(bool f) { isFlagged = f; }   // ← delete from Spectrum
 
+    bool hasData() const {
+        return !modelWavelengths.empty() || !modelFluxes.empty() ||
+               !rebinnedFluxes.empty() || !rebinnedSigmas.empty() ||
+               !modelSplines.empty() || !modelIgnore.empty();
+    }
+
     QDateTime creationDate;
     QString modelId;
     bool isBestFit;
