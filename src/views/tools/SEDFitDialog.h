@@ -177,7 +177,8 @@ private:
     QString       _workDir;
 
     QDoubleSpinBox *_rejectionSpin = nullptr;
-
+    
+    bool            _paramSignalsConnected = false;
     bool _paramsUserModified = false; // user manually edited the param table
     bool _populatingParams = false; // we're programmatically filling the table
 };

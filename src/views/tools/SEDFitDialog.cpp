@@ -1035,17 +1035,21 @@ void SEDFitDialog::initDefaultFitParams() {
                                             : QString()));
     }
 
-    connect(_paramTableWidget, &QTableWidget::cellChanged, this,
-            [this](int, int) {
-                if (!_populatingParams)
-                    _paramsUserModified = true;
-            });
+    if (!_paramSignalsConnected) {
+        _paramSignalsConnected = true;
 
-    connect(_gridSelector1, &GridSelectorWidget::selectionChanged, this,
-            [this] {
-                if (!_paramsUserModified && !_enableComp2Cb->isChecked())
-                    initDefaultFitParams();
-            });
+        connect(_paramTableWidget, &QTableWidget::cellChanged, this,
+                [this](int, int) {
+                    if (!_populatingParams)
+                        _paramsUserModified = true;
+                });
+
+        connect(_gridSelector1, &GridSelectorWidget::selectionChanged, this,
+                [this] {
+                    if (!_paramsUserModified && !_enableComp2Cb->isChecked())
+                        initDefaultFitParams();
+                });
+    }
 
     _paramsUserModified = false;
     _populatingParams   = false;
