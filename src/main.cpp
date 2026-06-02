@@ -12,7 +12,7 @@ int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
     app.setApplicationName("ASTRA");
-    app.setApplicationVersion("0.1.1");
+    app.setApplicationVersion("0.2.0");
     app.setOrganizationName("ASTRA");
 
     QFontDatabase::addApplicationFont(":/fonts/FiraCode-Regular.ttf");
