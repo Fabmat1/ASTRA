@@ -23,6 +23,7 @@ class QComboBox;
 class QDoubleSpinBox;
 class QSpinBox;
 class QLabel;
+class QRadioButton;
 
 class Star;
 class DatabaseManager;
@@ -139,6 +140,8 @@ private slots:
     selectedExistingFit(QString *outSource = nullptr,
                         QString *outFilter = nullptr) const;
 
+    Periodogram::Result    currentPeriodogramResult() const;
+
     std::shared_ptr<Star>  _star;
     DatabaseManager*       _dbm        = nullptr;
     ApplicationController* _controller = nullptr;
@@ -226,4 +229,8 @@ private slots:
     QPushButton *_plotFitBtn       = nullptr;
     QPushButton *_setBestFitBtn    = nullptr;
     QPushButton *_deleteFitBtn     = nullptr;
+
+    // Periodogram click behaviour toggle
+    QRadioButton *_clickNearestRadio = nullptr;
+    QRadioButton *_clickExactRadio   = nullptr;
 };

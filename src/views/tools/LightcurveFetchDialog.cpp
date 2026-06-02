@@ -12,7 +12,9 @@
 #include "views/panels/DetailPanel.h"
 #include "views/panels/LCPanel.h"
 #include "views/panels/PeriodogramPanel.h"
+#include "views/widgets/PreciseDoubleSpinBox.h"
 
+#include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDialogButtonBox>
@@ -34,6 +36,7 @@
 #include <QPlainTextEdit>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QRadioButton>
 #include <QRegularExpression>
 #include <QScrollArea>
 #include <QShortcut>
@@ -74,6 +77,8 @@ static const QList<PreviewEntry>& previewEntries()
     };
     return entries;
 }
+
+constexpr double kClickSnapRelWindow = 0.01;
 
 // Convert a single line of ANSI-coloured text to a safe HTML span.
 QString ansiToHtml(const QString& line)
@@ -602,24 +607,45 @@ QWidget* LightcurveFetchDialog::buildPeriodogramTab()
             this, &LightcurveFetchDialog::onPanelComputeFinished);
 
     // Double-click on a periodogram peak → fold viewer + add to peaks table.
+    // Click on a periodogram → fold viewer + add a solution to the peaks table.
     connect(_periodogramPanel, &PeriodogramPanel::periodSelected,
-            this, [this](double period) {
-        if (period <= 0) return;
-        // Estimate error from the currently-selected periodogram source if any,
-        // else from any available result.
-        Periodogram::Result res;
-        QString label = _peakSourceCombo ? _peakSourceCombo->currentData().toString() : QString();
-        if (!label.isEmpty()) res = _periodogramPanel->resultByLabel(label);
-        if (!res.isValid()) {
-            auto descs = _periodogramPanel->availableResults();
-            if (!descs.isEmpty()) res = _periodogramPanel->resultByLabel(descs.front().label);
-        }
-        if (res.isValid())
-            addPeak(PeriodogramPanel::estimatePeakAt(res, period));
+            this, [this](double clickedPeriod) {
+        if (clickedPeriod <= 0) return;
 
-        // Also fold the viewer immediately for the original UX.
+        const bool exact = _clickExactRadio && _clickExactRadio->isChecked();
+        double foldPeriod = clickedPeriod;
+
+        if (exact) {
+            // Mode 2: add the exact period the user clicked on, no snapping.
+            PeriodogramPanel::PeriodPeak pk;
+            pk.period      = clickedPeriod;
+            pk.frequency   = 1.0 / clickedPeriod;
+            pk.power       = 0.0;
+            pk.periodError = 0.0;
+            pk.sourceLabel = "click (exact)";
+            addPeak(pk);
+        } else {
+            // Mode 1: snap to the nearest peak within a small window and add it
+            // ± its estimated sigma.
+            const Periodogram::Result res = currentPeriodogramResult();
+            if (res.isValid()) {
+                const auto pk = PeriodogramPanel::estimatePeakAt(
+                    res, clickedPeriod, kClickSnapRelWindow);
+                addPeak(pk);
+                if (pk.period > 0) foldPeriod = pk.period;
+            } else {
+                // No periodogram computed yet — fall back to the exact click.
+                PeriodogramPanel::PeriodPeak pk;
+                pk.period      = clickedPeriod;
+                pk.frequency   = 1.0 / clickedPeriod;
+                pk.sourceLabel = "click";
+                addPeak(pk);
+            }
+        }
+
+        // Fold the viewer immediately for the original UX.
         if (_lcPanel) {
-            _lcPanel->setFoldPeriod(period);
+            _lcPanel->setFoldPeriod(foldPeriod);
             _lcPanel->setFolded(true);
         }
         _tabs->setCurrentIndex(0);
@@ -659,14 +685,16 @@ QWidget* LightcurveFetchDialog::buildPeriodogramControls()
     auto* paramForm = new QFormLayout(paramBox);
     paramForm->setLabelAlignment(Qt::AlignRight);
 
-    _minPSpin = new QDoubleSpinBox;
-    _minPSpin->setDecimals(8); _minPSpin->setRange(0.0, 1e9);
-    _minPSpin->setSpecialValueText("auto"); _minPSpin->setSuffix(" d");
+    _minPSpin = new PreciseDoubleSpinBox; // 15-sig-fig, paste-friendly
+    _minPSpin->setRange(0.0, 1e9);
+    _minPSpin->setSpecialValueText("auto");
+    _minPSpin->setSuffix(" d");
     paramForm->addRow("Min P:", _minPSpin);
 
-    _maxPSpin = new QDoubleSpinBox;
-    _maxPSpin->setDecimals(6); _maxPSpin->setRange(0.0, 1e9);
-    _maxPSpin->setSpecialValueText("auto"); _maxPSpin->setSuffix(" d");
+    _maxPSpin = new PreciseDoubleSpinBox;
+    _maxPSpin->setRange(0.0, 1e9);
+    _maxPSpin->setSpecialValueText("auto");
+    _maxPSpin->setSuffix(" d");
     paramForm->addRow("Max P:", _maxPSpin);
 
     _nSampSpin = new QSpinBox;
@@ -728,12 +756,32 @@ QWidget* LightcurveFetchDialog::buildPeriodogramControls()
     vlay->addWidget(seriesBox);
 
     // ── Peaks group ──
-    auto* peakBox = new QGroupBox("Period detection");
-    auto* pLay    = new QVBoxLayout(peakBox);
+    auto *peakBox = new QGroupBox("Period detection");
+    auto *pLay    = new QVBoxLayout(peakBox);
     pLay->setContentsMargins(6, 6, 6, 6);
     pLay->setSpacing(4);
 
-    auto* peakTop = new QHBoxLayout;
+    // ── Click-to-add behaviour toggle ─────────────────────────────────
+    auto *clickModeRow = new QHBoxLayout;
+    clickModeRow->addWidget(new QLabel("On click:"));
+    _clickNearestRadio = new QRadioButton("Nearest peak");
+    _clickExactRadio   = new QRadioButton("Exact period");
+    _clickNearestRadio->setChecked(true);
+    _clickNearestRadio->setToolTip(
+        "Clicking in the periodogram snaps to the nearest peak (within a small "
+        "window) and adds it ± its estimated sigma.");
+    _clickExactRadio->setToolTip(
+        "Clicking in the periodogram adds the exact period at the cursor as a "
+        "solution, without snapping.");
+    auto *clickModeGroup = new QButtonGroup(this);
+    clickModeGroup->addButton(_clickNearestRadio);
+    clickModeGroup->addButton(_clickExactRadio);
+    clickModeRow->addWidget(_clickNearestRadio);
+    clickModeRow->addWidget(_clickExactRadio);
+    clickModeRow->addStretch();
+    pLay->addLayout(clickModeRow);
+
+    auto *peakTop = new QHBoxLayout;
     peakTop->addWidget(new QLabel("From:"));
     _peakSourceCombo = new QComboBox;
     _peakSourceCombo->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
@@ -961,6 +1009,25 @@ void LightcurveFetchDialog::onPanelComputeFinished(bool /*cancelled*/)
 
 // ── Peak detection / management ───────────────────────────────────
 
+Periodogram::Result LightcurveFetchDialog::currentPeriodogramResult() const {
+    Periodogram::Result res;
+    if (!_periodogramPanel)
+        return res;
+
+    const QString label = _peakSourceCombo
+                              ? _peakSourceCombo->currentData().toString()
+                              : QString();
+    if (!label.isEmpty())
+        res = _periodogramPanel->resultByLabel(label);
+
+    if (!res.isValid()) {
+        const auto descs = _periodogramPanel->availableResults();
+        if (!descs.isEmpty())
+            res = _periodogramPanel->resultByLabel(descs.front().label);
+    }
+    return res;
+}
+
 void LightcurveFetchDialog::onDetectPeaksClicked()
 {
     if (!_periodogramPanel || !_peakSourceCombo) return;
@@ -973,24 +1040,51 @@ void LightcurveFetchDialog::onDetectPeaksClicked()
     for (const auto& pk : peaks) addPeak(pk);
 }
 
-void LightcurveFetchDialog::onAddManualPeakClicked()
-{
-    if (!_periodogramPanel) return;
-    bool ok = false;
-    const double p = QInputDialog::getDouble(this, "Add period",
-        "Period (days):", 1.0, 1e-9, 1e9, 6, &ok);
-    if (!ok || p <= 0) return;
+void LightcurveFetchDialog::onAddManualPeakClicked() {
+    if (!_periodogramPanel)
+        return;
 
-    // Estimate error using the currently-selected periodogram if any.
-    Periodogram::Result res;
-    if (_peakSourceCombo) {
-        const QString label = _peakSourceCombo->currentData().toString();
-        if (!label.isEmpty()) res = _periodogramPanel->resultByLabel(label);
-    }
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Add period"));
+    auto *v = new QVBoxLayout(&dlg);
+
+    auto *form = new QFormLayout;
+    auto *spin = new PreciseDoubleSpinBox;
+    spin->setRange(1e-9, 1e9);
+    spin->setValue(1.0);
+    spin->setSuffix(" d");
+    spin->setToolTip(tr("Supports pasting full-precision periods "
+                        "(incl. scientific notation)."));
+    form->addRow(tr("Period (days):"), spin);
+    v->addLayout(form);
+
+    auto *bb =
+        new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    v->addWidget(bb);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    const double p = spin->value();
+    if (p <= 0)
+        return;
+
+    // Keep the entered period exact (the whole point of the precise box);
+    // only borrow a power/sigma estimate from the current periodogram, if any.
     PeriodogramPanel::PeriodPeak pk;
-    if (res.isValid()) pk = PeriodogramPanel::estimatePeakAt(res, p);
-    else               { pk.period = p; pk.frequency = 1.0 / p; pk.sourceLabel = "manual"; }
-    pk.sourceLabel += " (manual)";
+    pk.period      = p;
+    pk.frequency   = 1.0 / p;
+    pk.sourceLabel = "manual";
+
+    const Periodogram::Result res = currentPeriodogramResult();
+    if (res.isValid()) {
+        const auto est =
+            PeriodogramPanel::estimatePeakAt(res, p, kClickSnapRelWindow);
+        pk.power       = est.power;
+        pk.periodError = est.periodError;
+    }
     addPeak(pk);
 }
 

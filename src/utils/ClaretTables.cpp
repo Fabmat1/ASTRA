@@ -5,20 +5,53 @@
 #include <QHash>
 #include <QRegularExpression>
 #include <QTextStream>
+#include <QMutex>
+#include <QMutexLocker>
 
 #include <cmath>
 #include <limits>
 
 namespace {
 
+// One-time parse of a Claret resource file into tokenized rows.
+// Files are read-only resources, so the cache is valid for the process life.
+struct ParsedTable {
+    QVector<QStringList> rows;
+};
+
+const ParsedTable &loadParsedTable(const QString &path) {
+    static QHash<QString, ParsedTable> cache;
+    static QMutex                      mutex;
+    QMutexLocker                       lk(&mutex);
+
+    auto it = cache.find(path);
+    if (it != cache.end())
+        return it.value();
+
+    ParsedTable pt;
+    QFile       f(path);
+    if (f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        static const QRegularExpression splitter(R"(\s+)");
+        QTextStream                     s(&f);
+        while (!s.atEnd()) {
+            const QString line = s.readLine().trimmed();
+            if (line.isEmpty() || line.startsWith('#') || line.startsWith('!'))
+                continue;
+            pt.rows.append(line.split(splitter, Qt::SkipEmptyParts));
+        }
+    }
+    it = cache.insert(path, std::move(pt));
+    return it.value();
+}
+
 struct TableSpec {
-  QString resourcePath;
-  int teffCol = 0;
-  int loggCol = -1;
-  QVector<int> targetCols;
-  int filterCol = -2; // -2 = no filter, -1 = last column
-  QString filterValue;
-  bool teffIsLog = false;
+    QString      resourcePath;
+    int          teffCol = 0;
+    int          loggCol = -1;
+    QVector<int> targetCols;
+    int          filterCol = -2; // -2 = no filter, -1 = last column
+    QString      filterValue;
+    bool         teffIsLog = false;
 };
 
 QString filter2011(const QString &band) {
@@ -140,79 +173,71 @@ std::optional<TableSpec> beamingSpec(const QString &band) {
 
 std::optional<std::tuple<QVector<double>, double, std::optional<double>>>
 queryTable(const TableSpec &spec, double T, std::optional<double> logg) {
-  QFile f(spec.resourcePath);
-  if (!f.open(QIODevice::ReadOnly | QIODevice::Text))
-    return std::nullopt;
+    const ParsedTable &table = loadParsedTable(spec.resourcePath);
+    if (table.rows.isEmpty())
+        return std::nullopt;
 
-  static const QRegularExpression splitter(R"(\s+)");
+    double                bestD = std::numeric_limits<double>::infinity();
+    QVector<double>       bestVals;
+    double                bestT = 0.0;
+    std::optional<double> bestG;
 
-  double bestD = std::numeric_limits<double>::infinity();
-  QVector<double> bestVals;
-  double bestT = 0.0;
-  std::optional<double> bestG;
+    for (const QStringList &F : table.rows) {
+        // Optional filter check
+        if (spec.filterCol != -2 && !spec.filterValue.isEmpty()) {
+            int fc = spec.filterCol;
+            if (fc < 0)
+                fc = F.size() + fc;
+            if (fc < 0 || fc >= F.size() || F[fc] != spec.filterValue)
+                continue;
+        }
+        if (spec.teffCol >= F.size())
+            continue;
 
-  QTextStream s(&f);
-  while (!s.atEnd()) {
-    const QString line = s.readLine().trimmed();
-    if (line.isEmpty() || line.startsWith('#') || line.startsWith('!'))
-      continue;
-    const QStringList F = line.split(splitter, Qt::SkipEmptyParts);
+        bool         ok   = false;
+        const double traw = F[spec.teffCol].toDouble(&ok);
+        if (!ok)
+            continue;
+        const double rowT = spec.teffIsLog ? std::pow(10.0, traw) : traw;
 
-    // Optional filter check
-    if (spec.filterCol != -2 && !spec.filterValue.isEmpty()) {
-      int fc = spec.filterCol;
-      if (fc < 0)
-        fc = F.size() + fc;
-      if (fc < 0 || fc >= F.size() || F[fc] != spec.filterValue)
-        continue;
+        std::optional<double> rowG;
+        if (spec.loggCol >= 0 && spec.loggCol < F.size()) {
+            const double g = F[spec.loggCol].toDouble(&ok);
+            if (ok)
+                rowG = g;
+        }
+
+        double d = std::abs(rowT - T) / std::max(T, 1.0);
+        if (logg && rowG)
+            d += std::abs(*rowG - *logg) / 5.0;
+        if (d >= bestD)
+            continue;
+
+        QVector<double> vals;
+        vals.reserve(spec.targetCols.size());
+        bool good = true;
+        for (int ci : spec.targetCols) {
+            if (ci >= F.size()) {
+                good = false;
+                break;
+            }
+            const double v = F[ci].toDouble(&ok);
+            if (!ok) {
+                good = false;
+                break;
+            }
+            vals.append(v);
+        }
+        if (good) {
+            bestD    = d;
+            bestVals = vals;
+            bestT    = rowT;
+            bestG    = rowG;
+        }
     }
-    if (spec.teffCol >= F.size())
-      continue;
-
-    bool ok = false;
-    const double traw = F[spec.teffCol].toDouble(&ok);
-    if (!ok)
-      continue;
-    const double rowT = spec.teffIsLog ? std::pow(10.0, traw) : traw;
-
-    std::optional<double> rowG;
-    if (spec.loggCol >= 0 && spec.loggCol < F.size()) {
-      const double g = F[spec.loggCol].toDouble(&ok);
-      if (ok)
-        rowG = g;
-    }
-
-    double d = std::abs(rowT - T) / std::max(T, 1.0);
-    if (logg && rowG)
-      d += std::abs(*rowG - *logg) / 5.0;
-    if (d >= bestD)
-      continue;
-
-    QVector<double> vals;
-    vals.reserve(spec.targetCols.size());
-    bool good = true;
-    for (int ci : spec.targetCols) {
-      if (ci >= F.size()) {
-        good = false;
-        break;
-      }
-      const double v = F[ci].toDouble(&ok);
-      if (!ok) {
-        good = false;
-        break;
-      }
-      vals.append(v);
-    }
-    if (good) {
-      bestD = d;
-      bestVals = vals;
-      bestT = rowT;
-      bestG = rowG;
-    }
-  }
-  if (bestVals.isEmpty())
-    return std::nullopt;
-  return std::make_tuple(bestVals, bestT, bestG);
+    if (bestVals.isEmpty())
+        return std::nullopt;
+    return std::make_tuple(bestVals, bestT, bestG);
 }
 
 std::array<double, 4> defaultLdc(double T) {

@@ -206,6 +206,14 @@ class LCFitDialog : public QDialog {
     void    recomputeM2Min();
     void    clampStartingParamsToInputs(LCFitPhysics::StartParams &sp) const;
     QString claretFilterKey() const;
+    // Cache keys so we don't re-query Claret/beaming tables on every
+    // page visit when the relevant inputs haven't changed.
+    QString _lastClaretKey;
+    QString _lastBeamingKey;
+
+    // Build a signature of the inputs that affect each query.
+    QString claretInputKey() const;
+    QString beamingInputKey() const;
 
     // Page change handling
     void onPageChanged(int index);

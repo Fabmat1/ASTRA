@@ -726,8 +726,8 @@ void PeriodogramPanel::syncXRangeFrom(QCustomPlot* origin)
 // ── Peak detection ─────────────────────────────────────────────────
 
 PeriodogramPanel::PeriodPeak
-PeriodogramPanel::estimatePeakAt(const Periodogram::Result& res, double period)
-{
+PeriodogramPanel::estimatePeakAt(const Periodogram::Result &res, double period,
+                                 double relWindow) {
     PeriodPeak pk;
     pk.period = period;
     if (period <= 0 || !res.isValid() || res.frequency.isEmpty()) return pk;
@@ -742,12 +742,22 @@ PeriodogramPanel::estimatePeakAt(const Periodogram::Result& res, double period)
         double d = std::abs(res.frequency[i] - fHint);
         if (d < bestD) { bestD = d; idx = i; }
     }
-    // climb to local max within small window
-    int peakIdx = idx;
-    const int W = std::max(2, N / 200);
-    int lo = std::max(0, idx - W), hi = std::min(N - 1, idx + W);
+    // Climb to the local max, but only within ±relWindow (fractional) of the
+    // clicked frequency, so the snapped peak stays close to the click.
+    const double fWin    = std::max(0.0, relWindow) * fHint;
+    int          peakIdx = idx;
+    int          lo = idx, hi = idx;
+    while (lo > 0 && std::abs(res.frequency[lo - 1] - fHint) <= fWin)
+        --lo;
+    while (hi < N - 1 && std::abs(res.frequency[hi + 1] - fHint) <= fWin)
+        ++hi;
+    if (hi - lo < 2) { // window collapsed to ~1 bin
+        lo = std::max(0, idx - 2);
+        hi = std::min(N - 1, idx + 2);
+    }
     for (int j = lo; j <= hi; ++j)
-        if (res.power[j] > res.power[peakIdx]) peakIdx = j;
+        if (res.power[j] > res.power[peakIdx])
+            peakIdx = j;
 
     const double fPk = res.frequency[peakIdx];
     if (fPk <= 0) return pk;

@@ -95,8 +95,8 @@ public:
     QList<PeriodPeak> detectPeaks(const QString& resultLabel,
                                   int maxPeaks = 5,
                                   double minRelSep = 0.05) const;
-    /// Refine + estimate error for a user-supplied period against `res`.
-    static PeriodPeak estimatePeakAt(const Periodogram::Result& res, double period);
+
+    static PeriodPeak estimatePeakAt(const Periodogram::Result &res, double periodGuess, double relWindow = 0.05); 
 
     // ── Display ─────────────────────────────────────────────────────
     void  setXAxis(XAxis ax);

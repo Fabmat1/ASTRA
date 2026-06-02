@@ -1755,13 +1755,33 @@ void LCFitDialog::onPageChanged(int index) {
     updateNavButtons();
     const QString title = _pageTitles.value(index);
     if (title == tr("Limb/Gravity Darkening")) {
-        onQueryClaretClicked();
+        const QString key = claretInputKey();
+        if (key != _lastClaretKey) {
+            onQueryClaretClicked();
+            _lastClaretKey = key;
+        }
     } else if (title == tr("Beaming")) {
-        onComputeBeamingClicked();
+        const QString key = beamingInputKey();
+        if (key != _lastBeamingKey) {
+            onComputeBeamingClicked();
+            _lastBeamingKey = key;
+        }
     } else if (title == tr("Review")) {
         if (!_configOverride)
             onRefreshReviewClicked();
     }
+}
+
+QString LCFitDialog::claretInputKey() const {
+    return QStringLiteral("%1|%2|%3|%4|%5|%6|%7")
+        .arg(_type1->currentText(), _type2->currentText(), _T1->text(),
+             _T2->text(), _logg1->text(), _logg2->text(), claretFilterKey());
+}
+
+QString LCFitDialog::beamingInputKey() const {
+    return QStringLiteral("%1|%2|%3|%4|%5")
+        .arg(_T1->text(), _T2->text(), _logg1->text(), _logg2->text(),
+             claretFilterKey());
 }
 
 void LCFitDialog::onPrevPage() {
