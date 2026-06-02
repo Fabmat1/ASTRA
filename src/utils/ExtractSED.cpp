@@ -1,12 +1,13 @@
 #include "ExtractSED.h"
 #include "models/Photometry.h"
 
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QTextStream>
 #include <QRegularExpression>
-#include <QDebug>
+#include <QTextStream>
+#include <charconv>
 #include <cmath>
 #include <limits>
 
