@@ -822,7 +822,7 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
             }
         }
 
-        // Summary fields — gracefully handle missing columns (idx == -1)
+        // Summary fields - gracefully handle missing columns (idx == -1)
         if (idxNSpectra >= 0)    star->setNSpectra(query.value(idxNSpectra).toInt());
         if (idxNFitSpectra >= 0) star->setNFitSpectra(query.value(idxNFitSpectra).toInt());
 
@@ -977,7 +977,7 @@ bool DatabaseManager::saveStar(const QString& projectId, std::shared_ptr<Star> s
     while (q.next()) rows.push_back({q.value(0).toString(), q.value(1).toString()});
     if (rows.empty()) return;
 
-    // Resolve once per unique string — usually only a handful of distinct values.
+    // Resolve once per unique string - usually only a handful of distinct values.
     struct Hit { std::shared_ptr<Instrument> inst; QString modeKey; int count = 0; };
     QHash<QString, Hit> byString;
     QHash<QString, int> unresolvedCounts;
@@ -1066,6 +1066,11 @@ bool DatabaseManager::importCSV(const QString& filepath, std::shared_ptr<Project
 std::shared_ptr<Photometry> DatabaseManager::loadPhotometry(const QString& starId)
 {
     return _photometry->loadPhotometry(starId);
+}
+
+bool DatabaseManager::savePhotometry(const QString              &starId,
+                                     std::shared_ptr<Photometry> photometry) {
+    return _photometry->savePhotometry(starId, photometry);
 }
 
 std::vector<std::shared_ptr<Spectrum>> DatabaseManager::loadSpectra(const QString& starId)

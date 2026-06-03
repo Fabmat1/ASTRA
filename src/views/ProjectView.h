@@ -24,7 +24,8 @@ class StarFilterProxyModel;
 class StarFilterWidget;
 class Star;
 class BooleanColumnDelegate;
-
+class QDragEnterEvent;
+class QDropEvent;
 
 class ScrollingLabel : public QWidget {
     Q_OBJECT
@@ -163,8 +164,9 @@ public:
 
     void loadProject(const QString& projectId);
     void refreshTable();  // Add this line
+    void receivePackageFile(const QString &path);
 
-public slots:
+  public slots:
     void onAddStar();
     void onImportStars();
     void onRemoveStar();
@@ -172,8 +174,10 @@ public slots:
     void onShowDetailWindow();
     void onConfigureColumns();
     void onCreatePlot();
+    void onShareStars();
+    void onReceiveStars();
 
-private slots:
+  private slots:
     void onStarDoubleClicked(const QModelIndex& index);
     void onTableContextMenu(const QPoint& pos);
     void onHeaderContextMenu(const QPoint& pos);
@@ -181,8 +185,10 @@ private slots:
     void onSelectionChanged(const QItemSelection& selected, const QItemSelection& deselected);
 
 protected:
-    bool eventFilter(QObject* obj, QEvent* event) override;
-    void keyPressEvent(QKeyEvent* event) override;
+    bool eventFilter(QObject *obj, QEvent *event) override;
+    void keyPressEvent(QKeyEvent *event) override;
+    void dragEnterEvent(QDragEnterEvent *event) override; 
+    void dropEvent(QDropEvent *event) override;
 
 private:
     void setupUi();
@@ -210,7 +216,8 @@ private:
     QAction* _removeSelectedAction;
     QAction* _reloadMetricsAction;
     QAction* _configureColumnsAction;
-    
+    QAction               *_shareAction = nullptr;
+
     QModelIndex _rightClickedIndex;
     BooleanColumnDelegate* _boolDelegate = nullptr;
 

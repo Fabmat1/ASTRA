@@ -107,7 +107,7 @@ public:
     Time&       time()              { return _time; }
     void        setTime(const Time& t) { _time = t; }
 
-    // ── Time (legacy wrappers — delegate to Time) ───────────────────────────
+    // ── Time (legacy wrappers - delegate to Time) ───────────────────────────
     // These keep every existing call-site compiling.  Migrate at leisure,
     // then remove.
     double getMJD() const           { return _time.mjdOr(0.0); }

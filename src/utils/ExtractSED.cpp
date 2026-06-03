@@ -17,7 +17,7 @@
 
 namespace {
 
-// Whitespace tokenizer over a byte range — produces views, no allocations.
+// Whitespace tokenizer over a byte range - produces views, no allocations.
 inline int splitWhitespace(const char *b, const char *e, std::string_view *out,
                            int maxTok) {
     int n = 0;
@@ -347,7 +347,7 @@ bool parseTexResults(const QString& filepath, std::shared_ptr<SEDModel> model)
         }
     };
 
-    // Find the last unescaped '&' in a line — this is the real table
+    // Find the last unescaped '&' in a line - this is the real table
     // column separator.  Escaped \& (e.g. S\&F) is skipped.
     auto findColumnSeparator = [](const QString& line) -> int {
         for (int i = line.length() - 1; i >= 0; --i) {
@@ -371,7 +371,7 @@ bool parseTexResults(const QString& filepath, std::shared_ptr<SEDModel> model)
             line.startsWith("\\hline"))
             continue;
 
-        // \multicolumn lines have no real column separator —
+        // \multicolumn lines have no real column separator -
         // check them for component headers and move on
         if (line.contains("\\multicolumn")) {
             if (line.contains("Component 1")) {

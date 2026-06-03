@@ -126,7 +126,7 @@ static double logRegularizedGammaQ_CF(double a, double x)
         if (std::fabs(del - 1.0) < EPS) break;
     }
 
-    // Never compute exp(...) — stay in log space the whole way
+    // Never compute exp(...) - stay in log space the whole way
     return -x + a * std::log(x) - gln + std::log(h);
 }
 

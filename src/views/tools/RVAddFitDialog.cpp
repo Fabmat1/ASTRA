@@ -151,7 +151,7 @@ void RVAddFitDialog::buildManualTab(QWidget *parent) {
 }
 
 // ───────────────────────────────────────────────────────────────────
-//   MCMC tab — 2-column layout
+//   MCMC tab - 2-column layout
 // ───────────────────────────────────────────────────────────────────
 void RVAddFitDialog::buildMCMCTab(QWidget *parent) {
     auto *lay = new QVBoxLayout(parent);
@@ -209,7 +209,7 @@ void RVAddFitDialog::buildMCMCTab(QWidget *parent) {
     _mcmcPeakCombo->setEnabled(false);
     fP->addRow("Peak", _mcmcPeakCombo);
 
-    // NEW: ellipsoidal toggle — use twice the photometric peak period.
+    // NEW: ellipsoidal toggle - use twice the photometric peak period.
     _mcmcPeakEllipsoidal = new QCheckBox("Ellipsoidal: use 2× peak period");
     _mcmcPeakEllipsoidal->setEnabled(false);
     _mcmcPeakEllipsoidal->setToolTip(
@@ -421,7 +421,7 @@ void RVAddFitDialog::populatePhotPeaks()
                     .arg(pk.period, 0, 'f', 6)
                     .arg(sigma,     0, 'f', 6)
                     .arg(pk.power,  0, 'f', 4)
-                    .arg(pk.sourceLabel.isEmpty() ? "—" : pk.sourceLabel);
+                    .arg(pk.sourceLabel.isEmpty() ? "-" : pk.sourceLabel);
                 auto* item = new QListWidgetItem(label, _photPeaksList);
                 item->setData(Qt::UserRole + 0, pk.period);
                 item->setData(Qt::UserRole + 1, sigma);
@@ -446,7 +446,7 @@ void RVAddFitDialog::populatePhotPeaks()
                 QString label = QString("P=%1 ± %2 d  (%3)")
                     .arg(pk.period, 0, 'f', 6)
                     .arg(sigma,     0, 'f', 6)
-                    .arg(pk.sourceLabel.isEmpty() ? "—" : pk.sourceLabel);
+                    .arg(pk.sourceLabel.isEmpty() ? "-" : pk.sourceLabel);
                 _mcmcPeakCombo->addItem(label);
                 _mcmcPeakCombo->setItemData(_mcmcPeakCombo->count() - 1, pk.period, Qt::UserRole + 0);
                 _mcmcPeakCombo->setItemData(_mcmcPeakCombo->count() - 1, sigma,     Qt::UserRole + 1);
@@ -723,7 +723,7 @@ void RVAddFitDialog::onRunMCMC()
             if (rate > 0.0) {
                 const double remaining = std::max(0, totalSamples - done) / rate;
                 const int s = int(remaining);
-                etaStr = QString(" — ETA %1:%2:%3")
+                etaStr = QString(" - ETA %1:%2:%3")
                     .arg(s / 3600, 2, 10, QChar('0'))
                     .arg((s / 60) % 60, 2, 10, QChar('0'))
                     .arg(s % 60, 2, 10, QChar('0'));

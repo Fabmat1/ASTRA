@@ -173,7 +173,7 @@ LightcurveFetchDialog::~LightcurveFetchDialog() = default;
 
 void LightcurveFetchDialog::setupUi()
 {
-    setWindowTitle(QString("Light Curves — %1").arg(
+    setWindowTitle(QString("Light Curves - %1").arg(
         _star->getAlias().isEmpty() ? _star->getSourceId() : _star->getAlias()));
     resize(1400, 850);
 
@@ -634,7 +634,7 @@ QWidget* LightcurveFetchDialog::buildPeriodogramTab()
                 addPeak(pk);
                 if (pk.period > 0) foldPeriod = pk.period;
             } else {
-                // No periodogram computed yet — fall back to the exact click.
+                // No periodogram computed yet - fall back to the exact click.
                 PeriodogramPanel::PeriodPeak pk;
                 pk.period      = clickedPeriod;
                 pk.frequency   = 1.0 / clickedPeriod;
@@ -928,7 +928,7 @@ void LightcurveFetchDialog::refreshSeriesListFromPanel()
             ? QString("%1  (%2 pts)").arg(si.source).arg(si.nPoints)
             : QString("%1 · %2  (%3 pts)").arg(si.source, si.filter).arg(si.nPoints);
         if (!si.eligible)
-            label += QString("  — skipped (<%1)").arg(_periodogramPanel->minPointsThreshold());
+            label += QString("  - skipped (<%1)").arg(_periodogramPanel->minPointsThreshold());
 
         auto* it = new QListWidgetItem(label);
         it->setData(Qt::UserRole, si.key);
@@ -977,7 +977,7 @@ void LightcurveFetchDialog::onOptimalClicked()
     double mn = 0, mx = 0;
     if (!_periodogramPanel->suggestAutoBounds(mn, mx)) {
         QMessageBox::warning(this, "Optimal",
-            "Could not auto-resolve period bounds — check selection / min pts.");
+            "Could not auto-resolve period bounds - check selection / min pts.");
         return;
     }
     if (_minPSpin->value() <= 0) _minPSpin->setValue(mn);
@@ -1033,7 +1033,7 @@ void LightcurveFetchDialog::onDetectPeaksClicked()
     if (!_periodogramPanel || !_peakSourceCombo) return;
     const QString label = _peakSourceCombo->currentData().toString();
     if (label.isEmpty()) {
-        QMessageBox::information(this, "Detect peaks", "No periodograms available — compute first.");
+        QMessageBox::information(this, "Detect peaks", "No periodograms available - compute first.");
         return;
     }
     const auto peaks = _periodogramPanel->detectPeaks(label, _peakCountSpin->value());
@@ -1119,7 +1119,7 @@ void LightcurveFetchDialog::loadPersistedPeaks()
     if (!_dbm || !_star) return;
     const QString json = _dbm->loadStarPhotPeaks(_star->getId());
     _peaks = PeriodogramPanel::peaksFromJson(json);
-    rebuildPeaksTable();   // display only — don't re-persist what we just read
+    rebuildPeaksTable();   // display only - don't re-persist what we just read
 
     LOG_INFO("Periodogram",
         QString("Loaded %1 persisted peak(s) for star %2")
@@ -1152,7 +1152,7 @@ void LightcurveFetchDialog::rebuildPeaksTable()
         setItem(0, QString::number(pk.period,      'g', 8));
         setItem(1, pk.periodError > 0
                      ? QString::number(pk.periodError, 'g', 3)
-                     : QString("—"));
+                     : QString("-"));
         setItem(2, QString::number(pk.power, 'g', 3));
         setItem(3, pk.sourceLabel);
     }
@@ -1295,7 +1295,7 @@ void LightcurveFetchDialog::onFetchClicked()
 void LightcurveFetchDialog::onFetchCancelClicked()
 {
     if (_fetcher && _fetcher->isRunning()) {
-        _fetchLog->feed(tr("— cancellation requested —\n"));
+        _fetchLog->feed(tr("- cancellation requested -\n"));
         _fetcher->cancel();
     }
 }
@@ -1334,8 +1334,8 @@ void LightcurveFetchDialog::onFetcherFinished(int code, bool ok)
         _fetchLog->feed((s + '\n').toUtf8());
     };
 
-    status(ok ? tr("— lightcurvequery finished successfully —")
-              : tr("— lightcurvequery exited with code %1 —").arg(code));
+    status(ok ? tr("- lightcurvequery finished successfully -")
+              : tr("- lightcurvequery exited with code %1 -").arg(code));
 
     const QString gaiaId = _star->getSourceId();
     const auto expected  = _fetcher->expectedOutputFiles(gaiaId);
@@ -1349,7 +1349,7 @@ void LightcurveFetchDialog::onFetcherFinished(int code, bool ok)
     const bool haveCoords =
         Star::isSet(_star->getRa()) && Star::isSet(_star->getDec());
     if (!haveCoords) {
-        status(tr("Warning: star has no RA/Dec — BJDs will not be computed."));
+        status(tr("Warning: star has no RA/Dec - BJDs will not be computed."));
     }
 
     QStringList imported, empty;
@@ -1373,7 +1373,7 @@ void LightcurveFetchDialog::onFetcherFinished(int code, bool ok)
         if (!nativeIsBjd && haveCoords && _dbm) {
             auto inst = _dbm->resolveInstrumentString(source);
             if (!inst) {
-                status(tr("[%1] no instrument record found — BJD not computed")
+                status(tr("[%1] no instrument record found - BJD not computed")
                        .arg(source));
             } else {
                 int converted = 0;
@@ -1531,7 +1531,7 @@ QWidget* LightcurveFetchDialog::buildPreviewsTab()
     _previewDesc->setStyleSheet("color: gray;");
     root->addWidget(_previewDesc);
 
-    // CROWDSAP — only shown when the TESS image is on screen.
+    // CROWDSAP - only shown when the TESS image is on screen.
     _crowdsapTabLabel = new QLabel;
     _crowdsapTabLabel->setTextFormat(Qt::RichText);
     _crowdsapTabLabel->setAlignment(Qt::AlignCenter);
@@ -1695,14 +1695,14 @@ void LightcurveFetchDialog::onRecomputeBjdClicked()
     }
     if (!Star::isSet(_star->getRa()) || !Star::isSet(_star->getDec())) {
         QMessageBox::warning(this, tr("Recompute BJD"),
-            tr("Star has no RA/Dec — cannot compute BJD."));
+            tr("Star has no RA/Dec - cannot compute BJD."));
         return;
     }
     auto inst = _dbm ? _dbm->resolveInstrumentString(source) : nullptr;
 
     // Build a small modal dialog with a time-scale selector.
     QDialog dlg(this);
-    dlg.setWindowTitle(tr("Recompute BJD — %1").arg(source));
+    dlg.setWindowTitle(tr("Recompute BJD - %1").arg(source));
     auto* v = new QVBoxLayout(&dlg);
 
     auto* hint = new QLabel(tr(
@@ -1753,7 +1753,7 @@ void LightcurveFetchDialog::onRecomputeBjdClicked()
 
     if (!nativeIsBjd && !inst) {
         QMessageBox::warning(this, tr("Recompute BJD"),
-            tr("No instrument record matches source \"%1\" — cannot "
+            tr("No instrument record matches source \"%1\" - cannot "
                "compute BJD from a non-barycentric scale.").arg(source));
         return;
     }
@@ -1774,7 +1774,7 @@ void LightcurveFetchDialog::onRecomputeBjdClicked()
         if (pt.time.bjd().has_value()) ++recomputed;
     }
 
-    // Replace outright — same points, but their Time objects have been rebuilt.
+    // Replace outright - same points, but their Time objects have been rebuilt.
     phot->addLightcurve(source, pts);
     if (_dbm && !_dbm->saveLightcurveForStar(_star->getId(), source, phot.get())) {
         QMessageBox::warning(this, tr("Recompute BJD"),
@@ -2187,7 +2187,7 @@ void LightcurveFetchDialog::refreshExistingFitsTree() {
                 it->setText(1, QString::number(fit->period, 'g', 8));
                 it->setText(2, fit->chi2 > 0
                                    ? QString::number(fit->chi2, 'g', 4)
-                                   : "—");
+                                   : "-");
                 it->setData(0, Qt::UserRole, fit->getId());
                 it->setData(0, Qt::UserRole + 1, src);
                 it->setData(0, Qt::UserRole + 2, filt);
@@ -2259,7 +2259,7 @@ LightcurveFetchDialog::selectedExistingFit(QString *outSource,
     auto phot = _star ? _star->getPhotometry() : nullptr;
     if (!phot)
         return nullptr;
-    // Search the whole source bucket — don't rely on filter equality semantics.
+    // Search the whole source bucket - don't rely on filter equality semantics.
     for (const auto &f : phot->getLCFits(src)) {
         if (f->getId() == id) {
             if (outSource)
@@ -2309,7 +2309,7 @@ void LightcurveFetchDialog::onSetSelectedAsBestClicked() {
     if (_fitLcPanel)
         _fitLcPanel->refresh();
     LOG_INFO("LCFit", QString("Set best LC fit for %1/%2/%3 → %4")
-                          .arg(_star->getId(), src, filt.isEmpty() ? "—" : filt,
+                          .arg(_star->getId(), src, filt.isEmpty() ? "-" : filt,
                                fit->getId()));
 }
 

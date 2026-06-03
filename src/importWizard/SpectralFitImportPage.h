@@ -42,7 +42,7 @@ struct DiggaFitDirectory {
     QString gridName;
     QString parentDirName;
 
-    // From fit_report.tex — spec index → spectrum filename
+    // From fit_report.tex - spec index → spectrum filename
     QMap<int, QString> specIndexToFilename;
 
     // Shared (tied) parameters from fit_parameters.csv
@@ -177,7 +177,7 @@ private:
     void setupIsisPage();
     void setupMappingPage();
 
-    // Index building (heavy — call from background thread)
+    // Index building (heavy - call from background thread)
     struct SpectrumIndex {
         QHash<QString, QPair<std::shared_ptr<Star>, std::shared_ptr<Spectrum>>> filenameIndex;
         QHash<QString, std::shared_ptr<Star>> sourceIdIndex;
@@ -187,18 +187,18 @@ private:
 
     SpectrumIndex buildSpectrumLookupIndex();
 
-    // DIGGA parsing (pure — safe for background thread)
+    // DIGGA parsing (pure - safe for background thread)
     static DiggaFitDirectory parseDiggaDirectory(const DiggaScanResult& scan);
     static QMap<int, QString> parseDiggaFitReport(const QByteArray& content);
     static void parseDiggaFitParameters(const QByteArray& content, DiggaFitDirectory& dir);
 
-    // DIGGA matching (uses index — safe for background thread)
+    // DIGGA matching (uses index - safe for background thread)
     static void matchDiggaDirectories(std::vector<DiggaFitDirectory>& dirs,
                                       const SpectrumIndex& index);
 
 
 
-    // Preview — only builds limited summary, no widget ops
+    // Preview - only builds limited summary, no widget ops
     void updateDiggaPreviewTable();
 
     // Import
@@ -207,7 +207,7 @@ private:
     // Check spectra import task
     bool isSpectraImportRunning() const;
 
-    // ISIS parsing (pure — background-safe)
+    // ISIS parsing (pure - background-safe)
     static IsisFitDirectory parseIsisDirectory(const IsisScanResult &scan);
     static void matchIsisDirectories(std::vector<IsisFitDirectory> &dirs,
                                      const SpectrumIndex           &index);

@@ -148,7 +148,7 @@ def main():
 
     # Systematic grid: a few key combinations
     key_combos = [
-        # (mjd_key, target_key, obs_key) — chosen for coverage
+        # (mjd_key, target_key, obs_key) - chosen for coverage
         ('j2000',           'spica',          'mcdonald'),
         ('j2000',           'vega',           'geocentre'),
         ('vernal_equinox',  'ecliptic_plane', 'lasilla'),

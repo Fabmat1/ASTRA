@@ -445,7 +445,7 @@ void ProjectCard::buildStarrySkyBackground()
     p.setPen(Qt::NoPen);
     for (const auto& s : _stars) {
         // Only "bright" stars get a bloom. The bloom uses a wide radius and many
-        // gradient stops so the falloff approximates a Gaussian — no visible edge.
+        // gradient stops so the falloff approximates a Gaussian - no visible edge.
         if (s.brightness > 0.7) {
             const qreal R = s.radius * 11.0;
             QRadialGradient g(s.pos, R);

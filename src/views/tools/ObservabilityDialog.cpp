@@ -51,7 +51,7 @@ ObservabilityDialog::ObservabilityDialog(std::shared_ptr<Star> star,
                                          QWidget* parent)
     : QDialog(parent), _star(std::move(star)), _dbm(dbm)
 {
-    setWindowTitle(QString("Observability — %1")
+    setWindowTitle(QString("Observability - %1")
                        .arg(_star->getAlias().isEmpty() ? _star->getSourceId()
                                                         : _star->getAlias()));
     resize(1000, 720);
@@ -430,7 +430,7 @@ void ObservabilityDialog::plotRVPrediction()
         T0_bjd = bestFit->getReferenceBJD() - bestFit->getPhi() * period0;
     }
 
-    // σ_T₀ — prefer stored t0Error; else propagate from phi and period errors.
+    // σ_T₀ - prefer stored t0Error; else propagate from phi and period errors.
     double sigma_T0 = sigmaOf(bestFit->getT0Error());
     if (sigma_T0 == 0.0) {
         const double sPhi = sigmaOf(bestFit->getPhiError());
@@ -463,7 +463,7 @@ void ObservabilityDialog::plotRVPrediction()
         tmp.setGamma(gamma_s);
         if (ecc) { tmp.setEccentricity(e_s); tmp.setOmega(om_s); }
 
-        // Evaluate directly via phase — bypasses the stored phi entirely,
+        // Evaluate directly via phase - bypasses the stored phi entirely,
         // so period errors accumulate over (t − T₀)/P cycles correctly.
         for (int i = 0; i < Nt; ++i) {
             double phase = std::fmod((bjdGrid[i] - T0_s) / P_s, 1.0);
@@ -547,7 +547,7 @@ void ObservabilityDialog::plotRVPrediction()
                   .arg(cycles, 0, 'f', 1)
                   .arg(phaseSigma, 0, 'f', 3);
     if (noUncertainties)
-        status += "\n⚠ No parameter uncertainties stored — bands collapse to median.";
+        status += "\n⚠ No parameter uncertainties stored - bands collapse to median.";
     _rvStatusLabel->setText(status);
 
     _rvPlot->replot();

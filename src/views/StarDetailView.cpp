@@ -10,22 +10,23 @@
 #include "views/panels/DetailPanelFactory.h"
 #include "views/panels/PanelUtils.h"
 
-#include "views/tools/RVInspectorDialog.h"
-#include "views/tools/SpectraFitDialog.h"
-#include "views/tools/LightcurveFetchDialog.h"
-#include "views/tools/SEDFitDialog.h"
+#include "io/StarShare.h"
 #include "views/tools/CMDDialog.h"
 #include "views/tools/GalacticOrbitDialog.h"
+#include "views/tools/LightcurveFetchDialog.h"
 #include "views/tools/ObservabilityDialog.h"
+#include "views/tools/RVInspectorDialog.h"
+#include "views/tools/SEDFitDialog.h"
+#include "views/tools/SpectraFitDialog.h"
 
-#include <QHBoxLayout>
-#include <QVBoxLayout>
-#include <QSplitter>
-#include <QPushButton>
-#include <QTimer>
-#include <QEvent>
 #include <QDesktopServices>
+#include <QEvent>
+#include <QHBoxLayout>
+#include <QPushButton>
+#include <QSplitter>
+#include <QTimer>
 #include <QUrl>
+#include <QVBoxLayout>
 
 StarDetailView::StarDetailView(std::shared_ptr<Star> star,
                                DatabaseManager* dbm,
@@ -67,8 +68,8 @@ StarDetailView::~StarDetailView()
 void StarDetailView::setupUi()
 {
     QString title = _star->getAlias().isEmpty()
-        ? QString("Star Detail — %1").arg(_star->getSourceId())
-        : QString("Star Detail — %1").arg(_star->getAlias());
+        ? QString("Star Detail - %1").arg(_star->getSourceId())
+        : QString("Star Detail - %1").arg(_star->getAlias());
     setWindowTitle(title);
     setAttribute(Qt::WA_DeleteOnClose);
     resize(1400, 900);
@@ -198,7 +199,6 @@ QWidget* StarDetailView::createButtonSidebar()
     _simbadButton = makeButton("Show in SIMBAD", "Open SIMBAD page for this star");
     connect(_simbadButton, &QPushButton::clicked, this, &StarDetailView::onShowInSimbad);
 
-    layout->addSpacing(8);
 
     _viewAdjustRVButton = makeButton("View / Adjust RV", "View and adjust radial velocity data");
     connect(_viewAdjustRVButton, &QPushButton::clicked, this, &StarDetailView::onViewAdjustRV);
@@ -223,6 +223,13 @@ QWidget* StarDetailView::createButtonSidebar()
 
     _calcOrbitButton = makeButton("Galactic Orbit", "Calculate galactic orbit");
     connect(_calcOrbitButton, &QPushButton::clicked, this, &StarDetailView::onCalculateOrbit);
+
+    layout->addSpacing(8);
+
+    _shareButton =
+        makeButton("Share Star", "Export this star to a shareable .astra file");
+    connect(_shareButton, &QPushButton::clicked, this,
+            &StarDetailView::onShareStar);
 
     layout->addStretch();
     return sidebar;
@@ -296,6 +303,12 @@ void StarDetailView::onCalculateOrbit()
     auto* dialog = new GalacticOrbitDialog(_star, this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->show();
+}
+
+void StarDetailView::onShareStar() {
+    if (!_star)
+        return;
+    StarShare::exportStarsInteractive(this, _controller, {_star});
 }
 
 void StarDetailView::onShowInSimbad()

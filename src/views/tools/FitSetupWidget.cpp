@@ -418,7 +418,7 @@ QGroupBox* FitSetupWidget::buildPerSpectrumSection()
     connect(_resetToModeDefaultBtn, &QPushButton::clicked,
             this, &FitSetupWidget::onResetToModeDefault);
 
-    // Hook up editor-change callbacks — they flush the spin values into state
+    // Hook up editor-change callbacks - they flush the spin values into state
     auto flush = [this]{ commitEditorToState(); pushPreviewToPanel(); };
     connect(_wlMinSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
     connect(_wlMaxSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
@@ -1012,7 +1012,7 @@ fit::SpectralFitJob FitSetupWidget::buildJob(QStringList& tempFilesOut) const
     
         if (cfg.anchors.isEmpty()) {
             LOG_WARNING("FitSetup",
-                QString("Spectrum %1 has no continuum anchors — skipping")
+                QString("Spectrum %1 has no continuum anchors - skipping")
                     .arg(s->getId()));
             continue;
         }
@@ -1303,7 +1303,7 @@ void FitSetupWidget::onPreviewScript()
     }
 
     QDialog dlg(this);
-    dlg.setWindowTitle(QString("%1 — script preview").arg(job.backend));
+    dlg.setWindowTitle(QString("%1 - script preview").arg(job.backend));
     dlg.resize(820, 640);
 
     auto* v   = new QVBoxLayout(&dlg);

@@ -1,38 +1,44 @@
 #include "ProjectView.h"
-#include "controllers/ApplicationController.h"
-#include "models/Project.h"
-#include "models/Star.h"
 #include "../importWizard/StarImportWizard.h"
-#include "utils/Logger.h"
-#include "db/DatabaseManager.h"
-#include "views/StarDetailView.h"
-#include "StarFilterWidget.h"
-#include "models/ColumnPreset.h"
 #include "BooleanColumnDelegate.h"
 #include "ColumnConfigDialog.h"
+#include "StarFilterWidget.h"
+#include "controllers/ApplicationController.h"
+#include "db/DatabaseManager.h"
 #include "dialogs/AddStarDialog.h"
+#include "io/StarPackage.h"
+#include "io/StarShare.h"
+#include "models/ColumnPreset.h"
+#include "models/Project.h"
+#include "models/Star.h"
 #include "utils/BackgroundTaskManager.h"
+#include "utils/Logger.h"
+#include "views/StarDetailView.h"
 
-#include <QUuid>
-#include <QTableView>
-#include <QVBoxLayout>
-#include <QLabel>
-#include <QHeaderView>
-#include <QMessageBox>
-#include <QFileDialog>
-#include <QMenu>
 #include <QAction>
-#include <QKeyEvent>
-#include <QClipboard>
 #include <QApplication>
-#include <QPushButton>
-#include <QSet>
-#include <algorithm>
+#include <QClipboard>
+#include <QDragEnterEvent>
+#include <QDropEvent>
+#include <QFileDialog>
+#include <QHeaderView>
+#include <QKeyEvent>
+#include <QLabel>
 #include <QMainWindow>
+#include <QMenu>
+#include <QMessageBox>
+#include <QMimeData>
+#include <QPushButton>
+#include <QScrollBar>
+#include <QSet>
 #include <QSettings>
 #include <QStatusBar>
+#include <QTableView>
+#include <QUrl>
+#include <QUuid>
+#include <QVBoxLayout>
 #include <QWheelEvent>
-#include <QScrollBar>
+#include <algorithm>
 
 ProjectView::ProjectView(ApplicationController* controller, QWidget *parent)
     : QWidget(parent)
@@ -44,6 +50,7 @@ ProjectView::ProjectView(ApplicationController* controller, QWidget *parent)
 {
     setupUi();
     setupContextMenus();
+    setAcceptDrops(true);
 }
 
 ProjectView::~ProjectView()
@@ -129,9 +136,13 @@ void ProjectView::setupContextMenus()
     _copyAction = _tableContextMenu->addAction("Copy\tCtrl+C");
     _copyAction->setShortcut(QKeySequence::Copy);
     connect(_copyAction, &QAction::triggered, this, &ProjectView::onCopySelection);
-    
+
     _tableContextMenu->addSeparator();
-    
+
+    _shareAction = _tableContextMenu->addAction("Share…");
+    connect(_shareAction, &QAction::triggered, this,
+            &ProjectView::onShareStars);
+
     _openDetailAction = _tableContextMenu->addAction("Open Detail View");
     connect(_openDetailAction, &QAction::triggered, this, &ProjectView::onShowDetailWindow);
     
@@ -187,7 +198,7 @@ void ProjectView::loadProject(const QString& projectId)
         // Create source model
         _tableModel = new StarTableModel(_currentProject, this);
         
-        // Create proxy — block signals during setup
+        // Create proxy - block signals during setup
         _proxyModel = new StarFilterProxyModel(this);
         _proxyModel->blockSignals(true);
         _proxyModel->setSourceModel(_tableModel);
@@ -354,7 +365,8 @@ void ProjectView::onTableContextMenu(const QPoint& pos)
     _openDetailAction->setEnabled(index.isValid());
     _removeSelectedAction->setEnabled(hasSelection);
     _reloadMetricsAction->setEnabled(hasSelection);
-    
+    if (_shareAction) _shareAction->setEnabled(true); 
+
     _tableContextMenu->exec(_starTable->viewport()->mapToGlobal(pos));
 }
 
@@ -459,6 +471,35 @@ void ProjectView::onAddStar()
         .arg(!star->getAlias().isEmpty() ? star->getAlias()
              : !star->getSourceId().isEmpty() ? ("Gaia DR3 " + star->getSourceId())
              : star->getJName()));
+}
+
+void ProjectView::onShareStars() {
+    if (!_currentProject) {
+        QMessageBox::warning(this, "Share Stars",
+                             "Please open a project first.");
+        return;
+    }
+
+    auto stars = getSelectedStars();
+
+    if (stars.empty()) {
+        auto all = _currentProject->getAllStars();
+        if (all.empty()) {
+            QMessageBox::information(this, "Share Stars",
+                                     "There are no stars to share.");
+            return;
+        }
+        const auto btn = QMessageBox::question(
+            this, "Share Stars",
+            QString("No stars selected. Share all %1 stars in the project?")
+                .arg(all.size()),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (btn != QMessageBox::Yes)
+            return;
+        stars = all;
+    }
+
+    StarShare::exportStarsInteractive(this, _controller, stars);
 }
 
 void ProjectView::onImportStars()
@@ -876,4 +917,56 @@ bool StarTableModel::removeStars(const std::vector<int>& rows)
     // This is handled by refresh() after deletion from project
     Q_UNUSED(rows)
     return true;
+}
+
+static bool isAstraUrl(const QUrl &u) {
+    return u.isLocalFile() &&
+           u.toLocalFile().endsWith(QString(StarPackage::FILE_EXTENSION),
+                                    Qt::CaseInsensitive);
+}
+
+void ProjectView::dragEnterEvent(QDragEnterEvent *event) {
+    if (!_currentProject)
+        return;
+    if (event->mimeData()->hasUrls()) {
+        for (const QUrl &u : event->mimeData()->urls()) {
+            if (isAstraUrl(u)) {
+                event->acceptProposedAction();
+                return;
+            }
+        }
+    }
+}
+
+void ProjectView::dropEvent(QDropEvent *event) {
+    if (!_currentProject)
+        return;
+    int total = 0;
+    for (const QUrl &u : event->mimeData()->urls()) {
+        if (!isAstraUrl(u))
+            continue;
+        const int n = StarShare::importFileInteractive(
+            this, _controller, _currentProject, u.toLocalFile());
+        if (n > 0)
+            total += n;
+    }
+    event->acceptProposedAction();
+    if (total > 0)
+        loadProject(_currentProject->getId());
+}
+
+void ProjectView::receivePackageFile(const QString &path) {
+    if (!_currentProject) {
+        QMessageBox::warning(this, "Receive Stars",
+                             "Please open a project first.");
+        return;
+    }
+    const int n = StarShare::importFileInteractive(this, _controller,
+                                                   _currentProject, path);
+    if (n > 0)
+        loadProject(_currentProject->getId());
+}
+
+void ProjectView::onReceiveStars() {
+    receivePackageFile(QString()); // empty → file dialog inside the helper
 }

@@ -168,7 +168,7 @@ void ColumnPresetManager::buildBuiltInPresets() {
 
     _builtInPresets.clear();
 
-    // 0. Default — sensible factory default (a bit of everything)
+    // 0. Default - sensible factory default (a bit of everything)
     _builtInPresets.push_back(makePreset(
         "preset_default", "Default",
         {"ra", "dec", "plx", "teff", "logg", "spec_class", "logp", "delta_rv",

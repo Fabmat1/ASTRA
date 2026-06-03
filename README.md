@@ -74,7 +74,7 @@ sudo pacman -S base-devel cmake git wget pkgconf gcc-fortran \
 
 #### 2. Header-only Dependencies
 
-`unordered_dense` is not packaged on most distros — install it manually:
+`unordered_dense` is not packaged on most distros - install it manually:
 ```bash
 sudo mkdir -p /usr/local/include/ankerl
 sudo wget -O /usr/local/include/ankerl/unordered_dense.h \
@@ -102,7 +102,7 @@ The compiled binary will be at `build/ASTRA`. Run it directly:
 
 #### 4. (Optional) System-wide Install
 
-To install ASTRA system-wide — which also registers desktop files so it appears in your application menu:
+To install ASTRA system-wide - which also registers desktop files so it appears in your application menu:
 
 ```bash
 sudo cmake --install build --prefix /usr/local

@@ -162,7 +162,7 @@ class LCFitDialog : public QDialog {
     QCheckBox *_sinIPrior = nullptr;
     QMap<QString, QCheckBox *> _vary;
 
-    // — Advanced page —
+    // - Advanced page -
     QSpinBox       *_nlat1f{}, *_nlat2f{}, *_nlat1c{}, *_nlat2c{};
     QSpinBox       *_npole{}, *_nlatfill{}, *_nlngfill{};
     QDoubleSpinBox *_deltaPhase{};
@@ -182,7 +182,7 @@ class LCFitDialog : public QDialog {
     QSpinBox       *_nspot{};
     QSpinBox       *_iscale{};
 
-    // — Review page —
+    // - Review page -
     QPlainTextEdit            *_configReview{};
     QLabel                    *_reviewStatus{};
     std::optional<QJsonObject> _configOverride;

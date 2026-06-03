@@ -784,7 +784,7 @@ int GaiaQueryTask::parsePositionalResponse(
     }
 
     // A given upload position can match several Gaia sources within the
-    // radius — keep the nearest one per input star.
+    // radius - keep the nearest one per input star.
     struct Cand {
         QStringList values;
         double      dist;
@@ -1322,7 +1322,7 @@ void DiggaFitImportTask::execute()
     // race-free as long as no two entries share a fit.
     //
     // entry.spectrum may be shared between entries, but we never
-    // touch it here — only in Phase 2 (sequential).
+    // touch it here - only in Phase 2 (sequential).
 
     std::atomic<int> loadedCount{0};
     std::atomic<int> loadFailed{0};
@@ -1495,7 +1495,7 @@ void IsisFitImportTask::execute() {
     // race-free as long as no two entries share a fit.
     //
     // entry.spectrum may be shared between entries, but we never
-    // touch it here — only in Phase 2 (sequential).
+    // touch it here - only in Phase 2 (sequential).
 
     std::atomic<int> loadedCount{0};
     std::atomic<int> loadFailed{0};

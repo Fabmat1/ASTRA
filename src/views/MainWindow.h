@@ -29,9 +29,9 @@ public:
     ~MainWindow();
 
     void updateMenuBarForProjectView(bool projectOpen);
+    void importStarPackage(const QString &path);
 
-public slots:
-    void showProjectSelection();
+public slots: void showProjectSelection();
     void showProject(const QString& projectId);
     void openProjectDialog();
     void removeProjectDialog();
@@ -79,11 +79,14 @@ private:
     QActionGroup* _themeActionGroup;
 
     // Stars menu actions
-    QAction* _addStarAction;
-    QAction* _importStarsAction;
-    QAction* _removeStarAction;
-    QAction* _detailWindowAction;
+    QAction *_addStarAction;
+    QAction *_importStarsAction;
+    QAction *_removeStarAction;
+    QAction *_detailWindowAction;
+    QAction *_shareStarsAction   = nullptr;
+    QAction *_receiveStarsAction = nullptr;
 
+    QString _pendingImportPath;
     // Analysis menu actions
     QAction* _createPlotAction;
 

@@ -26,9 +26,9 @@ FitPreviewOverlay::FitPreviewOverlay(QCustomPlot* plot, QObject* parent)
     _plot->installEventFilter(this);
     _plot->setMouseTracking(true);
 
-    // If the plot is torn down before we are — which happens when
+    // If the plot is torn down before we are - which happens when
     // SpectraPanel's deleteChildren() visits the plot container before
-    // it visits this overlay — drop every item reference immediately.
+    // it visits this overlay - drop every item reference immediately.
     // After this fires, clearItems() has nothing to remove and our
     // destructor can run safely.
     connect(_plot.data(), &QObject::destroyed, this, [this] {
@@ -59,7 +59,7 @@ void FitPreviewOverlay::clearItems()
     // If the plot has already been destroyed (typical during
     // SpectraPanel's ~QWidget when the plot container is visited
     // before this overlay), every item the plot owned is already
-    // freed. Just drop our now-null QPointer references — never
+    // freed. Just drop our now-null QPointer references - never
     // dereference them, never call plot->removeItem().
     if (!_plot) {
         _rangeLoLine.clear();
@@ -217,7 +217,7 @@ FitPreviewOverlay::Hit FitPreviewOverlay::hitTest(const QPoint& px) const
     const double tol = tolerancePx();
     auto xPx = [&](double wl){ return _plot->xAxis->coordToPixel(wl); };
 
-    // Range edges — highest priority
+    // Range edges - highest priority
     {
         double d1 = std::abs(mx - xPx(_cfg.wlMin));
         double d2 = std::abs(mx - xPx(_cfg.wlMax));
@@ -236,7 +236,7 @@ FitPreviewOverlay::Hit FitPreviewOverlay::hitTest(const QPoint& px) const
         if (d1 <= tol) { hit.kind = AnchorLo; hit.index = i; return hit; }
         if (d2 <= tol) { hit.kind = AnchorHi; hit.index = i; return hit; }
     }
-    // Ignore body — lowest priority so edges stay grabbable
+    // Ignore body - lowest priority so edges stay grabbable
     for (int i = 0; i < _cfg.ignore.size(); ++i) {
         double xLo = xPx(_cfg.ignore[i].wlLow);
         double xHi = xPx(_cfg.ignore[i].wlHigh);

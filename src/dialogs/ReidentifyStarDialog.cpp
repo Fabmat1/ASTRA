@@ -140,7 +140,7 @@ ReidentifyStarDialog::ReidentifyStarDialog(std::shared_ptr<Star> star,
         QTimer::singleShot(0, this, &ReidentifyStarDialog::onSearch);
     else
         setStatus(
-            "This star has no coordinates — enter a name or RA/Dec below.",
+            "This star has no coordinates - enter a name or RA/Dec below.",
             true);
 }
 
@@ -390,7 +390,7 @@ void ReidentifyStarDialog::onManualResolve() {
 
     if (c.sourceId.isEmpty())
         setStatus(
-            "Resolved (no Gaia DR3 id — Gaia photometry will be skipped).",
+            "Resolved (no Gaia DR3 id - Gaia photometry will be skipped).",
             false);
     else
         setStatus(QString("Resolved to Gaia DR3 %1.").arg(c.sourceId));
@@ -485,7 +485,7 @@ void ReidentifyStarDialog::onApply() {
     s.setERp(g.e_rp);
     s.setBpRp(g.bp_rp);
 
-    // 3) Bibliography — replace the bibcode list.
+    // 3) Bibliography - replace the bibcode list.
     if (_bibliographyCheck->isChecked() && !c.sourceId.isEmpty()) {
         std::vector<QString> bibs;
         QString              berr;
@@ -571,7 +571,7 @@ bool ReidentifyStarDialog::coneSearchGaia(double ra, double dec,
     const Csv csv = parseCsv(body);
     for (const QStringList &row : csv.rows) {
         Candidate c;
-        // Source can be a big integer — keep as string.
+        // Source can be a big integer - keep as string.
         c.sourceId = cellS(csv, row, "source");
         if (c.sourceId.isEmpty())
             c.sourceId = cellS(csv, row, "source_id");
@@ -589,7 +589,7 @@ bool ReidentifyStarDialog::coneSearchGaia(double ra, double dec,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// SIMBAD resolve (cross-IDs + coords) — mirrors AddStarDialog::resolveSimbad
+// SIMBAD resolve (cross-IDs + coords) - mirrors AddStarDialog::resolveSimbad
 // ─────────────────────────────────────────────────────────────────────────────
 bool ReidentifyStarDialog::resolveSimbad(const QString &queryStr,
                                          ResolvedIds &out, QString &err) {
@@ -711,7 +711,7 @@ bool ReidentifyStarDialog::resolveSimbad(const QString &queryStr,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Full Gaia DR3 record — mirrors AddStarDialog::fetchGaiaDR3
+// Full Gaia DR3 record - mirrors AddStarDialog::fetchGaiaDR3
 // ─────────────────────────────────────────────────────────────────────────────
 bool ReidentifyStarDialog::fetchGaiaFull(const QString &sourceId, GaiaData &out,
                                          QString &err) {
@@ -803,7 +803,7 @@ bool ReidentifyStarDialog::fetchGaiaFull(const QString &sourceId, GaiaData &out,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Bibliography — SIMBAD TAP (ident ⋈ has_ref ⋈ ref)
+// Bibliography - SIMBAD TAP (ident ⋈ has_ref ⋈ ref)
 // Replace this with your existing background fetcher if you prefer.
 // ─────────────────────────────────────────────────────────────────────────────
 bool ReidentifyStarDialog::fetchBibcodes(const QString        &sourceId,

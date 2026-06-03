@@ -263,7 +263,7 @@ InstrumentModeMatch InstrumentRepository::matchSpectralProperties(
             if (!mode.hasSpectralProperties()) continue;
             const auto& sp = mode.spectral();
 
-            // Wavelength overlap — check broad range and each setup
+            // Wavelength overlap - check broad range and each setup
             double wlScore = scoreOverlap(sp.wavelengthMin, sp.wavelengthMax);
             if (wlScore < 0.05) continue;
 
@@ -283,7 +283,7 @@ InstrumentModeMatch InstrumentRepository::matchSpectralProperties(
                     else if (modeRes > samplingRes)
                         resScore = 0.3 + 0.7 * (samplingRes / modeRes);
                     else
-                        resScore = 1.0;            // oversampled — fine
+                        resScore = 1.0;            // oversampled - fine
                 }
             }
 

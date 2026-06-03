@@ -619,13 +619,13 @@ void SpectraFitDialog::onAddSpectraClicked()
 
         auto reader = registry.getReaderForFile(path);
         if (!reader) {
-            failures << QString("%1 — no reader available").arg(name);
+            failures << QString("%1 - no reader available").arg(name);
             continue;
         }
 
         SpectrumReadResult res = reader->readSpectrum(path);
         if (!res.success || !res.spectrum) {
-            failures << QString("%1 — %2")
+            failures << QString("%1 - %2")
                 .arg(name,
                      res.errorMessage.isEmpty() ? "unknown read error"
                                                 : res.errorMessage);
@@ -641,7 +641,7 @@ void SpectraFitDialog::onAddSpectraClicked()
         // Persist to DB (this also writes the spectrum's data file on disk
         // via SpectrumRepository::saveSpectrum).
         if (_dbm && !_dbm->saveSpectrum(_star->getId(), spec)) {
-            failures << QString("%1 — database save failed").arg(name);
+            failures << QString("%1 - database save failed").arg(name);
             continue;
         }
 

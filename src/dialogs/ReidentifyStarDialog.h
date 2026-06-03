@@ -67,7 +67,7 @@ class ReidentifyStarDialog : public QDialog {
     void setStatus(const QString &msg, bool isError = false);
     void populateTable();
 
-    // Network queries (synchronous, event-loop driven — matches AddStarDialog).
+    // Network queries (synchronous, event-loop driven - matches AddStarDialog).
     bool coneSearchGaia(double ra, double dec, double radiusArcsec,
                         std::vector<Candidate> &out, QString &err);
     bool resolveSimbad(const QString &queryStr, ResolvedIds &out, QString &err);

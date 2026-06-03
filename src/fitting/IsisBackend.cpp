@@ -643,7 +643,7 @@ SpectralFitResult IsisBackend::run(const SpectralFitJob& job,
             pump(proc.readAllStandardOutput());
             if (shouldAbort && shouldAbort()) {
                 aborted = true;
-                if (onLog) onLog("Abort requested — terminating ISIS...");
+                if (onLog) onLog("Abort requested - terminating ISIS...");
                 proc.terminate();
                 if (!proc.waitForFinished(3000)) proc.kill();
                 proc.waitForFinished(-1);
@@ -669,7 +669,7 @@ SpectralFitResult IsisBackend::run(const SpectralFitJob& job,
             return out;
         }
 
-        if (onLog) onLog("ISIS finished — parsing results...");
+        if (onLog) onLog("ISIS finished - parsing results...");
         if (!parseIsisOutputs(out, workDir, job, onLog)) {
             out.success = false;
             out.errorMessage =

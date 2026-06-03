@@ -156,7 +156,7 @@ bool SEDImportPage::validatePage()
         if (e.selected && !e.hasError)
             ++selectedCount;
     }
-    if (selectedCount == 0) return true;   // nothing to do — allow finish
+    if (selectedCount == 0) return true;   // nothing to do - allow finish
 
     stageSelectedSEDs();
     return true;
@@ -468,8 +468,8 @@ void SEDImportPage::populateTree()
             item->setText(3, QString::number(e.ra,  'f', 6));
             item->setText(4, QString::number(e.dec, 'f', 6));
         } else {
-            item->setText(3, "—");
-            item->setText(4, "—");
+            item->setText(3, "-");
+            item->setText(4, "-");
         }
 
         // Column 5: matched star

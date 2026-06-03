@@ -69,7 +69,7 @@ void FitProgressDialog::setFinished(const astra::fitting::SpectralFitResult& r)
     _bar->setRange(0, 1000);
     _bar->setValue(1000);
     QString summary = QString(
-        "✔ Finished — χ² = %1, iter = %2, free = %3, points = %4, converged = %5")
+        "✔ Finished - χ² = %1, iter = %2, free = %3, points = %4, converged = %5")
         .arg(r.finalChi2, 0, 'f', 3)
         .arg(r.iterations)
         .arg(r.nFreeParameters)

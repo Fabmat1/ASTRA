@@ -102,7 +102,7 @@ void RVMCMCResultsDialog::buildUi()
     split->addWidget(right);
     split->setStretchFactor(0, 5);
     split->setStretchFactor(1, 1);
-    // Force initial sizes — stretch alone doesn't override widget hints.
+    // Force initial sizes - stretch alone doesn't override widget hints.
     const int w = std::max(width(), 1200);
     split->setSizes({ int(w * 0.8), int(w * 0.2) });
 
@@ -308,7 +308,7 @@ void RVMCMCResultsDialog::rebuildHistogramsForActiveFilter()
     if (_filterInfo)
         _filterInfo->setText(QString("Filter: %1 / %2 samples").arg(kept).arg(total));
 
-    if (kept < 50) return;   // too few — keep last render
+    if (kept < 50) return;   // too few - keep last render
 
     auto inLog = [](const std::string& s){ return s == "period"; };
     const auto& names = _result.full_corner.param_names;

@@ -30,7 +30,7 @@ QString ClaretFilter::canonical(const QString &f) {
         // ATLAS (closest match)
         {"c", "SDSS-g"},
         {"o", "SDSS-r"},
-        // Gaia (no native Claret table — fall back to broadband V)
+        // Gaia (no native Claret table - fall back to broadband V)
         {"G", "Johnson-V"},
         {"BP", "Johnson-B"},
         {"RP", "Johnson-R"},

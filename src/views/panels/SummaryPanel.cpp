@@ -174,7 +174,7 @@ inline double m2Of(double P, double K, double M1, double e, double sini) {
 }
 
 // Linearised error propagation via central differences.
-// Roughly 10 solver calls — microseconds vs. milliseconds for the MC.
+// Roughly 10 solver calls - microseconds vs. milliseconds for the MC.
 double propagateM2Error(double P, double eP, double K, double eK, double M1,
                         double eM1, double e, double ee, double sini,
                         double esini) {
@@ -512,7 +512,7 @@ QWidget *SummaryPanel::createMetricCardsRow() {
         else if (nSpec > 0)
             subtitle = QString("from %1 spectra").arg(nSpec);
 
-        QString value = has(logP) ? QString::number(logP, 'f', 2) : "—";
+        QString value = has(logP) ? QString::number(logP, 'f', 2) : "-";
         layout->addWidget(
             createMetricCard(value, "log(p)", subtitle, logPColor(logP)));
     }
@@ -521,7 +521,7 @@ QWidget *SummaryPanel::createMetricCardsRow() {
     {
         const double drv   = S.getDeltaRV();
         const double edrv  = S.getEDeltaRV();
-        QString      value = has(drv) ? QString::number(drv, 'f', 1) : "—";
+        QString      value = has(drv) ? QString::number(drv, 'f', 1) : "-";
         QString      subtitle;
         if (has(drv)) {
             subtitle = has(edrv) ? QString("± %1 km/s").arg(edrv, 0, 'f', 1)
@@ -584,7 +584,7 @@ QWidget* SummaryPanel::createMetricCard(const QString& value, const QString& lab
         "font-size: 22px; font-weight: 700; color: %1; border: none; background: transparent;"
     ).arg(accentColor.name()));
     valueLabel->setAlignment(Qt::AlignLeft);
-    if (value != "—")
+    if (value != "-")
         makeCopyable(valueLabel, value);
     layout->addWidget(valueLabel);
 
@@ -592,7 +592,7 @@ QWidget* SummaryPanel::createMetricCard(const QString& value, const QString& lab
     labelWidget->setStyleSheet(QString(
         "font-size: 11px; font-weight: 600; color: %1; border: none; background: transparent;"
     ).arg(labelCol.name()));
-    if (value != "—")
+    if (value != "-")
         makeCopyable(labelWidget, value);
     layout->addWidget(labelWidget);
 
@@ -1569,7 +1569,7 @@ QWidget *SummaryPanel::createCompanionSection() {
 
     const bool hasMassFunc   = in.valid;
     const bool hasSeparation = in.valid && std::isfinite(in.P) && in.P > 0.0;
-    // q must be genuinely set AND non-zero — isSet() only rejects NaN.
+    // q must be genuinely set AND non-zero - isSet() only rejects NaN.
     const bool hasQ =
         Star::isSet(_ctx.star->getPhotQ()) && _ctx.star->getPhotQ() > 0.0;
 
@@ -1631,12 +1631,12 @@ QColor SummaryPanel::logPColor(double logP) const
     if (std::isnan(logP) || logP == 0.0)
         return PanelUtils::isDarkTheme() ? QColor(100, 100, 100) : QColor(180, 180, 180);
     if (logP < -10.0)
-        return QColor(220, 50, 50);    // Red — extremely significant
+        return QColor(220, 50, 50);    // Red - extremely significant
     if (logP < -5.0)
-        return QColor(230, 150, 30);   // Orange — significant
+        return QColor(230, 150, 30);   // Orange - significant
     if (logP < -2.0)
-        return QColor(200, 200, 50);   // Yellow — marginal
-    return QColor(80, 180, 80);        // Green — consistent with constant
+        return QColor(200, 200, 50);   // Yellow - marginal
+    return QColor(80, 180, 80);        // Green - consistent with constant
 }
 
 QColor SummaryPanel::deltaRVColor(double deltaRV) const

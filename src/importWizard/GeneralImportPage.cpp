@@ -267,7 +267,7 @@ QString GeneralImportPage::generateRowKey(const DataRow& row) const
     return keyParts.join("|");
 }
 
-// src/utils/GeneralImportPage.cpp  — replace/add the deduplication methods
+// src/utils/GeneralImportPage.cpp  - replace/add the deduplication methods
 
 QString GeneralImportPage::fieldForColumn(const QString& columnName) const
 {
@@ -336,7 +336,7 @@ int GeneralImportPage::numericPrecision(const QVariant& value) const
 
     int dotPos = str.indexOf('.');
     if (dotPos < 0) {
-        // Integer — count trailing non-zero significance
+        // Integer - count trailing non-zero significance
         // e.g. "5778" -> 4 significant digits
         return str.length();
     }
@@ -354,7 +354,7 @@ bool GeneralImportPage::areNumericValuesCompatible(double a, double b,
                                                     const QString& fieldName) const
 {
     if (std::isnan(a) && std::isnan(b)) return true;
-    if (std::isnan(a) || std::isnan(b)) return true;  // one missing — compatible
+    if (std::isnan(a) || std::isnan(b)) return true;  // one missing - compatible
 
     double tol = toleranceForField(fieldName);
     return std::fabs(a - b) <= tol;
@@ -413,7 +413,7 @@ bool GeneralImportPage::areRowsCompatible(const DataRow& a, const DataRow& b) co
     // Check that every mapped numeric field present in both rows
     // agrees within the rounding tolerance.
     for (const auto& [col, field] : _columnMappings) {
-        // Skip identifier / string fields — already matched by identity key
+        // Skip identifier / string fields - already matched by identity key
         static const QSet<QString> stringFields = {
             "source_id", "alias", "tic", "jname", "spec_class"
         };
@@ -425,7 +425,7 @@ bool GeneralImportPage::areRowsCompatible(const DataRow& a, const DataRow& b) co
         bool hasA = (itA != a.values.end() && !normalizeValue(itA->second).isEmpty());
         bool hasB = (itB != b.values.end() && !normalizeValue(itB->second).isEmpty());
 
-        if (!hasA || !hasB) continue;  // one side missing — no conflict
+        if (!hasA || !hasB) continue;  // one side missing - no conflict
 
         bool okA, okB;
         double vA = itA->second.toDouble(&okA);
@@ -436,7 +436,7 @@ bool GeneralImportPage::areRowsCompatible(const DataRow& a, const DataRow& b) co
                 return false;  // genuinely different
             }
         } else {
-            // Both are strings — must match exactly
+            // Both are strings - must match exactly
             if (normalizeValue(itA->second) != normalizeValue(itB->second)) {
                 return false;
             }
@@ -457,12 +457,12 @@ DataRow GeneralImportPage::mergeRows(const DataRow& existing, const DataRow& inc
         bool hasI = (itI != incoming.values.end() && !normalizeValue(itI->second).isEmpty());
 
         if (!hasI) continue;           // incoming has nothing to offer
-        if (!hasE) {                   // existing is missing — take incoming
+        if (!hasE) {                   // existing is missing - take incoming
             merged.values[col] = itI->second;
             continue;
         }
 
-        // Both present — keep the one with higher precision
+        // Both present - keep the one with higher precision
         int precE = numericPrecision(itE->second);
         int precI = numericPrecision(itI->second);
         if (precI > precE) {
@@ -1179,7 +1179,7 @@ bool GeneralImportPage::validatePage()
         QMessageBox::warning(this, "No Data", "No data was loaded from the file.");
         return false;
     }
-    // removeDuplicateRows() — already done in readFile(), don't repeat
+    // removeDuplicateRows() - already done in readFile(), don't repeat
 
     if (!_unmappedColumns.empty()) {
         QMessageBox::StandardButton reply = QMessageBox::question(this, "Unmapped Columns",
@@ -1211,7 +1211,7 @@ bool GeneralImportPage::validatePage()
             if (dialog.exec() == QDialog::Accepted) {
                 _columnMappings = dialog.getMappings();
                 
-                // Re-deduplicate with new mappings — new mapped columns
+                // Re-deduplicate with new mappings - new mapped columns
                 // may reveal additional duplicates
                 size_t beforeRededup = _dataRows.size();
                 removeDuplicateRows();
@@ -1281,7 +1281,7 @@ bool GeneralImportPage::validatePage()
     LOG_INFO("GeneralImport", QString("Staged %1 new stars, matched %2 existing stars")
              .arg(newCount).arg(matchedCount));
 
-    // Fire background tasks — they work on staging->allStars()
+    // Fire background tasks - they work on staging->allStars()
     BackgroundTaskManager *taskManager = controller->backgroundTaskManager();
 
     const bool wantGaia   = _gaiaCheckBox->isChecked();

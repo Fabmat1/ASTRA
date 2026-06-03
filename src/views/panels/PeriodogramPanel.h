@@ -118,7 +118,7 @@ public slots:
     void cancelCompute();
 
 signals:
-    /// Emitted when the set of series (or their stats) changes — host
+    /// Emitted when the set of series (or their stats) changes - host
     /// should rebuild its selection UI from seriesInfo().
     void seriesChanged();
 

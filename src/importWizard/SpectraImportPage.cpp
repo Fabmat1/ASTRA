@@ -474,7 +474,7 @@ void SpectraImportPage::initializePage() {
     _fullMatchResults.clear();
 
     // If we already loaded the full working set on a previous visit,
-    // this is a cheap, in-memory refresh — no DB I/O, no freeze.
+    // this is a cheap, in-memory refresh - no DB I/O, no freeze.
     if (staging->isDbSeeded()) {
         _importedStars = staging->allStars();
         buildStarLookupIndex();
@@ -533,7 +533,7 @@ void SpectraImportPage::startBackgroundSeed() {
                 _seedWatcher->deleteLater();
                 _seedWatcher = nullptr;
 
-                // Back on GUI thread, DB work finished — now touch
+                // Back on GUI thread, DB work finished - now touch
                 // widgets/data.
                 _importedStars = staging->allStars();
                 buildStarLookupIndex();

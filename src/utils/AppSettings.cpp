@@ -25,7 +25,7 @@ constexpr const char* kLcurveDir = "lcurve/installDir";
 QString AppSettings::panelName(DetailPanel p)
 {
     switch (p) {
-        case DetailPanel::None:           return "— Empty —";
+        case DetailPanel::None:           return "- Empty -";
         case DetailPanel::Summary:        return "Summary";
         case DetailPanel::RadialVelocity: return "Radial Velocity";
         case DetailPanel::LightCurve:     return "Light Curves";

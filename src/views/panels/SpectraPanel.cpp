@@ -49,7 +49,7 @@ void SpectraPanel::setupUi()
     QVBoxLayout* layout = new QVBoxLayout(group);
     layout->setSpacing(2);
 
-    // ── Tab bar — spectrum selector ──
+    // ── Tab bar - spectrum selector ──
     _tabBar = new QTabBar;
     _tabBar->setElideMode(Qt::ElideNone);
     _tabBar->setExpanding(false);
@@ -488,7 +488,7 @@ void SpectraPanel::updateSpectrumDisplay()
 
         if (displayMode == DisplayNormalized || displayMode == DisplayRebinned) {
             // ── Normalized / Rebinned modes ──
-            // Data comes from the fit's pre-computed rebinned arrays —
+            // Data comes from the fit's pre-computed rebinned arrays -
             // no interpolation needed since they share the model wavelength grid.
             const auto& mWl  = selectedFit->modelWavelengths;
             const size_t N   = mWl.size();
@@ -537,7 +537,7 @@ void SpectraPanel::updateSpectrumDisplay()
                 upper->setChannelFillGraph(lower);
             }
 
-            // Rebinned spectrum — split into ignored / active segments
+            // Rebinned spectrum - split into ignored / active segments
             // so ignored points are shown dimmed
             QVector<double> activeWl, activeD;
 
@@ -594,7 +594,7 @@ void SpectraPanel::updateSpectrumDisplay()
             modelGraph->setPen(QPen(PanelUtils::kFitCurveColor, 1.5));
             modelGraph->removeFromLegend();
 
-            // Residuals — only over non-ignored points
+            // Residuals - only over non-ignored points
             for (size_t i = 0; i < N; ++i) {
                 if (!ign.empty() && ign[i] == 0) continue;
                 residualWl.push_back(mWl[i]);
@@ -613,7 +613,7 @@ void SpectraPanel::updateSpectrumDisplay()
             _mainPlot->yAxis->setRange(yLo, yHi);
 
         } else {
-            // ── Raw + renorm mode — existing behaviour ──
+            // ── Raw + renorm mode - existing behaviour ──
             const auto& mWl   = selectedFit->modelWavelengths;
             const auto& mFlux = selectedFit->modelFluxes;
 
@@ -658,7 +658,7 @@ void SpectraPanel::updateSpectrumDisplay()
             _mainPlot->yAxis->setRange(mainYLo, mainYHi);
         }
     } else {
-        // No fit — just set Y range from raw data
+        // No fit - just set Y range from raw data
         std::vector<double> allMainY;
         for (size_t i = 0; i < fluxes.size(); ++i)
             if (!std::isnan(fluxes[i])) allMainY.push_back(fluxes[i]);
@@ -712,7 +712,7 @@ void SpectraPanel::updateSpectrumDisplay()
         xResTicker->setTickCount(6);
         _residualPlot->xAxis->setTicker(xResTicker);
 
-        // Robust Y range for residuals — clip outlier residuals
+        // Robust Y range for residuals - clip outlier residuals
         auto [resYLo, resYHi] = PanelUtils::robustRange(residualVal, 0.95, 0.15);
 
         _residualPlot->yAxis->setLabel("Residual");
@@ -948,7 +948,7 @@ void SpectraPanel::selectFitById(const QString& fitId)
 void SpectraPanel::setDisplayMode(DisplayMode mode)
 {
     if (mode != _displayMode->currentIndex()) {
-        _hasCustomZoom = false;          // forget user zoom — we're changing views
+        _hasCustomZoom = false;          // forget user zoom - we're changing views
     }
     _displayMode->setCurrentIndex(static_cast<int>(mode));
     updateSpectrumDisplay();

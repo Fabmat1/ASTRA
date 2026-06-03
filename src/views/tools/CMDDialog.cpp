@@ -91,7 +91,7 @@ CMDDialog::~CMDDialog() = default;
 // ── UI ─────────────────────────────────────────────────────
 void CMDDialog::setupUi()
 {
-    setWindowTitle(QString("Colour-Magnitude Diagram — %1").arg(
+    setWindowTitle(QString("Colour-Magnitude Diagram - %1").arg(
         _star->getAlias().isEmpty() ? _star->getSourceId() : _star->getAlias()));
     resize(1100, 750);
 
@@ -261,7 +261,7 @@ bool CMDDialog::loadTrackData(CMDTrack& track)
                 continue;
             }
 
-            // Otherwise treat as header — resolve columns by alias.
+            // Otherwise treat as header - resolve columns by alias.
             for (int i = 0; i < parts.size(); ++i) {
                 QString n = norm(parts[i]);
                 if (magCol < 0 && magAliases.contains(n)) magCol = i;
@@ -269,7 +269,7 @@ bool CMDDialog::loadTrackData(CMDTrack& track)
             }
 
             if (magCol < 0 || colCol < 0) {
-                // Unrecognised header — fall back to first two columns
+                // Unrecognised header - fall back to first two columns
                 // in default order only if exactly two columns exist.
                 if (parts.size() == 2 && a && b) {
                     magCol = 0; colCol = 1;
@@ -361,7 +361,7 @@ void CMDDialog::computeStarPoint()
              .arg(g).arg(bp).arg(rp).arg(plx).arg(ePlx));
 
     if (std::isnan(g) || std::isnan(bp) || std::isnan(rp)) {
-        LOG_WARNING("Tools", "CMD: star skipped — missing G/BP/RP photometry");
+        LOG_WARNING("Tools", "CMD: star skipped - missing G/BP/RP photometry");
         return;
     }
     double color  = bp - rp;
@@ -369,16 +369,16 @@ void CMDDialog::computeStarPoint()
                               (std::isnan(eRp) ? 0 : eRp*eRp));
 
     if (std::isnan(plx) || plx <= 0) {
-        LOG_WARNING("Tools", "CMD: star skipped — parallax missing or non-positive");
+        LOG_WARNING("Tools", "CMD: star skipped - parallax missing or non-positive");
         return;
     }
     if (std::isnan(ePlx)) {
-        LOG_WARNING("Tools", "CMD: star skipped — parallax error missing");
+        LOG_WARNING("Tools", "CMD: star skipped - parallax error missing");
         return;
     }
     double rel = ePlx / plx;
     if (rel > kMaxRelErrSkip) {
-        LOG_WARNING("Tools", QString("CMD: star skipped — spurious parallax (%1% error)")
+        LOG_WARNING("Tools", QString("CMD: star skipped - spurious parallax (%1% error)")
                     .arg(rel * 100, 0, 'f', 1));
         return;
     }

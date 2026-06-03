@@ -8,7 +8,7 @@ class QLineEdit;
 
 // Minimal in-app terminal: a read-only output pane plus an input line
 // with command history (Up/Down). Emits lineEntered() when the user
-// presses Enter. No ANSI/escape handling — good enough for line-based
+// presses Enter. No ANSI/escape handling - good enough for line-based
 // REPLs like ISIS over pipes.
 class TerminalView : public QWidget
 {

@@ -25,7 +25,7 @@ public:
 
     virtual void refreshTheme() {}
 
-    /// Full rebuild — call when the underlying data set changed
+    /// Full rebuild - call when the underlying data set changed
     /// (spectra added/removed, light curves fetched, SED fit saved, …).
     virtual void refresh() {}
 

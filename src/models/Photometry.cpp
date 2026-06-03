@@ -281,7 +281,7 @@ Photometry::MergeResult Photometry::mergeLightcurve(
 {
     auto it = _lightcurves.find(source);
 
-    // No existing lightcurve — just store
+    // No existing lightcurve - just store
     if (it == _lightcurves.end() || it->second.empty()) {
         _lightcurves[source] = newPoints;
         return MergeResult::Added;
@@ -356,15 +356,15 @@ Photometry::MergeResult Photometry::mergeLightcurve(
         }
 
         if (existingFullyContained) {
-            // New data is a strict superset — replace
+            // New data is a strict superset - replace
             _lightcurves[source] = newPoints;
             return MergeResult::Replaced;
         }
     }
 
-    // Case 3: Partial overlap or disjoint — merge unique new points in
+    // Case 3: Partial overlap or disjoint - merge unique new points in
     if (uniqueNewPts.empty()) {
-        // New is a subset of existing — nothing to add
+        // New is a subset of existing - nothing to add
         return MergeResult::Identical;
     }
 

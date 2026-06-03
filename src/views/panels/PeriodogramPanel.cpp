@@ -135,7 +135,7 @@ void PeriodogramPanel::setSeries(const QList<Series>& series)
     loadFromCache();
 
     if (_perSeries.isEmpty()) {
-        const QString msg = QString("%1 series — click Compute").arg(_series.size());
+        const QString msg = QString("%1 series - click Compute").arg(_series.size());
         _statusLabel->setText(msg);
         emit statusMessage(msg);
     }
@@ -162,7 +162,7 @@ QList<PeriodogramPanel::SeriesInfo> PeriodogramPanel::seriesInfo() const
 void PeriodogramPanel::setSeriesEnabled(const QString& key, bool on)
 {
     _userEnabled[key] = on;
-    // Don't re-emit seriesChanged for every tick — the host is the source.
+    // Don't re-emit seriesChanged for every tick - the host is the source.
 }
 
 bool PeriodogramPanel::isSeriesEnabled(const QString& key) const
@@ -316,7 +316,7 @@ void PeriodogramPanel::computeAll(bool force)
 
     const auto grid = currentGrid();
     if (!grid.isValid()) {
-        const QString msg = "Invalid grid (check Min P / Max P / N) — see log";
+        const QString msg = "Invalid grid (check Min P / Max P / N) - see log";
         _statusLabel->setText(msg);
         emit statusMessage(msg);
         LOG_WARNING("Periodogram", "Grid invalid; aborting compute");
@@ -772,7 +772,7 @@ PeriodogramPanel::estimatePeakAt(const Periodogram::Result &res, double period,
     while (wlo > 0       && res.power[wlo] >= halfP) --wlo;
     while (whi < N - 1   && res.power[whi] >= halfP) ++whi;
     if (whi - wlo < 2) {
-        // window too narrow — fall back to a few bins around the peak
+        // window too narrow - fall back to a few bins around the peak
         wlo = std::max(0, peakIdx - 3);
         whi = std::min(N - 1, peakIdx + 3);
     }
@@ -861,7 +861,7 @@ void PeriodogramPanel::loadFromCache()
     rebuildAggregates();
     replotAll();
     const QString msg = stale > 0
-        ? QString("Loaded cache · %1 series (%2 stale — recompute to refresh)").arg(loaded).arg(stale)
+        ? QString("Loaded cache · %1 series (%2 stale - recompute to refresh)").arg(loaded).arg(stale)
         : QString("Loaded cache · %1 series").arg(loaded);
     _statusLabel->setText(msg);
     emit statusMessage(msg);

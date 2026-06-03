@@ -222,7 +222,7 @@ void CrossRefResolver::onNetworkReply(QNetworkReply* reply)
     QTimer::singleShot(0, this, &CrossRefResolver::pumpQueue);
 
     if (reply->error() != QNetworkReply::NoError) {
-        // Transient — do NOT mark as permanently failed.
+        // Transient - do NOT mark as permanently failed.
         LOG_WARNING(CAT, QString("CrossRef request failed for %1: %2")
             .arg(bibcode, reply->errorString()));
         emit fetchFailed(bibcode);
@@ -320,7 +320,7 @@ void CrossRefResolver::onNetworkReply(QNetworkReply* reply)
     BibcodeInfo info;
     info.bibcode = bibcode;
 
-    // Join all title parts — CrossRef can split across array elements
+    // Join all title parts - CrossRef can split across array elements
     QJsonArray titles    = bestItem["title"].toArray();
     QJsonArray subtitles = bestItem["subtitle"].toArray();
     QStringList titleParts;
@@ -560,12 +560,12 @@ BibcodeInfo CrossRefResolver::parseADSHtml(const QString& bibcode, const QString
     BibcodeInfo info;
     info.bibcode = bibcode;
 
-    // Title — Google Scholar-style meta tag, present on every ADS abstract page.
+    // Title - Google Scholar-style meta tag, present on every ADS abstract page.
     auto titles = extractMetaByName(html, "citation_title");
     if (!titles.isEmpty())
         info.title = cleanTitle(titles.first());
 
-    // Authors — one meta tag per author; ADS uses "Family, Given".
+    // Authors - one meta tag per author; ADS uses "Family, Given".
     auto authors = extractMetaByName(html, "citation_author");
     QStringList authorList;
     int maxA = std::min<int>(5, authors.size());
@@ -580,7 +580,7 @@ BibcodeInfo CrossRefResolver::parseADSHtml(const QString& bibcode, const QString
     if (!dois.isEmpty())
         info.doi = dois.first().trimmed();
 
-    // Abstract — ADS embeds it as a JSON-escaped block. Try meta description
+    // Abstract - ADS embeds it as a JSON-escaped block. Try meta description
     // first (truncated, but always there), then a more generous regex.
     auto descs = extractMetaByName(html, "description");
     if (!descs.isEmpty())
@@ -670,7 +670,7 @@ BibcodeInfo CrossRefResolver::parseADSJson(const QString    &bibcode,
         authorList << "et al.";
     info.authors = authorList.join("; ");
 
-    // DOI — also an array in ADS
+    // DOI - also an array in ADS
     const QJsonArray dois = rec["doi"].toArray();
     if (!dois.isEmpty())
         info.doi = dois[0].toString().trimmed();
@@ -751,7 +751,7 @@ void CrossRefResolver::applyRateLimitHeaders(QNetworkReply* reply)
     if (status == 429) {
         int retryS = reply->rawHeader("Retry-After").toInt();
         if (retryS <= 0) retryS = 5;
-        LOG_WARNING(CAT, QString("CrossRef 429 — pausing queue %1s").arg(retryS));
+        LOG_WARNING(CAT, QString("CrossRef 429 - pausing queue %1s").arg(retryS));
         // Block the pump for that long by pretending we just dispatched.
         _lastDispatch.restart();
         _minIntervalMs = std::max(_minIntervalMs, retryS * 1000);
@@ -768,7 +768,7 @@ void CrossRefResolver::applyRateLimitHeaders(QNetworkReply* reply)
     if (!lim.isEmpty() && !iv.isEmpty()) {
         bool ok1 = false, ok2 = false;
         int allowed = lim.toInt(&ok1);
-        // Interval is "1s" / "1m" — strip suffix and convert.
+        // Interval is "1s" / "1m" - strip suffix and convert.
         QString ivStr = QString::fromLatin1(iv).trimmed();
         int seconds = 1;
         if (ivStr.endsWith('s', Qt::CaseInsensitive))

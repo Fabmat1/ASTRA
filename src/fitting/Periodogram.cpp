@@ -287,7 +287,7 @@ vector<complex<double>> extirpolate_complex(
 }
 
 // ──────────────────────────────────────────────────────────────────────
-// trig_sum — fast trigonometric sum via NFFT
+// trig_sum - fast trigonometric sum via NFFT
 // ──────────────────────────────────────────────────────────────────────
 
 pair<vector<double>, vector<double>>

@@ -251,7 +251,7 @@ void RVPanel::populate()
     else if (rvCurve)  bestFit = rvCurve->getBestFit();
     bool hasPeriod = bestFit && bestFit->getPeriod() > 0;
 
-    LOG_DEBUG(CAT, QString("Star %1 — rvCurve=%2, getNumPoints=%3, hasPeriod=%4")
+    LOG_DEBUG(CAT, QString("Star %1 - rvCurve=%2, getNumPoints=%3, hasPeriod=%4")
         .arg(_ctx.star->getSourceId())
         .arg(rvCurve ? "valid" : "NULL")
         .arg(rvCurve ? QString::number(rvCurve->getNumPoints()) : "N/A")
@@ -275,7 +275,7 @@ void RVPanel::populate()
     }
 
     if (!hasData) {
-        LOG_WARNING(CAT, QString("Star %1 — no RV data (rvCurve %2)")
+        LOG_WARNING(CAT, QString("Star %1 - no RV data (rvCurve %2)")
             .arg(_ctx.star->getSourceId(),
                  rvCurve ? "exists but empty" : "is null"));
         _contentLayout->addWidget(PanelUtils::makePlaceholder("No radial velocity data available yet."));
@@ -286,7 +286,7 @@ void RVPanel::populate()
     auto points = _showFlagged ? rvCurve->getRVPoints()
                             : rvCurve->getActiveRVPoints();
 
-    LOG_DEBUG(CAT, QString("Star %1 — getRVPoints() returned %2 point(s)")
+    LOG_DEBUG(CAT, QString("Star %1 - getRVPoints() returned %2 point(s)")
         .arg(_ctx.star->getSourceId())
         .arg(points.size()));
 
@@ -315,12 +315,12 @@ void RVPanel::populate()
         data.push_back({tm.sortValue(), pt->getRV(), pt->getRVError(), tm});
     }
 
-    LOG_INFO(CAT, QString("Star %1 — %2 skipped, %3/%4 accepted")
+    LOG_INFO(CAT, QString("Star %1 - %2 skipped, %3/%4 accepted")
         .arg(_ctx.star->getSourceId())
         .arg(skipped).arg(data.size()).arg(points.size()));
 
     if (data.empty()) {
-        LOG_ERROR(CAT, QString("Star %1 — ALL %2 RV points dropped")
+        LOG_ERROR(CAT, QString("Star %1 - ALL %2 RV points dropped")
             .arg(_ctx.star->getSourceId()).arg(points.size()));
         _contentLayout->addWidget(PanelUtils::makePlaceholder("RV points have no valid timestamps."));
         return;
@@ -332,7 +332,7 @@ void RVPanel::populate()
     // ── Branch: folded or broken-axis ──
     if (_folded && hasPeriod) {
         // =====================================================================
-        // FOLDED (phase) VIEW — two phases shown by default, [-1, 1]
+        // FOLDED (phase) VIEW - two phases shown by default, [-1, 1]
         // =====================================================================
         double P   = bestFit->getPeriod();
         double phi = bestFit->getPhi();
@@ -390,7 +390,7 @@ void RVPanel::populate()
         LOG_INFO(
             CAT,
             QString(
-                "Star %1 — folded RV chart (2 phases) created with %2 points")
+                "Star %1 - folded RV chart (2 phases) created with %2 points")
                 .arg(_ctx.star->getSourceId())
                 .arg(data.size()));
 
@@ -409,7 +409,7 @@ void RVPanel::populate()
 
         std::vector<int> gapIdx = findGapIndices(times);
 
-        LOG_DEBUG(CAT, QString("Star %1 — timeline: t0=%2, %3 gap(s), %4 points")
+        LOG_DEBUG(CAT, QString("Star %1 - timeline: t0=%2, %3 gap(s), %4 points")
             .arg(_ctx.star->getSourceId()).arg(t0, 0, 'f', 4)
             .arg(gapIdx.size()).arg(times.size()));
 
@@ -482,7 +482,7 @@ void RVPanel::populate()
             plot->replot();
             _contentLayout->addWidget(plot);
 
-            LOG_INFO(CAT, QString("Star %1 — single-segment RV, %2 pts, span=%3 d")
+            LOG_INFO(CAT, QString("Star %1 - single-segment RV, %2 pts, span=%3 d")
                 .arg(_ctx.star->getSourceId()).arg(data.size()).arg(span, 0, 'f', 1));
 
         } else {
@@ -557,7 +557,7 @@ void RVPanel::populate()
 
             _contentLayout->addWidget(brokenAxis);
 
-            LOG_INFO(CAT, QString("Star %1 — broken-axis RV: %2 segments, %3 total points")
+            LOG_INFO(CAT, QString("Star %1 - broken-axis RV: %2 segments, %3 total points")
                 .arg(_ctx.star->getSourceId()).arg(nSeg).arg(data.size()));
         }
     }

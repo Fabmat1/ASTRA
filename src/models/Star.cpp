@@ -340,7 +340,7 @@ void Star::recomputeSpectraMetrics()
     _nSpectra = static_cast<int>(_spectra.size());
     _nFitSpectra = 0;
 
-    // Reset atmospheric — will be set from best fit below
+    // Reset atmospheric - will be set from best fit below
     _teff = 0; _e_teff = 0;
     _logg = 0; _e_logg = 0;
     _he = 0;   _e_he = 0;
@@ -379,7 +379,7 @@ void Star::recomputePhotometryMetrics()
 
     if (!_photometry) return;
 
-    // Dataset availability — uses getLightcurveSources()
+    // Dataset availability - uses getLightcurveSources()
     auto lcSources = _photometry->getLightcurveSources();
     LOG_INFO("Star", QString("recomputePhotometryMetrics [%1]: %2 lightcurve source(s)")
                          .arg(getId()).arg(lcSources.size()));
@@ -395,7 +395,7 @@ void Star::recomputePhotometryMetrics()
         if (src.contains("blackgem") || src == "bg")   _hasBlackgem = true;
     }
 
-    // SED best fit — components is a public member
+    // SED best fit - components is a public member
     auto bestSed = _photometry->getBestSEDModel();
     if (bestSed) {
         if (bestSed->components.size() >= 1) {

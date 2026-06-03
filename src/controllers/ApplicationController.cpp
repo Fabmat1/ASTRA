@@ -165,7 +165,7 @@ std::shared_ptr<Project> ApplicationController::openProject(const QString& proje
                                 }
                                 const double mjd = p->getMJD();
                                 if (!(mjd > 0.0) || std::isnan(mjd)) {
-                                    LOG_WARNING("BjdResolver", QString("MJD invalid (%1) — cannot compute BJD").arg(mjd));
+                                    LOG_WARNING("BjdResolver", QString("MJD invalid (%1) - cannot compute BJD").arg(mjd));
                                     return;
                                 }
                                 auto s = wstar.lock();

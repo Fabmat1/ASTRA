@@ -696,7 +696,7 @@ bool LightcurveImportPage::parseLightcurveFile(
     }
 
     // If every detected filter value parses as a number, the column layout
-    // is almost certainly not time/flux/err/filter — reject as trash
+    // is almost certainly not time/flux/err/filter - reject as trash
     if (!outFilters.isEmpty()) {
         bool allNumeric = true;
         for (const QString& f : outFilters) {
@@ -705,7 +705,7 @@ bool LightcurveImportPage::parseLightcurveFile(
             if (!ok) { allNumeric = false; break; }
         }
         if (allNumeric) {
-            outError = "All filter values are numeric — column structure "
+            outError = "All filter values are numeric - column structure "
                        "does not match expected lightcurve format";
             outPoints.clear();
             outFilters.clear();
@@ -1288,7 +1288,7 @@ void LightcurveImportPage::updateSummary()
         .arg(instResolved).arg(totalPoints);
 
     if (unmatched > 0 && _createNewCb->isChecked())
-        text += QString(" — %1 new star(s) will be created").arg(unmatched);
+        text += QString(" - %1 new star(s) will be created").arg(unmatched);
 
     _summaryLabel->setText(text);
 }

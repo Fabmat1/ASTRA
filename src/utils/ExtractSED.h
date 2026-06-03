@@ -31,7 +31,7 @@ void mergePhotometryDat(const QString& filePath,
 
 /// Parse all available ISIS SED files in \a dirPath and build an SEDModel.
 /// The model's compressed data (curve + observed photometry) is populated
-/// in memory but NOT yet written to disk — the caller (DatabaseManager)
+/// in memory but NOT yet written to disk - the caller (DatabaseManager)
 /// does that when saving.
 SEDExtractResult extractFromDirectory(const QString& dirPath);
 

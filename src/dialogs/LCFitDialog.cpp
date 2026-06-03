@@ -832,9 +832,9 @@ QWidget *LCFitDialog::buildAdvancedPage() {
     addDbl(ggeo, 4, 0, tr("mucrit1:"), _mucrit1, 0.0, 1.0, 4, 0.01, 0.0);
     addDbl(ggeo, 4, 2, tr("mucrit2:"), _mucrit2, 0.0, 1.0, 4, 0.01, 0.0);
     _limb1Sel = new QComboBox;
-    _limb1Sel->addItems({"Poly", "Claret"});
+    _limb1Sel->addItems({"Claret", "Poly"});
     _limb2Sel = new QComboBox;
-    _limb2Sel->addItems({"Poly", "Claret"});
+    _limb2Sel->addItems({"Claret", "Poly"});
     ggeo->addWidget(new QLabel(tr("Limb model 1:")), 5, 0);
     ggeo->addWidget(_limb1Sel, 5, 1);
     ggeo->addWidget(new QLabel(tr("Limb model 2:")), 5, 2);
@@ -1903,7 +1903,7 @@ void LCFitDialog::applyAdvancedOverrides(QJsonObject &mp) const {
         mp[k] = QString::number(v, 'g', 10);
     };
     // For 5-field "value step1 step2 vary visible" parameters, only the
-    // value is replaced — step/vary/visible are preserved.
+    // value is replaced - step/vary/visible are preserved.
     auto tweakVal = [&](const QString &k, double v) {
         const QString cur   = mp.value(k).toString();
         QStringList   parts = cur.split(' ', Qt::SkipEmptyParts);

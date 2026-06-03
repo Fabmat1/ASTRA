@@ -293,14 +293,14 @@ bool PhotometryRepository::saveLightcurveForStar(const QString& starId,
         if (!idByMem.isEmpty() && idByMem != idByStar) {
             qWarning() << "PhotometryRepository: in-memory photometry id"
                        << idByMem << "differs from DB id" << idByStar
-                       << "for star" << starId << "— using DB id.";
+                       << "for star" << starId << "- using DB id.";
         }
     } else if (!idByMem.isEmpty() && !idByMemStarId.isEmpty()) {
         // The in-memory id exists in the DB but under a different star_id.
         // Refuse to clobber it; allocate a fresh id for this star instead.
         qWarning() << "PhotometryRepository: in-memory photometry id"
                    << idByMem << "belongs to star" << idByMemStarId
-                   << "not" << starId << "— creating a new photometry row.";
+                   << "not" << starId << "- creating a new photometry row.";
         photometryId = _db.generateUUID();
     } else {
         // No row for this star, and the in-memory id (if any) is unused.

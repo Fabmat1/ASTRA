@@ -545,7 +545,7 @@ QString StarRepository::findMatchingStarId(const QString& projectId,
 
         // Handle RA wraparound at 0/360
         if (raLo < 0.0 || raHi > 360.0) {
-            // Wraparound — use OR
+            // Wraparound - use OR
             double raLoW = (raLo < 0.0) ? raLo + 360.0 : raLo;
             double raHiW = (raHi > 360.0) ? raHi - 360.0 : raHi;
             q.prepare(R"(

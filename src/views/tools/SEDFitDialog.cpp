@@ -173,7 +173,7 @@ void SEDFitDialog::setupUi()
     QString title = _star->getAlias().isEmpty()
                         ? _star->getSourceId()
                         : _star->getAlias();
-    setWindowTitle(QString("SED Analysis — %1").arg(title));
+    setWindowTitle(QString("SED Analysis - %1").arg(title));
     resize(1500, 850);
 
     auto* root = new QVBoxLayout(this);
@@ -374,11 +374,11 @@ QWidget* SEDFitDialog::createNewFitPanel()
     headerLabel->setStyleSheet("font-size: 12pt; padding: 4px;");
     nfLay->addWidget(headerLabel);
 
-    // ── Grid — Component 1 ─────────────────────────────────
+    // ── Grid - Component 1 ─────────────────────────────────
     AppSettings       settings;
 
     _gridSelector1 = new GridSelectorWidget;
-    _gridSelector1->setTitle("Model Grid — Component 1");
+    _gridSelector1->setTitle("Model Grid - Component 1");
     _gridSelector1->setBasePaths(settings.gridBasePaths());
     _gridSelector1->setShowConfigureButton(true);
     nfLay->addWidget(_gridSelector1);
@@ -388,7 +388,7 @@ QWidget* SEDFitDialog::createNewFitPanel()
     nfLay->addWidget(_enableComp2Cb);
 
     _gridSelector2 = new GridSelectorWidget;
-    _gridSelector2->setTitle("Model Grid — Component 2");
+    _gridSelector2->setTitle("Model Grid - Component 2");
     _gridSelector2->setBasePaths(settings.gridBasePaths());
     _gridSelector2->setShowConfigureButton(true);
     _gridSelector2->setVisible(false);
@@ -1886,13 +1886,13 @@ void SEDFitDialog::updatePhotometryTable()
         setReadOnly(PC_Lambda,   QString::number(p.lambda, 'f', 1));
 
         setEditable(PC_Mag,
-            p.magnitude != 0 ? QString::number(p.magnitude, 'f', 4) : "—");
+            p.magnitude != 0 ? QString::number(p.magnitude, 'f', 4) : "-");
         setEditable(PC_MagErr,
-            p.magnitudeErr != 0 ? QString::number(p.magnitudeErr, 'f', 4) : "—");
+            p.magnitudeErr != 0 ? QString::number(p.magnitudeErr, 'f', 4) : "-");
 
         setReadOnly(PC_Residual,
             (p.diffErr > 0) ? QString::number(p.diff / p.diffErr, 'f', 2)
-                            : "—");
+                            : "-");
         setReadOnly(PC_Catalog, p.vizierCatalog);
     }
 
@@ -2208,7 +2208,7 @@ void SEDFitDialog::onRunFit()
     if (QFile::exists(_workDir + "/photometry.dat"))
         _isisOutput->append("✓ Wrote photometry.dat with existing photometric data");
     else
-        _isisOutput->append("No photometry.dat written — ISIS will query for data");
+        _isisOutput->append("No photometry.dat written - ISIS will query for data");
     _isisOutput->append("Starting ISIS...\n");
 
     _isisProcess = new QProcess(this);

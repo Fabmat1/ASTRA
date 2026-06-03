@@ -1,25 +1,24 @@
 // In src/views/MainWindow.cpp - replace entire file
 
 #include "MainWindow.h"
-#include "ProjectSelectionView.h"
 #include "InstrumentConfigView.h"
+#include "ProjectSelectionView.h"
 #include "ProjectView.h"
 #include "controllers/ApplicationController.h"
-#include "models/Project.h"
-#include "utils/ThemeManager.h"
-#include "utils/BackgroundTaskManager.h"
 #include "dialogs/SettingsDialog.h"
-#include "controllers/ApplicationController.h"
-
-#include <QStackedWidget>
-#include <QMenuBar>
-#include <QMenu>
+#include "io/StarShare.h"
+#include "models/Project.h"
+#include "utils/BackgroundTaskManager.h"
+#include "utils/ThemeManager.h"
 #include <QAction>
 #include <QActionGroup>
-#include <QStatusBar>
-#include <QMessageBox>
 #include <QInputDialog>
+#include <QMenu>
+#include <QMenuBar>
+#include <QMessageBox>
 #include <QPushButton>
+#include <QStackedWidget>
+#include <QStatusBar>
 
 MainWindow::MainWindow(ApplicationController* controller, QWidget *parent)
     : QMainWindow(parent)
@@ -244,6 +243,11 @@ void MainWindow::showProject(const QString& projectId)
     _centralStack->setCurrentWidget(_projectView);
     updateMenuBarForProjectView(true);
     _closeProjectAction->setEnabled(true);
+    if (!_pendingImportPath.isEmpty()) {
+        const QString p = _pendingImportPath;
+        _pendingImportPath.clear();
+        _projectView->receivePackageFile(p);
+    }
 }
 
 void MainWindow::onShowInstrumentConfig()
@@ -271,6 +275,13 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             _addStarAction = _starsMenu->addAction("&Add Star...");
             _importStarsAction = _starsMenu->addAction("&Import Stars...");
             _starsMenu->addSeparator();
+            _shareStarsAction  = new QAction(tr("Share Stars…"), this);
+            _starsMenu->addAction(_shareStarsAction);
+                tr("Export selected stars to a shareable .astra file");
+            _receiveStarsAction = new QAction(tr("Receive Stars…"), this);
+            _receiveStarsAction->setStatusTip(tr("Import stars from a shared .astra file"));
+            _starsMenu->addAction(_receiveStarsAction);
+            _starsMenu->addSeparator();
             _removeStarAction = _starsMenu->addAction("&Remove Selected");
             _starsMenu->addSeparator();
             _detailWindowAction = _starsMenu->addAction("View &Detail Window");
@@ -280,7 +291,8 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             connect(_importStarsAction, &QAction::triggered, _projectView, &ProjectView::onImportStars);
             connect(_removeStarAction, &QAction::triggered, _projectView, &ProjectView::onRemoveStar);
             connect(_detailWindowAction, &QAction::triggered, _projectView, &ProjectView::onShowDetailWindow);
-            
+            connect(_shareStarsAction, &QAction::triggered, _projectView, &ProjectView::onShareStars);
+            connect(_receiveStarsAction, &QAction::triggered, _projectView, &ProjectView::onReceiveStars);
             QAction* helpAction = _helpMenu->menuAction();
             menuBar->insertMenu(helpAction, _starsMenu);
         }
@@ -409,4 +421,19 @@ void MainWindow::updateOpenProjectAction()
 {
     bool hasProjects = !_controller->getProjects().empty();
     _openProjectAction->setEnabled(hasProjects);
+}
+
+void MainWindow::importStarPackage(const QString &path) {
+    if (path.isEmpty())
+        return;
+
+    if (!_controller->getCurrentProject()) {
+        _pendingImportPath = path;
+        QMessageBox::information(this, "Receive Stars",
+                                 "Open or create a project - the stars will "
+                                 "then be imported into it.");
+        showProjectSelection();
+        return;
+    }
+    _projectView->receivePackageFile(path);
 }

@@ -97,7 +97,7 @@ public:
 private:
     SpectrumMetadata _externalMetadata;
 
-    // Kept for API compatibility — now uses a static regex internally
+    // Kept for API compatibility - now uses a static regex internally
     // and takes the delimiter as a parameter (no per-line re-detection).
     bool parseDataLine(const QString& line, double& wavelength,
                        double& flux, double& error) const;            // old signature; reimplemented

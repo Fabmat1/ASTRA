@@ -43,7 +43,7 @@
 #include <numeric>
 
 // ════════════════════════════════════════════════════════════════
-// RadialVelocityImportPage — Construction & UI
+// RadialVelocityImportPage - Construction & UI
 // ════════════════════════════════════════════════════════════════
 
 RadialVelocityImportPage::RadialVelocityImportPage(QWidget* parent)
@@ -570,7 +570,7 @@ void RadialVelocityImportPage::initializePage() {
     _indexBuilt   = false;
     _previewTree->clear();
 
-    buildStarLookupIndex(); // shell-only (sourceId/alias) — no DB I/O
+    buildStarLookupIndex(); // shell-only (sourceId/alias) - no DB I/O
 
     // If background tasks still running, poll
     if (isBackgroundBusy()) {
@@ -587,7 +587,7 @@ void RadialVelocityImportPage::initializePage() {
                 _indexBuilt = false;
                 buildStarLookupIndex();
                 _statusLabel->setText(
-                    QString("Ready — %1 stars available for RV import.")
+                    QString("Ready - %1 stars available for RV import.")
                         .arg(_importedStars.size()));
                 updatePreviewFromProject();
             }
@@ -599,7 +599,7 @@ void RadialVelocityImportPage::initializePage() {
     updatePreviewFromProject();
 
     _statusLabel->setText(
-        QString("Ready — %1 stars available. Select a data source.")
+        QString("Ready - %1 stars available. Select a data source.")
             .arg(_importedStars.size()));
 }
 
@@ -835,7 +835,7 @@ void RadialVelocityImportPage::populateColumnCombos(
 }
 
 // ════════════════════════════════════════════════════════════════
-// Mode 1: From Spectral Fits — now dispatches a background task
+// Mode 1: From Spectral Fits - now dispatches a background task
 // ════════════════════════════════════════════════════════════════
 
 void RadialVelocityImportPage::onExtractFromFits()
@@ -904,7 +904,7 @@ void RadialVelocityImportPage::onExtractFromFits()
     wiz->controller()->backgroundTaskManager()->queueTask(task);
 }
 // ════════════════════════════════════════════════════════════════
-// Mode 2: From Folders — now dispatches a background task
+// Mode 2: From Folders - now dispatches a background task
 // ════════════════════════════════════════════════════════════════
 
 void RadialVelocityImportPage::onScanFolders()
@@ -1250,7 +1250,7 @@ void RadialVelocityImportPage::applyFitParamsToProject()
         // In-memory linking
         curve->addRVFit(fit);
 
-        // Mark dirty — commitAll will re-save the curve and its fits
+        // Mark dirty - commitAll will re-save the curve and its fits
         if (staging) {
             staging->markStarDirty(star->getId());
         }

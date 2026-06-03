@@ -62,7 +62,7 @@ void StarImportWizard::accept() {
     waitForBackgroundTasks();
 
     if (_staging.isEmpty()) {
-        LOG_INFO("ImportWizard", "Nothing to commit — staging area is empty");
+        LOG_INFO("ImportWizard", "Nothing to commit - staging area is empty");
         QWizard::accept();
         return;
     }
@@ -82,7 +82,7 @@ void StarImportWizard::accept() {
                                  .arg(nFits)
                                  .arg(nRV));
 
-    // Progress dialog on the HEAP — so it survives until the async callback
+    // Progress dialog on the HEAP - so it survives until the async callback
     auto *progress = new QProgressDialog("Saving imported data to database…",
                                          QString(), 0, 100, this);
     progress->setWindowModality(Qt::WindowModal);

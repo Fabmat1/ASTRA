@@ -50,7 +50,7 @@ static QLineEdit* makeNumberEdit(QWidget* parent)
     v->setNotation(QDoubleValidator::ScientificNotation);
     v->setLocale(QLocale::c());
     le->setValidator(v);
-    le->setPlaceholderText("—");
+    le->setPlaceholderText("-");
     return le;
 }
 
@@ -433,7 +433,7 @@ bool AddStarDialog::resolveSimbad(const QString& queryStr, ResolvedIds& out, QSt
     static const QString kBegin = "==ASTRABEGIN==";
     static const QString kEnd   = "==ASTRAEND==";
 
-    // SINGLE-LINE format string — avoids any chance of line-continuation
+    // SINGLE-LINE format string - avoids any chance of line-continuation
     // breaking on whitespace / CRLF normalisation.
     QString script;
     script  = "format object f1 \"";

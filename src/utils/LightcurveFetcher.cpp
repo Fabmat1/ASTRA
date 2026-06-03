@@ -207,7 +207,7 @@ static void emitLineChunks(QByteArray& buf, std::function<void(QString)> emit_)
     }
 }
 
-// LightcurveFetcher.cpp — replace the bodies of onStdout / onStderr
+// LightcurveFetcher.cpp - replace the bodies of onStdout / onStderr
 void LightcurveFetcher::onStdout()
 {
     const QByteArray chunk = _proc->readAllStandardOutput();
@@ -266,7 +266,7 @@ LightcurveFetcher::expectedOutputFiles(const QString& gaiaId) const
 // Output file parser
 // ─────────────────────────────────────────────────────────────────────
 //
-// The format varies a little by source — but they're all comma-separated:
+// The format varies a little by source - but they're all comma-separated:
 //   TESS     : time(BJD-2457000), flux, flux_err                     (3 cols)
 //   ZTF      : mjd, flux, flux_err, filter                           (4 cols)
 //   ATLAS    : mjd, flux, flux_err, filter                           (4 cols)
@@ -274,7 +274,7 @@ LightcurveFetcher::expectedOutputFiles(const QString& gaiaId) const
 //   BlackGEM : MJD_OBS, FNU_OPT, FNUERRTOT_OPT, FILTER               (4 cols)
 //
 // Files that the Python pipeline failed to populate contain the literal
-// "NaN, NaN, NaN, NaN, NaN, NaN, NaN" — we treat those as empty.
+// "NaN, NaN, NaN, NaN, NaN, NaN, NaN" - we treat those as empty.
 
 std::vector<LightcurvePoint>
 LightcurveFetcher::parseOutputFile(const QString& path,

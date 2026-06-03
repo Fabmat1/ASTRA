@@ -232,7 +232,7 @@ public:
     double getRms() const { return _rms; }
     void setRms(double rms) { _rms = rms; }
 
-    // ── Reference time (runtime only — not persisted; rebound on load) ──
+    // ── Reference time (runtime only - not persisted; rebound on load) ──
     // Set by RadialVelocityCurve::updateFitReferences() to the first
     // datapoint's BJD/MJD.  _phi is interpreted as the phase at this time.
     void setReferenceTime(double bjd, double mjd) { _tRefBJD = bjd; _tRefMJD = mjd; }
@@ -339,7 +339,7 @@ public:
     double getWeightedMeanRV() const;
     double getWeightedStdDevRV() const;
 
-    // ── Time range (legacy — delegates to Time inside each point) ───────────
+    // ── Time range (legacy - delegates to Time inside each point) ───────────
     double getMinMJD() const;
     double getMaxMJD() const;
     double getTimeSpan() const;   // Max MJD − Min MJD
@@ -354,7 +354,7 @@ public:
     void setLogP(double logP) { _logP = logP; }
 
     // ─────────────────────────────────────────────────────────────────────
-    // Change notification — multi-subscriber, token-based.
+    // Change notification - multi-subscriber, token-based.
     //
     // Each subscriber gets an opaque ListenerToken from addChangeListener();
     // call removeChangeListener(token) (typically in your destructor) to

@@ -71,7 +71,7 @@ void ImportStagingArea::pullStarsFromDB(DatabaseManager* dbm, const QString& pro
     if (!dbm) return;
 
     // Load stars one by one, skip if already in working set
-    // (You may want a batch load method on DatabaseManager — for now, individual)
+    // (You may want a batch load method on DatabaseManager - for now, individual)
     auto allDbStars = dbm->loadStars(projectId);
 
     QMutexLocker lock(&_mutex);
@@ -111,7 +111,7 @@ std::shared_ptr<Star> ImportStagingArea::findMatchingStar(
         return nullptr;
     };
 
-    // Strongest identifiers first — keep this order identical to
+    // Strongest identifiers first - keep this order identical to
     // findMatchingStarId
     if (!sourceId.isEmpty())
         if (auto s = scanId([&](auto &st) {
@@ -137,9 +137,9 @@ std::shared_ptr<Star> ImportStagingArea::findMatchingStar(
             }))
             return s;
 
-    // Coordinate fallback — tolerance MUST match findMatchingStarId
+    // Coordinate fallback - tolerance MUST match findMatchingStarId
     if (Star::isSet(ra) && Star::isSet(dec)) {
-        const double tolDeg = 2.0 / 3600.0; // 2 arcsec — align with DB matcher
+        const double tolDeg = 2.0 / 3600.0; // 2 arcsec - align with DB matcher
         std::shared_ptr<Star> best;
         double                bestSep = tolDeg;
         for (auto it = _workingStars.cbegin(); it != _workingStars.cend();
@@ -729,7 +729,7 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm,
                             sp->setId(existing->getId());
 
                             if (existingEmpty && sp->hasData()) {
-                                // Heal data only — DO NOT cascade fits (the
+                                // Heal data only - DO NOT cascade fits (the
                                 // loop owns them).
                                 if (!dbm->saveSpectrum(starId, sp, false)) {
                                     LOG_ERROR(
@@ -754,7 +754,7 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm,
                             }
                             tick(); // the spectrum unit
                         } else {
-                            // Genuinely new spectrum — cascade fits as before.
+                            // Genuinely new spectrum - cascade fits as before.
                             if (!dbm->saveSpectrum(starId, sp)) {
                                 LOG_ERROR("Staging",
                                           QString("Failed to save spectrum %1")
@@ -767,7 +767,7 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm,
                         }
 
                     } else {
-                        // ── Existing spectrum — only its new fits, heal/dedup
+                        // ── Existing spectrum - only its new fits, heal/dedup
                         // ──
                         if (!commitNewFits(sp->getId(), sp)) {
                             dbm->rollbackTransaction();
@@ -860,7 +860,7 @@ bool ImportStagingArea::commitAll(DatabaseManager* dbm,
             return false;
         }
 
-        // Final snap to 100 % — covers any rounding from the cascaded ticks
+        // Final snap to 100 % - covers any rounding from the cascaded ticks
         if (progress) progress(total, total);
 
         LOG_INFO("Staging", "Commit successful");
@@ -998,7 +998,7 @@ void ImportStagingArea::deduplicateStars()
                 if (_newRVCurveIds.contains(curve->getId()))
                     _newRVCurveIds.insert(curve->getId());
                 } else if (keeper->getRVCurve() && donor->getRVCurve()) {
-                    // Both have RV curves — merge points into keeper's curve
+                    // Both have RV curves - merge points into keeper's curve
                     auto keeperCurve = keeper->getRVCurve();
                     auto donorCurve = donor->getRVCurve();
     

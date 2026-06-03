@@ -45,7 +45,7 @@ public:
     
     virtual QString taskName() const = 0;
 
-    // Staging area support — when set, tasks stage instead of DB-writing
+    // Staging area support - when set, tasks stage instead of DB-writing
     void setStagingArea(ImportStagingArea* staging) { _stagingArea = staging; }
     ImportStagingArea* stagingArea() const { return _stagingArea; }
     
@@ -345,7 +345,7 @@ class IsisFitImportTask : public BackgroundTask {
 };
 
 // ============================================================================
-// RVExtractionTask — Extract RV from spectral fits in background
+// RVExtractionTask - Extract RV from spectral fits in background
 // ============================================================================
 
 struct RVExtractionResult {

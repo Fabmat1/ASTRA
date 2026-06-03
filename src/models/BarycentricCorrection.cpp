@@ -163,7 +163,7 @@ double BarycentricCorrection::ttToTdbCorrection(double mjd_tt)
 // two corrections the original code was missing:
 //
 //   1.  GEOMETRIC longitude only (no aberration, no nutation).
-//       Aberration is an apparent shift (~20.5″) due to Earth's velocity —
+//       Aberration is an apparent shift (~20.5″) due to Earth's velocity -
 //       it does not correspond to Earth's physical position.
 //
 //   2.  Precession correction: Meeus's L0 is referred to the MEAN EQUINOX

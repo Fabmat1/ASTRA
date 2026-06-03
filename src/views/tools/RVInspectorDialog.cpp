@@ -181,7 +181,7 @@ QVariant RVPointsTableModel::data(const QModelIndex& idx, int role) const
             case ColMJD: {
                 double m = p->getMJD();
                 return (m > 0.0 && !std::isnan(m))
-                    ? QString::number(m, 'f', 6) : QString("—");
+                    ? QString::number(m, 'f', 6) : QString("-");
             }
             case ColBJD: {
                 double b = p->getBJD();
@@ -194,7 +194,7 @@ QVariant RVPointsTableModel::data(const QModelIndex& idx, int role) const
             case ColErrSystematic: return QString::number(p->getRVErrorSystematic(), 'f', 4);
             case ColInstrument: {
                 QString n = resolveInstrumentName(p);
-                return n.isEmpty() ? QString("—") : n;
+                return n.isEmpty() ? QString("-") : n;
             }
             case ColSource:
                 return p->getRVSource() == RadialVelocityPoint::RVSource::FromFit
@@ -472,7 +472,7 @@ void RVSolutionsWidget::rebuildList()
         for (const auto& fit : curve->getRVFits()) {
             if (!fit) continue;
             QString star = fit->isBestFit() ? "★ " : "  ";
-            QString label = QString("%1%2 — P=%3 d  K=%4 km/s")
+            QString label = QString("%1%2 - P=%3 d  K=%4 km/s")
                 .arg(star)
                 .arg(fit->getFitMethod().isEmpty() ? "fit" : fit->getFitMethod())
                 .arg(fit->getPeriod(), 0, 'f', 4)
@@ -608,7 +608,7 @@ void RVSolutionsWidget::updateStatsLabel(std::shared_ptr<RVFit> fit)
 
     auto fmt = [](double v, int prec) {
         return (std::isnan(v) || v == 0.0)
-            ? QString("—")
+            ? QString("-")
             : QString::number(v, 'f', prec);
     };
     _statsLabel->setText(QString(
@@ -621,7 +621,7 @@ void RVSolutionsWidget::updateStatsLabel(std::shared_ptr<RVFit> fit)
              fmt(fit->getT0MJD(), 5),
              fmt(fit->getChi2(),  3),
              fmt(fit->getRms(),   3),
-             fit->getFitMethod().isEmpty() ? "—" : fit->getFitMethod()));
+             fit->getFitMethod().isEmpty() ? "-" : fit->getFitMethod()));
 }
 
 
@@ -800,7 +800,7 @@ RVInspectorDialog::~RVInspectorDialog() = default;
 
 void RVInspectorDialog::setupUi()
 {
-    setWindowTitle(QString("RV Inspector — %1").arg(
+    setWindowTitle(QString("RV Inspector - %1").arg(
         _star->getAlias().isEmpty() ? _star->getSourceId() : _star->getAlias()));
     setAttribute(Qt::WA_DeleteOnClose);
     resize(1400, 900);

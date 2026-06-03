@@ -17,7 +17,7 @@ GalacticOrbitDialog::~GalacticOrbitDialog() = default;
 
 void GalacticOrbitDialog::setupUi()
 {
-    setWindowTitle(QString("Galactic Orbit — %1").arg(
+    setWindowTitle(QString("Galactic Orbit - %1").arg(
         _star->getAlias().isEmpty() ? _star->getSourceId() : _star->getAlias()));
     resize(800, 700);
 

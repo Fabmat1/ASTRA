@@ -310,7 +310,7 @@ bool StarFilterProxyModel::matchesAdvancedFilters(int sourceRow, const QModelInd
 
         int colIdx = columnIndexForName(condition.columnName);
         if (colIdx < 0) {
-            // Column not found — treat as not matching in AND, matching in OR
+            // Column not found - treat as not matching in AND, matching in OR
             if (_logicMode == And) return false;
             continue;
         }

@@ -22,7 +22,7 @@
 #include <QListWidget>
 
 // =====================================================================
-// DetailGridEditor — nested widget (file-private)
+// DetailGridEditor - nested widget (file-private)
 // =====================================================================
 class DetailGridEditor : public QWidget
 {
@@ -280,7 +280,7 @@ QWidget *SettingsDialog::createGeneralPage() {
     _isisEdit     = new QLineEdit(_settings->isisBinaryPath());
     _isisEdit->setPlaceholderText(
         QStandardPaths::findExecutable("isis").isEmpty()
-            ? "isis not found in PATH — set explicitly"
+            ? "isis not found in PATH - set explicitly"
             : "Auto-detected from PATH");
     auto *browseBtn = new QPushButton("Browse…");
     pathRow->addWidget(_isisEdit, 1);
@@ -340,7 +340,7 @@ QWidget* SettingsDialog::createStarDetailPage()
     auto* intro = new QLabel(
         "Configure the default layout of panels in the Star Detail view. "
         "You can have between 1 and 4 rows and columns. Choose what to display "
-        "in each cell — empty cells collapse at view time.");
+        "in each cell - empty cells collapse at view time.");
     intro->setWordWrap(true);
     outer->addWidget(intro);
 
@@ -395,7 +395,7 @@ QWidget* SettingsDialog::createLightcurveFetchPage()
 
     // Python interpreter
     QString pyHint = QStandardPaths::findExecutable("python3").isEmpty()
-        ? "python3 not found in PATH — set explicitly"
+        ? "python3 not found in PATH - set explicitly"
         : "Auto-detected from PATH";
     form->addRow("Python:",
         makePathRow(_lcqPythonEdit, _settings->lcqueryPython(),
@@ -519,7 +519,7 @@ QWidget *SettingsDialog::createLightcurveFitPage() {
   _lcurveDirEdit = new QLineEdit(_settings->lcurveDir());
   _lcurveDirEdit->setPlaceholderText(
       QStandardPaths::findExecutable("lcurve_levmarq").isEmpty()
-          ? "lcurve binaries not found in PATH — set explicitly"
+          ? "lcurve binaries not found in PATH - set explicitly"
           : "Auto-detected from PATH");
   auto *browse = new QPushButton("Browse…");
   auto *reset = new QPushButton("Use PATH");
@@ -567,10 +567,10 @@ QWidget *SettingsDialog::createLightcurveFitPage() {
     for (const QString &b : bins) {
       const QString p = probe.lcurveBinary(b);
       if (p.isEmpty()) {
-        rows << QString("<span style='color:#c46060;'>✗ %1</span> — not found")
+        rows << QString("<span style='color:#c46060;'>✗ %1</span> - not found")
                     .arg(b);
       } else {
-        rows << QString("<span style='color:#7dbd5e;'>✓ %1</span> — %2")
+        rows << QString("<span style='color:#7dbd5e;'>✓ %1</span> - %2")
                     .arg(b, p.toHtmlEscaped());
         ++found;
       }

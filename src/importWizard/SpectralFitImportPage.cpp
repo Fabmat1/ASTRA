@@ -192,7 +192,7 @@ QVector<IsisPropRow> parseIsisProperties(const QByteArray &bytes) {
 } // anonymous namespace
 
 // ════════════════════════════════════════════════════════════════
-// ISIS: parsing + matching  (file scope — NOT in anonymous namespace)
+// ISIS: parsing + matching  (file scope - NOT in anonymous namespace)
 // ════════════════════════════════════════════════════════════════
 
 IsisFitDirectory
@@ -839,7 +839,7 @@ void SpectralFitImportPage::updateIsisPreviewTable() {
         _previewTree->resizeColumnToContents(i);
     _previewTree->setUpdatesEnabled(true);
 
-    QString statusText = QString("Found %1 ISIS directories — %2 fully "
+    QString statusText = QString("Found %1 ISIS directories - %2 fully "
                                  "matched, %3 partial, %4 unmatched "
                                  "(%5/%6 spectra matched)")
                              .arg(totalDirs)
@@ -850,7 +850,7 @@ void SpectralFitImportPage::updateIsisPreviewTable() {
                              .arg(totalSpecAll);
     if (totalDirs > MAX_PREVIEW_DIRS)
         statusText +=
-            QString(" — showing first %1 directories").arg(MAX_PREVIEW_DIRS);
+            QString(" - showing first %1 directories").arg(MAX_PREVIEW_DIRS);
     _statusLabel->setText(statusText);
 }
 
@@ -921,7 +921,7 @@ void SpectralFitImportPage::initializePage()
                 _diggaScanButton->setEnabled(!_diggaFolderEdit->text().trimmed().isEmpty());
                 _isisScanButton->setEnabled(!_isisFolderEdit->text().trimmed().isEmpty());
                 _statusLabel->setText(
-                    QString("Ready — %1 stars, %2 spectra indexed.")
+                    QString("Ready - %1 stars, %2 spectra indexed.")
                     .arg(_specIndex.sourceIdIndex.size())
                     .arg(_specIndex.totalSpectra));
             }
@@ -934,7 +934,7 @@ void SpectralFitImportPage::initializePage()
     _indexBuilt = true;
 
     _statusLabel->setText(
-        QString("Ready — %1 spectra indexed across %2 stars.")
+        QString("Ready - %1 spectra indexed across %2 stars.")
         .arg(_specIndex.totalSpectra)
         .arg(_specIndex.starSpectraIndex.size()));
 }
@@ -967,7 +967,7 @@ SpectralFitImportPage::buildSpectrumLookupIndex() {
     QHash<QString, std::shared_ptr<Star>> starById;
     starById.reserve(_importedStars.size());
 
-    // ── 1) Star identity index (shells only — no spectra touched) ──────────
+    // ── 1) Star identity index (shells only - no spectra touched) ──────────
     for (const auto &star : _importedStars) {
         const QString starId   = star->getId();
         const QString sourceId = star->getSourceId();
@@ -1017,7 +1017,7 @@ SpectralFitImportPage::buildSpectrumLookupIndex() {
     //     NOTE: do NOT gate on hasSpectraLoaded(). That flag only means
     //     "lazy-loaded from DB"; staged spectra are attached via addSpectrum()
     //     WITHOUT setting it. The shells from loadStars carry no spectra
-    //     loader, so getSpectra() here never triggers DB I/O — it returns
+    //     loader, so getSpectra() here never triggers DB I/O - it returns
     //     in-memory only.
     QSet<QString> inMemoryIds;
     for (const auto &star : _importedStars) {
@@ -1104,7 +1104,7 @@ void SpectralFitImportPage::onBrowseDiggaFolder()
 }
 
 // ════════════════════════════════════════════════════════════════
-// DIGGA: async scan — ALL heavy work in background thread
+// DIGGA: async scan - ALL heavy work in background thread
 // ════════════════════════════════════════════════════════════════
 
 void SpectralFitImportPage::onScanDigga()
@@ -1410,7 +1410,7 @@ void SpectralFitImportPage::parseDiggaFitParameters(
 }
 
 // ════════════════════════════════════════════════════════════════
-// DIGGA: matching — static, no per-item logging
+// DIGGA: matching - static, no per-item logging
 // ════════════════════════════════════════════════════════════════
 
 void SpectralFitImportPage::matchDiggaDirectories(
@@ -1686,7 +1686,7 @@ void SpectralFitImportPage::importIsisFits() {
         return;
     }
 
-    // Auto-best per spectrum (lowest reduced χ²) — identical policy to DIGGA
+    // Auto-best per spectrum (lowest reduced χ²) - identical policy to DIGGA
     if (autoBest) {
         QHash<QString, std::vector<int>> specGroups;
         for (int i = 0; i < (int)entries.size(); ++i)
@@ -1810,7 +1810,7 @@ bool SpectralFitImportPage::loadPlotdata(
 }
 
 // ════════════════════════════════════════════════════════════════
-// Preview table — LIMITED rows, no expandAll on large datasets
+// Preview table - LIMITED rows, no expandAll on large datasets
 // ════════════════════════════════════════════════════════════════
 
 void SpectralFitImportPage::updateDiggaPreviewTable()
@@ -1955,7 +1955,7 @@ void SpectralFitImportPage::updateDiggaPreviewTable()
 
     // Only expand top-level items (don't expand children by default)
     // Users can click to expand individual dirs
-    // DON'T call expandAll() — it's O(n) widget updates
+    // DON'T call expandAll() - it's O(n) widget updates
 
     // Resize columns once with the limited dataset
     for (int i = 0; i < _previewTree->columnCount(); ++i)
@@ -1965,13 +1965,13 @@ void SpectralFitImportPage::updateDiggaPreviewTable()
 
     // Status with full accurate counts (not limited by preview)
     QString statusText = QString(
-        "Found %1 DIGGA directories — %2 fully matched, "
+        "Found %1 DIGGA directories - %2 fully matched, "
         "%3 partial, %4 unmatched (%5/%6 spectra matched)")
         .arg(totalDirs).arg(fullyMatched).arg(partialMatched)
         .arg(unmatched).arg(totalSpecMatch).arg(totalSpecAll);
 
     if (totalDirs > MAX_PREVIEW_DIRS)
-        statusText += QString(" — showing first %1 directories").arg(MAX_PREVIEW_DIRS);
+        statusText += QString(" - showing first %1 directories").arg(MAX_PREVIEW_DIRS);
 
     _statusLabel->setText(statusText);
 }

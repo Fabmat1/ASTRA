@@ -35,6 +35,7 @@ private slots:
     void onShowInSimbad();
     void onSettingsGridChanged();
     void onShowObservability();
+    void onShareStar();
 
 private:
     void setupUi();
@@ -63,6 +64,7 @@ private:
     QPushButton* _cmdButton           = nullptr;
     QPushButton* _observabilityButton = nullptr;
     QPushButton* _calcOrbitButton     = nullptr;
+    QPushButton *_shareButton          = nullptr;
 
     bool _themeRefreshPending = false;
 };

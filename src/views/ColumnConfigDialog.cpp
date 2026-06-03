@@ -208,7 +208,7 @@ void ColumnConfigDialog::syncPresetCombo()
     _presetCombo->blockSignals(true);
     _presetCombo->clear();
 
-    _presetCombo->addItem("— Custom —", QString());          // index 0
+    _presetCombo->addItem("- Custom -", QString());          // index 0
 
     auto& mgr = ColumnPresetManager::instance();
     _presetCombo->insertSeparator(_presetCombo->count());
@@ -233,7 +233,7 @@ void ColumnConfigDialog::onPresetSelected(int index)
     QString presetId = _presetCombo->itemData(index).toString();
     if (presetId.isEmpty()) {
         _deletePresetBtn->setEnabled(false);
-        return;  // "Custom" row — don't change anything
+        return;  // "Custom" row - don't change anything
     }
 
     auto& mgr = ColumnPresetManager::instance();

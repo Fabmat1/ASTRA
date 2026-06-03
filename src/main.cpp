@@ -33,8 +33,16 @@ int main(int argc, char *argv[])
     qRegisterMetaType<astra::fitting::SpectralFitJob>();
 
     ApplicationController controller;
-    MainWindow window(&controller);
+    MainWindow            window(&controller);
     window.show();
+
+    const QStringList args = app.arguments();
+    for (int i = 1; i < args.size(); ++i) {
+        if (args[i].endsWith(".astra", Qt::CaseInsensitive)) {
+            window.importStarPackage(args[i]);
+            break;
+        }
+    }
 
     LOG_INFO("Main", "Main window displayed");
 

@@ -56,6 +56,7 @@ public:
     size_t getStarCountForProject(const QString& projectId);
     bool importCSV(const QString& filepath, std::shared_ptr<Project> project);
     std::shared_ptr<Photometry> loadPhotometry(const QString& starId);
+    bool savePhotometry(const QString              &starId, std::shared_ptr<Photometry> photometry);
     std::vector<std::shared_ptr<Spectrum>> loadSpectra(const QString& starId);
     std::vector<SpectrumIndexRow> loadSpectraIndex(const QString &projectId);
     bool saveSpectrum(const QString &starId, std::shared_ptr<Spectrum> spectrum,

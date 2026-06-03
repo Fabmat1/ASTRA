@@ -480,7 +480,7 @@ void LCPanel::rebuildPlots()
         const auto& s = _series[i];
         QString gk = (_viewMode == ViewMode::StackedBySource)
                        ? s.source
-                       : (s.source + " · " + (s.filter.isEmpty() ? "—" : s.filter));
+                       : (s.source + " · " + (s.filter.isEmpty() ? "-" : s.filter));
         if (!groupIdx.contains(gk)) {
             groupIdx[gk] = groups.size();
             groups.append({gk, {}});
@@ -981,7 +981,7 @@ void LCPanel::onFlagModeToggled(bool on)
         _toggleFoldBtn->setText("Show Folded");
     }
     for (auto* p : _plots) applyFlagModeInteractions(p);
-    // No replot needed — only interaction state changed.
+    // No replot needed - only interaction state changed.
 }
 
 void LCPanel::onClearFlagsClicked()

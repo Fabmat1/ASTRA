@@ -130,7 +130,7 @@ void TerminalView::setHotkeyMode(bool on)
 {
     _hotkeyMode = on;
     _in->setPlaceholderText(on
-        ? "Hotkey mode — keys sent immediately (Esc to drop)"
+        ? "Hotkey mode - keys sent immediately (Esc to drop)"
         : QString());
 }
 

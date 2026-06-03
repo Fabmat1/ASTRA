@@ -294,6 +294,9 @@ set(SOURCES
     src/fitting/StdStreamRedirector.cpp
     src/fitting/Periodogram.cpp
 
+    # io
+    src/io/StarPackage.cpp
+    src/io/StarShare.cpp
 )
 
 # Header files
@@ -419,7 +422,10 @@ set(HEADERS
     src/fitting/FitWorker.h
     src/fitting/StdStreamRedirector.h
     src/fitting/Periodogram.h
-    
+
+    # io
+    src/io/StarPackage.h
+    src/io/StarShare.h 
 )
 
 # Create executable
@@ -546,6 +552,30 @@ if(UNIX AND NOT APPLE)
             FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/linux/icons/astra.png"
             DESTINATION "${CMAKE_INSTALL_DATADIR}/icons/hicolor/256x256/apps"
         )
+    endif()
+
+    # install MIME definition
+    install(
+        FILES "${CMAKE_CURRENT_SOURCE_DIR}/resources/linux/astra-mime.xml"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/mime/packages"
+    )
+
+    # refresh caches
+    find_program(UPDATE_DESKTOP_DB update-desktop-database)
+    find_program(UPDATE_ICON_CACHE gtk-update-icon-cache)
+    find_program(UPDATE_MIME_DATABASE update-mime-database)
+
+    if(UPDATE_MIME_DATABASE)
+        install(CODE "
+            execute_process(
+                COMMAND \"${UPDATE_MIME_DATABASE}\"
+                        \"\$ENV{DESTDIR}\${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_DATADIR}/mime\"
+                RESULT_VARIABLE _ret
+            )
+            if(NOT _ret EQUAL 0)
+                message(WARNING \"update-mime-database returned \${_ret}\")
+            endif()
+        ")
     endif()
 
     # --- Refresh the icon/desktop caches after install -------------------

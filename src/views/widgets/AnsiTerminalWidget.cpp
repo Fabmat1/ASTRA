@@ -219,7 +219,7 @@ void AnsiTerminalWidget::dispatchCsi(char final)
         break;
     }
 
-    default: break;          // SU/SD/SCP/RCP/... — not needed for rich
+    default: break;          // SU/SD/SCP/RCP/... - not needed for rich
     }
 }
 
