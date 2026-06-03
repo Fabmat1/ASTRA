@@ -79,4 +79,9 @@ class SummaryPanel : public DetailPanel {
     QWidget    *_refSpinner  = nullptr; // busy row, shown while more remain
     QStringList _pendingRefs;           // not-yet-shown bibcodes
     bool        _loadingMoreRefs = false;
+
+    QWidget *createSpecClassBadge(); // editable badge
+    void     commitSpecClass(const QString &newClass);
+
+    bool _specEditing = false;
 };

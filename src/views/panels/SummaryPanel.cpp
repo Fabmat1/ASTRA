@@ -5,6 +5,7 @@
 #include "models/Photometry.h"
 #include "models/RadialVelocity.h"
 #include "models/Spectrum.h"
+#include "db/DatabaseManager.h"
 #include "models/Star.h"
 #include "utils/AppPaths.h"
 #include "utils/CrossRefResolver.h"
@@ -17,9 +18,10 @@
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
-#include <QMessageBox>
 #include <QLabel>
+#include <QLineEdit>
 #include <QMap>
+#include <QMessageBox>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
@@ -358,25 +360,98 @@ QWidget* SummaryPanel::createNameHeader()
 
     hLayout->addLayout(nameCol, 1);
 
-    // Right side: spectral class badge (if available)
-    QString specClass = _ctx.star->getSpecClass();
-    if (!specClass.isEmpty()) {
-        QColor badgeColor = specClassColor(specClass);
-        QColor badgeText = accentTextColor(badgeColor);
-
-        QLabel* badge = new QLabel(specClass);
-        badge->setAlignment(Qt::AlignCenter);
-        badge->setFixedHeight(30);
-        badge->setMinimumWidth(60);
-        badge->setStyleSheet(QString(
-            "font-size: 13px; font-weight: 700; color: %1; "
-            "background: %2; border-radius: 6px; "
-            "padding: 2px 12px; border: none;"
-        ).arg(badgeText.name(), badgeColor.name()));
-        hLayout->addWidget(badge, 0, Qt::AlignRight | Qt::AlignVCenter);
-    }
+    // Right side: editable spectral-class badge
+    hLayout->addWidget(createSpecClassBadge(), 0,
+                       Qt::AlignRight | Qt::AlignVCenter);
 
     return header;
+}
+
+QWidget *SummaryPanel::createSpecClassBadge() {
+    const bool    dark      = PanelUtils::isDarkTheme();
+    const QString specClass = _ctx.star->getSpecClass();
+    const bool    empty     = specClass.isEmpty();
+
+    QWidget     *host = new QWidget;
+    QHBoxLayout *l    = new QHBoxLayout(host);
+    l->setContentsMargins(0, 0, 0, 0);
+    l->setSpacing(0);
+
+    QColor badgeColor =
+        empty ? (dark ? QColor(70, 70, 75) : QColor(225, 225, 230))
+              : specClassColor(specClass);
+    QColor badgeText =
+        empty ? (dark ? QColor(160, 160, 165) : QColor(110, 110, 115))
+              : accentTextColor(badgeColor);
+
+    // --- display badge (a flat button so it's natively clickable) ---
+    QPushButton *badge = new QPushButton(empty ? "＋ Spec. class" : specClass);
+    badge->setCursor(Qt::PointingHandCursor);
+    badge->setFixedHeight(30);
+    badge->setMinimumWidth(60);
+    badge->setToolTip("Click to edit spectral class");
+    badge->setStyleSheet(
+        QString("QPushButton { font-size: 13px; font-weight: 700; color: %1;"
+                " background: %2; border-radius: 6px; padding: 2px 12px; "
+                "border: none; }"
+                "QPushButton:hover { text-decoration: underline; }")
+            .arg(badgeText.name(), badgeColor.name()));
+
+    // --- inline editor ---
+    QLineEdit *editor = new QLineEdit(specClass);
+    editor->setFixedHeight(30);
+    editor->setMinimumWidth(90);
+    editor->setMaxLength(32);
+    editor->setAlignment(Qt::AlignCenter);
+    editor->setVisible(false);
+    editor->setStyleSheet(
+        QString(
+            "QLineEdit { font-size: 13px; font-weight: 700; border-radius: 6px;"
+            " padding: 2px 8px; border: 1px solid %1; background: %2; color: "
+            "%3; }")
+            .arg(dark ? "#5a5a5f" : "#bbbbbb", dark ? "#3a3a3f" : "#ffffff",
+                 dark ? "#eeeeee" : "#222222"));
+
+    l->addWidget(badge);
+    l->addWidget(editor);
+
+    // Click -> enter edit mode
+    connect(badge, &QPushButton::clicked, this, [this, badge, editor]() {
+        _specEditing = true;
+        badge->setVisible(false);
+        editor->setText(_ctx.star->getSpecClass());
+        editor->setVisible(true);
+        editor->setFocus();
+        editor->selectAll();
+    });
+
+    // Commit on Enter or focus-out (returnPressed also fires editingFinished).
+    // Defer the rebuild so we don't delete the editor inside its own signal.
+    connect(editor, &QLineEdit::editingFinished, this, [this, editor]() {
+        if (!_specEditing)
+            return;
+        _specEditing      = false;
+        const QString val = editor->text();
+        QTimer::singleShot(0, this, [this, val]() { commitSpecClass(val); });
+    });
+
+    return host;
+}
+
+void SummaryPanel::commitSpecClass(const QString &raw) {
+    const QString newClass = raw.trimmed();
+
+    if (newClass != _ctx.star->getSpecClass()) {
+        _ctx.star->setSpecClass(newClass);
+
+        // Persist to the database
+        _ctx.dbm->updateStar(_ctx.projectId, _ctx.star);
+
+        // Let other views (table, etc.) know the star changed
+        _ctx.star->markSummaryDirty();
+    }
+
+    rebuild(); // restores the badge view with the new text/colour
 }
 
 QWidget *SummaryPanel::createMetricCardsRow() {
