@@ -2,6 +2,7 @@
 #include "PanelUtils.h"
 
 #include "controllers/ApplicationController.h"
+#include "dialogs/ReidentifyStarDialog.h"
 #include "models/Photometry.h"
 #include "models/RadialVelocity.h"
 #include "models/Spectrum.h"
@@ -326,16 +327,49 @@ QWidget* SummaryPanel::createNameHeader()
     hLayout->setSpacing(12);
 
     // Left side: name + source ID
-    QVBoxLayout* nameCol = new QVBoxLayout;
+    QVBoxLayout *nameCol = new QVBoxLayout;
     nameCol->setSpacing(2);
 
-    QString displayName = _ctx.star->getAlias().isEmpty() ? _ctx.star->getSourceId() : _ctx.star->getAlias();
+    QString displayName = _ctx.star->getAlias().isEmpty()
+                              ? _ctx.star->getSourceId()
+                              : _ctx.star->getAlias();
 
-    QLabel* nameLabel = new QLabel(displayName);
-    nameLabel->setStyleSheet(QString("font-size: 20px; font-weight: 700; color: %1; background: transparent;")
-        .arg(dark ? "white" : "#1a1a1a"));
+    // ── Name row: name label + re-identify (pen) button ──────────────────
+    QHBoxLayout *nameRow = new QHBoxLayout;
+    nameRow->setContentsMargins(0, 0, 0, 0);
+    nameRow->setSpacing(6);
+
+    QLabel *nameLabel = new QLabel(displayName);
+    nameLabel->setStyleSheet(QString("font-size: 20px; font-weight: 700; "
+                                     "color: %1; background: transparent;")
+                                 .arg(dark ? "white" : "#1a1a1a"));
     nameLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
-    nameCol->addWidget(nameLabel);
+    nameRow->addWidget(nameLabel);
+
+    QPushButton *editBtn =
+        new QPushButton(QString::fromUtf8("\xE2\x9C\x8E")); // ✎
+    editBtn->setFlat(true);
+    editBtn->setCursor(Qt::PointingHandCursor);
+    editBtn->setFixedSize(22, 22);
+    editBtn->setToolTip(
+        "Re-identify this star (pick a different nearby source)");
+    editBtn->setStyleSheet(
+        QString("QPushButton { font-size: 14px; color: %1; border: none; "
+                "background: transparent; }"
+                "QPushButton:hover { color: %2; }")
+            .arg(dark ? "#8aa3c8" : "#5a6b85", dark ? "#cfdaee" : "#1d3160"));
+    connect(editBtn, &QPushButton::clicked, this, [this]() {
+        ReidentifyStarDialog dlg(_ctx.star, _ctx.dbm, _ctx.projectId, this);
+        if (dlg.exec() == QDialog::Accepted) {
+            // The dialog already applied fields + called dbm->updateStar().
+            _ctx.star->markSummaryDirty(); // notify app to reload
+            refresh();                     // re-render this panel
+        }
+    });
+    nameRow->addWidget(editBtn);
+    nameRow->addStretch();
+
+    nameCol->addLayout(nameRow);
 
     // Gaia source ID line
     QString subText;
