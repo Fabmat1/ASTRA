@@ -1722,10 +1722,10 @@ bool SummaryPanel::MassInputs::sameAs(const MassInputs &o) const noexcept {
             return false;
         return std::abs(a - b) <= 1e-12 * std::max(1.0, std::abs(a));
     };
-    return valid == o.valid && hasIncl == o.hasIncl && eq(P, o.P) &&
-           eq(eP, o.eP) && eq(K, o.K) && eq(eK, o.eK) && eq(M1, o.M1) &&
-           eq(eM1, o.eM1) && eq(e, o.e) && eq(ee, o.ee) && eq(sini, o.sini) &&
-           eq(esini, o.esini);
+    return valid == o.valid && hasIncl == o.hasIncl && hasQ == o.hasQ &&
+           eq(P, o.P) && eq(eP, o.eP) && eq(K, o.K) && eq(eK, o.eK) &&
+           eq(M1, o.M1) && eq(eM1, o.eM1) && eq(e, o.e) && eq(ee, o.ee) &&
+           eq(sini, o.sini) && eq(esini, o.esini) && eq(q, o.q) && eq(eQ, o.eQ);
 }
 
 void SummaryPanel::ensureCompanionMasses() {
@@ -1766,36 +1766,59 @@ void SummaryPanel::ensureCompanionMasses() {
                                      : 0.0;
     }
 
+    // Mass ratio q = M2/M1 from the light-curve solution. When present it gives
+    // an inclination-independent handle on the true companion mass (M2 = q·M1).
+    const double qVal  = _ctx.star->getPhotQ();
+    const double eqVal = _ctx.star->getPhotEQ();
+    in.hasQ            = Star::isSet(qVal) && qVal > 0.0;
+    if (in.hasQ) {
+        in.q  = qVal;
+        in.eQ = (std::isfinite(eqVal) && eqVal > 0.0) ? eqVal : 0.0;
+    }
+
     in.valid = std::isfinite(in.P) && in.P > 0.0 && std::isfinite(in.K) &&
                in.K > 0.0 && std::isfinite(in.M1) && in.M1 > 0.0;
 
-    if (_hasMassCache && _cachedMassInputs.sameAs(in))
-        return;
+    // Recompute only when the inputs actually changed. The reconciliation below
+    // always runs, so a stale or incorrect value already in the database is
+    // detected and corrected every time the panel is opened.
+    if (!_hasMassCache || !_cachedMassInputs.sameAs(in)) {
+        _cachedMassInputs = in;
+        _hasMassCache     = true;
 
-    _cachedMassInputs = in;
-    _hasMassCache     = true;
-
-    if (!in.valid) {
-        _cachedMassMin  = {};
-        _cachedMassTrue = {};
-    } else {
-        const double mMin = m2Of(in.P, in.K, in.M1, in.e, 1.0);
-        const double sMin = propagateM2Error(in.P, in.eP, in.K, in.eK, in.M1,
-                                             in.eM1, in.e, in.ee, 1.0, 0.0);
-        _cachedMassMin    = {mMin, sMin};
-
-        if (in.hasIncl) {
-            const double mT = m2Of(in.P, in.K, in.M1, in.e, in.sini);
-            const double sT =
-                propagateM2Error(in.P, in.eP, in.K, in.eK, in.M1, in.eM1, in.e,
-                                 in.ee, in.sini, in.esini);
-            _cachedMassTrue = {mT, sT};
-        } else {
+        if (!in.valid) {
+            _cachedMassMin  = {};
             _cachedMassTrue = {};
+        } else {
+            // M2 (min): edge-on (sin i = 1) lower bound from the mass function.
+            const double mMin = m2Of(in.P, in.K, in.M1, in.e, 1.0);
+            const double sMin = propagateM2Error(in.P, in.eP, in.K, in.eK, in.M1,
+                                                 in.eM1, in.e, in.ee, 1.0, 0.0);
+            _cachedMassMin    = {mMin, sMin};
+
+            // M2 (true): prefer the measured mass ratio q = M2/M1, which is
+            // inclination-independent; otherwise fall back to the
+            // inclination-derived value from the mass function.
+            if (in.hasQ) {
+                const double mT = in.q * in.M1;
+                const double rq = (in.q > 0.0) ? in.eQ / in.q : 0.0;
+                const double rm = (in.M1 > 0.0) ? in.eM1 / in.M1 : 0.0;
+                const double sT = mT * std::sqrt(rq * rq + rm * rm);
+                _cachedMassTrue = {mT, sT};
+            } else if (in.hasIncl) {
+                const double mT = m2Of(in.P, in.K, in.M1, in.e, in.sini);
+                const double sT =
+                    propagateM2Error(in.P, in.eP, in.K, in.eK, in.M1, in.eM1,
+                                     in.e, in.ee, in.sini, in.esini);
+                _cachedMassTrue = {mT, sT};
+            } else {
+                _cachedMassTrue = {};
+            }
         }
     }
 
-    // Persist to Star only when truly different.
+    // Reconcile against the value already stored on the Star / in the database
+    // and persist only when it has genuinely drifted (stale fit, edited q, etc.).
     Star &s   = *_ctx.star;
     auto  neq = [](double a, double b) {
         if (std::isnan(a) && std::isnan(b))
@@ -1823,5 +1846,5 @@ void SummaryPanel::ensureCompanionMasses() {
         changed = true;
     }
     if (changed)
-        s.markSummaryDirty();
+        s.persistSummary();
 }

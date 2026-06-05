@@ -267,6 +267,12 @@ public:
 
     void markSummaryDirty();
 
+    // Persist the current summary state to the database immediately, bypassing
+    // the change-detection in computeSummaryMetrics(). Used for derived values
+    // (e.g. companion masses) that are computed outside the metrics pipeline and
+    // mutated directly on the Star before persisting.
+    void persistSummary() { if (_summaryPersistCb) _summaryPersistCb(); }
+
     void setSummaryPersistCallback(SummaryPersistCallback cb)
         { _summaryPersistCb = std::move(cb); }
     using SummaryChangedCallback = std::function<void()>;

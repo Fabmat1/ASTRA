@@ -53,7 +53,9 @@ class SummaryPanel : public DetailPanel {
         double P = 0, eP = 0, K = 0, eK = 0;
         double M1 = 0, eM1 = 0, e = 0, ee = 0;
         double sini = 0, esini = 0;
+        double q = 0, eQ = 0;
         bool   hasIncl = false;
+        bool   hasQ    = false;
         bool   valid   = false;
         bool   sameAs(const MassInputs &o) const noexcept;
     };

@@ -127,8 +127,8 @@ void ColumnPresetManager::buildColumnRegistry() {
         {"sed_e_lum2", "e_L₂", "SED", false},
 
         // ── Companion Mass (derived) ────────────────────────────────────────
-        {"comp_mass_min", "M₂ sin i [M☉]", "Companion Mass", false},
-        {"e_comp_mass_min", "e_M₂ sin i", "Companion Mass", false},
+        {"comp_mass_min", "M₂_min [M☉]", "Companion Mass", false},
+        {"e_comp_mass_min", "e_M₂_min", "Companion Mass", false},
         {"comp_mass_true", "M₂ [M☉]", "Companion Mass", false},
         {"e_comp_mass_true", "e_M₂", "Companion Mass", false},
 

@@ -755,6 +755,10 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
     const int idxHasAtlas = rec.indexOf("has_atlas");
     const int idxHasBlackgem = rec.indexOf("has_blackgem");
     const int idxTessCrowdsap = rec.indexOf("tess_crowdsap");
+    const int idxCompMassMin = rec.indexOf("comp_mass_min");
+    const int idxCompEMassMin = rec.indexOf("comp_e_mass_min");
+    const int idxCompMassTrue = rec.indexOf("comp_mass_true");
+    const int idxCompEMassTrue = rec.indexOf("comp_e_mass_true");
 
     // Pre-allocate
     const size_t estimatedCount = _stars->getStarCountForProject(projectId);
@@ -866,6 +870,11 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
         if (idxHasAtlas >= 0)    star->setHasAtlas(query.value(idxHasAtlas).toInt() != 0);
         if (idxHasBlackgem >= 0) star->setHasBlackgem(query.value(idxHasBlackgem).toInt() != 0);
         if (idxTessCrowdsap >= 0 && !query.isNull(idxTessCrowdsap)) star->setTessCrowdsap(query.value(idxTessCrowdsap).toDouble());
+
+        if (idxCompMassMin >= 0)   star->setCompMassMin(query.value(idxCompMassMin).toDouble());
+        if (idxCompEMassMin >= 0)  star->setECompMassMin(query.value(idxCompEMassMin).toDouble());
+        if (idxCompMassTrue >= 0)  star->setCompMassTrue(query.value(idxCompMassTrue).toDouble());
+        if (idxCompEMassTrue >= 0) star->setECompMassTrue(query.value(idxCompEMassTrue).toDouble());
         stars.push_back(std::move(star));
     }
 

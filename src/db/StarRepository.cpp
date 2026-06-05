@@ -333,6 +333,8 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
             phot_period = :phot_period, phot_e_period = :phot_e_period,
             phot_incl = :phot_incl, phot_e_incl = :phot_e_incl,
             phot_q = :phot_q, phot_e_q = :phot_e_q,
+            comp_mass_min = :comp_mass_min, comp_e_mass_min = :comp_e_mass_min,
+            comp_mass_true = :comp_mass_true, comp_e_mass_true = :comp_e_mass_true,
             has_tess = :has_tess, has_gaia = :has_gaia, has_ztf = :has_ztf,
             has_atlas = :has_atlas, has_blackgem = :has_blackgem,
             bibcodes = :bibcodes
@@ -418,6 +420,11 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
     query.bindValue(":phot_e_incl", star->getPhotEIncl());
     query.bindValue(":phot_q", star->getPhotQ());
     query.bindValue(":phot_e_q", star->getPhotEQ());
+
+    query.bindValue(":comp_mass_min", star->getCompMassMin());
+    query.bindValue(":comp_e_mass_min", star->getECompMassMin());
+    query.bindValue(":comp_mass_true", star->getCompMassTrue());
+    query.bindValue(":comp_e_mass_true", star->getECompMassTrue());
 
     query.bindValue(":has_tess", star->getHasTess() ? 1 : 0);
     query.bindValue(":has_gaia", star->getHasGaia() ? 1 : 0);

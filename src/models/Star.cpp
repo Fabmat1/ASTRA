@@ -181,6 +181,12 @@ const std::unordered_map<QString, Star::FieldGetter>& Star::getFieldMap()
         { "phot_q",         [](const Star* s) { return dblVar(s->getPhotQ()); } },
         { "phot_e_q",       [](const Star* s) { return dblVar(s->getPhotEQ()); } },
 
+        // ── Companion Mass ──────────────────────────────────────────────────
+        { "comp_mass_min",   [](const Star* s) { return dblVar(s->getCompMassMin()); } },
+        { "e_comp_mass_min", [](const Star* s) { return dblVar(s->getECompMassMin()); } },
+        { "comp_mass_true",  [](const Star* s) { return dblVar(s->getCompMassTrue()); } },
+        { "e_comp_mass_true",[](const Star* s) { return dblVar(s->getECompMassTrue()); } },
+
         // ── Dataset availability (boolean → rendered by delegate) ───────────
         { "has_tess",       [](const Star* s) { return QVariant(s->getHasTess()); } },
         { "has_gaia",       [](const Star* s) { return QVariant(s->getHasGaia()); } },
