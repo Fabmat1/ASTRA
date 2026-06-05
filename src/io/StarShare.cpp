@@ -10,16 +10,72 @@
 #include "models/RadialVelocity.h"
 #include "models/Spectrum.h"
 #include <QApplication>
+#include <QEventLoop>
 #include <QFileDialog>
+#include <QFutureWatcher>
 #include <QMessageBox>
+#include <QMetaObject>
+#include <QPointer>
+#include <QProgressDialog>
 #include <QRegularExpression>
 #include <QString>
 #include <QUuid>
+#include <QtConcurrent>
+
+#include <functional>
 
 namespace {
 
 inline QString freshId() {
     return QUuid::createUuid().toString(QUuid::WithoutBraces);
+}
+
+// Runs `job` on a worker thread while a modal progress dialog blocks the UI.
+// `job` is handed a thread-safe reporter `report(percent, phase)` that it may
+// call from the worker thread to drive the dialog. The dialog is not
+// cancellable (the work writes files / a DB transaction and must run to
+// completion). Returns the job's result once it finishes.
+template <class Result>
+Result runWithProgress(
+    QWidget *parent, const QString &title,
+    const std::function<Result(const StarPackage::ProgressFn &)> &job) {
+    QProgressDialog dlg(title, QString(), 0, 100, parent);
+    dlg.setWindowTitle(title);
+    dlg.setWindowModality(Qt::ApplicationModal);
+    dlg.setMinimumDuration(0);
+    dlg.setAutoClose(false);
+    dlg.setAutoReset(false);
+    dlg.setCancelButton(nullptr); // not cancellable
+    dlg.setValue(0);
+
+    // Thread-safe reporter: marshals updates onto the GUI thread.
+    QPointer<QProgressDialog> dlgPtr(&dlg);
+    StarPackage::ProgressFn   report = [dlgPtr](int pct, const QString &phase) {
+        if (!dlgPtr)
+            return;
+        QMetaObject::invokeMethod(
+            dlgPtr.data(),
+            [dlgPtr, pct, phase]() {
+                if (!dlgPtr)
+                    return;
+                dlgPtr->setLabelText(phase);
+                dlgPtr->setValue(qBound(0, pct, 100));
+            },
+            Qt::QueuedConnection);
+    };
+
+    QFutureWatcher<Result> watcher;
+    QEventLoop             loop;
+    QObject::connect(&watcher, &QFutureWatcherBase::finished, &loop,
+                     &QEventLoop::quit);
+    watcher.setFuture(
+        QtConcurrent::run([job, report]() -> Result { return job(report); }));
+
+    dlg.show();
+    if (!watcher.isFinished())
+        loop.exec(); // pumps GUI events; modal dialog blocks interaction
+    dlg.close();
+    return watcher.result();
 }
 
 // Regenerate every ID so imported objects never collide with existing DB rows,
@@ -148,72 +204,114 @@ int StarShare::importFileInteractive(QWidget                 *parent,
             return 0; // cancelled
     }
 
-    auto result = StarPackage::readFromFile(path);
-    if (!result.success) {
+    DatabaseManager *dbm       = controller->databaseManager();
+    const QString    projectId = project->getId();
+
+    // Outcome of the off-thread read + persist.
+    struct ImportOutcome {
+        bool        readOk    = false;
+        bool        saveOk    = true;
+        int         saved     = 0;
+        bool        empty     = false;
+        QString     readError;
+        QString     creatorNote;
+        std::vector<std::shared_ptr<Star>> stars;
+    };
+
+    // Read the package and persist its stars on a worker thread. Reading
+    // (decompress + JSON + blobs) and saving (DB transaction + side-file
+    // writes) are both heavy; doing them here keeps the UI responsive behind a
+    // modal progress dialog. All DB work runs on this single worker thread, so
+    // the per-thread connection and the surrounding transaction stay coherent.
+    const ImportOutcome out = runWithProgress<ImportOutcome>(
+        parent, QStringLiteral("Receiving stars…"),
+        [dbm, projectId, path](const StarPackage::ProgressFn &report)
+            -> ImportOutcome {
+            ImportOutcome o;
+
+            // Read → progress 0..40 of the overall bar.
+            auto pkg = StarPackage::readFromFile(
+                path, [&report](int p, const QString &ph) {
+                    report(int(p * 0.40), ph);
+                });
+            o.readOk      = pkg.success;
+            o.readError   = pkg.error;
+            o.creatorNote = pkg.creatorNote;
+            if (!pkg.success)
+                return o;
+            if (pkg.stars.empty()) {
+                o.empty = true;
+                return o;
+            }
+
+            // Ensure referenced instruments exist (never clobber the user's).
+            report(42, QStringLiteral("Saving instruments…"));
+            for (auto &inst : pkg.instruments) {
+                if (!inst)
+                    continue;
+                if (!dbm->getInstrumentById(inst->getId()) &&
+                    !dbm->getInstrumentByName(inst->getName()))
+                    dbm->saveInstrument(inst);
+            }
+
+            // Persist stars → progress 45..100.
+            dbm->beginTransaction();
+            const int n = int(pkg.stars.size());
+            int       i = 0;
+            for (auto &star : pkg.stars) {
+                ++i;
+                if (!star)
+                    continue;
+                remapIdsForImport(star);
+                if (!persistImportedStar(dbm, projectId, star)) {
+                    o.saveOk = false;
+                    break;
+                }
+                ++o.saved;
+                report(45 + int(55.0 * i / n),
+                       QStringLiteral("Saving star %1 of %2").arg(i).arg(n));
+            }
+            if (o.saveOk)
+                dbm->commitTransaction();
+            else
+                dbm->rollbackTransaction();
+
+            if (o.saveOk)
+                o.stars = std::move(pkg.stars);
+            return o;
+        });
+
+    if (!out.readOk) {
         QMessageBox::critical(
             parent, "Import Failed",
-            QString("Could not read '%1':\n%2").arg(path, result.error));
+            QString("Could not read '%1':\n%2").arg(path, out.readError));
         return -1;
     }
-    if (result.stars.empty()) {
+    if (out.empty) {
         QMessageBox::information(parent, "Receive Stars",
                                  "The package contained no stars.");
         return 0;
     }
-
-    DatabaseManager *dbm = controller->databaseManager();
-
-    // Ensure referenced instruments exist (never clobber the user's own).
-    for (auto &inst : result.instruments) {
-        if (!inst)
-            continue;
-        if (!dbm->getInstrumentById(inst->getId()) &&
-            !dbm->getInstrumentByName(inst->getName()))
-            dbm->saveInstrument(inst);
-    }
-
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    dbm->beginTransaction();
-
-    bool ok    = true;
-    int  saved = 0;
-    for (auto &star : result.stars) {
-        if (!star)
-            continue;
-        remapIdsForImport(star);
-        if (!persistImportedStar(dbm, project->getId(), star)) {
-            ok = false;
-            break;
-        }
-        ++saved;
-    }
-
-    if (ok)
-        dbm->commitTransaction();
-    else
-        dbm->rollbackTransaction();
-    QApplication::restoreOverrideCursor();
-
-    if (!ok) {
+    if (!out.saveOk) {
         QMessageBox::critical(
             parent, "Import Failed",
             "An error occurred while saving. No changes were made.");
         return -1;
     }
 
-    for (auto &star : result.stars)
+    for (auto &star : out.stars)
         if (star)
             project->addStar(star);
 
     QString extra;
-    if (!result.creatorNote.isEmpty())
-        extra = QString("\n\nNote from sender:\n%1").arg(result.creatorNote);
+    if (!out.creatorNote.isEmpty())
+        extra = QString("\n\nNote from sender:\n%1").arg(out.creatorNote);
     QMessageBox::information(parent, "Stars Received",
                              QString("Imported %1 star%2 from:\n%3%4")
-                                 .arg(saved)
-                                 .arg(saved != 1 ? "s" : "")
+                                 .arg(out.saved)
+                                 .arg(out.saved != 1 ? "s" : "")
                                  .arg(path, extra));
-    return saved;
+    return out.saved;
 }
 
 namespace StarShare {
@@ -256,15 +354,28 @@ void exportStarsInteractive(QWidget *parent,
 
     StarPackage::ExportOptions opts; // defaults: include everything
 
-    QString err;
-    QApplication::setOverrideCursor(Qt::WaitCursor);
-    const bool ok = StarPackage::writeToFile(path, stars, opts, &err);
-    QApplication::restoreOverrideCursor();
+    // Serialize, compress and write on a worker thread (loading lazy spectrum /
+    // fit side-files, JSON building and zlib compression can all be heavy) so
+    // the UI stays responsive behind a modal progress dialog.
+    struct ExportOutcome {
+        bool    ok = false;
+        QString error;
+    };
+    const ExportOutcome out = runWithProgress<ExportOutcome>(
+        parent, QStringLiteral("Sharing stars…"),
+        [path, stars, opts](const StarPackage::ProgressFn &report)
+            -> ExportOutcome {
+            ExportOutcome o;
+            o.ok = StarPackage::writeToFile(path, stars, opts, &o.error,
+                                            StarPackage::InstrumentResolver{},
+                                            report);
+            return o;
+        });
 
-    if (!ok) {
+    if (!out.ok) {
         QMessageBox::critical(
             parent, "Share Failed",
-            QString("Could not write the package:\n%1").arg(err));
+            QString("Could not write the package:\n%1").arg(out.error));
         return;
     }
 

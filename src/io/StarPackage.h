@@ -60,20 +60,29 @@ class StarPackage {
     using InstrumentResolver =
         std::function<std::shared_ptr<Instrument>(const QString &instrumentId)>;
 
+    // Progress reporting: (percent 0-100, human-readable phase label). Invoked
+    // from the calling thread; keep the callback thread-safe (do not touch the
+    // UI directly — marshal to the GUI thread). Optional.
+    using ProgressFn = std::function<void(int percent, const QString &phase)>;
+
     // ── Write ────────────────────────────────────────────────────────────────
     static bool writeToFile(const QString                            &filepath,
                             const std::vector<std::shared_ptr<Star>> &stars,
                             const ExportOptions &opts, QString *error = nullptr,
-                            const InstrumentResolver &resolver = {});
+                            const InstrumentResolver &resolver = {},
+                            const ProgressFn         &progress = {});
 
     static QByteArray
     writeToBuffer(const std::vector<std::shared_ptr<Star>> &stars,
                   const ExportOptions &opts, QString *error = nullptr,
-                  const InstrumentResolver &resolver = {});
+                  const InstrumentResolver &resolver = {},
+                  const ProgressFn         &progress = {});
 
     // ── Read ─────────────────────────────────────────────────────────────────
-    static ImportResult readFromFile(const QString &filepath);
-    static ImportResult readFromBuffer(const QByteArray &bytes);
+    static ImportResult readFromFile(const QString    &filepath,
+                                     const ProgressFn &progress = {});
+    static ImportResult readFromBuffer(const QByteArray &bytes,
+                                       const ProgressFn &progress = {});
 
     // ── Probing ────────────────────────────────────────────────────────────
     static bool isStarPackage(const QString &filepath);

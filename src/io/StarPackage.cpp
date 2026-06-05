@@ -200,7 +200,7 @@ Time timeFromJson(const QJsonObject &o) {
 // ═════════════════════════════════════════════════════════════════════════════
 //  SpectralFit
 // ═════════════════════════════════════════════════════════════════════════════
-QJsonObject fitToJson(const SpectralFit &f, BlobPool &bp, bool withData) {
+QJsonObject fitToJson(const SpectralFit &f, BlobPool &bp) {
     QJsonObject o;
     o["id"]        = f.getId();
     o["modelId"]   = f.modelId;
@@ -226,13 +226,25 @@ QJsonObject fitToJson(const SpectralFit &f, BlobPool &bp, bool withData) {
     pD(o, "micro", f.microturbulence);
     pD(o, "microErr", f.microturbulenceError);
 
-    if (withData) {
-        o["b_modelWl"]   = bp.addDoubles(f.modelWavelengths);
-        o["b_modelFlux"] = bp.addDoubles(f.modelFluxes);
-        o["b_rebinFlux"] = bp.addDoubles(f.rebinnedFluxes);
-        o["b_rebinSig"]  = bp.addDoubles(f.rebinnedSigmas);
-        o["b_splines"]   = bp.addDoubles(f.modelSplines);
-        o["b_ignore"]    = bp.addBytes(f.modelIgnore);
+    // Model arrays are lazy: after a normal DB load only the side-file path is
+    // set (loadSpectralFits does not read the blob). Pull it in here so fits
+    // are always exported with their data, regardless of whether the UI
+    // happened to load them. Load into a temporary to avoid mutating the live
+    // model object that may be shared with the UI.
+    const SpectralFit *src = &f;
+    SpectralFit        loaded;
+    if (!f.hasData() && !f.getModelDataFile().isEmpty()) {
+        loaded = f;
+        if (loaded.loadDataFromFile(loaded.getModelDataFile()))
+            src = &loaded;
+    }
+    if (src->hasData()) {
+        o["b_modelWl"]   = bp.addDoubles(src->modelWavelengths);
+        o["b_modelFlux"] = bp.addDoubles(src->modelFluxes);
+        o["b_rebinFlux"] = bp.addDoubles(src->rebinnedFluxes);
+        o["b_rebinSig"]  = bp.addDoubles(src->rebinnedSigmas);
+        o["b_splines"]   = bp.addDoubles(src->modelSplines);
+        o["b_ignore"]    = bp.addBytes(src->modelIgnore);
     }
     return o;
 }
@@ -286,15 +298,29 @@ QJsonObject spectrumToJson(Spectrum &s, BlobPool &bp,
     o["baryCorr"]     = s.isBarycentricallyCorrected();
     o["time"]         = timeToJson(s.time());
 
-    o["b_wl"]   = bp.addDoubles(s.getWavelengths());
-    o["b_flux"] = bp.addDoubles(s.getFluxes());
-    o["b_err"]  = bp.addDoubles(s.getFluxErrors());
+    // Raw spectrum arrays are lazy too: loadSpectra only stores the data_file
+    // path, so getWavelengths() is empty until something loads it. Pull it in
+    // (into a temporary) so the spectrum is never exported without its data.
+    std::vector<double> wl = s.getWavelengths();
+    std::vector<double> fl = s.getFluxes();
+    std::vector<double> er = s.getFluxErrors();
+    if (wl.empty() && !s.getDataFile().isEmpty()) {
+        Spectrum tmp;
+        if (tmp.loadDataFromFile(s.getDataFile())) {
+            wl = tmp.getWavelengths();
+            fl = tmp.getFluxes();
+            er = tmp.getFluxErrors();
+        }
+    }
+    o["b_wl"]   = bp.addDoubles(wl);
+    o["b_flux"] = bp.addDoubles(fl);
+    o["b_err"]  = bp.addDoubles(er);
 
     if (opt.includeSpectralFits) {
         QJsonArray fits;
         for (const auto &f : s.getSpectralFits())
             if (f)
-                fits.append(fitToJson(*f, bp, /*withData*/ f->hasData()));
+                fits.append(fitToJson(*f, bp));
         o["fits"] = fits;
     }
     return o;
@@ -1143,14 +1169,24 @@ starFromJson(const QJsonObject &o, BlobReader &br,
 QByteArray
 StarPackage::writeToBuffer(const std::vector<std::shared_ptr<Star>> &stars,
                            const ExportOptions &opts, QString *error,
-                           const InstrumentResolver &resolver) {
+                           const InstrumentResolver &resolver,
+                           const ProgressFn         &progress) {
     BlobPool          bp;
     std::set<QString> referencedInstIds;
 
     QJsonArray starArr;
-    for (const auto &s : stars)
+    const int  nStars = int(stars.size());
+    int        si     = 0;
+    for (const auto &s : stars) {
+        ++si;
         if (s)
             starArr.append(starToJson(*s, bp, opts, referencedInstIds));
+        if (progress)
+            progress(nStars > 0 ? int(85.0 * si / nStars) : 85,
+                     QStringLiteral("Serializing star %1 of %2")
+                         .arg(si)
+                         .arg(nStars));
+    }
 
     // Instruments - from RV-point objects directly + resolver for the rest.
     QJsonArray instArr;
@@ -1203,7 +1239,11 @@ StarPackage::writeToBuffer(const std::vector<std::shared_ptr<Star>> &stars,
     inner.append(manifestBytes);
     inner.append(bp.data);
 
+    if (progress)
+        progress(90, QStringLiteral("Compressing…"));
     const QByteArray body = qCompress(inner, COMPRESS_LVL);
+    if (progress)
+        progress(95, QStringLiteral("Finalizing…"));
 
     QByteArray  out;
     QDataStream ds(&out, QIODevice::WriteOnly);
@@ -1221,8 +1261,10 @@ StarPackage::writeToBuffer(const std::vector<std::shared_ptr<Star>> &stars,
 bool StarPackage::writeToFile(const QString &filepath,
                               const std::vector<std::shared_ptr<Star>> &stars,
                               const ExportOptions &opts, QString *error,
-                              const InstrumentResolver &resolver) {
-    const QByteArray bytes = writeToBuffer(stars, opts, error, resolver);
+                              const InstrumentResolver &resolver,
+                              const ProgressFn         &progress) {
+    const QByteArray bytes =
+        writeToBuffer(stars, opts, error, resolver, progress);
     if (bytes.isEmpty()) {
         if (error && error->isEmpty())
             *error = "Nothing to write.";
@@ -1247,10 +1289,13 @@ bool StarPackage::writeToFile(const QString &filepath,
                          .arg(filepath, f.errorString());
         return false;
     }
+    if (progress)
+        progress(100, QStringLiteral("Done"));
     return true;
 }
 
-StarPackage::ImportResult StarPackage::readFromBuffer(const QByteArray &data) {
+StarPackage::ImportResult StarPackage::readFromBuffer(const QByteArray &data,
+                                                      const ProgressFn &progress) {
     ImportResult r;
     if (data.size() < HEADER_SIZE ||
         std::memcmp(data.constData(), MAGIC, 8) != 0) {
@@ -1285,6 +1330,8 @@ StarPackage::ImportResult StarPackage::readFromBuffer(const QByteArray &data) {
                           .arg(vMaj)
                           .arg(vMin);
 
+    if (progress)
+        progress(5, QStringLiteral("Decompressing…"));
     const QByteArray body  = data.mid(HEADER_SIZE);
     const QByteArray inner = qUncompress(body);
     if (inner.size() < 4) {
@@ -1321,6 +1368,8 @@ StarPackage::ImportResult StarPackage::readFromBuffer(const QByteArray &data) {
     br.swap     = (bo != hostByteOrderCode());
     br.warnings = &r.warnings;
 
+    if (progress)
+        progress(10, QStringLiteral("Reading instruments…"));
     // Instruments first (RV points link to them by id)
     std::map<QString, std::shared_ptr<Instrument>> instById;
     for (const QJsonValue &v : manifest.value("instruments").toArray()) {
@@ -1330,14 +1379,27 @@ StarPackage::ImportResult StarPackage::readFromBuffer(const QByteArray &data) {
         r.instruments.push_back(inst);
     }
 
-    for (const QJsonValue &v : manifest.value("stars").toArray())
+    const QJsonArray starsArr = manifest.value("stars").toArray();
+    const int        nStars   = starsArr.size();
+    int              si       = 0;
+    for (const QJsonValue &v : starsArr) {
         r.stars.push_back(starFromJson(v.toObject(), br, instById));
+        ++si;
+        if (progress)
+            progress(nStars > 0 ? 10 + int(85.0 * si / nStars) : 95,
+                     QStringLiteral("Reading star %1 of %2")
+                         .arg(si)
+                         .arg(nStars));
+    }
 
+    if (progress)
+        progress(100, QStringLiteral("Done"));
     r.success = true;
     return r;
 }
 
-StarPackage::ImportResult StarPackage::readFromFile(const QString &filepath) {
+StarPackage::ImportResult StarPackage::readFromFile(const QString    &filepath,
+                                                    const ProgressFn &progress) {
     ImportResult r;
     QFile        f(filepath);
     if (!f.open(QIODevice::ReadOnly)) {
@@ -1345,7 +1407,9 @@ StarPackage::ImportResult StarPackage::readFromFile(const QString &filepath) {
                       .arg(filepath, f.errorString());
         return r;
     }
-    return readFromBuffer(f.readAll());
+    if (progress)
+        progress(2, QStringLiteral("Reading file…"));
+    return readFromBuffer(f.readAll(), progress);
 }
 
 bool StarPackage::isStarPackage(const QString &filepath) {
