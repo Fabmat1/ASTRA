@@ -7,12 +7,13 @@
 #include "fitting/FitBackendRegistry.h"
 #include <QDebug>
 #include <QFontDatabase>
+#include "astra_version.h"
 
 int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
     app.setApplicationName("ASTRA");
-    app.setApplicationVersion("0.2.2");
+    app.setApplicationVersion(ASTRA_VERSION_STRING);
     app.setOrganizationName("ASTRA");
 
     QFontDatabase::addApplicationFont(":/fonts/FiraCode-Regular.ttf");

@@ -1,6 +1,7 @@
 // In src/views/MainWindow.cpp - replace entire file
 
 #include "MainWindow.h"
+#include "astra_version.h"
 #include "InstrumentConfigView.h"
 #include "ProjectSelectionView.h"
 #include "ProjectView.h"
@@ -218,7 +219,7 @@ void MainWindow::createActions()
     connect(_aboutAction, &QAction::triggered, [this]() {
         QMessageBox::about(this, "About ASTRA",
             "ASTRA - Advanced STellar astrophysics Research and Analysis tool\n\n"
-            "Version 0.2.2\n\n"
+            "Version " ASTRA_VERSION_STRING "\n\n"
             "A modern Qt6 application for managing and analyzing stellar astrophysics data.\n"
             "All your data in one place! :)");
     });

@@ -435,6 +435,20 @@ qt_add_executable(ASTRA
     resources/resources.qrc
 )
 
+# ── Git-derived version header (regenerated every build) ──────────────────────
+set(ASTRA_VERSION_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/astra_version.h)
+add_custom_target(astra_version ALL
+    BYPRODUCTS ${ASTRA_VERSION_HEADER}
+    COMMAND ${CMAKE_COMMAND}
+            -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}
+            -DOUT=${ASTRA_VERSION_HEADER}
+            -DFALLBACK_VERSION=${PROJECT_VERSION}
+            -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GitVersion.cmake
+    COMMENT "Resolving ASTRA version from git"
+    VERBATIM)
+add_dependencies(ASTRA astra_version)
+target_include_directories(ASTRA PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+
 target_include_directories(ASTRA PRIVATE
     ${CMAKE_SOURCE_DIR}/external/DIGGA/include
 )
