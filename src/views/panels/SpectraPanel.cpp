@@ -221,7 +221,7 @@ void SpectraPanel::populate()
     for (auto& spec : _sortedSpectra) {
         QString inst = spec->getInstrument();
         if (!inst.isEmpty() && !instrumentColors.contains(inst)) {
-            instrumentColors[inst] = PanelUtils::kLCColors[colorIdx % PanelUtils::kNumLCColors];
+            instrumentColors[inst] = PanelUtils::lcColor(colorIdx);
             colorIdx++;
         }
     }
@@ -591,7 +591,7 @@ void SpectraPanel::updateSpectrumDisplay()
             // Model line
             QCPGraph* modelGraph = _mainPlot->addGraph();
             modelGraph->setData(mWlVec, modelVec);
-            modelGraph->setPen(QPen(PanelUtils::kFitCurveColor, 1.5));
+            modelGraph->setPen(QPen(PanelUtils::fitCurveColor(), 1.5));
             modelGraph->removeFromLegend();
 
             // Residuals - only over non-ignored points
@@ -638,7 +638,7 @@ void SpectraPanel::updateSpectrumDisplay()
             }
 
             QCPGraph* modelGraph = _mainPlot->addGraph();
-            modelGraph->setPen(QPen(PanelUtils::kFitCurveColor, 1.5));
+            modelGraph->setPen(QPen(PanelUtils::fitCurveColor(), 1.5));
             modelGraph->setData(mWlVec, mFlVec);
             modelGraph->removeFromLegend();
 

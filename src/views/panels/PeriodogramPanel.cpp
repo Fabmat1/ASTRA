@@ -592,7 +592,7 @@ void PeriodogramPanel::replotAll()
                 if (!isSeriesEnabled(k)) continue;
                 auto it = _perSeries.constFind(k);
                 if (it != _perSeries.constEnd()) {
-                    plotInto(p, *it, PanelUtils::kLCColors[colorIdx % PanelUtils::kNumLCColors]);
+                    plotInto(p, *it, PanelUtils::lcColor(colorIdx));
                     ++filterCount;
                 }
                 ++colorIdx;

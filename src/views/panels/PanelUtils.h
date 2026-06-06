@@ -10,15 +10,18 @@ class QCustomPlot;
 
 namespace PanelUtils {
 
-// File-scope constants (exposed for panels to share a consistent palette)
-extern const QColor kPointColor;
-extern const QColor kErrorBarColor;
-extern const QColor kFitCurveColor;
-extern const QColor kLCColors[];
-extern const int    kNumLCColors;
-
 bool    isDarkTheme();
-QColor  dataLineColor();
+
+// Shared data-plot palette. These are theme-aware: each returns a colour tuned
+// for the active light/dark theme so the data reads well against the (now
+// theme-coloured) plot background instead of clashing on dark themes.
+QColor  pointColor();      // RV data points
+QColor  errorBarColor();   // RV error bars
+QColor  fitCurveColor();   // fit curves, model overlays, highlight markers
+QColor  lcColor(int index);// cycling palette for LC / instrument / periodogram series
+int     lcColorCount();    // number of distinct entries before the palette repeats
+
+QColor  dataLineColor();   // spectrum line
 
 // Active-theme colours, read from qApp properties published by ThemeManager
 // (a QSS background-color does NOT update the QPalette, so these are the

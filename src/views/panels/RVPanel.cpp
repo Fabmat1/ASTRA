@@ -244,10 +244,9 @@ RVPanel::RVPanel(const Context& ctx, QWidget* parent)
 void RVPanel::refresh()      { populate(); }
 void RVPanel::refreshTheme()
 {
-    for (auto* plot : findChildren<QCustomPlot*>()) {
-        PanelUtils::stylePlot(plot);
-        plot->replot();
-    }
+    // Repopulate so the data colours (point/error/fit) pick up the new theme,
+    // not just the plot background. populate() re-styles the plots too.
+    populate();
 }
 void RVPanel::populate()
 {
@@ -392,8 +391,8 @@ void RVPanel::populate()
         constexpr double kPhaseHi = 1.05;
 
         auto yRange = addRVDataToPlot(plot, phases, rvs, errs, kPhaseLo,
-                                      kPhaseHi, PanelUtils::kPointColor,
-                                      PanelUtils::kErrorBarColor);
+                                      kPhaseHi, PanelUtils::pointColor(),
+                                      PanelUtils::errorBarColor());
 
         // Model curve spans the full visible range (two phases).
         constexpr int   N = 480;
@@ -404,13 +403,13 @@ void RVPanel::populate()
             fitY[i]         = bestFit->calculateRVAtPhase(ph);
         }
         QCPGraph *fitGraph = plot->addGraph();
-        fitGraph->setPen(QPen(PanelUtils::kFitCurveColor, 2.0));
+        fitGraph->setPen(QPen(PanelUtils::fitCurveColor(), 2.0));
         fitGraph->setData(fitX, fitY);
         fitGraph->removeFromLegend();
 
         // Highlight graph on top of everything else.
         tgt.plot  = plot;
-        tgt.graph = makeHighlightGraph(plot, PanelUtils::kFitCurveColor);
+        tgt.graph = makeHighlightGraph(plot, PanelUtils::fitCurveColor());
         tgt.xMin  = kPhaseLo;
         tgt.xMax  = kPhaseHi;
         _highlightTargets.push_back(std::move(tgt));
@@ -503,7 +502,7 @@ void RVPanel::populate()
             double clipHi = xMax + span * 0.05;
 
             addRVDataToPlot(plot, times, rvs, errs, clipLo, clipHi,
-                            PanelUtils::kPointColor, PanelUtils::kErrorBarColor);
+                            PanelUtils::pointColor(), PanelUtils::errorBarColor());
 
             if (bestFit && bestFit->getPeriod() > 0) {
                 QVector<double> fitX(501), fitY(501);
@@ -513,7 +512,7 @@ void RVPanel::populate()
                     fitY[i] = bestFit->calculateRV(Time(t + t0, TimeScale::BJD));
                 }
                 QCPGraph* fitGraph = plot->addGraph();
-                fitGraph->setPen(QPen(PanelUtils::kFitCurveColor, 2.0));
+                fitGraph->setPen(QPen(PanelUtils::fitCurveColor(), 2.0));
                 fitGraph->setData(fitX, fitY);
                 fitGraph->removeFromLegend();
             }
@@ -521,7 +520,7 @@ void RVPanel::populate()
             // Highlight graph on top.
             HighlightTarget tgt;
             tgt.plot    = plot;
-            tgt.graph   = makeHighlightGraph(plot, PanelUtils::kFitCurveColor);
+            tgt.graph   = makeHighlightGraph(plot, PanelUtils::fitCurveColor());
             tgt.xs      = times;
             tgt.ys      = rvs;
             tgt.specIds = specIds;
@@ -575,7 +574,7 @@ void RVPanel::populate()
                 plot->legend->setVisible(false);
 
                 addRVDataToPlot(plot, segTimes, segRV, segErr,
-                                xMin, xMax, PanelUtils::kPointColor, PanelUtils::kErrorBarColor);
+                                xMin, xMax, PanelUtils::pointColor(), PanelUtils::errorBarColor());
 
                 // Fit overlay
                 if (bestFit && bestFit->getPeriod() > 0) {
@@ -586,7 +585,7 @@ void RVPanel::populate()
                         fitY[i] = bestFit->calculateRV(Time(t + t0, TimeScale::BJD));
                     }
                     QCPGraph* fitGraph = plot->addGraph();
-                    fitGraph->setPen(QPen(PanelUtils::kFitCurveColor, 2.0));
+                    fitGraph->setPen(QPen(PanelUtils::fitCurveColor(), 2.0));
                     fitGraph->setData(fitX, fitY);
                     fitGraph->removeFromLegend();
                 }
@@ -594,7 +593,7 @@ void RVPanel::populate()
                 // Highlight graph on top, scoped to this segment's points.
                 HighlightTarget tgt;
                 tgt.plot    = plot;
-                tgt.graph   = makeHighlightGraph(plot, PanelUtils::kFitCurveColor);
+                tgt.graph   = makeHighlightGraph(plot, PanelUtils::fitCurveColor());
                 tgt.xs      = segTimes;
                 tgt.ys      = segRV;
                 tgt.specIds = segSpec;

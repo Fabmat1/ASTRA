@@ -115,7 +115,7 @@ LCPanel::LCPanel(const Context& ctx, QWidget* parent)
 }
 
 void LCPanel::refresh()      { populate(); }
-void LCPanel::refreshTheme() { for (auto* p : _plots) { PanelUtils::stylePlot(p); p->replot(); } }
+void LCPanel::refreshTheme() { rebuildPlots(); }  // recolours series for the new theme + restyles
 
 // ── Public API ──────────────────────────────────────────────────────
 
@@ -624,7 +624,7 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
         int  nBins  = _folded ? _binsFolded.value(s.key, 200)
                               : _binsUnfolded.value(s.key, 1000);
 
-        QColor col = PanelUtils::kLCColors[colorIdx % PanelUtils::kNumLCColors];
+        QColor col = PanelUtils::lcColor(colorIdx);
         colorIdx++;
 
         // x (phase, or BJD − t_0)
@@ -1048,7 +1048,7 @@ void LCPanel::buildSettingsMenu()
 
     int colorIdx = 0;
     for (const auto& s : _series) {
-        QColor col = PanelUtils::kLCColors[colorIdx % PanelUtils::kNumLCColors];
+        QColor col = PanelUtils::lcColor(colorIdx);
         colorIdx++;
 
         auto* row = new QWidget;

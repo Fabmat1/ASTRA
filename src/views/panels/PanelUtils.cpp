@@ -13,29 +13,74 @@
 
 namespace PanelUtils {
 
-const QColor kPointColor   (86, 156, 214);
-const QColor kErrorBarColor(200, 120, 120);
-const QColor kFitCurveColor(220, 50, 50);
-
-const QColor kLCColors[] = {
-    QColor(86, 156, 214),
-    QColor(214, 157, 86),
-    QColor(86, 214, 120),
-    QColor(214, 86, 186),
-    QColor(214, 214, 86),
-    QColor(86, 214, 214),
-    QColor(180, 130, 214),
-};
-const int kNumLCColors = sizeof(kLCColors) / sizeof(kLCColors[0]);
-
 bool isDarkTheme()
 {
     return qApp->property("isDarkTheme").toBool();
 }
 
+namespace {
+
+// Cycling series palette, one variant per theme polarity. The dark variants are
+// brighter/more pastel so they pop against a dark plot background; the light
+// variants are the original mid-tones that read on white.
+const QColor kLCColorsLight[] = {
+    QColor( 86, 156, 214),  // blue
+    QColor(214, 157,  86),  // orange
+    QColor( 86, 214, 120),  // green
+    QColor(214,  86, 186),  // magenta
+    QColor(214, 214,  86),  // yellow
+    QColor( 86, 214, 214),  // cyan
+    QColor(180, 130, 214),  // purple
+};
+const QColor kLCColorsDark[] = {
+    QColor(130, 170, 255),  // soft blue
+    QColor(240, 184, 120),  // amber
+    QColor(138, 222, 156),  // green
+    QColor(236, 150, 206),  // pink
+    QColor(232, 224, 148),  // yellow
+    QColor(132, 224, 224),  // cyan
+    QColor(190, 162, 236),  // purple
+};
+constexpr int kNumLCColorsInternal =
+    sizeof(kLCColorsLight) / sizeof(kLCColorsLight[0]);
+
+} // namespace
+
+QColor pointColor()
+{
+    return isDarkTheme() ? QColor(124, 166, 232)   // soft sky blue
+                         : QColor( 86, 156, 214);
+}
+
+QColor errorBarColor()
+{
+    // Muted/desaturated so error bars recede behind the points.
+    return isDarkTheme() ? QColor(170, 120, 120)
+                         : QColor(200, 120, 120);
+}
+
+QColor fitCurveColor()
+{
+    // Warm coral on dark (pure red is harsh there); strong red on light.
+    return isDarkTheme() ? QColor(255, 121, 108)
+                         : QColor(220,  50,  50);
+}
+
+int lcColorCount() { return kNumLCColorsInternal; }
+
+QColor lcColor(int index)
+{
+    const QColor* pal = isDarkTheme() ? kLCColorsDark : kLCColorsLight;
+    int i = index % kNumLCColorsInternal;
+    if (i < 0) i += kNumLCColorsInternal;
+    return pal[i];
+}
+
 QColor dataLineColor()
 {
-    return isDarkTheme() ? QColor(210, 210, 210) : QColor(30, 30, 30);
+    // Light themes: near-black. Dark themes: a soft, slightly cool off-white
+    // rather than a glaring pure-white line.
+    return isDarkTheme() ? QColor(190, 197, 214) : QColor(30, 30, 30);
 }
 
 QColor themeBg()
