@@ -14,6 +14,17 @@
         <file>fonts/FiraCode-Light.ttf</file>
         <file>fonts/FiraCode-SemiBold.ttf</file>
         <file>fonts/FiraCode-Medium.ttf</file>
+        <file>fonts/DejaVuSans.ttf</file>
+        <file>fonts/DejaVuSans-Bold.ttf</file>
+        <file>icons/check.svg</file>
+        <file>icons/menu-check.svg</file>
+        <file>icons/radio.svg</file>
+        <file>icons/arrow-down.svg</file>
+        <file>icons/arrow-up.svg</file>
+        <file>icons/arrow-right.svg</file>
+        <file>icons/arrow-left.svg</file>
+        <file>icons/branch-closed.svg</file>
+        <file>icons/branch-open.svg</file>
         <file>claret_tables/Claret2011_GDC_MS.dat</file>
         <file>claret_tables/Claret2011_MS_multifilter_LDC.dat</file>
         <file>claret_tables/Claret2018_MS_KEPLER_LDC.dat</file>

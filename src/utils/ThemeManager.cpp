@@ -3,6 +3,10 @@
 #include "ThemeManager.h"
 #include <QApplication>
 #include <QFile>
+#include <QDir>
+#include <QRegularExpression>
+#include <QStandardPaths>
+#include <QFileInfo>
 #include <QDebug>
 
 ThemeManager::ThemeManager(QObject *parent)
@@ -84,7 +88,9 @@ bool ThemeManager::applyTheme(const QString& themeId)
         qWarning() << "Failed to load theme stylesheet:" << theme.filePath;
         return false;
     }
-    
+
+    styleSheet = prepareThemeIcons(themeId, styleSheet);
+
     qApp->setStyleSheet(styleSheet);
     _currentThemeId = themeId;
     
@@ -103,7 +109,9 @@ bool ThemeManager::applyThemeFromFile(const QString& filePath)
     if (styleSheet.isEmpty()) {
         return false;
     }
-    
+
+    styleSheet = prepareThemeIcons(QFileInfo(filePath).baseName(), styleSheet);
+
     qApp->setStyleSheet(styleSheet);
     return true;
 }
@@ -145,6 +153,78 @@ QString ThemeManager::loadStyleSheet(const QString& filePath) const
     
     QString styleSheet = QString::fromUtf8(file.readAll());
     file.close();
-    
+
     return styleSheet;
+}
+
+QString ThemeManager::prepareThemeIcons(const QString& themeId, const QString& styleSheet) const
+{
+    // The stylesheets reference subcontrol images via the __ICONDIR__ placeholder,
+    // e.g. `image: url(__ICONDIR__/check.svg);`. The actual icon files are
+    // monochrome SVG templates in the :/icons/ resource that use the literal token
+    // CURRENTCOLOR as their fill/stroke colour. Here we recolour them to match the
+    // active theme and write them out to a temp directory, then point __ICONDIR__
+    // at that directory.
+
+    // Fallback colours (used when a theme omits the @icons header block) - mid grey
+    // foreground reads acceptably on both light and dark backgrounds, and white
+    // checkmarks read on an accent-filled indicator box.
+    QString checkColor = "#ffffff";  // checkmark / radio dot (shown on accent fill)
+    QString arrowColor = "#808080";  // arrows / branches (shown on theme background)
+
+    // Parse the optional @icons header block, e.g.:
+    //   /* @icons
+    //      check: #faf4ed;
+    //      arrow: #575279;
+    //   */
+    static const QRegularExpression icoCheck(
+        QStringLiteral("@icons\\b[\\s\\S]*?\\bcheck\\s*:\\s*(#[0-9a-fA-F]{3,8})"));
+    static const QRegularExpression icoArrow(
+        QStringLiteral("@icons\\b[\\s\\S]*?\\barrow\\s*:\\s*(#[0-9a-fA-F]{3,8})"));
+    auto mc = icoCheck.match(styleSheet);
+    if (mc.hasMatch()) checkColor = mc.captured(1);
+    auto ma = icoArrow.match(styleSheet);
+    if (ma.hasMatch()) arrowColor = ma.captured(1);
+
+    // Map each icon template to the colour it should be recoloured with.
+    struct IconSpec { const char* name; const QString& color; };
+    const QVector<IconSpec> icons = {
+        { "check.svg",         checkColor },
+        { "menu-check.svg",    arrowColor },  // menu sits on theme bg, use foreground
+        { "radio.svg",         checkColor },
+        { "arrow-down.svg",    arrowColor },
+        { "arrow-up.svg",      arrowColor },
+        { "arrow-right.svg",   arrowColor },
+        { "arrow-left.svg",    arrowColor },
+        { "branch-closed.svg", arrowColor },
+        { "branch-open.svg",   arrowColor },
+    };
+
+    QString outDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation)
+                     + "/astra-icons/" + themeId;
+    QDir().mkpath(outDir);
+
+    for (const IconSpec& spec : icons) {
+        QFile tmpl(QStringLiteral(":/icons/") + spec.name);
+        if (!tmpl.open(QFile::ReadOnly | QFile::Text)) {
+            qWarning() << "Cannot open icon template:" << spec.name;
+            continue;
+        }
+        QString svg = QString::fromUtf8(tmpl.readAll());
+        tmpl.close();
+
+        svg.replace("CURRENTCOLOR", spec.color);
+
+        QFile out(outDir + "/" + spec.name);
+        if (out.open(QFile::WriteOnly | QFile::Truncate)) {
+            out.write(svg.toUtf8());
+            out.close();
+        } else {
+            qWarning() << "Cannot write recoloured icon:" << out.fileName();
+        }
+    }
+
+    QString result = styleSheet;
+    result.replace("__ICONDIR__", outDir);
+    return result;
 }

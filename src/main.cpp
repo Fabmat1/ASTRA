@@ -6,6 +6,7 @@
 #include "fitting/FitTypes.h"
 #include "fitting/FitBackendRegistry.h"
 #include <QDebug>
+#include <QFont>
 #include <QFontDatabase>
 #include "astra_version.h"
 
@@ -22,6 +23,22 @@ int main(int argc, char *argv[])
     QFontDatabase::addApplicationFont(":/fonts/FiraCode-Light.ttf");
     QFontDatabase::addApplicationFont(":/fonts/FiraCode-Retina.ttf");
     QFontDatabase::addApplicationFont(":/fonts/FiraCode-SemiBold.ttf");
+
+    // Symbol-rich fallback font so niche unicode glyphs (✓ ✗ ▲ ▼ → etc.)
+    // used in labels/text always render, even when the resolved UI font lacks them.
+    QFontDatabase::addApplicationFont(":/fonts/DejaVuSans.ttf");
+    QFontDatabase::addApplicationFont(":/fonts/DejaVuSans-Bold.ttf");
+
+    // Register DejaVu Sans as a fallback substitute for the UI font families
+    // declared in the theme QSS, so glyphs missing from the primary font are
+    // sourced from DejaVu Sans instead of rendering as a missing-glyph box.
+    const QStringList uiFamilies = {
+        "Segoe UI", "SF Pro Display", "Helvetica Neue", "Arial",
+        "sans-serif", "FiraCode"
+    };
+    for (const QString& family : uiFamilies) {
+        QFont::insertSubstitution(family, "DejaVu Sans");
+    }
 
     // Initialize paths (uses compile-time ASTRA_DATA_DIR, or QStandardPaths if empty)
     AppPaths::initialize();

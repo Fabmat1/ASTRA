@@ -41,9 +41,14 @@
  * Success:             Green (#40a02b)
  * Warning:             Yellow (#df8e1d)
  * Error/Destructive:   Red (#d20f39)
- * 
+ *
  * =============================================================================
  */
+
+/* @icons
+   check: #eff1f5;   (checkmark / radio dot - shown on the accent-filled box)
+   arrow: #4c4f69;   (arrows / branches - shown on the theme background)
+*/
 
 
 /* =============================================================================
@@ -52,7 +57,7 @@
  */
 
 * {
-    font-family: "Segoe UI", "SF Pro Display", "Helvetica Neue", Arial, sans-serif;
+    font-family: "Segoe UI", "SF Pro Display", "Helvetica Neue", Arial, "DejaVu Sans", sans-serif;
     font-size: 10pt;
 }
 
@@ -174,6 +179,10 @@ QMenu::indicator {
     width: 16px;
     height: 16px;
     margin-left: 6px;
+}
+
+QMenu::indicator:checked {
+    image: url(__ICONDIR__/menu-check.svg);
 }
 
 
@@ -458,22 +467,16 @@ QDoubleSpinBox::down-button:pressed {
 
 QSpinBox::up-arrow,
 QDoubleSpinBox::up-arrow {
-    image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-bottom: 5px solid #4c4f69;
-    width: 0;
-    height: 0;
+    image: url(__ICONDIR__/arrow-up.svg);
+    width: 10px;
+    height: 10px;
 }
 
 QSpinBox::down-arrow,
 QDoubleSpinBox::down-arrow {
-    image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid #4c4f69;
-    width: 0;
-    height: 0;
+    image: url(__ICONDIR__/arrow-down.svg);
+    width: 10px;
+    height: 10px;
 }
 
 
@@ -515,15 +518,10 @@ QComboBox::drop-down {
 }
 
 QComboBox::down-arrow {
-    image: none;
-    border-left: 5px solid transparent;
-    border-right: 5px solid transparent;
-    border-top: 6px solid #4c4f69;
+    image: url(__ICONDIR__/arrow-down.svg);
+    width: 12px;
+    height: 12px;
     margin-right: 8px;
-}
-
-QComboBox::down-arrow:disabled {
-    border-top-color: #9ca0b0;
 }
 
 QComboBox QAbstractItemView {
@@ -583,12 +581,7 @@ QCheckBox::indicator:hover {
 QCheckBox::indicator:checked {
     background-color: #1e66f5;
     border-color: #1e66f5;
-    image: none;
-}
-
-/* Checkmark using borders */
-QCheckBox::indicator:checked::after {
-    content: "";
+    image: url(__ICONDIR__/check.svg);
 }
 
 QCheckBox::indicator:disabled {
@@ -632,6 +625,7 @@ QRadioButton::indicator:hover {
 QRadioButton::indicator:checked {
     background-color: #1e66f5;
     border-color: #1e66f5;
+    image: url(__ICONDIR__/radio.svg);
 }
 
 QRadioButton::indicator:disabled {
@@ -856,22 +850,16 @@ QHeaderView::section:checked {
 
 /* Sort indicator */
 QHeaderView::up-arrow {
-    image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-bottom: 5px solid #1e66f5;
-    width: 0;
-    height: 0;
+    image: url(__ICONDIR__/arrow-up.svg);
+    width: 10px;
+    height: 10px;
     margin-left: 4px;
 }
 
 QHeaderView::down-arrow {
-    image: none;
-    border-left: 4px solid transparent;
-    border-right: 4px solid transparent;
-    border-top: 5px solid #1e66f5;
-    width: 0;
-    height: 0;
+    image: url(__ICONDIR__/arrow-down.svg);
+    width: 10px;
+    height: 10px;
     margin-left: 4px;
 }
 
@@ -920,6 +908,16 @@ QTreeView::branch:hover {
 
 QTreeView::branch:selected {
     background-color: #7287fd;
+}
+
+QTreeView::branch:has-children:!has-siblings:closed,
+QTreeView::branch:closed:has-children:has-siblings {
+    image: url(__ICONDIR__/branch-closed.svg);
+}
+
+QTreeView::branch:open:has-children:!has-siblings,
+QTreeView::branch:open:has-children:has-siblings {
+    image: url(__ICONDIR__/branch-open.svg);
 }
 
 

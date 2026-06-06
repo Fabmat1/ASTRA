@@ -54,7 +54,13 @@ signals:
 private:
     void registerDefaultThemes();
     QString loadStyleSheet(const QString& filePath) const;
-    
+
+    // Generates theme-recolored copies of the monochrome SVG icon templates
+    // (checkmarks, arrows, branches, ...) into a temp directory and substitutes
+    // the __ICONDIR__ placeholder in the stylesheet with that directory.
+    // Returns the stylesheet with __ICONDIR__ resolved.
+    QString prepareThemeIcons(const QString& themeId, const QString& styleSheet) const;
+
     QVector<ThemeInfo> _themes;
     QString _currentThemeId;
     QSettings _settings;
