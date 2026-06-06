@@ -20,6 +20,13 @@ extern const int    kNumLCColors;
 bool    isDarkTheme();
 QColor  dataLineColor();
 
+// Active-theme colours, read from qApp properties published by ThemeManager
+// (a QSS background-color does NOT update the QPalette, so these are the
+// reliable source for the theme's real background/foreground/surface).
+QColor  themeBg();
+QColor  themeFg();
+QColor  themeSurface();
+
 void    clearLayout(QLayout* layout);
 QLabel* makePlaceholder(const QString& text);
 

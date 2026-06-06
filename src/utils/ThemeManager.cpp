@@ -2,12 +2,69 @@
 
 #include "ThemeManager.h"
 #include <QApplication>
+#include <QColor>
 #include <QFile>
 #include <QDir>
 #include <QRegularExpression>
 #include <QStandardPaths>
 #include <QFileInfo>
 #include <QDebug>
+
+namespace {
+
+// Default fallbacks used when a stylesheet's primary QWidget rule cannot be
+// parsed. These mirror the hardcoded light/dark values used elsewhere in the
+// app (e.g. PanelUtils::stylePlot).
+const QColor kDefaultDarkBg (42, 42, 42);
+const QColor kDefaultDarkFg (210, 210, 210);
+const QColor kDefaultLightBg(255, 255, 255);
+const QColor kDefaultLightFg(42, 42, 42);
+
+// Derive a slightly raised "card" surface from the window background so cards
+// read as elevated against the theme. Light themes nudge toward white; dark
+// themes lighten a touch. Mirrors the intent behind Rosé Pine Dawn's #fffaf3
+// surface sitting one step off its #faf4ed base.
+QColor deriveSurface(const QColor& bg, bool isDark)
+{
+    if (isDark) {
+        return bg.lighter(118);
+    }
+    // Blend the base background a little toward white for a subtle lift.
+    const double t = 0.45;
+    int r = static_cast<int>(bg.red()   + (255 - bg.red())   * t);
+    int g = static_cast<int>(bg.green() + (255 - bg.green()) * t);
+    int b = static_cast<int>(bg.blue()  + (255 - bg.blue())  * t);
+    return QColor(qMin(r, 255), qMin(g, 255), qMin(b, 255));
+}
+
+// Parse the primary `QWidget { ... }` rule near the top of every theme .qss and
+// publish the real background/foreground/surface colours as qApp properties so
+// the rest of the app can read the active theme reliably (a QSS background-color
+// does NOT update a widget's QPalette, so palette reads return stale values).
+void publishThemeColors(const QString& styleSheet, bool isDark)
+{
+    QColor bg = isDark ? kDefaultDarkBg : kDefaultLightBg;
+    QColor fg = isDark ? kDefaultDarkFg : kDefaultLightFg;
+
+    // Non-greedy + a leading whitespace/separator anchor so we match the bare
+    // `background-color`/`color` declarations and not `selection-background-color`
+    // or `selection-color` which also appear in the same QWidget rule.
+    static const QRegularExpression bgRe(
+        QStringLiteral("QWidget\\s*\\{[^}]*?[\\s;{]background-color\\s*:\\s*(#[0-9a-fA-F]{3,8})"));
+    static const QRegularExpression fgRe(
+        QStringLiteral("QWidget\\s*\\{[^}]*?[\\s;{]color\\s*:\\s*(#[0-9a-fA-F]{3,8})"));
+
+    auto mbg = bgRe.match(styleSheet);
+    if (mbg.hasMatch()) bg = QColor(mbg.captured(1));
+    auto mfg = fgRe.match(styleSheet);
+    if (mfg.hasMatch()) fg = QColor(mfg.captured(1));
+
+    qApp->setProperty("themeBg", bg);
+    qApp->setProperty("themeFg", fg);
+    qApp->setProperty("themeSurface", deriveSurface(bg, isDark));
+}
+
+} // namespace
 
 ThemeManager::ThemeManager(QObject *parent)
     : QObject(parent)
@@ -107,8 +164,9 @@ bool ThemeManager::applyTheme(const QString& themeId)
 
     qApp->setStyleSheet(styleSheet);
     _currentThemeId = themeId;
-    
+
     qApp->setProperty("isDarkTheme", theme.isDark);
+    publishThemeColors(styleSheet, theme.isDark);
 
     saveCurrentTheme();
 
@@ -127,6 +185,17 @@ bool ThemeManager::applyThemeFromFile(const QString& filePath)
     styleSheet = prepareThemeIcons(QFileInfo(filePath).baseName(), styleSheet);
 
     qApp->setStyleSheet(styleSheet);
+
+    // No registered ThemeInfo here, so infer dark/light from the parsed window
+    // background's lightness before publishing the theme colours.
+    static const QRegularExpression bgRe(
+        QStringLiteral("QWidget\\s*\\{[^}]*?[\\s;{]background-color\\s*:\\s*(#[0-9a-fA-F]{3,8})"));
+    bool isDark = qApp->property("isDarkTheme").toBool();
+    auto mbg = bgRe.match(styleSheet);
+    if (mbg.hasMatch()) isDark = QColor(mbg.captured(1)).lightnessF() < 0.5;
+
+    qApp->setProperty("isDarkTheme", isDark);
+    publishThemeColors(styleSheet, isDark);
     return true;
 }
 

@@ -38,6 +38,27 @@ QColor dataLineColor()
     return isDarkTheme() ? QColor(210, 210, 210) : QColor(30, 30, 30);
 }
 
+QColor themeBg()
+{
+    QVariant v = qApp->property("themeBg");
+    if (v.isValid()) return v.value<QColor>();
+    return isDarkTheme() ? QColor(42, 42, 42) : QColor(255, 255, 255);
+}
+
+QColor themeFg()
+{
+    QVariant v = qApp->property("themeFg");
+    if (v.isValid()) return v.value<QColor>();
+    return isDarkTheme() ? QColor(210, 210, 210) : QColor(42, 42, 42);
+}
+
+QColor themeSurface()
+{
+    QVariant v = qApp->property("themeSurface");
+    if (v.isValid()) return v.value<QColor>();
+    return isDarkTheme() ? QColor(50, 50, 55) : QColor(248, 248, 250);
+}
+
 QVector<double> toQVec(const std::vector<double>& v)
 {
     return QVector<double>(v.begin(), v.end());
@@ -66,16 +87,13 @@ void stylePlot(QCustomPlot* plot)
 {
     bool dark = isDarkTheme();
 
-    QColor bgColor      = dark ? QColor(42, 42, 42)   : QColor(255, 255, 255);
+    // Background follows the active theme so plots sit seamlessly on the panel.
+    // The grid/tick/text colours stay as the existing dark/light values — they
+    // read fine on the theme background and are deliberately kept as-is.
+    QColor bgColor      = themeBg();
     QColor textColor    = dark ? QColor(210, 210, 210) : QColor(30, 30, 30);
     QColor gridColor    = dark ? QColor(80, 80, 80)    : QColor(200, 200, 200);
     QColor subGridColor = dark ? QColor(55, 55, 55)    : QColor(225, 225, 225);
-
-    for (QWidget* w = plot->parentWidget(); w; w = w->parentWidget()) {
-        QColor c = w->palette().color(QPalette::Window);
-        bool consistent = dark ? (c.lightnessF() < 0.45) : (c.lightnessF() > 0.55);
-        if (consistent && c.alpha() == 255) { bgColor = c; break; }
-    }
 
     plot->setStyleSheet("");
     plot->setBackground(QBrush(bgColor));

@@ -31,6 +31,16 @@ namespace {
 constexpr double kMaxRelErrNormal = 0.20;  // >20% → upper limit
 constexpr double kMaxRelErrSkip   = 1.00;  // >100% → spurious, skip
 
+// Active-theme background, published by ThemeManager as a qApp property. A QSS
+// background-color does NOT update the QPalette, so reading QPalette::Window
+// would return a stale (often white) colour — read the property instead.
+QColor themeBg() {
+    QVariant v = qApp->property("themeBg");
+    if (v.isValid()) return v.value<QColor>();
+    return qApp->property("isDarkTheme").toBool() ? QColor(42, 42, 42)
+                                                  : QColor(255, 255, 255);
+}
+
 double absMagFromPlx(double m, double plx_mas) {
     return m + 5.0 * std::log10(plx_mas) - 10.0;
 }
@@ -552,8 +562,11 @@ void CMDDialog::plotBackgroundAsDensity(const QVector<double>& xs,
     QCPColorGradient grad(QCPColorGradient::gpGrayscale);
     if (!isDarkTheme()) grad = grad.inverted();
     grad.setLevelCount(100);
-    QColor bg = _plot->axisRect()->backgroundBrush().color();
-    grad.setColorStopAt(0.0, bg);
+    // Anchor the low-density (empty cell) stop to the theme background so the
+    // density map blends into the plot. Reading the axisRect brush here was
+    // order-dependent: if applyPlotTheme hadn't run yet the brush was an unset
+    // black default, rendering the whole CMD super dark.
+    grad.setColorStopAt(0.0, themeBg());
     cm->setGradient(grad);
     cm->setDataScaleType(QCPAxis::stLogarithmic);
     cm->rescaleDataRange(true);
@@ -697,16 +710,13 @@ void CMDDialog::applyPlotTheme()
 {
     bool isDark = isDarkTheme();
 
-    QColor bgColor      = isDark ? QColor(42, 42, 42)    : QColor(255, 255, 255);
+    // Background follows the active theme (read from the ThemeManager qApp
+    // property, NOT QPalette::Window which is stale under a QSS theme). Grid/
+    // text colours stay as the existing dark/light values.
+    QColor bgColor      = themeBg();
     QColor textColor    = isDark ? QColor(210, 210, 210) : QColor(30, 30, 30);
     QColor gridColor    = isDark ? QColor(80, 80, 80)    : QColor(200, 200, 200);
     QColor subGridColor = isDark ? QColor(55, 55, 55)    : QColor(225, 225, 225);
-
-    // Take the app-wide window color (set by ThemeManager)
-    QColor appBg = qApp->palette().color(QPalette::Window);
-    if (appBg.alpha() == 255) {
-        bgColor = appBg;
-    }
 
     _plot->setStyleSheet("");
     _plot->setBackground(QBrush(bgColor));

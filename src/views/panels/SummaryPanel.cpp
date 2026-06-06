@@ -44,6 +44,32 @@ struct PropRow {
     QString copyValue;
 };
 
+// --- Theme-derived colours -------------------------------------------------
+// All card/panel chrome is derived from the active theme (published by
+// ThemeManager) so panels read as a single, uniformly elevated surface that
+// matches the theme instead of hardcoded near-white/dark grey.
+
+// Blend two colours by t (0 -> a, 1 -> b).
+QColor blendColor(const QColor& a, const QColor& b, double t) {
+    return QColor(
+        static_cast<int>(a.red()   + (b.red()   - a.red())   * t),
+        static_cast<int>(a.green() + (b.green() - a.green()) * t),
+        static_cast<int>(a.blue()  + (b.blue()  - a.blue())  * t));
+}
+
+// Primary readable text on the elevated surface.
+QColor primaryTextColor() { return PanelUtils::themeFg(); }
+
+// Secondary/label text: foreground blended toward the surface.
+QColor mutedTextColor() {
+    return blendColor(PanelUtils::themeFg(), PanelUtils::themeSurface(), 0.40);
+}
+
+// Hairline border around cards: surface nudged toward the foreground a touch.
+QColor sectionBorderColor() {
+    return blendColor(PanelUtils::themeSurface(), PanelUtils::themeFg(), 0.18);
+}
+
 class CopyEventFilter : public QObject
 {
 public:
@@ -562,17 +588,17 @@ QWidget *SummaryPanel::createMetricCardsRow() {
 QWidget* SummaryPanel::createMetricCard(const QString& value, const QString& label,
                                            const QString& subtitle, const QColor& accentColor)
 {
-    bool dark = PanelUtils::isDarkTheme();
-    QColor cardBg   = dark ? QColor(50, 50, 55)   : QColor(248, 248, 250);
-    QColor border   = dark ? QColor(70, 70, 75)    : QColor(210, 210, 215);
-    QColor labelCol = dark ? QColor(160, 160, 165) : QColor(110, 110, 115);
-    QColor subCol   = dark ? QColor(130, 130, 135) : QColor(140, 140, 145);
+    QColor cardBg   = PanelUtils::themeSurface();
+    QColor border   = sectionBorderColor();
+    QColor labelCol = mutedTextColor();
+    QColor subCol   = blendColor(PanelUtils::themeFg(), PanelUtils::themeSurface(), 0.50);
 
     QFrame* card = new QFrame;
     card->setObjectName("metricCard");
     card->setStyleSheet(QString(
         "QFrame#metricCard { background: %1; border: 1px solid %2; "
         "border-left: 4px solid %3; border-radius: 6px; }"
+        "QFrame#metricCard > QWidget { background: transparent; }"
     ).arg(cardBg.name(), border.name(), accentColor.name()));
 
     QVBoxLayout* layout = new QVBoxLayout(card);
@@ -613,10 +639,8 @@ QWidget* SummaryPanel::createMetricCard(const QString& value, const QString& lab
 QWidget *SummaryPanel::createPropertiesSection() {
     auto has = [](double v) { return std::isfinite(v) && v != 0.0; };
 
-    const bool   dark   = PanelUtils::isDarkTheme();
-    const QColor valCol = dark ? QColor(220, 220, 225) : QColor(30, 30, 35);
-    const QColor labelCol =
-        dark ? QColor(140, 140, 145) : QColor(100, 100, 105);
+    const QColor valCol   = primaryTextColor();
+    const QColor labelCol = mutedTextColor();
 
     auto addV = [&](std::vector<PropRow> &rows, const QString &l, double v,
                     double err, int prec, const QString &unit = "") {
@@ -786,10 +810,8 @@ QWidget *SummaryPanel::createPropertiesSection() {
 }
 
 QWidget *SummaryPanel::createOrbitalFitSection() {
-    const bool   dark   = PanelUtils::isDarkTheme();
-    const QColor valCol = dark ? QColor(220, 220, 225) : QColor(30, 30, 35);
-    const QColor labelCol =
-        dark ? QColor(140, 140, 145) : QColor(100, 100, 105);
+    const QColor valCol   = primaryTextColor();
+    const QColor labelCol = mutedTextColor();
     auto has = [](double v) { return std::isfinite(v) && v != 0.0; };
 
     auto rvCurve = _ctx.star->getRVCurve();
@@ -852,12 +874,10 @@ QWidget *SummaryPanel::createOrbitalFitSection() {
 
 QWidget* SummaryPanel::createDataInventorySection()
 {
-    bool dark = PanelUtils::isDarkTheme();
-    QColor tagBg     = dark ? QColor(60, 65, 70)   : QColor(230, 235, 240);
-    QColor tagBorder = dark ? QColor(80, 85, 90)    : QColor(200, 205, 210);
-    QColor tagText   = dark ? QColor(195, 200, 205) : QColor(50, 55, 60);
+    QColor tagText   = primaryTextColor();
     QColor checkCol  = QColor(80, 180, 100);
-    QColor crossCol  = dark ? QColor(100, 100, 105) : QColor(170, 170, 175);
+    QColor crossCol  = blendColor(PanelUtils::themeFg(), PanelUtils::themeSurface(), 0.55);
+    QColor detailCol = mutedTextColor();
 
     auto spectra = _ctx.star->getSpectra();
     auto rvCurve = _ctx.star->getRVCurve();
@@ -1012,7 +1032,7 @@ QWidget* SummaryPanel::createDataInventorySection()
             det->setTextFormat(Qt::RichText); 
             det->setStyleSheet(QString(
                 "font-size: 11px; color: %1; background: transparent; border: none;"
-            ).arg(dark ? "#aaa" : "#777"));
+            ).arg(detailCol.name()));
             det->setTextInteractionFlags(Qt::TextSelectableByMouse);
             row->addWidget(det, 1);
         } else {
@@ -1056,14 +1076,17 @@ void SummaryPanel::buildReferenceCards(QWidget           *host,
                                        const QStringList &bibcodes) {
     bool   dark        = PanelUtils::isDarkTheme();
     QColor accentColor = dark ? QColor(100, 130, 200) : QColor(60, 100, 180);
-    QColor cardBg      = dark ? QColor(48, 50, 56) : QColor(250, 250, 252);
-    QColor cardBorder  = dark ? QColor(65, 68, 75) : QColor(215, 218, 225);
-    QColor titleColor  = dark ? QColor(225, 228, 235) : QColor(25, 25, 30);
-    QColor subtitleCol = dark ? QColor(145, 150, 160) : QColor(100, 105, 115);
-    QColor bodyCol     = dark ? QColor(190, 195, 205) : QColor(55, 60, 70);
-    QColor abstractBg  = dark ? QColor(42, 44, 50) : QColor(243, 244, 248);
+    // Inner reference cards sit on the elevated section surface; render them on
+    // the theme base so they read as a recessed list item, with theme-derived
+    // border/text so the whole card matches the active theme.
+    QColor cardBg      = PanelUtils::themeBg();
+    QColor cardBorder  = sectionBorderColor();
+    QColor titleColor  = primaryTextColor();
+    QColor subtitleCol = mutedTextColor();
+    QColor bodyCol     = blendColor(PanelUtils::themeFg(), PanelUtils::themeBg(), 0.15);
+    QColor abstractBg  = blendColor(PanelUtils::themeBg(), PanelUtils::themeFg(), 0.05);
     QColor linkColor   = dark ? QColor(120, 160, 230) : QColor(40, 90, 180);
-    QColor loadingCol  = dark ? QColor(110, 115, 125) : QColor(150, 155, 165);
+    QColor loadingCol  = mutedTextColor();
 
     QVBoxLayout *layout = qobject_cast<QVBoxLayout *>(host->layout());
     if (!layout)
@@ -1256,14 +1279,16 @@ void SummaryPanel::addReferenceCards(QWidget           *host,
 
     bool   dark        = PanelUtils::isDarkTheme();
     QColor accentColor = dark ? QColor(100, 130, 200) : QColor(60, 100, 180);
-    QColor cardBg      = dark ? QColor(48, 50, 56) : QColor(250, 250, 252);
-    QColor cardBorder  = dark ? QColor(65, 68, 75) : QColor(215, 218, 225);
-    QColor titleColor  = dark ? QColor(225, 228, 235) : QColor(25, 25, 30);
-    QColor subtitleCol = dark ? QColor(145, 150, 160) : QColor(100, 105, 115);
-    QColor bodyCol     = dark ? QColor(190, 195, 205) : QColor(55, 60, 70);
-    QColor abstractBg  = dark ? QColor(42, 44, 50) : QColor(243, 244, 248);
+    // Same theme-derived scheme as buildReferenceCards (recessed item on the
+    // elevated section surface).
+    QColor cardBg      = PanelUtils::themeBg();
+    QColor cardBorder  = sectionBorderColor();
+    QColor titleColor  = primaryTextColor();
+    QColor subtitleCol = mutedTextColor();
+    QColor bodyCol     = blendColor(PanelUtils::themeFg(), PanelUtils::themeBg(), 0.15);
+    QColor abstractBg  = blendColor(PanelUtils::themeBg(), PanelUtils::themeFg(), 0.05);
     QColor linkColor   = dark ? QColor(120, 160, 230) : QColor(40, 90, 180);
-    QColor loadingCol  = dark ? QColor(110, 115, 125) : QColor(150, 155, 165);
+    QColor loadingCol  = mutedTextColor();
 
     QString cardStyle =
         QString("QFrame#refCard { background: %1; border: 1px solid %2; "
@@ -1515,17 +1540,21 @@ QWidget *SummaryPanel::makeLoadingRow() {
 
 QFrame* SummaryPanel::createSectionFrame(const QString& title, QWidget* content)
 {
-    bool dark = PanelUtils::isDarkTheme();
-    QColor cardBg  = dark ? QColor(50, 50, 55) : QColor(248, 248, 250);
-    QColor border  = dark ? QColor(70, 70, 75)  : QColor(210, 210, 215);
-    QColor titleCol = dark ? QColor(180, 180, 185) : QColor(90, 90, 95);
+    QColor cardBg  = PanelUtils::themeSurface();
+    QColor border  = sectionBorderColor();
+    QColor titleCol = mutedTextColor();
 
     QFrame* frame = new QFrame;
     frame->setFrameShape(QFrame::NoFrame);
+    frame->setObjectName("sectionCard");
+    // The QFrame#sectionCard rule paints the elevated surface; the inner content
+    // widgets would otherwise pick up the global `QWidget { background-color }`
+    // theme rule (leaving a stray theme-bg rectangle behind the params), so make
+    // every descendant QWidget transparent and let the card surface show through.
     frame->setStyleSheet(QString(
         "QFrame#sectionCard { background: %1; border: 1px solid %2; border-radius: 6px; }"
+        "QFrame#sectionCard > QWidget { background: transparent; }"
     ).arg(cardBg.name(), border.name()));
-    frame->setObjectName("sectionCard");
 
     QVBoxLayout* layout = new QVBoxLayout(frame);
     layout->setContentsMargins(10, 8, 10, 10);
@@ -1541,6 +1570,8 @@ QFrame* SummaryPanel::createSectionFrame(const QString& title, QWidget* content)
         layout->addWidget(titleLabel);
     }
 
+    if (content)
+        content->setAttribute(Qt::WA_StyledBackground, true);
     layout->addWidget(content);
     return frame;
 }
@@ -1577,10 +1608,8 @@ QWidget *SummaryPanel::createCompanionSection() {
         !hasM1 && !hasIncl)
         return nullptr;
 
-    const bool   dark   = PanelUtils::isDarkTheme();
-    const QColor valCol = dark ? QColor(220, 220, 225) : QColor(30, 30, 35);
-    const QColor labelCol =
-        dark ? QColor(140, 140, 145) : QColor(100, 100, 105);
+    const QColor valCol   = primaryTextColor();
+    const QColor labelCol = mutedTextColor();
 
     std::vector<PropRow> rows;
 
