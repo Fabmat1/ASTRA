@@ -426,28 +426,43 @@ void RadialVelocityCurve::addRVFit(std::shared_ptr<RVFit> fit)
     notifyChanged();
 }
 
-void RadialVelocityCurve::updateFitReferences()
-{
-    if (_rvPoints.empty() || _rvFits.empty()) return;
-
+bool RadialVelocityCurve::computeReferenceEpoch(double &bjdOut,
+                                                double &mjdOut) const {
     std::shared_ptr<RadialVelocityPoint> first;
     double minSort = std::numeric_limits<double>::max();
-    for (const auto& p : _rvPoints) {
-        if (!p || !p->time().isValid()) continue;
+    for (const auto &p : _rvPoints) {
+        if (!p || !p->time().isValid())
+            continue;
         const double s = p->time().sortValue();
-        if (s < minSort) { minSort = s; first = p; }
+        if (s < minSort) {
+            minSort = s;
+            first   = p;
+        }
     }
-    if (!first) return;
+    if (!first)
+        return false;
 
     double bjd = first->getBJD();
     double mjd = first->getMJD();
-    if (std::isnan(bjd)) bjd = 0.0;
-    if (std::isnan(mjd)) mjd = 0.0;
-
-    for (auto& fit : _rvFits)
-        if (fit) fit->setReferenceTime(bjd, mjd);
+    if (std::isnan(bjd))
+        bjd = 0.0;
+    if (std::isnan(mjd))
+        mjd = 0.0;
+    bjdOut = bjd;
+    mjdOut = mjd;
+    return true;
 }
 
+void RadialVelocityCurve::updateFitReferences() {
+    if (_rvPoints.empty() || _rvFits.empty())
+        return;
+    double bjd = 0.0, mjd = 0.0;
+    if (!computeReferenceEpoch(bjd, mjd))
+        return;
+    for (auto &fit : _rvFits)
+        if (fit)
+            fit->setReferenceTime(bjd, mjd);
+}
 
 void RadialVelocityCurve::removeRVFit(const QString& fitId)
 {

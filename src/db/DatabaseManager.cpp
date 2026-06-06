@@ -755,6 +755,7 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
     const int idxHasAtlas = rec.indexOf("has_atlas");
     const int idxHasBlackgem = rec.indexOf("has_blackgem");
     const int idxTessCrowdsap = rec.indexOf("tess_crowdsap");
+    const int idxPhotPeaksJson = rec.indexOf("phot_peaks_json");
     const int idxCompMassMin = rec.indexOf("comp_mass_min");
     const int idxCompEMassMin = rec.indexOf("comp_e_mass_min");
     const int idxCompMassTrue = rec.indexOf("comp_mass_true");
@@ -870,6 +871,7 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
         if (idxHasAtlas >= 0)    star->setHasAtlas(query.value(idxHasAtlas).toInt() != 0);
         if (idxHasBlackgem >= 0) star->setHasBlackgem(query.value(idxHasBlackgem).toInt() != 0);
         if (idxTessCrowdsap >= 0 && !query.isNull(idxTessCrowdsap)) star->setTessCrowdsap(query.value(idxTessCrowdsap).toDouble());
+        if (idxPhotPeaksJson >= 0 && !query.isNull(idxPhotPeaksJson)) star->setPhotPeaksJson(query.value(idxPhotPeaksJson).toString());
 
         if (idxCompMassMin >= 0)   star->setCompMassMin(query.value(idxCompMassMin).toDouble());
         if (idxCompEMassMin >= 0)  star->setECompMassMin(query.value(idxCompEMassMin).toDouble());

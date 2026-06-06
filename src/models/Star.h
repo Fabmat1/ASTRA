@@ -211,6 +211,13 @@ public:
     double getTessCrowdsap() const         { return _tessCrowdsap; }
     void   setTessCrowdsap(double v)       { _tessCrowdsap = v; }
 
+    // Periodogram peaks (LC periods) collected in the Lightcurve Fetch dialog,
+    // stored verbatim as JSON. Carried on the model so a full star upsert
+    // preserves the column instead of nulling it (it has no dedicated binding
+    // otherwise).
+    QString getPhotPeaksJson() const           { return _photPeaksJson; }
+    void    setPhotPeaksJson(const QString& j) { _photPeaksJson = j; }
+
     // Metadata
     std::vector<QString> getBibcodes() const { return _bibcodes; }
     void setBibcodes(const std::vector<QString>& bibcodes) { _bibcodes = bibcodes; }
@@ -418,6 +425,9 @@ private:
 
     // TESS crowding metric (set from lightcurvequery's tess_crowdsap.txt)
     double _tessCrowdsap = std::numeric_limits<double>::quiet_NaN();
+
+    // Periodogram peaks (LC periods) as JSON; see get/setPhotPeaksJson().
+    QString _photPeaksJson;
 };
 
 #endif // STAR_H

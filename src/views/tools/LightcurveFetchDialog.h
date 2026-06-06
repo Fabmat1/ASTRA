@@ -76,6 +76,7 @@ private slots:
     // Peaks
     void onDetectPeaksClicked();
     void onAddManualPeakClicked();
+    void onDoublePeriodClicked();
     void onRemovePeakClicked();
     void onClearPeaksClicked();
     void onFoldInViewerClicked();
@@ -174,6 +175,7 @@ private slots:
     QTableWidget* _peaksTable       = nullptr;
     QPushButton*  _detectBtn        = nullptr;
     QPushButton*  _addManualBtn     = nullptr;
+    QPushButton*  _doublePeriodBtn  = nullptr;
     QPushButton*  _removeBtn        = nullptr;
     QPushButton*  _clearBtn         = nullptr;
     QPushButton*  _foldBtn          = nullptr;

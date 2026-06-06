@@ -193,6 +193,9 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
     query.bindValue(":has_blackgem", star->getHasBlackgem() ? 1 : 0);
 
     query.bindValue(":tess_crowdsap", star->getTessCrowdsap());
+    // Without this bind the placeholder is NULL and the INSERT OR REPLACE wipes
+    // any periodogram peaks saved via DatabaseManager::saveStarPhotPeaks().
+    query.bindValue(":phot_peaks_json", star->getPhotPeaksJson());
 
     query.bindValue(":comp_mass_min", star->getCompMassMin());
     query.bindValue(":comp_e_mass_min", star->getECompMassMin());

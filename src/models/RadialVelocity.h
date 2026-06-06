@@ -257,7 +257,7 @@ public:
     static double solveKepler(double M, double e,
                               double tol = 1e-12, int maxIter = 60);
 
-private:
+  private:
     QString _id;
     QString _curveId;
     QDateTime _creationDate;
@@ -405,8 +405,9 @@ public:
 
     void reconcileWithSpectra(
         const std::vector<std::shared_ptr<Spectrum>>& spectra);
+    bool computeReferenceEpoch(double &bjdOut, double &mjdOut) const;
 
-protected:
+  protected:
     void notifyChanged();
 
 private:

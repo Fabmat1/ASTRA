@@ -795,16 +795,22 @@ QWidget* LightcurveFetchDialog::buildPeriodogramControls()
     pLay->addLayout(peakTop);
 
     auto* peakBtns = new QHBoxLayout;
-    _detectBtn    = new QPushButton("Detect peaks");
-    _addManualBtn = new QPushButton("Add…");
+    _detectBtn       = new QPushButton("Detect peaks");
+    _addManualBtn    = new QPushButton("Add…");
+    _doublePeriodBtn = new QPushButton("×2");
+    _doublePeriodBtn->setToolTip(tr("Add double the selected period as a new "
+                                    "peak (e.g. for ellipsoidal variables whose "
+                                    "LC peak sits at P/2)."));
     _removeBtn    = new QPushButton("Remove");
     _clearBtn     = new QPushButton("Clear");
-    connect(_detectBtn,    &QPushButton::clicked, this, &LightcurveFetchDialog::onDetectPeaksClicked);
-    connect(_addManualBtn, &QPushButton::clicked, this, &LightcurveFetchDialog::onAddManualPeakClicked);
-    connect(_removeBtn,    &QPushButton::clicked, this, &LightcurveFetchDialog::onRemovePeakClicked);
-    connect(_clearBtn,     &QPushButton::clicked, this, &LightcurveFetchDialog::onClearPeaksClicked);
+    connect(_detectBtn,       &QPushButton::clicked, this, &LightcurveFetchDialog::onDetectPeaksClicked);
+    connect(_addManualBtn,    &QPushButton::clicked, this, &LightcurveFetchDialog::onAddManualPeakClicked);
+    connect(_doublePeriodBtn, &QPushButton::clicked, this, &LightcurveFetchDialog::onDoublePeriodClicked);
+    connect(_removeBtn,       &QPushButton::clicked, this, &LightcurveFetchDialog::onRemovePeakClicked);
+    connect(_clearBtn,        &QPushButton::clicked, this, &LightcurveFetchDialog::onClearPeaksClicked);
     peakBtns->addWidget(_detectBtn);
     peakBtns->addWidget(_addManualBtn);
+    peakBtns->addWidget(_doublePeriodBtn);
     peakBtns->addWidget(_removeBtn);
     peakBtns->addWidget(_clearBtn);
     pLay->addLayout(peakBtns);
@@ -1088,6 +1094,27 @@ void LightcurveFetchDialog::onAddManualPeakClicked() {
     addPeak(pk);
 }
 
+void LightcurveFetchDialog::onDoublePeriodClicked()
+{
+    const int row = _peaksTable ? _peaksTable->currentRow() : -1;
+    if (row < 0 || row >= _peaks.size()) {
+        QMessageBox::information(this, tr("Double period"),
+            tr("Select a period in the list first, then press ×2."));
+        return;
+    }
+
+    // Copy the selected peak so we keep its provenance, then double the period
+    // (frequency halves, the absolute σ_P scales with the period).
+    PeriodogramPanel::PeriodPeak pk = _peaks[row];
+    const double orig = pk.period;
+    pk.period      = orig * 2.0;
+    pk.frequency   = pk.period > 0 ? 1.0 / pk.period : 0.0;
+    pk.periodError = pk.periodError * 2.0;
+    pk.sourceLabel = QString("2×%1")
+                         .arg(QString::number(orig, 'g', 6));
+    addPeak(pk);
+}
+
 void LightcurveFetchDialog::addPeak(const PeriodogramPanel::PeriodPeak& pk)
 {
     if (pk.period <= 0) return;
@@ -1131,6 +1158,9 @@ void LightcurveFetchDialog::persistPeaks()
     if (!_dbm || !_star) return;
     const QString json = PeriodogramPanel::peaksToJson(_peaks);
     _dbm->saveStarPhotPeaks(_star->getId(), json);
+    // Keep the in-memory Star in sync so a later full upsert writes the current
+    // peaks rather than the value the star was loaded with (or NULL).
+    _star->setPhotPeaksJson(json);
 }
 
 void LightcurveFetchDialog::commitPeaks()

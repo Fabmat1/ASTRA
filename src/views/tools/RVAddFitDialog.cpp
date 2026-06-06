@@ -195,7 +195,9 @@ void RVAddFitDialog::buildMCMCTab(QWidget *parent) {
     fP->addRow("Max period [d]", _maxP);
 
     _mcmcLimitPeak    = new QCheckBox("Limit to photometric peak ±");
-    _mcmcPeakSigmaMul = mk(0.1, 100.0, 2, 0.1);
+    // Allow tightening well below 1σ (down to 0.001σ) to pin the search around a
+    // good LC period; 3 decimals so e.g. 0.05σ is representable.
+    _mcmcPeakSigmaMul = mk(0.001, 100.0, 3, 0.05);
     _mcmcPeakSigmaMul->setValue(5.0);
     _mcmcPeakSigmaMul->setSuffix(" σ");
     _mcmcPeakSigmaMul->setEnabled(false);
@@ -338,9 +340,12 @@ void RVAddFitDialog::buildPhotTab(QWidget* parent)
         s->setSingleStep(step);
         return s;
     };
-    _photPeriodTol = mk(0.1, 10.0, 2, 0.1);
+    // Allow a very tight prior (down to 0.001×σ_P) so the LM fit can be pinned
+    // around a trusted LC period; 3 decimals for sub-0.1 values like 0.05.
+    _photPeriodTol = mk(0.001, 10.0, 3, 0.05);
     _photPeriodTol->setValue(1.0);
-    _photPeriodTol->setToolTip("Prior width in multiples of the reported σ_P.");
+    _photPeriodTol->setToolTip("Prior width in multiples of the reported σ_P "
+                               "(can be tightened below 0.1 to lock onto the LC period).");
 
     _photEllipsoidal = new QCheckBox("Ellipsoidal (search at 2·P_phot)");
     _photEccentric   = new QCheckBox("Eccentric orbit");
@@ -835,11 +840,15 @@ LMResult fitCircularLM(const std::vector<double>& t,
             const double w  = 2.0*M_PI*t[i]/P;
             const double cw = std::cos(w), sw = std::sin(w);
             const double s  = sigma[i];
+            // ∂r/∂P = -(1/σ)·∂M/∂P, with M = Kc·cos w + Ks·sin w + γ and
+            // w = 2π t/P, so ∂M/∂P = (2π t/P²)(Kc·sin w − Ks·cos w). The previous
+            // code dropped the leading minus sign, which steered the period step
+            // in the wrong direction and stalled the fit.
             const double Ji[4] = {
                 -cw/s,
                 -sw/s,
                 -1.0/s,
-                +(2.0*M_PI*t[i]/(P*P)) * (Kc*sw - Ks*cw) / s
+                (2.0*M_PI*t[i]/(P*P)) * (Ks*cw - Kc*sw) / s
             };
             for (int a=0;a<4;++a){
                 JTr[a] += Ji[a]*r[i];
@@ -917,26 +926,48 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidLM(
 {
     auto data = buildRVData();
     if (data.bjd.size() < 4) {
-        if (errOut) *errOut = "Need ≥ 4 unflagged RV points with BJD.";
+        if (errOut)
+            *errOut = "Need ≥ 4 unflagged RV points with BJD.";
         return nullptr;
     }
-    const double t0 = data.bjd.front();
+
+    // Phase against the SAME reference epoch that updateFitReferences() will
+    // assign once this fit is attached to the curve. Otherwise t0 (earliest
+    // *unflagged* point) can differ from tRefBJD (earliest point, flagged or
+    // not), producing a phase-shifted model even when P/K/gamma are correct.
+    double t0   = data.bjd.front(); // fallback if no curve epoch available
+    double mjd0 = 0.0;
+    if (_curve) {
+        double refBjd = 0.0, refMjd = 0.0;
+        if (_curve->computeReferenceEpoch(refBjd, refMjd) && refBjd > 0.0) {
+            t0   = refBjd;
+            mjd0 = refMjd;
+        }
+    }
+
     std::vector<double> t(data.bjd.size()), y = data.rv, s = data.rv_err;
-    for (size_t i=0;i<data.bjd.size();++i) t[i] = data.bjd[i] - t0;
+    for (size_t i = 0; i < data.bjd.size(); ++i)
+        t[i] = data.bjd[i] - t0;
 
     auto R = fitCircularLM(t, y, s, pSeed, pSigma);
-    if (!R.ok) { if (errOut) *errOut = R.msg; return nullptr; }
+    if (!R.ok) {
+        if (errOut)
+            *errOut = R.msg;
+        return nullptr;
+    }
 
     auto fit = std::make_shared<RVFit>();
     fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
     fit->setCurveId(_curve ? _curve->getId() : QString());
     fit->setCreationDate(QDateTime::currentDateTime());
     fit->setFitMethod(QString("LM (P_phot=%1±%2)")
-        .arg(pSeed, 0,'f',6).arg(pSigma, 0,'f',6));
+                          .arg(pSeed, 0, 'f', 6)
+                          .arg(pSigma, 0, 'f', 6));
     fit->setPeriod(R.P);
     fit->setK(R.K);
     fit->setGamma(R.gamma);
-    fit->setPhi(R.phi);
+    fit->setPhi(R.phi);              // now relative to t0 == tRefBJD
+    fit->setReferenceTime(t0, mjd0); // consistent even before attach
     fit->setEccentric(false);
     fit->setBestFit(false);
     return fit;
