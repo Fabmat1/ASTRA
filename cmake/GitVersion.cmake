@@ -1,39 +1,44 @@
 # Run at BUILD time. Writes ${OUT} with ASTRA_VERSION_STRING defined as:
-#   • the exact tag, if HEAD is exactly on an annotated/lightweight tag
-#   • otherwise the short commit hash (with -dirty suffix if the tree is dirty)
-# Falls back to the CMake project version if git is unavailable.
+#   • the exact tag                 -> when HEAD is *exactly* on a tag and the
+#                                      working tree is clean (a real release)
+#   • git-<shorthash>[-dirty]       -> any other build from a git checkout
+#   • ${FALLBACK_VERSION}           -> when git is unavailable (e.g. a tarball)
+#
+# The dirty check deliberately ignores submodule pointer changes and untracked
+# files, so a clean superproject is reported as clean even when vendored
+# submodules (external/*) have local modifications.
 
 set(_version "${FALLBACK_VERSION}")
 
 find_package(Git QUIET)
 if(GIT_FOUND)
-    # Exact tag on HEAD? -> use it.
     execute_process(
-        COMMAND "${GIT_EXECUTABLE}" describe --tags --exact-match
+        COMMAND "${GIT_EXECUTABLE}" rev-parse --short HEAD
         WORKING_DIRECTORY "${SRC_DIR}"
-        OUTPUT_VARIABLE _tag
-        OUTPUT_STRIP_TRAILING_WHITESPACE
-        ERROR_QUIET RESULT_VARIABLE _tag_rc)
+        OUTPUT_VARIABLE _hash OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET RESULT_VARIABLE _hash_rc)
 
-    if(_tag_rc EQUAL 0 AND _tag)
-        set(_version "${_tag}")
-    else()
+    if(_hash_rc EQUAL 0 AND _hash)
+        # Is HEAD exactly on a tag?
         execute_process(
-            COMMAND "${GIT_EXECUTABLE}" rev-parse --short HEAD
+            COMMAND "${GIT_EXECUTABLE}" describe --tags --exact-match HEAD
             WORKING_DIRECTORY "${SRC_DIR}"
-            OUTPUT_VARIABLE _hash
-            OUTPUT_STRIP_TRAILING_WHITESPACE
-            ERROR_QUIET RESULT_VARIABLE _hash_rc)
-        if(_hash_rc EQUAL 0 AND _hash)
-            # mark a dirty working tree
-            execute_process(
-                COMMAND "${GIT_EXECUTABLE}" status --porcelain
-                WORKING_DIRECTORY "${SRC_DIR}"
-                OUTPUT_VARIABLE _dirty OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+            OUTPUT_VARIABLE _tag OUTPUT_STRIP_TRAILING_WHITESPACE
+            ERROR_QUIET RESULT_VARIABLE _tag_rc)
+
+        # Is the superproject dirty? (ignore submodules + untracked files)
+        execute_process(
+            COMMAND "${GIT_EXECUTABLE}" status --porcelain
+                    --untracked-files=no --ignore-submodules=all
+            WORKING_DIRECTORY "${SRC_DIR}"
+            OUTPUT_VARIABLE _dirty OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+
+        if(_tag_rc EQUAL 0 AND _tag AND NOT _dirty)
+            set(_version "${_tag}")                 # clean release → the tag
+        else()
+            set(_version "git-${_hash}")            # dev build → git-<hash>
             if(_dirty)
-                set(_version "${_hash}-dirty")
-            else()
-                set(_version "${_hash}")
+                set(_version "${_version}-dirty")
             endif()
         endif()
     endif()

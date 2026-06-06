@@ -3,6 +3,7 @@
 
 #include "models/Star.h"
 #include "models/RadialVelocity.h"
+#include "models/Spectrum.h"
 #include "models/Time.h"
 #include "utils/Logger.h"
 #include "plotting/qcustomplot.h"
@@ -203,6 +204,24 @@ QPair<double, double> addRVDataToPlot(
     return {yLo, yHi};
 }
 
+// Create the dedicated, empty highlight graph for a plot. It is a subtle hollow
+// ring drawn slightly larger than the normal points so the underlying point
+// still shows through; applyHighlight() fills it with the matching point(s).
+// Paints on the default "main" layer, i.e. above the regular points.
+QCPGraph* makeHighlightGraph(QCustomPlot* plot, const QColor& col)
+{
+    QCPGraph* hl = plot->addGraph();
+    hl->setLineStyle(QCPGraph::lsNone);
+    // Explicit QPen + QBrush so the pen/brush overload is chosen: a hollow ring
+    // (no fill) in the accent colour. Passing Qt::NoBrush as a bare argument
+    // would instead resolve to the colour-fill overload and paint it solid.
+    QCPScatterStyle style(QCPScatterStyle::ssCircle, QPen(col, 1.6),
+                          QBrush(Qt::NoBrush), 11);
+    hl->setScatterStyle(style);
+    hl->removeFromLegend();
+    return hl;
+}
+
 } // namespace
 
 RVPanel::~RVPanel()
@@ -234,6 +253,8 @@ void RVPanel::populate()
 {
     static const QString CAT = "StarDetailView.RV";
 
+    // Old plots (and their highlight graphs) are destroyed with the layout.
+    _highlightTargets.clear();
     PanelUtils::clearLayout(_contentLayout);
 
     auto rvCurve = _ctx.star->getRVCurve();
@@ -291,7 +312,7 @@ void RVPanel::populate()
         .arg(points.size()));
 
     struct RVDatum {
-        double time; double rv; double err; Time tobj;
+        double time; double rv; double err; Time tobj; QString specId;
     };
     std::vector<RVDatum> data;
     data.reserve(points.size());
@@ -312,7 +333,11 @@ void RVPanel::populate()
             continue;
         }
 
-        data.push_back({tm.sortValue(), pt->getRV(), pt->getRVError(), tm});
+        // Keep the source spectrum id (and epoch) with each point; the actual
+        // spectrum↔point matching happens later in applyHighlight() so the
+        // highlight can change without rebuilding the plot.
+        data.push_back({tm.sortValue(), pt->getRV(), pt->getRVError(), tm,
+                        pt->getSpectrumId()});
     }
 
     LOG_INFO(CAT, QString("Star %1 - %2 skipped, %3/%4 accepted")
@@ -341,6 +366,9 @@ void RVPanel::populate()
         phases.reserve(data.size() * 2);
         rvs.reserve(data.size() * 2);
         errs.reserve(data.size() * 2);
+
+        HighlightTarget tgt;   // both phase wings registered as separate entries
+        tgt.xMin = -1.05;      // kPhaseLo (set again below as constexpr)
         for (auto &d : data) {
             double ph = bestFit->computePhase(d.tobj);
             phases.push_back(ph - 1.0);
@@ -349,6 +377,10 @@ void RVPanel::populate()
             phases.push_back(ph);
             rvs.push_back(d.rv);
             errs.push_back(d.err);
+            tgt.xs.push_back(ph - 1.0); tgt.ys.push_back(d.rv);
+            tgt.specIds.push_back(d.specId); tgt.epochs.push_back(d.time);
+            tgt.xs.push_back(ph);       tgt.ys.push_back(d.rv);
+            tgt.specIds.push_back(d.specId); tgt.epochs.push_back(d.time);
         }
 
         QCustomPlot *plot = new QCustomPlot;
@@ -376,6 +408,13 @@ void RVPanel::populate()
         fitGraph->setData(fitX, fitY);
         fitGraph->removeFromLegend();
 
+        // Highlight graph on top of everything else.
+        tgt.plot  = plot;
+        tgt.graph = makeHighlightGraph(plot, PanelUtils::kFitCurveColor);
+        tgt.xMin  = kPhaseLo;
+        tgt.xMax  = kPhaseHi;
+        _highlightTargets.push_back(std::move(tgt));
+
         plot->xAxis->setLabel("Phase");
         plot->xAxis->setRange(kPhaseLo, kPhaseHi);
         plot->yAxis->setLabel("RV [km/s]");
@@ -400,11 +439,14 @@ void RVPanel::populate()
         // =====================================================================
 
         double t0 = data.front().time;
-        std::vector<double> times, rvs, errs;
+        std::vector<double>  times, rvs, errs, epochs;
+        std::vector<QString> specIds;            // all parallel to times
         for (auto& d : data) {
             times.push_back(d.time - t0);
             rvs.push_back(d.rv);
             errs.push_back(d.err);
+            epochs.push_back(d.time);
+            specIds.push_back(d.specId);
         }
 
         std::vector<int> gapIdx = findGapIndices(times);
@@ -457,8 +499,10 @@ void RVPanel::populate()
             double span = xMax - xMin;
             if (span <= 0) span = 1.0;
 
-            addRVDataToPlot(plot, times, rvs, errs,
-                            xMin - span * 0.05, xMax + span * 0.05,
+            double clipLo = xMin - span * 0.05;
+            double clipHi = xMax + span * 0.05;
+
+            addRVDataToPlot(plot, times, rvs, errs, clipLo, clipHi,
                             PanelUtils::kPointColor, PanelUtils::kErrorBarColor);
 
             if (bestFit && bestFit->getPeriod() > 0) {
@@ -473,6 +517,18 @@ void RVPanel::populate()
                 fitGraph->setData(fitX, fitY);
                 fitGraph->removeFromLegend();
             }
+
+            // Highlight graph on top.
+            HighlightTarget tgt;
+            tgt.plot    = plot;
+            tgt.graph   = makeHighlightGraph(plot, PanelUtils::kFitCurveColor);
+            tgt.xs      = times;
+            tgt.ys      = rvs;
+            tgt.specIds = specIds;
+            tgt.epochs  = epochs;
+            tgt.xMin    = clipLo;
+            tgt.xMax    = clipHi;
+            _highlightTargets.push_back(std::move(tgt));
 
             plot->xAxis->setLabel("Days from first observation");
             plot->xAxis->setRange(xMin - span * 0.05, xMax + span * 0.05);
@@ -489,13 +545,17 @@ void RVPanel::populate()
             // --- Multiple segments: broken-axis widget ---
             auto* brokenAxis = new BrokenAxisWidget;
 
-            auto splitRV  = splitAt(rvs,  gapIdx);
-            auto splitErr = splitAt(errs, gapIdx);
+            auto splitRV    = splitAt(rvs,     gapIdx);
+            auto splitErr   = splitAt(errs,    gapIdx);
+            auto splitSpec  = splitAt(specIds, gapIdx);
+            auto splitEpoch = splitAt(epochs,  gapIdx);
 
             for (int seg = 0; seg < nSeg; ++seg) {
                 auto& segTimes = splitTimes[seg];
                 auto& segRV    = splitRV[seg];
                 auto& segErr   = splitErr[seg];
+                auto& segSpec  = splitSpec[seg];
+                auto& segEpoch = splitEpoch[seg];
 
                 double segStart = segTimes.front();
                 double segEnd   = segTimes.back();
@@ -531,6 +591,18 @@ void RVPanel::populate()
                     fitGraph->removeFromLegend();
                 }
 
+                // Highlight graph on top, scoped to this segment's points.
+                HighlightTarget tgt;
+                tgt.plot    = plot;
+                tgt.graph   = makeHighlightGraph(plot, PanelUtils::kFitCurveColor);
+                tgt.xs      = segTimes;
+                tgt.ys      = segRV;
+                tgt.specIds = segSpec;
+                tgt.epochs  = segEpoch;
+                tgt.xMin    = xMin;
+                tgt.xMax    = xMax;
+                _highlightTargets.push_back(std::move(tgt));
+
                 plot->xAxis->setRange(xMin, xMax);
 
                 // Tick count depends on relative width
@@ -561,6 +633,9 @@ void RVPanel::populate()
                 .arg(_ctx.star->getSourceId()).arg(nSeg).arg(data.size()));
         }
     }
+
+    // Fill in the highlight markers for the currently shown spectrum (if any).
+    applyHighlight();
 }
 
 void RVPanel::setupUi()
@@ -608,4 +683,53 @@ void RVPanel::setDisplayedFit(std::shared_ptr<RVFit> fit)
 {
     _displayedFit = std::move(fit);
     populate();
+}
+
+void RVPanel::highlightSpectrum(const QString& spectrumId, const QString& /*fitId*/)
+{
+    if (_highlightSpectrumId == spectrumId)
+        return;                       // nothing changed
+    _highlightSpectrumId = spectrumId;
+    applyHighlight();                 // update markers in-place, no rebuild → no flash
+}
+
+void RVPanel::applyHighlight()
+{
+    // Resolve the highlighted spectrum's epoch once, for the time-based fallback
+    // used when an RV point carries no source-spectrum id.
+    bool   haveTime = false;
+    double hlTime   = 0.0;
+    if (!_highlightSpectrumId.isEmpty() && _ctx.star) {
+        for (auto& spec : _ctx.star->getSpectra()) {
+            if (spec && spec->getId() == _highlightSpectrumId) {
+                hlTime   = spec->time().sortValue();
+                haveTime = spec->time().isValid();
+                break;
+            }
+        }
+    }
+
+    for (auto& tgt : _highlightTargets) {
+        if (!tgt.plot || !tgt.graph) continue;
+
+        QVector<double> px, py;
+        if (!_highlightSpectrumId.isEmpty()) {
+            for (size_t i = 0; i < tgt.xs.size(); ++i) {
+                if (tgt.xs[i] < tgt.xMin || tgt.xs[i] > tgt.xMax) continue;
+
+                bool match = false;
+                if (!tgt.specIds[i].isEmpty())
+                    match = (tgt.specIds[i] == _highlightSpectrumId);
+                else if (haveTime)
+                    match = std::fabs(tgt.epochs[i] - hlTime) < 1e-4; // ~8.6 s
+
+                if (match) { px.append(tgt.xs[i]); py.append(tgt.ys[i]); }
+            }
+        }
+
+        tgt.graph->setData(px, py);
+        // Plain (synchronous) replot, matching the rest of this panel. Only the
+        // highlight scatter changed, so there is no widget rebuild and no flash.
+        tgt.plot->replot();
+    }
 }

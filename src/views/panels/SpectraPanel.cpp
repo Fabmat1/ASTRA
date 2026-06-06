@@ -205,14 +205,14 @@ void SpectraPanel::populate()
         return;
     }
 
-    // Sort spectra by instrument, then MJD
+    // Sort spectra strictly by observation date (lowest → highest), regardless
+    // of instrument-name prefix. Time::sortValue() yields a comparable epoch
+    // even when only an MJD or only a BJD is present.
     _sortedSpectra = spectra;
     std::sort(_sortedSpectra.begin(), _sortedSpectra.end(),
               [](const std::shared_ptr<Spectrum>& a,
                  const std::shared_ptr<Spectrum>& b) {
-                  if (a->getInstrument() != b->getInstrument())
-                      return a->getInstrument() < b->getInstrument();
-                  return a->getMJD() < b->getMJD();
+                  return a->time().sortValue() < b->time().sortValue();
               });
 
     // Assign tab colors by instrument

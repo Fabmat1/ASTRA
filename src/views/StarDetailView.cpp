@@ -9,6 +9,8 @@
 #include "views/panels/DetailPanel.h"
 #include "views/panels/DetailPanelFactory.h"
 #include "views/panels/PanelUtils.h"
+#include "views/panels/SpectraPanel.h"
+#include "views/panels/RVPanel.h"
 
 #include "io/StarShare.h"
 #include "views/tools/CMDDialog.h"
@@ -137,6 +139,25 @@ void StarDetailView::buildGrid()
     }
     for (int i = 0; i < _rootVSplit->count(); ++i)
         _rootVSplit->setStretchFactor(i, 1);
+
+    // ── Cross-panel wiring: highlight the RV point of the shown spectrum ──
+    // When a Spectra Panel and an RV Panel coexist in the grid, changing the
+    // displayed spectrum emphasises its matching RV point in the RV plot(s).
+    {
+        SpectraPanel* spectraPanel = nullptr;
+        RVPanel*      rvPanel      = nullptr;
+        for (auto* p : _panels) {
+            if (!spectraPanel) spectraPanel = qobject_cast<SpectraPanel*>(p);
+            if (!rvPanel)      rvPanel      = qobject_cast<RVPanel*>(p);
+        }
+        if (spectraPanel && rvPanel) {
+            connect(spectraPanel, &SpectraPanel::selectionChanged,
+                    rvPanel,      &RVPanel::highlightSpectrum);
+            // Apply the highlight for whatever spectrum is shown initially.
+            rvPanel->highlightSpectrum(spectraPanel->currentSpectrumId(),
+                                       spectraPanel->currentFitId());
+        }
+    }
 
     _gridHost->layout()->addWidget(_rootVSplit);
 

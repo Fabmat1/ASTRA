@@ -85,6 +85,7 @@ compile_commands.json
 CTestTestfile.cmake
 _deps
 *.cmake
+!cmake/GitVersion.cmake
 
 # Visual Studio
 .vs/
@@ -155,6 +156,8 @@ object_catalogue.csv
 result_parameters.csv
 
 CLAUDE.md
+
+IMPROVEMENT_TASKS.md
 
 flame.svg
 perf.data
