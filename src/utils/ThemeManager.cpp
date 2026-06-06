@@ -23,9 +23,23 @@ ThemeManager::~ThemeManager()
 
 void ThemeManager::registerDefaultThemes()
 {
+    // Light themes
     registerTheme("rose_pine_dawn", "Rosé Pine Dawn", ":/themes/rose_pine_dawn.qss", false);
+    registerTheme("catppuccin_latte", "Catppuccin Latte", ":/themes/catppuccin_latte.qss", false);
+    registerTheme("github_light", "GitHub Light", ":/themes/github_light.qss", false);
+    registerTheme("solarized_light", "Solarized Light", ":/themes/solarized_light.qss", false);
+    registerTheme("gruvbox_light", "Gruvbox Light", ":/themes/gruvbox_light.qss", false);
+    registerTheme("nord_light", "Nord Light", ":/themes/nord_light.qss", false);
     registerTheme("one_light", "One Light", ":/themes/one_light.qss", false);
-    registerTheme("catppuccin_mocha", "Catppuccin Mocha", ":/themes/catppuccin_dark.qss", true);
+
+    // Dark themes
+    registerTheme("catppuccin_mocha", "Catppuccin Mocha", ":/themes/catppuccin_mocha.qss", true);
+    registerTheme("dracula", "Dracula", ":/themes/dracula.qss", true);
+    registerTheme("nord", "Nord", ":/themes/nord.qss", true);
+    registerTheme("gruvbox_dark", "Gruvbox Dark", ":/themes/gruvbox_dark.qss", true);
+    registerTheme("tokyo_night", "Tokyo Night", ":/themes/tokyo_night.qss", true);
+    registerTheme("solarized_dark", "Solarized Dark", ":/themes/solarized_dark.qss", true);
+    registerTheme("one_dark", "One Dark", ":/themes/one_dark.qss", true);
 }
 
 void ThemeManager::registerTheme(const ThemeInfo& theme)
@@ -140,7 +154,7 @@ void ThemeManager::loadSavedTheme()
 
 QString ThemeManager::getSavedThemeId() const
 {
-    return _settings.value("appearance/theme", "catppuccin_latte").toString();
+    return _settings.value("appearance/theme", "rose_pine_dawn").toString();
 }
 
 QString ThemeManager::loadStyleSheet(const QString& filePath) const

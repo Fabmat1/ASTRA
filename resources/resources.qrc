@@ -1,9 +1,19 @@
 <RCC version="1.0">
     <qresource prefix="/">
-        <file>themes/catppuccin_light.qss</file>
-        <file>themes/catppuccin_dark.qss</file>
         <file>themes/rose_pine_dawn.qss</file>
+        <file>themes/catppuccin_latte.qss</file>
+        <file>themes/github_light.qss</file>
+        <file>themes/solarized_light.qss</file>
+        <file>themes/gruvbox_light.qss</file>
+        <file>themes/nord_light.qss</file>
         <file>themes/one_light.qss</file>
+        <file>themes/catppuccin_mocha.qss</file>
+        <file>themes/dracula.qss</file>
+        <file>themes/nord.qss</file>
+        <file>themes/gruvbox_dark.qss</file>
+        <file>themes/tokyo_night.qss</file>
+        <file>themes/solarized_dark.qss</file>
+        <file>themes/one_dark.qss</file>
         <file>data/default_instruments.json</file>
         <file>data/gaia_cmd.csv</file>
         <file>scripts/photometry_body.sl</file>
