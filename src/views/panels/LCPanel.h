@@ -78,6 +78,17 @@ private:
 
     void setupUi();
     void populate();
+
+    // ── Per-star persisted view settings ────────────────────────────────
+    /// Stable per-star key (source id, falling back to UUID) under which the
+    /// panel's view configuration is stored in QSettings. Empty if no star.
+    QString starSettingsKey() const;
+    /// Read saved view settings (T0 source, binning, visibility, fold/view
+    /// mode) and apply them to internal state before the first populate().
+    void restoreStarSettings();
+    /// Persist the current view settings for the active star.
+    void saveStarSettings() const;
+
     void rebuildSeriesCache();
     void rebuildPlots();
     void replotAll(bool preserveZoom = false);
@@ -123,6 +134,8 @@ private:
     bool     _syncingXAxis  = false;
     QHash<QCustomPlot*, double> _xOffsets;
     bool _foldDefaultApplied = false; // ensures "folded by default" runs once
+    bool _settingsRestored   = false; // per-star settings loaded into state once
+    bool _foldRestored       = false; // user had an explicit folded choice saved
 
     QList<SeriesCache>              _series;
     QList<QCustomPlot*>             _plots;

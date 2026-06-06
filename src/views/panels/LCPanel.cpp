@@ -27,6 +27,7 @@
 #include <QWheelEvent>
 #include <QApplication>
 #include <QSignalBlocker>
+#include <QSettings>
 
 #include <algorithm>
 #include <cmath>
@@ -98,6 +99,9 @@ binSeries(const QVector<double>& px,
 }
 
 constexpr int kErrorBarMax = 8000;   // skip error bars above this count
+
+// Per-star LC view settings are stored under "LCPanel/<sourceId>/<key>".
+constexpr const char* kLCSettingsRoot = "LCPanel";
 
 } // anon
 
@@ -321,6 +325,7 @@ void LCPanel::onT0SourceChanged(int)
 {
     _t0Source = static_cast<T0Source>(_t0SourceCombo->currentData().toInt());
     resolveAutoFoldParams();
+    saveStarSettings();
     if (_folded) replotAll();
 }
 
@@ -329,6 +334,11 @@ void LCPanel::onT0SourceChanged(int)
 void LCPanel::populate()
 {
     static const QString CAT = "StarDetailView.LC";
+
+    // Pull saved per-star view configuration into internal state once, before
+    // any defaults are filled in or signals are wired up.
+    if (!_settingsRestored)
+        restoreStarSettings();
 
     rebuildSeriesCache();
 
@@ -360,6 +370,11 @@ void LCPanel::populate()
         QSignalBlocker b(_toggleFoldBtn);
         _toggleFoldBtn->setChecked(true);
         _toggleFoldBtn->setText("Show Timeline");
+    } else if (canFold && _foldRestored) {
+        // Reflect the saved folded choice on the toggle button.
+        QSignalBlocker b(_toggleFoldBtn);
+        _toggleFoldBtn->setChecked(_folded);
+        _toggleFoldBtn->setText(_folded ? "Show Timeline" : "Show Folded");
     }
 
     if (!canFold && _folded) {
@@ -518,6 +533,7 @@ void LCPanel::rebuildPlots()
         QList<int> memCopy = members;
         connect(visCb, &QCheckBox::toggled, this, [this, pSafe, memCopy](bool on) {
             for (int idx : memCopy) _visible[_series[idx].key] = on;
+            saveStarSettings();
             if (pSafe) pSafe->setVisible(on);
         });
         p->setVisible(visCb->isChecked());
@@ -960,14 +976,17 @@ void LCPanel::persistFlagsForSource(const QString& source)
 void LCPanel::onToggleFolded()
 {
     _folded = _toggleFoldBtn->isChecked();
+    _foldRestored = true;   // user now has an explicit folded choice
     _toggleFoldBtn->setText(_folded ? "Show Timeline" : "Show Folded");
     if (_folded && _flagMode) _flagBtn->setChecked(false);
+    saveStarSettings();
     replotAll();
 }
 
 void LCPanel::onViewModeChanged(int idx)
 {
     _viewMode = static_cast<ViewMode>(_viewModeCombo->itemData(idx).toInt());
+    saveStarSettings();
     rebuildPlots();
     replotAll();
 }
@@ -1054,7 +1073,7 @@ void LCPanel::buildSettingsMenu()
         auto* visCb = new QCheckBox("Show");
         visCb->setChecked(_visible.value(s.key, true));
         connect(visCb, &QCheckBox::toggled, this,
-                [this, k=s.key](bool on){ _visible[k] = on; replotAll(); });
+                [this, k=s.key](bool on){ _visible[k] = on; saveStarSettings(); replotAll(); });
         ctrl->addWidget(visCb);
 
         auto *normCb = new QCheckBox("Norm");
@@ -1087,11 +1106,12 @@ void LCPanel::buildSettingsMenu()
                               : _binsUnfolded.value(s.key, 1000));
         sb->setEnabled(binEnabled(s.key));
         connect(binCb, &QCheckBox::toggled, this, [this, k=s.key, sb](bool on){
-            setBinEnabled(k, on); sb->setEnabled(on); replotAll();
+            setBinEnabled(k, on); sb->setEnabled(on); saveStarSettings(); replotAll();
         });
         connect(sb, QOverload<int>::of(&QSpinBox::valueChanged), this,
                 [this, k=s.key](int v){
             if (_folded) _binsFolded[k] = v; else _binsUnfolded[k] = v;
+            saveStarSettings();
             replotAll();
         });
         ctrl->addStretch();
@@ -1129,6 +1149,7 @@ void LCPanel::setUniformFoldedBins(int nBins)
         _binsFolded[s.key]       = nBins;
         _binEnabledFolded[s.key] = true;
     }
+    saveStarSettings();
     if (_folded) replotAll(/*preserveZoom*/ true);
 }
 
@@ -1149,4 +1170,108 @@ void LCPanel::clearPreviewFit() {
     _previewFitFilter.clear();
     if (_folded)
         replotAll(/*preserveZoom*/ true);
+}
+
+// ── Per-star persisted view settings ────────────────────────────────
+
+QString LCPanel::starSettingsKey() const
+{
+    if (!_ctx.star) return QString();
+    // Prefer the stable Gaia source id; fall back to the database UUID.
+    QString id = _ctx.star->getSourceId();
+    if (id.isEmpty()) id = _ctx.star->getId();
+    if (id.isEmpty()) return QString();
+    return QString("%1/%2").arg(kLCSettingsRoot, id);
+}
+
+void LCPanel::restoreStarSettings()
+{
+    const QString base = starSettingsKey();
+    if (base.isEmpty()) return;
+
+    QSettings s;
+    s.beginGroup(base);
+
+    // ── T₀ source ──
+    if (s.contains("t0Source")) {
+        int v = std::clamp(s.value("t0Source").toInt(),
+                           static_cast<int>(T0Source::Auto),
+                           static_cast<int>(T0Source::RVFit));
+        _t0Source = static_cast<T0Source>(v);
+        if (_t0SourceCombo) {
+            QSignalBlocker b(_t0SourceCombo);
+            _t0SourceCombo->setCurrentIndex(v);
+        }
+    }
+
+    // ── View mode ──
+    if (s.contains("viewMode")) {
+        int v = std::clamp(s.value("viewMode").toInt(),
+                           static_cast<int>(ViewMode::Overlay),
+                           static_cast<int>(ViewMode::StackedBySourceFilter));
+        _viewMode = static_cast<ViewMode>(v);
+        if (_viewModeCombo) {
+            QSignalBlocker b(_viewModeCombo);
+            _viewModeCombo->setCurrentIndex(v);
+        }
+    }
+
+    // ── Folded vs unfolded (only if the user had an explicit saved choice) ──
+    if (s.contains("folded")) {
+        _folded       = s.value("folded").toBool();
+        _foldRestored = true;
+        // Suppress the one-shot "folded by default" so the saved choice wins.
+        _foldDefaultApplied = true;
+    }
+
+    // ── Per-series view state: visibility & binning ──
+    s.beginGroup("series");
+    const QStringList keys = s.childGroups();
+    for (const QString& k : keys) {
+        s.beginGroup(k);
+        if (s.contains("visible"))
+            _visible[k] = s.value("visible").toBool();
+        if (s.contains("binFolded"))
+            _binEnabledFolded[k] = s.value("binFolded").toBool();
+        if (s.contains("binUnfolded"))
+            _binEnabledUnfolded[k] = s.value("binUnfolded").toBool();
+        if (s.contains("nBinsFolded"))
+            _binsFolded[k] = s.value("nBinsFolded").toInt();
+        if (s.contains("nBinsUnfolded"))
+            _binsUnfolded[k] = s.value("nBinsUnfolded").toInt();
+        s.endGroup();
+    }
+    s.endGroup();   // series
+
+    s.endGroup();   // base
+
+    _settingsRestored = true;
+}
+
+void LCPanel::saveStarSettings() const
+{
+    const QString base = starSettingsKey();
+    if (base.isEmpty()) return;
+
+    QSettings s;
+    s.beginGroup(base);
+
+    s.setValue("t0Source", static_cast<int>(_t0Source));
+    s.setValue("viewMode", static_cast<int>(_viewMode));
+    s.setValue("folded",   _folded);
+
+    s.beginGroup("series");
+    for (const auto& sc : _series) {
+        s.beginGroup(sc.key);
+        s.setValue("visible",       _visible.value(sc.key, true));
+        s.setValue("binFolded",     _binEnabledFolded.value(sc.key, true));
+        s.setValue("binUnfolded",   _binEnabledUnfolded.value(sc.key, false));
+        s.setValue("nBinsFolded",   _binsFolded.value(sc.key, 200));
+        s.setValue("nBinsUnfolded", _binsUnfolded.value(sc.key, 1000));
+        s.endGroup();
+    }
+    s.endGroup();   // series
+
+    s.endGroup();   // base
+    s.sync();
 }
