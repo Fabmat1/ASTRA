@@ -1278,6 +1278,17 @@ std::shared_ptr<PeriodogramRecord> DatabaseManager::loadPeriodogram(
 bool DatabaseManager::deleteStarPeriodograms(const QString& starId)
 { return _periodograms->deleteAllForStar(starId); }
 
+bool DatabaseManager::saveCurveRVPeriodograms(const QString& starId, const QString& curveId,
+    const std::vector<std::shared_ptr<PeriodogramRecord>>& records)
+{ return _periodograms->saveAllForCurve(starId, curveId, records); }
+
+std::vector<std::shared_ptr<PeriodogramRecord>>
+DatabaseManager::loadCurveRVPeriodograms(const QString& curveId)
+{ return _periodograms->loadAllForCurve(curveId); }
+
+bool DatabaseManager::deleteCurveRVPeriodograms(const QString& curveId)
+{ return _periodograms->deleteAllForCurve(curveId); }
+
 bool DatabaseManager::saveStarPhotPeaks(const QString& starId,
                                         const QString& peaksJson)
 {

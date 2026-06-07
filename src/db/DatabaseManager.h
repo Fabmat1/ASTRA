@@ -100,6 +100,10 @@ public:
     std::vector<std::shared_ptr<PeriodogramRecord>> loadStarPeriodograms(const QString& starId);
     std::shared_ptr<PeriodogramRecord> loadPeriodogram(const QString& starId, const QString& source, const QString& filter = {});
     bool deleteStarPeriodograms(const QString& starId);
+    bool saveCurveRVPeriodograms(const QString& starId, const QString& curveId,
+        const std::vector<std::shared_ptr<PeriodogramRecord>>& records);
+    std::vector<std::shared_ptr<PeriodogramRecord>> loadCurveRVPeriodograms(const QString& curveId);
+    bool deleteCurveRVPeriodograms(const QString& curveId);
     bool    saveStarPhotPeaks(const QString& starId, const QString& peaksJson);
     QString loadStarPhotPeaks(const QString& starId);
     bool   saveStarTessCrowdsap(const QString& starId, double value);

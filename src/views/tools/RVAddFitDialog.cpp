@@ -6,8 +6,10 @@
 #include "models/RadialVelocity.h"
 #include "models/Star.h"
 #include "utils/Logger.h"
+#include "views/panels/PanelUtils.h"
 #include "views/panels/PeriodogramPanel.h"
 #include "views/widgets/PreciseDoubleSpinBox.h"
+#include "plotting/qcustomplot.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -25,14 +27,21 @@
 #include <QPointer>
 #include <QProgressDialog>
 #include <QPushButton>
+#include <QScrollArea>
+#include <QSet>
 #include <QSpinBox>
+#include <QSplitter>
 #include <QTabWidget>
 #include <QTimer>
+#include <QToolButton>
 #include <QUuid>
 #include <QVBoxLayout>
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <limits>
 #include <memory>
+#include <numeric>
 #include <thread>
 
 // ───────────────────────────────────────────────────────────────────
@@ -51,14 +60,23 @@ RVAddFitDialog::RVAddFitDialog(std::shared_ptr<Star> star,
 
     auto* mcmcTab   = new QWidget;
     auto* photTab   = new QWidget;
+    auto* pgTab     = new QWidget;
+    auto* bsTab     = new QWidget;
     auto* manualTab = new QWidget;
     buildMCMCTab(mcmcTab);
     buildPhotTab(photTab);
+    buildPeriodogramTab(pgTab);
+    buildBootstrapTab(bsTab);
     buildManualTab(manualTab);
 
     _tabs->addTab(mcmcTab,   "RV-MCMC");
     _tabs->addTab(photTab,   "From Photometry");
+    _tabs->addTab(pgTab,     "RV Periodogram");
+    _tabs->addTab(bsTab,     "χ² Landscape");
     _tabs->addTab(manualTab, "Manual");
+    _bsTabIndex     = _tabs->indexOf(bsTab);
+    _manualTabIndex = _tabs->indexOf(manualTab);
+    _pgTabIndex     = _tabs->indexOf(pgTab);
     outer->addWidget(_tabs, 1);
 
     _buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
@@ -73,6 +91,9 @@ RVAddFitDialog::RVAddFitDialog(std::shared_ptr<Star> star,
 
     populatePeriodogramSources();
     populatePhotPeaks();           // also fills MCMC tab's peak combo
+    // RV-periodogram tab data (LC periodogram load + restore of cached result)
+    // is loaded lazily on first activation - see onTabChanged - so opening the
+    // dialog stays snappy even for stars with large LC periodograms.
 }
 
 // ───────────────────────────────────────────────────────────────────
@@ -484,12 +505,21 @@ void RVAddFitDialog::onMcmcLimitPeakToggled(bool on) {
 void RVAddFitDialog::onTabChanged(int idx)
 {
     auto* okBtn = _buttons->button(QDialogButtonBox::Ok);
-    if (okBtn) okBtn->setVisible(idx == 2);   // Manual is tab 2
+    if (okBtn) okBtn->setVisible(idx == _manualTabIndex);   // OK only on Manual
+
+    // Lazily populate the RV-periodogram tab the first time it is shown.
+    if (idx == _pgTabIndex && !_pgInitialized) {
+        _pgInitialized = true;
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        pgPopulateLcList();
+        pgLoadPersisted();
+        QApplication::restoreOverrideCursor();
+    }
 }
 
 void RVAddFitDialog::onAccept()
 {
-    if (_tabs->currentIndex() != 2) return;
+    if (_tabs->currentIndex() != _manualTabIndex) return;
     auto fit = buildManualFit();
     if (fit) { _resultFits.append(fit); accept(); }
 }
@@ -919,6 +949,189 @@ LMResult fitCircularLM(const std::vector<double>& t,
     return R;
 }
 
+// ── Bounded per-cell fit for the χ² landscape ──────────────────────────
+// Fits Kc, Ks, γ and P with P projected onto [Pmin, Pmax] (no period prior),
+// seeded at P0. Returns the pure data χ² = Σ ((y-model)/σ)² at the solution.
+// Kept lightweight (capped iterations) since it runs once per grid cell.
+double fitCellChi2(const std::vector<double>& t,
+                   const std::vector<double>& y,
+                   const std::vector<double>& sigma,
+                   double P0, double Pmin, double Pmax)
+{
+    const int N = int(t.size());
+    if (N < 4 || !(P0 > 0)) return std::numeric_limits<double>::infinity();
+
+    double Kc=0.0, Ks=0.0, gamma=0.0, P=std::clamp(P0, Pmin, Pmax);
+    {
+        double sumW=0, sumY=0;
+        for (int i=0;i<N;++i){ double w=1.0/(sigma[i]*sigma[i]); sumW+=w; sumY+=w*y[i]; }
+        if (sumW>0) gamma = sumY/sumW;
+        double m=0; for (int i=0;i<N;++i) m=std::max(m, std::abs(y[i]-gamma));
+        Ks = m;
+    }
+
+    auto residuals = [&](double Kc, double Ks, double gamma, double P,
+                         std::vector<double>& r){
+        r.resize(N);
+        for (int i=0;i<N;++i){
+            const double w = 2.0*M_PI*t[i]/P;
+            r[i] = (y[i] - (Kc*std::cos(w) + Ks*std::sin(w) + gamma)) / sigma[i];
+        }
+    };
+
+    std::vector<double> r; residuals(Kc,Ks,gamma,P,r);
+    double chi2=0; for (double v:r) chi2+=v*v;
+    double lambda = 1e-3;
+
+    for (int iter=0; iter<60; ++iter){
+        double JTJ[4][4]={{0}}, JTr[4]={0};
+        for (int i=0;i<N;++i){
+            const double w  = 2.0*M_PI*t[i]/P;
+            const double cw = std::cos(w), sw = std::sin(w);
+            const double s  = sigma[i];
+            const double Ji[4] = {
+                -cw/s, -sw/s, -1.0/s,
+                (2.0*M_PI*t[i]/(P*P)) * (Ks*cw - Kc*sw) / s
+            };
+            for (int a=0;a<4;++a){
+                JTr[a] += Ji[a]*r[i];
+                for (int b=0;b<4;++b) JTJ[a][b] += Ji[a]*Ji[b];
+            }
+        }
+        double A[4][4]; double bvec[4];
+        for (int a=0;a<4;++a){
+            for (int b=0;b<4;++b) A[a][b]=JTJ[a][b];
+            A[a][a]*=(1.0+lambda);
+            bvec[a]=-JTr[a];
+        }
+        double delta[4]={0};
+        {
+            double M[4][5];
+            for (int i=0;i<4;++i){ for (int j=0;j<4;++j) M[i][j]=A[i][j]; M[i][4]=bvec[i]; }
+            bool singular=false;
+            for (int i=0;i<4 && !singular;++i){
+                int piv=i;
+                for (int k=i+1;k<4;++k) if (std::abs(M[k][i])>std::abs(M[piv][i])) piv=k;
+                if (std::abs(M[piv][i])<1e-30){ singular=true; break; }
+                if (piv!=i) std::swap(M[piv],M[i]);
+                for (int k=i+1;k<4;++k){
+                    double f=M[k][i]/M[i][i];
+                    for (int j=i;j<5;++j) M[k][j]-=f*M[i][j];
+                }
+            }
+            if (singular){ lambda*=10; if (lambda>1e12) break; continue; }
+            for (int i=3;i>=0;--i){
+                double s=M[i][4];
+                for (int j=i+1;j<4;++j) s-=M[i][j]*delta[j];
+                delta[i]=s/M[i][i];
+            }
+        }
+        double Kc2=Kc+delta[0], Ks2=Ks+delta[1], g2=gamma+delta[2];
+        double P2=std::clamp(P+delta[3], Pmin, Pmax);
+
+        std::vector<double> r2; residuals(Kc2,Ks2,g2,P2,r2);
+        double chi2New=0; for (double v:r2) chi2New+=v*v;
+
+        if (chi2New<chi2){
+            const double rel=(chi2-chi2New)/std::max(chi2,1e-30);
+            Kc=Kc2; Ks=Ks2; gamma=g2; P=P2; chi2=chi2New; r.swap(r2);
+            lambda=std::max(lambda*0.5,1e-10);
+            if (rel<1e-9) break;
+        } else {
+            lambda*=4.0; if (lambda>1e12) break;
+        }
+    }
+    return chi2;
+}
+
+// 4×4 matrix inverse via Gauss-Jordan. Returns false if singular.
+bool invert4x4(const double A[4][4], double inv[4][4])
+{
+    double M[4][8];
+    for (int i=0;i<4;++i){
+        for (int j=0;j<4;++j){ M[i][j]=A[i][j]; M[i][4+j]=(i==j)?1.0:0.0; }
+    }
+    for (int i=0;i<4;++i){
+        int piv=i;
+        for (int k=i+1;k<4;++k) if (std::abs(M[k][i])>std::abs(M[piv][i])) piv=k;
+        if (std::abs(M[piv][i])<1e-30) return false;
+        if (piv!=i) std::swap(M[piv],M[i]);
+        double d=M[i][i];
+        for (int j=0;j<8;++j) M[i][j]/=d;
+        for (int k=0;k<4;++k){
+            if (k==i) continue;
+            double f=M[k][i];
+            for (int j=0;j<8;++j) M[k][j]-=f*M[i][j];
+        }
+    }
+    for (int i=0;i<4;++i) for (int j=0;j<4;++j) inv[i][j]=M[i][4+j];
+    return true;
+}
+
+struct LMResultFull {
+    double K=0, gamma=0, phi=0, P=0, chi2=0;
+    double Kerr=0, gammaErr=0, phiErr=0, Perr=0;
+    bool ok=false; QString msg;
+};
+
+// Full fit (soft period prior, free P) that also returns 1σ parameter errors
+// from the data-only covariance C = s²·(JᵀJ)⁻¹, with s² = χ²_data/(N−4).
+LMResultFull fitCircularLMFull(const std::vector<double>& t,
+                               const std::vector<double>& y,
+                               const std::vector<double>& sigma,
+                               double P0, double sigP)
+{
+    LMResultFull R;
+    LMResult base = fitCircularLM(t, y, sigma, P0, sigP);
+    if (!base.ok) { R.msg = base.msg; return R; }
+    R.K=base.K; R.gamma=base.gamma; R.phi=base.phi; R.P=base.P;
+
+    const int N = int(t.size());
+    // Recover Kc, Ks from K and φ (φ = atan2(Kc,Ks)/2π).
+    const double ph = base.phi * 2.0*M_PI;
+    double Kc = base.K*std::sin(ph), Ks = base.K*std::cos(ph);
+    const double P = base.P, gamma = base.gamma;
+
+    // Data-only χ² and Jacobian at the solution.
+    double JTJ[4][4]={{0}}; double chi2=0.0;
+    for (int i=0;i<N;++i){
+        const double w  = 2.0*M_PI*t[i]/P;
+        const double cw = std::cos(w), sw = std::sin(w);
+        const double s  = sigma[i];
+        const double res = (y[i] - (Kc*cw + Ks*sw + gamma)) / s;
+        chi2 += res*res;
+        const double Ji[4] = {
+            -cw/s, -sw/s, -1.0/s,
+            (2.0*M_PI*t[i]/(P*P)) * (Ks*cw - Kc*sw) / s
+        };
+        for (int a=0;a<4;++a) for (int b=0;b<4;++b) JTJ[a][b]+=Ji[a]*Ji[b];
+    }
+    R.chi2 = chi2;
+
+    double cov[4][4];
+    const int dof = std::max(1, N-4);
+    const double s2 = chi2 / dof;          // reduce-χ² error rescaling
+    if (invert4x4(JTJ, cov)) {
+        for (int a=0;a<4;++a) for (int b=0;b<4;++b) cov[a][b]*=s2;
+        const double vKc=std::max(0.0,cov[0][0]), vKs=std::max(0.0,cov[1][1]);
+        const double cKcKs=cov[0][1];
+        R.gammaErr = std::sqrt(std::max(0.0, cov[2][2]));
+        R.Perr     = std::sqrt(std::max(0.0, cov[3][3]));
+        const double K2 = Kc*Kc + Ks*Ks;
+        if (K2 > 0) {
+            // K = √(Kc²+Ks²);  φ = atan2(Kc,Ks)/2π
+            const double dKc=Kc/std::sqrt(K2), dKs=Ks/std::sqrt(K2);
+            R.Kerr = std::sqrt(std::max(0.0,
+                dKc*dKc*vKc + dKs*dKs*vKs + 2.0*dKc*dKs*cKcKs));
+            const double pKc= Ks/K2/(2.0*M_PI), pKs=-Kc/K2/(2.0*M_PI);
+            R.phiErr = std::sqrt(std::max(0.0,
+                pKc*pKc*vKc + pKs*pKs*vKs + 2.0*pKc*pKs*cKcKs));
+        }
+    }
+    R.ok = true;
+    return R;
+}
+
 } // namespace
 
 std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidLM(
@@ -974,6 +1187,56 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidLM(
 }
 
 // ───────────────────────────────────────────────────────────────────
+std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidLMFull(
+    double pSeed, double pSigma, double pErrLandscape, QString* errOut) const
+{
+    auto data = buildRVData();
+    if (data.bjd.size() < 4) {
+        if (errOut) *errOut = "Need ≥ 4 unflagged RV points with BJD.";
+        return nullptr;
+    }
+
+    // Same reference epoch handling as fitSinusoidLM (keep phase consistent).
+    double t0   = data.bjd.front();
+    double mjd0 = 0.0;
+    if (_curve) {
+        double refBjd = 0.0, refMjd = 0.0;
+        if (_curve->computeReferenceEpoch(refBjd, refMjd) && refBjd > 0.0) {
+            t0 = refBjd; mjd0 = refMjd;
+        }
+    }
+
+    std::vector<double> t(data.bjd.size()), y = data.rv, s = data.rv_err;
+    for (size_t i = 0; i < data.bjd.size(); ++i) t[i] = data.bjd[i] - t0;
+
+    auto R = fitCircularLMFull(t, y, s, pSeed, pSigma);
+    if (!R.ok) { if (errOut) *errOut = R.msg; return nullptr; }
+
+    auto fit = std::make_shared<RVFit>();
+    fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    fit->setCurveId(_curve ? _curve->getId() : QString());
+    fit->setCreationDate(QDateTime::currentDateTime());
+    fit->setFitMethod(QString("LM χ²-landscape (P_seed=%1)")
+                          .arg(pSeed, 0, 'f', 6));
+    fit->setPeriod(R.P);
+    fit->setK(R.K);
+    fit->setGamma(R.gamma);
+    fit->setPhi(R.phi);
+    fit->setReferenceTime(t0, mjd0);
+    fit->setChi2(R.chi2);
+    fit->setKError(R.Kerr);
+    fit->setGammaError(R.gammaErr);
+    fit->setPhiError(R.phiErr);
+    // Prefer the covariance-based period error; fall back to the landscape
+    // curvature estimate when the covariance is degenerate (Perr ≈ 0).
+    fit->setPeriodError((R.Perr > 0 && std::isfinite(R.Perr))
+                            ? R.Perr : std::max(0.0, pErrLandscape));
+    fit->setEccentric(false);
+    fit->setBestFit(false);
+    return fit;
+}
+
+// ───────────────────────────────────────────────────────────────────
 void RVAddFitDialog::onRunPhotFit()
 {
     if (!_curve || !_photPeaksList) return;
@@ -1003,6 +1266,1113 @@ void RVAddFitDialog::onRunPhotFit()
     if (!failed.isEmpty()) {
         QMessageBox::warning(this, "From Photometry",
             "Some peaks failed:\n" + failed.join("\n"));
+    }
+    if (fits.isEmpty()) return;
+
+    _resultFits = fits;
+    accept();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//   RV Periodogram tab
+// ═══════════════════════════════════════════════════════════════════
+namespace {
+
+// Local peak finder mirroring PeriodogramPanel::detectPeaks but operating on a
+// stand-alone Result (the panel's version only works on its own stored
+// results). Uses the panel's static estimatePeakAt for the σ_P estimate.
+QList<PeriodogramPanel::PeriodPeak>
+detectPeaksOnResult(const Periodogram::Result& res, int maxPeaks,
+                    double minRelSep = 0.05)
+{
+    QList<PeriodogramPanel::PeriodPeak> peaks;
+    if (!res.isValid() || res.power.size() < 5) return peaks;
+
+    const int N = res.power.size();
+    QVector<int> candidates;
+    candidates.reserve(N / 4);
+    for (int i = 1; i < N - 1; ++i) {
+        const double p = res.power[i];
+        if (p > res.power[i - 1] && p > res.power[i + 1]) candidates.append(i);
+    }
+    std::sort(candidates.begin(), candidates.end(),
+              [&](int a, int b){ return res.power[a] > res.power[b]; });
+
+    QVector<int> chosen;
+    for (int i : candidates) {
+        if (chosen.size() >= maxPeaks) break;
+        const double fi = res.frequency[i];
+        bool close = false;
+        for (int j : chosen) {
+            const double fj = res.frequency[j];
+            if (std::abs(fi - fj) / std::max(fi, 1e-30) < minRelSep) { close = true; break; }
+        }
+        if (!close) chosen.append(i);
+    }
+    for (int idx : chosen) {
+        const double f = res.frequency[idx];
+        if (f <= 0) continue;
+        peaks.append(PeriodogramPanel::estimatePeakAt(res, 1.0 / f));
+    }
+    std::sort(peaks.begin(), peaks.end(),
+              [](const PeriodogramPanel::PeriodPeak& a,
+                 const PeriodogramPanel::PeriodPeak& b){ return a.period < b.period; });
+    return peaks;
+}
+
+} // namespace
+
+void RVAddFitDialog::buildPeriodogramTab(QWidget* parent)
+{
+    auto* outer = new QVBoxLayout(parent);
+    outer->setContentsMargins(4, 4, 4, 4);
+
+    auto* info = new QLabel(
+        "Compute a Lomb–Scargle periodogram of the RV curve, optionally "
+        "multiply it (period-wise) with existing light-curve periodograms to "
+        "narrow the candidate periods, then detect peaks and fit them with the "
+        "LM solver to add as solutions.");
+    info->setWordWrap(true);
+    outer->addWidget(info);
+
+    auto* splitter = new QSplitter(Qt::Horizontal, parent);
+
+    // ── Left: plot + small toolbar ───────────────────────────────────
+    auto* plotHost = new QWidget;
+    auto* plotLay  = new QVBoxLayout(plotHost);
+    plotLay->setContentsMargins(0, 0, 0, 0);
+
+    auto* tbar = new QHBoxLayout;
+    tbar->addWidget(new QLabel("X axis:"));
+    _pgXAxis = new QComboBox;
+    _pgXAxis->addItem("Period", 0);
+    _pgXAxis->addItem("Frequency", 1);
+    tbar->addWidget(_pgXAxis);
+    tbar->addStretch();
+    _pgInfoLabel = new QLabel("Not computed.");
+    _pgInfoLabel->setStyleSheet("color: gray; font-style: italic;");
+    tbar->addWidget(_pgInfoLabel);
+    plotLay->addLayout(tbar);
+
+    _pgPlot = new QCustomPlot;
+    PanelUtils::stylePlot(_pgPlot);
+    _pgPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
+    _pgPlot->setMinimumSize(360, 320);
+    plotLay->addWidget(_pgPlot, 1);
+    splitter->addWidget(plotHost);
+
+    connect(_pgXAxis, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int){ pgReplot(); });
+
+    // Double-click in the plot → snap to nearest peak and add it.
+    connect(_pgPlot, &QCustomPlot::mouseDoubleClick, this,
+            [this](QMouseEvent* ev){
+        const Periodogram::Result res = pgActiveResult();
+        if (!res.isValid()) return;
+        const double xc = _pgPlot->xAxis->pixelToCoord(ev->pos().x());
+        const bool periodMode = (_pgXAxis->currentData().toInt() == 0);
+        const double period = periodMode ? xc : (xc > 0 ? 1.0 / xc : 0.0);
+        if (!(period > 0)) return;
+        const auto pk = PeriodogramPanel::estimatePeakAt(res, period);
+        if (pk.period > 0)
+            pgAddPeakItem(pk.period, pk.periodError, pk.power, pk.sourceLabel);
+        pgReplot();
+    });
+
+    // ── Right: controls (scrollable) ─────────────────────────────────
+    auto* ctlScroll = new QScrollArea;
+    ctlScroll->setWidgetResizable(true);
+    ctlScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto* ctl    = new QWidget;
+    auto* ctlLay = new QVBoxLayout(ctl);
+    ctlLay->setContentsMargins(6, 6, 6, 6);
+    ctlLay->setSpacing(8);
+    ctlScroll->setWidget(ctl);
+    ctlScroll->setMinimumWidth(330);
+    ctlScroll->setMaximumWidth(440);
+
+    auto mk = [](double mn, double mx, int dec, double step) {
+        auto* s = new PreciseDoubleSpinBox;
+        s->setRange(mn, mx);
+        s->setDecimals(dec);
+        s->setSingleStep(step);
+        return s;
+    };
+
+    // Parameters
+    auto* paramBox  = new QGroupBox("Periodogram parameters");
+    auto* paramForm = new QFormLayout(paramBox);
+    _pgMinP = new PreciseDoubleSpinBox;
+    _pgMinP->setRange(0.0, 1e9);
+    _pgMinP->setSpecialValueText("auto");
+    _pgMinP->setSuffix(" d");
+    paramForm->addRow("Min P:", _pgMinP);
+    _pgMaxP = new PreciseDoubleSpinBox;
+    _pgMaxP->setRange(0.0, 1e9);
+    _pgMaxP->setSpecialValueText("auto");
+    _pgMaxP->setSuffix(" d");
+    paramForm->addRow("Max P:", _pgMaxP);
+    _pgNSamp = new QSpinBox;
+    _pgNSamp->setRange(0, 50'000'000);
+    _pgNSamp->setSingleStep(1000);
+    _pgNSamp->setSpecialValueText("auto");
+    paramForm->addRow("N:", _pgNSamp);
+    _pgOversample = new QDoubleSpinBox;
+    _pgOversample->setDecimals(1);
+    _pgOversample->setRange(0.1, 100.0);
+    _pgOversample->setValue(20.0);
+    paramForm->addRow("Oversample:", _pgOversample);
+
+    auto* paramBtns = new QHBoxLayout;
+    _pgOptimalBtn = new QToolButton;
+    _pgOptimalBtn->setText("Optimal");
+    _pgOptimalBtn->setToolTip("Auto-fill empty fields from the RV sampling.");
+    paramBtns->addWidget(_pgOptimalBtn);
+    paramBtns->addStretch();
+    _pgComputeBtn = new QPushButton("Compute");
+    _pgComputeBtn->setDefault(true);
+    paramBtns->addWidget(_pgComputeBtn);
+    paramForm->addRow(paramBtns);
+    ctlLay->addWidget(paramBox);
+
+    connect(_pgOptimalBtn, &QToolButton::clicked, this, &RVAddFitDialog::onPgOptimal);
+    connect(_pgComputeBtn, &QPushButton::clicked, this, &RVAddFitDialog::onPgCompute);
+
+    // LC multiply
+    auto* lcBox  = new QGroupBox("Multiply with light-curve periodograms");
+    auto* lcLay  = new QVBoxLayout(lcBox);
+    auto* lcInfo = new QLabel(
+        "Check periodograms to multiply (period-wise, geometric mean) into the "
+        "RV periodogram.");
+    lcInfo->setWordWrap(true);
+    lcInfo->setStyleSheet("color: gray; font-style: italic;");
+    lcLay->addWidget(lcInfo);
+    _pgLcList = new QListWidget;
+    _pgLcList->setMaximumHeight(120);
+    lcLay->addWidget(_pgLcList);
+    ctlLay->addWidget(lcBox);
+    connect(_pgLcList, &QListWidget::itemChanged, this,
+            [this](QListWidgetItem*){ onPgLcSelectionChanged(); });
+
+    // Peak detection
+    auto* peakBox = new QGroupBox("Peak detection");
+    auto* peakLay = new QVBoxLayout(peakBox);
+    auto* peakTop = new QHBoxLayout;
+    peakTop->addWidget(new QLabel("From:"));
+    _pgPeakSource = new QComboBox;
+    _pgPeakSource->addItem("RV periodogram");
+    _pgPeakSource->addItem("RV × LC product");
+    peakTop->addWidget(_pgPeakSource, 1);
+    peakTop->addWidget(new QLabel("N:"));
+    _pgPeakCount = new QSpinBox;
+    _pgPeakCount->setRange(1, 50);
+    _pgPeakCount->setValue(5);
+    _pgPeakCount->setMaximumWidth(60);
+    peakTop->addWidget(_pgPeakCount);
+    peakLay->addLayout(peakTop);
+
+    _pgDetectBtn = new QPushButton("Detect peaks");
+    peakLay->addWidget(_pgDetectBtn);
+    _pgPeaksList = new QListWidget;
+    _pgPeaksList->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    _pgPeaksList->setMinimumHeight(110);
+    peakLay->addWidget(_pgPeaksList);
+    ctlLay->addWidget(peakBox);
+
+    connect(_pgDetectBtn, &QPushButton::clicked, this, &RVAddFitDialog::onPgDetectPeaks);
+    connect(_pgPeakSource, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int){ pgReplot(); });
+
+    // Fit options
+    auto* fitBox  = new QGroupBox("Fit selected peaks (LM)");
+    auto* fitForm = new QFormLayout(fitBox);
+    _pgPeriodTol = mk(0.001, 10.0, 3, 0.05);
+    _pgPeriodTol->setValue(1.0);
+    _pgPeriodTol->setToolTip("Prior width in multiples of the peak's σ_P "
+                             "(tighten below 0.1 to lock onto the period).");
+    fitForm->addRow("Period prior width (×σ_P)", _pgPeriodTol);
+    _pgEllipsoidal = new QCheckBox("Ellipsoidal (fit at 2·P_peak)");
+    fitForm->addRow(_pgEllipsoidal);
+    _pgFitBtn = new QPushButton("Fit selected peaks…");
+    fitForm->addRow(_pgFitBtn);
+    ctlLay->addWidget(fitBox);
+    ctlLay->addStretch();
+
+    connect(_pgFitBtn, &QPushButton::clicked, this, &RVAddFitDialog::onPgFitPeaks);
+
+    splitter->addWidget(ctlScroll);
+    splitter->setStretchFactor(0, 1);
+    splitter->setStretchFactor(1, 0);
+    outer->addWidget(splitter, 1);
+}
+
+// ───────────────────────────────────────────────────────────────────
+void RVAddFitDialog::pgPopulateLcList()
+{
+    if (!_pgLcList || !_dbm || !_star) return;
+    _pgLcList->clear();
+    _pgLcResults.clear();
+
+    _pgLcRecs = _dbm->loadStarPeriodograms(_star->getId());
+    if (_pgLcRecs.empty()) {
+        _pgLcList->setEnabled(false);
+        auto* it = new QListWidgetItem("No light-curve periodograms available.",
+                                       _pgLcList);
+        it->setFlags(Qt::NoItemFlags);
+        return;
+    }
+    _pgLcList->setEnabled(true);
+
+    // Per-source aggregates in first-appearance order, plus a combined product.
+    QStringList sources;
+    QSet<QString> seen;
+    for (const auto& r : _pgLcRecs) {
+        if (!r || !r->result.isValid()) continue;
+        if (!seen.contains(r->source)) { seen.insert(r->source); sources << r->source; }
+    }
+
+    // Per-source weighted sums are cheap (array sums). The "Combined (all
+    // sources)" product is an interpolating geometric mean over potentially
+    // million-bin grids, so we add it with a placeholder and compute it lazily
+    // only if the user actually checks it (see pgUpdateProduct).
+    auto addRow = [this](const QString& shortLabel, const QString& display,
+                         const Periodogram::Result& res, bool combined) {
+        _pgLcResults.append(res);
+        auto* it = new QListWidgetItem(display, _pgLcList);
+        it->setFlags(it->flags() | Qt::ItemIsUserCheckable);
+        it->setCheckState(Qt::Unchecked);
+        it->setData(Qt::UserRole + 0, _pgLcResults.size() - 1);
+        it->setData(Qt::UserRole + 1, combined);
+        it->setData(Qt::UserRole + 2, shortLabel);
+    };
+
+    for (const QString& s : sources) {
+        Periodogram::Result r = PeriodogramUtils::combineForSource(_pgLcRecs, s);
+        if (r.isValid())
+            addRow(s, QString("%1 (weighted sum)").arg(s), r, false);
+    }
+    if (sources.size() > 1)
+        addRow("Combined", "Combined (all sources)", Periodogram::Result{}, true);
+}
+
+void RVAddFitDialog::pgLoadPersisted()
+{
+    if (!_dbm || !_curve) return;
+    auto recs = _dbm->loadCurveRVPeriodograms(_curve->getId());
+    for (const auto& r : recs) {
+        if (!r || !r->result.isValid()) continue;
+        if (r->source == "product") _pgProduct = r->result;
+        else                        _pgRV      = r->result;
+    }
+    if (_pgRV.isValid()) {
+        if (_pgMinP) _pgMinP->setValue(1.0 / (_pgRV.grid.f0 + _pgRV.grid.df * (_pgRV.grid.Nf - 1)));
+        if (_pgMaxP) _pgMaxP->setValue(_pgRV.grid.f0 > 0 ? 1.0 / _pgRV.grid.f0 : 0.0);
+        if (_pgNSamp) _pgNSamp->setValue(_pgRV.grid.Nf);
+        if (_pgInfoLabel)
+            _pgInfoLabel->setText(QString("Loaded: %1 bins (cached).").arg(_pgRV.grid.Nf));
+        pgReplot();
+    }
+}
+
+void RVAddFitDialog::pgPersist()
+{
+    if (!_dbm || !_curve || !_star) return;
+    std::vector<std::shared_ptr<PeriodogramRecord>> recs;
+    if (_pgRV.isValid()) {
+        auto r = std::make_shared<PeriodogramRecord>();
+        r->source = "rv";
+        r->result = _pgRV;
+        recs.push_back(r);
+    }
+    if (_pgProduct.isValid()) {
+        auto r = std::make_shared<PeriodogramRecord>();
+        r->source = "product";
+        r->result = _pgProduct;
+        recs.push_back(r);
+    }
+    if (!recs.empty())
+        _dbm->saveCurveRVPeriodograms(_star->getId(), _curve->getId(), recs);
+}
+
+void RVAddFitDialog::pgUpdateProduct()
+{
+    _pgProduct = Periodogram::Result{};
+    if (!_pgRV.isValid() || !_pgLcList) return;
+
+    QList<Periodogram::Result> parts;
+    parts.append(_pgRV);
+    for (int i = 0; i < _pgLcList->count(); ++i) {
+        auto* it = _pgLcList->item(i);
+        if (!it || it->checkState() != Qt::Checked) continue;
+        const int idx = it->data(Qt::UserRole + 0).toInt();
+        if (idx < 0 || idx >= _pgLcResults.size()) continue;
+
+        // Compute the combined-sources product on first use, then cache it.
+        if (it->data(Qt::UserRole + 1).toBool() && !_pgLcResults[idx].isValid())
+            _pgLcResults[idx] = PeriodogramUtils::combineForStar(_pgLcRecs);
+
+        if (_pgLcResults[idx].isValid())
+            parts.append(_pgLcResults[idx]);
+    }
+    if (parts.size() < 2) return;   // nothing selected → no product
+    _pgProduct = Periodogram::multiplied(parts, "RV × LC");
+}
+
+void RVAddFitDialog::onPgLcSelectionChanged()
+{
+    pgUpdateProduct();
+    pgReplot();
+}
+
+void RVAddFitDialog::pgReplot()
+{
+    if (!_pgPlot) return;
+    _pgPlot->clearPlottables();
+    _pgPlot->clearItems();
+
+    const bool periodMode = !_pgXAxis || _pgXAxis->currentData().toInt() == 0;
+    _pgPlot->xAxis->setLabel(periodMode ? "Period [d]" : "Frequency [1/d]");
+    // Curves are normalised to their own maximum so the RV, the selected LC
+    // periodograms and the resulting product can be compared by shape on one
+    // axis despite very different absolute power scales.
+    _pgPlot->yAxis->setLabel("Relative power");
+    if (periodMode) {
+        _pgPlot->xAxis->setScaleType(QCPAxis::stLogarithmic);
+        QSharedPointer<QCPAxisTickerLog> t(new QCPAxisTickerLog);
+        _pgPlot->xAxis->setTicker(t);
+    } else {
+        _pgPlot->xAxis->setScaleType(QCPAxis::stLinear);
+        _pgPlot->xAxis->setTicker(QSharedPointer<QCPAxisTicker>(new QCPAxisTicker));
+    }
+
+    auto plotRes = [&](const Periodogram::Result& res, const QString& name,
+                       const QColor& col, double width, Qt::PenStyle style){
+        if (!res.isValid()) return;
+        double ymax = 0.0;
+        for (int i = 0; i < res.grid.Nf; ++i)
+            ymax = std::max(ymax, res.power[i]);
+        const double inv = (ymax > 0.0) ? 1.0 / ymax : 1.0;
+        QVector<double> x, y;
+        x.reserve(res.grid.Nf); y.reserve(res.grid.Nf);
+        for (int i = 0; i < res.grid.Nf; ++i) {
+            const double f = res.frequency[i];
+            if (periodMode) { if (f <= 0) continue; x.append(1.0 / f); }
+            else            { x.append(f); }
+            y.append(res.power[i] * inv);
+        }
+        auto* g = _pgPlot->addGraph();
+        g->setName(name);
+        QPen pen(col); pen.setWidthF(width); pen.setStyle(style);
+        g->setPen(pen);
+        g->setAdaptiveSampling(true);
+        g->setData(x, y, false);
+    };
+
+    // RV periodogram (always, if computed).
+    plotRes(_pgRV, "RV", PanelUtils::lcColor(0), 1.2, Qt::SolidLine);
+
+    // Each selected LC periodogram, so the user sees what is going into the
+    // product and how each one looks.
+    if (_pgLcList) {
+        int colorIdx = 1;
+        for (int i = 0; i < _pgLcList->count(); ++i) {
+            auto* it = _pgLcList->item(i);
+            if (!it || it->checkState() != Qt::Checked) continue;
+            const int idx = it->data(Qt::UserRole + 0).toInt();
+            if (idx < 0 || idx >= _pgLcResults.size()) continue;
+            const QString name = it->data(Qt::UserRole + 2).toString();
+            plotRes(_pgLcResults[idx], name,
+                    PanelUtils::lcColor(colorIdx++), 0.9, Qt::DashLine);
+        }
+    }
+
+    // The resulting product on top, emphasised.
+    plotRes(_pgProduct, "RV × LC (product)",
+            PanelUtils::isDarkTheme() ? Qt::white : Qt::black, 1.8, Qt::SolidLine);
+
+    _pgPlot->legend->setVisible(_pgPlot->graphCount() > 1);
+
+    // Peak markers from the peaks list.
+    if (_pgPeaksList) {
+        for (int i = 0; i < _pgPeaksList->count(); ++i) {
+            auto* it = _pgPeaksList->item(i);
+            const double P = it->data(Qt::UserRole + 0).toDouble();
+            if (!(P > 0)) continue;
+            const double xc = periodMode ? P : 1.0 / P;
+            auto* line = new QCPItemStraightLine(_pgPlot);
+            line->point1->setCoords(xc, 0);
+            line->point2->setCoords(xc, 1);
+            QPen pen(QColor(220, 60, 60, 160));
+            pen.setStyle(Qt::DashLine);
+            pen.setWidthF(1.0);
+            line->setPen(pen);
+        }
+    }
+
+    _pgPlot->rescaleAxes();
+    _pgPlot->replot();
+}
+
+Periodogram::Result RVAddFitDialog::pgActiveResult() const
+{
+    if (_pgPeakSource && _pgPeakSource->currentIndex() == 1 && _pgProduct.isValid())
+        return _pgProduct;
+    return _pgRV;
+}
+
+void RVAddFitDialog::pgAddPeakItem(double period, double sigma, double power,
+                                   const QString& label)
+{
+    if (!_pgPeaksList || !(period > 0)) return;
+    const double s = (sigma > 0 && !std::isnan(sigma)) ? sigma : 0.0;
+    QString text = QString("P = %1 ± %2 d   (power %3, %4)")
+        .arg(period, 0, 'f', 6)
+        .arg(s,      0, 'f', 6)
+        .arg(power,  0, 'f', 4)
+        .arg(label.isEmpty() ? "-" : label);
+    auto* item = new QListWidgetItem(text, _pgPeaksList);
+    item->setData(Qt::UserRole + 0, period);
+    item->setData(Qt::UserRole + 1, s);
+    item->setSelected(true);
+}
+
+// ───────────────────────────────────────────────────────────────────
+void RVAddFitDialog::onPgOptimal()
+{
+    auto data = buildRVData();
+    if (data.bjd.size() < 4) {
+        QMessageBox::warning(this, "RV Periodogram",
+            "Need ≥ 4 unflagged RV points with BJD.");
+        return;
+    }
+    QVector<double> t(data.bjd.begin(), data.bjd.end());
+
+    double mn = _pgMinP->value();   // 0 ⇒ auto
+    double mx = _pgMaxP->value();
+    if (!Periodogram::resolveAutoBounds(t, mn, mx)) {
+        QMessageBox::warning(this, "RV Periodogram",
+            "Could not determine sensible period bounds from the RV sampling.");
+        return;
+    }
+    _pgMinP->setValue(mn);
+    _pgMaxP->setValue(mx);
+
+    const Periodogram::Grid g =
+        Periodogram::generateOptimalGrid(t, _pgOversample->value(), mn, mx, 0);
+    if (g.isValid()) _pgNSamp->setValue(g.Nf);
+}
+
+void RVAddFitDialog::onPgCompute()
+{
+    auto data = buildRVData();
+    if (data.bjd.size() < 4) {
+        QMessageBox::warning(this, "RV Periodogram",
+            "Need ≥ 4 unflagged RV points with BJD.");
+        return;
+    }
+
+    QVector<double> t(data.bjd.begin(),   data.bjd.end());
+    QVector<double> y(data.rv.begin(),    data.rv.end());
+    QVector<double> dy(data.rv_err.begin(), data.rv_err.end());
+
+    const Periodogram::Grid grid = Periodogram::generateOptimalGrid(
+        t, _pgOversample->value(), _pgMinP->value(), _pgMaxP->value(),
+        _pgNSamp->value());
+    if (!grid.isValid()) {
+        QMessageBox::warning(this, "RV Periodogram",
+            "Invalid grid. Check the period bounds / sample count.");
+        return;
+    }
+
+    auto* progress = new QProgressDialog(
+        QString("Computing RV periodogram (%1 bins)…").arg(grid.Nf),
+        QString(), 0, 0, this);
+    progress->setWindowModality(Qt::WindowModal);
+    progress->setMinimumDuration(0);
+    progress->setCancelButton(nullptr);
+    progress->show();
+
+    QPointer<RVAddFitDialog>  self = this;
+    QPointer<QProgressDialog> pd   = progress;
+
+    std::thread worker([self, pd, t, y, dy, grid]() mutable {
+        Periodogram::Result res = Periodogram::computeGLS(t, y, dy, grid);
+        res.label = "RV";
+
+        QMetaObject::invokeMethod(qApp, [self, pd, res]() mutable {
+            if (pd) { pd->close(); pd->deleteLater(); }
+            if (!self) return;
+            if (!res.isValid()) {
+                QMessageBox::critical(self, "RV Periodogram",
+                    "Periodogram computation failed.");
+                return;
+            }
+            self->_pgRV = res;
+            self->pgUpdateProduct();
+            self->pgReplot();
+            self->pgPersist();
+            if (self->_pgInfoLabel)
+                self->_pgInfoLabel->setText(
+                    QString("Computed: %1 bins, %2 points.")
+                        .arg(res.grid.Nf).arg(res.nPoints));
+        }, Qt::QueuedConnection);
+    });
+    worker.detach();
+}
+
+void RVAddFitDialog::onPgDetectPeaks()
+{
+    const Periodogram::Result res = pgActiveResult();
+    if (!res.isValid()) {
+        QMessageBox::warning(this, "RV Periodogram",
+            "Compute the periodogram first (and select an existing one if using "
+            "the product).");
+        return;
+    }
+    const auto peaks = detectPeaksOnResult(res, _pgPeakCount->value());
+    _pgPeaksList->clear();
+    for (const auto& pk : peaks)
+        pgAddPeakItem(pk.period, pk.periodError, pk.power, pk.sourceLabel);
+    pgReplot();
+}
+
+void RVAddFitDialog::onPgFitPeaks()
+{
+    if (!_curve || !_pgPeaksList) return;
+    const auto items = _pgPeaksList->selectedItems();
+    if (items.isEmpty()) {
+        QMessageBox::warning(this, "RV Periodogram",
+            "Select at least one detected peak to fit.");
+        return;
+    }
+    const double tolMul = _pgPeriodTol->value();
+    const bool ellips   = _pgEllipsoidal->isChecked();
+
+    QStringList failed;
+    QList<std::shared_ptr<RVFit>> fits;
+    for (auto* it : items) {
+        double P     = it->data(Qt::UserRole + 0).toDouble();
+        double sigma = it->data(Qt::UserRole + 1).toDouble();
+        if (ellips) { P *= 2.0; sigma *= 2.0; }
+        if (!(sigma > 0)) sigma = std::max(1e-6, 0.02 * P);
+        sigma *= std::max(1e-3, tolMul);
+
+        QString err;
+        auto fit = fitSinusoidLM(P, sigma, &err);
+        if (!fit) { failed << QString("P=%1 d: %2").arg(P).arg(err); continue; }
+        fits.append(fit);
+    }
+    if (!failed.isEmpty()) {
+        QMessageBox::warning(this, "RV Periodogram",
+            "Some peaks failed:\n" + failed.join("\n"));
+    }
+    if (fits.isEmpty()) return;
+
+    _resultFits = fits;
+    accept();
+}
+
+// ═══════════════════════════════════════════════════════════════════
+//   χ² Landscape (bootstrap) tab
+// ═══════════════════════════════════════════════════════════════════
+void RVAddFitDialog::buildBootstrapTab(QWidget* parent)
+{
+    auto* outer = new QVBoxLayout(parent);
+    outer->setContentsMargins(4, 4, 4, 4);
+
+    auto* info = new QLabel(
+        "Scan a period grid: at every grid point a Levenberg–Marquardt circular "
+        "RV fit is run, bounded to its grid cell (half-way to each neighbour, so "
+        "the whole period range is covered). The data χ² of each final fit forms "
+        "a landscape whose minima are candidate periods. Re-fit a minimum to get "
+        "the full solution with errors; its probability of being the true period "
+        "is estimated from how deep its χ² is relative to the other minima.");
+    info->setWordWrap(true);
+    outer->addWidget(info);
+
+    auto* splitter = new QSplitter(Qt::Horizontal, parent);
+
+    // ── Left: plot + toolbar ─────────────────────────────────────────
+    auto* plotHost = new QWidget;
+    auto* plotLay  = new QVBoxLayout(plotHost);
+    plotLay->setContentsMargins(0, 0, 0, 0);
+
+    auto* tbar = new QHBoxLayout;
+    tbar->addWidget(new QLabel("X:"));
+    _bsXAxis = new QComboBox;
+    _bsXAxis->addItem("Period", 0);
+    _bsXAxis->addItem("Frequency", 1);
+    tbar->addWidget(_bsXAxis);
+    tbar->addSpacing(8);
+    tbar->addWidget(new QLabel("Y:"));
+    _bsYAxis = new QComboBox;
+    _bsYAxis->addItem("χ²", 0);
+    _bsYAxis->addItem("Rel. likelihood", 1);
+    tbar->addWidget(_bsYAxis);
+    tbar->addStretch();
+    _bsInfoLabel = new QLabel("Not computed.");
+    _bsInfoLabel->setStyleSheet("color: gray; font-style: italic;");
+    tbar->addWidget(_bsInfoLabel);
+    plotLay->addLayout(tbar);
+
+    _bsPlot = new QCustomPlot;
+    PanelUtils::stylePlot(_bsPlot);
+    _bsPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
+    _bsPlot->setMinimumSize(360, 320);
+    plotLay->addWidget(_bsPlot, 1);
+    splitter->addWidget(plotHost);
+
+    connect(_bsXAxis, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int){ bsReplot(); });
+    connect(_bsYAxis, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int){ bsReplot(); });
+
+    // ── Right: controls (scrollable) ─────────────────────────────────
+    auto* ctlScroll = new QScrollArea;
+    ctlScroll->setWidgetResizable(true);
+    ctlScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    auto* ctl    = new QWidget;
+    auto* ctlLay = new QVBoxLayout(ctl);
+    ctlLay->setContentsMargins(6, 6, 6, 6);
+    ctlLay->setSpacing(8);
+    ctlScroll->setWidget(ctl);
+    ctlScroll->setMinimumWidth(330);
+    ctlScroll->setMaximumWidth(440);
+
+    auto mk = [](double mn, double mx, int dec, double step) {
+        auto* s = new PreciseDoubleSpinBox;
+        s->setRange(mn, mx);
+        s->setDecimals(dec);
+        s->setSingleStep(step);
+        return s;
+    };
+
+    // Grid parameters
+    auto* gridBox  = new QGroupBox("Period grid");
+    auto* gridForm = new QFormLayout(gridBox);
+    _bsMinP = new PreciseDoubleSpinBox;
+    _bsMinP->setRange(0.0, 1e9);
+    _bsMinP->setSpecialValueText("auto");
+    _bsMinP->setSuffix(" d");
+    gridForm->addRow("Min P:", _bsMinP);
+    _bsMaxP = new PreciseDoubleSpinBox;
+    _bsMaxP->setRange(0.0, 1e9);
+    _bsMaxP->setSpecialValueText("auto");
+    _bsMaxP->setSuffix(" d");
+    gridForm->addRow("Max P:", _bsMaxP);
+    _bsNSamp = new QSpinBox;
+    _bsNSamp->setRange(0, 50'000'000);
+    _bsNSamp->setSingleStep(1000);
+    _bsNSamp->setSpecialValueText("auto");
+    gridForm->addRow("N cells:", _bsNSamp);
+    _bsOversample = new QDoubleSpinBox;
+    _bsOversample->setDecimals(1);
+    _bsOversample->setRange(0.1, 100.0);
+    _bsOversample->setValue(5.0);   // coarser than the periodogram grid (20)
+    _bsOversample->setToolTip("Grid oversampling. Lower than the periodogram "
+                              "(each cell is refined by its own LM fit).");
+    gridForm->addRow("Oversample:", _bsOversample);
+
+    auto* gridBtns = new QHBoxLayout;
+    _bsOptimalBtn = new QToolButton;
+    _bsOptimalBtn->setText("Optimal");
+    _bsOptimalBtn->setToolTip("Auto-fill empty fields from the RV sampling.");
+    gridBtns->addWidget(_bsOptimalBtn);
+    gridBtns->addStretch();
+    _bsRunBtn = new QPushButton("Run scan");
+    _bsRunBtn->setDefault(true);
+    gridBtns->addWidget(_bsRunBtn);
+    gridForm->addRow(gridBtns);
+    ctlLay->addWidget(gridBox);
+
+    connect(_bsOptimalBtn, &QToolButton::clicked, this, &RVAddFitDialog::onBsOptimal);
+    connect(_bsRunBtn,     &QPushButton::clicked, this, &RVAddFitDialog::onBsRun);
+
+    // Peak detection
+    auto* peakBox = new QGroupBox("Candidate minima");
+    auto* peakLay = new QVBoxLayout(peakBox);
+    auto* peakTop = new QHBoxLayout;
+    peakTop->addWidget(new QLabel("N:"));
+    _bsPeakCount = new QSpinBox;
+    _bsPeakCount->setRange(1, 50);
+    _bsPeakCount->setValue(5);
+    _bsPeakCount->setMaximumWidth(60);
+    peakTop->addWidget(_bsPeakCount);
+    peakTop->addStretch();
+    _bsDetectBtn = new QPushButton("Detect minima");
+    peakTop->addWidget(_bsDetectBtn);
+    peakLay->addLayout(peakTop);
+    _bsPeaksList = new QListWidget;
+    _bsPeaksList->setSelectionMode(QAbstractItemView::ExtendedSelection);
+    _bsPeaksList->setMinimumHeight(120);
+    peakLay->addWidget(_bsPeaksList);
+    ctlLay->addWidget(peakBox);
+
+    connect(_bsDetectBtn, &QPushButton::clicked, this, &RVAddFitDialog::onBsDetectPeaks);
+
+    // Fit options
+    auto* fitBox  = new QGroupBox("Fit selected minima (LM)");
+    auto* fitForm = new QFormLayout(fitBox);
+    _bsPeriodTol = mk(0.001, 100.0, 3, 0.5);
+    _bsPeriodTol->setValue(5.0);
+    _bsPeriodTol->setToolTip("Prior width in multiples of the minimum's σ_P "
+                             "(from the landscape curvature).");
+    fitForm->addRow("Period prior width (×σ_P)", _bsPeriodTol);
+    _bsEllipsoidal = new QCheckBox("Ellipsoidal (fit at 2·P_peak)");
+    fitForm->addRow(_bsEllipsoidal);
+    _bsFitBtn = new QPushButton("Fit selected minima…");
+    fitForm->addRow(_bsFitBtn);
+    ctlLay->addWidget(fitBox);
+    ctlLay->addStretch();
+
+    connect(_bsFitBtn, &QPushButton::clicked, this, &RVAddFitDialog::onBsFitPeaks);
+
+    splitter->addWidget(ctlScroll);
+    splitter->setStretchFactor(0, 1);
+    splitter->setStretchFactor(1, 0);
+    outer->addWidget(splitter, 1);
+}
+
+// ───────────────────────────────────────────────────────────────────
+void RVAddFitDialog::onBsOptimal()
+{
+    auto data = buildRVData();
+    if (data.bjd.size() < 4) {
+        QMessageBox::warning(this, "χ² Landscape",
+            "Need ≥ 4 unflagged RV points with BJD.");
+        return;
+    }
+    QVector<double> t(data.bjd.begin(), data.bjd.end());
+
+    double mn = _bsMinP->value();   // 0 ⇒ auto
+    double mx = _bsMaxP->value();
+    if (!Periodogram::resolveAutoBounds(t, mn, mx)) {
+        QMessageBox::warning(this, "χ² Landscape",
+            "Could not determine sensible period bounds from the RV sampling.");
+        return;
+    }
+    _bsMinP->setValue(mn);
+    _bsMaxP->setValue(mx);
+
+    const Periodogram::Grid g =
+        Periodogram::generateOptimalGrid(t, _bsOversample->value(), mn, mx, 0);
+    if (g.isValid()) _bsNSamp->setValue(g.Nf);
+}
+
+// ───────────────────────────────────────────────────────────────────
+void RVAddFitDialog::onBsRun()
+{
+    auto data = buildRVData();
+    if (data.bjd.size() < 4) {
+        QMessageBox::warning(this, "χ² Landscape",
+            "Need ≥ 4 unflagged RV points with BJD.");
+        return;
+    }
+
+    QVector<double> tq(data.bjd.begin(), data.bjd.end());
+    const Periodogram::Grid grid = Periodogram::generateOptimalGrid(
+        tq, _bsOversample->value(), _bsMinP->value(), _bsMaxP->value(),
+        _bsNSamp->value());
+    if (!grid.isValid()) {
+        QMessageBox::warning(this, "χ² Landscape",
+            "Invalid grid. Check the period bounds / cell count.");
+        return;
+    }
+
+    // χ² is invariant to the time origin; subtract the first epoch for
+    // numerical conditioning (large BJD / small P would otherwise lose digits).
+    const double t0 = data.bjd.front();
+    auto t = std::make_shared<std::vector<double>>(data.bjd.size());
+    for (size_t i = 0; i < data.bjd.size(); ++i) (*t)[i] = data.bjd[i] - t0;
+    auto y = std::make_shared<std::vector<double>>(data.rv);
+    auto s = std::make_shared<std::vector<double>>(data.rv_err);
+    const int dof = std::max(1, int(data.bjd.size()) - 4);
+
+    const int Nf = grid.Nf;
+    auto chi2 = std::make_shared<std::vector<double>>(Nf,
+                    std::numeric_limits<double>::infinity());
+    auto progress = std::make_shared<std::atomic<int>>(0);
+
+    auto* dlg = new QProgressDialog(
+        QString("Scanning %1 period cells…").arg(Nf),
+        QString("Cancel"), 0, Nf, this);
+    dlg->setWindowModality(Qt::WindowModal);
+    dlg->setMinimumDuration(0);
+    dlg->setAutoClose(false);
+    dlg->setAutoReset(false);
+    dlg->setValue(0);
+    dlg->show();
+
+    auto cancelled = std::make_shared<std::atomic<bool>>(false);
+    connect(dlg, &QProgressDialog::canceled, this,
+            [cancelled]{ cancelled->store(true); });
+
+    auto* poll = new QTimer(dlg);
+    poll->setInterval(150);
+    connect(poll, &QTimer::timeout, dlg, [dlg, progress, Nf]{
+        dlg->setValue(std::min(progress->load(), Nf));
+    });
+    poll->start();
+
+    QPointer<RVAddFitDialog>  self = this;
+    QPointer<QProgressDialog> pd   = dlg;
+
+    std::thread driver([self, pd, grid, Nf, dof, t, y, s,
+                        chi2, progress, cancelled]() mutable
+    {
+        const double f0 = grid.f0, df = grid.df;
+        auto cellWork = [&](int lo, int hi){
+            for (int i = lo; i < hi; ++i) {
+                if (cancelled->load()) return;
+                const double fi  = f0 + i * df;
+                const double fLo = f0 + (i - 0.5) * df;  // lower freq edge
+                const double fHi = f0 + (i + 0.5) * df;  // upper freq edge
+                if (!(fi > 0.0)) {
+                    (*chi2)[i] = std::numeric_limits<double>::infinity();
+                    progress->fetch_add(1);
+                    continue;
+                }
+                const double Pmin = (fHi > 0.0) ? 1.0 / fHi : 1.0 / fi;
+                const double Pmax = (fLo > 0.0) ? 1.0 / fLo : 1.0 / (0.5 * fi);
+                (*chi2)[i] = fitCellChi2(*t, *y, *s, 1.0 / fi, Pmin, Pmax);
+                progress->fetch_add(1);
+            }
+        };
+
+        unsigned hw = std::thread::hardware_concurrency();
+        int nThreads = std::max(1u, hw ? hw : 1u);
+        nThreads = std::min(nThreads, std::max(1, Nf));
+        std::vector<std::thread> pool;
+        const int chunk = (Nf + nThreads - 1) / nThreads;
+        for (int k = 0; k < nThreads; ++k) {
+            const int lo = k * chunk;
+            const int hi = std::min(Nf, lo + chunk);
+            if (lo >= hi) break;
+            pool.emplace_back(cellWork, lo, hi);
+        }
+        for (auto& th : pool) th.join();
+
+        QMetaObject::invokeMethod(qApp, [self, pd, grid, dof, chi2, cancelled]() mutable {
+            // Read the cancel state BEFORE closing: QProgressDialog::close()
+            // emits canceled() synchronously, which would otherwise flip the
+            // flag and make a normal finish look cancelled.
+            const bool wasCancelled = cancelled->load();
+            if (pd) { pd->close(); pd->deleteLater(); }
+            if (!self) return;
+            if (wasCancelled) {
+                if (self->_bsInfoLabel) self->_bsInfoLabel->setText("Scan cancelled.");
+                return;
+            }
+
+            self->_bsGrid = grid;
+            self->_bsChi2 = QVector<double>(chi2->begin(), chi2->end());
+
+            double cmin = std::numeric_limits<double>::infinity();
+            for (double v : *chi2) if (std::isfinite(v)) cmin = std::min(cmin, v);
+            self->_bsChi2Min = std::isfinite(cmin) ? cmin : 0.0;
+            self->_bsScale   = std::max(1e-12, self->_bsChi2Min / dof);
+
+            self->_bsPeaksList->clear();
+            self->bsReplot();
+            if (self->_bsInfoLabel)
+                self->_bsInfoLabel->setText(
+                    QString("Scanned %1 cells · χ²_min = %2 · reduced χ² = %3")
+                        .arg(grid.Nf)
+                        .arg(self->_bsChi2Min, 0, 'f', 2)
+                        .arg(self->_bsScale,   0, 'f', 3));
+            // Immediately surface the candidate minima so the result is visible.
+            self->onBsDetectPeaks();
+        }, Qt::QueuedConnection);
+    });
+    driver.detach();
+}
+
+// ───────────────────────────────────────────────────────────────────
+void RVAddFitDialog::bsReplot()
+{
+    if (!_bsPlot) return;
+    _bsPlot->clearPlottables();
+    _bsPlot->clearItems();
+
+    const bool periodMode = !_bsXAxis || _bsXAxis->currentData().toInt() == 0;
+    const bool likeMode   = _bsYAxis && _bsYAxis->currentData().toInt() == 1;
+    _bsPlot->xAxis->setLabel(periodMode ? "Period [d]" : "Frequency [1/d]");
+    _bsPlot->yAxis->setLabel(likeMode ? "Relative likelihood" : "χ²");
+    if (periodMode) {
+        _bsPlot->xAxis->setScaleType(QCPAxis::stLogarithmic);
+        QSharedPointer<QCPAxisTickerLog> tk(new QCPAxisTickerLog);
+        _bsPlot->xAxis->setTicker(tk);
+    } else {
+        _bsPlot->xAxis->setScaleType(QCPAxis::stLinear);
+        _bsPlot->xAxis->setTicker(QSharedPointer<QCPAxisTicker>(new QCPAxisTicker));
+    }
+
+    const int Nf = std::min<int>(_bsChi2.size(), _bsGrid.Nf);
+    if (Nf > 1 && _bsGrid.isValid()) {
+        QVector<double> x, yv;
+        x.reserve(Nf); yv.reserve(Nf);
+        for (int i = 0; i < Nf; ++i) {
+            const double f = _bsGrid.f0 + i * _bsGrid.df;
+            const double c = _bsChi2[i];
+            if (!std::isfinite(c) || !(f > 0.0)) continue;
+            x.append(periodMode ? 1.0 / f : f);
+            yv.append(likeMode
+                ? std::exp(-(c - _bsChi2Min) / (2.0 * _bsScale))
+                : c);
+        }
+        auto* g = _bsPlot->addGraph();
+        g->setName(likeMode ? "Likelihood" : "χ²");
+        QPen pen(PanelUtils::lcColor(0)); pen.setWidthF(1.2);
+        g->setPen(pen);
+        g->setAdaptiveSampling(true);
+        g->setData(x, yv, false);
+    }
+
+    // Candidate minima markers.
+    if (_bsPeaksList) {
+        for (int i = 0; i < _bsPeaksList->count(); ++i) {
+            auto* it = _bsPeaksList->item(i);
+            const double P = it->data(Qt::UserRole + 0).toDouble();
+            if (!(P > 0)) continue;
+            const double xc = periodMode ? P : 1.0 / P;
+            auto* line = new QCPItemStraightLine(_bsPlot);
+            line->point1->setCoords(xc, 0);
+            line->point2->setCoords(xc, 1);
+            QPen pen(QColor(220, 60, 60, 160));
+            pen.setStyle(Qt::DashLine);
+            pen.setWidthF(1.0);
+            line->setPen(pen);
+        }
+    }
+
+    _bsPlot->rescaleAxes();
+    _bsPlot->replot();
+}
+
+void RVAddFitDialog::bsAddPeakItem(double period, double sigma,
+                                   double chi2, double prob)
+{
+    if (!_bsPeaksList || !(period > 0)) return;
+    const double s = (sigma > 0 && std::isfinite(sigma)) ? sigma : 0.0;
+    QString text = QString("P = %1 ± %2 d   (χ² %3, P=%4%)")
+        .arg(period, 0, 'f', 6)
+        .arg(s,      0, 'f', 6)
+        .arg(chi2,   0, 'f', 2)
+        .arg(prob * 100.0, 0, 'f', 1);
+    auto* item = new QListWidgetItem(text, _bsPeaksList);
+    item->setData(Qt::UserRole + 0, period);
+    item->setData(Qt::UserRole + 1, s);
+    item->setSelected(true);
+}
+
+// ───────────────────────────────────────────────────────────────────
+void RVAddFitDialog::onBsDetectPeaks()
+{
+    const int Nf = std::min<int>(_bsChi2.size(), _bsGrid.Nf);
+    if (Nf < 5 || !_bsGrid.isValid()) {
+        QMessageBox::warning(this, "χ² Landscape", "Run the scan first.");
+        return;
+    }
+
+    // Strict local minima of the χ² landscape.
+    QVector<int> cand;
+    for (int i = 1; i < Nf - 1; ++i) {
+        const double c = _bsChi2[i];
+        if (std::isfinite(c) && c < _bsChi2[i-1] && c < _bsChi2[i+1])
+            cand.append(i);
+    }
+    std::sort(cand.begin(), cand.end(),
+              [this](int a, int b){ return _bsChi2[a] < _bsChi2[b]; });
+
+    const int maxPeaks = _bsPeakCount->value();
+    const double minRelSep = 0.02;
+    QVector<int> chosen;
+    for (int i : cand) {
+        if (chosen.size() >= maxPeaks) break;
+        const double fi = _bsGrid.f0 + i * _bsGrid.df;
+        bool close = false;
+        for (int j : chosen) {
+            const double fj = _bsGrid.f0 + j * _bsGrid.df;
+            if (std::abs(fi - fj) / std::max(fi, 1e-30) < minRelSep) { close = true; break; }
+        }
+        if (!close) chosen.append(i);
+    }
+
+    // Parabolic refinement (in frequency) → refined P, σ_P and vertex χ².
+    struct Cand { double P, sigP, chi2v; };
+    QVector<Cand> peaks;
+    const double h = _bsGrid.df;
+    for (int i : chosen) {
+        const double ym = _bsChi2[i-1], y0 = _bsChi2[i], yp = _bsChi2[i+1];
+        const double denom = (ym - 2.0*y0 + yp);   // > 0 for a strict minimum
+        const double fi = _bsGrid.f0 + i * _bsGrid.df;
+        double fPeak = fi, chi2v = y0, sigP = 0.0;
+        if (denom > 0.0) {
+            const double kk = (ym - yp) / (2.0 * denom);    // vertex offset (cells)
+            fPeak = fi + kk * h;
+            chi2v = y0 - (yp - ym)*(yp - ym) / (8.0 * denom);
+            // Δ(rescaled χ²)=1 ⇒ σ_f = h·√(2·s/denom); σ_P = σ_f / f².
+            const double sigF = h * std::sqrt(2.0 * _bsScale / denom);
+            if (fPeak > 0.0) sigP = sigF / (fPeak * fPeak);
+        }
+        if (fPeak > 0.0)
+            peaks.append({1.0 / fPeak, sigP, std::min(chi2v, y0)});
+    }
+
+    // Probability that each minimum is the true period: relative likelihood
+    // exp(−Δχ²/2s) normalised over the candidate set (error-rescaled by s so it
+    // reflects the actual noise level, not under/over-estimated formal errors).
+    double wsum = 0.0;
+    QVector<double> w(peaks.size());
+    for (int i = 0; i < peaks.size(); ++i) {
+        w[i] = std::exp(-(peaks[i].chi2v - _bsChi2Min) / (2.0 * _bsScale));
+        wsum += w[i];
+    }
+
+    // Present sorted by period for a stable reading order.
+    QVector<int> order(peaks.size());
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(),
+              [&](int a, int b){ return peaks[a].P < peaks[b].P; });
+
+    _bsPeaksList->clear();
+    for (int idx : order) {
+        const double prob = (wsum > 0.0) ? w[idx] / wsum : 0.0;
+        bsAddPeakItem(peaks[idx].P, peaks[idx].sigP, peaks[idx].chi2v, prob);
+    }
+    bsReplot();
+}
+
+// ───────────────────────────────────────────────────────────────────
+void RVAddFitDialog::onBsFitPeaks()
+{
+    if (!_curve || !_bsPeaksList) return;
+    const auto items = _bsPeaksList->selectedItems();
+    if (items.isEmpty()) {
+        QMessageBox::warning(this, "χ² Landscape",
+            "Select at least one candidate minimum to fit.");
+        return;
+    }
+    const double tolMul = _bsPeriodTol->value();
+    const bool ellips   = _bsEllipsoidal->isChecked();
+
+    QStringList failed;
+    QList<std::shared_ptr<RVFit>> fits;
+    for (auto* it : items) {
+        double P     = it->data(Qt::UserRole + 0).toDouble();
+        double sigma = it->data(Qt::UserRole + 1).toDouble();
+        if (ellips) { P *= 2.0; sigma *= 2.0; }
+        if (!(sigma > 0)) sigma = std::max(1e-6, 0.02 * P);
+        const double priorW = sigma * std::max(1e-3, tolMul);
+
+        QString err;
+        auto fit = fitSinusoidLMFull(P, priorW, sigma, &err);
+        if (!fit) { failed << QString("P=%1 d: %2").arg(P).arg(err); continue; }
+        fits.append(fit);
+    }
+    if (!failed.isEmpty()) {
+        QMessageBox::warning(this, "χ² Landscape",
+            "Some minima failed:\n" + failed.join("\n"));
     }
     if (fits.isEmpty()) return;
 
