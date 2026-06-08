@@ -56,6 +56,7 @@ public:
     bool canRemove(int row) const;
     void removePoint(int row);
     void appendPoint(std::shared_ptr<RadialVelocityPoint> p);
+    void appendPoints(const std::vector<std::shared_ptr<RadialVelocityPoint>>& pts);
 
 signals:
     void pointEdited(const QModelIndex& row);
@@ -162,6 +163,7 @@ public:
 
 private slots:
     void onAddManualPoint();
+    void onImportPointsFromCsv();
     void onPointActionClicked();
     void onPointSelectionChanged();
 
@@ -180,6 +182,7 @@ private:
     RVPointsTableModel* _pointsModel = nullptr;
 
     QPushButton* _addPointBtn    = nullptr;
+    QPushButton* _importPointsBtn = nullptr;
     QPushButton* _actionBtn = nullptr;
 
 };

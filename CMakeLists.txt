@@ -266,6 +266,7 @@ set(SOURCES
     src/views/tools/InteractiveIsisDialog.cpp
     src/views/tools/RVAddFitDialog.cpp
     src/views/tools/RVAddPointDialog.cpp
+    src/views/tools/RVImportPointsDialog.cpp
     src/views/tools/RVMCMCResultsDialog.cpp
     src/views/tools/ObservabilityDialog.cpp
 

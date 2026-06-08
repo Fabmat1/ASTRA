@@ -2,6 +2,7 @@
 
 #include "RVAddFitDialog.h"
 #include "RVAddPointDialog.h"
+#include "RVImportPointsDialog.h"
 #include "db/DatabaseManager.h"
 #include "models/Instrument.h"
 #include "models/RadialVelocity.h"
@@ -15,6 +16,7 @@
 
 #include <QAction>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDateTime>
 #include <QDialogButtonBox>
 #include <QDoubleSpinBox>
@@ -29,11 +31,55 @@
 #include <QMenu>
 #include <QPushButton>
 #include <QSplitter>
+#include <QStyledItemDelegate>
 #include <QTableView>
 #include <QUuid>
 #include <QVBoxLayout>
 
 #include <cmath>
+
+// ─────────────────────────────────────────────────────────────────────────────
+//   Combo-box editor for the Instrument column: lets the user (re)assign the
+//   instrument of a free-standing RV point, which drives its BJD conversion.
+// ─────────────────────────────────────────────────────────────────────────────
+namespace {
+class InstrumentColumnDelegate : public QStyledItemDelegate
+{
+public:
+    InstrumentColumnDelegate(DatabaseManager* dbm, QObject* parent = nullptr)
+        : QStyledItemDelegate(parent), _dbm(dbm) {}
+
+    QWidget* createEditor(QWidget* parent, const QStyleOptionViewItem&,
+                          const QModelIndex&) const override
+    {
+        auto* combo = new QComboBox(parent);
+        combo->addItem("(none)", QString());
+        if (_dbm) {
+            for (const auto& inst : _dbm->getAllInstruments())
+                if (inst) combo->addItem(inst->getName(), inst->getId());
+        }
+        return combo;
+    }
+
+    void setEditorData(QWidget* editor, const QModelIndex& idx) const override
+    {
+        if (auto* combo = qobject_cast<QComboBox*>(editor)) {
+            const int i = combo->findData(idx.data(Qt::EditRole).toString());
+            combo->setCurrentIndex(i >= 0 ? i : 0);
+        }
+    }
+
+    void setModelData(QWidget* editor, QAbstractItemModel* model,
+                      const QModelIndex& idx) const override
+    {
+        if (auto* combo = qobject_cast<QComboBox*>(editor))
+            model->setData(idx, combo->currentData(), Qt::EditRole);
+    }
+
+private:
+    DatabaseManager* _dbm = nullptr;
+};
+} // namespace
 
 // ═════════════════════════════════════════════════════════════════════════════
 //   RVPointsTableModel
@@ -127,6 +173,14 @@ Qt::ItemFlags RVPointsTableModel::flags(const QModelIndex& idx) const
         case ColRV:
         case ColErrFormal:
         case ColErrSystematic: f |= Qt::ItemIsEditable;     break;
+        case ColInstrument: {
+            // Only free-standing (manual/imported) points may have their
+            // instrument reassigned; spectrum-linked points derive it.
+            const auto& p = _points[idx.row()];
+            if (p && p->getSpectrumId().isEmpty())
+                f |= Qt::ItemIsEditable;
+            break;
+        }
         case ColFlagged:       f |= Qt::ItemIsUserCheckable; break;
         default: break;
     }
@@ -175,6 +229,12 @@ QVariant RVPointsTableModel::data(const QModelIndex& idx, int role) const
 
     if (role == Qt::CheckStateRole && idx.column() == ColFlagged)
         return p->isFlagged() ? Qt::Checked : Qt::Unchecked;
+
+    // The instrument editor (combo delegate) keys on the instrument id.
+    if (role == Qt::EditRole && idx.column() == ColInstrument) {
+        if (auto inst = resolveInstrumentObject(p)) return inst->getId();
+        return QString();
+    }
 
     if (role == Qt::DisplayRole || role == Qt::EditRole) {
         switch (idx.column()) {
@@ -247,6 +307,23 @@ bool RVPointsTableModel::setData(const QModelIndex& idx, const QVariant& value, 
                     break;
                 }
             }
+        }
+        changed = true;
+    }
+    else if (role == Qt::EditRole && idx.column() == ColInstrument) {
+        const QString id = value.toString();
+        std::shared_ptr<Instrument> inst =
+            (!id.isEmpty() && _dbm) ? _dbm->getInstrumentById(id) : nullptr;
+        p->setInstrument(inst);
+        promote();
+        // Reassigning the instrument changes the barycentric correction, so
+        // recompute BJD from the point's MJD and the star's coordinates.
+        if (inst && _star) {
+            const double ra  = _star->getRa();
+            const double dec = _star->getDec();
+            const double mjd = p->getMJD();
+            if (!std::isnan(ra) && !std::isnan(dec) && mjd > 0.0)
+                p->setBJD(inst->mjdToBjd(mjd, ra, dec));
         }
         changed = true;
     }
@@ -838,21 +915,28 @@ void RVInspectorDialog::setupUi()
     _pointsTable->horizontalHeader()->setStretchLastSection(true);
     _pointsTable->setSortingEnabled(false);
     _pointsTable->setContextMenuPolicy(Qt::CustomContextMenu);
+    _pointsTable->setItemDelegateForColumn(
+        RVPointsTableModel::ColInstrument,
+        new InstrumentColumnDelegate(_dbm, _pointsTable));
     connect(_pointsTable, &QWidget::customContextMenuRequested,
             this, &RVInspectorDialog::onTableContextMenu);
     tableLay->addWidget(_pointsTable);
 
     auto* pointBtnRow = new QHBoxLayout;
-    _addPointBtn = new QPushButton("Add manual point…");
-    _actionBtn   = new QPushButton("Remove selected");
+    _addPointBtn     = new QPushButton("Add manual point…");
+    _importPointsBtn = new QPushButton("Import from CSV…");
+    _actionBtn       = new QPushButton("Remove selected");
     _actionBtn->setEnabled(false);
     pointBtnRow->addStretch();
     pointBtnRow->addWidget(_addPointBtn);
+    pointBtnRow->addWidget(_importPointsBtn);
     pointBtnRow->addWidget(_actionBtn);
     tableLay->addLayout(pointBtnRow);
 
     connect(_addPointBtn, &QPushButton::clicked,
             this, &RVInspectorDialog::onAddManualPoint);
+    connect(_importPointsBtn, &QPushButton::clicked,
+            this, &RVInspectorDialog::onImportPointsFromCsv);
     connect(_actionBtn,   &QPushButton::clicked,
             this, &RVInspectorDialog::onPointActionClicked);
     connect(_pointsTable->selectionModel(), &QItemSelectionModel::selectionChanged,
@@ -952,6 +1036,23 @@ void RVPointsTableModel::appendPoint(std::shared_ptr<RadialVelocityPoint> p)
     reload();
 }
 
+void RVPointsTableModel::appendPoints(
+    const std::vector<std::shared_ptr<RadialVelocityPoint>>& pts)
+{
+    if (pts.empty() || !_star) return;
+    _star->ensureRVCurveSynced();      // creates curve if missing
+    _curve = _star->getRVCurve();
+    if (!_curve) return;
+
+    for (const auto& p : pts) {
+        if (!p) continue;
+        _curve->addRVPoint(p);         // assigns id + curveId, dedup-safe
+        _curve->persistPoint(p);
+    }
+    _star->markSummaryDirty();
+    reload();
+}
+
 void RVInspectorDialog::onAddManualPoint()
 {
     RVAddPointDialog dlg(_star, _dbm, this);
@@ -961,6 +1062,21 @@ void RVInspectorDialog::onAddManualPoint()
 
     _pointsModel->appendPoint(p);
     if (_plotPanel) _plotPanel->refresh();
+}
+
+void RVInspectorDialog::onImportPointsFromCsv()
+{
+    RVImportPointsDialog dlg(_star, _dbm, this);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    auto pts = dlg.results();
+    if (pts.empty()) return;
+
+    _pointsModel->appendPoints(pts);
+    if (_plotPanel) _plotPanel->refresh();
+
+    LOG_INFO("Tools", QString("RV Inspector: imported %1 RV point(s) from CSV")
+        .arg(pts.size()));
 }
 
 void RVInspectorDialog::onPointSelectionChanged()
