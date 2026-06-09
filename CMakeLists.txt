@@ -246,6 +246,7 @@ set(SOURCES
     src/dialogs/EditProjectDialog.cpp
     src/dialogs/NewProjectDialog.cpp
     src/dialogs/SettingsDialog.cpp
+    src/dialogs/FirstRunDialog.cpp
     src/dialogs/AddStarDialog.cpp
     src/dialogs/ImportLightcurve.cpp
     src/dialogs/LCFitDialog.cpp
@@ -374,6 +375,7 @@ set(HEADERS
     src/dialogs/EditProjectDialog.h
     src/dialogs/NewProjectDialog.h
     src/dialogs/SettingsDialog.h
+    src/dialogs/FirstRunDialog.h
     src/dialogs/AddStarDialog.h
     src/dialogs/ImportLightcurve.h
     src/dialogs/LCFitDialog.h

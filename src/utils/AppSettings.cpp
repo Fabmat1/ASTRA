@@ -63,10 +63,31 @@ void AppSettings::applyDefaults()
         { DetailPanel::Spectra, DetailPanel::LightCurve     },
     };
     const QString home = QDir::homePath();
+    const QString user = qEnvironmentVariable("USER");
     _gridBasePaths = { home + "/ISIS_models",
                        home + "/isis/synthetic_spectra/grids",
                        "/data/stellar/modelgrids" };
-    
+    // Shared / group model-grid locations used across our analysis machines, so
+    // grids are found out of the box there. Non-existent paths are ignored at
+    // search time.
+    _gridBasePaths
+        << "/scratch1/irrgang/fitting/"
+        << "/userdata/data/irrgang/synthetic_spectra/grids/"
+        << "/userdata/data/heber/synthetic_spectra/grids/"
+        << "/userdata/data/dorsch/synthetic_spectra/grids/"
+        << "/home/indus/grids/"
+        << "/home/taurus/data/dorsch/grids/"
+        << "/home/carina/schaffenroth/data/photometry/"
+        << "/work/dorsch/grids/";
+    if (!user.isEmpty()) {
+        _gridBasePaths
+            << QStringLiteral("/scratch1/%1/fitting/").arg(user)
+            << QStringLiteral("/scratch2/%1/fitting/").arg(user)
+            << QStringLiteral("/userdata/data/%1/synthetic_spectra/grids/").arg(user)
+            << QStringLiteral("/Users/%1/programs/isis_grids/").arg(user)
+            << QStringLiteral("/Users/%1/Electra/isis_grids/").arg(user);
+    }
+
     _lcqueryPython = QStandardPaths::findExecutable("python3");
     if (_lcqueryPython.isEmpty())
         _lcqueryPython = QStringLiteral("python3");

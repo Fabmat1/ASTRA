@@ -6,6 +6,7 @@
 #include "ProjectSelectionView.h"
 #include "ProjectView.h"
 #include "controllers/ApplicationController.h"
+#include "dialogs/FirstRunDialog.h"
 #include "dialogs/SettingsDialog.h"
 #include "io/StarShare.h"
 #include "models/Project.h"
@@ -20,6 +21,7 @@
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QTimer>
 
 MainWindow::MainWindow(ApplicationController* controller, QWidget *parent)
     : QMainWindow(parent)
@@ -39,6 +41,16 @@ MainWindow::MainWindow(ApplicationController* controller, QWidget *parent)
     // Connect theme change signal
     connect(_controller->themeManager(), &ThemeManager::themeChanged,
             this, &MainWindow::onThemeChanged);
+
+    // First-launch onboarding (optional ADS / ATLAS tokens). Deferred so the
+    // main window is shown first; the dialog marks itself as seen so it only
+    // ever appears once.
+    if (FirstRunDialog::shouldShow()) {
+        QTimer::singleShot(0, this, [this] {
+            FirstRunDialog dlg(_controller->settings(), this);
+            dlg.exec();
+        });
+    }
 }
 
 MainWindow::~MainWindow()
