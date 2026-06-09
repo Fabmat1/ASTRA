@@ -151,6 +151,9 @@ QProcessEnvironment IsisEnvironment::environmentFor(const QString& binaryPath)
     env.insert(QStringLiteral("SLSH_PATH"),         root + "/share/slsh");
     env.insert(QStringLiteral("SLANG_MODULE_PATH"), root + "/lib/slang/v2/modules");
     env.insert(QStringLiteral("HOME"),              privateHome());
+    // PGPLOT looks up its font here; bundled under <root>/pgplot by the build.
+    env.insert(QStringLiteral("PGPLOT_DIR"),  root + "/pgplot");
+    env.insert(QStringLiteral("PGPLOT_FONT"), root + "/pgplot/grfont.dat");
     prepend(QStringLiteral("LD_LIBRARY_PATH"),
             { QDir(libDir).absolutePath(), root + "/lib" });
     prepend(QStringLiteral("PATH"), { appDir, root + "/bin" });
