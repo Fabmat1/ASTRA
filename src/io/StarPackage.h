@@ -62,7 +62,7 @@ class StarPackage {
 
     // Progress reporting: (percent 0-100, human-readable phase label). Invoked
     // from the calling thread; keep the callback thread-safe (do not touch the
-    // UI directly — marshal to the GUI thread). Optional.
+    // UI directly - marshal to the GUI thread). Optional.
     using ProgressFn = std::function<void(int percent, const QString &phase)>;
 
     // ── Write ────────────────────────────────────────────────────────────────

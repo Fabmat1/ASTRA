@@ -133,7 +133,7 @@ void stylePlot(QCustomPlot* plot)
     bool dark = isDarkTheme();
 
     // Background follows the active theme so plots sit seamlessly on the panel.
-    // The grid/tick/text colours stay as the existing dark/light values — they
+    // The grid/tick/text colours stay as the existing dark/light values - they
     // read fine on the theme background and are deliberately kept as-is.
     QColor bgColor      = themeBg();
     QColor textColor    = dark ? QColor(210, 210, 210) : QColor(30, 30, 30);

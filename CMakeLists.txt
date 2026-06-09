@@ -41,7 +41,7 @@ message(STATUS "ASTRA data storage location set to: ${ASTRA_DATA_DIR}")
 
 # Qt
 find_package(Qt6 6.10 REQUIRED COMPONENTS
-    Core Widgets Sql Network Concurrent PrintSupport)
+    Core Widgets Sql Network Concurrent PrintSupport Svg)
 qt_standard_project_setup()
 
 set(LCQUERY_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/lightcurvequery")
@@ -311,6 +311,7 @@ set(SOURCES
     # views/tools
     src/views/tools/CMDDialog.cpp
     src/views/tools/GalacticOrbitDialog.cpp
+    src/views/tools/ProjectPlotDialog.cpp
     src/views/tools/LightcurveFetchDialog.cpp
     src/views/tools/LcquerySetupDialog.cpp
     src/views/tools/RVInspectorDialog.cpp
@@ -442,6 +443,7 @@ set(HEADERS
     # views/tools
     src/views/tools/CMDDialog.h
     src/views/tools/GalacticOrbitDialog.h
+    src/views/tools/ProjectPlotDialog.h
     src/views/tools/LightcurveFetchDialog.h
     src/views/tools/LcquerySetupDialog.h
     src/views/tools/RVInspectorDialog.h
@@ -555,6 +557,7 @@ target_link_libraries(ASTRA PRIVATE
     Qt6::Network
     Qt6::Concurrent
     Qt6::PrintSupport
+    Qt6::Svg
     qcustomplot
     DIGGA::core
     rv_mcmc

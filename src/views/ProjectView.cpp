@@ -14,6 +14,7 @@
 #include "utils/BackgroundTaskManager.h"
 #include "utils/Logger.h"
 #include "views/StarDetailView.h"
+#include "views/tools/ProjectPlotDialog.h"
 
 #include <QAction>
 #include <QApplication>
@@ -715,7 +716,30 @@ void ProjectView::updateBoolDelegate()
 
 void ProjectView::onCreatePlot()
 {
-    QMessageBox::information(this, "Create Plot", "Plot creation to be implemented");
+    if (!_currentProject) {
+        QMessageBox::information(this, "Create Plot", "No project loaded");
+        return;
+    }
+
+    std::vector<std::shared_ptr<Star>> allStars = _currentProject->getAllStars();
+
+    // Stars currently visible through the filter proxy
+    std::vector<std::shared_ptr<Star>> filteredStars;
+    if (_proxyModel && _tableModel) {
+        filteredStars.reserve(_proxyModel->rowCount());
+        for (int r = 0; r < _proxyModel->rowCount(); ++r) {
+            QModelIndex src = _proxyModel->mapToSource(_proxyModel->index(r, 0));
+            if (auto star = _tableModel->getStarAtRow(src.row()))
+                filteredStars.push_back(star);
+        }
+    }
+
+    auto* dialog = new ProjectPlotDialog(std::move(allStars),
+                                         std::move(filteredStars),
+                                         getSelectedStars(),
+                                         this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
 }
 
 void ProjectView::updateStatusBar(const QString& message)

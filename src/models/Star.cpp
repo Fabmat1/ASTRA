@@ -187,6 +187,9 @@ const std::unordered_map<QString, Star::FieldGetter>& Star::getFieldMap()
         { "comp_mass_true",  [](const Star* s) { return dblVar(s->getCompMassTrue()); } },
         { "e_comp_mass_true",[](const Star* s) { return dblVar(s->getECompMassTrue()); } },
 
+        // ── TESS crowding ───────────────────────────────────────────────────
+        { "tess_crowdsap",  [](const Star* s) { return dblVar(s->getTessCrowdsap()); } },
+
         // ── Dataset availability (boolean → rendered by delegate) ───────────
         { "has_tess",       [](const Star* s) { return QVariant(s->getHasTess()); } },
         { "has_gaia",       [](const Star* s) { return QVariant(s->getHasGaia()); } },

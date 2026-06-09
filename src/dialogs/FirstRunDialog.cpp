@@ -43,7 +43,7 @@ FirstRunDialog::FirstRunDialog(AppSettings* settings, QWidget* parent)
         "<h3>Welcome to ASTRA</h3>"
         "A couple of optional API tokens unlock extra features. You can set them "
         "now or any time later under <b>Settings → Lightcurve Fetching</b>. "
-        "Both are optional — leave them blank to skip."));
+        "Both are optional - leave them blank to skip."));
     intro->setWordWrap(true);
     intro->setTextFormat(Qt::RichText);
     root->addWidget(intro);
@@ -69,7 +69,7 @@ FirstRunDialog::FirstRunDialog(AppSettings* settings, QWidget* parent)
 
     form->addRow(tr("NASA/ADS token:"),
                  makeTokenRow(_adsEdit, _settings ? _settings->adsApiToken() : QString(),
-                              tr("optional — for publication lookups")));
+                              tr("optional - for publication lookups")));
     auto* adsHint = new QLabel(tr(
         "Used to fetch publication info for stars when CrossRef has no match. "
         "Create one at <a href=\"https://ui.adsabs.harvard.edu/user/settings/token\">"
@@ -81,7 +81,7 @@ FirstRunDialog::FirstRunDialog(AppSettings* settings, QWidget* parent)
 
     form->addRow(tr("ATLAS token:"),
                  makeTokenRow(_atlasEdit, _settings ? _settings->atlasToken() : QString(),
-                              tr("optional — for ATLAS lightcurve fetching")));
+                              tr("optional - for ATLAS lightcurve fetching")));
     auto* atlasHint = new QLabel(tr(
         "Required to fetch ATLAS forced-photometry lightcurves. Register and get "
         "a token at <a href=\"https://fallingstar-data.com/forcedphot/\">"

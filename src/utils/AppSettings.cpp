@@ -259,7 +259,7 @@ QString AppSettings::lcurveBinary(const QString &name) const {
     return p;
 
   // 2. Right next to the ASTRA executable. This is where AppImage bundling
-  //    (linuxdeploy) drops helper binaries — usr/bin alongside the app — and
+  //    (linuxdeploy) drops helper binaries - usr/bin alongside the app - and
   //    the AppImage's AppRun is a bare symlink to the binary, so PATH is not
   //    extended at runtime; resolving against applicationDirPath() is what
   //    actually finds the bundled lcurve inside the AppImage.

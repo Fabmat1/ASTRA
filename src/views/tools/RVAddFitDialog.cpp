@@ -1170,8 +1170,8 @@ bool solveLinearN(int n, std::vector<double>& A, std::vector<double>& b,
 
 // Levenberg–Marquardt fit of the full Keplerian RV model with a soft period
 // prior. Parameters: [P, K, γ, φ, e, ω]. The model is evaluated with EXACTLY
-// the convention RVFit uses for eccentric fits — mean anomaly M = 2π(θ − φ),
-// θ = t/P (see RVFit::calculateRVAtPhase / computePhase) — so the fitted φ can
+// the convention RVFit uses for eccentric fits - mean anomaly M = 2π(θ − φ),
+// θ = t/P (see RVFit::calculateRVAtPhase / computePhase) - so the fitted φ can
 // be stored verbatim and the resulting curve aligns with the data. A numerical
 // (forward-difference) Jacobian keeps the math readable; the problem is small.
 KeplerLMResult keplerLM(const std::vector<double>& t,

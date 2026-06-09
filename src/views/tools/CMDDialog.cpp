@@ -33,7 +33,7 @@ constexpr double kMaxRelErrSkip   = 1.00;  // >100% → spurious, skip
 
 // Active-theme background, published by ThemeManager as a qApp property. A QSS
 // background-color does NOT update the QPalette, so reading QPalette::Window
-// would return a stale (often white) colour — read the property instead.
+// would return a stale (often white) colour - read the property instead.
 QColor themeBg() {
     QVariant v = qApp->property("themeBg");
     if (v.isValid()) return v.value<QColor>();

@@ -8,7 +8,7 @@
  * copy that may be bundled inside the AppImage.
  *
  * ISIS (S-Lang based) only *reads* its installation tree, so the bundled copy
- * can run in place from the read-only AppImage mount — no unpacking needed.
+ * can run in place from the read-only AppImage mount - no unpacking needed.
  * What it does require is a set of environment variables pointing at that tree
  * (which lives at a different absolute path every launch) plus a `.isisrc`
  * that puts the isisscripts / stellar_isisscripts directories on the ISIS load
