@@ -82,6 +82,46 @@ set(CMAKE_BUILD_WITH_INSTALL_RPATH FALSE)
 set(CMAKE_INSTALL_RPATH "$ORIGIN/../${CMAKE_INSTALL_LIBDIR}")
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 
+# ── lcurve fitting binaries (optional bundling) ─────────────────────────────
+# Directory holding prebuilt lcurve_* binaries to ship inside the install tree
+# / AppImage (e.g. your lcurve build output). When the binaries are present at
+# configure time they are installed under <prefix>/<libexec>/astra/lcurve and
+# resolved at runtime relative to the ASTRA binary, so users no longer need to
+# build and install lcurve separately. When absent (the default), nothing is
+# bundled and lcurve is resolved from the Settings dialog / PATH as before.
+set(ASTRA_LCURVE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/lcurve" CACHE PATH
+    "Directory containing prebuilt lcurve_* binaries to bundle (optional)")
+
+set(_lcurve_binaries lcurve_levmarq lcurve_mcmc lcurve_simplex)
+set(_lcurve_found_files "")
+foreach(_b IN LISTS _lcurve_binaries)
+    if(EXISTS "${ASTRA_LCURVE_DIR}/${_b}")
+        list(APPEND _lcurve_found_files "${ASTRA_LCURVE_DIR}/${_b}")
+    endif()
+endforeach()
+if(_lcurve_found_files)
+    message(STATUS "lcurve binaries to bundle: ${_lcurve_found_files}")
+else()
+    message(STATUS
+        "No lcurve binaries found in '${ASTRA_LCURVE_DIR}' - lcurve will be "
+        "resolved from Settings/PATH at runtime. Set -DASTRA_LCURVE_DIR=<dir> "
+        "to bundle them.")
+endif()
+
+# Path the runtime uses to locate bundled binaries relative to the ASTRA
+# executable. Computed from the install layout so it is identical for an
+# installed tree and a (relocated) AppImage.
+file(RELATIVE_PATH ASTRA_LCURVE_BUNDLE_RELDIR
+     "${CMAKE_INSTALL_FULL_BINDIR}"
+     "${CMAKE_INSTALL_FULL_LIBEXECDIR}/astra/lcurve")
+
+# Same idea for the bundled lightcurvequery Python sources. They are shipped as
+# read-only data under <prefix>/share/astra/lightcurvequery; at runtime ASTRA
+# unpacks them into a writable per-user dir and builds a venv next to them.
+file(RELATIVE_PATH ASTRA_LCQUERY_BUNDLE_RELDIR
+     "${CMAKE_INSTALL_FULL_BINDIR}"
+     "${CMAKE_INSTALL_FULL_DATADIR}/astra/lightcurvequery")
+
 # Find optional CCfits for FITS file support
 # First try to find CCfits using pkg-config
 find_package(PkgConfig)
@@ -236,6 +276,7 @@ set(SOURCES
     src/utils/ThemeManager.cpp
     src/utils/ObservabilityCalculator.cpp
     src/utils/LightcurveFetcher.cpp
+    src/utils/LcqueryEnvironment.cpp
     src/utils/CheckStateDragger.cpp
     src/utils/ClaretTables.cpp
     src/utils/LCFitPhysics.cpp
@@ -258,6 +299,7 @@ set(SOURCES
     src/views/tools/CMDDialog.cpp
     src/views/tools/GalacticOrbitDialog.cpp
     src/views/tools/LightcurveFetchDialog.cpp
+    src/views/tools/LcquerySetupDialog.cpp
     src/views/tools/RVInspectorDialog.cpp
     src/views/tools/SEDFitDialog.cpp
     src/views/tools/SpectraFitDialog.cpp
@@ -362,6 +404,7 @@ set(HEADERS
     src/utils/ThemeManager.h
     src/utils/ObservabilityCalculator.h
     src/utils/LightcurveFetcher.h
+    src/utils/LcqueryEnvironment.h
     src/utils/CheckStateDragger.h
     src/utils/ClaretTables.h
     src/utils/LCFitPhysics.h
@@ -385,6 +428,7 @@ set(HEADERS
     src/views/tools/CMDDialog.h
     src/views/tools/GalacticOrbitDialog.h
     src/views/tools/LightcurveFetchDialog.h
+    src/views/tools/LcquerySetupDialog.h
     src/views/tools/RVInspectorDialog.h
     src/views/tools/SEDFitDialog.h
     src/views/tools/SpectraFitDialog.h
@@ -460,6 +504,10 @@ target_compile_definitions(ASTRA PRIVATE
     ASTRA_LCQUERY_SCRIPT="${LCQUERY_SCRIPT}"
     ASTRA_LCQUERY_REQS="${LCQUERY_REQS}"
     ASTRA_HAVE_LCQUERY=$<BOOL:${ASTRA_HAVE_LCQUERY}>
+    ASTRA_LCQUERY_BUNDLE_RELDIR="${ASTRA_LCQUERY_BUNDLE_RELDIR}"
+    ASTRA_LCQUERY_SOURCE_DIR="${LCQUERY_DIR}"
+    ASTRA_LCURVE_BUNDLE_RELDIR="${ASTRA_LCURVE_BUNDLE_RELDIR}"
+    ASTRA_LCURVE_SOURCE_DIR="${ASTRA_LCURVE_DIR}"
 )
 
 # Profiling option
@@ -541,6 +589,34 @@ install(TARGETS ASTRA
     BUNDLE DESTINATION .
     RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
 )
+
+# ── Bundle lcurve fitting binaries (if provided at configure time) ──────────
+# install(PROGRAMS ...) keeps the executable bit. The AppImage build step still
+# needs to pull each binary's shared-library deps (Boost, libgomp, ...) into the
+# AppDir, e.g. linuxdeploy --executable <AppDir>/.../lcurve/lcurve_levmarq ...
+if(_lcurve_found_files)
+    install(PROGRAMS ${_lcurve_found_files}
+        DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/astra/lcurve")
+endif()
+
+# ── Bundle lightcurvequery Python sources (if the submodule is present) ─────
+# Shipped read-only; ASTRA copies them into a writable dir and builds a venv at
+# runtime. Excludes VCS metadata, build caches, the submodule's own venv and
+# any per-run output folders so the AppImage stays clean and reproducible.
+if(ASTRA_HAVE_LCQUERY)
+    install(DIRECTORY "${LCQUERY_DIR}/"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/astra/lightcurvequery"
+        USE_SOURCE_PERMISSIONS
+        PATTERN ".git*"        EXCLUDE
+        PATTERN ".venv"        EXCLUDE
+        PATTERN ".idea"        EXCLUDE
+        PATTERN "__pycache__"  EXCLUDE
+        PATTERN "lightcurves"  EXCLUDE
+        PATTERN "mastDownload" EXCLUDE
+        PATTERN "lcplots"      EXCLUDE
+        PATTERN "pgramplots"   EXCLUDE
+        PATTERN "rvplots"      EXCLUDE)
+endif()
 
 # ── Linux desktop integration ─────────────────────────────────────────────
 if(UNIX AND NOT APPLE)

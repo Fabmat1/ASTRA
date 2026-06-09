@@ -8,7 +8,9 @@
 #include "utils/AppPaths.h"
 #include "utils/AppSettings.h"
 #include "utils/FilterWavelength.h"
+#include "utils/LcqueryEnvironment.h"
 #include "utils/Logger.h"
+#include "views/tools/LcquerySetupDialog.h"
 #include "views/panels/DetailPanel.h"
 #include "views/panels/LCPanel.h"
 #include "views/panels/PeriodogramPanel.h"
@@ -312,6 +314,11 @@ QWidget* LightcurveFetchDialog::buildFetchTab()
     _importCsvBtn = new QPushButton(tr("Import from CSV…"));
     _importCsvBtn->setToolTip(tr("Import a lightcurve from a CSV file for "
                                  "any instrument with a photometric mode."));
+    _setupEnvBtn = new QPushButton(tr("Set up environment…"));
+    _setupEnvBtn->setToolTip(tr("Automatically unpack the bundled lightcurvequery "
+                                "scripts and build a Python environment with all "
+                                "required packages."));
+    _setupEnvBtn->setVisible(false);
     _fetchBusy = new QProgressBar;
     _fetchBusy->setRange(0, 0);
     _fetchBusy->setVisible(false);
@@ -321,6 +328,7 @@ QWidget* LightcurveFetchDialog::buildFetchTab()
     btnRow->addWidget(_fetchBtn);
     btnRow->addWidget(_cancelFetch);
     btnRow->addWidget(_importCsvBtn);
+    btnRow->addWidget(_setupEnvBtn);
     btnRow->addSpacing(8);
     btnRow->addWidget(_fetchBusy, 1);
     btnRow->addWidget(_fetchStatus, 2);
@@ -329,6 +337,7 @@ QWidget* LightcurveFetchDialog::buildFetchTab()
     connect(_fetchBtn,     &QPushButton::clicked, this, &LightcurveFetchDialog::onFetchClicked);
     connect(_cancelFetch,  &QPushButton::clicked, this, &LightcurveFetchDialog::onFetchCancelClicked);
     connect(_importCsvBtn, &QPushButton::clicked, this, &LightcurveFetchDialog::onImportCsvClicked);
+    connect(_setupEnvBtn,  &QPushButton::clicked, this, &LightcurveFetchDialog::onSetupEnvClicked);
 
     _fetchLog = new AnsiTerminalWidget;
     root->addWidget(_fetchLog, 1);
@@ -376,12 +385,22 @@ QWidget* LightcurveFetchDialog::buildFetchTab()
             _fetchStatus->setStyleSheet("color: gray;");
             _fetchStatus->setText(tr("Ready."));
             _fetchBtn->setEnabled(true);
+            if (_setupEnvBtn) _setupEnvBtn->setVisible(false);
         } else {
             _fetchStatus->setStyleSheet("color: #c46060;");
             _fetchStatus->setText(tr("⚠ %1").arg(msg.section('\n', 0, 0)));
             _fetchBtn->setEnabled(false);
             _fetchLog->feed("[availability] " + msg + '\n');
-            _fetchLog->feed(tr("→ Open Settings → Lightcurve Fetching to configure.\n"));
+            // Offer one-click setup when a bundled copy is available; otherwise
+            // fall back to the manual configuration hint.
+            const bool canBootstrap = LcqueryEnvironment::bundleAvailable();
+            if (_setupEnvBtn) _setupEnvBtn->setVisible(canBootstrap);
+            if (canBootstrap)
+                _fetchLog->feed(tr("→ Click \"Set up environment…\" to install it "
+                                   "automatically, or configure paths in "
+                                   "Settings → Lightcurve Fetching.\n"));
+            else
+                _fetchLog->feed(tr("→ Open Settings → Lightcurve Fetching to configure.\n"));
         }
     });
 
@@ -1497,6 +1516,20 @@ void LightcurveFetchDialog::onImportCsvClicked()
     _fetchStatus->setText(tr("Imported %1 CSV points (%2).")
                           .arg(dlg.importedPoints().size())
                           .arg(dlg.sourceKey()));
+}
+
+void LightcurveFetchDialog::onSetupEnvClicked()
+{
+    AppSettings* settings = _controller ? _controller->settings() : nullptr;
+    LcquerySetupDialog dlg(settings, this);
+    dlg.exec();
+    // Whether or not the user finished setup, re-probe so the UI reflects the
+    // current state. If settings were updated this also fires via
+    // lcquerySettingsChanged, but probing here covers the cancelled case too.
+    _fetchStatus->setStyleSheet("color: gray;");
+    _fetchStatus->setText(tr("Re-checking…"));
+    _fetchBtn->setEnabled(false);
+    _fetcher->checkAvailableAsync();
 }
 
 // ── Previews tab ──────────────────────────────────────────────────────────

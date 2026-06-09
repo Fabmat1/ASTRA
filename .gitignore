@@ -6,6 +6,9 @@ out/
 bin/
 lib/
 
+# Prebuilt lcurve binaries dropped in for bundling (see ASTRA_LCURVE_DIR)
+external/lcurve/
+
 # Qt generated files
 *.pro.user
 *.pro.user.*

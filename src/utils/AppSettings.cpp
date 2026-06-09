@@ -5,6 +5,7 @@
 #include <QStandardPaths>
 #include <QDir>
 #include <QFileInfo>
+#include <QCoreApplication>
 #include <algorithm>
 
 namespace {
@@ -216,8 +217,11 @@ void AppSettings::setLcurveDir(const QString &dir) {
 }
 
 QString AppSettings::lcurveBinary(const QString &name) const {
-  if (!_lcurveDir.isEmpty()) {
-    const QString candidate = QDir(_lcurveDir).absoluteFilePath(name);
+  // Look for an executable called `name` inside `dir`; "" if not found.
+  auto inDir = [&name](const QString &dir) -> QString {
+    if (dir.isEmpty())
+      return {};
+    const QString candidate = QDir(dir).absoluteFilePath(name);
     QFileInfo fi(candidate);
     if (fi.exists() && fi.isExecutable())
       return fi.absoluteFilePath();
@@ -226,6 +230,41 @@ QString AppSettings::lcurveBinary(const QString &name) const {
     if (fiExe.exists())
       return fiExe.absoluteFilePath();
 #endif
+    return {};
+  };
+
+  // 1. User-configured directory always wins (both source and AppImage runs).
+  if (QString p = inDir(_lcurveDir); !p.isEmpty())
+    return p;
+
+  // 2. Right next to the ASTRA executable. This is where AppImage bundling
+  //    (linuxdeploy) drops helper binaries — usr/bin alongside the app — and
+  //    the AppImage's AppRun is a bare symlink to the binary, so PATH is not
+  //    extended at runtime; resolving against applicationDirPath() is what
+  //    actually finds the bundled lcurve inside the AppImage.
+  if (QString p = inDir(QCoreApplication::applicationDirPath()); !p.isEmpty())
+    return p;
+
+  // 3. Bundled location for an installed tree (`make install`), where helper
+  //    binaries live under <prefix>/libexec rather than next to the app. The
+  //    prefix-relative path is computed from the install layout at build time.
+#ifdef ASTRA_LCURVE_BUNDLE_RELDIR
+  {
+    const QString bundled =
+        QDir(QCoreApplication::applicationDirPath())
+            .absoluteFilePath(QStringLiteral(ASTRA_LCURVE_BUNDLE_RELDIR));
+    if (QString p = inDir(bundled); !p.isEmpty())
+      return p;
   }
+#endif
+
+  // 4. Configure-time source directory: convenience when a developer runs
+  //    straight from the build tree (no install step) but has populated it.
+#ifdef ASTRA_LCURVE_SOURCE_DIR
+  if (QString p = inDir(QStringLiteral(ASTRA_LCURVE_SOURCE_DIR)); !p.isEmpty())
+    return p;
+#endif
+
+  // 5. Last resort: PATH.
   return QStandardPaths::findExecutable(name);
 }

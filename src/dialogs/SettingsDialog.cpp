@@ -1,6 +1,8 @@
 #include "SettingsDialog.h"
 #include "utils/AppSettings.h"
+#include "utils/LcqueryEnvironment.h"
 #include "utils/LightcurveFetcher.h"
+#include "views/tools/LcquerySetupDialog.h"
 
 #include <QPlainTextEdit>
 #include <QCheckBox>
@@ -358,13 +360,39 @@ QWidget* SettingsDialog::createLightcurveFetchPage()
 
     auto* intro = new QLabel(
         "The Lightcurve Fetch dialog uses the bundled "
-        "<i>lightcurvequery</i> Python tool "
-        "(<code>external/lightcurvequery</code>). "
-        "The selected Python interpreter must have its "
-        "dependencies installed:<br>"
-        "<code>python -m pip install -r external/lightcurvequery/requirements.txt</code>");
+        "<i>lightcurvequery</i> Python tool. The easiest way to get going is "
+        "<b>Set up bundled environment</b> below, which unpacks the scripts and "
+        "builds a self-contained Python environment with all required packages. "
+        "Alternatively, point the fields here at your own interpreter and "
+        "<code>lightcurvequery.py</code>.");
     intro->setWordWrap(true);
     outer->addWidget(intro);
+
+    // ── One-click bundled setup ─────────────────────────────────────────
+    {
+        auto* setupRow = new QHBoxLayout;
+        auto* setupBtn = new QPushButton(
+            LcqueryEnvironment::isProvisioned()
+                ? tr("Reinstall bundled environment…")
+                : tr("Set up bundled environment…"));
+        setupBtn->setEnabled(LcqueryEnvironment::bundleAvailable());
+        if (!LcqueryEnvironment::bundleAvailable())
+            setupBtn->setToolTip(tr("This build does not ship the lightcurvequery "
+                                    "sources."));
+        connect(setupBtn, &QPushButton::clicked, this, [this, setupBtn] {
+            LcquerySetupDialog dlg(_settings, this);
+            dlg.exec();
+            // Reflect any newly written paths in the editable fields.
+            _lcqPythonEdit->setText(_settings->lcqueryPython());
+            _lcqScriptEdit->setText(_settings->lcqueryScript());
+            setupBtn->setText(LcqueryEnvironment::isProvisioned()
+                                  ? tr("Reinstall bundled environment…")
+                                  : tr("Set up bundled environment…"));
+        });
+        setupRow->addWidget(setupBtn);
+        setupRow->addStretch();
+        outer->addLayout(setupRow);
+    }
 
     auto* form = new QFormLayout;
     form->setLabelAlignment(Qt::AlignRight);

@@ -92,6 +92,7 @@ private slots:
     void onFetcherFinished(int code, bool ok);
     void onFetcherFailed(const QString& reason);
     void onImportCsvClicked();
+    void onSetupEnvClicked();
     void onDeleteLightcurveClicked();
     void onRecomputeBjdClicked();
 
@@ -205,6 +206,7 @@ private slots:
     QLabel*          _fetchStatus  = nullptr;
     QCheckBox*       _reattemptAll = nullptr;
     QPushButton*     _importCsvBtn = nullptr;
+    QPushButton*     _setupEnvBtn  = nullptr;
     bool             _wasReattempt = false;
 
     int     _previewsTabIdx   = -1;
