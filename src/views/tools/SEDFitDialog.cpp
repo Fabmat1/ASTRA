@@ -8,6 +8,7 @@
 #include "plotting/qcustomplot.h"
 #include "utils/AppSettings.h"
 #include "utils/ExtractSED.h"
+#include "utils/IsisEnvironment.h"
 #include "utils/Logger.h"
 #include "utils/SystematicErrors.h"
 #include "views/widgets/GridSelectorWidget.h"
@@ -1961,11 +1962,7 @@ bool SEDFitDialog::isIsisAvailable() const {
 }
 
 QString SEDFitDialog::findIsisBinary() const {
-    AppSettings s;
-    QString     custom = s.isisBinaryPath().trimmed();
-    if (!custom.isEmpty() && QFileInfo(custom).isExecutable())
-        return custom;
-    return QStandardPaths::findExecutable("isis");
+    return IsisEnvironment::resolveBinary();
 }
 
 QString SEDFitDialog::starIdentifierForScript() const
@@ -2211,8 +2208,11 @@ void SEDFitDialog::onRunFit()
         _isisOutput->append("No photometry.dat written - ISIS will query for data");
     _isisOutput->append("Starting ISIS...\n");
 
+    const QString isisBinary = findIsisBinary();
+
     _isisProcess = new QProcess(this);
     _isisProcess->setWorkingDirectory(_workDir);
+    _isisProcess->setProcessEnvironment(IsisEnvironment::environmentFor(isisBinary));
 
     connect(_isisProcess, &QProcess::readyReadStandardOutput, this, [this] {
         _isisOutput->append(
@@ -2226,7 +2226,7 @@ void SEDFitDialog::onRunFit()
             QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
             this, &SEDFitDialog::onIsisFinished);
 
-    _isisProcess->start(findIsisBinary(), {"photometry.sl"});
+    _isisProcess->start(isisBinary, {"photometry.sl"});
 }
 
 void SEDFitDialog::onIsisFinished(int exitCode, QProcess::ExitStatus status)

@@ -122,6 +122,17 @@ file(RELATIVE_PATH ASTRA_LCQUERY_BUNDLE_RELDIR
      "${CMAKE_INSTALL_FULL_BINDIR}"
      "${CMAKE_INSTALL_FULL_DATADIR}/astra/lightcurvequery")
 
+# And for a bundled ISIS tree under <prefix>/share/astra/isis. ISIS only reads
+# its tree, so it runs in place from the (read-only) AppImage; ASTRA points it
+# there at runtime via ISIS_SRCDIR / SLSH_PATH / .isisrc. The tree itself is
+# produced by the AppImage build (build-appimage.sh), not by `cmake --install`.
+file(RELATIVE_PATH ASTRA_ISIS_BUNDLE_RELDIR
+     "${CMAKE_INSTALL_FULL_BINDIR}"
+     "${CMAKE_INSTALL_FULL_DATADIR}/astra/isis")
+# Optional: point a dev build straight at an external ISIS prefix.
+set(ASTRA_ISIS_DIR "" CACHE PATH
+    "Optional ISIS prefix to resolve at runtime when not bundled (dev only)")
+
 # Find optional CCfits for FITS file support
 # First try to find CCfits using pkg-config
 find_package(PkgConfig)
@@ -277,6 +288,7 @@ set(SOURCES
     src/utils/ObservabilityCalculator.cpp
     src/utils/LightcurveFetcher.cpp
     src/utils/LcqueryEnvironment.cpp
+    src/utils/IsisEnvironment.cpp
     src/utils/CheckStateDragger.cpp
     src/utils/ClaretTables.cpp
     src/utils/LCFitPhysics.cpp
@@ -405,6 +417,7 @@ set(HEADERS
     src/utils/ObservabilityCalculator.h
     src/utils/LightcurveFetcher.h
     src/utils/LcqueryEnvironment.h
+    src/utils/IsisEnvironment.h
     src/utils/CheckStateDragger.h
     src/utils/ClaretTables.h
     src/utils/LCFitPhysics.h
@@ -508,6 +521,8 @@ target_compile_definitions(ASTRA PRIVATE
     ASTRA_LCQUERY_SOURCE_DIR="${LCQUERY_DIR}"
     ASTRA_LCURVE_BUNDLE_RELDIR="${ASTRA_LCURVE_BUNDLE_RELDIR}"
     ASTRA_LCURVE_SOURCE_DIR="${ASTRA_LCURVE_DIR}"
+    ASTRA_ISIS_BUNDLE_RELDIR="${ASTRA_ISIS_BUNDLE_RELDIR}"
+    ASTRA_ISIS_SOURCE_DIR="${ASTRA_ISIS_DIR}"
 )
 
 # Profiling option

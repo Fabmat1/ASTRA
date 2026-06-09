@@ -1,5 +1,6 @@
 #include "SettingsDialog.h"
 #include "utils/AppSettings.h"
+#include "utils/IsisEnvironment.h"
 #include "utils/LcqueryEnvironment.h"
 #include "utils/LightcurveFetcher.h"
 #include "views/tools/LcquerySetupDialog.h"
@@ -281,9 +282,14 @@ QWidget *SettingsDialog::createGeneralPage() {
     auto *pathRow = new QHBoxLayout;
     _isisEdit     = new QLineEdit(_settings->isisBinaryPath());
     _isisEdit->setPlaceholderText(
-        QStandardPaths::findExecutable("isis").isEmpty()
-            ? "isis not found in PATH - set explicitly"
-            : "Auto-detected from PATH");
+        !IsisEnvironment::bundledBinary().isEmpty()
+            ? "Leave blank to use the bundled ISIS"
+            : QStandardPaths::findExecutable("isis").isEmpty()
+                ? "isis not found in PATH - set explicitly"
+                : "Auto-detected from PATH");
+    _isisEdit->setToolTip(
+        "Path to an ISIS binary. Leave blank to use the copy bundled with "
+        "ASTRA (when present), otherwise ISIS is searched for on PATH.");
     auto *browseBtn = new QPushButton("Browse…");
     pathRow->addWidget(_isisEdit, 1);
     pathRow->addWidget(browseBtn);

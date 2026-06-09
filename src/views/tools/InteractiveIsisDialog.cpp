@@ -3,6 +3,7 @@
 #include "views/widgets/TerminalView.h"
 #include "utils/AppPaths.h"
 #include "utils/AppSettings.h"
+#include "utils/IsisEnvironment.h"
 
 #include <QCloseEvent>
 #include <QDir>
@@ -130,11 +131,7 @@ static bool bpathsContainTelluricGrid(const QStringList& basePaths)
 
 QString InteractiveIsisDialog::resolveBinary()
 {
-    AppSettings settings;
-    const QString custom = settings.isisBinaryPath().trimmed();
-    if (!custom.isEmpty() && QFileInfo(custom).isExecutable())
-        return custom;
-    return QStandardPaths::findExecutable("isis");
+    return IsisEnvironment::resolveBinary();
 }
 
 QString InteractiveIsisDialog::generateHeader(const SpectralFitJob& job,
@@ -464,6 +461,7 @@ void InteractiveIsisDialog::onStart()
     _term->setInputEnabled(true);
     _term->focusInput();
 
+    _proc->setProcessEnvironment(IsisEnvironment::environmentFor(binary));
     _proc->start(prog, args);
     if (!_proc->waitForStarted(10000)) {
         appendStatus("Failed to start ISIS.");

@@ -1,6 +1,7 @@
 #include "IsisBackend.h"
 #include "utils/AppPaths.h"
 #include "utils/AppSettings.h"
+#include "utils/IsisEnvironment.h"
 
 #include <QByteArray>
 #include <QDir>
@@ -446,11 +447,7 @@ bool parseIsisOutputs(SpectralFitResult& out,
 
 QString IsisBackend::resolveBinary()
 {
-    AppSettings settings;
-    const QString custom = settings.isisBinaryPath().trimmed();
-    if (!custom.isEmpty() && QFileInfo(custom).isExecutable())
-        return custom;
-    return QStandardPaths::findExecutable("isis");
+    return IsisEnvironment::resolveBinary();
 }
 
 QString IsisBackend::generateScript(const SpectralFitJob& job)
@@ -605,6 +602,7 @@ SpectralFitResult IsisBackend::run(const SpectralFitJob& job,
 
         QProcess proc;
         proc.setWorkingDirectory(workDir);
+        proc.setProcessEnvironment(IsisEnvironment::environmentFor(binary));
         proc.setProcessChannelMode(QProcess::MergedChannels);
 
         QByteArray pending;
