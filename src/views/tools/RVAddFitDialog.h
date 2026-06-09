@@ -93,6 +93,14 @@ private:
                                          double pSigma,
                                          QString* errOut = nullptr) const;
 
+    // LM least-squares of the full Keplerian (eccentric) RV model around a
+    // constrained period. Seeded from the circular fit; φ is returned in the
+    // RVFit eccentric convention so it can be stored verbatim. nullptr on
+    // failure (needs ≥ 6 points).
+    std::shared_ptr<RVFit> fitKeplerianLM(double pSeed,
+                                          double pSigma,
+                                          QString* errOut = nullptr) const;
+
     // Like fitSinusoidLM but also stamps the fitted χ² and 1σ parameter errors
     // (K, γ, φ, P) derived from the covariance at the solution. pErrLandscape is
     // a fallback period uncertainty (e.g. from the χ² landscape curvature) used

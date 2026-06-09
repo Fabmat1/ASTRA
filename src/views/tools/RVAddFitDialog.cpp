@@ -1132,6 +1132,179 @@ LMResultFull fitCircularLMFull(const std::vector<double>& t,
     return R;
 }
 
+// ── Eccentric (Keplerian) LM fit ───────────────────────────────────────
+struct KeplerLMResult {
+    double K=0, gamma=0, phi=0, P=0, e=0, omega=0, chi2=0;
+    bool ok=false; QString msg;
+};
+
+// Solve the n×n linear system A·x = b in place (partial pivoting). false if
+// singular. A and b are modified; the solution is written to x.
+bool solveLinearN(int n, std::vector<double>& A, std::vector<double>& b,
+                  std::vector<double>& x)
+{
+    auto at = [&](int r, int c) -> double& { return A[r * n + c]; };
+    for (int i = 0; i < n; ++i) {
+        int piv = i;
+        for (int k = i + 1; k < n; ++k)
+            if (std::abs(at(k, i)) > std::abs(at(piv, i))) piv = k;
+        if (std::abs(at(piv, i)) < 1e-30) return false;
+        if (piv != i) {
+            for (int j = 0; j < n; ++j) std::swap(at(piv, j), at(i, j));
+            std::swap(b[piv], b[i]);
+        }
+        for (int k = i + 1; k < n; ++k) {
+            double f = at(k, i) / at(i, i);
+            for (int j = i; j < n; ++j) at(k, j) -= f * at(i, j);
+            b[k] -= f * b[i];
+        }
+    }
+    x.assign(n, 0.0);
+    for (int i = n - 1; i >= 0; --i) {
+        double s = b[i];
+        for (int j = i + 1; j < n; ++j) s -= at(i, j) * x[j];
+        x[i] = s / at(i, i);
+    }
+    return true;
+}
+
+// Levenberg–Marquardt fit of the full Keplerian RV model with a soft period
+// prior. Parameters: [P, K, γ, φ, e, ω]. The model is evaluated with EXACTLY
+// the convention RVFit uses for eccentric fits — mean anomaly M = 2π(θ − φ),
+// θ = t/P (see RVFit::calculateRVAtPhase / computePhase) — so the fitted φ can
+// be stored verbatim and the resulting curve aligns with the data. A numerical
+// (forward-difference) Jacobian keeps the math readable; the problem is small.
+KeplerLMResult keplerLM(const std::vector<double>& t,
+                        const std::vector<double>& y,
+                        const std::vector<double>& sigma,
+                        double P0, double sigP,
+                        double eMin, double eMax,
+                        double omegaMin, double omegaMax)
+{
+    KeplerLMResult R;
+    const int N = int(t.size());
+    if (N < 6) { R.msg = "Need ≥ 6 points for an eccentric fit."; return R; }
+    if (!(P0 > 0)) { R.msg = "Invalid period seed."; return R; }
+    if (!(sigP > 0) || std::isnan(sigP)) sigP = std::max(1e-6, 0.05 * P0);
+
+    eMax = std::min(eMax, 0.95);
+    if (eMin < 0.0) eMin = 0.0;
+    if (eMin > eMax) std::swap(eMin, eMax);
+
+    // Seed P, K, γ, φ from a circular LM fit (good starting point).
+    double P = P0, K, gamma, phiCirc;
+    LMResult c = fitCircularLM(t, y, sigma, P0, sigP);
+    if (c.ok) { P = c.P; K = c.K; gamma = c.gamma; phiCirc = c.phi; }
+    else {
+        double sumW = 0, sumY = 0;
+        for (int i = 0; i < N; ++i) { double w = 1.0/(sigma[i]*sigma[i]); sumW += w; sumY += w*y[i]; }
+        gamma = sumW > 0 ? sumY/sumW : 0.0;
+        double m = 0; for (int i = 0; i < N; ++i) m = std::max(m, std::abs(y[i]-gamma));
+        K = m; phiCirc = 0.0;
+    }
+
+    constexpr int NP = 6;             // [P, K, γ, φ, e, ω]
+    // Circular φ is in the +φ convention; the eccentric model uses −φ, so the
+    // equivalent low-eccentricity phase seed is the negated circular phase.
+    double p[NP] = {
+        P, K, gamma,
+        std::fmod(-phiCirc, 1.0) + (phiCirc > 0 ? 1.0 : 0.0),
+        std::clamp(0.1, eMin, eMax),
+        std::clamp(90.0, omegaMin, omegaMax)
+    };
+
+    auto project = [&](double* q) {
+        if (q[0] <= 1e-6) q[0] = 1e-6;                       // P > 0
+        q[3] = std::fmod(q[3], 1.0); if (q[3] < 0) q[3] += 1.0;     // φ ∈ [0,1)
+        q[4] = std::clamp(q[4], eMin, eMax);                // e bounds
+        q[5] = std::fmod(q[5], 360.0); if (q[5] < 0) q[5] += 360.0; // ω ∈ [0,360)
+    };
+
+    auto model = [&](const double* q, double ti) -> double {
+        const double theta = ti / q[0];
+        const double M = 2.0 * M_PI * (theta - q[3]);
+        const double e = q[4];
+        const double E = RVFit::solveKepler(M, e);
+        const double nu = 2.0 * std::atan2(std::sqrt(1.0 + e) * std::sin(E * 0.5),
+                                           std::sqrt(1.0 - e) * std::cos(E * 0.5));
+        const double w = q[5] * M_PI / 180.0;
+        return q[2] + q[1] * (std::cos(nu + w) + e * std::cos(w));
+    };
+
+    auto computeRes = [&](const double* q, std::vector<double>& r) {
+        r.resize(N + 1);
+        for (int i = 0; i < N; ++i) r[i] = (y[i] - model(q, t[i])) / sigma[i];
+        r[N] = (P0 - q[0]) / sigP;    // soft period prior
+    };
+
+    project(p);
+    std::vector<double> r; computeRes(p, r);
+    double chi2 = 0; for (double v : r) chi2 += v * v;
+    double lambda = 1e-3;
+
+    std::vector<double> J((N + 1) * NP);   // numerical Jacobian, row-major
+    for (int iter = 0; iter < 300; ++iter) {
+        // Forward-difference Jacobian.
+        for (int a = 0; a < NP; ++a) {
+            double step = std::max(std::abs(p[a]) * 1e-6, 1e-7);
+            if (a == 3) step = 1e-6;       // φ
+            if (a == 4) step = 1e-5;       // e
+            if (a == 5) step = 1e-3;       // ω
+            double pp[NP]; for (int k = 0; k < NP; ++k) pp[k] = p[k];
+            pp[a] += step; project(pp);
+            double used = pp[a] - p[a];
+            if (used == 0.0) { for (int k = 0; k < NP; ++k) pp[k] = p[k]; pp[a] -= step; project(pp); used = pp[a] - p[a]; }
+            if (used == 0.0) { for (int i = 0; i <= N; ++i) J[i*NP + a] = 0.0; continue; }
+            std::vector<double> rr; computeRes(pp, rr);
+            for (int i = 0; i <= N; ++i) J[i*NP + a] = (rr[i] - r[i]) / used;
+        }
+
+        // Normal equations JᵀJ and Jᵀr.
+        std::vector<double> JTJ(NP * NP, 0.0), JTr(NP, 0.0);
+        for (int i = 0; i <= N; ++i)
+            for (int a = 0; a < NP; ++a) {
+                JTr[a] += J[i*NP + a] * r[i];
+                for (int b = 0; b < NP; ++b) JTJ[a*NP + b] += J[i*NP + a] * J[i*NP + b];
+            }
+
+        // Damped solve (LM): (JᵀJ + λ·diag)·δ = −Jᵀr.
+        std::vector<double> A = JTJ, bvec(NP), delta;
+        for (int a = 0; a < NP; ++a) { A[a*NP + a] *= (1.0 + lambda); bvec[a] = -JTr[a]; }
+        if (!solveLinearN(NP, A, bvec, delta)) {
+            lambda *= 10.0;
+            if (lambda > 1e12) break;
+            continue;
+        }
+
+        double pn[NP]; for (int k = 0; k < NP; ++k) pn[k] = p[k] + delta[k];
+        project(pn);
+        std::vector<double> rn; computeRes(pn, rn);
+        double chi2New = 0; for (double v : rn) chi2New += v * v;
+
+        if (chi2New < chi2) {
+            const double rel = (chi2 - chi2New) / std::max(chi2, 1e-30);
+            for (int k = 0; k < NP; ++k) p[k] = pn[k];
+            chi2 = chi2New; r.swap(rn);
+            lambda = std::max(lambda * 0.5, 1e-10);
+            if (rel < 1e-9) break;
+        } else {
+            lambda *= 4.0;
+            if (lambda > 1e12) break;
+        }
+    }
+
+    R.P = p[0]; R.K = p[1]; R.gamma = p[2];
+    R.phi = p[3]; R.e = p[4]; R.omega = p[5];
+
+    // Canonicalise a negative amplitude: −K·(cos(ν+ω)+e·cos ω) is identical to
+    // +K with ω shifted by 180°.
+    if (R.K < 0.0) { R.K = -R.K; R.omega = std::fmod(R.omega + 180.0, 360.0); }
+    R.phi = std::fmod(R.phi, 1.0); if (R.phi < 0) R.phi += 1.0;
+
+    R.chi2 = chi2; R.ok = true;
+    return R;
+}
+
 } // namespace
 
 std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidLM(
@@ -1182,6 +1355,61 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidLM(
     fit->setPhi(R.phi);              // now relative to t0 == tRefBJD
     fit->setReferenceTime(t0, mjd0); // consistent even before attach
     fit->setEccentric(false);
+    fit->setBestFit(false);
+    return fit;
+}
+
+// ───────────────────────────────────────────────────────────────────
+std::shared_ptr<RVFit> RVAddFitDialog::fitKeplerianLM(
+    double pSeed, double pSigma, QString* errOut) const
+{
+    auto data = buildRVData();
+    if (data.bjd.size() < 6) {
+        if (errOut)
+            *errOut = "Need ≥ 6 unflagged RV points with BJD for an eccentric fit.";
+        return nullptr;
+    }
+
+    // Phase against the same reference epoch updateFitReferences() will assign
+    // (earliest point), exactly as fitSinusoidLM does, so φ stays consistent.
+    double t0   = data.bjd.front();
+    double mjd0 = 0.0;
+    if (_curve) {
+        double refBjd = 0.0, refMjd = 0.0;
+        if (_curve->computeReferenceEpoch(refBjd, refMjd) && refBjd > 0.0) {
+            t0   = refBjd;
+            mjd0 = refMjd;
+        }
+    }
+
+    std::vector<double> t(data.bjd.size()), y = data.rv, s = data.rv_err;
+    for (size_t i = 0; i < data.bjd.size(); ++i)
+        t[i] = data.bjd[i] - t0;
+
+    auto R = keplerLM(t, y, s, pSeed, pSigma,
+                      /*eMin=*/0.0, /*eMax=*/0.9,
+                      /*omegaMin=*/0.0, /*omegaMax=*/360.0);
+    if (!R.ok) {
+        if (errOut)
+            *errOut = R.msg;
+        return nullptr;
+    }
+
+    auto fit = std::make_shared<RVFit>();
+    fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    fit->setCurveId(_curve ? _curve->getId() : QString());
+    fit->setCreationDate(QDateTime::currentDateTime());
+    fit->setFitMethod(QString("Keplerian LM (P_phot=%1±%2)")
+                          .arg(pSeed, 0, 'f', 6)
+                          .arg(pSigma, 0, 'f', 6));
+    fit->setPeriod(R.P);
+    fit->setK(R.K);
+    fit->setGamma(R.gamma);
+    fit->setPhi(R.phi);              // stored in RVFit's eccentric (−φ) convention
+    fit->setReferenceTime(t0, mjd0);
+    fit->setEccentric(true);
+    fit->setEccentricity(R.e);
+    fit->setOmega(R.omega);
     fit->setBestFit(false);
     return fit;
 }
@@ -1248,6 +1476,7 @@ void RVAddFitDialog::onRunPhotFit()
     }
     const double tolMul = _photPeriodTol->value();
     const bool ellips   = _photEllipsoidal->isChecked();
+    const bool ecc      = _photEccentric && _photEccentric->isChecked();
 
     QStringList failed;
     QList<std::shared_ptr<RVFit>> fits;
@@ -1259,7 +1488,8 @@ void RVAddFitDialog::onRunPhotFit()
         sigma *= std::max(1e-3, tolMul);
 
         QString err;
-        auto fit = fitSinusoidLM(P, sigma, &err);
+        auto fit = ecc ? fitKeplerianLM(P, sigma, &err)
+                       : fitSinusoidLM(P, sigma, &err);
         if (!fit) { failed << QString("P=%1 d: %2").arg(P).arg(err); continue; }
         fits.append(fit);
     }

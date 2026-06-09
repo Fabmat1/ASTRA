@@ -258,6 +258,15 @@ public:
                               double tol = 1e-12, int maxIter = 60);
 
   private:
+    // Sign with which φ enters the time→phase fold. The circular and eccentric
+    // RV models fitted by rv_mcmc use OPPOSITE phase conventions: the circular
+    // model is sin(2π(θ + φ)) (maths.cpp sinusoid()), while the eccentric
+    // Keplerian model defines the mean anomaly as M = 2π(θ − φ) (models.cpp
+    // rv_curve()). Folding with this sign keeps computePhase()/getT0BJD() (and
+    // therefore the plotted curve, χ²/rms and predicted RV) aligned with the
+    // data for eccentricity-enabled fits.
+    double phaseSign() const { return _isEccentric ? -1.0 : 1.0; }
+
     QString _id;
     QString _curveId;
     QDateTime _creationDate;

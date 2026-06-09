@@ -275,14 +275,14 @@ double RVFit::getT0BJD() const
 {
     if (_tRefBJD <= 0.0 || _period <= 0.0)
         return std::numeric_limits<double>::quiet_NaN();
-    return _tRefBJD - _phi * _period;
+    return _tRefBJD - phaseSign() * _phi * _period;
 }
 
 double RVFit::getT0MJD() const
 {
     if (_tRefMJD <= 0.0 || _period <= 0.0)
         return std::numeric_limits<double>::quiet_NaN();
-    return _tRefMJD - _phi * _period;
+    return _tRefMJD - phaseSign() * _phi * _period;
 }
 
 RadialVelocityCurve::RadialVelocityCurve()
@@ -884,9 +884,9 @@ double RVFit::computePhase(const Time& t) const
     } else if (_tRefMJD > 0.0 && mjd > 0.0) {
         tVal = mjd; refVal = _tRefMJD;
     } else {
-        return wrapPhase(_phi);
+        return wrapPhase(phaseSign() * _phi);
     }
-    return wrapPhase((tVal - refVal) / _period + _phi);
+    return wrapPhase((tVal - refVal) / _period + phaseSign() * _phi);
 }
 
 
