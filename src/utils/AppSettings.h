@@ -60,6 +60,14 @@ public:
     /// Uses _lcurveDir if set, otherwise searches PATH. Returns "" if not found.
     QString lcurveBinary(const QString& name) const;
 
+    // ── Updates ──────────────────────────────────────────────────────────
+    bool checkUpdatesOnStartup() const { return _checkUpdatesOnStartup; }
+    void setCheckUpdatesOnStartup(bool on);
+
+    /// Release version the user chose to skip (empty if none).
+    QString skippedUpdateVersion() const { return _skippedUpdateVersion; }
+    void    setSkippedUpdateVersion(const QString& version);
+
 
 signals:
     void isisBinaryPathChanged();
@@ -68,6 +76,7 @@ signals:
     void lcquerySettingsChanged();
     void lcurveSettingsChanged();
     void adsApiTokenChanged();
+    void updateSettingsChanged();
 
   private:
     void load();
@@ -87,4 +96,7 @@ signals:
     QString _atlasToken;
     QString _blackgemScript;
     QString _adsApiToken;
+
+    bool    _checkUpdatesOnStartup = true;
+    QString _skippedUpdateVersion;
 };

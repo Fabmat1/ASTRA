@@ -21,6 +21,8 @@ constexpr const char* kLcqScript     = "lcquery/script";
 constexpr const char* kAtlasToken    = "lcquery/atlasToken";
 constexpr const char* kBlackgemScr   = "lcquery/blackgemScript";
 constexpr const char* kLcurveDir = "lcurve/installDir";
+constexpr const char* kUpdateCheck   = "update/checkOnStartup";
+constexpr const char* kUpdateSkipped = "update/skippedVersion";
 }
 
 QString AppSettings::panelName(DetailPanel p)
@@ -131,6 +133,8 @@ void AppSettings::load()
     _atlasToken      = s.value(kAtlasToken,   _atlasToken     ).toString();
     _blackgemScript  = s.value(kBlackgemScr,  _blackgemScript ).toString();
     _lcurveDir = s.value(kLcurveDir, _lcurveDir).toString();
+    _checkUpdatesOnStartup = s.value(kUpdateCheck,   _checkUpdatesOnStartup).toBool();
+    _skippedUpdateVersion  = s.value(kUpdateSkipped, _skippedUpdateVersion ).toString();
     s.endGroup();
 
     if (!flat.isEmpty()) {
@@ -168,6 +172,8 @@ void AppSettings::save() const
     s.setValue(kAtlasToken,   _atlasToken);
     s.setValue(kBlackgemScr,  _blackgemScript);
     s.setValue(kLcurveDir, _lcurveDir);
+    s.setValue(kUpdateCheck,   _checkUpdatesOnStartup);
+    s.setValue(kUpdateSkipped, _skippedUpdateVersion);
 
     s.endGroup();
     s.sync();
@@ -235,6 +241,20 @@ void AppSettings::setLcurveDir(const QString &dir) {
   _lcurveDir = dir;
   save();
   emit lcurveSettingsChanged();
+}
+
+void AppSettings::setCheckUpdatesOnStartup(bool on) {
+  if (_checkUpdatesOnStartup == on) return;
+  _checkUpdatesOnStartup = on;
+  save();
+  emit updateSettingsChanged();
+}
+
+void AppSettings::setSkippedUpdateVersion(const QString &version) {
+  if (_skippedUpdateVersion == version) return;
+  _skippedUpdateVersion = version;
+  save();
+  emit updateSettingsChanged();
 }
 
 QString AppSettings::lcurveBinary(const QString &name) const {

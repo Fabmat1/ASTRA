@@ -21,6 +21,8 @@ class ProjectSelectionView;
 class InstrumentConfigView;
 class ProjectView;
 class LightcurveFetchSessionsDialog;
+class UpdateManager;
+struct UpdateInfo;
 struct ThemeInfo;
 
 class MainWindow : public QMainWindow
@@ -53,6 +55,12 @@ private:
     void updateOpenProjectAction();
     void updateThemeMenuSelection(const QString& themeId);
 
+    // Update manager
+    void startupUpdateCheck();
+    void onUpdateAvailable(const UpdateInfo& info);
+    void promptInstallUpdate(const UpdateInfo& info);
+    UpdateManager* _updater = nullptr;
+
     ApplicationController* _controller;
     QStackedWidget* _centralStack;
     ProjectSelectionView* _projectSelectionView;
@@ -74,6 +82,7 @@ private:
     QAction* _exitAction;
     QAction* _configureColumnsAction;
     QAction* _aboutAction;
+    QAction* _checkUpdatesAction = nullptr;
 
     // Settings actions
     QMenu* _toolsMenu = nullptr;

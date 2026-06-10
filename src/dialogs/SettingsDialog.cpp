@@ -3,8 +3,11 @@
 #include "utils/IsisEnvironment.h"
 #include "utils/LcqueryEnvironment.h"
 #include "utils/LightcurveFetcher.h"
+#include "utils/UpdateManager.h"
 #include "views/tools/LcquerySetupDialog.h"
 
+#include <QMessageBox>
+#include <QProgressDialog>
 #include <QPlainTextEdit>
 #include <QCheckBox>
 #include <QVBoxLayout>
@@ -177,6 +180,7 @@ void SettingsDialog::setupUi()
     _topicList->addItem("Grid Paths");
     _topicList->addItem("Lightcurve Fetching");
     _topicList->addItem("Lightcurve Fitting");
+    _topicList->addItem("Updates");
 
     _pages = new QStackedWidget;
     _pages->addWidget(createGeneralPage());
@@ -184,6 +188,7 @@ void SettingsDialog::setupUi()
     _pages->addWidget(createGridPathsPage());
     _pages->addWidget(createLightcurveFetchPage());
     _pages->addWidget(createLightcurveFitPage());
+    _pages->addWidget(createUpdatesPage());
 
     connect(_topicList, &QListWidget::currentRowChanged,
             _pages, &QStackedWidget::setCurrentIndex);
@@ -532,6 +537,9 @@ void SettingsDialog::apply()
     _settings->setAtlasToken    (_atlasTokenEdit->text().trimmed());
     _settings->setBlackgemScript(_blackgemEdit->text().trimmed());
     _settings->setLcurveDir(_lcurveDirEdit->text().trimmed());
+
+    if (_updateOnStartup)
+        _settings->setCheckUpdatesOnStartup(_updateOnStartup->isChecked());
 }
 
 QWidget *SettingsDialog::createLightcurveFitPage() {
@@ -636,4 +644,161 @@ QWidget *SettingsDialog::createLightcurveFitPage() {
 
   outer->addStretch();
   return page;
+}
+
+// =====================================================================
+// Updates page
+// =====================================================================
+
+QWidget* SettingsDialog::createUpdatesPage()
+{
+    auto* page  = new QWidget;
+    auto* outer = new QVBoxLayout(page);
+    outer->setContentsMargins(16, 16, 16, 16);
+
+    auto* intro = new QLabel(
+        "ASTRA can check GitHub for new releases. When you run the official "
+        "<code>.AppImage</code>, available updates can be downloaded and "
+        "installed in place.");
+    intro->setWordWrap(true);
+    outer->addWidget(intro);
+
+    // Current version / channel.
+    auto* verLbl = new QLabel(
+        QString("Current version: <b>%1</b>%2")
+            .arg(UpdateManager::currentVersion().toHtmlEscaped(),
+                 UpdateManager::isAppImage() ? "  (AppImage)" : ""));
+    verLbl->setTextFormat(Qt::RichText);
+    outer->addWidget(verLbl);
+
+    _updateOnStartup = new QCheckBox("Check for updates automatically on startup");
+    _updateOnStartup->setChecked(_settings->checkUpdatesOnStartup());
+    outer->addWidget(_updateOnStartup);
+
+    if (!UpdateManager::isReleaseBuild()) {
+        auto* devHint = new QLabel(
+            "<i>This is a development build; automatic update prompts are "
+            "disabled, but you can still check what the latest release is.</i>");
+        devHint->setWordWrap(true);
+        devHint->setStyleSheet("color: gray;");
+        outer->addWidget(devHint);
+    }
+
+    auto* btnRow = new QHBoxLayout;
+    _updateCheckBtn = new QPushButton("Check now");
+    _updateInstallBtn = new QPushButton("Download && Install");
+    _updateInstallBtn->setVisible(false);
+    btnRow->addWidget(_updateCheckBtn);
+    btnRow->addWidget(_updateInstallBtn);
+    btnRow->addStretch();
+    outer->addLayout(btnRow);
+
+    _updateStatus = new QLabel;
+    _updateStatus->setWordWrap(true);
+    _updateStatus->setTextFormat(Qt::RichText);
+    _updateStatus->setOpenExternalLinks(true);
+    _updateStatus->setTextInteractionFlags(Qt::TextBrowserInteraction);
+    outer->addWidget(_updateStatus);
+
+    _updater = new UpdateManager(this);
+
+    connect(_updater, &UpdateManager::checkStarted, this, [this] {
+        _updateCheckBtn->setEnabled(false);
+        _updateInstallBtn->setVisible(false);
+        _updateStatus->setStyleSheet("color: gray;");
+        _updateStatus->setText("Checking for updates…");
+    });
+    connect(_updater, &UpdateManager::upToDate, this,
+            [this](const QString& current) {
+        _updateCheckBtn->setEnabled(true);
+        const UpdateInfo& latest = _updater->latestInfo();
+        if (!UpdateManager::isReleaseBuild() && !latest.tagName.isEmpty()) {
+            _updateStatus->setStyleSheet("color: gray;");
+            _updateStatus->setText(
+                QString("Latest release is <b>%1</b>. You are on development "
+                        "build %2.")
+                    .arg(latest.tagName.toHtmlEscaped(), current.toHtmlEscaped()));
+        } else {
+            _updateStatus->setStyleSheet("color: #7dbd5e;");
+            _updateStatus->setText("✓ You are running the latest version.");
+        }
+    });
+    connect(_updater, &UpdateManager::checkFailed, this,
+            [this](const QString& err) {
+        _updateCheckBtn->setEnabled(true);
+        _updateStatus->setStyleSheet("color: #c46060;");
+        _updateStatus->setText("⚠ Update check failed: " + err.toHtmlEscaped());
+    });
+    connect(_updater, &UpdateManager::updateAvailable, this,
+            [this](const UpdateInfo& info) {
+        _updateCheckBtn->setEnabled(true);
+        _updateStatus->setStyleSheet("color: #dca84d;");
+        _updateStatus->setText(
+            QString("A new version <b>%1</b> is available "
+                    "(<a href=\"%2\">release notes</a>).")
+                .arg(info.version.toHtmlEscaped(), info.htmlUrl.toHtmlEscaped()));
+        if (UpdateManager::isAppImage() && info.hasAppImage()) {
+            _updateInstallBtn->setVisible(true);
+            _updateInstallBtn->setEnabled(true);
+            disconnect(_updateInstallBtn, &QPushButton::clicked, nullptr, nullptr);
+            connect(_updateInstallBtn, &QPushButton::clicked, this,
+                    [this, info] { startUpdateInstall(info); });
+        } else {
+            _updateInstallBtn->setVisible(false);
+        }
+    });
+
+    connect(_updateCheckBtn, &QPushButton::clicked, this, [this] {
+        // Manual check ignores any skipped-version marker.
+        _updater->checkForUpdates(/*respectSkip=*/false);
+    });
+
+    outer->addStretch();
+    return page;
+}
+
+void SettingsDialog::startUpdateInstall(const UpdateInfo& info)
+{
+    auto* progress = new QProgressDialog(
+        QString("Downloading ASTRA %1…").arg(info.version),
+        "Cancel", 0, 100, this);
+    progress->setWindowModality(Qt::WindowModal);
+    progress->setMinimumDuration(0);
+    progress->setAutoClose(false);
+    progress->setAutoReset(false);
+    progress->setValue(0);
+
+    connect(_updater, &UpdateManager::downloadProgress, progress,
+            [progress](qint64 received, qint64 total) {
+        if (total > 0) {
+            progress->setMaximum(100);
+            progress->setValue(int(received * 100 / total));
+        } else {
+            progress->setMaximum(0);  // indeterminate
+        }
+    });
+    connect(progress, &QProgressDialog::canceled, _updater,
+            &UpdateManager::cancelDownload);
+
+    connect(_updater, &UpdateManager::installFailed, progress,
+            [this, progress](const QString& err) {
+        progress->close();
+        progress->deleteLater();
+        QMessageBox::warning(this, "Update failed", err);
+    });
+    connect(_updater, &UpdateManager::installFinished, progress,
+            [this, progress, info](const QString&) {
+        progress->close();
+        progress->deleteLater();
+        const auto btn = QMessageBox::information(
+            this, "Update installed",
+            QString("ASTRA %1 has been installed.\n\n"
+                    "Restart now to use the new version?").arg(info.version),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+        if (btn == QMessageBox::Yes)
+            UpdateManager::relaunch();
+    });
+
+    _updateInstallBtn->setEnabled(false);
+    _updater->downloadAndInstall(info);
 }

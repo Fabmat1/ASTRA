@@ -3,6 +3,8 @@
 #include <QDialog>
 
 class AppSettings;
+class UpdateManager;
+struct UpdateInfo;
 class QListWidget;
 class QStackedWidget;
 class QLineEdit;
@@ -10,6 +12,8 @@ class DetailGridEditor;
 class QListWidget;
 class QPlainTextEdit;
 class QLabel;
+class QCheckBox;
+class QPushButton;
 
 class SettingsDialog : public QDialog
 {
@@ -26,6 +30,7 @@ private:
     QWidget* createGridPathsPage();
     QWidget* createLightcurveFetchPage();
     QWidget *createLightcurveFitPage();
+    QWidget* createUpdatesPage();
 
     QLineEdit *_lcurveDirEdit = nullptr;
     QLabel  *_lcurveStatusLbl = nullptr;
@@ -48,4 +53,12 @@ private:
     QLineEdit*       _adsTokenEdit     = nullptr;
     QLineEdit*       _blackgemEdit     = nullptr;
     QLabel*          _lcqTestResult    = nullptr;
+
+    // Updates page
+    QCheckBox*       _updateOnStartup  = nullptr;
+    QLabel*          _updateStatus     = nullptr;
+    QPushButton*     _updateCheckBtn   = nullptr;
+    QPushButton*     _updateInstallBtn = nullptr;
+    UpdateManager*   _updater          = nullptr;
+    void startUpdateInstall(const UpdateInfo& info);
 };

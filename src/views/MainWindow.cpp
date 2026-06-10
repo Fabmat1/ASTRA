@@ -10,9 +10,11 @@
 #include "dialogs/SettingsDialog.h"
 #include "io/StarShare.h"
 #include "models/Project.h"
+#include "utils/AppSettings.h"
 #include "utils/BackgroundTaskManager.h"
 #include "utils/LightcurveFetchService.h"
 #include "utils/ThemeManager.h"
+#include "utils/UpdateManager.h"
 #include "views/tools/LightcurveFetchSessionsDialog.h"
 #include <QAction>
 #include <QActionGroup>
@@ -21,9 +23,12 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QDesktopServices>
 #include <QProgressBar>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QStackedWidget>
+#include <QUrl>
 #include <QStatusBar>
 #include <QTimer>
 #include <QToolButton>
@@ -56,6 +61,9 @@ MainWindow::MainWindow(ApplicationController* controller, QWidget *parent)
             dlg.exec();
         });
     }
+
+    // Silent check for a newer release on GitHub (deferred so the window is up).
+    QTimer::singleShot(0, this, [this] { startupUpdateCheck(); });
 }
 
 MainWindow::~MainWindow()
@@ -197,6 +205,7 @@ void MainWindow::setupMenus()
 
     // Help menu - always visible  
     _helpMenu = menuBar->addMenu("&Help");
+    _checkUpdatesAction = _helpMenu->addAction("Check for &Updates...");
     _aboutAction = _helpMenu->addAction("&About ASTRA...");
 
     _closeProjectAction->setEnabled(false);
@@ -312,6 +321,45 @@ void MainWindow::createActions()
     connect(_settingsAction, &QAction::triggered, this, [this] {
         SettingsDialog dlg(_controller->settings(), this);
         dlg.exec();
+    });
+
+    // Manual "Check for Updates" — always reports the outcome, even when the
+    // app is already current or a previously-skipped version is available.
+    connect(_checkUpdatesAction, &QAction::triggered, this, [this] {
+        if (!_updater) {
+            _updater = new UpdateManager(this);
+            connect(_updater, &UpdateManager::updateAvailable,
+                    this, &MainWindow::onUpdateAvailable);
+        }
+        _checkUpdatesAction->setEnabled(false);
+
+        auto reenable = [this] { _checkUpdatesAction->setEnabled(true); };
+        auto* c = new QObject(this);  // owns the one-shot connections
+        connect(_updater, &UpdateManager::upToDate, c, [this, c, reenable] {
+            reenable();
+            const UpdateInfo& latest = _updater->latestInfo();
+            if (!UpdateManager::isReleaseBuild() && !latest.tagName.isEmpty())
+                QMessageBox::information(this, "Check for Updates",
+                    QString("You are running development build %1.\n"
+                            "The latest release is %2.")
+                        .arg(UpdateManager::currentVersion(), latest.tagName));
+            else
+                QMessageBox::information(this, "Check for Updates",
+                    "You are running the latest version of ASTRA ("
+                    + UpdateManager::currentVersion() + ").");
+            c->deleteLater();
+        });
+        connect(_updater, &UpdateManager::checkFailed, c,
+                [this, c, reenable](const QString& err) {
+            reenable();
+            QMessageBox::warning(this, "Check for Updates",
+                "Could not check for updates:\n" + err);
+            c->deleteLater();
+        });
+        connect(_updater, &UpdateManager::updateAvailable, c,
+                [c, reenable](const UpdateInfo&) { reenable(); c->deleteLater(); });
+
+        _updater->checkForUpdates(/*respectSkip=*/false);
     });
 }
 
@@ -534,4 +582,107 @@ void MainWindow::importStarPackage(const QString &path) {
         return;
     }
     _projectView->receivePackageFile(path);
+}
+
+// ── Update manager ────────────────────────────────────────────────────────
+
+void MainWindow::startupUpdateCheck()
+{
+    if (!_controller->settings()->checkUpdatesOnStartup())
+        return;
+    // Don't nag development builds (the check still runs from Help / Settings).
+    if (!UpdateManager::isReleaseBuild())
+        return;
+
+    if (!_updater) {
+        _updater = new UpdateManager(this);
+        connect(_updater, &UpdateManager::updateAvailable,
+                this, &MainWindow::onUpdateAvailable);
+    }
+    _updater->checkForUpdates(/*respectSkip=*/true);
+}
+
+void MainWindow::onUpdateAvailable(const UpdateInfo& info)
+{
+    QMessageBox box(this);
+    box.setIcon(QMessageBox::Information);
+    box.setWindowTitle("Update available");
+    box.setText(QString("A new version of ASTRA is available: <b>%1</b><br>"
+                        "(you have %2)")
+                    .arg(info.version.toHtmlEscaped(),
+                         UpdateManager::currentVersion().toHtmlEscaped()));
+    if (!info.releaseNotes.trimmed().isEmpty()) {
+        QString notes = info.releaseNotes.trimmed();
+        if (notes.size() > 1500)
+            notes = notes.left(1500) + "…";
+        box.setDetailedText(notes);
+    }
+
+    const bool canInstall = UpdateManager::isAppImage() && info.hasAppImage();
+
+    QPushButton* installBtn = nullptr;
+    if (canInstall)
+        installBtn = box.addButton("Download && Install", QMessageBox::AcceptRole);
+    QPushButton* notesBtn = box.addButton("Release Notes", QMessageBox::ActionRole);
+    QPushButton* skipBtn  = box.addButton("Skip This Version", QMessageBox::DestructiveRole);
+    QPushButton* laterBtn = box.addButton("Later", QMessageBox::RejectRole);
+    box.setDefaultButton(canInstall ? installBtn : notesBtn);
+
+    box.exec();
+    QAbstractButton* clicked = box.clickedButton();
+
+    if (clicked == notesBtn) {
+        if (!info.htmlUrl.isEmpty())
+            QDesktopServices::openUrl(QUrl(info.htmlUrl));
+    } else if (clicked == skipBtn) {
+        _controller->settings()->setSkippedUpdateVersion(info.version);
+    } else if (canInstall && clicked == installBtn) {
+        promptInstallUpdate(info);
+    }
+    // "Later": do nothing — we'll prompt again next launch.
+}
+
+void MainWindow::promptInstallUpdate(const UpdateInfo& info)
+{
+    auto* progress = new QProgressDialog(
+        QString("Downloading ASTRA %1…").arg(info.version),
+        "Cancel", 0, 100, this);
+    progress->setWindowModality(Qt::WindowModal);
+    progress->setMinimumDuration(0);
+    progress->setAutoClose(false);
+    progress->setAutoReset(false);
+    progress->setValue(0);
+
+    connect(_updater, &UpdateManager::downloadProgress, progress,
+            [progress](qint64 received, qint64 total) {
+        if (total > 0) {
+            progress->setMaximum(100);
+            progress->setValue(int(received * 100 / total));
+        } else {
+            progress->setMaximum(0);  // indeterminate
+        }
+    });
+    connect(progress, &QProgressDialog::canceled, _updater,
+            &UpdateManager::cancelDownload);
+
+    connect(_updater, &UpdateManager::installFailed, progress,
+            [this, progress](const QString& err) {
+        progress->close();
+        progress->deleteLater();
+        QMessageBox::warning(this, "Update failed", err);
+    });
+    connect(_updater, &UpdateManager::installFinished, progress,
+            [this, progress, info](const QString&) {
+        progress->close();
+        progress->deleteLater();
+        const auto btn = QMessageBox::information(
+            this, "Update installed",
+            QString("ASTRA %1 has been installed.\n\n"
+                    "Restart now to use the new version?").arg(info.version),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+        if (btn == QMessageBox::Yes)
+            UpdateManager::relaunch();
+    });
+
+    _updater->downloadAndInstall(info);
 }

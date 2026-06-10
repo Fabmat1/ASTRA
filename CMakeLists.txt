@@ -286,6 +286,7 @@ set(SOURCES
     src/utils/Logger.cpp
     src/utils/SpectrumReader.cpp
     src/utils/ThemeManager.cpp
+    src/utils/UpdateManager.cpp
     src/utils/ObservabilityCalculator.cpp
     src/utils/LightcurveFetcher.cpp
     src/utils/LightcurveFetchService.cpp
@@ -420,6 +421,7 @@ set(HEADERS
     src/utils/Logger.h
     src/utils/SpectrumReader.h
     src/utils/ThemeManager.h
+    src/utils/UpdateManager.h
     src/utils/ObservabilityCalculator.h
     src/utils/LightcurveFetcher.h
     src/utils/LightcurveFetchService.h
