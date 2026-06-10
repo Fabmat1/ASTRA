@@ -54,7 +54,13 @@ public:
     void resetToFit(int row);
 
     bool canRemove(int row) const;
+    /// True when the point was derived from a spectral fit that has since been
+    /// deleted (its spectrum or specific fit no longer exists), leaving a stale
+    /// RV point that can no longer be reset - so it may be removed instead.
+    bool isOrphaned(int row) const;
     void removePoint(int row);
+
+    std::shared_ptr<RadialVelocityPoint> pointAt(int row) const;
     void appendPoint(std::shared_ptr<RadialVelocityPoint> p);
     void appendPoints(const std::vector<std::shared_ptr<RadialVelocityPoint>>& pts);
 

@@ -24,6 +24,11 @@ public:
     explicit LightcurveFetchSessionsDialog(LightcurveFetchService* service,
                                            QWidget*                parent = nullptr);
 
+signals:
+    /// Emitted when the user clicks "New Fetch…" - the owner (MainWindow) wires
+    /// this to the Project View's batch-fetch action for the selected stars.
+    void newFetchRequested();
+
 private slots:
     void rebuildList();
     void onSelectionChanged();

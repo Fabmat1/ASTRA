@@ -35,9 +35,11 @@ FirstRunDialog::FirstRunDialog(AppSettings* settings, QWidget* parent)
 {
     setWindowTitle(tr("Welcome to ASTRA"));
     setModal(true);
-    resize(560, 0);
+    setMinimumWidth(640);
 
     auto* root = new QVBoxLayout(this);
+    root->setContentsMargins(20, 20, 20, 16);
+    root->setSpacing(14);
 
     auto* intro = new QLabel(tr(
         "<h3>Welcome to ASTRA</h3>"
@@ -50,6 +52,10 @@ FirstRunDialog::FirstRunDialog(AppSettings* settings, QWidget* parent)
 
     auto* form = new QFormLayout;
     form->setRowWrapPolicy(QFormLayout::DontWrapRows);
+    form->setFieldGrowthPolicy(QFormLayout::ExpandingFieldsGrow);
+    form->setLabelAlignment(Qt::AlignRight);
+    form->setHorizontalSpacing(12);
+    form->setVerticalSpacing(8);
 
     // Helper: build a password-style token field with a Show toggle.
     auto makeTokenRow = [this](QLineEdit*& edit, const QString& current,
@@ -57,6 +63,7 @@ FirstRunDialog::FirstRunDialog(AppSettings* settings, QWidget* parent)
         auto* row = new QHBoxLayout;
         edit = new QLineEdit(current);
         edit->setEchoMode(QLineEdit::Password);
+        edit->setMinimumWidth(360);
         edit->setPlaceholderText(placeholder);
         auto* show = new QCheckBox(tr("Show"));
         connect(show, &QCheckBox::toggled, this, [edit](bool on) {

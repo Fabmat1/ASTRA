@@ -94,6 +94,7 @@ private:
     // Stars menu actions
     QAction *_addStarAction;
     QAction *_importStarsAction;
+    QAction *_exportTableAction = nullptr;
     QAction *_removeStarAction;
     QAction *_detailWindowAction;
     QAction *_shareStarsAction   = nullptr;
@@ -103,7 +104,6 @@ private:
     // Analysis menu actions
     QAction* _createPlotAction;
     QAction* _fetchLightcurvesAction = nullptr;
-    QAction* _lcSessionsAction       = nullptr;
 
     QAction* _instrumentConfigAction = nullptr;
     InstrumentConfigView* _instrumentConfigView = nullptr;

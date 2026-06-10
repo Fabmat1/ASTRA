@@ -244,6 +244,7 @@ set(SOURCES
 
     # dialogs
     src/dialogs/EditProjectDialog.cpp
+    src/dialogs/ExportTableDialog.cpp
     src/dialogs/NewProjectDialog.cpp
     src/dialogs/SettingsDialog.cpp
     src/dialogs/FirstRunDialog.cpp
@@ -378,6 +379,7 @@ set(HEADERS
 
     # dialogs
     src/dialogs/EditProjectDialog.h
+    src/dialogs/ExportTableDialog.h
     src/dialogs/NewProjectDialog.h
     src/dialogs/SettingsDialog.h
     src/dialogs/FirstRunDialog.h

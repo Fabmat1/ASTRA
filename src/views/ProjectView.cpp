@@ -6,6 +6,7 @@
 #include "controllers/ApplicationController.h"
 #include "db/DatabaseManager.h"
 #include "dialogs/AddStarDialog.h"
+#include "dialogs/ExportTableDialog.h"
 #include "io/StarPackage.h"
 #include "io/StarShare.h"
 #include "models/ColumnPreset.h"
@@ -23,6 +24,7 @@
 #include <QClipboard>
 #include <QDragEnterEvent>
 #include <QDropEvent>
+#include <QFile>
 #include <QFileDialog>
 #include <QHeaderView>
 #include <QKeyEvent>
@@ -37,11 +39,20 @@
 #include <QSettings>
 #include <QStatusBar>
 #include <QTableView>
+#include <QTextStream>
 #include <QUrl>
 #include <QUuid>
 #include <QVBoxLayout>
 #include <QWheelEvent>
 #include <algorithm>
+#include <cmath>
+#include <limits>
+
+#ifdef HAVE_CCFITS
+#include <CCfits/CCfits>
+#include <CCfits/Column.h>
+#include <CCfits/Table.h>
+#endif
 
 ProjectView::ProjectView(ApplicationController* controller, QWidget *parent)
     : QWidget(parent)
@@ -786,6 +797,256 @@ void ProjectView::onFetchLightcurves()
     if (skipped > 0)
         msg += tr("  (%1 star(s) without Gaia ID skipped)").arg(skipped);
     updateStatusBar(msg);
+}
+
+namespace {
+
+// Format a star field value for tabular export. Doubles use up to 12 sig figs
+// (NaN → empty), bools become 1/0, everything else is its plain string.
+QString exportCell(const QVariant& v)
+{
+    if (!v.isValid() || v.isNull()) return QString();
+    switch (v.typeId()) {
+        case QMetaType::Double:
+        case QMetaType::Float: {
+            const double d = v.toDouble();
+            return std::isnan(d) ? QString() : QString::number(d, 'g', 12);
+        }
+        case QMetaType::Bool:
+            return v.toBool() ? QStringLiteral("1") : QStringLiteral("0");
+        default:
+            return v.toString();
+    }
+}
+
+// Quote a CSV field if it contains the separator, a quote or a newline.
+QString csvEscape(const QString& field, const QString& sep)
+{
+    const bool needQuote = field.contains('"') || field.contains('\n') ||
+                           field.contains('\r') ||
+                           (!sep.isEmpty() && field.contains(sep));
+    if (!needQuote) return field;
+    QString out = field;
+    out.replace('"', QStringLiteral("\"\""));
+    return '"' + out + '"';
+}
+
+} // namespace
+
+void ProjectView::onExportTable()
+{
+    if (!_currentProject || !_tableModel) {
+        QMessageBox::information(this, tr("Export Table"), tr("No project loaded."));
+        return;
+    }
+
+    auto* selModel = _starTable->selectionModel();
+    const bool hasSelection = selModel && selModel->hasSelection();
+
+    ExportTableDialog dlg(hasSelection, this);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    const auto scope = dlg.scope();
+
+    // ── Resolve the column keys to export ────────────────────────────────
+    std::vector<QString> keys;
+    auto shownColumnKeys = [this, &keys] {
+        for (int c = 0; c < _tableModel->columnCount(); ++c) {
+            const QString k = _tableModel->getColumnName(c);
+            if (!k.isEmpty()) keys.push_back(k);
+        }
+    };
+    if (scope == ExportTableDialog::Scope::All) {
+        for (const auto& cd : ColumnPresetManager::instance().allColumns())
+            keys.push_back(cd.key);
+    } else if (scope == ExportTableDialog::Scope::Selection) {
+        QList<int> cols;
+        for (const QModelIndex& pi : selModel->selectedIndexes()) {
+            const int c = mapToSource(pi).column();
+            if (!cols.contains(c)) cols.append(c);
+        }
+        std::sort(cols.begin(), cols.end());
+        for (int c : cols) {
+            const QString k = _tableModel->getColumnName(c);
+            if (!k.isEmpty()) keys.push_back(k);
+        }
+        if (keys.empty()) shownColumnKeys();   // safety net
+    } else {
+        shownColumnKeys();
+    }
+
+    // ── Resolve the rows (stars) to export, in display order ─────────────
+    std::vector<std::shared_ptr<Star>> stars;
+    auto starsInDisplayOrder = [this, &stars](const QSet<int>* onlyRows) {
+        if (_proxyModel) {
+            for (int pr = 0; pr < _proxyModel->rowCount(); ++pr) {
+                const int sr = mapToSource(_proxyModel->index(pr, 0)).row();
+                if (onlyRows && !onlyRows->contains(sr)) continue;
+                if (auto s = _tableModel->getStarAtRow(sr)) stars.push_back(s);
+            }
+        } else {
+            for (int r = 0; r < _tableModel->rowCount(); ++r) {
+                if (onlyRows && !onlyRows->contains(r)) continue;
+                if (auto s = _tableModel->getStarAtRow(r)) stars.push_back(s);
+            }
+        }
+    };
+    if (scope == ExportTableDialog::Scope::All) {
+        for (int r = 0; r < _tableModel->rowCount(); ++r)
+            if (auto s = _tableModel->getStarAtRow(r)) stars.push_back(s);
+    } else if (scope == ExportTableDialog::Scope::Selection) {
+        QSet<int> rowSet;
+        for (const QModelIndex& pi : selModel->selectedIndexes())
+            rowSet.insert(mapToSource(pi).row());
+        starsInDisplayOrder(&rowSet);
+    } else {
+        starsInDisplayOrder(nullptr);
+    }
+
+    if (keys.empty() || stars.empty()) {
+        QMessageBox::information(this, tr("Export Table"),
+            tr("Nothing to export for the chosen selection."));
+        return;
+    }
+
+    // ── Materialise headers + the string matrix ──────────────────────────
+    auto& mgr = ColumnPresetManager::instance();
+    QStringList headers;
+    for (const auto& k : keys) {
+        const QString dn = mgr.displayName(k);
+        headers << (dn.isEmpty() ? k : dn);
+    }
+    std::vector<std::vector<QString>> cells;
+    cells.reserve(stars.size());
+    for (const auto& s : stars) {
+        std::vector<QString> row;
+        row.reserve(keys.size());
+        for (const auto& k : keys)
+            row.push_back(exportCell(s->getFieldValue(k)));
+        cells.push_back(std::move(row));
+    }
+
+    const auto fmt = dlg.format();
+
+    // ── Clipboard / CSV share the same text serialisation ────────────────
+    if (fmt == ExportTableDialog::Format::Clipboard ||
+        fmt == ExportTableDialog::Format::Csv) {
+        const QString sep = dlg.separator();
+        auto buildLine = [&sep](const QStringList& fields) {
+            QStringList esc;
+            esc.reserve(fields.size());
+            for (const auto& f : fields) esc << csvEscape(f, sep);
+            return esc.join(sep);
+        };
+
+        QString text;
+        if (dlg.includeHeader())
+            text += buildLine(headers) + '\n';
+        for (const auto& row : cells) {
+            QStringList fields;
+            for (const auto& v : row) fields << v;
+            text += buildLine(fields) + '\n';
+        }
+
+        if (fmt == ExportTableDialog::Format::Clipboard) {
+            QApplication::clipboard()->setText(text);
+            updateStatusBar(tr("Copied %1 row(s) × %2 column(s) to clipboard")
+                            .arg(cells.size()).arg(keys.size()));
+            return;
+        }
+
+        QString path = QFileDialog::getSaveFileName(
+            this, tr("Export table to CSV"),
+            _currentProject->getName() + ".csv",
+            tr("CSV files (*.csv);;Text files (*.txt);;All files (*)"));
+        if (path.isEmpty()) return;
+        QFile f(path);
+        if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
+            QMessageBox::warning(this, tr("Export Table"),
+                tr("Could not open %1 for writing.").arg(path));
+            return;
+        }
+        QTextStream ts(&f);
+        ts << text;
+        f.close();
+        updateStatusBar(tr("Exported %1 row(s) to %2")
+                        .arg(cells.size()).arg(path));
+        return;
+    }
+
+    // ── FITS binary table ────────────────────────────────────────────────
+#ifdef HAVE_CCFITS
+    {
+        QString path = QFileDialog::getSaveFileName(
+            this, tr("Export table to FITS"),
+            _currentProject->getName() + ".fits",
+            tr("FITS files (*.fits *.fit);;All files (*)"));
+        if (path.isEmpty()) return;
+
+        const long nrows = static_cast<long>(cells.size());
+        const int  ncols = static_cast<int>(keys.size());
+
+        // Infer a numeric (double) or string column type per column.
+        std::vector<bool> numeric(ncols, false);
+        std::vector<std::string> colName, colForm, colUnit;
+        for (int j = 0; j < ncols; ++j) {
+            bool num = true, anyVal = false;
+            int maxLen = 1;
+            for (long i = 0; i < nrows; ++i) {
+                const QString& s = cells[i][j];
+                if (!s.isEmpty()) {
+                    anyVal = true;
+                    bool ok = false;
+                    s.toDouble(&ok);
+                    if (!ok) num = false;
+                }
+                maxLen = std::max(maxLen, int(s.size()));
+            }
+            numeric[j] = num && anyVal;
+            colName.push_back(keys[j].toStdString());
+            colForm.push_back(numeric[j] ? std::string("D")
+                                         : "A" + std::to_string(std::max(maxLen, 1)));
+            colUnit.emplace_back();
+        }
+
+        try {
+            // '!' forces overwrite of an existing file.
+            std::unique_ptr<CCfits::FITS> fits(
+                new CCfits::FITS("!" + path.toStdString(), CCfits::Write));
+            CCfits::Table* table =
+                fits->addTable("STARS", nrows, colName, colForm, colUnit);
+
+            const double nan = std::numeric_limits<double>::quiet_NaN();
+            for (int j = 0; j < ncols; ++j) {
+                if (numeric[j]) {
+                    std::vector<double> col(nrows);
+                    for (long i = 0; i < nrows; ++i) {
+                        const QString& s = cells[i][j];
+                        bool ok = false;
+                        const double d = s.toDouble(&ok);
+                        col[i] = (s.isEmpty() || !ok) ? nan : d;
+                    }
+                    table->column(colName[j]).write(col, 1);
+                } else {
+                    std::vector<std::string> col(nrows);
+                    for (long i = 0; i < nrows; ++i)
+                        col[i] = cells[i][j].toStdString();
+                    table->column(colName[j]).write(col, 1);
+                }
+            }
+            // FITS object flushes & closes on destruction.
+        } catch (const std::exception& e) {
+            QMessageBox::warning(this, tr("Export Table"),
+                tr("Failed to write FITS file:\n%1").arg(e.what()));
+            return;
+        }
+        updateStatusBar(tr("Exported %1 row(s) to %2")
+                        .arg(cells.size()).arg(path));
+    }
+#else
+    QMessageBox::warning(this, tr("Export Table"),
+        tr("This build of ASTRA was compiled without FITS support."));
+#endif
 }
 
 void ProjectView::updateStatusBar(const QString& message)

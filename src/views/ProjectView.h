@@ -175,6 +175,7 @@ public:
     void onConfigureColumns();
     void onCreatePlot();
     void onFetchLightcurves();
+    void onExportTable();
     void onShareStars();
     void onReceiveStars();
 

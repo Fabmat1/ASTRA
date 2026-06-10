@@ -12,6 +12,7 @@
 #include <QHBoxLayout>
 #include <QGroupBox>
 #include <QCheckBox>
+#include <QEvent>
 #include <QPushButton>
 #include <QTimer>
 #include <QPainter>
@@ -252,6 +253,27 @@ void RVPanel::populate()
 {
     static const QString CAT = "StarDetailView.RV";
 
+    // Capture the current per-plot axis ranges before the plots are destroyed,
+    // so we can restore the user's zoom when only the displayed fit changed.
+    const bool preserveZoom = _preserveZoomOnNextPopulate;
+    _preserveZoomOnNextPopulate = false;
+    struct SavedRange { bool valid=false; double xLo,xHi,yLo,yHi; };
+    std::vector<SavedRange> savedRanges;
+    if (preserveZoom) {
+        for (auto& t : _highlightTargets) {
+            SavedRange s;
+            if (t.plot) {
+                s.valid = true;
+                s.xLo = t.plot->xAxis->range().lower;
+                s.xHi = t.plot->xAxis->range().upper;
+                s.yLo = t.plot->yAxis->range().lower;
+                s.yHi = t.plot->yAxis->range().upper;
+            }
+            savedRanges.push_back(s);
+        }
+    }
+    if (_resetZoomBtn) _resetZoomBtn->hide();
+
     // Old plots (and their highlight graphs) are destroyed with the layout.
     _highlightTargets.clear();
     PanelUtils::clearLayout(_contentLayout);
@@ -394,18 +416,26 @@ void RVPanel::populate()
                                       kPhaseHi, PanelUtils::pointColor(),
                                       PanelUtils::errorBarColor());
 
-        // Model curve spans the full visible range (two phases).
+        // Model curve spans the full visible range (two phases). Track its
+        // extent too, so the Y range frames both the points and the model.
         constexpr int   N = 480;
         QVector<double> fitX(N + 1), fitY(N + 1);
+        double mLo = std::numeric_limits<double>::max();
+        double mHi = std::numeric_limits<double>::lowest();
         for (int i = 0; i <= N; ++i) {
             const double ph = kPhaseLo + (kPhaseHi - kPhaseLo) * i / N;
             fitX[i]         = ph;
             fitY[i]         = bestFit->calculateRVAtPhase(ph);
+            mLo = std::min(mLo, fitY[i]);
+            mHi = std::max(mHi, fitY[i]);
         }
         QCPGraph *fitGraph = plot->addGraph();
         fitGraph->setPen(QPen(PanelUtils::fitCurveColor(), 2.0));
         fitGraph->setData(fitX, fitY);
         fitGraph->removeFromLegend();
+
+        double yLo = std::min(yRange.first,  mLo);
+        double yHi = std::max(yRange.second, mHi);
 
         // Highlight graph on top of everything else.
         tgt.plot  = plot;
@@ -417,10 +447,14 @@ void RVPanel::populate()
         plot->xAxis->setLabel("Phase");
         plot->xAxis->setRange(kPhaseLo, kPhaseHi);
         plot->yAxis->setLabel("RV [km/s]");
-        double margin = (yRange.second - yRange.first) * 0.1;
+        double margin = (yHi - yLo) * 0.1;
         if (margin < 1.0)
             margin = 1.0;
-        plot->yAxis->setRange(yRange.first - margin, yRange.second + margin);
+        plot->yAxis->setRange(yLo - margin, yHi + margin);
+
+        auto& T = _highlightTargets.back();
+        T.homeXLo = kPhaseLo;       T.homeXHi = kPhaseHi;
+        T.homeYLo = yLo - margin;   T.homeYHi = yHi + margin;
 
         plot->replot();
         _contentLayout->addWidget(plot);
@@ -472,12 +506,24 @@ void RVPanel::populate()
         for (auto& w : widths)
             stretches.push_back(std::max(1, static_cast<int>(std::round(w / sumW * 100))));
 
-        // Global Y range
+        // Global Y range - from the points AND the model curve, so a high-K
+        // solution whose model swings past the data is still fully framed.
         double yLo =  std::numeric_limits<double>::max();
         double yHi =  std::numeric_limits<double>::lowest();
         for (size_t i = 0; i < rvs.size(); ++i) {
             yLo = std::min(yLo, rvs[i] - errs[i]);
             yHi = std::max(yHi, rvs[i] + errs[i]);
+        }
+        if (bestFit && bestFit->getPeriod() > 0 && !times.empty()) {
+            constexpr int M = 600;
+            const double tA = times.front();
+            const double tB = times.back();
+            for (int i = 0; i <= M; ++i) {
+                const double t = tA + (tB - tA) * i / M;
+                const double y = bestFit->calculateRV(Time(t + t0, TimeScale::BJD));
+                yLo = std::min(yLo, y);
+                yHi = std::max(yHi, y);
+            }
         }
         double yMargin = (yHi - yLo) * 0.1;
         if (yMargin < 1.0) yMargin = 1.0;
@@ -533,6 +579,10 @@ void RVPanel::populate()
             plot->xAxis->setRange(xMin - span * 0.05, xMax + span * 0.05);
             plot->yAxis->setLabel("RV [km/s]");
             plot->yAxis->setRange(yLo, yHi);
+
+            auto& T = _highlightTargets.back();
+            T.homeXLo = xMin - span * 0.05; T.homeXHi = xMax + span * 0.05;
+            T.homeYLo = yLo;                T.homeYHi = yHi;
 
             plot->replot();
             _contentLayout->addWidget(plot);
@@ -604,6 +654,12 @@ void RVPanel::populate()
 
                 plot->xAxis->setRange(xMin, xMax);
 
+                {
+                    auto& T = _highlightTargets.back();
+                    T.homeXLo = xMin; T.homeXHi = xMax;
+                    T.homeYLo = yLo;  T.homeYHi = yHi;
+                }
+
                 // Tick count depends on relative width
                 double normW = widths[seg] / maxW;
                 if (normW < 0.20)
@@ -632,6 +688,31 @@ void RVPanel::populate()
                 .arg(_ctx.star->getSourceId()).arg(nSeg).arg(data.size()));
         }
     }
+
+    // Restore the user's previous zoom/pan if this rebuild was only a change of
+    // the displayed solution (same plot structure as before).
+    if (preserveZoom && savedRanges.size() == _highlightTargets.size()) {
+        for (size_t i = 0; i < _highlightTargets.size(); ++i) {
+            auto& t = _highlightTargets[i];
+            const auto& s = savedRanges[i];
+            if (!t.plot || !s.valid) continue;
+            t.plot->xAxis->setRange(s.xLo, s.xHi);
+            t.plot->yAxis->setRange(s.yLo, s.yHi);
+            t.plot->replot();
+        }
+    }
+
+    // Track zoom/pan so the reset-zoom button appears when away from home.
+    for (auto& t : _highlightTargets) {
+        if (!t.plot) continue;
+        connect(t.plot->xAxis,
+                qOverload<const QCPRange&>(&QCPAxis::rangeChanged), this,
+                [this](const QCPRange&) { updateResetZoomButton(); });
+        connect(t.plot->yAxis,
+                qOverload<const QCPRange&>(&QCPAxis::rangeChanged), this,
+                [this](const QCPRange&) { updateResetZoomButton(); });
+    }
+    updateResetZoomButton();
 
     // Fill in the highlight markers for the currently shown spectrum (if any).
     applyHighlight();
@@ -669,6 +750,69 @@ void RVPanel::setupUi()
     _contentLayout = new QVBoxLayout(_content);
     _contentLayout->setContentsMargins(0, 0, 0, 0);
     layout->addWidget(_content, 1);
+
+    // Floating "reset zoom" button, overlaid on the plot area. Shown only when
+    // the user has zoomed/panned away from the auto-computed view.
+    _resetZoomBtn = new QPushButton(QStringLiteral("⤢  Reset zoom"), _content);
+    _resetZoomBtn->setCursor(Qt::PointingHandCursor);
+    _resetZoomBtn->setToolTip("Restore the default axis range");
+    _resetZoomBtn->setStyleSheet(
+        "QPushButton { font-weight: 600; padding: 3px 10px; border-radius: 4px;"
+        " border: 1px solid palette(mid); background: palette(window); }"
+        "QPushButton:hover { background: palette(midlight); }");
+    _resetZoomBtn->hide();
+    connect(_resetZoomBtn, &QPushButton::clicked, this, &RVPanel::resetZoom);
+    _content->installEventFilter(this);
+}
+
+bool RVPanel::eventFilter(QObject* obj, QEvent* event)
+{
+    // Keep the floating reset-zoom button pinned to the top-right of the plot.
+    if (obj == _content && event->type() == QEvent::Resize)
+        updateResetZoomButton();
+    return DetailPanel::eventFilter(obj, event);
+}
+
+void RVPanel::updateResetZoomButton()
+{
+    if (!_resetZoomBtn) return;
+
+    auto atHome = [](const HighlightTarget& t) -> bool {
+        if (!t.plot) return true;
+        const auto cx = t.plot->xAxis->range();
+        const auto cy = t.plot->yAxis->range();
+        auto close = [](double a, double b, double span) {
+            return std::fabs(a - b) <= std::max(1e-9, std::fabs(span) * 1e-3);
+        };
+        const double xs = t.homeXHi - t.homeXLo;
+        const double ys = t.homeYHi - t.homeYLo;
+        return close(cx.lower, t.homeXLo, xs) && close(cx.upper, t.homeXHi, xs)
+            && close(cy.lower, t.homeYLo, ys) && close(cy.upper, t.homeYHi, ys);
+    };
+
+    bool home = true;
+    for (const auto& t : _highlightTargets)
+        if (!atHome(t)) { home = false; break; }
+
+    const bool show = !home && !_highlightTargets.empty();
+    _resetZoomBtn->setVisible(show);
+    if (show) {
+        _resetZoomBtn->adjustSize();
+        const int m = 10;
+        _resetZoomBtn->move(std::max(0, _content->width() - _resetZoomBtn->width() - m), m);
+        _resetZoomBtn->raise();
+    }
+}
+
+void RVPanel::resetZoom()
+{
+    for (auto& t : _highlightTargets) {
+        if (!t.plot) continue;
+        t.plot->xAxis->setRange(t.homeXLo, t.homeXHi);
+        t.plot->yAxis->setRange(t.homeYLo, t.homeYHi);
+        t.plot->replot();
+    }
+    updateResetZoomButton();
 }
 
 void RVPanel::onToggleFolded()
@@ -680,16 +824,32 @@ void RVPanel::onToggleFolded()
 
 void RVPanel::setDisplayedFit(std::shared_ptr<RVFit> fit)
 {
+    // Scrolling through solutions should not snap the view back to the default
+    // zoom - keep whatever range the user is currently looking at.
+    _preserveZoomOnNextPopulate = true;
     _displayedFit = std::move(fit);
     populate();
 }
 
 void RVPanel::highlightSpectrum(const QString& spectrumId, const QString& /*fitId*/)
 {
-    if (_highlightSpectrumId == spectrumId)
+    if (_highlightSpectrumId == spectrumId && !_highlightHasEpoch)
         return;                       // nothing changed
     _highlightSpectrumId = spectrumId;
+    _highlightHasEpoch   = false;     // spectrum-driven highlight resolves its own epoch
     applyHighlight();                 // update markers in-place, no rebuild → no flash
+}
+
+void RVPanel::highlightRVPoint(const QString& spectrumId, double epoch, bool hasEpoch)
+{
+    if (_highlightSpectrumId == spectrumId &&
+        _highlightHasEpoch == hasEpoch &&
+        (!hasEpoch || _highlightEpoch == epoch))
+        return;                       // nothing changed
+    _highlightSpectrumId = spectrumId;
+    _highlightEpoch      = epoch;
+    _highlightHasEpoch   = hasEpoch;
+    applyHighlight();
 }
 
 void RVPanel::applyHighlight()
@@ -698,7 +858,10 @@ void RVPanel::applyHighlight()
     // used when an RV point carries no source-spectrum id.
     bool   haveTime = false;
     double hlTime   = 0.0;
-    if (!_highlightSpectrumId.isEmpty() && _ctx.star) {
+    if (_highlightHasEpoch) {
+        haveTime = true;
+        hlTime   = _highlightEpoch;
+    } else if (!_highlightSpectrumId.isEmpty() && _ctx.star) {
         for (auto& spec : _ctx.star->getSpectra()) {
             if (spec && spec->getId() == _highlightSpectrumId) {
                 hlTime   = spec->time().sortValue();
@@ -708,11 +871,13 @@ void RVPanel::applyHighlight()
         }
     }
 
+    const bool haveHighlight = !_highlightSpectrumId.isEmpty() || haveTime;
+
     for (auto& tgt : _highlightTargets) {
         if (!tgt.plot || !tgt.graph) continue;
 
         QVector<double> px, py;
-        if (!_highlightSpectrumId.isEmpty()) {
+        if (haveHighlight) {
             for (size_t i = 0; i < tgt.xs.size(); ++i) {
                 if (tgt.xs[i] < tgt.xMin || tgt.xs[i] > tgt.xMax) continue;
 

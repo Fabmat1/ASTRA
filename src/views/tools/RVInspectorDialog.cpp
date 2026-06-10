@@ -426,16 +426,34 @@ void RVSolutionsWidget::buildUi()
     v->addWidget(_list, 1);
 
     auto* btnRow = new QHBoxLayout;
-    _addBtn  = new QPushButton("Add");
+    _addBtn  = new QPushButton("➕  Add Fit");
     _delBtn  = new QPushButton("Delete");
     _bestBtn = new QPushButton("Set as Best");
+    // Adding a new RV solution is the primary action on this page - make the
+    // button stand out from the secondary delete / set-as-best controls.
+    _addBtn->setToolTip("Add a new RV solution (fit or manual orbit)");
+    _addBtn->setStyleSheet(
+        "QPushButton { font-weight: 600; padding: 4px 10px;"
+        " border: 1px solid #5a9bd4; border-radius: 4px; }"
+        "QPushButton:hover { background: rgba(90,155,212,0.18); }");
     btnRow->addWidget(_addBtn);
     btnRow->addWidget(_delBtn);
     btnRow->addWidget(_bestBtn);
     v->addLayout(btnRow);
 
-    auto* paramBox = new QGroupBox("Parameters");
-    auto* form = new QFormLayout(paramBox);
+    // Collapsible "manually adjust the curve" section. Hidden by default so the
+    // solutions list and stats stay uncluttered; expand it to tweak parameters
+    // by hand. Implemented as a checkable group box whose body is shown/hidden.
+    auto* paramBox = new QGroupBox("Manually Adjust Curve");
+    paramBox->setCheckable(true);
+    paramBox->setChecked(false);
+    auto* paramBoxLay = new QVBoxLayout(paramBox);
+    paramBoxLay->setContentsMargins(6, 4, 6, 6);
+    auto* paramContent = new QWidget;
+    paramBoxLay->addWidget(paramContent);
+    paramContent->setVisible(false);
+    connect(paramBox, &QGroupBox::toggled, paramContent, &QWidget::setVisible);
+    auto* form = new QFormLayout(paramContent);
 
     // Pasteable + full precision (15 significant digits, no rounding):
     // do NOT call setDecimals or the stored value gets truncated on paste.
@@ -911,8 +929,15 @@ void RVInspectorDialog::setupUi()
                                 | QAbstractItemView::SelectedClicked
                                 | QAbstractItemView::EditKeyPressed);
     _pointsTable->verticalHeader()->setVisible(false);
-    _pointsTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
-    _pointsTable->horizontalHeader()->setStretchLastSection(true);
+    {
+        auto* hh = _pointsTable->horizontalHeader();
+        hh->setSectionResizeMode(QHeaderView::ResizeToContents);
+        // The Flag column holds only a checkbox, so it should never be the
+        // space-filling column. Let the Instrument column absorb the slack.
+        hh->setStretchLastSection(false);
+        hh->setSectionResizeMode(RVPointsTableModel::ColInstrument,
+                                 QHeaderView::Stretch);
+    }
     _pointsTable->setSortingEnabled(false);
     _pointsTable->setContextMenuPolicy(Qt::CustomContextMenu);
     _pointsTable->setItemDelegateForColumn(
@@ -997,18 +1022,61 @@ void RVInspectorDialog::onTableContextMenu(const QPoint& pos)
     QMenu menu(this);
     QAction* resetAct = menu.addAction("Reset RV to fit value");
     resetAct->setEnabled(_pointsModel->canResetToFit(row));
+
+    const bool orphaned = _pointsModel->isOrphaned(row);
+    QAction* removeAct = menu.addAction(
+        orphaned ? "Remove orphaned point" : "Remove point");
+    removeAct->setEnabled(_pointsModel->canRemove(row));
+
     QAction* chosen = menu.exec(_pointsTable->viewport()->mapToGlobal(pos));
-    if (chosen == resetAct) _pointsModel->resetToFit(row);
+    if (chosen == resetAct) {
+        _pointsModel->resetToFit(row);
+    } else if (chosen == removeAct) {
+        _pointsModel->removePoint(row);
+        if (_plotPanel) _plotPanel->refresh();
+        onPointSelectionChanged();
+    }
 }
 
 bool RVPointsTableModel::canRemove(int row) const
 {
     if (row < 0 || row >= static_cast<int>(_points.size())) return false;
     const auto& p = _points[row];
-    return p
-        && p->getRVSource() == RadialVelocityPoint::RVSource::Manual
+    if (!p) return false;
+    // Orphaned fit-points (whose spectral fit was deleted) can be removed even
+    // though they still carry a spectrum/fit id.
+    if (isOrphaned(row)) return true;
+    return p->getRVSource() == RadialVelocityPoint::RVSource::Manual
         && p->getSpectrumId().isEmpty()      // truly free-standing
         && p->getSpectralFitId().isEmpty();
+}
+
+bool RVPointsTableModel::isOrphaned(int row) const
+{
+    if (row < 0 || row >= static_cast<int>(_points.size())) return false;
+    const auto& p = _points[row];
+    if (!p) return false;
+    // Only points tied to a spectrum/spectral-fit can become orphaned.
+    const bool linksFit = !p->getSpectralFitId().isEmpty()
+                       || !p->getSpectrumId().isEmpty();
+    if (!linksFit) return false;
+
+    auto sp = linkedSpectrum(p);
+    if (!sp) return true;   // the source spectrum is gone entirely
+
+    if (!p->getSpectralFitId().isEmpty()) {
+        for (const auto& f : sp->getSpectralFits())
+            if (f && f->getId() == p->getSpectralFitId())
+                return false;   // the referenced fit still exists
+        return true;            // spectrum present but its fit was deleted
+    }
+    return false;
+}
+
+std::shared_ptr<RadialVelocityPoint> RVPointsTableModel::pointAt(int row) const
+{
+    if (row < 0 || row >= static_cast<int>(_points.size())) return nullptr;
+    return _points[row];
 }
 
 void RVPointsTableModel::removePoint(int row)
@@ -1085,11 +1153,26 @@ void RVInspectorDialog::onPointSelectionChanged()
     if (rows.size() != 1) {
         _actionBtn->setText("Remove selected");
         _actionBtn->setEnabled(false);
+        if (_plotPanel) _plotPanel->highlightRVPoint({}, 0.0, false);
         return;
     }
     const int row = rows.first().row();
+
+    // Emphasise the selected point in the plot.
+    if (_plotPanel) {
+        if (auto p = _pointsModel->pointAt(row)) {
+            const Time& t = p->time();
+            _plotPanel->highlightRVPoint(p->getSpectrumId(),
+                                         t.sortValue(), t.isValid());
+        } else {
+            _plotPanel->highlightRVPoint({}, 0.0, false);
+        }
+    }
+
     if (_pointsModel->canRemove(row)) {
-        _actionBtn->setText("Remove selected");
+        _actionBtn->setText(_pointsModel->isOrphaned(row)
+                                ? "Remove orphaned point"
+                                : "Remove selected");
         _actionBtn->setEnabled(true);
     } else if (_pointsModel->canResetToFit(row)) {
         _actionBtn->setText("Reset to fit value");

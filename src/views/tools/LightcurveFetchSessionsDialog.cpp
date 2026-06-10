@@ -45,6 +45,21 @@ LightcurveFetchSessionsDialog::LightcurveFetchSessionsDialog(
 
     auto* root = new QVBoxLayout(this);
 
+    // ── New-fetch launcher (this dialog is the single entry point for both
+    //    starting a batch fetch and monitoring the running sessions). ──
+    auto* newRow = new QHBoxLayout;
+    auto* newFetchBtn = new QPushButton(tr("➕  New Fetch…"));
+    newFetchBtn->setToolTip(tr("Start a new lightcurve fetch for the stars "
+                               "selected in the project table."));
+    // Make it stand out as the primary call-to-action.
+    newFetchBtn->setStyleSheet(
+        "QPushButton { font-weight: 600; padding: 6px 14px; }");
+    connect(newFetchBtn, &QPushButton::clicked, this,
+            &LightcurveFetchSessionsDialog::newFetchRequested);
+    newRow->addWidget(newFetchBtn);
+    newRow->addStretch();
+    root->addLayout(newRow);
+
     _summary = new QLabel;
     _summary->setStyleSheet("color: gray;");
     root->addWidget(_summary);
@@ -210,8 +225,11 @@ BatchLightcurveFetchSetupDialog::BatchLightcurveFetchSetupDialog(int starCount,
     : QDialog(parent)
 {
     setWindowTitle(tr("Fetch Lightcurves"));
+    setMinimumWidth(520);
 
     auto* root = new QVBoxLayout(this);
+    root->setContentsMargins(16, 16, 16, 12);
+    root->setSpacing(12);
 
     auto* hdr = new QLabel(
         tr("Fetch public lightcurves for <b>%n selected star(s)</b> via the "
@@ -223,6 +241,8 @@ BatchLightcurveFetchSetupDialog::BatchLightcurveFetchSetupDialog(int starCount,
 
     auto* srcBox = new QGroupBox(tr("Sources"));
     auto* srcLay = new QHBoxLayout(srcBox);
+    srcLay->setContentsMargins(12, 8, 12, 8);
+    srcLay->setSpacing(14);
     _tess  = new QCheckBox("TESS");     _tess->setChecked(true);
     _ztf   = new QCheckBox("ZTF");      _ztf->setChecked(true);
     _atlas = new QCheckBox("ATLAS");    _atlas->setChecked(true);

@@ -176,6 +176,13 @@ void MainWindow::onShowLcFetchSessions()
         _lcSessionsDialog->setAttribute(Qt::WA_DeleteOnClose);
         connect(_lcSessionsDialog, &QObject::destroyed, this,
                 [this] { _lcSessionsDialog = nullptr; });
+        // "New Fetch…" in the sessions overview launches the batch-fetch setup
+        // for the stars selected in the project table.
+        connect(_lcSessionsDialog,
+                &LightcurveFetchSessionsDialog::newFetchRequested,
+                this, [this] {
+            if (_projectView) _projectView->onFetchLightcurves();
+        });
     }
     _lcSessionsDialog->show();
     _lcSessionsDialog->raise();
@@ -408,6 +415,9 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             _starsMenu = new QMenu("&Stars", this);
             _addStarAction = _starsMenu->addAction("&Add Star...");
             _importStarsAction = _starsMenu->addAction("&Import Stars...");
+            _exportTableAction = _starsMenu->addAction("&Export Table...");
+            _exportTableAction->setStatusTip(
+                tr("Export the star table to FITS, CSV or the clipboard"));
             _starsMenu->addSeparator();
             _shareStarsAction  = new QAction(tr("Share Stars…"), this);
             _starsMenu->addAction(_shareStarsAction);
@@ -423,6 +433,7 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             // Connect to ProjectView slots
             connect(_addStarAction, &QAction::triggered, _projectView, &ProjectView::onAddStar);
             connect(_importStarsAction, &QAction::triggered, _projectView, &ProjectView::onImportStars);
+            connect(_exportTableAction, &QAction::triggered, _projectView, &ProjectView::onExportTable);
             connect(_removeStarAction, &QAction::triggered, _projectView, &ProjectView::onRemoveStar);
             connect(_detailWindowAction, &QAction::triggered, _projectView, &ProjectView::onShowDetailWindow);
             connect(_shareStarsAction, &QAction::triggered, _projectView, &ProjectView::onShareStars);
@@ -437,17 +448,15 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             _createPlotAction = _analysisMenu->addAction("Create &Plot...");
             _fetchLightcurvesAction = _analysisMenu->addAction("Fetch &Lightcurves...");
             _fetchLightcurvesAction->setStatusTip(
-                tr("Fetch lightcurves for the selected stars in the background"));
-            _lcSessionsAction = _analysisMenu->addAction("Lightcurve Fetch &Sessions...");
-            _lcSessionsAction->setStatusTip(
-                tr("Show the terminals and progress of background lightcurve fetches"));
+                tr("Start and monitor background lightcurve fetches for the "
+                   "selected stars"));
             _analysisMenu->addSeparator();
             _instrumentConfigAction = _analysisMenu->addAction("&Instruments...");
 
             connect(_createPlotAction, &QAction::triggered, _projectView, &ProjectView::onCreatePlot);
+            // A single entry point: opens the sessions overview, which carries a
+            // "New Fetch…" button to launch a batch fetch for the selection.
             connect(_fetchLightcurvesAction, &QAction::triggered,
-                    _projectView, &ProjectView::onFetchLightcurves);
-            connect(_lcSessionsAction, &QAction::triggered,
                     this, &MainWindow::onShowLcFetchSessions);
             connect(_instrumentConfigAction, &QAction::triggered, this, &MainWindow::onShowInstrumentConfig);
             
@@ -476,7 +485,6 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             delete _analysisMenu;
             _analysisMenu = nullptr;
             _fetchLightcurvesAction = nullptr;
-            _lcSessionsAction       = nullptr;
         }
         
         // Remove Configure Columns from View menu
