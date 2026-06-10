@@ -2,9 +2,19 @@
 
 ASTRA is a modern Qt6 application for managing and analyzing stellar astrophysics data. It provides comprehensive tools for handling large catalogs of stars, spectroscopic data, photometry, radial velocities, and SEDs.
 
+## Quick Start
+
+If you want to immediately get going using ASTRA, the by far quickest way is grabbing the AppImage file from the latest release you can see on the right side of the GitHub page. Once its downloaded on your Linux system, navigate to its location and launch it using
+
+```
+chmod +x  ./astra-0.3.0-x86_64.AppImage
+./astra-0.3.0-x86_64.AppImage --appimage-extract-and-run
+```
+(Change the version number to match your downloaded file)
+
 ## Installation
 
-ASTRA can be installed by downloading the [latest AppImage release](https://github.com/Fabmat1/ASTRA/releases/latest) (recommended for most users), or built from source.
+ASTRA can be installed by downloading the [latest AppImage release](https://github.com/Fabmat1/ASTRA/releases/latest) (recommended for most users, see above), or built from source.
 
 ### Runtime Dependencies (AppImage users)
 
