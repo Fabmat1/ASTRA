@@ -3,6 +3,7 @@
 #include <QDialog>
 #include <QColor>
 #include <QFont>
+#include <QJsonObject>
 #include <QStringList>
 #include <memory>
 #include <vector>
@@ -51,9 +52,11 @@ private slots:
     void onSeriesRenamed(QListWidgetItem* item);
     void onEditOverlay();
     void onRemoveOverlay();
+    void onManagePresets();
 
 protected:
     void resizeEvent(QResizeEvent* event) override;
+    void closeEvent(QCloseEvent* event) override;
     bool eventFilter(QObject* obj, QEvent* event) override;
 
 private:
@@ -65,14 +68,15 @@ private:
         QString label;
         int     sourceId = 0;          // 0 all, 1 filtered, 2 selected
         QString xKey, yKey, histKey;
+        QString xErrKey, yErrKey;      // error fields → error bars (scatter)
         int     markerIndex = 0;
         QColor  color;
     };
 
-    // A file-based overlay: a line (track/isochrone) or a closed region
-    // boundary drawn as a shaded polygon.
+    // An overlay: a line (track/isochrone) or a closed region boundary loaded
+    // from file, or a text annotation placed at plot coordinates.
     struct OverlayConfig {
-        enum Type { Line = 0, Region = 1 };
+        enum Type { Line = 0, Region = 1, Text = 2 };
         int     type = Line;
         QString label;
         QColor  color;
@@ -81,14 +85,24 @@ private:
         QString filePath;
         int     colX = 1, colY = 2;    // 1-based file columns
         QVector<double> tx, ty;        // loaded vertices
+        QString text;                  // Text type only
+        double  textX = 0.0, textY = 0.0;
+        double  fontScale = 0.85;      // relative to the axis font
     };
 
     void setupUi();
     QWidget* buildControlPanel();
     void detectNumericFields();
     void populateFieldCombo(QComboBox* combo, const QString& defaultKey,
-                            bool noneOption = false);
+                            bool noneOption = false,
+                            bool includeErrorFields = false);
+    void repopulateFieldCombos();
     QString fieldLabel(const QString& key) const;
+
+    // Error-field pairing ("teff" → "e_teff", "rv_k" → "rv_e_k", ...)
+    static bool    isErrorFieldKey(const QString& key);
+    QString        errorKeyFor(const QString& key) const;
+    void           autoSelectErrorField(QComboBox* errCombo, const QString& key);
 
     const std::vector<std::shared_ptr<Star>>& starsForSource(int sourceId) const;
     std::vector<double> extractField(const std::vector<std::shared_ptr<Star>>& stars,
@@ -100,6 +114,12 @@ private:
 
     void addOverlayOfType(int type);
     bool editOverlayDialog(OverlayConfig& ov);
+    bool editTextOverlayDialog(OverlayConfig& ov);
+
+    // Presets: full dialog configuration as JSON (see PlotPresetStore)
+    QJsonObject capturePresetConfig();
+    void        applyPresetConfig(const QJsonObject& cfg);
+    void        updateActivePresetThumbnail();
     bool loadTrackFile(OverlayConfig& ov, QString* err);
     void drawOverlays();
     QString overlayDisplayText(const OverlayConfig& ov) const;
@@ -158,6 +178,8 @@ private:
     // Scatter page
     QComboBox* _xFieldCombo    = nullptr;
     QComboBox* _yFieldCombo    = nullptr;
+    QComboBox* _xErrCombo      = nullptr;
+    QComboBox* _yErrCombo      = nullptr;
     QCheckBox* _logXCheck      = nullptr;
     QCheckBox* _logYCheck      = nullptr;
     QCheckBox* _invXCheck      = nullptr;
@@ -166,6 +188,7 @@ private:
     QComboBox* _sizeByCombo    = nullptr;
     QComboBox* _trendCombo     = nullptr;
     QSpinBox*  _trendWindowSpin = nullptr;
+    QCheckBox* _showErrFieldsCheck = nullptr;
 
     // Histogram page
     QComboBox* _histFieldCombo  = nullptr;
@@ -213,4 +236,7 @@ private:
     QColor _seriesColor;
     QColor _bgColor;   // invalid → follow app theme
     QFont  _axisFont;  // axis label + tick label font
+
+    // Last loaded/saved preset; its thumbnail follows the latest plot.
+    QString _activePresetId;
 };

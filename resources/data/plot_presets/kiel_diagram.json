@@ -1,0 +1,95 @@
+{
+    "version": 1,
+    "name": "Kiel diagram",
+    "type": 0,
+    "series": [
+        {
+            "label": "Stars",
+            "sourceId": 0,
+            "xKey": "teff",
+            "yKey": "logg",
+            "xErrKey": "e_teff",
+            "yErrKey": "e_logg",
+            "histKey": "teff",
+            "markerIndex": 0,
+            "color": "#2060B0"
+        }
+    ],
+    "scatter": {
+        "logX": true,
+        "logY": false,
+        "invX": true,
+        "invY": true,
+        "colorBy": "",
+        "sizeBy": "",
+        "trend": 0,
+        "trendWindow": 21
+    },
+    "limits": {
+        "xMin": "19000",
+        "xMax": "62000",
+        "yMin": "4.4",
+        "yMax": "6.65",
+        "hideStacked": true,
+        "stackedN": 5
+    },
+    "style": {
+        "markerSize": 6,
+        "cull": false,
+        "bgColor": "",
+        "axisWidth": 1.0,
+        "minorTicks": true,
+        "grid": false,
+        "xTicks": "20000, 30000, 40000, 50000, 60000",
+        "yTicks": "",
+        "xLabel": "Teff [K]",
+        "yLabel": "log g [dex]",
+        "title": "Kiel diagram"
+    },
+    "overlays": [
+        {
+            "type": 1,
+            "label": "EHB (Dorman+1993)",
+            "color": "#999999",
+            "width": 1.0,
+            "penStyle": 0,
+            "filePath": ":/data/plot_presets/ehb_region.dat",
+            "colX": 1,
+            "colY": 2
+        },
+        {
+            "type": 0,
+            "label": "He-ZAMS (Paczyński 1971)",
+            "color": "#8B3030",
+            "width": 2.0,
+            "penStyle": 0,
+            "filePath": ":/data/plot_presets/hezams.dat",
+            "colX": 1,
+            "colY": 2
+        },
+        {
+            "type": 2,
+            "text": "0.5 M☉",
+            "textX": 35318,
+            "textY": 6.04,
+            "color": "#8B3030",
+            "fontScale": 0.7
+        },
+        {
+            "type": 2,
+            "text": "0.7 M☉",
+            "textX": 42462,
+            "textY": 5.9,
+            "color": "#8B3030",
+            "fontScale": 0.7
+        },
+        {
+            "type": 2,
+            "text": "1.0 M☉",
+            "textX": 50933,
+            "textY": 5.79,
+            "color": "#8B3030",
+            "fontScale": 0.7
+        }
+    ]
+}

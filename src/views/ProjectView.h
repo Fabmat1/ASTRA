@@ -174,6 +174,7 @@ public:
     void onShowDetailWindow();
     void onConfigureColumns();
     void onCreatePlot();
+    void onFetchLightcurves();
     void onShareStars();
     void onReceiveStars();
 

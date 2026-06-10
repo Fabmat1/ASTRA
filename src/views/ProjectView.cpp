@@ -12,8 +12,10 @@
 #include "models/Project.h"
 #include "models/Star.h"
 #include "utils/BackgroundTaskManager.h"
+#include "utils/LightcurveFetchService.h"
 #include "utils/Logger.h"
 #include "views/StarDetailView.h"
+#include "views/tools/LightcurveFetchSessionsDialog.h"
 #include "views/tools/ProjectPlotDialog.h"
 
 #include <QAction>
@@ -740,6 +742,50 @@ void ProjectView::onCreatePlot()
                                          this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
     dialog->show();
+}
+
+void ProjectView::onFetchLightcurves()
+{
+    if (!_currentProject) {
+        QMessageBox::information(this, tr("Fetch Lightcurves"), tr("No project loaded"));
+        return;
+    }
+
+    auto stars = getSelectedStars();
+    if (stars.empty()) {
+        QMessageBox::information(this, tr("Fetch Lightcurves"),
+                                 tr("Select at least one star first."));
+        return;
+    }
+
+    std::vector<std::shared_ptr<Star>> eligible;
+    int skipped = 0;
+    for (const auto& s : stars) {
+        if (s && !s->getSourceId().isEmpty())
+            eligible.push_back(s);
+        else
+            ++skipped;
+    }
+    if (eligible.empty()) {
+        QMessageBox::warning(this, tr("Fetch Lightcurves"),
+                             tr("None of the selected stars has a Gaia source ID."));
+        return;
+    }
+
+    BatchLightcurveFetchSetupDialog dlg(int(eligible.size()), this);
+    if (dlg.exec() != QDialog::Accepted)
+        return;
+
+    auto* service = _controller->lightcurveFetchService();
+    const int queued = service->enqueueBatch(eligible,
+                                             _currentProject->getId(),
+                                             dlg.options(),
+                                             dlg.parallelWorkers());
+
+    QString msg = tr("Queued %1 lightcurve fetch session(s)").arg(queued);
+    if (skipped > 0)
+        msg += tr("  (%1 star(s) without Gaia ID skipped)").arg(skipped);
+    updateStatusBar(msg);
 }
 
 void ProjectView::updateStatusBar(const QString& message)

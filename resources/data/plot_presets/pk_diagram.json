@@ -1,0 +1,81 @@
+{
+    "version": 1,
+    "name": "P–K diagram",
+    "type": 0,
+    "series": [
+        {
+            "label": "Stars",
+            "sourceId": 0,
+            "xKey": "rv_period",
+            "yKey": "rv_k",
+            "xErrKey": "rv_e_period",
+            "yErrKey": "rv_e_k",
+            "histKey": "rv_period",
+            "markerIndex": 0,
+            "color": "#2060B0"
+        }
+    ],
+    "scatter": {
+        "logX": true,
+        "logY": false,
+        "invX": false,
+        "invY": false,
+        "colorBy": "",
+        "sizeBy": "",
+        "trend": 0,
+        "trendWindow": 21
+    },
+    "limits": {
+        "xMin": "0.0316",
+        "xMax": "10",
+        "yMin": "0",
+        "yMax": "420",
+        "hideStacked": true,
+        "stackedN": 5
+    },
+    "style": {
+        "markerSize": 7,
+        "cull": false,
+        "bgColor": "",
+        "axisWidth": 1.0,
+        "minorTicks": true,
+        "grid": false,
+        "xTicks": "0.1, 1, 10",
+        "yTicks": "",
+        "xLabel": "P [d]",
+        "yLabel": "K [km/s]",
+        "title": "P–K diagram"
+    },
+    "overlays": [
+        {
+            "type": 0,
+            "label": "M₁=0.4, M₂=0.80 M☉, i=90°",
+            "color": "#2C241A",
+            "width": 1.2,
+            "penStyle": 0,
+            "filePath": ":/data/plot_presets/pk_theory_m2_080.dat",
+            "colX": 1,
+            "colY": 2
+        },
+        {
+            "type": 0,
+            "label": "M₁=0.4, M₂=0.40 M☉, i=90°",
+            "color": "#2C241A",
+            "width": 1.2,
+            "penStyle": 1,
+            "filePath": ":/data/plot_presets/pk_theory_m2_040.dat",
+            "colX": 1,
+            "colY": 2
+        },
+        {
+            "type": 0,
+            "label": "M₁=0.4, M₂=0.08 M☉, i=90°",
+            "color": "#2C241A",
+            "width": 1.2,
+            "penStyle": 2,
+            "filePath": ":/data/plot_presets/pk_theory_m2_008.dat",
+            "colX": 1,
+            "colY": 2
+        }
+    ]
+}

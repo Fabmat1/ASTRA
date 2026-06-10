@@ -117,9 +117,11 @@ void LightcurveFetcher::start(const QString& gaiaId, const Options& opt)
         return;
     }
 
-    if (QString err = checkAvailable(); !err.isEmpty()) {
-        emit failed(err);
-        return;
+    if (!_skipPreflight) {
+        if (QString err = checkAvailable(); !err.isEmpty()) {
+            emit failed(err);
+            return;
+        }
     }
 
     if (!_proc) {

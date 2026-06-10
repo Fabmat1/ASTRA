@@ -12,12 +12,15 @@ class QMenuBar;
 class QToolBar;
 class QStatusBar;
 class QActionGroup;
+class QToolButton;
+class QProgressBar;
 QT_END_NAMESPACE
 
 class ApplicationController;
 class ProjectSelectionView;
 class InstrumentConfigView;
 class ProjectView;
+class LightcurveFetchSessionsDialog;
 struct ThemeInfo;
 
 class MainWindow : public QMainWindow
@@ -40,6 +43,7 @@ private slots:
     void onThemeActionTriggered(QAction* action);
     void onThemeChanged(const QString& themeId);
     void onShowInstrumentConfig();
+    void onShowLcFetchSessions();
 
 private:
     void setupUi();
@@ -89,9 +93,18 @@ private:
     QString _pendingImportPath;
     // Analysis menu actions
     QAction* _createPlotAction;
+    QAction* _fetchLightcurvesAction = nullptr;
+    QAction* _lcSessionsAction       = nullptr;
 
     QAction* _instrumentConfigAction = nullptr;
     InstrumentConfigView* _instrumentConfigView = nullptr;
+
+    // Lightcurve fetch status-bar widget
+    void setupLcFetchStatusWidget();
+    QWidget*      _lcFetchWidget   = nullptr;
+    QToolButton*  _lcFetchBtn      = nullptr;
+    QProgressBar* _lcFetchProgress = nullptr;
+    LightcurveFetchSessionsDialog* _lcSessionsDialog = nullptr;
 };
 
 #endif // MAINWINDOW_H

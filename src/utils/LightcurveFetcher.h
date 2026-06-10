@@ -55,6 +55,10 @@ public:
     QString checkAvailable() const;
     void checkAvailableAsync();
 
+    /// Skip the (blocking) interpreter/package probe inside start(). Used by
+    /// callers that have already verified availability asynchronously.
+    void setSkipPreflightCheck(bool skip) { _skipPreflight = skip; }
+
     bool isRunning() const;
 
     void start(const QString& gaiaId, const Options& opt);
@@ -99,4 +103,5 @@ private:
     QByteArray _errBuf;
     QString _atlasToken;
     QString _blackgemScript;
+    bool    _skipPreflight = false;
 };

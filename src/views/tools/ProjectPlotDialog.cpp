@@ -1,6 +1,7 @@
 #include "ProjectPlotDialog.h"
 #include "models/Star.h"
 #include "models/ColumnPreset.h"
+#include "utils/PlotPresetStore.h"
 #include "views/panels/PanelUtils.h"
 #include "plotting/qcustomplot.h"
 
@@ -30,6 +31,9 @@
 #include <QFontDialog>
 #include <QEvent>
 #include <QFileDialog>
+#include <QInputDialog>
+#include <QJsonArray>
+#include <QJsonDocument>
 #include <QMessageBox>
 #include <QSvgGenerator>
 #include <QFile>
@@ -338,8 +342,45 @@ QString ProjectPlotDialog::fieldLabel(const QString& key) const
     return ColumnPresetManager::instance().displayName(key);
 }
 
+// Error fields follow two conventions: a plain "e_" prefix (e_teff, e_logg)
+// or an "_e_" infix after the family prefix (rv_e_k, sed_e_mass1,
+// phot_e_period).
+bool ProjectPlotDialog::isErrorFieldKey(const QString& key)
+{
+    return key.startsWith(QLatin1String("e_")) || key.contains(QLatin1String("_e_"));
+}
+
+QString ProjectPlotDialog::errorKeyFor(const QString& key) const
+{
+    if (key.isEmpty() || isErrorFieldKey(key))
+        return {};
+    // "e_<key>" first, then the infix form "<prefix>_e_<rest>" for every
+    // possible prefix split (handles rv_e_k, sed_e_mass1, phot_e_period, ...).
+    if (_numericFields.contains("e_" + key))
+        return "e_" + key;
+    int us = key.indexOf('_');
+    while (us > 0) {
+        const QString candidate = key.left(us) + "_e_" + key.mid(us + 1);
+        if (_numericFields.contains(candidate))
+            return candidate;
+        us = key.indexOf('_', us + 1);
+    }
+    return {};
+}
+
+void ProjectPlotDialog::autoSelectErrorField(QComboBox* errCombo, const QString& key)
+{
+    if (!errCombo)
+        return;
+    const QSignalBlocker b(errCombo);
+    const QString errKey = errorKeyFor(key);
+    errCombo->setCurrentIndex(0);   // (None)
+    if (!errKey.isEmpty())
+        setComboKey(errCombo, errKey);
+}
+
 void ProjectPlotDialog::populateFieldCombo(QComboBox* combo, const QString& defaultKey,
-                                           bool noneOption)
+                                           bool noneOption, bool includeErrorFields)
 {
     auto* model = new QStandardItemModel(combo);
     const auto& mgr = ColumnPresetManager::instance();
@@ -353,6 +394,8 @@ void ProjectPlotDialog::populateFieldCombo(QComboBox* combo, const QString& defa
     QString lastCategory;
     int defaultRow = -1;
     for (const QString& key : _numericFields) {
+        if (!includeErrorFields && isErrorFieldKey(key) && key != defaultKey)
+            continue;
         const ColumnDef* def = mgr.columnDef(key);
         if (!def)
             continue;
@@ -382,6 +425,28 @@ void ProjectPlotDialog::populateFieldCombo(QComboBox* combo, const QString& defa
                 break;
             }
         }
+    }
+}
+
+// Rebuild the axis/field dropdowns, keeping the current selections, after the
+// "show error fields" toggle changed.
+void ProjectPlotDialog::repopulateFieldCombos()
+{
+    const bool errs = _showErrFieldsCheck && _showErrFieldsCheck->isChecked();
+    struct Entry { QComboBox* combo; bool none; };
+    const Entry entries[] = {
+        { _xFieldCombo,    false },
+        { _yFieldCombo,    false },
+        { _histFieldCombo, false },
+        { _colorByCombo,   true  },
+        { _sizeByCombo,    true  },
+    };
+    for (const auto& e : entries) {
+        if (!e.combo)
+            continue;
+        const QSignalBlocker b(e.combo);
+        const QString current = e.combo->currentData(Qt::UserRole).toString();
+        populateFieldCombo(e.combo, current, e.none, errs);
     }
 }
 
@@ -523,28 +588,57 @@ QWidget* ProjectPlotDialog::buildControlPanel()
     yOpts->addWidget(_invYCheck, 1);
     scatterForm->addRow(tr("Y options:"), yOpts);
 
-    _colorByCombo = new QComboBox(scatterPage);
+    // Error bars; auto-filled with the matching error field when the axis
+    // field changes (e.g. teff → e_teff).
+    _xErrCombo = new QComboBox(scatterPage);
+    _yErrCombo = new QComboBox(scatterPage);
+    populateFieldCombo(_xErrCombo, QString(), true, true);
+    populateFieldCombo(_yErrCombo, QString(), true, true);
+    _xErrCombo->setToolTip(tr("Field with the symmetric error of the X values, "
+                              "drawn as error bars"));
+    _yErrCombo->setToolTip(tr("Field with the symmetric error of the Y values, "
+                              "drawn as error bars"));
+    autoSelectErrorField(_xErrCombo, _xFieldCombo->currentData(Qt::UserRole).toString());
+    autoSelectErrorField(_yErrCombo, _yFieldCombo->currentData(Qt::UserRole).toString());
+    scatterForm->addRow(tr("X error:"), _xErrCombo);
+    scatterForm->addRow(tr("Y error:"), _yErrCombo);
+
+    // Less common options live in a collapsed "Advanced" section.
+    auto* advancedContent = new QWidget(scatterPage);
+    auto* advancedForm = new QFormLayout(advancedContent);
+    advancedForm->setContentsMargins(0, 0, 0, 0);
+
+    _colorByCombo = new QComboBox(advancedContent);
     populateFieldCombo(_colorByCombo, QString(), true);
     _colorByCombo->setToolTip(tr("Encode a third field in the marker colour "
                                  "(adds a colour bar)"));
-    scatterForm->addRow(tr("Color by:"), _colorByCombo);
+    advancedForm->addRow(tr("Color by:"), _colorByCombo);
 
-    _sizeByCombo = new QComboBox(scatterPage);
+    _sizeByCombo = new QComboBox(advancedContent);
     populateFieldCombo(_sizeByCombo, QString(), true);
     _sizeByCombo->setToolTip(tr("Encode a third field in the marker size"));
-    scatterForm->addRow(tr("Size by:"), _sizeByCombo);
+    advancedForm->addRow(tr("Size by:"), _sizeByCombo);
 
-    _trendCombo = new QComboBox(scatterPage);
+    _trendCombo = new QComboBox(advancedContent);
     _trendCombo->addItems({ tr("None"), tr("Running mean"), tr("Running median") });
-    scatterForm->addRow(tr("Trend curve:"), _trendCombo);
+    advancedForm->addRow(tr("Trend curve:"), _trendCombo);
 
-    _trendWindowSpin = new QSpinBox(scatterPage);
+    _trendWindowSpin = new QSpinBox(advancedContent);
     _trendWindowSpin->setRange(3, 501);
     _trendWindowSpin->setSingleStep(2);
     _trendWindowSpin->setValue(21);
     _trendWindowSpin->setSuffix(tr(" pts"));
     _trendWindowSpin->setEnabled(false);
-    scatterForm->addRow(tr("Window:"), _trendWindowSpin);
+    advancedForm->addRow(tr("Window:"), _trendWindowSpin);
+
+    _showErrFieldsCheck = new QCheckBox(tr("Show error fields in axis lists"),
+                                        advancedContent);
+    _showErrFieldsCheck->setToolTip(
+        tr("Error fields (e_Teff, e_K, ...) are hidden from the X/Y axis "
+           "dropdowns to keep them tidy; tick this to plot them directly."));
+    advancedForm->addRow(QString(), _showErrFieldsCheck);
+
+    scatterForm->addRow(collapsibleGroup(tr("Advanced"), advancedContent));
 
     _optionsStack->addWidget(scatterPage);
 
@@ -607,6 +701,8 @@ QWidget* ProjectPlotDialog::buildControlPanel()
         [this] { addOverlayOfType(OverlayConfig::Line); });
     addOverlayMenu->addAction(tr("Region boundary from file…"), this,
         [this] { addOverlayOfType(OverlayConfig::Region); });
+    addOverlayMenu->addAction(tr("Text annotation…"), this,
+        [this] { addOverlayOfType(OverlayConfig::Text); });
     addOverlayBtn->setMenu(addOverlayMenu);
     auto* editOverlayBtn = new QPushButton(tr("Edit"), overlaysContent);
     auto* removeOverlayBtn = new QPushButton(tr("Remove"), overlaysContent);
@@ -774,8 +870,12 @@ QWidget* ProjectPlotDialog::buildControlPanel()
 
     auto* btnRow = new QHBoxLayout();
     auto* exportBtn = new QPushButton(tr("Export…"), panel);
+    auto* presetsBtn = new QPushButton(tr("Presets…"), panel);
+    presetsBtn->setToolTip(tr("Save the current plot configuration as a preset "
+                              "or load a saved one"));
     auto* closeBtn = new QPushButton(tr("Close"), panel);
     btnRow->addWidget(exportBtn);
+    btnRow->addWidget(presetsBtn);
     btnRow->addStretch();
     btnRow->addWidget(closeBtn);
     panelLayout->addLayout(btnRow);
@@ -784,9 +884,23 @@ QWidget* ProjectPlotDialog::buildControlPanel()
     connect(_typeCombo, &QComboBox::currentIndexChanged,
             this, &ProjectPlotDialog::onPlotTypeChanged);
 
+    // Auto-fill the error combos when an axis field changes; connected before
+    // the generic updatePlot handlers so the replot sees the new error field.
+    connect(_xFieldCombo, &QComboBox::currentIndexChanged, this, [this] {
+        autoSelectErrorField(_xErrCombo,
+                             _xFieldCombo->currentData(Qt::UserRole).toString());
+    });
+    connect(_yFieldCombo, &QComboBox::currentIndexChanged, this, [this] {
+        autoSelectErrorField(_yErrCombo,
+                             _yFieldCombo->currentData(Qt::UserRole).toString());
+    });
+    connect(_showErrFieldsCheck, &QCheckBox::toggled,
+            this, &ProjectPlotDialog::repopulateFieldCombos);
+
     for (QComboBox* cb : { _sourceCombo, _typeCombo, _xFieldCombo,
                            _yFieldCombo, _histFieldCombo, _markerCombo,
-                           _trendCombo, _colorByCombo, _sizeByCombo })
+                           _trendCombo, _colorByCombo, _sizeByCombo,
+                           _xErrCombo, _yErrCombo })
         connect(cb, &QComboBox::currentIndexChanged,
                 this, &ProjectPlotDialog::updatePlot);
     for (QCheckBox* ck : { _logXCheck, _logYCheck, _invXCheck, _invYCheck,
@@ -816,6 +930,8 @@ QWidget* ProjectPlotDialog::buildControlPanel()
     connect(_colorBtn, &QPushButton::clicked, this, &ProjectPlotDialog::onPickColor);
     connect(_bgColorBtn, &QPushButton::clicked, this, &ProjectPlotDialog::onPickBgColor);
     connect(exportBtn, &QPushButton::clicked, this, &ProjectPlotDialog::onExport);
+    connect(presetsBtn, &QPushButton::clicked,
+            this, &ProjectPlotDialog::onManagePresets);
     connect(closeBtn, &QPushButton::clicked, this, &QDialog::close);
 
     connect(addSeriesBtn, &QPushButton::clicked,
@@ -833,6 +949,8 @@ QWidget* ProjectPlotDialog::buildControlPanel()
     first.sourceId = _sourceCombo->currentData().toInt();
     first.xKey = _xFieldCombo->currentData(Qt::UserRole).toString();
     first.yKey = _yFieldCombo->currentData(Qt::UserRole).toString();
+    first.xErrKey = _xErrCombo->currentData(Qt::UserRole).toString();
+    first.yErrKey = _yErrCombo->currentData(Qt::UserRole).toString();
     first.histKey = _histFieldCombo->currentData(Qt::UserRole).toString();
     first.markerIndex = _markerCombo->currentIndex();
     first.color = _seriesColor;
@@ -895,6 +1013,8 @@ void ProjectPlotDialog::syncUiToSeries()
     s.sourceId    = _sourceCombo->currentData().toInt();
     s.xKey        = _xFieldCombo->currentData(Qt::UserRole).toString();
     s.yKey        = _yFieldCombo->currentData(Qt::UserRole).toString();
+    s.xErrKey     = _xErrCombo->currentData(Qt::UserRole).toString();
+    s.yErrKey     = _yErrCombo->currentData(Qt::UserRole).toString();
     s.histKey     = _histFieldCombo->currentData(Qt::UserRole).toString();
     s.markerIndex = _markerCombo->currentIndex();
     s.color       = _seriesColor;
@@ -904,11 +1024,16 @@ void ProjectPlotDialog::loadSeriesIntoUi(const SeriesConfig& s)
 {
     const QSignalBlocker b1(_sourceCombo), b2(_xFieldCombo), b3(_yFieldCombo);
     const QSignalBlocker b4(_histFieldCombo), b5(_markerCombo);
+    const QSignalBlocker b6(_xErrCombo), b7(_yErrCombo);
     const int srcIdx = _sourceCombo->findData(s.sourceId);
     if (srcIdx >= 0)
         _sourceCombo->setCurrentIndex(srcIdx);
     setComboKey(_xFieldCombo, s.xKey);
     setComboKey(_yFieldCombo, s.yKey);
+    _xErrCombo->setCurrentIndex(0);
+    _yErrCombo->setCurrentIndex(0);
+    setComboKey(_xErrCombo, s.xErrKey);
+    setComboKey(_yErrCombo, s.yErrKey);
     setComboKey(_histFieldCombo, s.histKey);
     if (s.markerIndex >= 0 && s.markerIndex < _markerCombo->count())
         _markerCombo->setCurrentIndex(s.markerIndex);
@@ -938,16 +1063,23 @@ void ProjectPlotDialog::addOverlayOfType(int type)
     ov.type = type;
     ov.color = QColor(kSeriesPalette[5].hex);   // vermillion
 
-    const QString path = QFileDialog::getOpenFileName(
-        this,
-        type == OverlayConfig::Region ? tr("Load Region Boundary")
-                                      : tr("Load Line / Track / Isochrone"),
-        QDir::homePath(),
-        tr("Data files (*.dat *.txt *.csv *.iso);;All files (*)"));
-    if (path.isEmpty())
-        return;
-    ov.filePath = path;
-    ov.label = QFileInfo(path).completeBaseName();
+    if (type == OverlayConfig::Text) {
+        // Place new annotations at the centre of the current view
+        ov.textX = _plot->xAxis->range().center();
+        ov.textY = _plot->yAxis->range().center();
+        ov.color = effectiveFg();
+    } else {
+        const QString path = QFileDialog::getOpenFileName(
+            this,
+            type == OverlayConfig::Region ? tr("Load Region Boundary")
+                                          : tr("Load Line / Track / Isochrone"),
+            QDir::homePath(),
+            tr("Data files (*.dat *.txt *.csv *.iso);;All files (*)"));
+        if (path.isEmpty())
+            return;
+        ov.filePath = path;
+        ov.label = QFileInfo(path).completeBaseName();
+    }
 
     if (!editOverlayDialog(ov))
         return;
@@ -979,6 +1111,9 @@ void ProjectPlotDialog::onRemoveOverlay()
 
 QString ProjectPlotDialog::overlayDisplayText(const OverlayConfig& ov) const
 {
+    if (ov.type == OverlayConfig::Text)
+        return QString("%1: %2").arg(tr("Text"), ov.text.isEmpty() ? tr("(empty)")
+                                                                   : ov.text);
     const QString kind = ov.type == OverlayConfig::Region ? tr("Region")
                                                           : tr("Line");
     const QString name = ov.label.isEmpty()
@@ -1026,6 +1161,9 @@ bool ProjectPlotDialog::loadTrackFile(OverlayConfig& ov, QString* err)
 
 bool ProjectPlotDialog::editOverlayDialog(OverlayConfig& ov)
 {
+    if (ov.type == OverlayConfig::Text)
+        return editTextOverlayDialog(ov);
+
     QDialog dlg(this);
     dlg.setWindowTitle(ov.type == OverlayConfig::Region ? tr("Region Overlay")
                                                         : tr("Line Overlay"));
@@ -1115,6 +1253,69 @@ bool ProjectPlotDialog::editOverlayDialog(OverlayConfig& ov)
     return true;
 }
 
+bool ProjectPlotDialog::editTextOverlayDialog(OverlayConfig& ov)
+{
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Text Annotation"));
+    auto* form = new QFormLayout(&dlg);
+
+    auto* textEdit = new QLineEdit(ov.text, &dlg);
+    textEdit->setPlaceholderText(tr("annotation text"));
+    form->addRow(tr("Text:"), textEdit);
+
+    auto makeCoordEdit = [&dlg](double value) {
+        auto* e = new QLineEdit(QString::number(value, 'g', 10), &dlg);
+        auto* val = new QDoubleValidator(e);
+        val->setNotation(QDoubleValidator::ScientificNotation);
+        e->setValidator(val);
+        return e;
+    };
+    auto* xEdit = makeCoordEdit(ov.textX);
+    auto* yEdit = makeCoordEdit(ov.textY);
+    form->addRow(tr("X position:"), xEdit);
+    form->addRow(tr("Y position:"), yEdit);
+
+    auto* colorBtn = new QPushButton(&dlg);
+    colorBtn->setFixedSize(60, 22);
+    QColor cur = ov.color;
+    auto updateSwatch = [&cur, colorBtn] {
+        colorBtn->setStyleSheet(
+            QString("background-color: %1; border: 1px solid gray;").arg(cur.name()));
+    };
+    updateSwatch();
+    connect(colorBtn, &QPushButton::clicked, &dlg, [&] {
+        const QColor chosen = pickColor(colorBtn, cur);
+        if (chosen.isValid()) {
+            cur = chosen;
+            updateSwatch();
+        }
+    });
+    form->addRow(tr("Color:"), colorBtn);
+
+    auto* scaleSpin = new QDoubleSpinBox(&dlg);
+    scaleSpin->setRange(0.3, 3.0);
+    scaleSpin->setSingleStep(0.05);
+    scaleSpin->setValue(ov.fontScale);
+    scaleSpin->setToolTip(tr("Text size relative to the axis label font"));
+    form->addRow(tr("Font scale:"), scaleSpin);
+
+    auto* buttons = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    form->addRow(buttons);
+
+    if (dlg.exec() != QDialog::Accepted)
+        return false;
+
+    ov.text      = textEdit->text();
+    ov.textX     = xEdit->text().toDouble();
+    ov.textY     = yEdit->text().toDouble();
+    ov.color     = cur;
+    ov.fontScale = scaleSpin->value();
+    return !ov.text.isEmpty();
+}
+
 void ProjectPlotDialog::drawOverlays()
 {
     if (_overlays.empty() || _typeCombo->currentIndex() == SkyMap)
@@ -1130,6 +1331,19 @@ void ProjectPlotDialog::drawOverlays()
 
     bool legendAdds = false;
     for (auto& ov : _overlays) {
+        if (ov.type == OverlayConfig::Text) {
+            if (ov.text.isEmpty())
+                continue;
+            auto* item = new QCPItemText(_plot);
+            item->position->setCoords(ov.textX, ov.textY);
+            item->setText(ov.text);
+            QFont f = _axisFont;
+            if (f.pointSizeF() > 0.0)
+                f.setPointSizeF(f.pointSizeF() * ov.fontScale);
+            item->setFont(f);
+            item->setColor(ov.color.isValid() ? ov.color : effectiveFg());
+            continue;
+        }
         if (ov.tx.isEmpty()) {
             QString err;
             if (!loadTrackFile(ov, &err))
@@ -1172,10 +1386,15 @@ void ProjectPlotDialog::onSwapAxes()
         const QSignalBlocker b1(_xFieldCombo), b2(_yFieldCombo);
         const QSignalBlocker b3(_logXCheck), b4(_logYCheck);
         const QSignalBlocker b5(_invXCheck), b6(_invYCheck);
+        const QSignalBlocker b7(_xErrCombo), b8(_yErrCombo);
 
         const int xi = _xFieldCombo->currentIndex();
         _xFieldCombo->setCurrentIndex(_yFieldCombo->currentIndex());
         _yFieldCombo->setCurrentIndex(xi);
+
+        const int xe = _xErrCombo->currentIndex();
+        _xErrCombo->setCurrentIndex(_yErrCombo->currentIndex());
+        _yErrCombo->setCurrentIndex(xe);
 
         const bool log = _logXCheck->isChecked();
         _logXCheck->setChecked(_logYCheck->isChecked());
@@ -1667,7 +1886,15 @@ void ProjectPlotDialog::plotScatter()
         if (colorBy) cs = extractField(starsForSource(d.cfg->sourceId), cKey);
         if (sizeBy)  ss = extractField(starsForSource(d.cfg->sourceId), sKey);
 
-        QVector<double> px, py, pc, ps;
+        // Error fields → error bars (only drawn for plain scatter graphs;
+        // colour/size-encoded points are split over many bucket graphs).
+        const bool wantXErr = !colorBy && !sizeBy && !d.cfg->xErrKey.isEmpty();
+        const bool wantYErr = !colorBy && !sizeBy && !d.cfg->yErrKey.isEmpty();
+        std::vector<double> xe, ye;
+        if (wantXErr) xe = extractField(starsForSource(d.cfg->sourceId), d.cfg->xErrKey);
+        if (wantYErr) ye = extractField(starsForSource(d.cfg->sourceId), d.cfg->yErrKey);
+
+        QVector<double> px, py, pc, ps, pex, pey;
         px.reserve(int(d.xs.size()));
         py.reserve(int(d.xs.size()));
         for (size_t i = 0; i < d.xs.size(); ++i) {
@@ -1685,22 +1912,57 @@ void ProjectPlotDialog::plotScatter()
             }
             px.push_back(d.xs[i]);
             py.push_back(d.ys[i]);
-            if (colorBy) pc.push_back(cs[i]);
-            if (sizeBy)  ps.push_back(ss[i]);
+            if (colorBy)  pc.push_back(cs[i]);
+            if (sizeBy)   ps.push_back(ss[i]);
+            if (wantXErr) pex.push_back(std::isnan(xe[i]) ? 0.0 : xe[i]);
+            if (wantYErr) pey.push_back(std::isnan(ye[i]) ? 0.0 : ye[i]);
         }
         plotted += px.size();
 
         const QCPScatterStyle::ScatterShape shape = kMarkers[d.cfg->markerIndex].shape;
 
         if (!colorBy && !sizeBy) {
+            // QCPErrorBars pair with the graph's data by index in key-sorted
+            // order, so pre-sort everything by x.
+            if ((wantXErr || wantYErr) && !px.isEmpty()) {
+                std::vector<int> order(px.size());
+                std::iota(order.begin(), order.end(), 0);
+                std::stable_sort(order.begin(), order.end(),
+                                 [&](int a, int b) { return px[a] < px[b]; });
+                auto reorder = [&order](QVector<double>& v) {
+                    if (v.isEmpty()) return;
+                    QVector<double> out;
+                    out.reserve(v.size());
+                    for (int i : order) out.push_back(v[i]);
+                    v = std::move(out);
+                };
+                reorder(py);
+                reorder(pex);
+                reorder(pey);
+                reorder(px);
+            }
+
             auto* graph = _plot->addGraph();
             graph->setLineStyle(QCPGraph::lsNone);
             graph->setScatterStyle(QCPScatterStyle(shape, d.cfg->color, baseSize));
-            graph->setAdaptiveSampling(cull);
-            graph->setData(px, py);
+            graph->setAdaptiveSampling(cull && !wantXErr && !wantYErr);
+            graph->setData(px, py, wantXErr || wantYErr);
             graph->setName(d.cfg->label);
             if (multi)
                 graph->addToLegend();
+
+            auto addErrorBars = [&](QCPErrorBars::ErrorType type,
+                                    const QVector<double>& errs) {
+                auto* eb = new QCPErrorBars(_plot->xAxis, _plot->yAxis);
+                eb->setErrorType(type);
+                eb->setDataPlottable(graph);
+                eb->setData(errs);
+                QPen pen(d.cfg->color, std::max(0.8, baseSize / 8.0));
+                eb->setPen(pen);
+                eb->setWhiskerWidth(std::max(4.0, baseSize * 0.9));
+            };
+            if (wantXErr) addErrorBars(QCPErrorBars::etKeyError, pex);
+            if (wantYErr) addErrorBars(QCPErrorBars::etValueError, pey);
         } else {
             // Encoded points are split into colour x size buckets and drawn as
             // one graph per bucket (QCPGraph has a single scatter style).
@@ -2439,4 +2701,531 @@ void ProjectPlotDialog::onExport()
     else
         QMessageBox::warning(this, tr("Export Failed"),
                              tr("Could not write %1").arg(path));
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Presets
+// ─────────────────────────────────────────────────────────────────────────────
+
+namespace {
+
+// Grid browser for saved plot presets: thumbnail of the last plot made with
+// each preset plus its name and plotted axes. Lives entirely on top of
+// PlotPresetStore; the plot dialog supplies capture/snapshot callbacks.
+class PlotPresetBrowserDialog : public QDialog
+{
+public:
+    PlotPresetBrowserDialog(std::function<QJsonObject()> capture,
+                            std::function<QPixmap()>     snapshot,
+                            const QString&               suggestedName,
+                            QWidget*                     parent)
+        : QDialog(parent)
+        , _capture(std::move(capture))
+        , _snapshot(std::move(snapshot))
+        , _suggestedName(suggestedName)
+    {
+        setWindowTitle(tr("Plot Presets"));
+        resize(760, 520);
+
+        auto* root = new QVBoxLayout(this);
+
+        _grid = new QListWidget(this);
+        _grid->setViewMode(QListView::IconMode);
+        _grid->setIconSize(QSize(220, 140));
+        _grid->setGridSize(QSize(244, 196));
+        _grid->setResizeMode(QListView::Adjust);
+        _grid->setMovement(QListView::Static);
+        _grid->setWordWrap(true);
+        _grid->setSpacing(8);
+        root->addWidget(_grid, 1);
+
+        auto* btnRow   = new QHBoxLayout();
+        _loadBtn       = new QPushButton(tr("Load"), this);
+        auto* saveBtn  = new QPushButton(tr("Save current plot as preset…"), this);
+        _deleteBtn     = new QPushButton(tr("Delete"), this);
+        auto* closeBtn = new QPushButton(tr("Close"), this);
+        _loadBtn->setDefault(true);
+        btnRow->addWidget(_loadBtn);
+        btnRow->addWidget(saveBtn);
+        btnRow->addWidget(_deleteBtn);
+        btnRow->addStretch();
+        btnRow->addWidget(closeBtn);
+        root->addLayout(btnRow);
+
+        connect(_grid, &QListWidget::itemSelectionChanged,
+                this, [this] { updateButtons(); });
+        connect(_grid, &QListWidget::itemDoubleClicked,
+                this, [this](QListWidgetItem*) { loadSelected(); });
+        connect(_loadBtn, &QPushButton::clicked, this, [this] { loadSelected(); });
+        connect(saveBtn, &QPushButton::clicked, this, [this] { saveCurrent(); });
+        connect(_deleteBtn, &QPushButton::clicked, this, [this] { deleteSelected(); });
+        connect(closeBtn, &QPushButton::clicked, this, &QDialog::reject);
+
+        refresh();
+    }
+
+    QString     chosenId() const     { return _chosenId; }
+    QJsonObject chosenConfig() const { return _chosenConfig; }
+
+private:
+    static QString subtitleFor(const QJsonObject& cfg)
+    {
+        const auto& mgr = ColumnPresetManager::instance();
+        const QJsonArray series = cfg.value("series").toArray();
+        const QJsonObject s0 = series.isEmpty() ? QJsonObject()
+                                                : series.first().toObject();
+        switch (cfg.value("type").toInt(0)) {
+        case 1:
+            return tr("Histogram of %1")
+                .arg(mgr.displayName(s0.value("histKey").toString()));
+        case 2:
+            return tr("Sky map");
+        default:
+            return QString("%1 vs %2")
+                .arg(mgr.displayName(s0.value("yKey").toString()),
+                     mgr.displayName(s0.value("xKey").toString()));
+        }
+    }
+
+    static QPixmap placeholderThumb()
+    {
+        QPixmap pm(220, 140);
+        pm.fill(QColor(72, 72, 78));
+        QPainter p(&pm);
+        p.setPen(QColor(180, 180, 185));
+        p.drawText(pm.rect(), Qt::AlignCenter, tr("no preview yet"));
+        p.setPen(QColor(100, 100, 106));
+        p.drawRect(pm.rect().adjusted(0, 0, -1, -1));
+        return pm;
+    }
+
+    void refresh()
+    {
+        const QString prevSel = selectedId();
+        _grid->clear();
+        for (const auto& info : PlotPresetStore::allPresets()) {
+            QPixmap thumb = PlotPresetStore::thumbnail(info.id);
+            if (thumb.isNull())
+                thumb = placeholderThumb();
+            else
+                thumb = thumb.scaled(220, 140, Qt::KeepAspectRatio,
+                                     Qt::SmoothTransformation);
+
+            QString name = info.name;
+            if (info.builtIn)
+                name += tr("  (built-in)");
+            auto* item = new QListWidgetItem(QIcon(thumb),
+                                             name + "\n" + subtitleFor(info.config));
+            item->setData(Qt::UserRole, info.id);
+            item->setData(Qt::UserRole + 1, info.config);
+            item->setData(Qt::UserRole + 2, info.builtIn);
+            item->setToolTip(subtitleFor(info.config));
+            item->setSizeHint(QSize(236, 188));
+            _grid->addItem(item);
+            if (info.id == prevSel)
+                _grid->setCurrentItem(item);
+        }
+        if (!_grid->currentItem() && _grid->count() > 0)
+            _grid->setCurrentRow(0);
+        updateButtons();
+    }
+
+    QString selectedId() const
+    {
+        auto* it = _grid->currentItem();
+        return it ? it->data(Qt::UserRole).toString() : QString();
+    }
+
+    void updateButtons()
+    {
+        auto* it = _grid->currentItem();
+        _loadBtn->setEnabled(it != nullptr);
+        _deleteBtn->setEnabled(it && !it->data(Qt::UserRole + 2).toBool());
+    }
+
+    void loadSelected()
+    {
+        auto* it = _grid->currentItem();
+        if (!it)
+            return;
+        _chosenId     = it->data(Qt::UserRole).toString();
+        _chosenConfig = it->data(Qt::UserRole + 1).toJsonObject();
+        accept();
+    }
+
+    void saveCurrent()
+    {
+        bool ok = false;
+        const QString name = QInputDialog::getText(
+            this, tr("Save Preset"), tr("Preset name:"),
+            QLineEdit::Normal, _suggestedName, &ok).trimmed();
+        if (!ok || name.isEmpty())
+            return;
+
+        for (const auto& info : PlotPresetStore::allPresets()) {
+            if (!info.builtIn && info.name.compare(name, Qt::CaseInsensitive) == 0) {
+                const auto ret = QMessageBox::question(
+                    this, tr("Save Preset"),
+                    tr("A preset named \"%1\" already exists. Overwrite it?").arg(name),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+                if (ret != QMessageBox::Yes)
+                    return;
+                break;
+            }
+        }
+
+        const QString id = PlotPresetStore::savePreset(name, _capture(), _snapshot());
+        if (id.isEmpty()) {
+            QMessageBox::warning(this, tr("Save Preset"),
+                                 tr("Could not write the preset file."));
+            return;
+        }
+        _savedId = id;
+        refresh();
+    }
+
+    void deleteSelected()
+    {
+        auto* it = _grid->currentItem();
+        if (!it || it->data(Qt::UserRole + 2).toBool())
+            return;
+        const QString name = it->text().section('\n', 0, 0);
+        const auto ret = QMessageBox::question(
+            this, tr("Delete Preset"),
+            tr("Delete preset \"%1\"?").arg(name),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (ret != QMessageBox::Yes)
+            return;
+        PlotPresetStore::removePreset(it->data(Qt::UserRole).toString());
+        refresh();
+    }
+
+public:
+    QString savedId() const { return _savedId; }
+
+private:
+    std::function<QJsonObject()> _capture;
+    std::function<QPixmap()>     _snapshot;
+    QString                      _suggestedName;
+
+    QListWidget* _grid      = nullptr;
+    QPushButton* _loadBtn   = nullptr;
+    QPushButton* _deleteBtn = nullptr;
+
+    QString     _chosenId;
+    QJsonObject _chosenConfig;
+    QString     _savedId;
+};
+
+} // namespace
+
+QJsonObject ProjectPlotDialog::capturePresetConfig()
+{
+    syncUiToSeries();
+
+    QJsonObject cfg;
+    cfg["version"] = 1;
+    cfg["type"]    = _typeCombo->currentIndex();
+
+    QJsonArray series;
+    for (const auto& s : _series) {
+        QJsonObject o;
+        o["label"]       = s.label;
+        o["sourceId"]    = s.sourceId;
+        o["xKey"]        = s.xKey;
+        o["yKey"]        = s.yKey;
+        o["xErrKey"]     = s.xErrKey;
+        o["yErrKey"]     = s.yErrKey;
+        o["histKey"]     = s.histKey;
+        o["markerIndex"] = s.markerIndex;
+        o["color"]       = s.color.name();
+        series.append(o);
+    }
+    cfg["series"] = series;
+
+    QJsonObject scatter;
+    scatter["logX"]        = _logXCheck->isChecked();
+    scatter["logY"]        = _logYCheck->isChecked();
+    scatter["invX"]        = _invXCheck->isChecked();
+    scatter["invY"]        = _invYCheck->isChecked();
+    scatter["colorBy"]     = _colorByCombo->currentData(Qt::UserRole).toString();
+    scatter["sizeBy"]      = _sizeByCombo->currentData(Qt::UserRole).toString();
+    scatter["trend"]       = _trendCombo->currentIndex();
+    scatter["trendWindow"] = _trendWindowSpin->value();
+    cfg["scatter"] = scatter;
+
+    QJsonObject hist;
+    hist["bins"]    = _binsSpin->value();
+    hist["logX"]    = _histLogXCheck->isChecked();
+    hist["logY"]    = _histLogYCheck->isChecked();
+    hist["invX"]    = _histInvXCheck->isChecked();
+    hist["logBins"] = _histLogBinsCheck->isChecked();
+    cfg["hist"] = hist;
+
+    QJsonObject sky;
+    sky["grid"] = _skyGridCheck->isChecked();
+    cfg["sky"] = sky;
+
+    QJsonObject limits;
+    limits["xMin"]        = _xMinEdit->text();
+    limits["xMax"]        = _xMaxEdit->text();
+    limits["yMin"]        = _yMinEdit->text();
+    limits["yMax"]        = _yMaxEdit->text();
+    limits["hideStacked"] = _hideStackedCheck->isChecked();
+    limits["stackedN"]    = _stackedNSpin->value();
+    cfg["limits"] = limits;
+
+    QJsonObject style;
+    style["markerSize"] = _markerSizeSpin->value();
+    style["cull"]       = _cullRadio->isChecked();
+    style["bgColor"]    = !_bgColor.isValid()      ? QString()
+                        : _bgColor.alpha() == 0    ? QStringLiteral("transparent")
+                                                   : _bgColor.name();
+    style["axisWidth"]  = _axisWidthSpin->value();
+    style["minorTicks"] = _minorTicksCheck->isChecked();
+    style["grid"]       = _gridCheck->isChecked();
+    style["xTicks"]     = _xTicksEdit->text();
+    style["yTicks"]     = _yTicksEdit->text();
+    style["xLabel"]     = _xLabelEdit->text();
+    style["yLabel"]     = _yLabelEdit->text();
+    style["title"]      = _titleEdit->text();
+    style["fontFamily"] = _axisFont.family();
+    style["fontSize"]   = _axisFont.pointSizeF();
+    style["fontBold"]   = _axisFont.bold();
+    cfg["style"] = style;
+
+    QJsonArray overlays;
+    for (const auto& ov : _overlays) {
+        QJsonObject o;
+        o["type"]     = ov.type;
+        o["label"]    = ov.label;
+        o["color"]    = ov.color.name();
+        o["width"]    = ov.width;
+        o["penStyle"] = ov.penStyle;
+        if (ov.type == OverlayConfig::Text) {
+            o["text"]      = ov.text;
+            o["textX"]     = ov.textX;
+            o["textY"]     = ov.textY;
+            o["fontScale"] = ov.fontScale;
+        } else {
+            o["filePath"] = ov.filePath;
+            o["colX"]     = ov.colX;
+            o["colY"]     = ov.colY;
+        }
+        overlays.append(o);
+    }
+    cfg["overlays"] = overlays;
+
+    return cfg;
+}
+
+void ProjectPlotDialog::applyPresetConfig(const QJsonObject& cfg)
+{
+    // ── Series ──────────────────────────────────────────────────────────────
+    std::vector<SeriesConfig> series;
+    for (const auto& v : cfg.value("series").toArray()) {
+        const QJsonObject o = v.toObject();
+        SeriesConfig s;
+        s.label       = o.value("label").toString(
+            tr("Series %1").arg(series.size() + 1));
+        s.sourceId    = o.value("sourceId").toInt(0);
+        s.xKey        = o.value("xKey").toString();
+        s.yKey        = o.value("yKey").toString();
+        s.xErrKey     = o.value("xErrKey").toString();
+        s.yErrKey     = o.value("yErrKey").toString();
+        s.histKey     = o.value("histKey").toString();
+        s.markerIndex = o.value("markerIndex").toInt(0);
+        s.color       = QColor(o.value("color").toString("#0072B2"));
+        // Fall back to "all stars" when the preset's source isn't available
+        // in this dialog instance (no filter / selection).
+        if (_sourceCombo->findData(s.sourceId) < 0)
+            s.sourceId = 0;
+        series.push_back(std::move(s));
+    }
+    if (series.empty())
+        return;
+    _series = std::move(series);
+
+    {
+        const QSignalBlocker b(_seriesList);
+        _seriesList->clear();
+        for (const auto& s : _series) {
+            auto* item = new QListWidgetItem(s.label);
+            item->setFlags(item->flags() | Qt::ItemIsEditable);
+            _seriesList->addItem(item);
+        }
+        _seriesList->setCurrentRow(0);
+    }
+
+    // ── Overlays ────────────────────────────────────────────────────────────
+    _overlays.clear();
+    _overlayList->clear();
+    for (const auto& v : cfg.value("overlays").toArray()) {
+        const QJsonObject o = v.toObject();
+        OverlayConfig ov;
+        ov.type      = o.value("type").toInt(OverlayConfig::Line);
+        ov.label     = o.value("label").toString();
+        ov.color     = QColor(o.value("color").toString("#D55E00"));
+        ov.width     = o.value("width").toDouble(1.5);
+        ov.penStyle  = o.value("penStyle").toInt(0);
+        ov.filePath  = o.value("filePath").toString();
+        ov.colX      = o.value("colX").toInt(1);
+        ov.colY      = o.value("colY").toInt(2);
+        ov.text      = o.value("text").toString();
+        ov.textX     = o.value("textX").toDouble();
+        ov.textY     = o.value("textY").toDouble();
+        ov.fontScale = o.value("fontScale").toDouble(0.85);
+        if (ov.type != OverlayConfig::Text && !QFile::exists(ov.filePath)) {
+            setStatus(tr("Preset overlay file missing: %1").arg(ov.filePath));
+            continue;
+        }
+        _overlays.push_back(std::move(ov));
+        _overlayList->addItem(overlayDisplayText(_overlays.back()));
+    }
+
+    // ── Option widgets (signals blocked; one replot at the end) ─────────────
+    const QJsonObject scatter = cfg.value("scatter").toObject();
+    const QJsonObject hist    = cfg.value("hist").toObject();
+    const QJsonObject sky     = cfg.value("sky").toObject();
+    const QJsonObject limits  = cfg.value("limits").toObject();
+    const QJsonObject style   = cfg.value("style").toObject();
+
+    auto setCheck = [](QCheckBox* cb, const QJsonObject& o, const char* key,
+                       bool fallback = false) {
+        const QSignalBlocker b(cb);
+        cb->setChecked(o.value(key).toBool(fallback));
+    };
+    setCheck(_logXCheck, scatter, "logX");
+    setCheck(_logYCheck, scatter, "logY");
+    setCheck(_invXCheck, scatter, "invX");
+    setCheck(_invYCheck, scatter, "invY");
+    {
+        const QSignalBlocker b1(_colorByCombo), b2(_sizeByCombo);
+        _colorByCombo->setCurrentIndex(0);
+        _sizeByCombo->setCurrentIndex(0);
+        setComboKey(_colorByCombo, scatter.value("colorBy").toString());
+        setComboKey(_sizeByCombo, scatter.value("sizeBy").toString());
+    }
+    {
+        const QSignalBlocker b(_trendCombo);
+        _trendCombo->setCurrentIndex(scatter.value("trend").toInt(0));
+        _trendWindowSpin->setEnabled(_trendCombo->currentIndex() != 0);
+    }
+    {
+        const QSignalBlocker b(_trendWindowSpin);
+        _trendWindowSpin->setValue(scatter.value("trendWindow").toInt(21));
+    }
+
+    {
+        const QSignalBlocker b(_binsSpin);
+        _binsSpin->setValue(hist.value("bins").toInt(30));
+    }
+    setCheck(_histLogXCheck, hist, "logX");
+    setCheck(_histLogYCheck, hist, "logY");
+    setCheck(_histInvXCheck, hist, "invX");
+    setCheck(_histLogBinsCheck, hist, "logBins");
+    setCheck(_skyGridCheck, sky, "grid", true);
+
+    auto setEdit = [](QLineEdit* e, const QJsonObject& o, const char* key) {
+        const QSignalBlocker b(e);
+        e->setText(o.value(key).toString());
+    };
+    setEdit(_xMinEdit, limits, "xMin");
+    setEdit(_xMaxEdit, limits, "xMax");
+    setEdit(_yMinEdit, limits, "yMin");
+    setEdit(_yMaxEdit, limits, "yMax");
+    setCheck(_hideStackedCheck, limits, "hideStacked", true);
+    {
+        const QSignalBlocker b(_stackedNSpin);
+        _stackedNSpin->setValue(limits.value("stackedN").toInt(5));
+        _stackedNSpin->setEnabled(_hideStackedCheck->isChecked());
+    }
+
+    {
+        const QSignalBlocker b(_markerSizeSpin);
+        _markerSizeSpin->setValue(style.value("markerSize").toInt(6));
+    }
+    {
+        const QSignalBlocker b1(_allPointsRadio), b2(_cullRadio);
+        (style.value("cull").toBool() ? _cullRadio
+                                      : _allPointsRadio)->setChecked(true);
+    }
+    const QString bg = style.value("bgColor").toString();
+    _bgColor = bg.isEmpty()                          ? QColor()
+             : bg == QLatin1String("transparent")    ? QColor(0, 0, 0, 0)
+                                                     : QColor(bg);
+    {
+        const QSignalBlocker b(_axisWidthSpin);
+        _axisWidthSpin->setValue(style.value("axisWidth").toDouble(1.0));
+    }
+    setCheck(_minorTicksCheck, style, "minorTicks", true);
+    setCheck(_gridCheck, style, "grid", true);
+    setEdit(_xTicksEdit, style, "xTicks");
+    setEdit(_yTicksEdit, style, "yTicks");
+    setEdit(_xLabelEdit, style, "xLabel");
+    setEdit(_yLabelEdit, style, "yLabel");
+    setEdit(_titleEdit, style, "title");
+
+    if (style.contains("fontFamily")) {
+        QFont f = _axisFont;
+        f.setFamily(style.value("fontFamily").toString(f.family()));
+        const double pt = style.value("fontSize").toDouble(0.0);
+        if (pt > 0.0)
+            f.setPointSizeF(pt);
+        f.setBold(style.value("fontBold").toBool(false));
+        _axisFont = f;
+        updateFontButton();
+    }
+
+    // Selected (first) series into the per-series controls
+    loadSeriesIntoUi(_series.front());
+    updateColorSwatch();
+
+    const int type = std::clamp(cfg.value("type").toInt(0), 0, 2);
+    {
+        const QSignalBlocker b(_typeCombo);
+        _typeCombo->setCurrentIndex(type);
+    }
+    onPlotTypeChanged(type);
+    updatePlot();
+}
+
+void ProjectPlotDialog::updateActivePresetThumbnail()
+{
+    if (_activePresetId.isEmpty() || !_plot)
+        return;
+    PlotPresetStore::saveThumbnail(_activePresetId, _plot->toPixmap(440, 300));
+}
+
+void ProjectPlotDialog::onManagePresets()
+{
+    // Snapshot the current plot for the active preset before showing the grid
+    // so its thumbnail reflects the latest plot made with it.
+    updateActivePresetThumbnail();
+
+    const QString suggested = _titleEdit->text().trimmed().isEmpty()
+                                  ? defaultExportBaseName()
+                                  : _titleEdit->text().trimmed();
+    PlotPresetBrowserDialog dlg(
+        [this] { return capturePresetConfig(); },
+        [this] { return _plot->toPixmap(440, 300); },
+        suggested, this);
+    const int ret = dlg.exec();
+
+    if (!dlg.savedId().isEmpty())
+        _activePresetId = dlg.savedId();
+
+    if (ret == QDialog::Accepted && !dlg.chosenConfig().isEmpty()) {
+        applyPresetConfig(dlg.chosenConfig());
+        _activePresetId = dlg.chosenId();
+        updateActivePresetThumbnail();
+        setStatus(tr("Loaded preset \"%1\".")
+                      .arg(dlg.chosenConfig().value("name").toString()));
+    }
+}
+
+void ProjectPlotDialog::closeEvent(QCloseEvent* event)
+{
+    updateActivePresetThumbnail();
+    QDialog::closeEvent(event);
 }

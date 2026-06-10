@@ -342,49 +342,37 @@ QWidget* LightcurveFetchDialog::buildFetchTab()
     _fetchLog = new AnsiTerminalWidget;
     root->addWidget(_fetchLog, 1);
 
-    AppSettings* settings = _controller ? _controller->settings() : nullptr;
+    _fetchService = _controller ? _controller->lightcurveFetchService() : nullptr;
 
-    _fetcher = new LightcurveFetcher(this);
-    _fetcher->setWorkingDir(QDir(AppPaths::root())
-                            .absoluteFilePath("lcquery"));
+    connect(_fetchService, &LightcurveFetchService::sessionStarted,
+            this, &LightcurveFetchDialog::onFetchSessionStarted);
+    connect(_fetchService, &LightcurveFetchService::sessionOutput,
+            this, &LightcurveFetchDialog::onFetchSessionOutput);
+    connect(_fetchService, &LightcurveFetchService::sessionFinished,
+            this, &LightcurveFetchDialog::onFetchSessionFinished);
 
-    if (settings) {
-        if (!settings->lcqueryPython().isEmpty())
-            _fetcher->setPython(settings->lcqueryPython());
-        if (!settings->lcqueryScript().isEmpty())
-            _fetcher->setScript(settings->lcqueryScript());
-        _fetcher->setAtlasToken(settings->atlasToken());
-        _fetcher->setBlackgemScript(settings->blackgemScript());
+    // A batch fetch (started from the Analysis menu) may import lightcurves
+    // for this star while the dialog is open - refresh the views then too.
+    connect(_fetchService, &LightcurveFetchService::starLightcurvesUpdated,
+            this, [this](const QString& starId) {
+        if (!_star || starId != _star->getId()) return;
+        if (_lcPanel)          _lcPanel->refresh();
+        if (_fitLcPanel)       _fitLcPanel->refresh();
+        if (_periodogramPanel) pushSeriesIntoPanel();
+        refreshViewerSourceCombo();
+        refreshPreviewsTab();
+    });
 
-        connect(settings, &AppSettings::lcquerySettingsChanged,
-                this, [this, settings] {
-            _fetcher->setPython(settings->lcqueryPython());
-            _fetcher->setScript(settings->lcqueryScript());
-            _fetcher->setAtlasToken(settings->atlasToken());
-            _fetcher->setBlackgemScript(settings->blackgemScript());
-
-            _fetchStatus->setStyleSheet("color: gray;");
-            _fetchStatus->setText(tr("Re-checking…"));
-            _fetchBtn->setEnabled(false);
-            _fetcher->checkAvailableAsync();
-        });
-    }
-
-    connect(_fetcher, &LightcurveFetcher::started,
-            this, &LightcurveFetchDialog::onFetcherStarted);
-    connect(_fetcher, &LightcurveFetcher::finished,
-            this, &LightcurveFetchDialog::onFetcherFinished);
-    connect(_fetcher, &LightcurveFetcher::failed,
-            this, &LightcurveFetchDialog::onFetcherFailed);
-    connect(_fetcher, &LightcurveFetcher::rawOutput,
-            _fetchLog, QOverload<const QByteArray&>::of(&AnsiTerminalWidget::feed));
-
-    connect(_fetcher, &LightcurveFetcher::availabilityChecked,
+    connect(_fetchService, &LightcurveFetchService::availabilityChecked,
             this, [this](bool ok, const QString& msg) {
+        const bool sessionActive = !_fetchSessionId.isEmpty() &&
+            _fetchService->isSessionActive(_fetchSessionId);
         if (ok) {
-            _fetchStatus->setStyleSheet("color: gray;");
-            _fetchStatus->setText(tr("Ready."));
-            _fetchBtn->setEnabled(true);
+            if (!sessionActive) {
+                _fetchStatus->setStyleSheet("color: gray;");
+                _fetchStatus->setText(tr("Ready."));
+                _fetchBtn->setEnabled(true);
+            }
             if (_setupEnvBtn) _setupEnvBtn->setVisible(false);
         } else {
             _fetchStatus->setStyleSheet("color: #c46060;");
@@ -407,9 +395,48 @@ QWidget* LightcurveFetchDialog::buildFetchTab()
     _fetchStatus->setStyleSheet("color: gray;");
     _fetchStatus->setText(tr("Checking Python setup…"));
     _fetchBtn->setEnabled(false);
-    _fetcher->checkAvailableAsync();
+    _fetchService->checkAvailabilityAsync();
+
+    attachToExistingSession();
 
     return page;
+}
+
+void LightcurveFetchDialog::setFetchRunningUi(bool running)
+{
+    _fetchBtn->setEnabled(!running);
+    _cancelFetch->setEnabled(running);
+    _fetchBusy->setVisible(running);
+    if (running) {
+        _fetchStatus->setStyleSheet("color: #dca84d;");
+        _fetchStatus->setText(tr("Running…"));
+    }
+}
+
+void LightcurveFetchDialog::attachToExistingSession()
+{
+    if (!_fetchService || !_star) return;
+    const QString id = _fetchService->sessionForStar(_star->getId());
+    if (id.isEmpty()) return;
+
+    _fetchSessionId = id;
+
+    // Replay the buffered terminal output of the (possibly still running)
+    // session so closing and reopening the dialog loses nothing.
+    _fetchLog->clearTerminal();
+    const QByteArray buf = _fetchService->sessionBuffer(id);
+    if (!buf.isEmpty()) _fetchLog->feed(buf);
+
+    const auto info = _fetchService->sessionInfo(id);
+    if (info.state == LightcurveFetchService::State::Running) {
+        setFetchRunningUi(true);
+    } else if (info.state == LightcurveFetchService::State::Queued) {
+        setFetchRunningUi(true);
+        _fetchStatus->setText(tr("Queued…"));
+    } else if (!info.summary.isEmpty()) {
+        _fetchStatus->setStyleSheet(info.ok ? "color: #7dbd5e;" : "color: gray;");
+        _fetchStatus->setText(info.summary);
+    }
 }
 
 QWidget *LightcurveFetchDialog::buildFitTab() {
@@ -1269,7 +1296,7 @@ void LightcurveFetchDialog::onSetAsBestFitClicked()
 
 void LightcurveFetchDialog::onFetchClicked()
 {
-    if (!_fetcher) return;
+    if (!_fetchService) return;
 
     LightcurveFetcher::Options opt;
     if (_fetchTess->isChecked())  opt.sources << "TESS";
@@ -1288,9 +1315,9 @@ void LightcurveFetchDialog::onFetchClicked()
     opt.ztfInnerArc = _ztfInner->value();
     opt.ztfOuterArc = _ztfOuter->value();
 
-    _wasReattempt = _reattemptAll && _reattemptAll->isChecked();
+    const bool reattempt = _reattemptAll && _reattemptAll->isChecked();
 
-    if (_wasReattempt) {
+    if (reattempt) {
         const auto ret = QMessageBox::warning(
             this, tr("Reattempt everything"),
             tr("This will delete the cached lightcurvequery output files for "
@@ -1301,200 +1328,78 @@ void LightcurveFetchDialog::onFetchClicked()
                "Continue?").arg(opt.sources.join(", ")),
             QMessageBox::Yes | QMessageBox::No,
             QMessageBox::No);
-        if (ret != QMessageBox::Yes) {
-            _wasReattempt = false;
+        if (ret != QMessageBox::Yes)
             return;
-        }
-
-        const QString gaiaId = _star->getSourceId();
-        const auto expected  = _fetcher->expectedOutputFiles(gaiaId);
-        for (const QString& src : opt.sources) {
-            const QString path = expected.value(src);
-            if (!path.isEmpty() && QFile::exists(path)) {
-                if (QFile::remove(path))
-                    _fetchLog->feed(tr("[reattempt] removed %1\n").arg(path).toUtf8());
-                else
-                    _fetchLog->feed(tr("[reattempt] WARNING: could not remove %1\n").arg(path).toUtf8());
-            }
-        }
-
-        // Per-source preview / aux files that we should also clear so stale
-        // ones don't get displayed for sources whose fetch fails.
-        const QString prevDir = previewDir();
-        QStringList auxFiles;
-        if (opt.sources.contains("TESS")) {
-            auxFiles << "tess_preview.png" << "tess_crowdsap.txt";
-        }
-        if (opt.sources.contains("ZTF"))      auxFiles << "ztf_preview.png";
-        for (const QString& f : auxFiles) {
-            const QString p = QDir(prevDir).absoluteFilePath(f);
-            if (QFile::exists(p)) QFile::remove(p);
-        }
     }
 
-    _fetchLog->clear();
-    _fetchLog->feed(tr("Fetching: %1%2\n")
-                    .arg(opt.sources.join(", "))
-                    .arg(_wasReattempt ? tr("  (reattempt mode)") : QString()).toUtf8());
+    _fetchSessionId = _fetchService->enqueue(_star, _projectId, opt, reattempt);
+    if (_fetchSessionId.isEmpty()) {
+        _fetchStatus->setStyleSheet("color: #c46060;");
+        _fetchStatus->setText(tr("Could not start fetch (no Gaia ID?)."));
+        return;
+    }
 
-    const QString gaiaId = _star->getSourceId();
-    _fetcher->start(gaiaId, opt);
+    // enqueue() may already have started the session and emitted its first
+    // output lines before we knew the session id - replay the buffer.
+    _fetchLog->clearTerminal();
+    const QByteArray buf = _fetchService->sessionBuffer(_fetchSessionId);
+    if (!buf.isEmpty()) _fetchLog->feed(buf);
+
+    const auto info = _fetchService->sessionInfo(_fetchSessionId);
+    if (info.state == LightcurveFetchService::State::Queued) {
+        setFetchRunningUi(true);
+        _fetchStatus->setText(tr("Queued…"));
+    } else if (info.state == LightcurveFetchService::State::Running) {
+        setFetchRunningUi(true);
+    } else {
+        // Failed instantly (e.g. environment problem).
+        setFetchRunningUi(false);
+        _fetchStatus->setStyleSheet(info.ok ? "color: gray;" : "color: #c46060;");
+        if (!info.summary.isEmpty()) _fetchStatus->setText(info.summary);
+    }
 }
 
 void LightcurveFetchDialog::onFetchCancelClicked()
 {
-    if (_fetcher && _fetcher->isRunning()) {
-        _fetchLog->feed(tr("- cancellation requested -\n"));
-        _fetcher->cancel();
-    }
+    if (_fetchService && !_fetchSessionId.isEmpty())
+        _fetchService->cancelSession(_fetchSessionId);
 }
 
-void LightcurveFetchDialog::onFetcherStarted()
+void LightcurveFetchDialog::onFetchSessionStarted(const QString& id)
 {
-    _fetchBtn->setEnabled(false);
-    _cancelFetch->setEnabled(true);
-    _fetchBusy->setVisible(true);
-    _fetchStatus->setStyleSheet("color: #dca84d;");
-    _fetchStatus->setText(tr("Running…"));
+    if (id != _fetchSessionId) return;
+    setFetchRunningUi(true);
 }
 
-void LightcurveFetchDialog::onFetcherLog(const QString& line)
+void LightcurveFetchDialog::onFetchSessionOutput(const QString& id,
+                                                 const QByteArray& chunk)
 {
-    LOG_INFO("lightcurvequery", line);
+    if (id != _fetchSessionId) return;
+    _fetchLog->feed(chunk);
 }
 
-void LightcurveFetchDialog::onFetcherFailed(const QString& reason)
+void LightcurveFetchDialog::onFetchSessionFinished(const QString& id, bool ok,
+                                                   const QString& summary)
 {
-    _fetchLog->feed("[fail] " + reason + '\n');
-    _fetchStatus->setStyleSheet("color: #c46060;");
-    _fetchStatus->setText(tr("Failed."));
-    _fetchBtn->setEnabled(true);
-    _cancelFetch->setEnabled(false);
-    _fetchBusy->setVisible(false);
-}
+    if (id != _fetchSessionId) return;
 
-void LightcurveFetchDialog::onFetcherFinished(int code, bool ok)
-{
-    _fetchBusy->setVisible(false);
-    _cancelFetch->setEnabled(false);
-    _fetchBtn->setEnabled(true);
+    setFetchRunningUi(false);
 
-    auto status = [this](const QString& s) {
-        _fetchLog->feed((s + '\n').toUtf8());
-    };
-
-    status(ok ? tr("- lightcurvequery finished successfully -")
-              : tr("- lightcurvequery exited with code %1 -").arg(code));
-
-    const QString gaiaId = _star->getSourceId();
-    const auto expected  = _fetcher->expectedOutputFiles(gaiaId);
-
-    auto phot = _star->getPhotometry();
-    if (!phot) {
-        phot = std::make_shared<Photometry>();
-        _star->setPhotometry(phot);
-    }
-
-    const bool haveCoords =
-        Star::isSet(_star->getRa()) && Star::isSet(_star->getDec());
-    if (!haveCoords) {
-        status(tr("Warning: star has no RA/Dec - BJDs will not be computed."));
-    }
-
-    QStringList imported, empty;
-    int totalPoints = 0;
-
-    for (auto it = expected.cbegin(); it != expected.cend(); ++it) {
-        const QString& source = it.key();
-        const QString& path   = it.value();
-        if (!QFile::exists(path)) continue;
-
-        TimeScale ts = TimeScale::Unknown;
-        auto pts = LightcurveFetcher::parseOutputFile(path, source, &ts);
-        if (pts.empty()) { empty << source; continue; }
-
-        const bool nativeIsBjd =
-            (ts == TimeScale::BJD  ||
-             ts == TimeScale::BTJD ||
-             ts == TimeScale::BKJD ||
-             ts == TimeScale::GaiaTCB);
-
-        if (!nativeIsBjd && haveCoords && _dbm) {
-            auto inst = _dbm->resolveInstrumentString(source);
-            if (!inst) {
-                status(tr("[%1] no instrument record found - BJD not computed")
-                       .arg(source));
-            } else {
-                int converted = 0;
-                for (auto& pt : pts) {
-                    if (pt.time.hasBjd()) continue;
-                    pt.time.setAutoConvertInfo(
-                        inst, _star->getRa(), _star->getDec());
-                    if (pt.time.bjd().has_value()) ++converted;
-                }
-                status(tr("[%1] computed BJD for %2 / %3 points")
-                       .arg(source).arg(converted).arg(int(pts.size())));
-            }
-        }
-
-        QString verb;
-        if (_wasReattempt) {
-            phot->addLightcurve(source, pts);
-            verb = tr("replaced (reattempt)");
-        } else {
-            const auto result = phot->mergeLightcurve(source, pts);
-            switch (result) {
-                case Photometry::MergeResult::Identical: verb = tr("identical");  break;
-                case Photometry::MergeResult::Replaced:  verb = tr("replaced");   break;
-                case Photometry::MergeResult::Merged:    verb = tr("merged");     break;
-                case Photometry::MergeResult::Added:     verb = tr("added");      break;
-            }
-        }
-        status(tr("[%1] %2 points %3").arg(source).arg(pts.size()).arg(verb));
-
-        if (_dbm && !_dbm->saveLightcurveForStar(_star->getId(), source, phot.get())) {
-            status(tr("[%1] WARNING: failed to save to database").arg(source));
-        }
-
-        imported << QString("%1 (%2)").arg(source).arg(pts.size());
-        totalPoints += int(pts.size());
-    }
-
-    {
-        const QString crowdFile = previewPath("tess_crowdsap.txt");
-        if (QFile::exists(crowdFile)) {
-            const double v = readCrowdsapFile(crowdFile);
-            if (!std::isnan(v)) {
-                _star->setTessCrowdsap(v);
-                if (_dbm) _dbm->saveStarTessCrowdsap(_star->getId(), v);
-                status(tr("[TESS] CROWDSAP = %1").arg(v, 0, 'f', 3));
-            } else {
-                status(tr("[TESS] tess_crowdsap.txt present but could not be parsed"));
-            }
-        }
-        refreshPreviewsTab();
-    }
-
-    if (!imported.isEmpty()) {
+    if (ok && !summary.isEmpty() && summary != tr("No data was produced.")) {
         _fetchStatus->setStyleSheet("color: #7dbd5e;");
-        _fetchStatus->setText(tr("Imported %1 points: %2")
-                              .arg(totalPoints).arg(imported.join(", ")));
-        if (_lcPanel)          _lcPanel->refresh();
-        if (_fitLcPanel)       _fitLcPanel->refresh();
-        if (_periodogramPanel) pushSeriesIntoPanel();
-        refreshViewerSourceCombo();
     } else if (ok) {
         _fetchStatus->setStyleSheet("color: gray;");
-        _fetchStatus->setText(tr("No data was produced."));
     } else {
         _fetchStatus->setStyleSheet("color: #c46060;");
-        _fetchStatus->setText(tr("Failed (exit %1).").arg(code));
     }
+    _fetchStatus->setText(summary.isEmpty() ? tr("Done.") : summary);
 
-    if (!empty.isEmpty())
-        status(tr("(No data for: %1)").arg(empty.join(", ")));
-
-    _wasReattempt = false;
+    // The service already imported any results; refresh the views.
+    if (_lcPanel)          _lcPanel->refresh();
+    if (_fitLcPanel)       _fitLcPanel->refresh();
+    if (_periodogramPanel) pushSeriesIntoPanel();
+    refreshViewerSourceCombo();
+    refreshPreviewsTab();
 }
 
 void LightcurveFetchDialog::onImportCsvClicked()
@@ -1529,7 +1434,7 @@ void LightcurveFetchDialog::onSetupEnvClicked()
     _fetchStatus->setStyleSheet("color: gray;");
     _fetchStatus->setText(tr("Re-checking…"));
     _fetchBtn->setEnabled(false);
-    _fetcher->checkAvailableAsync();
+    _fetchService->recheckAvailability();
 }
 
 // ── Previews tab ──────────────────────────────────────────────────────────
@@ -2294,15 +2199,9 @@ void LightcurveFetchDialog::refreshExistingFitsTree() {
             _deleteFitBtn->setEnabled(false);
     }
 
-    connect(
-        _existingFitsTree, &QTreeWidget::itemSelectionChanged, this,
-        [this] {
-            const bool any = selectedExistingFit() != nullptr;
-            _plotFitBtn->setEnabled(any);
-            _setBestFitBtn->setEnabled(any);
-            _deleteFitBtn->setEnabled(any);
-        },
-        Qt::UniqueConnection);
+    // Button enabling on selection change is handled by the connection made
+    // once in buildFitTab(); re-connecting here (per refresh) would stack
+    // duplicate connections, and Qt::UniqueConnection asserts on lambdas.
 }
 
 std::shared_ptr<LCFit>

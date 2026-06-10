@@ -7,7 +7,7 @@
 #include "views/panels/PeriodogramPanel.h"
 #include "views/widgets/AnsiTerminalWidget.h"
 #include "db/DatabaseManager.h"
-#include "utils/LightcurveFetcher.h"
+#include "utils/LightcurveFetchService.h"
 
 class QCheckBox;
 class QDoubleSpinBox;
@@ -87,10 +87,9 @@ private slots:
     // Fetch
     void onFetchClicked();
     void onFetchCancelClicked();
-    void onFetcherStarted();
-    void onFetcherLog(const QString& line);
-    void onFetcherFinished(int code, bool ok);
-    void onFetcherFailed(const QString& reason);
+    void onFetchSessionStarted(const QString& id);
+    void onFetchSessionOutput(const QString& id, const QByteArray& chunk);
+    void onFetchSessionFinished(const QString& id, bool ok, const QString& summary);
     void onImportCsvClicked();
     void onSetupEnvClicked();
     void onDeleteLightcurveClicked();
@@ -188,7 +187,11 @@ private slots:
 
     QList<PeriodogramPanel::PeriodPeak> _peaks;
 
-    LightcurveFetcher* _fetcher = nullptr;
+    LightcurveFetchService* _fetchService   = nullptr;
+    QString                 _fetchSessionId;
+
+    void setFetchRunningUi(bool running);
+    void attachToExistingSession();
 
     // Fetch tab widgets
     QCheckBox*       _fetchTess    = nullptr;
@@ -207,7 +210,6 @@ private slots:
     QCheckBox*       _reattemptAll = nullptr;
     QPushButton*     _importCsvBtn = nullptr;
     QPushButton*     _setupEnvBtn  = nullptr;
-    bool             _wasReattempt = false;
 
     int     _previewsTabIdx   = -1;
     QLabel*      _previewTitle      = nullptr;

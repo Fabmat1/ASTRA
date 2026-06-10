@@ -11,17 +11,22 @@
 #include "io/StarShare.h"
 #include "models/Project.h"
 #include "utils/BackgroundTaskManager.h"
+#include "utils/LightcurveFetchService.h"
 #include "utils/ThemeManager.h"
+#include "views/tools/LightcurveFetchSessionsDialog.h"
 #include <QAction>
 #include <QActionGroup>
+#include <QHBoxLayout>
 #include <QInputDialog>
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QStackedWidget>
 #include <QStatusBar>
 #include <QTimer>
+#include <QToolButton>
 
 MainWindow::MainWindow(ApplicationController* controller, QWidget *parent)
     : QMainWindow(parent)
@@ -98,7 +103,75 @@ void MainWindow::setupUi()
         }
     });
 
+    setupLcFetchStatusWidget();
+
     statusBar()->showMessage("Ready");
+}
+
+void MainWindow::setupLcFetchStatusWidget()
+{
+    auto* service = _controller->lightcurveFetchService();
+
+    _lcFetchWidget = new QWidget(this);
+    auto* lay = new QHBoxLayout(_lcFetchWidget);
+    lay->setContentsMargins(0, 0, 0, 0);
+    lay->setSpacing(4);
+
+    _lcFetchBtn = new QToolButton;
+    _lcFetchBtn->setAutoRaise(true);
+    _lcFetchBtn->setToolTip(tr("Open the lightcurve fetch sessions overview "
+                               "(terminals, progress, cancel)"));
+    _lcFetchProgress = new QProgressBar;
+    _lcFetchProgress->setMaximumWidth(140);
+    _lcFetchProgress->setMaximumHeight(14);
+    _lcFetchProgress->setTextVisible(false);
+
+    lay->addWidget(_lcFetchBtn);
+    lay->addWidget(_lcFetchProgress);
+    statusBar()->addPermanentWidget(_lcFetchWidget);
+    _lcFetchWidget->setVisible(false);
+
+    connect(_lcFetchBtn, &QToolButton::clicked,
+            this, &MainWindow::onShowLcFetchSessions);
+
+    connect(service, &LightcurveFetchService::progressChanged,
+            this, [this](int done, int total, int running) {
+        if (total <= 0) {
+            _lcFetchWidget->setVisible(false);
+            return;
+        }
+        _lcFetchWidget->setVisible(true);
+        _lcFetchProgress->setRange(0, total);
+        _lcFetchProgress->setValue(done);
+        const bool active = done < total;
+        _lcFetchProgress->setVisible(active);
+        _lcFetchBtn->setText(active
+            ? tr("Fetching lightcurves %1/%2 (%3 running)")
+                  .arg(done).arg(total).arg(running)
+            : tr("Lightcurve fetch done (%1/%2)").arg(done).arg(total));
+    });
+
+    connect(service, &LightcurveFetchService::allFinished,
+            this, [this](int done, int total) {
+        Q_UNUSED(done);
+        statusBar()->showMessage(
+            tr("Lightcurve fetching finished (%1 session%2)")
+                .arg(total).arg(total == 1 ? "" : "s"), 8000);
+    });
+}
+
+void MainWindow::onShowLcFetchSessions()
+{
+    if (!_lcSessionsDialog) {
+        _lcSessionsDialog =
+            new LightcurveFetchSessionsDialog(_controller->lightcurveFetchService(), this);
+        _lcSessionsDialog->setAttribute(Qt::WA_DeleteOnClose);
+        connect(_lcSessionsDialog, &QObject::destroyed, this,
+                [this] { _lcSessionsDialog = nullptr; });
+    }
+    _lcSessionsDialog->show();
+    _lcSessionsDialog->raise();
+    _lcSessionsDialog->activateWindow();
 }
 
 void MainWindow::setupMenus()
@@ -314,10 +387,20 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
         if (!_analysisMenu) {
             _analysisMenu = new QMenu("&Analysis", this);
             _createPlotAction = _analysisMenu->addAction("Create &Plot...");
+            _fetchLightcurvesAction = _analysisMenu->addAction("Fetch &Lightcurves...");
+            _fetchLightcurvesAction->setStatusTip(
+                tr("Fetch lightcurves for the selected stars in the background"));
+            _lcSessionsAction = _analysisMenu->addAction("Lightcurve Fetch &Sessions...");
+            _lcSessionsAction->setStatusTip(
+                tr("Show the terminals and progress of background lightcurve fetches"));
             _analysisMenu->addSeparator();
             _instrumentConfigAction = _analysisMenu->addAction("&Instruments...");
-            
+
             connect(_createPlotAction, &QAction::triggered, _projectView, &ProjectView::onCreatePlot);
+            connect(_fetchLightcurvesAction, &QAction::triggered,
+                    _projectView, &ProjectView::onFetchLightcurves);
+            connect(_lcSessionsAction, &QAction::triggered,
+                    this, &MainWindow::onShowLcFetchSessions);
             connect(_instrumentConfigAction, &QAction::triggered, this, &MainWindow::onShowInstrumentConfig);
             
             QAction* helpAction = _helpMenu->menuAction();
@@ -344,6 +427,8 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             menuBar->removeAction(_analysisMenu->menuAction());
             delete _analysisMenu;
             _analysisMenu = nullptr;
+            _fetchLightcurvesAction = nullptr;
+            _lcSessionsAction       = nullptr;
         }
         
         // Remove Configure Columns from View menu

@@ -1,0 +1,71 @@
+{
+    "version": 1,
+    "name": "Mass scatter (M₁ vs M₂)",
+    "type": 0,
+    "series": [
+        {
+            "label": "Systems",
+            "sourceId": 0,
+            "xKey": "sed_mass1",
+            "yKey": "comp_mass_true",
+            "xErrKey": "sed_e_mass1",
+            "yErrKey": "e_comp_mass_true",
+            "histKey": "sed_mass1",
+            "markerIndex": 0,
+            "color": "#2060B0"
+        }
+    ],
+    "scatter": {
+        "logX": false,
+        "logY": false,
+        "invX": false,
+        "invY": false,
+        "colorBy": "",
+        "sizeBy": "",
+        "trend": 0,
+        "trendWindow": 21
+    },
+    "limits": {
+        "xMin": "0",
+        "xMax": "1.2",
+        "yMin": "0",
+        "yMax": "1.2",
+        "hideStacked": true,
+        "stackedN": 5
+    },
+    "style": {
+        "markerSize": 7,
+        "cull": false,
+        "bgColor": "",
+        "axisWidth": 1.0,
+        "minorTicks": true,
+        "grid": false,
+        "xTicks": "",
+        "yTicks": "",
+        "xLabel": "M₁ [M☉]",
+        "yLabel": "M₂ [M☉]",
+        "title": "Mass scatter"
+    },
+    "overlays": [
+        {
+            "type": 1,
+            "label": "Super-Chandrasekhar",
+            "color": "#B85B3A",
+            "width": 0.5,
+            "penStyle": 2,
+            "filePath": ":/data/plot_presets/super_chandrasekhar_region.dat",
+            "colX": 1,
+            "colY": 2
+        },
+        {
+            "type": 0,
+            "label": "M_tot = 1.4587 M☉ (Chandrasekhar)",
+            "color": "#2C241A",
+            "width": 1.2,
+            "penStyle": 1,
+            "filePath": ":/data/plot_presets/chandrasekhar_line.dat",
+            "colX": 1,
+            "colY": 2
+        }
+    ]
+}

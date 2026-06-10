@@ -5,6 +5,7 @@
 #include "db/DatabaseManager.h"
 #include "utils/ThemeManager.h"
 #include "utils/BackgroundTaskManager.h"
+#include "utils/LightcurveFetchService.h"
 #include <QApplication>
 #include <QFile>
 #include <QUuid>
@@ -37,6 +38,13 @@ ApplicationController::ApplicationController(QObject *parent)
 
 ApplicationController::~ApplicationController()
 {
+}
+
+LightcurveFetchService* ApplicationController::lightcurveFetchService()
+{
+    if (!_lightcurveFetchService)
+        _lightcurveFetchService = std::make_unique<LightcurveFetchService>(this, this);
+    return _lightcurveFetchService.get();
 }
 
 std::vector<std::shared_ptr<Project>> ApplicationController::getProjects() const

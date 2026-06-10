@@ -13,6 +13,7 @@ class ThemeManager;
 struct ThemeInfo;
 class BackgroundTaskManager;
 class AppSettings;
+class LightcurveFetchService;
 
 
 class ApplicationController : public QObject
@@ -46,6 +47,9 @@ public:
 
     AppSettings* settings() const { return _settings.get(); }
 
+    /// Lazily created app-wide manager for background lightcurve fetching.
+    LightcurveFetchService* lightcurveFetchService();
+
 signals:
     void projectCreated(const QString& projectId);
     void projectOpened(const QString& projectId);
@@ -59,6 +63,7 @@ private:
     std::vector<std::shared_ptr<Project>> _projects;
     std::unique_ptr<BackgroundTaskManager> _backgroundTaskManager;
     std::unique_ptr<AppSettings> _settings;
+    std::unique_ptr<LightcurveFetchService> _lightcurveFetchService;
 
     void loadProjects();
 };

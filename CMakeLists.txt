@@ -288,6 +288,8 @@ set(SOURCES
     src/utils/ThemeManager.cpp
     src/utils/ObservabilityCalculator.cpp
     src/utils/LightcurveFetcher.cpp
+    src/utils/LightcurveFetchService.cpp
+    src/utils/PlotPresetStore.cpp
     src/utils/LcqueryEnvironment.cpp
     src/utils/IsisEnvironment.cpp
     src/utils/CheckStateDragger.cpp
@@ -313,6 +315,7 @@ set(SOURCES
     src/views/tools/GalacticOrbitDialog.cpp
     src/views/tools/ProjectPlotDialog.cpp
     src/views/tools/LightcurveFetchDialog.cpp
+    src/views/tools/LightcurveFetchSessionsDialog.cpp
     src/views/tools/LcquerySetupDialog.cpp
     src/views/tools/RVInspectorDialog.cpp
     src/views/tools/SEDFitDialog.cpp
@@ -419,6 +422,8 @@ set(HEADERS
     src/utils/ThemeManager.h
     src/utils/ObservabilityCalculator.h
     src/utils/LightcurveFetcher.h
+    src/utils/LightcurveFetchService.h
+    src/utils/PlotPresetStore.h
     src/utils/LcqueryEnvironment.h
     src/utils/IsisEnvironment.h
     src/utils/CheckStateDragger.h
@@ -445,6 +450,7 @@ set(HEADERS
     src/views/tools/GalacticOrbitDialog.h
     src/views/tools/ProjectPlotDialog.h
     src/views/tools/LightcurveFetchDialog.h
+    src/views/tools/LightcurveFetchSessionsDialog.h
     src/views/tools/LcquerySetupDialog.h
     src/views/tools/RVInspectorDialog.h
     src/views/tools/SEDFitDialog.h

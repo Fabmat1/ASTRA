@@ -16,6 +16,16 @@
         <file>themes/one_dark.qss</file>
         <file>data/default_instruments.json</file>
         <file>data/gaia_cmd.csv</file>
+        <file>data/plot_presets/kiel_diagram.json</file>
+        <file>data/plot_presets/pk_diagram.json</file>
+        <file>data/plot_presets/mass_scatter.json</file>
+        <file>data/plot_presets/hezams.dat</file>
+        <file>data/plot_presets/ehb_region.dat</file>
+        <file>data/plot_presets/pk_theory_m2_080.dat</file>
+        <file>data/plot_presets/pk_theory_m2_040.dat</file>
+        <file>data/plot_presets/pk_theory_m2_008.dat</file>
+        <file>data/plot_presets/chandrasekhar_line.dat</file>
+        <file>data/plot_presets/super_chandrasekhar_region.dat</file>
         <file>scripts/photometry_body.sl</file>
         <file>scripts/spectroscopy_interactive_body.sl</file>
         <file>fonts/FiraCode-Regular.ttf</file>
