@@ -166,7 +166,10 @@ flame.svg
 perf.data
 perf.data*
 
-scripts/
+scripts/*
+!scripts/astra_data.py
+!scripts/plot_curve.py
+!scripts/plot_periodogram.py
 
 !resources/scripts/out.svg
 
