@@ -234,12 +234,16 @@ RVPanel::~RVPanel()
     }
 }
 
-RVPanel::RVPanel(const Context& ctx, QWidget* parent)
+RVPanel::RVPanel(const Context& ctx, QWidget* parent, bool deferPopulate)
     : DetailPanel(ctx, parent)
 {
     setupUi();
-    if (_ctx.star) _ctx.star->ensureRVCurveSynced();
-    populate();
+    if (deferPopulate) {
+        showLoadingShimmer(1);
+    } else {
+        if (_ctx.star) _ctx.star->ensureRVCurveSynced();
+        populate();
+    }
 }
 
 void RVPanel::refresh()      { populate(); }
@@ -252,6 +256,10 @@ void RVPanel::refreshTheme()
 void RVPanel::populate()
 {
     static const QString CAT = "StarDetailView.RV";
+
+    // Idempotent; also covers the deferred path where the constructor skipped
+    // the heavy sync to keep the window opening instantly.
+    if (_ctx.star) _ctx.star->ensureRVCurveSynced();
 
     // Capture the current per-plot axis ranges before the plots are destroyed,
     // so we can restore the user's zoom when only the displayed fit changed.

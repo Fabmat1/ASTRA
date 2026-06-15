@@ -291,11 +291,14 @@ QWidget *buildPropertyGrid(const std::vector<PropRow> &rows,
 
 } // anonymous namespace
 
-SummaryPanel::SummaryPanel(const Context& ctx, QWidget* parent)
+SummaryPanel::SummaryPanel(const Context& ctx, QWidget* parent, bool deferPopulate)
     : DetailPanel(ctx, parent)
 {
     setupUi();
-    rebuild();
+    if (deferPopulate)
+        showLoadingShimmer(1);
+    else
+        rebuild();
 }
 
 void SummaryPanel::setupUi() {

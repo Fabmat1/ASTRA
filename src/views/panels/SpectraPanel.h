@@ -17,7 +17,8 @@ class SpectraPanel : public DetailPanel
 {
     Q_OBJECT
 public:
-    explicit SpectraPanel(const Context& ctx, QWidget* parent = nullptr);
+    explicit SpectraPanel(const Context& ctx, QWidget* parent = nullptr,
+                          bool deferPopulate = false);
 
     void refresh() override;
     void refreshTheme() override;
@@ -52,7 +53,7 @@ signals:
 private:
 
     void setupUi();
-    void populate();
+    void populate() override;
     void displaySpectrum(int index);
     void updateSpectrumDisplay();
 

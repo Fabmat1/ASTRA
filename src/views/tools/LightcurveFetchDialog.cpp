@@ -10,7 +10,6 @@
 #include "utils/FilterWavelength.h"
 #include "utils/LcqueryEnvironment.h"
 #include "utils/Logger.h"
-#include "utils/PerfTimer.h"
 #include "views/tools/LcquerySetupDialog.h"
 #include "views/panels/DetailPanel.h"
 #include "views/panels/LCPanel.h"
@@ -50,6 +49,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTextCursor>
+#include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
@@ -183,13 +183,11 @@ void LightcurveFetchDialog::setupUi()
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(6, 6, 6, 6);
 
-    PERF_SCOPE("Perf.LCDialog", "setupUi (total dialog open)");
-
     _tabs = new QTabWidget;
-    { PerfTimer t("Perf.LCDialog", "buildViewerTab");      _tabs->addTab(buildViewerTab(), "Viewer"); }
-    { PerfTimer t("Perf.LCDialog", "buildPeriodogramTab"); _periodogramTabIdx = _tabs->addTab(buildPeriodogramTab(), "Periodogram"); }
-    { PerfTimer t("Perf.LCDialog", "buildPreviewsTab");    _previewsTabIdx    = _tabs->addTab(buildPreviewsTab(), "Previews"); }
-    { PerfTimer t("Perf.LCDialog", "buildFetchTab");       _tabs->addTab(buildFetchTab(), "Fetch"); }
+    _tabs->addTab(buildViewerTab(), "Viewer");
+    _periodogramTabIdx = _tabs->addTab(buildPeriodogramTab(), "Periodogram");
+    _previewsTabIdx    = _tabs->addTab(buildPreviewsTab(), "Previews");
+    _tabs->addTab(buildFetchTab(), "Fetch");
 
     // The Fit tab builds a second full LCPanel over the same (potentially
     // million-point) lightcurves; defer it until the user first opens it so the
@@ -456,7 +454,6 @@ void LightcurveFetchDialog::ensureFitTabBuilt()
 {
     if (_fitTabBuilt) return;
     _fitTabBuilt = true;
-    PERF_SCOPE("Perf.LCDialog", "buildFitTab (lazy, first activation)");
     QWidget* content = buildFitTab();
     _fitTabPage->layout()->addWidget(content);
 }
@@ -472,7 +469,10 @@ QWidget *LightcurveFetchDialog::buildFitTab() {
     ctx.dbm        = _dbm;
     ctx.controller = _controller;
     ctx.projectId  = _projectId;
-    _fitLcPanel    = new LCPanel(ctx);
+    // Build the panel in deferred mode: it shows a single-card loading shimmer
+    // immediately and runs the heavy lightcurve load/plot build on the next
+    // event-loop turn, so the Fit tab becomes interactive instantly.
+    _fitLcPanel    = new LCPanel(ctx, nullptr, /*deferPopulate=*/true);
     root->addWidget(_fitLcPanel, 1);
 
     auto *sidebar = new QWidget;
@@ -590,13 +590,21 @@ QWidget *LightcurveFetchDialog::buildFitTab() {
 
     root->addWidget(sidebar);
 
+    // These read the star's photometry directly (not the LCPanel's populated
+    // series), so they can run now while the panel is still showing its shimmer.
     refreshFitSourceCombo();
     refreshFitPeriodList();
-    if (_fitLcPanel && _fitBinsSpin)
-        _fitLcPanel->setUniformFoldedBins(_fitBinsSpin->value());
-    onFitPeriodSelectionChanged();
-
     refreshExistingFitsTree();
+
+    // The folded preview depends on the panel's populated series, so defer it
+    // until populate() has finished. populated() fires once, after the heavy
+    // load on the next event-loop turn.
+    connect(_fitLcPanel, &DetailPanel::populated, this, [this] {
+        if (_fitLcPanel && _fitBinsSpin)
+            _fitLcPanel->setUniformFoldedBins(_fitBinsSpin->value());
+        onFitPeriodSelectionChanged();
+    });
+    QTimer::singleShot(0, _fitLcPanel, [p = _fitLcPanel] { p->populateNow(); });
 
     return page;
 }
@@ -967,18 +975,12 @@ void LightcurveFetchDialog::onPeriodogramTabActivated()
 
 void LightcurveFetchDialog::pushSeriesIntoPanel()
 {
-    PERF_SCOPE("Perf.Periodogram", "pushSeriesIntoPanel (tab switch)");
     QList<PeriodogramPanel::Series> conv;
-    {
-        PerfTimer t("Perf.Periodogram", "LCPanel::seriesData copy");
-        const auto src = _lcPanel->seriesData(false);   // exclude flagged
-        conv.reserve(src.size());
-        int pts = 0;
-        for (const auto& s : src) { conv.append({s.source, s.filter, s.t, s.y, s.e}); pts += s.t.size(); }
-        t.report(QString("%1 series, %2 pts").arg(src.size()).arg(pts));
-    }
-    { PerfTimer t("Perf.Periodogram", "PeriodogramPanel::setSeries (sync part)");
-      _periodogramPanel->setSeries(conv); }
+    const auto src = _lcPanel->seriesData(false);   // exclude flagged
+    conv.reserve(src.size());
+    for (const auto& s : src)
+        conv.append({s.source, s.filter, s.t, s.y, s.e});
+    _periodogramPanel->setSeries(conv);
 }
 
 void LightcurveFetchDialog::refreshPeakSourceCombo()

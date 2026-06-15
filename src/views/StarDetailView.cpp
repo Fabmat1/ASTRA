@@ -90,6 +90,7 @@ void StarDetailView::setupUi()
 
 void StarDetailView::tearDownGrid()
 {
+    _populateQueue.clear();
     for (auto* p : _panels) { if (p) p->deleteLater(); }
     _panels.clear();
     if (_rootVSplit) { _rootVSplit->deleteLater(); _rootVSplit = nullptr; }
@@ -118,10 +119,15 @@ void StarDetailView::buildGrid()
 
         bool anyInRow = false;
         for (auto which : row) {
-            DetailPanel* panel = DetailPanelFactory::create(which, ctx, hSplit);
+            // Build each panel deferred: it shows a loading shimmer immediately
+            // and its heavy populate() is driven later, one panel per event-loop
+            // turn, so the whole window appears instantly.
+            DetailPanel* panel =
+                DetailPanelFactory::create(which, ctx, hSplit, /*deferPopulate=*/true);
             if (panel) {
                 hSplit->addWidget(panel);
                 _panels.append(panel);
+                _populateQueue.append(panel);
                 anyInRow = true;
             } else {
                 // placeholder for "None" cells so row proportions are preserved
@@ -153,13 +159,21 @@ void StarDetailView::buildGrid()
         if (spectraPanel && rvPanel) {
             connect(spectraPanel, &SpectraPanel::selectionChanged,
                     rvPanel,      &RVPanel::highlightSpectrum);
-            // Apply the highlight for whatever spectrum is shown initially.
-            rvPanel->highlightSpectrum(spectraPanel->currentSpectrumId(),
-                                       spectraPanel->currentFitId());
+            // Both panels populate asynchronously; apply the initial highlight
+            // once the spectra panel has loaded the spectrum it shows first.
+            connect(spectraPanel, &DetailPanel::populated, rvPanel,
+                    [spectraPanel, rvPanel] {
+                        rvPanel->highlightSpectrum(spectraPanel->currentSpectrumId(),
+                                                   spectraPanel->currentFitId());
+                    });
         }
     }
 
     _gridHost->layout()->addWidget(_rootVSplit);
+
+    // Start filling the panels in, one per event-loop turn, behind their
+    // shimmers. The window is already laid out, so it paints immediately.
+    QTimer::singleShot(0, this, [this] { populateNextPanel(); });
 
     // Force equal partition at startup
     QTimer::singleShot(0, this, [this]() {
@@ -179,6 +193,21 @@ void StarDetailView::buildGrid()
             }
         }
     });
+}
+
+void StarDetailView::populateNextPanel()
+{
+    while (!_populateQueue.isEmpty() && _populateQueue.first().isNull())
+        _populateQueue.removeFirst();   // skip panels destroyed by a rebuild
+    if (_populateQueue.isEmpty()) return;
+
+    DetailPanel* panel = _populateQueue.takeFirst();
+    panel->populateNow();
+
+    // Hand control back to the event loop so this panel paints before the next
+    // one blocks; keeps the window responsive while everything fills in.
+    if (!_populateQueue.isEmpty())
+        QTimer::singleShot(0, this, [this] { populateNextPanel(); });
 }
 
 void StarDetailView::scheduleThemeRefresh() {

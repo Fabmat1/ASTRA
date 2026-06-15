@@ -2,6 +2,7 @@
 
 #include <QWidget>
 #include <QVector>
+#include <QPointer>
 #include <memory>
 
 class Star;
@@ -41,6 +42,9 @@ private:
     void setupUi();
     void buildGrid();            // reads AppSettings + instantiates panels
     void tearDownGrid();
+    // Drives the staggered, one-panel-per-event-loop-turn fill-in so the
+    // window appears instantly with shimmers and each panel populates in turn.
+    void populateNextPanel();
     QWidget* createButtonSidebar();
     void refreshAllThemes();
     void     scheduleThemeRefresh();
@@ -54,6 +58,9 @@ private:
     QWidget*              _gridHost   = nullptr;
     QSplitter*            _rootVSplit = nullptr;
     QVector<DetailPanel*> _panels;
+
+    // Panels still awaiting their deferred populate(), filled in one per turn.
+    QVector<QPointer<DetailPanel>> _populateQueue;
 
     // Sidebar buttons (unchanged)
     QPushButton* _simbadButton        = nullptr;

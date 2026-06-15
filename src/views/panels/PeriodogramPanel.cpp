@@ -2,7 +2,6 @@
 #include "PanelUtils.h"
 #include "plotting/qcustomplot.h"
 #include "utils/Logger.h"
-#include "utils/PerfTimer.h"
 #include "db/DatabaseManager.h"
 #include "models/PeriodogramRecord.h"
 #include "views/widgets/ShimmerWidget.h"
@@ -166,7 +165,6 @@ void PeriodogramPanel::updateOverlayState()
 
 void PeriodogramPanel::setSeries(const QList<Series>& series)
 {
-    PerfTimer perfHash("Perf.Periodogram", "setSeries: input hash (sync, blocks UI)");
     // Detect no-op re-application; FNV-style mix.
     quint64 h = 1469598103934665603ULL;
     for (const auto& s : series) {
@@ -174,7 +172,6 @@ void PeriodogramPanel::setSeries(const QList<Series>& series)
         for (char c : k) { h ^= static_cast<unsigned char>(c); h *= 1099511628211ULL; }
         h ^= Periodogram::hashData(s.t, s.y, s.e) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
     }
-    perfHash.report(QString("%1 series").arg(series.size()));
     if (h == _seriesHash && !_series.isEmpty()) {
         emit seriesChanged();   // host might want to refresh anyway
         return;
@@ -682,7 +679,6 @@ void PeriodogramPanel::drawOverlays(QCustomPlot* plot)
 
 void PeriodogramPanel::replotAll()
 {
-    PERF_SCOPE("Perf.Periodogram", "PeriodogramPanel::replotAll");
     for (auto* p : _plots) {
         p->clearPlottables();
         p->clearItems();

@@ -20,11 +20,14 @@
 #include <cmath>
 #include <limits>
 
-SpectraPanel::SpectraPanel(const Context& ctx, QWidget* parent)
+SpectraPanel::SpectraPanel(const Context& ctx, QWidget* parent, bool deferPopulate)
     : DetailPanel(ctx, parent)
 {
     setupUi();
-    populate();
+    if (deferPopulate)
+        showLoadingShimmer(1);
+    else
+        populate();
 }
 
 void SpectraPanel::refresh()      { populate(); }

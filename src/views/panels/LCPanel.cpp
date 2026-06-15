@@ -5,7 +5,6 @@
 #include "models/Photometry.h"
 #include "models/RadialVelocity.h"
 #include "utils/Logger.h"
-#include "utils/PerfTimer.h"
 #include "db/DatabaseManager.h"
 #include "plotting/qcustomplot.h"
 
@@ -108,11 +107,14 @@ constexpr const char* kLCSettingsRoot = "LCPanel";
 
 // ── ctor / refresh ──────────────────────────────────────────────────
 
-LCPanel::LCPanel(const Context& ctx, QWidget* parent)
+LCPanel::LCPanel(const Context& ctx, QWidget* parent, bool deferPopulate)
     : DetailPanel(ctx, parent)
 {
     setupUi();
-    populate();
+    if (deferPopulate)
+        showLoadingShimmer(1);   // single-plot panel: one skeleton card
+    else
+        populate();
 }
 
 void LCPanel::refresh()      { populate(); }
@@ -335,14 +337,13 @@ void LCPanel::onT0SourceChanged(int)
 void LCPanel::populate()
 {
     static const QString CAT = "StarDetailView.LC";
-    PERF_SCOPE("Perf.LC", "LCPanel::populate");
 
     // Pull saved per-star view configuration into internal state once, before
     // any defaults are filled in or signals are wired up.
     if (!_settingsRestored)
         restoreStarSettings();
 
-    { PerfTimer t("Perf.LC", "rebuildSeriesCache"); rebuildSeriesCache(); }
+    rebuildSeriesCache();
 
     if (_series.isEmpty()) {
         _toggleFoldBtn->setEnabled(false);
@@ -404,8 +405,8 @@ void LCPanel::populate()
             _showFit[s.key] = true; // ← add
     }
 
-    { PerfTimer t("Perf.LC", "rebuildPlots (populate)"); rebuildPlots(); }
-    { PerfTimer t("Perf.LC", "replotAll (populate)"); replotAll(); }
+    rebuildPlots();
+    replotAll();
 }
 
 void LCPanel::rebuildSeriesCache()
@@ -418,10 +419,7 @@ void LCPanel::rebuildSeriesCache()
 
     QHash<QString, int> indexFor;
     for (auto& src : sources) {
-        std::vector<LightcurvePoint> pts;
-        { PerfTimer t("Perf.LC", QString("getLightcurve(%1) [disk/decompress on first access]").arg(src));
-          pts = phot->getLightcurve(src);
-          t.report(QString("%1 pts").arg(pts.size())); }
+        std::vector<LightcurvePoint> pts = phot->getLightcurve(src);
         for (int i = 0; i < (int)pts.size(); ++i) {
             const auto& pt = pts[i];
             QString k = keyFor(src, pt.filter);
@@ -568,7 +566,6 @@ void LCPanel::rebuildPlots()
 
 void LCPanel::replotAll(bool preserveZoom)
 {
-    PERF_SCOPE("Perf.LC", "LCPanel::replotAll");
     QHash<QCustomPlot*, QPair<QCPRange, QCPRange>> saved;
     if (preserveZoom) {
         for (auto* p : _plots)

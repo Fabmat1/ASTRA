@@ -24,7 +24,8 @@ class LCPanel : public DetailPanel
 public:
     enum class ViewMode { Overlay = 0, StackedBySource = 1, StackedBySourceFilter = 2 };
 
-    explicit LCPanel(const Context& ctx, QWidget* parent = nullptr);
+    explicit LCPanel(const Context& ctx, QWidget* parent = nullptr,
+                     bool deferPopulate = false);
 
     void refresh() override;
     void refreshTheme() override;
@@ -77,7 +78,7 @@ private:
     struct PlotRange { double xLo = 0, xHi = 1, yLo = 0, yHi = 1; };
 
     void setupUi();
-    void populate();
+    void populate() override;
 
     // ── Per-star persisted view settings ────────────────────────────────
     /// Stable per-star key (source id, falling back to UUID) under which the

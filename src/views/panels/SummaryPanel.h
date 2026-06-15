@@ -11,7 +11,8 @@ class QLabel;
 class SummaryPanel : public DetailPanel {
     Q_OBJECT
   public:
-    explicit SummaryPanel(const Context &ctx, QWidget *parent = nullptr);
+    explicit SummaryPanel(const Context &ctx, QWidget *parent = nullptr,
+                          bool deferPopulate = false);
 
     void refresh() override;
     void refreshTheme() override;
@@ -25,6 +26,7 @@ class SummaryPanel : public DetailPanel {
     static constexpr int kRefBatchSize = 10;
 
     void setupUi();
+    void populate() override { rebuild(); }
     void rebuild();
 
     QWidget *buildDashboard();

@@ -19,7 +19,8 @@ class RVPanel : public DetailPanel
 {
     Q_OBJECT
 public:
-    explicit RVPanel(const Context& ctx, QWidget* parent = nullptr);
+    explicit RVPanel(const Context& ctx, QWidget* parent = nullptr,
+                     bool deferPopulate = false);
     ~RVPanel() override;
 
     void refresh() override;
@@ -48,7 +49,7 @@ private slots:
 
 private:
     void setupUi();
-    void populate();
+    void populate() override;
 
     // Show/hide & reposition the floating "reset zoom" button depending on
     // whether any plot is currently away from its computed home range.

@@ -7,5 +7,6 @@ class DetailPanelFactory {
 public:
     static DetailPanel* create(AppSettings::DetailPanel which,
                                const DetailPanel::Context& ctx,
-                               QWidget* parent = nullptr);
+                               QWidget* parent = nullptr,
+                               bool deferPopulate = false);
 };
