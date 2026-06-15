@@ -22,12 +22,16 @@ public:
     QString getImagePath() const { return _imagePath; }
     QDateTime getCreatedDate() const { return _createdDate; }
     QDateTime getModifiedDate() const { return _modifiedDate; }
+    // Seed for the procedurally generated card art. 0 → derive deterministically
+    // from the project id; non-zero → a user-rolled "regenerated" look.
+    quint32 getArtSeed() const { return _artSeed; }
 
     // Setters
     void setId(const QString& id, bool updateModifiedDate = true);
     void setName(const QString& name, bool updateModifiedDate = true);
     void setDescription(const QString& description, bool updateModifiedDate = true);
     void setImagePath(const QString& path, bool updateModifiedDate = true);
+    void setArtSeed(quint32 seed, bool updateModifiedDate = false);
     void setCreatedDate(const QDateTime& date, bool updateModifiedDate = true);
     void setStars(std::vector<std::shared_ptr<Star>> stars, bool updateModifiedDate = true);
     void setModifiedDate(const QDateTime& date);
@@ -59,6 +63,7 @@ private:
     QString _name;
     QString _description;
     QString _imagePath;
+    quint32 _artSeed = 0;
     QDateTime _createdDate;
     QDateTime _modifiedDate;
 

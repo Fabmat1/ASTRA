@@ -27,6 +27,7 @@
 #include <QStyle>
 #include <QLayout>
 #include <QHash>
+#include <QRandomGenerator>
 #include <random>
 #include <cmath>
 
@@ -104,6 +105,62 @@ static constexpr int  CARD_RADIUS  = 14;
 static constexpr int  MAX_LIFT     = 6;     // pixels the card visually rises on hover
 static constexpr int  WIDGET_PAD_B = MAX_LIFT; // bottom padding to host the lift travel + shadow
 
+// -----------------------------------------------------------------------------
+// Starry-sky colour variants.
+//
+// Every imageless project gets one of these emission-line palettes, picked
+// deterministically from its id so a project always looks the same and is
+// recognisable "at one glance". The background stays deep and dark (space-y);
+// the accent only really shows in the nebulosity and a faint cast on the
+// gradient + constellation lines, so it never reads as a flat coloured tile.
+// -----------------------------------------------------------------------------
+struct SkyVariant {
+    int    baseHue;        // deep-space gradient hue  (<0 → randomised per project)
+    int    baseSat;        // gradient saturation at the top
+    int    nebHueLo;       // nebula accent hue range
+    int    nebHueHi;
+    int    nebSat;         // nebula saturation / value / peak alpha
+    int    nebVal;
+    int    nebAlpha;
+    QColor lineTint;       // constellation-line colour (alpha applied at draw time)
+};
+
+static const SkyVariant kSkyVariants[] = {
+    // Cosmic blue – the original look (hue randomised 200–260 per project).
+    { -1, 140, 180, 320, 140, 180, 40, QColor(200, 215, 255) },
+    // Fiery red – Hα emission.
+    { 10, 150,   0,  22, 155, 175, 36, QColor(255, 205, 195) },
+    // Toxic green – kept muted so it stays nebular rather than neon.
+    { 138, 115,  95, 150, 135, 160, 32, QColor(205, 255, 215) },
+    // Vibrant magenta.
+    { 310, 138, 292, 332, 150, 180, 38, QColor(255, 200, 245) },
+    // OIII cyan.
+    { 186, 142, 172, 196, 158, 185, 40, QColor(200, 245, 255) },
+};
+static constexpr int kSkyVariantCount = int(sizeof(kSkyVariants) / sizeof(kSkyVariants[0]));
+
+// Stable, process-independent hash of the project id. Unlike qHash(QString),
+// which Qt randomises per process run, this always yields the same value, so a
+// project keeps its colour + constellations across every restart. Never 0
+// (0 is reserved to mean "no seed").
+static quint32 stableSeed(const QString& id)
+{
+    quint32 h = 2166136261u;                 // FNV-1a
+    for (char c : id.toUtf8()) {
+        h ^= static_cast<unsigned char>(c);
+        h *= 16777619u;
+    }
+    return h ? h : 1u;
+}
+
+// Map a seed to a variant index, mixing the bits first so a project's variant
+// doesn't correlate with the low bits that also drive its star layout.
+static int variantForSeed(quint32 seed)
+{
+    quint32 h = seed * 2654435761u;          // Knuth multiplicative hash
+    return int((h >> 16) % uint(kSkyVariantCount));
+}
+
 // =============================================================================
 //                          ProjectSelectionView
 // =============================================================================
@@ -173,11 +230,13 @@ void ProjectSelectionView::loadProjects()
     for (const auto& project : _controller->getProjects()) {
         auto* card = new ProjectCard(
             project->getId(), project->getName(), project->getDescription(),
-            project->getStarCount(), project->getImagePath(), _flowContainer);
+            project->getStarCount(), project->getImagePath(),
+            project->getArtSeed(), _flowContainer);
 
         connect(card, &ProjectCard::clicked,         this, &ProjectSelectionView::onProjectCardClicked);
         connect(card, &ProjectCard::editRequested,   this, &ProjectSelectionView::onProjectEdit);
         connect(card, &ProjectCard::deleteRequested, this, &ProjectSelectionView::onProjectDelete);
+        connect(card, &ProjectCard::artSeedChanged,  this, &ProjectSelectionView::onProjectRegenerate);
 
         _projectCards.append(card);
         _flowLayout->addWidget(card);
@@ -187,6 +246,19 @@ void ProjectSelectionView::loadProjects()
 
 void ProjectSelectionView::onProjectCardClicked(const QString& id) { emit projectSelected(id); }
 void ProjectSelectionView::onNewProjectClicked() { createNewProject(); }
+
+void ProjectSelectionView::onProjectRegenerate(const QString& projectId, quint32 newSeed)
+{
+    // The card has already repainted itself; just persist the new seed so the
+    // regenerated look survives a restart. Does not bump the modified date.
+    for (const auto& project : _controller->getProjects()) {
+        if (project->getId() == projectId) {
+            project->setArtSeed(newSeed, false);
+            _controller->updateProject(project);
+            break;
+        }
+    }
+}
 
 void ProjectSelectionView::createNewProject()
 {
@@ -242,10 +314,11 @@ void ProjectSelectionView::onProjectDelete(const QString& id)
 // =============================================================================
 ProjectCard::ProjectCard(const QString& id, const QString& name,
                          const QString& description, int starCount,
-                         const QString& imagePath, QWidget* parent)
+                         const QString& imagePath, quint32 artSeed,
+                         QWidget* parent)
     : QWidget(parent)
     , _projectId(id), _name(name), _description(description)
-    , _imagePath(imagePath), _starCount(starCount)
+    , _imagePath(imagePath), _starCount(starCount), _artSeed(artSeed)
 {
     setFixedSize(CARD_W, CARD_H + WIDGET_PAD_B);
     setCursor(Qt::PointingHandCursor);
@@ -281,6 +354,11 @@ void ProjectCard::createContextMenu()
 
     auto* open = _contextMenu->addAction("Open Project");
     auto* edit = _contextMenu->addAction("Edit Project");
+    // Only procedural (imageless) cards have constellations/colours to re-roll.
+    if (!_hasImage) {
+        auto* regen = _contextMenu->addAction("Regenerate Constellation");
+        connect(regen, &QAction::triggered, this, [this]{ regenerateArt(); });
+    }
     _contextMenu->addSeparator();
     auto* del  = _contextMenu->addAction("Delete Project");
 
@@ -304,11 +382,27 @@ void ProjectCard::rebuildBackground()
     else           buildStarrySkyBackground();
 }
 
+void ProjectCard::regenerateArt()
+{
+    // Roll a fresh, non-zero seed, repaint immediately, and let the view persist
+    // it so the new constellation + colour stick across restarts.
+    quint32 s;
+    do { s = QRandomGenerator::global()->generate(); } while (s == 0);
+    _artSeed = s;
+    rebuildBackground();
+    update();
+    emit artSeedChanged(_projectId, s);
+}
+
 void ProjectCard::buildFrostedBackground()
 {
+    const qreal dpr = devicePixelRatioF() > 0 ? devicePixelRatioF() : 1.0;
+    _bgDpr = dpr;
     QSize sz(CARD_W, CARD_H);
-    _bgPixmap = QPixmap(sz);
+    _bgPixmap = QPixmap(sz * dpr);
+    _bgPixmap.setDevicePixelRatio(dpr);
     _bgPixmap.fill(Qt::transparent);
+    const QRect logRect(0, 0, sz.width(), sz.height());
 
     // Downscale → upscale = soft "frosted glass / noise gradient" with image's palette.
     QPixmap tiny  = _imagePixmap.scaled(10, 10, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
@@ -316,33 +410,44 @@ void ProjectCard::buildFrostedBackground()
 
     QPainter p(&_bgPixmap);
     p.setRenderHint(QPainter::SmoothPixmapTransform);
-    p.drawPixmap(0, 0, blown);
+    p.drawPixmap(logRect, blown);
 
     // subtle darkening for legibility
-    p.fillRect(_bgPixmap.rect(), QColor(0, 0, 0, 55));
+    p.fillRect(logRect, QColor(0, 0, 0, 55));
 
     // vignette
     QRadialGradient vg(sz.width()/2.0, sz.height()/2.0,
                        std::max(sz.width(), sz.height()) * 0.75);
     vg.setColorAt(0.0, QColor(0,0,0,0));
     vg.setColorAt(1.0, QColor(0,0,0,110));
-    p.fillRect(_bgPixmap.rect(), vg);
+    p.fillRect(logRect, vg);
 }
 
 void ProjectCard::buildStarrySkyBackground()
 {
+    // Render into a pixmap sized for the current screen's device-pixel-ratio so
+    // the procedural art stays crisp at 4K / HiDPI. The painter still works in
+    // logical coordinates because the pixmap carries its own dpr.
+    const qreal dpr = devicePixelRatioF() > 0 ? devicePixelRatioF() : 1.0;
+    _bgDpr = dpr;
     QSize sz(CARD_W, CARD_H);
-    _bgPixmap = QPixmap(sz);
+    _bgPixmap = QPixmap(sz * dpr);
+    _bgPixmap.setDevicePixelRatio(dpr);
     _bgPixmap.fill(Qt::transparent);
+    const QRect logRect(0, 0, sz.width(), sz.height());
 
     QPainter p(&_bgPixmap);
     p.setRenderHint(QPainter::Antialiasing);
 
-    // Deterministic per project
-    std::mt19937 rng(static_cast<uint32_t>(qHash(_projectId)));
+    // Deterministic per project: an explicit user-rolled seed wins, otherwise a
+    // stable hash of the id (so the look survives restarts and re-renders).
+    const quint32 seed = _artSeed ? _artSeed : stableSeed(_projectId);
+    std::mt19937 rng(seed);
     auto frand = [&](qreal a, qreal b) {
         return a + (b - a) * (rng() / qreal(std::mt19937::max()));
     };
+
+    const SkyVariant& var = kSkyVariants[variantForSeed(seed)];
 
     auto starColor = [](qreal t) -> QColor {
         const QColor red  (255, 165, 145);   
@@ -356,22 +461,25 @@ void ProjectCard::buildStarrySkyBackground()
                     lerp(white.blue(),  target.blue(),  m));
     };
 
-    // Deep-space gradient
-    int hue = int(frand(200, 260));      // blueish-purple base
+    // Deep-space gradient. The value falloff (60 → 10) keeps it dark and space-y
+    // regardless of variant; only the hue/saturation carry the accent.
+    const int hue    = var.baseHue < 0 ? int(frand(200, 260)) : var.baseHue;
+    const int sat    = var.baseSat;
     QLinearGradient grad(0, 0, 0, sz.height());
-    grad.setColorAt(0.0, QColor::fromHsv(hue,  140, 60));
-    grad.setColorAt(0.6, QColor::fromHsv(hue,  160, 28));
-    grad.setColorAt(1.0, QColor::fromHsv(hue,  180, 10));
-    p.fillRect(_bgPixmap.rect(), grad);
+    grad.setColorAt(0.0, QColor::fromHsv(hue, std::min(255, sat),      60));
+    grad.setColorAt(0.6, QColor::fromHsv(hue, std::min(255, sat + 20), 28));
+    grad.setColorAt(1.0, QColor::fromHsv(hue, std::min(255, sat + 40), 10));
+    p.fillRect(logRect, grad);
 
-    // a couple of soft "nebula" blobs
+    // a couple of soft "nebula" blobs in the variant's accent colour
     int nNebula = 2 + int(frand(0, 3));
     for (int i = 0; i < nNebula; ++i) {
         QPointF c(frand(0, sz.width()), frand(0, sz.height()));
         qreal r = frand(60, 130);
         QRadialGradient ng(c, r);
-        QColor nc = QColor::fromHsv(int(frand(180, 320)), 140, 180);
-        nc.setAlpha(40);
+        QColor nc = QColor::fromHsv(int(frand(var.nebHueLo, var.nebHueHi)),
+                                    var.nebSat, var.nebVal);
+        nc.setAlpha(var.nebAlpha);
         ng.setColorAt(0, nc);
         nc.setAlpha(0);
         ng.setColorAt(1, nc);
@@ -435,8 +543,10 @@ void ProjectCard::buildStarrySkyBackground()
             _constellationLines.append({idx[i], idx[i+1]});
     }
 
-    // Draw constellation lines
-    QPen linePen(QColor(200, 215, 255, 70));
+    // Draw constellation lines (faintly tinted toward the variant accent)
+    QColor lineCol = var.lineTint;
+    lineCol.setAlpha(70);
+    QPen linePen(lineCol);
     linePen.setWidthF(0.8);
     p.setPen(linePen);
     for (const auto& l : _constellationLines)
@@ -484,6 +594,11 @@ void ProjectCard::paintEvent(QPaintEvent*)
     p.setRenderHint(QPainter::SmoothPixmapTransform);
     p.setRenderHint(QPainter::TextAntialiasing);
 
+    // Re-render the background if the card has migrated to a screen with a
+    // different device-pixel-ratio, so it stays crisp after moving monitors.
+    if (!qFuzzyCompare(_bgDpr, devicePixelRatioF()))
+        rebuildBackground();
+
     // The painted card occupies CARD_W x CARD_H within the widget; lift shifts it up.
     const qreal restY = WIDGET_PAD_B;
     const qreal yTop  = restY - _lift;
@@ -512,12 +627,18 @@ void ProjectCard::paintEvent(QPaintEvent*)
                        cardRect.width()  - margin * 2,
                        cardRect.height() - textArea - margin * 2);
 
-        QPixmap scaled = _imagePixmap.scaled(imgArea.size().toSize(),
+        // Scale to physical pixels and tag the result with the dpr so the
+        // preview stays sharp on 4K/HiDPI while still laid out in logical units.
+        const qreal dpr = devicePixelRatioF() > 0 ? devicePixelRatioF() : 1.0;
+        QPixmap scaled = _imagePixmap.scaled(imgArea.size().toSize() * dpr,
                                              Qt::KeepAspectRatio,
                                              Qt::SmoothTransformation);
-        QRectF dst(imgArea.left() + (imgArea.width()  - scaled.width())  / 2.0,
-                   imgArea.top()  + (imgArea.height() - scaled.height()) / 2.0,
-                   scaled.width(), scaled.height());
+        scaled.setDevicePixelRatio(dpr);
+        const qreal sw = scaled.width()  / dpr;
+        const qreal sh = scaled.height() / dpr;
+        QRectF dst(imgArea.left() + (imgArea.width()  - sw) / 2.0,
+                   imgArea.top()  + (imgArea.height() - sh) / 2.0,
+                   sw, sh);
 
         QPainterPath imgClip;
         imgClip.addRoundedRect(dst, 8, 8);

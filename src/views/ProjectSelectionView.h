@@ -40,6 +40,7 @@ private slots:
     void onNewProjectClicked();
     void onProjectEdit(const QString& projectId);
     void onProjectDelete(const QString& projectId);
+    void onProjectRegenerate(const QString& projectId, quint32 newSeed);
 
 private:
     void setupUi();
@@ -63,7 +64,12 @@ public:
     ~ProjectCard() override;
     explicit ProjectCard(const QString& id, const QString& name,
                          const QString& description, int starCount,
-                         const QString& imagePath, QWidget *parent = nullptr);
+                         const QString& imagePath, quint32 artSeed = 0,
+                         QWidget *parent = nullptr);
+
+    // Roll a fresh seed → new colour variant + constellations, repaint, and
+    // notify so the new look can be persisted.
+    void regenerateArt();
 
     QString getProjectId() const { return _projectId; }
     QString getName()      const { return _name; }
@@ -75,6 +81,7 @@ signals:
     void clicked(const QString& projectId);
     void deleteRequested(const QString& projectId);
     void editRequested(const QString& projectId);
+    void artSeedChanged(const QString& projectId, quint32 newSeed);
 
 protected:
     void paintEvent(QPaintEvent* event) override;
@@ -98,9 +105,11 @@ private:
     QString  _description;
     QString  _imagePath;
     int      _starCount;
+    quint32  _artSeed = 0;     // 0 → derived from id; non-zero → user-rolled
     QMenu*   _contextMenu  = nullptr;
 
     QPixmap  _bgPixmap;        // full-card background (frosted or starry)
+    qreal    _bgDpr    = 0.0;  // device-pixel-ratio the bg pixmap was rendered at
     QPixmap  _imagePixmap;     // sharp project image (if any)
     bool     _hasImage = false;
 

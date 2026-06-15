@@ -117,7 +117,8 @@ bool DatabaseManager::createTables()
             image_path TEXT,
             created_date TEXT,
             modified_date TEXT,
-            visible_columns TEXT
+            visible_columns TEXT,
+            art_seed INTEGER DEFAULT 0
         )
     )";
 
@@ -602,6 +603,9 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE stars ADD COLUMN comp_e_mass_min REAL",
         "ALTER TABLE stars ADD COLUMN comp_mass_true REAL",
         "ALTER TABLE stars ADD COLUMN comp_e_mass_true REAL",
+
+        // Procedural card-art seed (0 → derived from project id)
+        "ALTER TABLE projects ADD COLUMN art_seed INTEGER DEFAULT 0",
     };
 
     for (const QString& sql : alterQueries) {

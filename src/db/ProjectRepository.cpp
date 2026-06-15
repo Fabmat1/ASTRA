@@ -22,6 +22,7 @@ std::vector<std::shared_ptr<Project>> ProjectRepository::loadProjects()
             query.value("image_path").toString()
         );
         project->setId(query.value("id").toString(), false);
+        project->setArtSeed(query.value("art_seed").toUInt(), false);
         project->setCreatedDate(QDateTime::fromString(
             query.value("created_date").toString(), Qt::ISODate), false);
         project->setModifiedDate(QDateTime::fromString(
@@ -51,8 +52,8 @@ bool ProjectRepository::saveProject(std::shared_ptr<Project> project)
 
     QSqlQuery query(_db.threadConnection());
     query.prepare(R"(
-        INSERT INTO projects (id, name, description, image_path, created_date, modified_date, visible_columns)
-        VALUES (:id, :name, :description, :image_path, :created, :modified, :columns)
+        INSERT INTO projects (id, name, description, image_path, created_date, modified_date, visible_columns, art_seed)
+        VALUES (:id, :name, :description, :image_path, :created, :modified, :columns, :art_seed)
     )");
 
     query.bindValue(":id", project->getId());
@@ -61,6 +62,7 @@ bool ProjectRepository::saveProject(std::shared_ptr<Project> project)
     query.bindValue(":image_path", project->getImagePath());
     query.bindValue(":created", project->getCreatedDate().toString(Qt::ISODate));
     query.bindValue(":modified", project->getModifiedDate().toString(Qt::ISODate));
+    query.bindValue(":art_seed", project->getArtSeed());
 
     // Convert visible columns to comma-separated string
     QStringList columns;
@@ -84,7 +86,7 @@ bool ProjectRepository::updateProject(std::shared_ptr<Project> project)
     QSqlQuery query(_db.threadConnection());
     query.prepare(R"(
         UPDATE projects
-        SET name = :name, description = :description, image_path = :image_path, modified_date = :modified, visible_columns = :columns
+        SET name = :name, description = :description, image_path = :image_path, modified_date = :modified, visible_columns = :columns, art_seed = :art_seed
         WHERE id = :id
     )");
 
@@ -93,6 +95,7 @@ bool ProjectRepository::updateProject(std::shared_ptr<Project> project)
     query.bindValue(":description", project->getDescription());
     query.bindValue(":image_path", project->getImagePath());
     query.bindValue(":modified", project->getModifiedDate().toString(Qt::ISODate));
+    query.bindValue(":art_seed", project->getArtSeed());
 
     QStringList columns;
     for (const auto& col : project->getVisibleColumns()) {

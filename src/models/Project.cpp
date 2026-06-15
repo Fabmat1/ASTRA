@@ -37,6 +37,13 @@ void Project::setName(const QString& name, bool updateModifiedDate)
     _modifiedDate = QDateTime::currentDateTime();
 }
 
+void Project::setArtSeed(quint32 seed, bool updateModifiedDate)
+{
+    _artSeed = seed;
+    if (updateModifiedDate)
+        _modifiedDate = QDateTime::currentDateTime();
+}
+
 void Project::setDescription(const QString& description, bool updateModifiedDate)
 {
     _description = description;
