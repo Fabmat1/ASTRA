@@ -114,7 +114,8 @@ private slots:
     QWidget* buildFetchTab();
     QWidget* buildPreviewsTab();
     QWidget* buildFitTab();
-    QWidget* buildPeriodogramControls(); 
+    void     ensureFitTabBuilt();   // lazy: heavy Fit panel built on first activation
+    QWidget* buildPeriodogramControls();
 
     void refreshViewerSourceCombo();
 
@@ -221,6 +222,11 @@ private slots:
     int          _previewIndex      = 0;
 
     void stepPreview(int delta);
+
+    // Fit tab (built lazily on first activation - see ensureFitTabBuilt)
+    int          _fitTabIdx         = -1;
+    bool         _fitTabBuilt       = false;
+    QWidget*     _fitTabPage        = nullptr;
 
     // Fit tab widgets
     LCPanel*     _fitLcPanel        = nullptr;

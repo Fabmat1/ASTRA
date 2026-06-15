@@ -10,6 +10,7 @@
 #include "utils/FilterWavelength.h"
 #include "utils/LcqueryEnvironment.h"
 #include "utils/Logger.h"
+#include "utils/PerfTimer.h"
 #include "views/tools/LcquerySetupDialog.h"
 #include "views/panels/DetailPanel.h"
 #include "views/panels/LCPanel.h"
@@ -182,16 +183,28 @@ void LightcurveFetchDialog::setupUi()
     auto* layout = new QVBoxLayout(this);
     layout->setContentsMargins(6, 6, 6, 6);
 
+    PERF_SCOPE("Perf.LCDialog", "setupUi (total dialog open)");
+
     _tabs = new QTabWidget;
-    _tabs->addTab(buildViewerTab(),                          "Viewer");
-    _periodogramTabIdx = _tabs->addTab(buildPeriodogramTab(), "Periodogram");
-    _previewsTabIdx    = _tabs->addTab(buildPreviewsTab(),    "Previews");
-    _tabs->addTab(buildFetchTab(),                           "Fetch");
-    _tabs->addTab(buildFitTab(),                             "Fit");
+    { PerfTimer t("Perf.LCDialog", "buildViewerTab");      _tabs->addTab(buildViewerTab(), "Viewer"); }
+    { PerfTimer t("Perf.LCDialog", "buildPeriodogramTab"); _periodogramTabIdx = _tabs->addTab(buildPeriodogramTab(), "Periodogram"); }
+    { PerfTimer t("Perf.LCDialog", "buildPreviewsTab");    _previewsTabIdx    = _tabs->addTab(buildPreviewsTab(), "Previews"); }
+    { PerfTimer t("Perf.LCDialog", "buildFetchTab");       _tabs->addTab(buildFetchTab(), "Fetch"); }
+
+    // The Fit tab builds a second full LCPanel over the same (potentially
+    // million-point) lightcurves; defer it until the user first opens it so the
+    // dialog becomes interactive immediately. A lightweight placeholder holds
+    // its slot in the tab bar until then.
+    _fitTabPage = new QWidget;
+    auto* fitPlaceholderLay = new QVBoxLayout(_fitTabPage);
+    fitPlaceholderLay->setContentsMargins(0, 0, 0, 0);
+    _fitTabIdx = _tabs->addTab(_fitTabPage, "Fit");
+
     layout->addWidget(_tabs, 1);
 
     connect(_tabs, &QTabWidget::currentChanged, this, [this](int idx){
-        if (idx == _periodogramTabIdx) onPeriodogramTabActivated();
+        if (idx == _fitTabIdx)           ensureFitTabBuilt();
+        if (idx == _periodogramTabIdx)   onPeriodogramTabActivated();
         else if (idx == _previewsTabIdx) refreshPreviewsTab();
     });
 
@@ -437,6 +450,15 @@ void LightcurveFetchDialog::attachToExistingSession()
         _fetchStatus->setStyleSheet(info.ok ? "color: #7dbd5e;" : "color: gray;");
         _fetchStatus->setText(info.summary);
     }
+}
+
+void LightcurveFetchDialog::ensureFitTabBuilt()
+{
+    if (_fitTabBuilt) return;
+    _fitTabBuilt = true;
+    PERF_SCOPE("Perf.LCDialog", "buildFitTab (lazy, first activation)");
+    QWidget* content = buildFitTab();
+    _fitTabPage->layout()->addWidget(content);
 }
 
 QWidget *LightcurveFetchDialog::buildFitTab() {
@@ -945,12 +967,18 @@ void LightcurveFetchDialog::onPeriodogramTabActivated()
 
 void LightcurveFetchDialog::pushSeriesIntoPanel()
 {
-    const auto src = _lcPanel->seriesData(false);   // exclude flagged
+    PERF_SCOPE("Perf.Periodogram", "pushSeriesIntoPanel (tab switch)");
     QList<PeriodogramPanel::Series> conv;
-    conv.reserve(src.size());
-    for (const auto& s : src)
-        conv.append({s.source, s.filter, s.t, s.y, s.e});
-    _periodogramPanel->setSeries(conv);
+    {
+        PerfTimer t("Perf.Periodogram", "LCPanel::seriesData copy");
+        const auto src = _lcPanel->seriesData(false);   // exclude flagged
+        conv.reserve(src.size());
+        int pts = 0;
+        for (const auto& s : src) { conv.append({s.source, s.filter, s.t, s.y, s.e}); pts += s.t.size(); }
+        t.report(QString("%1 series, %2 pts").arg(src.size()).arg(pts));
+    }
+    { PerfTimer t("Perf.Periodogram", "PeriodogramPanel::setSeries (sync part)");
+      _periodogramPanel->setSeries(conv); }
 }
 
 void LightcurveFetchDialog::refreshPeakSourceCombo()

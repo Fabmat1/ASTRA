@@ -16,6 +16,7 @@ public:
         LightcurveData        = 6,
         PeriodogramData       = 7,
         LCFitData             = 8,
+        SEDPhotometryPointsData = 9,
     };
 
     // Write payload compressed to filepath (creates parent dirs automatically).
@@ -38,6 +39,8 @@ public:
                                    const QString& spectrumId, const QString& fitId);
     static QString photometricPointsPath(const QString& base, const QString& starId,
                                          const QString& photometryId);
+    static QString sedPhotometryPointsPath(const QString& base, const QString& starId,
+                                           const QString& photometryId);
     static QString lightcurvePath(const QString& base, const QString& starId,
                                   const QString& photometryId, const QString& source);
     static QString sedModelPath  (const QString& base, const QString& starId,

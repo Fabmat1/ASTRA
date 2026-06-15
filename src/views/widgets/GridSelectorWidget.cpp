@@ -202,11 +202,13 @@ void GridSelectorWidget::buildUi()
     outer->addWidget(_groupBox);
 
     connect(_catCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int){ populateGridCombo(); emit selectionChanged(); });
+            this, [this](int){ _hasExplicitSelection = true;
+                               populateGridCombo(); emit selectionChanged(); });
     connect(_gridCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int){ emit selectionChanged(); });
+            this, [this](int){ _hasExplicitSelection = true;
+                               emit selectionChanged(); });
     connect(_overrideEdit, &QLineEdit::editingFinished,
-            this, [this]{ emit selectionChanged(); });
+            this, [this]{ _hasExplicitSelection = true; emit selectionChanged(); });
     connect(_refreshBtn, &QPushButton::clicked, this, [this] {
         clearGridScanCache();
         refresh();
@@ -314,6 +316,32 @@ void GridSelectorWidget::finishPopulate() {
     if (_scanPending) {
         _scanPending = false;
         applySelection(_pendingCat, _pendingSel);
+    } else if (!_hasExplicitSelection) {
+        applyDefaultSelection();
+    }
+}
+
+void GridSelectorWidget::applyDefaultSelection()
+{
+    // Prefer the sdB / "sdB standard" grid when it was discovered. This is the
+    // most common starting point; the user can still change it freely.
+    for (const auto& dg : _discovered) {
+        if (dg.category == "sdB" && dg.displayName == "sdB standard") {
+            _catCombo->blockSignals(true);
+            int ci = _catCombo->findData(dg.category);
+            if (ci >= 0) _catCombo->setCurrentIndex(ci);
+            _catCombo->blockSignals(false);
+
+            populateGridCombo();
+
+            _gridCombo->blockSignals(true);
+            int gi = _gridCombo->findData(dg.relativePath);
+            if (gi >= 0) _gridCombo->setCurrentIndex(gi);
+            _gridCombo->blockSignals(false);
+
+            emit selectionChanged();
+            return;
+        }
     }
 }
 
@@ -543,9 +571,10 @@ void GridSelectorWidget::setSelection(const QString &category,
 }
 
 void GridSelectorWidget::applySelection(const QString &category,
-                                        const QString &relativePathOrOverride) 
+                                        const QString &relativePathOrOverride)
 {
     if (relativePathOrOverride.isEmpty()) return;
+    _hasExplicitSelection = true;
 
     for (const auto& dg : _discovered) {
         if (dg.relativePath == relativePathOrOverride ||

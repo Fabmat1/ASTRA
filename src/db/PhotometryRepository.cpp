@@ -44,6 +44,20 @@ bool PhotometryRepository::savePhotometry(const QString& starId,
         return false;
     }
 
+    // Canonical SED photometry points (single source of truth).
+    if (photometry->hasSedPhotometryPoints()) {
+        QString sedPointsFile = DataStore::sedPhotometryPointsPath(
+            dataDir, starId, photometry->getId());
+        if (photometry->saveSedPhotometryPointsToFile(sedPointsFile)) {
+            photometry->setSedPhotometryPointsFile(sedPointsFile);
+            QSqlQuery sq(_db.threadConnection());
+            sq.prepare("UPDATE photometry SET sed_points_file = :f WHERE id = :id");
+            sq.bindValue(":f",  sedPointsFile);
+            sq.bindValue(":id", photometry->getId());
+            sq.exec();
+        }
+    }
+
     // Save individual photometric points metadata to database
     for (const auto& point : photometry->getPhotometricPoints()) {
         QSqlQuery pointQuery(_db.threadConnection());
@@ -225,6 +239,60 @@ bool PhotometryRepository::saveSEDModelForStar(const QString& starId,
 
     // ── Save the SED model into that photometry ──────────────
     return saveSEDModel(starId, photometryId, model);
+}
+
+bool PhotometryRepository::saveSedPhotometryPointsForStar(
+    const QString& starId, std::shared_ptr<Photometry> photometry)
+{
+    if (!photometry) return false;
+
+    QSqlDatabase db = _db.threadConnection();
+
+    // ── Ensure a photometry record exists for this star ──────
+    QString photometryId;
+    {
+        QSqlQuery q(db);
+        q.prepare("SELECT id FROM photometry WHERE star_id = :star_id");
+        q.bindValue(":star_id", starId);
+        if (q.exec() && q.next())
+            photometryId = q.value(0).toString();
+    }
+    if (photometryId.isEmpty()) {
+        photometryId = photometry->getId().isEmpty() ? _db.generateUUID()
+                                                     : photometry->getId();
+        QSqlQuery ins(db);
+        ins.prepare(R"(
+            INSERT OR IGNORE INTO photometry (id, star_id, photometric_points_file)
+            VALUES (:id, :star_id, '')
+        )");
+        ins.bindValue(":id",      photometryId);
+        ins.bindValue(":star_id", starId);
+        if (!ins.exec()) {
+            qDebug() << "Failed to create photometry record:" << ins.lastError();
+            return false;
+        }
+    }
+    if (photometry->getId().isEmpty())
+        photometry->setId(photometryId);
+
+    // ── Write the compressed data file ───────────────────────
+    QString dataDir = QFileInfo(_db.databasePath()).absolutePath() + "/data";
+    QString pointsFile = DataStore::sedPhotometryPointsPath(dataDir, starId, photometryId);
+    if (!photometry->saveSedPhotometryPointsToFile(pointsFile)) {
+        qDebug() << "Failed to write SED photometry points file:" << pointsFile;
+        return false;
+    }
+    photometry->setSedPhotometryPointsFile(pointsFile);
+
+    QSqlQuery upd(db);
+    upd.prepare("UPDATE photometry SET sed_points_file = :f WHERE id = :id");
+    upd.bindValue(":f",  pointsFile);
+    upd.bindValue(":id", photometryId);
+    if (!upd.exec()) {
+        qDebug() << "Failed to update sed_points_file:" << upd.lastError();
+        return false;
+    }
+    return true;
 }
 
 bool PhotometryRepository::deleteSEDModel(const QString& modelId)
@@ -698,6 +766,14 @@ std::shared_ptr<Photometry> PhotometryRepository::loadPhotometry(const QString& 
     QString pointsFile = query.value("photometric_points_file").toString();
     if (!pointsFile.isEmpty()) {
         photometry->setPhotometricPointsFile(pointsFile);
+    }
+
+    // Canonical SED photometry points (single source of truth; loaded eagerly
+    // since the set is small and every SED fit shares it).
+    QString sedPointsFile = query.value("sed_points_file").toString();
+    if (!sedPointsFile.isEmpty()) {
+        photometry->setSedPhotometryPointsFile(sedPointsFile);
+        photometry->loadSedPhotometryPointsFromFile(sedPointsFile);
     }
 
     // Load lightcurve metadata

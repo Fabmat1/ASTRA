@@ -218,6 +218,7 @@ bool DatabaseManager::createTables()
             id TEXT PRIMARY KEY,
             star_id TEXT UNIQUE NOT NULL,
             photometric_points_file TEXT,
+            sed_points_file TEXT,
             FOREIGN KEY(star_id) REFERENCES stars(id) ON DELETE CASCADE
         )
     )";
@@ -531,6 +532,9 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE sed_models ADD COLUMN chi2_reduced REAL DEFAULT 0",
         "ALTER TABLE sed_models ADD COLUMN excess_noise REAL DEFAULT 0",
         "ALTER TABLE sed_models ADD COLUMN component_params TEXT",
+
+        // Canonical SED photometry points (single source of truth per star)
+        "ALTER TABLE photometry ADD COLUMN sed_points_file TEXT",
 
         // Star summary field migrations
         "ALTER TABLE stars ADD COLUMN n_spectra INTEGER DEFAULT 0",
@@ -1135,6 +1139,16 @@ bool DatabaseManager::updateSpectrumFlag(const QString& spectrumId, bool flagged
     return _spectra->updateSpectrumFlag(spectrumId, flagged);
 }
 
+bool DatabaseManager::updateSpectrumInstrument(const QString& spectrumId,
+                                               const QString& instrument,
+                                               const QString& instrumentId,
+                                               const QString& modeKey)
+{
+    if (!_spectra) return false;
+    return _spectra->updateSpectrumInstrument(spectrumId, instrument,
+                                              instrumentId, modeKey);
+}
+
 bool DatabaseManager::updateSpectralFitFlag(const QString& fitId, bool flagged)
 {
     if (!_spectra) return false;
@@ -1205,6 +1219,12 @@ QString DatabaseManager::findMatchingStarId(const QString& projectId, const QStr
 bool DatabaseManager::saveSEDModelForStar(const QString& starId, std::shared_ptr<SEDModel> model)
 {
     return _photometry->saveSEDModelForStar(starId, model);
+}
+
+bool DatabaseManager::saveSedPhotometryPointsForStar(
+    const QString& starId, std::shared_ptr<Photometry> photometry)
+{
+    return _photometry->saveSedPhotometryPointsForStar(starId, photometry);
 }
 
 bool DatabaseManager::deleteSEDModel(const QString& modelId)

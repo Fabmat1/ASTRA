@@ -146,7 +146,9 @@ void SpectraPanel::setupUi()
     // Debounce timer for axis synchronization
     _axisSyncTimer = new QTimer(this);
     _axisSyncTimer->setSingleShot(true);
-    _axisSyncTimer->setInterval(30);
+    // Near-immediate: just coalesce range changes fired within the same event
+    // loop iteration so the residual axis tracks the main axis without lag.
+    _axisSyncTimer->setInterval(0);
     connect(_axisSyncTimer, &QTimer::timeout, this, [this]() {
         _axisSyncInProgress = true;
         if (_syncFromMain) {
@@ -675,7 +677,15 @@ void SpectraPanel::updateSpectrumDisplay()
 
     bool showResiduals = !residualWl.empty();
 
-    _mainPlot->xAxis->setRange(xLo, xHi);
+    // Apply the target view range BEFORE replotting. When the user has a custom
+    // zoom active we restore it directly here, so the full-range view is never
+    // painted for a frame (which caused a visible "flash" while scrolling fast).
+    if (restoreZoom) {
+        _mainPlot->xAxis->setRange(savedXRange);
+        _mainPlot->yAxis->setRange(savedMainYRange);
+    } else {
+        _mainPlot->xAxis->setRange(xLo, xHi);
+    }
     if (showResiduals) {
         _mainPlot->xAxis->setTickLabels(false);
         _mainPlot->xAxis->setLabel("");
@@ -704,9 +714,11 @@ void SpectraPanel::updateSpectrumDisplay()
         zeroLine->setPen(QPen(QColor(120, 120, 120), 1.0, Qt::DashLine));
         zeroLine->setData(QVector<double>{xLo, xHi}, QVector<double>{0.0, 0.0});
 
-        // X axis
+        // X axis - match the (possibly zoomed) main plot range so the residual
+        // plot doesn't briefly show the full range either.
         _residualPlot->xAxis->setLabel("Wavelength [Å]");
-        _residualPlot->xAxis->setRange(xLo, xHi);
+        _residualPlot->xAxis->setRange(restoreZoom ? savedXRange
+                                                   : QCPRange(xLo, xHi));
 
         QSharedPointer<QCPAxisTicker> xResTicker(new QCPAxisTicker);
         xResTicker->setTickCount(6);
@@ -753,16 +765,7 @@ void SpectraPanel::updateSpectrumDisplay()
         _residualPlot->setVisible(false);
     }
 
-    // Restore zoom if user had custom zoom active
-    if (restoreZoom) {
-        _mainPlot->xAxis->setRange(savedXRange);
-        _mainPlot->yAxis->setRange(savedMainYRange);
-        _mainPlot->replot();
-        if (_residualPlot->isVisible()) {
-            _residualPlot->xAxis->setRange(savedXRange);
-            _residualPlot->replot();
-        }
-    }
+    // (Zoom was already applied above, before the replots, to avoid a flash.)
 
     if (_resetZoomButton)
         _resetZoomButton->setVisible(_hasCustomZoom);

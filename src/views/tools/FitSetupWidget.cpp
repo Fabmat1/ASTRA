@@ -293,7 +293,9 @@ QGroupBox* FitSetupWidget::buildSpectraListSection()
     _spectraList->setSelectionMode(QAbstractItemView::SingleSelection);
     _spectraList->setMinimumHeight(250);
 
-    new CheckStateDragger(_spectraList, /*checkColumn=*/0);
+    // Indicator-only so clicking a row's text still selects it (and plots the
+    // spectrum) while the checkbox can be clicked/dragged to (un)check.
+    new CheckStateDragger(_spectraList, /*checkColumn=*/0, /*indicatorOnly=*/true);
 
     connect(_spectraList, &QListWidget::currentRowChanged,
             this, &FitSetupWidget::onSpectrumListRowChanged);

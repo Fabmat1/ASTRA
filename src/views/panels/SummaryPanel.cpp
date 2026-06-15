@@ -14,6 +14,11 @@
 #include <QApplication>
 #include <QClipboard>
 #include <QCursor>
+#include <QFile>
+#include <QIcon>
+#include <QPainter>
+#include <QPixmap>
+#include <QSvgRenderer>
 #include <QDesktopServices>
 #include <QFrame>
 #include <QGridLayout>
@@ -48,6 +53,27 @@ struct PropRow {
 // All card/panel chrome is derived from the active theme (published by
 // ThemeManager) so panels read as a single, uniformly elevated surface that
 // matches the theme instead of hardcoded near-white/dark grey.
+
+// Render a monochrome CURRENTCOLOR SVG template into a themed icon.
+QIcon themedSvgIcon(const QString& resourcePath, const QColor& color, int px = 16) {
+    QFile f(resourcePath);
+    if (!f.open(QFile::ReadOnly | QFile::Text)) return QIcon();
+    QString svg = QString::fromUtf8(f.readAll());
+    svg.replace("CURRENTCOLOR", color.name(QColor::HexRgb));
+
+    QSvgRenderer renderer(svg.toUtf8());
+    const qreal dpr = qApp->devicePixelRatio();
+    QPixmap pm(QSize(px, px) * dpr);
+    pm.setDevicePixelRatio(dpr);
+    pm.fill(Qt::transparent);
+    QPainter p(&pm);
+    p.setRenderHint(QPainter::Antialiasing, true);
+    // Render into the logical px×px rect (the pixmap carries the dpr) so the
+    // glyph fills and is centred instead of landing in a corner.
+    renderer.render(&p, QRectF(0, 0, px, px));
+    p.end();
+    return QIcon(pm);
+}
 
 // Blend two colours by t (0 -> a, 1 -> b).
 QColor blendColor(const QColor& a, const QColor& b, double t) {
@@ -372,18 +398,18 @@ QWidget* SummaryPanel::createNameHeader()
     nameLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
     nameRow->addWidget(nameLabel);
 
-    QPushButton *editBtn =
-        new QPushButton(QString::fromUtf8("\xE2\x9C\x8E")); // ✎
+    QPushButton *editBtn = new QPushButton;
+    editBtn->setIcon(themedSvgIcon(":/icons/pencil.svg",
+                                   QColor(dark ? "#8aa3c8" : "#5a6b85")));
+    editBtn->setIconSize(QSize(15, 15));
     editBtn->setFlat(true);
     editBtn->setCursor(Qt::PointingHandCursor);
     editBtn->setFixedSize(22, 22);
     editBtn->setToolTip(
         "Re-identify this star (pick a different nearby source)");
     editBtn->setStyleSheet(
-        QString("QPushButton { font-size: 14px; color: %1; border: none; "
-                "background: transparent; }"
-                "QPushButton:hover { color: %2; }")
-            .arg(dark ? "#8aa3c8" : "#5a6b85", dark ? "#cfdaee" : "#1d3160"));
+        "QPushButton { border: none; background: transparent; }"
+        "QPushButton:hover { background: rgba(127,127,127,0.18); border-radius: 4px; }");
     connect(editBtn, &QPushButton::clicked, this, [this]() {
         ReidentifyStarDialog dlg(_ctx.star, _ctx.dbm, _ctx.projectId, this);
         if (dlg.exec() == QDialog::Accepted) {

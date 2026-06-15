@@ -67,6 +67,10 @@ public:
     bool saveSpectralFit(const QString& starId, const QString& spectrumId, std::shared_ptr<SpectralFit> fit);
     std::vector<std::shared_ptr<SpectralFit>> loadSpectralFits(const QString& spectrumId);
     bool updateSpectrumFlag(const QString& spectrumId, bool flagged);
+    bool updateSpectrumInstrument(const QString& spectrumId,
+                                  const QString& instrument,
+                                  const QString& instrumentId,
+                                  const QString& modeKey);
     bool updateSpectralFitFlag(const QString& fitId, bool flagged);
     bool updateBestFit(const QString& spectrumId, const QString& bestFitId);
     bool saveRadialVelocityCurve(std::shared_ptr<RadialVelocityCurve> curve, const QString& starId);
@@ -83,6 +87,8 @@ public:
     bool updateStarRow(const QString& projectId, std::shared_ptr<Star> star);
     QString findMatchingStarId(const QString& projectId, const QString& sourceId, const QString& alias, const QString& tic, const QString& jname, double ra, double dec);
     bool saveSEDModelForStar(const QString& starId, std::shared_ptr<SEDModel> model);
+    bool saveSedPhotometryPointsForStar(const QString& starId,
+                                        std::shared_ptr<Photometry> photometry);
     bool deleteSEDModel(const QString& modelId);
     bool saveLightcurveForStar(const QString& starId, const QString& source, Photometry* photometry);
     bool removeLightcurve(const QString& starId, const QString& source);

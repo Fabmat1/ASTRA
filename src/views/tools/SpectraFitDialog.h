@@ -7,6 +7,7 @@
 class Star;
 class Spectrum;
 class SpectralFit;
+class Instrument;
 class DatabaseManager;
 class SpectraPanel;
 class QTreeWidget;
@@ -40,8 +41,15 @@ private slots:
     void onTreeContextMenu(const QPoint& pos);
     void onAddSpectraClicked();
     void onAddFitClicked();
+    void onRedetectAllClicked();
 
 private:
+    // Instrument/mode (re)detection
+    bool autodetectInstrument(const std::shared_ptr<Spectrum>& spec,
+                              const std::vector<std::shared_ptr<Instrument>>& instruments);
+    void redetectSpectrumById(const QString& spectrumId);
+    void defineInstrumentManually(const QString& spectrumId);
+
     void setupUi();
     void rebuildTree();
     void refreshTreeStyling();
@@ -67,6 +75,7 @@ private:
 
     QPushButton*  _addSpectraBtn = nullptr;
     QPushButton*  _addFitBtn     = nullptr;
+    QPushButton*  _redetectBtn   = nullptr;
     CheckStateDragger* _flagDragger = nullptr;
 
     bool _updatingTree    = false;

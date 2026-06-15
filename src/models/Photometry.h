@@ -377,6 +377,25 @@ public:
     void addPhotometricPoint(const PhotometricPoint& point);
     std::vector<PhotometricPoint> getPhotometricPoints() const;
 
+    // ── Canonical SED photometry points (single source of truth) ────────
+    // Each star carries exactly one set of measured SED photometry points,
+    // shared by every SED fit. Per-fit residuals stay on SEDModel.
+    void    setSedPhotometryPointsFile(const QString& file) { _sedPhotometryPointsFile = file; }
+    QString getSedPhotometryPointsFile() const { return _sedPhotometryPointsFile; }
+    bool    saveSedPhotometryPointsToFile(const QString& filepath);
+    bool    loadSedPhotometryPointsFromFile(const QString& filepath);
+
+    const std::vector<SEDPhotometryPoint>& getSedPhotometryPoints() const { return _sedPhotometryPoints; }
+    std::vector<SEDPhotometryPoint>& mutableSedPhotometryPoints() { return _sedPhotometryPoints; }
+    void setSedPhotometryPoints(const std::vector<SEDPhotometryPoint>& pts) { _sedPhotometryPoints = pts; }
+    bool hasSedPhotometryPoints() const { return !_sedPhotometryPoints.empty(); }
+
+    // Merge incoming measured points into the canonical set: points missing
+    // from the current set are added; matching points (same system+passband)
+    // have their measured values refreshed while keeping the user's
+    // include/exclude flag. Returns true if anything changed.
+    bool mergeSedPhotometryPoints(const std::vector<SEDPhotometryPoint>& incoming);
+
     void addLightcurve(const QString& source, const std::vector<LightcurvePoint>& points);
     std::vector<LightcurvePoint> getLightcurve(const QString& source) const;
     std::vector<QString> getLightcurveSources() const;
@@ -400,8 +419,10 @@ public:
   private:
     QString _id;
     QString _photometricPointsFile;
+    QString _sedPhotometryPointsFile;
     std::map<QString, QString> _lightcurveFiles;
     std::vector<PhotometricPoint> _photometricPoints;
+    std::vector<SEDPhotometryPoint> _sedPhotometryPoints;
     std::map<QString, std::vector<LightcurvePoint>> _lightcurves;
     std::vector<std::shared_ptr<SEDModel>> _sedModels;
     std::map<QString, std::vector<std::shared_ptr<LCFit>>> _lcFits;

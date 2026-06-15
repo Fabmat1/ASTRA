@@ -795,6 +795,96 @@ bool Photometry::loadPhotometricPointsFromFile(const QString& filepath)
     return parse(s);
 }
 
+// ── Canonical SED photometry points ───────────────────────────────────
+
+static void writeSedPoint(QDataStream& s, const SEDPhotometryPoint& p)
+{
+    s << p.lambdaMin << p.lambda << p.lambdaMax
+      << p.fluxMin   << p.flux   << p.fluxMax
+      << p.diff      << p.diffErr
+      << p.passband  << p.system
+      << static_cast<qint32>(p.flag)
+      << p.vizierCatalog
+      << p.magnitude << p.magnitudeErr
+      << p.type      << p.angularDist;
+}
+
+static void readSedPoint(QDataStream& s, SEDPhotometryPoint& p)
+{
+    qint32 flag = 0;
+    s >> p.lambdaMin >> p.lambda >> p.lambdaMax
+      >> p.fluxMin   >> p.flux   >> p.fluxMax
+      >> p.diff      >> p.diffErr
+      >> p.passband  >> p.system
+      >> flag
+      >> p.vizierCatalog
+      >> p.magnitude >> p.magnitudeErr
+      >> p.type      >> p.angularDist;
+    p.flag = flag;
+}
+
+bool Photometry::saveSedPhotometryPointsToFile(const QString& filepath)
+{
+    QByteArray buffer;
+    {
+        QDataStream s(&buffer, QIODevice::WriteOnly);
+        s.setVersion(QDataStream::Qt_6_0);
+        s << static_cast<quint16>(1);
+        s << static_cast<quint32>(_sedPhotometryPoints.size());
+        for (const auto& p : _sedPhotometryPoints) writeSedPoint(s, p);
+    }
+    return DataStore::writeCompressed(filepath, DataStore::SEDPhotometryPointsData, buffer);
+}
+
+bool Photometry::loadSedPhotometryPointsFromFile(const QString& filepath)
+{
+    QByteArray buf;
+    if (!DataStore::readCompressed(filepath, DataStore::SEDPhotometryPointsData, buf))
+        return false;
+
+    QDataStream s(&buf, QIODevice::ReadOnly);
+    s.setVersion(QDataStream::Qt_6_0);
+
+    quint16 version = 0;
+    s >> version;
+    if (version != 1) return false;
+
+    quint32 n = 0;
+    s >> n;
+    _sedPhotometryPoints.clear();
+    _sedPhotometryPoints.resize(n);
+    for (quint32 i = 0; i < n; ++i) readSedPoint(s, _sedPhotometryPoints[i]);
+
+    return s.status() == QDataStream::Ok;
+}
+
+bool Photometry::mergeSedPhotometryPoints(const std::vector<SEDPhotometryPoint>& incoming)
+{
+    auto key = [](const SEDPhotometryPoint& p) {
+        return (p.system.trimmed() + '|' + p.passband.trimmed()).toLower();
+    };
+
+    bool changed = false;
+    for (const auto& in : incoming) {
+        const QString k = key(in);
+        auto it = std::find_if(_sedPhotometryPoints.begin(),
+                               _sedPhotometryPoints.end(),
+                               [&](const SEDPhotometryPoint& e) { return key(e) == k; });
+        if (it == _sedPhotometryPoints.end()) {
+            _sedPhotometryPoints.push_back(in);   // missing -> add
+            changed = true;
+        } else {
+            // Existing -> refresh measured values, keep the user's flag.
+            const int keepFlag = it->flag;
+            SEDPhotometryPoint merged = in;
+            merged.flag = keepFlag;
+            *it = merged;
+            changed = true;
+        }
+    }
+    return changed;
+}
+
 bool Photometry::saveLightcurveToFile(const QString& source, const QString& filepath)
 {
     auto it = _lightcurves.find(source);

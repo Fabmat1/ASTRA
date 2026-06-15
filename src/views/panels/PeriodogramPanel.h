@@ -16,6 +16,7 @@ class QScrollArea;
 class QCustomPlot;
 class QProgressBar;
 class DatabaseManager;
+class ShimmerWidget;
 
 class PeriodogramPanel : public QWidget
 {
@@ -48,6 +49,16 @@ public:
     };
 
     enum class XAxis { Frequency, Period };
+
+    // Precomputed, axis-mode-specific display polyline for one Result, built off
+    // the UI thread so replotAll() only hands already-sorted arrays (and a known
+    // data range) to QCustomPlot on the main thread - no per-point work, no sort,
+    // no rescaleAxes scan over millions of points.
+    struct DisplayCurve {
+        QVector<double> x, y;
+        double xMin = 0, xMax = 0, yMin = 0, yMax = 0;
+        bool   hasRange = false;
+    };
 
     explicit PeriodogramPanel(DatabaseManager* dbm,
                               const QString&   starId,
@@ -136,21 +147,52 @@ private slots:
     void onXAxisChanged(int idx);
     void onSeriesComputed(int finishedIndex);
 
+protected:
+    void resizeEvent(QResizeEvent* e) override;
+
 private:
     void setupUi();
     void rebuildPlots();
     void replotAll();
+    void setShimmerVisible(bool on);
+    // Decide which overlay (skeleton shimmer / "nothing computed" message /
+    // none) should cover the plot stack given the current state.
+    void updateOverlayState();
+    static DisplayCurve buildDisplayCurve(const Periodogram::Result& res, XAxis mode);
+    static QString sourceDisplayKey(const QString& src) { return "@src::" + src; }
+    static QString combinedDisplayKey() { return QStringLiteral("@combined"); }
+
+    // Pure (thread-safe) aggregate builders, mirroring the old rebuildAggregates
+    // but operating on snapshots so they can run on a worker thread.
+    static QHash<QString, Periodogram::Result> computePerSourceMap(
+        const QList<Series>& series,
+        const QHash<QString, Periodogram::Result>& perSeries,
+        int minPts, const QHash<QString, bool>& userEnabled);
+    static Periodogram::Result computeCombinedResult(
+        const QStringList& sourceOrder,
+        const QHash<QString, Periodogram::Result>& perSource);
+    static QHash<QString, DisplayCurve> buildDisplayMap(
+        const QHash<QString, Periodogram::Result>& perSeries,
+        const QHash<QString, Periodogram::Result>& perSource,
+        const Periodogram::Result& combined, XAxis mode);
+
     void plotInto(QCustomPlot* plot, const Periodogram::Result& res,
+                  const QString& displayKey, const QString& graphName,
                   const QColor& color, bool emphasize = false);
     void wirePlotInteractions(QCustomPlot* plot);
-    void drawOverlays(QCustomPlot* plot);  
+    void drawOverlays(QCustomPlot* plot);
     Periodogram::Grid currentGrid() const;
     static QString makeKey(const QString& src, const QString& filt);
     void syncXRangeFrom(QCustomPlot* origin);
 
-    void loadFromCache();
+    // Off-UI-thread view pipeline. loadFromCacheAsync() reads the DB cache,
+    // builds aggregates and all display polylines on a worker, then replots on
+    // the main thread. rebuildAndReplotAsync() does the same minus the DB read
+    // (used after a fresh compute or an axis-mode toggle).
+    void loadFromCacheAsync();
+    void rebuildAndReplotAsync(bool persistAfter);
     void persistToCache();
-    void rebuildAggregates();
+    void persistToCacheAsync();
 
     static QString prettyDisplayName(const QString& label);
 
@@ -173,6 +215,8 @@ private:
     QScrollArea* _scrollArea    = nullptr;
     QWidget*     _stackedHost   = nullptr;
     QVBoxLayout* _stackedLayout = nullptr;
+    ShimmerWidget* _shimmer     = nullptr;
+    QLabel*      _emptyLabel    = nullptr;
     QList<PeriodPeak> _markedPeaks;
     QList<QCustomPlot*> _plots;
 
@@ -182,6 +226,15 @@ private:
     QHash<QString, Periodogram::Result> _perSeries;  // key = src::filt
     QHash<QString, Periodogram::Result> _perSource;  // key = src
     Periodogram::Result                 _combined;
+
+    // Precomputed display polylines for the current _xAxis mode, keyed by
+    // perSeries key / sourceDisplayKey(src) / combinedDisplayKey().
+    QHash<QString, DisplayCurve> _display;
+
+    // Background view-pipeline state. _viewGen tags each async job so a stale
+    // job's result is discarded if a newer one was kicked off meanwhile.
+    bool    _viewJobRunning = false;
+    quint64 _viewGen        = 0;
 
     XAxis  _xAxis             = XAxis::Period;
     double _highlightedPeriod = 0.0;

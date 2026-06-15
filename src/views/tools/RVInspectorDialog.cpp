@@ -429,6 +429,8 @@ void RVSolutionsWidget::buildUi()
     _addBtn  = new QPushButton("➕  Add Fit");
     _delBtn  = new QPushButton("Delete");
     _bestBtn = new QPushButton("Set as Best");
+    _clearBestBtn = new QPushButton("Clear Best");
+    _clearBestBtn->setToolTip("Un-mark the current best fit without deleting it");
     // Adding a new RV solution is the primary action on this page - make the
     // button stand out from the secondary delete / set-as-best controls.
     _addBtn->setToolTip("Add a new RV solution (fit or manual orbit)");
@@ -439,6 +441,7 @@ void RVSolutionsWidget::buildUi()
     btnRow->addWidget(_addBtn);
     btnRow->addWidget(_delBtn);
     btnRow->addWidget(_bestBtn);
+    btnRow->addWidget(_clearBestBtn);
     v->addLayout(btnRow);
 
     // Collapsible "manually adjust the curve" section. Hidden by default so the
@@ -518,6 +521,7 @@ void RVSolutionsWidget::buildUi()
     connect(_addBtn,    &QPushButton::clicked, this, &RVSolutionsWidget::onAddSolution);
     connect(_delBtn,    &QPushButton::clicked, this, &RVSolutionsWidget::onDeleteSolution);
     connect(_bestBtn,   &QPushButton::clicked, this, &RVSolutionsWidget::onSetAsBest);
+    connect(_clearBestBtn, &QPushButton::clicked, this, &RVSolutionsWidget::onClearBest);
     connect(_applyBtn,  &QPushButton::clicked, this, &RVSolutionsWidget::onApply);
     connect(_revertBtn, &QPushButton::clicked, this, &RVSolutionsWidget::onRevert);
     connect(_eccCheck,  &QCheckBox::toggled,   this, &RVSolutionsWidget::onEccentricToggled);
@@ -598,6 +602,10 @@ void RVSolutionsWidget::onSelectionChanged()
     takeSnapshot(fit);
     _delBtn->setEnabled(fit != nullptr);
     _bestBtn->setEnabled(fit && !fit->isBestFit());
+    if (_clearBestBtn) {
+        auto curve = _star ? _star->getRVCurve() : nullptr;
+        _clearBestBtn->setEnabled(curve && curve->getBestFit() != nullptr);
+    }
     _applyBtn->setEnabled(fit != nullptr);
     _revertBtn->setEnabled(fit != nullptr);
     emit displayedFitChanged(fit);
@@ -869,6 +877,26 @@ void RVSolutionsWidget::onSetAsBest()
     _bestBtn->setEnabled(false);
     emit fitsChanged();
     emit displayedFitChanged(fit);
+}
+
+void RVSolutionsWidget::onClearBest()
+{
+    auto curve = _star ? _star->getRVCurve() : nullptr;
+    if (!curve) return;
+    if (!curve->getBestFit()) return;   // nothing to clear
+
+    // Passing an id that matches no fit un-marks every fit -> no best fit.
+    curve->setBestFit(QString());
+    if (_dbm) {
+        for (auto& f : curve->getRVFits())
+            if (f) _dbm->saveRVFit(f, curve->getId());
+    }
+    rebuildList();
+    if (_star) _star->markSummaryDirty();
+    if (_clearBestBtn) _clearBestBtn->setEnabled(false);
+    _bestBtn->setEnabled(currentFit() != nullptr);
+    emit fitsChanged();
+    emit displayedFitChanged(currentFit());
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

@@ -2,12 +2,15 @@
 
 #include "models/Star.h"
 #include "models/Spectrum.h"
+#include "models/Instrument.h"
+#include "models/InstrumentMode.h"
 #include "db/DatabaseManager.h"
 #include "utils/Logger.h"
+#include "utils/matchSpectraToInstrument.h"
 #include "views/panels/SpectraPanel.h"
 #include "FitSetupWidget.h"
 #include "utils/CheckStateDragger.h"
-#include "utils/SpectrumReader.h"  
+#include "utils/SpectrumReader.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -23,6 +26,8 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QUuid>
+#include <QComboBox>
+#include <QFormLayout>
 #include <algorithm>
 #include <cmath>
 
@@ -170,10 +175,15 @@ void SpectraFitDialog::setupUi()
     auto* btnBar = new QHBoxLayout;
     _addSpectraBtn = new QPushButton(QStringLiteral("Add Spectra…"));
     _addFitBtn     = new QPushButton(QStringLiteral("Add Spectral Fit…"));
+    _redetectBtn   = new QPushButton(QStringLiteral("Re-detect instruments/modes"));
     _addSpectraBtn->setToolTip("Add new spectra to this star");
     _addFitBtn->setToolTip("Add a spectral fit to the selected spectrum");
+    _redetectBtn->setToolTip(
+        "Automatically re-detect the instrument and mode of every spectrum\n"
+        "from its wavelength coverage (using the configured instruments).");
     btnBar->addWidget(_addSpectraBtn);
     btnBar->addWidget(_addFitBtn);
+    btnBar->addWidget(_redetectBtn);
     btnBar->addStretch();
     rl->addLayout(btnBar);
 
@@ -181,6 +191,8 @@ void SpectraFitDialog::setupUi()
             this, &SpectraFitDialog::onAddSpectraClicked);
     connect(_addFitBtn, &QPushButton::clicked,
             this, &SpectraFitDialog::onAddFitClicked);
+    connect(_redetectBtn, &QPushButton::clicked,
+            this, &SpectraFitDialog::onRedetectAllClicked);
 
     _rightTabs->addTab(browseTab, "Browse");
 
@@ -565,6 +577,22 @@ void SpectraFitDialog::onTreeContextMenu(const QPoint& pos)
                     this, &SpectraFitDialog::onAddFitClicked);
 
             menu.addSeparator();
+            QAction* redetectAct =
+                menu.addAction(QStringLiteral("Re-detect instrument/mode"));
+            redetectAct->setToolTip(
+                "Automatically detect the instrument and mode from the "
+                "spectrum's wavelength coverage.");
+            connect(redetectAct, &QAction::triggered, this, [this, specId]{
+                redetectSpectrumById(specId);
+            });
+
+            QAction* defineAct =
+                menu.addAction(QStringLiteral("Set instrument/mode…"));
+            connect(defineAct, &QAction::triggered, this, [this, specId]{
+                defineInstrumentManually(specId);
+            });
+
+            menu.addSeparator();
             QAction* removeAct = menu.addAction(QStringLiteral("Remove Spectrum"));
             connect(removeAct, &QAction::triggered, this, [this, specId]{
                 if (QMessageBox::question(this, "Remove Spectrum",
@@ -784,4 +812,187 @@ void SpectraFitDialog::removeFit(const QString& spectrumId, const QString& fitId
 
     LOG_INFO("Tools",
         QString("Removed fit %1 from spectrum %2").arg(fitId, spectrumId));
+}
+
+// ----------------------------------------------------------------------------
+// Instrument / mode (re)detection
+// ----------------------------------------------------------------------------
+
+bool SpectraFitDialog::autodetectInstrument(
+    const std::shared_ptr<Spectrum>& spec,
+    const std::vector<std::shared_ptr<Instrument>>& instruments)
+{
+    if (!spec) return false;
+
+    // Wavelengths are needed to analyze the spectrum's coverage; load lazily.
+    if (!spec->hasData()) {
+        if (!spec->getDataFile().isEmpty())
+            spec->loadDataFromFile(spec->getDataFile());
+        else if (!spec->getFile().isEmpty())
+            spec->loadFromFile(spec->getFile());
+    }
+    auto wl = spec->getWavelengths();
+    if (wl.size() < 2) return false;
+
+    const QString hint = spec->getInstrument();
+    const auto match = matchSpectrumToInstrument(instruments, hint, wl);
+
+    static constexpr double kMinConfidence = 0.25;   // same as import wizard
+    if (!match.instrument || match.confidence < kMinConfidence)
+        return false;
+
+    spec->setInstrument(match.displayString);
+    spec->setInstrumentId(match.instrument->getId());
+    spec->setModeKey(match.modeKey);
+    if (_dbm)
+        _dbm->updateSpectrumInstrument(spec->getId(), spec->getInstrument(),
+                                       spec->getInstrumentId(),
+                                       spec->getModeKey());
+    LOG_INFO("Tools",
+        QString("Re-detected spectrum %1 → %2 (conf %3)")
+            .arg(spec->getId().left(8), match.displayString)
+            .arg(match.confidence, 0, 'f', 2));
+    return true;
+}
+
+void SpectraFitDialog::redetectSpectrumById(const QString& spectrumId)
+{
+    std::shared_ptr<Spectrum> spec;
+    for (auto& s : _spectra) if (s->getId() == spectrumId) { spec = s; break; }
+    if (!spec) return;
+
+    auto instruments = _dbm ? _dbm->getAllInstruments()
+                            : std::vector<std::shared_ptr<Instrument>>{};
+    if (instruments.empty()) {
+        QMessageBox::information(this, "Re-detect instrument/mode",
+            "No instruments are configured. Add instruments in Settings first.");
+        return;
+    }
+
+    const QString before = spec->getInstrument();
+    if (autodetectInstrument(spec, instruments)) {
+        _star->markSummaryDirty();
+        rebuildTree();
+        _panel->refresh();
+        emit spectraUpdated();
+        QMessageBox::information(this, "Re-detect instrument/mode",
+            QString("Detected: %1").arg(spec->getInstrument()));
+    } else {
+        QMessageBox::information(this, "Re-detect instrument/mode",
+            QString("Could not confidently match this spectrum to a configured "
+                    "instrument.%1")
+                .arg(before.isEmpty()
+                         ? QString()
+                         : QString("\nLeaving it as \"%1\".").arg(before)));
+    }
+}
+
+void SpectraFitDialog::onRedetectAllClicked()
+{
+    if (!_star) return;
+
+    auto instruments = _dbm ? _dbm->getAllInstruments()
+                            : std::vector<std::shared_ptr<Instrument>>{};
+    if (instruments.empty()) {
+        QMessageBox::information(this, "Re-detect instruments/modes",
+            "No instruments are configured. Add instruments in Settings first.");
+        return;
+    }
+
+    int matched = 0;
+    for (auto& spec : _spectra)
+        if (autodetectInstrument(spec, instruments)) ++matched;
+
+    _star->markSummaryDirty();
+    rebuildTree();
+    _panel->refresh();
+    emit spectraUpdated();
+
+    QMessageBox::information(this, "Re-detect instruments/modes",
+        QString("Re-detected %1 of %2 spectra.")
+            .arg(matched).arg(static_cast<int>(_spectra.size())));
+}
+
+void SpectraFitDialog::defineInstrumentManually(const QString& spectrumId)
+{
+    std::shared_ptr<Spectrum> spec;
+    for (auto& s : _spectra) if (s->getId() == spectrumId) { spec = s; break; }
+    if (!spec) return;
+
+    auto instruments = _dbm ? _dbm->getAllInstruments()
+                            : std::vector<std::shared_ptr<Instrument>>{};
+    if (instruments.empty()) {
+        QMessageBox::information(this, "Set instrument/mode",
+            "No instruments are configured. Add instruments in Settings first.");
+        return;
+    }
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(QStringLiteral("Set instrument / mode"));
+    auto* form = new QFormLayout(&dlg);
+
+    auto* instCombo = new QComboBox(&dlg);
+    for (const auto& inst : instruments)
+        instCombo->addItem(inst->getName(), inst->getId());
+    form->addRow("Instrument:", instCombo);
+
+    auto* modeCombo = new QComboBox(&dlg);
+    form->addRow("Mode:", modeCombo);
+
+    auto populateModes = [&](int idx) {
+        modeCombo->clear();
+        modeCombo->addItem(QStringLiteral("(none)"), QString());
+        if (idx < 0 || idx >= static_cast<int>(instruments.size())) return;
+        for (const InstrumentMode& m : instruments[idx]->modes()) {
+            if (m.dataType() != InstrumentMode::Spectroscopy) continue;
+            modeCombo->addItem(m.displayName(), m.key());
+        }
+    };
+    populateModes(0);
+    QObject::connect(instCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+                     &dlg, [&](int i){ populateModes(i); });
+
+    // Preselect the spectrum's current instrument/mode, if any.
+    if (!spec->getInstrumentId().isEmpty()) {
+        int i = instCombo->findData(spec->getInstrumentId());
+        if (i >= 0) { instCombo->setCurrentIndex(i); populateModes(i); }
+    }
+    if (!spec->getModeKey().isEmpty()) {
+        int m = modeCombo->findData(spec->getModeKey());
+        if (m >= 0) modeCombo->setCurrentIndex(m);
+    }
+
+    auto* bb = new QDialogButtonBox(
+        QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    QObject::connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    QObject::connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    form->addRow(bb);
+
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    const int ii = instCombo->currentIndex();
+    if (ii < 0 || ii >= static_cast<int>(instruments.size())) return;
+    const auto& inst = instruments[ii];
+    const QString modeKey  = modeCombo->currentData().toString();
+    const QString modeName = modeCombo->currentText();
+
+    QString display = inst->getName();
+    if (!modeKey.isEmpty())
+        display += QString(" (%1)").arg(modeName);
+
+    spec->setInstrument(display);
+    spec->setInstrumentId(inst->getId());
+    spec->setModeKey(modeKey);
+    if (_dbm)
+        _dbm->updateSpectrumInstrument(spec->getId(), display,
+                                       inst->getId(), modeKey);
+
+    _star->markSummaryDirty();
+    rebuildTree();
+    _panel->refresh();
+    emit spectraUpdated();
+
+    LOG_INFO("Tools",
+        QString("Set spectrum %1 instrument/mode → %2")
+            .arg(spec->getId().left(8), display));
 }

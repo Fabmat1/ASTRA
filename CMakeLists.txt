@@ -344,6 +344,7 @@ set(SOURCES
     # views/widgets
     src/views/widgets/FitPreviewOverlay.cpp
     src/views/widgets/GridSelectorWidget.cpp
+    src/views/widgets/ShimmerWidget.cpp
     src/views/widgets/TerminalView.cpp
     src/views/widgets/AnsiTerminalWidget.cpp
     src/views/widgets/IsisMacroPanel.cpp
@@ -480,6 +481,7 @@ set(HEADERS
     # views/widgets
     src/views/widgets/FitPreviewOverlay.h
     src/views/widgets/GridSelectorWidget.h
+    src/views/widgets/ShimmerWidget.h
     src/views/widgets/TerminalView.h
     src/views/widgets/AnsiTerminalWidget.h
     src/views/widgets/IsisMacroPanel.h

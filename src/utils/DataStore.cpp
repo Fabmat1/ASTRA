@@ -134,6 +134,12 @@ QString DataStore::photometricPointsPath(const QString& base, const QString& sta
     return starDir(base, starId) + "/photometry/points_" + photometryId + FILE_EXT;
 }
 
+QString DataStore::sedPhotometryPointsPath(const QString& base, const QString& starId,
+                                           const QString& photometryId)
+{
+    return starDir(base, starId) + "/photometry/sedpoints_" + photometryId + FILE_EXT;
+}
+
 QString DataStore::lightcurvePath(const QString& base, const QString& starId,
                                   const QString& photometryId, const QString& source)
 {

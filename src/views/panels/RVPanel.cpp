@@ -620,6 +620,7 @@ void RVPanel::populate()
                     .arg(stretches[seg]));
 
                 QCustomPlot* plot = brokenAxis->addSegment(stretches[seg]);
+                PanelUtils::stylePlot(plot);
                 plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
                 plot->legend->setVisible(false);
 

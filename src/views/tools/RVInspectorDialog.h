@@ -105,6 +105,7 @@ private slots:
     void onAddSolution();
     void onDeleteSolution();
     void onSetAsBest();
+    void onClearBest();
     void onApply();
     void onRevert();
     void onEccentricToggled(bool on);
@@ -129,6 +130,7 @@ private slots:
     QPushButton*    _addBtn    = nullptr;
     QPushButton*    _delBtn    = nullptr;
     QPushButton*    _bestBtn   = nullptr;
+    QPushButton*    _clearBestBtn = nullptr;
     QPushButton*    _applyBtn  = nullptr;
     QPushButton*    _revertBtn = nullptr;
 

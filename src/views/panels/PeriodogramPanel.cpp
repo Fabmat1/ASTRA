@@ -2,8 +2,13 @@
 #include "PanelUtils.h"
 #include "plotting/qcustomplot.h"
 #include "utils/Logger.h"
+#include "utils/PerfTimer.h"
 #include "db/DatabaseManager.h"
 #include "models/PeriodogramRecord.h"
+#include "views/widgets/ShimmerWidget.h"
+
+#include <QResizeEvent>
+#include <QTimer>
 
 #include <QDateTime>
 #include <QtConcurrent/QtConcurrent>
@@ -102,12 +107,66 @@ void PeriodogramPanel::setupUi()
     _stackedLayout->setSpacing(8);
     _scrollArea->setWidget(_stackedHost);
     outer->addWidget(_scrollArea, 1);
+
+    // Skeleton-loading overlay shown while periodograms are (re)computing so
+    // the panel never looks frozen or blank while the background jobs run.
+    _shimmer = new ShimmerWidget(this);
+    _shimmer->hide();
+
+    // Friendly empty-state shown when nothing has been computed yet.
+    _emptyLabel = new QLabel(
+        tr("No periodograms calculated yet.\n\n"
+           "Fetch some light curves and compute them."), this);
+    _emptyLabel->setAlignment(Qt::AlignCenter);
+    _emptyLabel->setWordWrap(true);
+    _emptyLabel->setStyleSheet("color: gray; font-size: 14px; font-style: italic;");
+    _emptyLabel->hide();
+}
+
+void PeriodogramPanel::resizeEvent(QResizeEvent* e)
+{
+    QWidget::resizeEvent(e);
+    if (_scrollArea) {
+        if (_shimmer)    _shimmer->setGeometry(_scrollArea->geometry());
+        if (_emptyLabel) _emptyLabel->setGeometry(_scrollArea->geometry());
+    }
+}
+
+void PeriodogramPanel::setShimmerVisible(bool on)
+{
+    if (!_shimmer || !_scrollArea) return;
+    if (on) {
+        _shimmer->setCardCount(qMax(1, _sourceOrder.size() + 1));
+        _shimmer->setGeometry(_scrollArea->geometry());
+        if (_emptyLabel) _emptyLabel->hide();
+        _shimmer->show();
+        _shimmer->raise();
+    } else {
+        _shimmer->hide();
+    }
+}
+
+void PeriodogramPanel::updateOverlayState()
+{
+    const bool computing = _jobsRemaining > 0 || _viewJobRunning;
+    setShimmerVisible(computing);
+    if (!_emptyLabel || !_scrollArea) return;
+
+    const bool showEmpty = !computing && _perSeries.isEmpty();
+    if (showEmpty) {
+        _emptyLabel->setGeometry(_scrollArea->geometry());
+        _emptyLabel->show();
+        _emptyLabel->raise();
+    } else {
+        _emptyLabel->hide();
+    }
 }
 
 // ── External data feed ──────────────────────────────────────────────
 
 void PeriodogramPanel::setSeries(const QList<Series>& series)
 {
+    PerfTimer perfHash("Perf.Periodogram", "setSeries: input hash (sync, blocks UI)");
     // Detect no-op re-application; FNV-style mix.
     quint64 h = 1469598103934665603ULL;
     for (const auto& s : series) {
@@ -115,6 +174,7 @@ void PeriodogramPanel::setSeries(const QList<Series>& series)
         for (char c : k) { h ^= static_cast<unsigned char>(c); h *= 1099511628211ULL; }
         h ^= Periodogram::hashData(s.t, s.y, s.e) + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
     }
+    perfHash.report(QString("%1 series").arg(series.size()));
     if (h == _seriesHash && !_series.isEmpty()) {
         emit seriesChanged();   // host might want to refresh anyway
         return;
@@ -125,21 +185,26 @@ void PeriodogramPanel::setSeries(const QList<Series>& series)
     _perSeries.clear();
     _perSource.clear();
     _cachedTags.clear();
+    _display.clear();
     _combined = Periodogram::Result{};
 
     _sourceOrder.clear();
     for (const auto& s : _series)
         if (!_sourceOrder.contains(s.source)) _sourceOrder.append(s.source);
 
-    rebuildPlots();
-    loadFromCache();
-
-    if (_perSeries.isEmpty()) {
-        const QString msg = QString("%1 series - click Compute").arg(_series.size());
-        _statusLabel->setText(msg);
-        emit statusMessage(msg);
-    }
-    emit seriesChanged();
+    // Build the plot skeletons and load any cached results on the next
+    // event-loop turn, behind the skeleton overlay, so switching to this tab
+    // returns immediately instead of freezing while the work runs.
+    setShimmerVisible(true);
+    QTimer::singleShot(0, this, [this]{
+        // Build the (empty) plot widgets on the main thread - cheap - then let
+        // the host refresh its series list. The heavy cache load, aggregation
+        // and per-graph polyline building all happen on a worker thread; the
+        // plots are filled in on the main thread when it finishes.
+        rebuildPlots();
+        emit seriesChanged();
+        loadFromCacheAsync();
+    });
 }
 
 QList<PeriodogramPanel::SeriesInfo> PeriodogramPanel::seriesInfo() const
@@ -358,6 +423,7 @@ void PeriodogramPanel::computeAll(bool force)
     _progress->setValue(0);
     _progress->setVisible(true);
     _cancelBtn->setVisible(true);
+    setShimmerVisible(true);
 
     const QString msg = QString("Computing %1 series…").arg(todo.size());
     _statusLabel->setText(msg);
@@ -409,24 +475,23 @@ void PeriodogramPanel::onSeriesComputed(int finishedIndex)
         if (_jobsRemaining > 0) return;
     }
 
-    rebuildAggregates();
-
     _jobs.clear();
     _progress->setVisible(false);
     _cancelBtn->setVisible(false);
 
-    const QString msg = _cancelRequested
-        ? QStringLiteral("Cancelled")
-        : QString("Done · %1 series · %2 sources")
-              .arg(_perSeries.size()).arg(_perSource.size());
-    _statusLabel->setText(msg);
-    emit statusMessage(msg);
-
-    if (!_cancelRequested) {
-        replotAll();
-        persistToCache();
+    if (_cancelRequested) {
+        updateOverlayState();
+        const QString msg = QStringLiteral("Cancelled");
+        _statusLabel->setText(msg);
+        emit statusMessage(msg);
+        emit computeFinished(true);
+        return;
     }
-    emit computeFinished(_cancelRequested);
+
+    // Aggregation (weighted sums / combined product) and per-graph polyline
+    // building are heavy; do them on a worker, then replot + persist + emit
+    // computeFinished from the main-thread finish handler.
+    rebuildAndReplotAsync(/*persistAfter=*/true);
 }
 
 void PeriodogramPanel::cancelCompute()
@@ -462,6 +527,9 @@ void PeriodogramPanel::rebuildPlots()
         p->setPlottingHints(QCP::phFastPolylines | QCP::phCacheLabels);
         p->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
         p->legend->setVisible(true);
+        // Theme the plot up-front so empty / pre-compute plots already sit on
+        // the active theme background instead of flashing flat white.
+        PanelUtils::stylePlot(p);
         wirePlotInteractions(p);
         connect(p->xAxis,
             static_cast<void (QCPAxis::*)(const QCPRange&)>(&QCPAxis::rangeChanged),
@@ -483,30 +551,66 @@ void PeriodogramPanel::rebuildPlots()
     // they fill the scroll-area vertically while still honoring minimumHeight.
 }
 
+// Build the axis-mode-specific (key, value) polyline for one Result. x is
+// emitted in ascending order in both modes so callers can hand it to QCustomPlot
+// as already-sorted (skipping its internal O(n log n) sort). Pure / thread-safe.
+PeriodogramPanel::DisplayCurve
+PeriodogramPanel::buildDisplayCurve(const Periodogram::Result& res, XAxis mode)
+{
+    DisplayCurve dc;
+    if (!res.isValid()) return dc;
+    const int N = res.grid.Nf;
+    dc.x.reserve(N);
+    dc.y.reserve(N);
+    if (mode == XAxis::Period) {
+        // x = 1/f. frequency[] is ascending, so 1/f is descending; walk
+        // backwards to emit ascending period.
+        for (int i = N - 1; i >= 0; --i) {
+            const double f = res.frequency[i];
+            if (f <= 0.0) continue;
+            dc.x.append(1.0 / f);
+            dc.y.append(res.power[i]);
+        }
+    } else {
+        for (int i = 0; i < N; ++i) {
+            dc.x.append(res.frequency[i]);
+            dc.y.append(res.power[i]);
+        }
+    }
+    // Precompute the data range so the main thread can set axis ranges directly
+    // instead of paying QCustomPlot's O(n) rescaleAxes over millions of points.
+    if (!dc.x.isEmpty()) {
+        dc.xMin = dc.x.first();              // x is ascending by construction
+        dc.xMax = dc.x.last();
+        dc.yMin = dc.yMax = dc.y.first();
+        for (double v : dc.y) { dc.yMin = std::min(dc.yMin, v); dc.yMax = std::max(dc.yMax, v); }
+        dc.hasRange = true;
+    }
+    return dc;
+}
+
 void PeriodogramPanel::plotInto(QCustomPlot* plot, const Periodogram::Result& res,
+                                const QString& displayKey, const QString& graphName,
                                 const QColor& color, bool emphasize)
 {
     if (!res.isValid()) return;
-    QVector<double> x; x.reserve(res.grid.Nf);
-    QVector<double> y; y.reserve(res.grid.Nf);
-    const bool periodMode = (_xAxis == XAxis::Period);
-    for (int i = 0; i < res.grid.Nf; ++i) {
-        const double f = res.frequency[i];
-        if (periodMode) {
-            if (f <= 0.0) continue;
-            x.append(1.0 / f);
-        } else {
-            x.append(f);
-        }
-        y.append(res.power[i]);
-    }
+
     auto* g = plot->addGraph();
-    g->setName(res.label);
+    g->setName(graphName);
     QPen pen(color); pen.setWidthF(emphasize ? 1.6 : 1.0);
     g->setPen(pen);
     g->setLineStyle(QCPGraph::lsLine);
     g->setAdaptiveSampling(true);
-    g->setData(x, y, false);
+
+    auto dit = _display.constFind(displayKey);
+    if (dit != _display.constEnd()) {
+        // Precomputed off-thread and already sorted ascending in x.
+        g->setData(dit->x, dit->y, /*alreadySorted=*/true);
+    } else {
+        // Fallback (no cached polyline): build inline for the current mode.
+        const DisplayCurve dc = buildDisplayCurve(res, _xAxis);
+        g->setData(dc.x, dc.y, /*alreadySorted=*/true);
+    }
 }
 
 void PeriodogramPanel::drawOverlays(QCustomPlot* plot)
@@ -578,9 +682,26 @@ void PeriodogramPanel::drawOverlays(QCustomPlot* plot)
 
 void PeriodogramPanel::replotAll()
 {
+    PERF_SCOPE("Perf.Periodogram", "PeriodogramPanel::replotAll");
     for (auto* p : _plots) {
         p->clearPlottables();
         p->clearItems();
+
+        // Union the precomputed data ranges of the graphs we add to this plot so
+        // we can set axis ranges directly (rescaleAxes() would rescan millions
+        // of points on the main thread).
+        bool   haveRange = false;
+        double xLo = 0, xHi = 0, yLo = 0, yHi = 0;
+        auto foldRange = [&](const QString& key) {
+            auto d = _display.constFind(key);
+            if (d == _display.constEnd() || !d->hasRange) return;
+            if (!haveRange) { xLo = d->xMin; xHi = d->xMax; yLo = d->yMin; yHi = d->yMax; haveRange = true; }
+            else {
+                xLo = std::min(xLo, d->xMin); xHi = std::max(xHi, d->xMax);
+                yLo = std::min(yLo, d->yMin); yHi = std::max(yHi, d->yMax);
+            }
+        };
+
         const QString kind = p->property("kind").toString();
         if (kind == "source") {
             const QString src = p->property("source").toString();
@@ -592,7 +713,8 @@ void PeriodogramPanel::replotAll()
                 if (!isSeriesEnabled(k)) continue;
                 auto it = _perSeries.constFind(k);
                 if (it != _perSeries.constEnd()) {
-                    plotInto(p, *it, PanelUtils::lcColor(colorIdx));
+                    plotInto(p, *it, k, it->label, PanelUtils::lcColor(colorIdx));
+                    foldRange(k);
                     ++filterCount;
                 }
                 ++colorIdx;
@@ -601,15 +723,15 @@ void PeriodogramPanel::replotAll()
                 auto it = _perSource.constFind(src);
                 if (it != _perSource.constEnd()) {
                     QColor emph = PanelUtils::isDarkTheme() ? Qt::white : Qt::black;
-                    auto sumRes = *it;
-                    sumRes.label = "weighted sum";
-                    plotInto(p, sumRes, emph, true);
+                    plotInto(p, *it, sourceDisplayKey(src), "weighted sum", emph, true);
+                    foldRange(sourceDisplayKey(src));
                 }
             }
         } else if (kind == "combined") {
             if (_combined.isValid()) {
                 QColor emph = PanelUtils::isDarkTheme() ? Qt::white : Qt::black;
-                plotInto(p, _combined, emph, true);
+                plotInto(p, _combined, combinedDisplayKey(), _combined.label, emph, true);
+                foldRange(combinedDisplayKey());
             }
         }
 
@@ -623,7 +745,14 @@ void PeriodogramPanel::replotAll()
             p->xAxis->setScaleType(QCPAxis::stLinear);
             p->xAxis->setTicker(QSharedPointer<QCPAxisTicker>(new QCPAxisTicker));
         }
-        p->rescaleAxes();
+        if (haveRange) {
+            if (xHi <= xLo) xHi = xLo + (periodMode ? xLo * 0.01 + 1e-6 : 1.0);
+            if (yHi <= yLo) yHi = yLo + 1.0;
+            p->xAxis->setRange(xLo, xHi);
+            p->yAxis->setRange(yLo, yHi);
+        } else {
+            p->rescaleAxes();
+        }
         drawOverlays(p);
         PanelUtils::stylePlot(p);
         p->replot(QCustomPlot::rpQueuedReplot);
@@ -648,13 +777,17 @@ void PeriodogramPanel::setXAxis(XAxis ax)
         QSignalBlocker b(_xAxisCombo);
         _xAxisCombo->setCurrentIndex(static_cast<int>(ax));
     }
-    replotAll();
+    // Switching axis mode requires rebuilding every display polyline (period vs
+    // frequency); do it off-thread to keep the toggle responsive.
+    if (_perSeries.isEmpty()) replotAll();
+    else                      rebuildAndReplotAsync(false);
 }
 
 void PeriodogramPanel::onXAxisChanged(int idx)
 {
     _xAxis = static_cast<XAxis>(_xAxisCombo->itemData(idx).toInt());
-    replotAll();
+    if (_perSeries.isEmpty()) replotAll();
+    else                      rebuildAndReplotAsync(false);
 }
 
 void PeriodogramPanel::onResetZoom()
@@ -832,60 +965,205 @@ PeriodogramPanel::detectPeaks(const QString& resultLabel,
     return peaks;
 }
 
-// ── Cache I/O / aggregates ─────────────────────────────────────────
+// ── Aggregate builders (pure / thread-safe) ────────────────────────
 
-void PeriodogramPanel::loadFromCache()
+QHash<QString, Periodogram::Result> PeriodogramPanel::computePerSourceMap(
+    const QList<Series>& series,
+    const QHash<QString, Periodogram::Result>& perSeries,
+    int minPts, const QHash<QString, bool>& userEnabled)
 {
-    if (!_dbm || _starId.isEmpty() || _series.isEmpty()) return;
-    auto records = _dbm->loadStarPeriodograms(_starId);
-    if (records.empty()) return;
-
-    QSet<QString> known;
-    for (const auto& s : _series) known.insert(makeKey(s.source, s.filter));
-
-    int loaded = 0, stale = 0;
-    for (const auto& r : records) {
-        const QString k = makeKey(r->source, r->filter);
-        if (!known.contains(k)) continue;
-        _perSeries.insert(k, r->result);
-        _cachedTags.insert(k, { r->dataHash, r->gridHash });
-        ++loaded;
-        for (const auto& s : _series) {
-            if (makeKey(s.source, s.filter) != k) continue;
-            if (Periodogram::hashData(s.t, s.y, s.e) != r->dataHash) ++stale;
-            break;
-        }
+    QHash<QString, QList<Periodogram::Result>> bySrc;
+    for (const auto& s : series) {
+        if (s.t.size() < minPts) continue;
+        const QString k = makeKey(s.source, s.filter);
+        if (!userEnabled.value(k, true)) continue;
+        auto it = perSeries.constFind(k);
+        if (it != perSeries.constEnd()) bySrc[s.source].append(*it);
     }
-    if (loaded == 0) return;
-
-    rebuildAggregates();
-    replotAll();
-    const QString msg = stale > 0
-        ? QString("Loaded cache · %1 series (%2 stale - recompute to refresh)").arg(loaded).arg(stale)
-        : QString("Loaded cache · %1 series").arg(loaded);
-    _statusLabel->setText(msg);
-    emit statusMessage(msg);
+    QHash<QString, Periodogram::Result> out;
+    for (auto it = bySrc.constBegin(); it != bySrc.constEnd(); ++it)
+        out.insert(it.key(), Periodogram::weightedSum(it.value(), it.key()));
+    return out;
 }
 
-void PeriodogramPanel::rebuildAggregates()
+Periodogram::Result PeriodogramPanel::computeCombinedResult(
+    const QStringList& sourceOrder,
+    const QHash<QString, Periodogram::Result>& perSource)
 {
-    _perSource.clear();
-    QHash<QString, QList<Periodogram::Result>> bySrc;
-    for (const auto& s : _series) {
-        if (s.t.size() < _minPts) continue;
-        const QString k = makeKey(s.source, s.filter);
-        if (!isSeriesEnabled(k)) continue;
-        auto it = _perSeries.constFind(k);
-        if (it != _perSeries.constEnd()) bySrc[s.source].append(*it);
-    }
-    for (auto it = bySrc.constBegin(); it != bySrc.constEnd(); ++it)
-        _perSource.insert(it.key(),
-            Periodogram::weightedSum(it.value(), it.key()));
-
     QList<Periodogram::Result> all;
-    for (const QString& src : _sourceOrder)
-        if (_perSource.contains(src)) all.append(_perSource[src]);
-    _combined = Periodogram::multiplied(all, "Combined");
+    for (const QString& src : sourceOrder)
+        if (perSource.contains(src)) all.append(perSource.value(src));
+    return Periodogram::multiplied(all, "Combined");
+}
+
+QHash<QString, PeriodogramPanel::DisplayCurve> PeriodogramPanel::buildDisplayMap(
+    const QHash<QString, Periodogram::Result>& perSeries,
+    const QHash<QString, Periodogram::Result>& perSource,
+    const Periodogram::Result& combined, XAxis mode)
+{
+    QHash<QString, DisplayCurve> out;
+    for (auto it = perSeries.constBegin(); it != perSeries.constEnd(); ++it)
+        if (it->isValid()) out.insert(it.key(), buildDisplayCurve(*it, mode));
+    for (auto it = perSource.constBegin(); it != perSource.constEnd(); ++it)
+        if (it->isValid()) out.insert(sourceDisplayKey(it.key()), buildDisplayCurve(*it, mode));
+    if (combined.isValid())
+        out.insert(combinedDisplayKey(), buildDisplayCurve(combined, mode));
+    return out;
+}
+
+// ── Cache I/O / aggregates (off the UI thread) ─────────────────────
+
+namespace {
+// Worker payload for the cache-load path.
+struct LoadPayload {
+    QHash<QString, Periodogram::Result>              perSeries;
+    QHash<QString, QPair<quint64, quint64>>          tags;     // key -> (dataHash, gridHash)
+    QHash<QString, Periodogram::Result>              perSource;
+    Periodogram::Result                              combined;
+    QHash<QString, PeriodogramPanel::DisplayCurve>   display;
+    int loaded = 0, stale = 0;
+};
+// Worker payload for the aggregate-only path (fresh compute / axis toggle).
+struct AggPayload {
+    QHash<QString, Periodogram::Result>            perSource;
+    Periodogram::Result                            combined;
+    QHash<QString, PeriodogramPanel::DisplayCurve> display;
+};
+} // namespace
+
+void PeriodogramPanel::loadFromCacheAsync()
+{
+    if (!_dbm || _starId.isEmpty() || _series.isEmpty()) {
+        _viewJobRunning = false;
+        updateOverlayState();
+        const QString msg = QString("%1 series - click Compute").arg(_series.size());
+        _statusLabel->setText(msg);
+        emit statusMessage(msg);
+        return;
+    }
+
+    const quint64 gen = ++_viewGen;
+    _viewJobRunning = true;
+    setShimmerVisible(true);
+
+    // Snapshots for the worker (QVector payloads are implicitly shared - the
+    // copies are cheap and the worker only reads them).
+    DatabaseManager*          dbm         = _dbm;
+    const QString             starId      = _starId;
+    const QList<Series>       series      = _series;
+    const int                 minPts      = _minPts;
+    const QHash<QString,bool> userEnabled = _userEnabled;
+    const QStringList         sourceOrder = _sourceOrder;
+    const XAxis               mode        = _xAxis;
+
+    auto* watcher = new QFutureWatcher<LoadPayload>(this);
+    connect(watcher, &QFutureWatcher<LoadPayload>::finished, this,
+            [this, watcher, gen]{
+        LoadPayload p = watcher->result();
+        watcher->deleteLater();
+        if (gen != _viewGen) return;           // superseded by a newer view job
+        _viewJobRunning = false;
+
+        if (p.loaded > 0) {
+            _perSeries = p.perSeries;
+            _cachedTags.clear();
+            for (auto it = p.tags.constBegin(); it != p.tags.constEnd(); ++it)
+                _cachedTags.insert(it.key(), { it.value().first, it.value().second });
+            _perSource = p.perSource;
+            _combined  = p.combined;
+            _display   = p.display;
+            replotAll();
+            const QString msg = p.stale > 0
+                ? QString("Loaded cache · %1 series (%2 stale - recompute to refresh)").arg(p.loaded).arg(p.stale)
+                : QString("Loaded cache · %1 series").arg(p.loaded);
+            _statusLabel->setText(msg);
+            emit statusMessage(msg);
+        } else {
+            const QString msg = QString("%1 series - click Compute").arg(_series.size());
+            _statusLabel->setText(msg);
+            emit statusMessage(msg);
+        }
+        updateOverlayState();
+        emit seriesChanged();
+    });
+
+    watcher->setFuture(QtConcurrent::run(
+        [dbm, starId, series, minPts, userEnabled, sourceOrder, mode]() -> LoadPayload {
+            LoadPayload p;
+            auto records = dbm->loadStarPeriodograms(starId);
+            if (records.empty()) return p;
+
+            QSet<QString> known;
+            for (const auto& s : series) known.insert(makeKey(s.source, s.filter));
+
+            for (const auto& r : records) {
+                const QString k = makeKey(r->source, r->filter);
+                if (!known.contains(k)) continue;
+                Periodogram::Result res = r->result;
+                res.label = k;
+                p.perSeries.insert(k, res);
+                p.tags.insert(k, qMakePair(r->dataHash, r->gridHash));
+                ++p.loaded;
+                for (const auto& s : series) {
+                    if (makeKey(s.source, s.filter) != k) continue;
+                    if (Periodogram::hashData(s.t, s.y, s.e) != r->dataHash) ++p.stale;
+                    break;
+                }
+            }
+            if (p.loaded == 0) return p;
+
+            p.perSource = computePerSourceMap(series, p.perSeries, minPts, userEnabled);
+            p.combined  = computeCombinedResult(sourceOrder, p.perSource);
+            p.display   = buildDisplayMap(p.perSeries, p.perSource, p.combined, mode);
+            return p;
+        }));
+}
+
+void PeriodogramPanel::rebuildAndReplotAsync(bool persistAfter)
+{
+    const quint64 gen = ++_viewGen;
+    _viewJobRunning = true;
+    setShimmerVisible(true);
+
+    const QList<Series>                      series      = _series;
+    const QHash<QString,Periodogram::Result> perSeries   = _perSeries;
+    const int                                minPts      = _minPts;
+    const QHash<QString,bool>                userEnabled = _userEnabled;
+    const QStringList                        sourceOrder = _sourceOrder;
+    const XAxis                              mode        = _xAxis;
+
+    auto* watcher = new QFutureWatcher<AggPayload>(this);
+    connect(watcher, &QFutureWatcher<AggPayload>::finished, this,
+            [this, watcher, gen, persistAfter]{
+        AggPayload p = watcher->result();
+        watcher->deleteLater();
+        if (gen != _viewGen) return;
+        _viewJobRunning = false;
+
+        _perSource = p.perSource;
+        _combined  = p.combined;
+        _display   = p.display;
+        replotAll();
+        updateOverlayState();
+
+        if (persistAfter) {
+            const QString msg = QString("Done · %1 series · %2 sources")
+                                    .arg(_perSeries.size()).arg(_perSource.size());
+            _statusLabel->setText(msg);
+            emit statusMessage(msg);
+            persistToCacheAsync();
+            emit computeFinished(false);
+        }
+    });
+
+    watcher->setFuture(QtConcurrent::run(
+        [series, perSeries, minPts, userEnabled, sourceOrder, mode]() -> AggPayload {
+            AggPayload p;
+            p.perSource = computePerSourceMap(series, perSeries, minPts, userEnabled);
+            p.combined  = computeCombinedResult(sourceOrder, p.perSource);
+            p.display   = buildDisplayMap(perSeries, p.perSource, p.combined, mode);
+            return p;
+        }));
 }
 
 void PeriodogramPanel::persistToCache()
@@ -911,6 +1189,49 @@ void PeriodogramPanel::persistToCache()
     LOG_INFO("Periodogram",
         QString("Persisted %1 records for star %2 (ok=%3)")
             .arg(recs.size()).arg(_starId).arg(ok));
+}
+
+void PeriodogramPanel::persistToCacheAsync()
+{
+    if (!_dbm || _starId.isEmpty()) return;
+
+    DatabaseManager*                         dbm       = _dbm;
+    const QString                            starId    = _starId;
+    const QList<Series>                      series    = _series;
+    const QHash<QString,Periodogram::Result> perSeries = _perSeries;
+
+    // Refresh the in-memory cache tags synchronously so a subsequent compute can
+    // tell its results are already cached without waiting for the disk write.
+    for (const auto& s : _series) {
+        const QString k = makeKey(s.source, s.filter);
+        auto it = _perSeries.constFind(k);
+        if (it == _perSeries.constEnd() || !it->isValid()) continue;
+        _cachedTags.insert(k, { Periodogram::hashData(s.t, s.y, s.e),
+                                Periodogram::hashGrid(it->grid) });
+    }
+
+    auto future = QtConcurrent::run([dbm, starId, series, perSeries]() {
+        std::vector<std::shared_ptr<PeriodogramRecord>> recs;
+        recs.reserve(perSeries.size());
+        for (const auto& s : series) {
+            const QString k = makeKey(s.source, s.filter);
+            auto it = perSeries.constFind(k);
+            if (it == perSeries.constEnd() || !it->isValid()) continue;
+            auto r = std::make_shared<PeriodogramRecord>();
+            r->source     = s.source;
+            r->filter     = s.filter;
+            r->result     = *it;
+            r->dataHash   = Periodogram::hashData(s.t, s.y, s.e);
+            r->gridHash   = Periodogram::hashGrid(it->grid);
+            r->computedAt = QDateTime::currentDateTime();
+            recs.push_back(r);
+        }
+        const bool ok = dbm->saveStarPeriodograms(starId, recs);
+        LOG_INFO("Periodogram",
+            QString("Persisted %1 records for star %2 (ok=%3)")
+                .arg(recs.size()).arg(starId).arg(ok));
+    });
+    Q_UNUSED(future);
 }
 
 void PeriodogramPanel::setMarkedPeaks(const QList<PeriodPeak>& peaks)

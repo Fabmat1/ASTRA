@@ -289,6 +289,25 @@ bool SpectrumRepository::updateSpectrumFlag(const QString& spectrumId, bool flag
     return q.exec();
 }
 
+bool SpectrumRepository::updateSpectrumInstrument(const QString& spectrumId,
+                                                  const QString& instrument,
+                                                  const QString& instrumentId,
+                                                  const QString& modeKey)
+{
+    QSqlQuery q(_db.database());
+    q.prepare("UPDATE spectra SET instrument = :inst, instrument_id = :iid, "
+              "mode_key = :mk WHERE id = :id");
+    q.bindValue(":inst", instrument);
+    q.bindValue(":iid", instrumentId.isEmpty()
+                            ? QVariant(QMetaType(QMetaType::QString))
+                            : QVariant(instrumentId));
+    q.bindValue(":mk", modeKey.isEmpty()
+                           ? QVariant(QMetaType(QMetaType::QString))
+                           : QVariant(modeKey));
+    q.bindValue(":id", spectrumId);
+    return q.exec();
+}
+
 bool SpectrumRepository::updateSpectralFitFlag(const QString& fitId, bool flagged)
 {
     QSqlQuery q(_db.database());

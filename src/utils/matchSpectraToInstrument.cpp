@@ -144,8 +144,13 @@ InstrumentMatch matchSpectrumToInstrument(
             ModeRange             rng;
             const InstrumentMode *mode;
         };
+        // NOTE: modes() returns a QList by value; bind it to a named local so
+        // the InstrumentMode objects outlive the `cands` pointers below (the
+        // segment loop dereferences c.mode). A temporary here would be freed at
+        // the end of the range-for, leaving cands holding dangling pointers.
+        const QList<InstrumentMode> instModes = inst.modes();
         std::vector<Cand> cands;
-        for (const InstrumentMode &mode : inst.modes()) {
+        for (const InstrumentMode &mode : instModes) {
             if (!modeIsSpectroscopic(mode))
                 continue;
             for (const ModeRange &rng : modeCandidateRanges(mode))

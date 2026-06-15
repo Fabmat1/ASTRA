@@ -10,6 +10,7 @@ class Star;
 class SEDModel;
 class Photometry;
 class DatabaseManager;
+struct SEDPhotometryPoint;
 
 class GridSelectorWidget;
 class QCustomPlot;
@@ -80,6 +81,14 @@ private:
     void updateParameterDisplay();
     void updatePhotometryTable();
     void updateFitSelector();
+
+    // Canonical (per-star) SED photometry points helpers.
+    std::vector<SEDPhotometryPoint>& canonicalPhotometryPoints();
+    void ensureCanonicalPhotometryPoints();
+    void persistCanonicalPhotometryPoints();
+    // Overlay the canonical include/exclude flags onto a fit's observed points
+    // (in memory) so the plot reflects the single source of truth.
+    void applyCanonicalFlagsToFit(const std::shared_ptr<SEDModel>& model);
     void initDefaultFitParams();
 
     bool isDarkTheme() const;
@@ -141,6 +150,11 @@ private:
     QCheckBox*      _fixDistCb    = nullptr;
     QDoubleSpinBox* _distSpin     = nullptr;
     QDoubleSpinBox* _distErrSpin  = nullptr;
+    QToolButton*    _distCorrectBtn = nullptr;
+
+    // Query Gaia DR3 and apply the Lindegren (2021) parallax zero-point
+    // correction + El-Badry (2021) error inflation to the fixed distance.
+    void applyGaiaDistanceCorrection();
 
     QTableWidget* _paramTableWidget = nullptr;
     QPushButton*  _addParamBtn      = nullptr;
@@ -152,6 +166,7 @@ private:
     QCheckBox* _writeModelCb   = nullptr;
     QCheckBox* _saveMCCb       = nullptr;
     QCheckBox* _applyZPOCb     = nullptr;
+    QCheckBox* _useSavedPhotCb = nullptr;
 
     QPushButton* _advToggleBtn        = nullptr;
     QWidget*     _advContent          = nullptr;

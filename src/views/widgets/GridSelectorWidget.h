@@ -82,6 +82,7 @@ private:
     void    finishPopulate(); 
     void    setLoading(bool on);
     void    applySelection(const QString &category, const QString &rel);
+    void    applyDefaultSelection();   // prefer sdB / "sdB standard" if present
     static QVector<DiscoveredGrid> performScan( // runs on worker thread
         const QStringList &basePaths, const QStringList &markers,
         const QStringList &skipTokens, const QVector<GridPreset> &presets);
@@ -105,4 +106,8 @@ private:
     QProgressBar                            *_spinner     = nullptr;
 
     QString _pendingCat, _pendingSel;
+
+    // True once a selection has been requested explicitly (via setSelection)
+    // or chosen by the user, so we stop forcing the sdB default.
+    bool _hasExplicitSelection = false;
 };

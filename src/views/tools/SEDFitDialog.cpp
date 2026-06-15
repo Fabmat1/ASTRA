@@ -30,14 +30,20 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
+#include <QNetworkRequest>
 #include <QProcess>
 #include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QEventLoop>
 #include <QSpinBox>
 #include <QSplitter>
 #include <QStandardPaths>
 #include <QStorageInfo>
+#include <QStyle>
+#include <QUrlQuery>
 #include <QTableWidget>
 #include <QTableWidgetItem>
 #include <QTemporaryDir>
@@ -434,12 +440,27 @@ QWidget* SEDFitDialog::createNewFitPanel()
     _distErrSpin->setSuffix(" kpc");
     _distErrSpin->setEnabled(false);
     dLay->addWidget(_distErrSpin);
+
+    // Small icon button: query Gaia DR3 and apply the Lindegren (2021)
+    // parallax zero-point correction + El-Badry (2021) error inflation.
+    _distCorrectBtn = new QToolButton;
+    _distCorrectBtn->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
+    _distCorrectBtn->setAutoRaise(true);
+    _distCorrectBtn->setEnabled(false);
+    _distCorrectBtn->setToolTip(
+        tr("Query Gaia DR3 and apply the parallax zero-point correction\n"
+           "(Lindegren et al. 2021) and uncertainty inflation\n"
+           "(El-Badry et al. 2021) to the fixed distance."));
+    dLay->addWidget(_distCorrectBtn);
     dLay->addStretch();
 
     connect(_fixDistCb, &QCheckBox::toggled, this, [this](bool on) {
         _distSpin->setEnabled(on);
         _distErrSpin->setEnabled(on);
+        _distCorrectBtn->setEnabled(on);
     });
+    connect(_distCorrectBtn, &QToolButton::clicked,
+            this, &SEDFitDialog::applyGaiaDistanceCorrection);
 
     if (Star::isSet(_star->getPlx()) && _star->getPlx() > 0) {
         double d_kpc = 1.0 / _star->getPlx();
@@ -531,6 +552,14 @@ QWidget* SEDFitDialog::createNewFitPanel()
         "Apply empirical corrections to photometric zero-point offsets");
     oLay->addWidget(_applyZPOCb, orow++, 3);
 
+    _useSavedPhotCb = new QCheckBox("Use saved photometry");
+    _useSavedPhotCb->setChecked(true);
+    _useSavedPhotCb->setToolTip(
+        "When enabled, the star's saved photometry points are written to\n"
+        "photometry.dat and used for the fit. When disabled, no photometry.dat\n"
+        "is written and ISIS re-queries the photometry from the archives.");
+    oLay->addWidget(_useSavedPhotCb, orow++, 0, 1, 2);
+
     oLay->setColumnStretch(1, 1);
     oLay->setColumnStretch(3, 1);
     nfLay->addWidget(optGroup);
@@ -587,10 +616,9 @@ QWidget* SEDFitDialog::createNewFitPanel()
 
 void SEDFitDialog::writePhotometryDat(const QString& filepath)
 {
-    std::vector<SEDPhotometryPoint> points;
-
-    if (_currentFitIndex >= 0 && _currentFitIndex < static_cast<int>(_fits.size()))
-        points = _fits[_currentFitIndex]->observedPoints;
+    // Single source of truth: the star's canonical SED photometry points.
+    ensureCanonicalPhotometryPoints();
+    std::vector<SEDPhotometryPoint> points = canonicalPhotometryPoints();
 
     if (points.empty()) {
         auto phot = _star->getPhotometry();
@@ -678,6 +706,281 @@ void SEDFitDialog::writePhotometryDat(const QString& filepath)
                 qPrintable(QString::number(p.angularDist, 'g', 16)),
                 qPrintable(p.vizierCatalog));
     }
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// Gaia parallax corrections for the manually fixed distance
+// ═══════════════════════════════════════════════════════════════════
+//
+// Reproduces the group's `query_astrometry` convention:
+//   * parallax zero-point: Lindegren et al. (2021) recipe, ported from the
+//     official `gaiadr3_zeropoint` package (coefficient tables z5/z6 200720).
+//   * parallax-error inflation: El-Badry, Rix & Heintz (2021), Eq. (16).
+
+namespace {
+
+// Lindegren et al. (2021) parallax zero-point Z [mas]. corrected = plx - Z.
+// `colour` is nu_eff_used_in_astrometry (5p) or pseudocolour (6p).
+// `solved` is astrometric_params_solved (31 -> 5p, 95 -> 6p).
+// Returns NaN if the solution type has no zero-point recipe.
+double lindegrenParallaxZpo(double gMag, double colour, double sinBeta, int solved)
+{
+    // G-magnitude interpolation nodes (shared by z5 and z6).
+    static const double gNodes[13] = {
+        6.0, 10.8, 11.2, 11.8, 12.2, 12.9, 13.1, 15.9, 16.1, 17.5, 19.0, 20.0, 21.0};
+
+    // z5: 8 basis terms; q[node][term].
+    static const int    j5[8] = {0, 0, 0, 1, 1, 2, 3, 4};
+    static const int    k5[8] = {0, 1, 2, 0, 1, 0, 0, 0};
+    static const double q5[13][8] = {
+        {-26.98,  -9.62,  27.40,  -25.1,   -0.0, -1257,    0.0,    0.0},
+        {-27.23,  -3.07,  23.04,   35.3,   15.7, -1257,    0.0,    0.0},
+        {-30.33,  -9.23,   9.08,  -88.4,  -11.8, -1257,    0.0,    0.0},
+        {-33.54, -10.08,  13.28, -126.7,   11.6, -1257,    0.0,    0.0},
+        {-13.65,  -0.07,   9.35, -111.4,   40.6, -1257,    0.0,    0.0},
+        {-19.53,  -1.64,  15.86,  -66.8,   20.6, -1257,    0.0,    0.0},
+        {-37.99,   2.63,  16.14,   -5.7,   14.0, -1257,  107.9,  104.3},
+        {-38.33,   5.61,  15.42,    0.0,   18.7, -1189,  243.8,  155.2},
+        {-31.05,   2.83,   8.59,    0.0,   15.5, -1404,  105.5,  170.7},
+        {-29.18,  -0.09,   2.41,    0.0,   24.5, -1165,  189.7,  325.0},
+        {-18.40,   5.98,  -6.46,    0.0,    5.5,     0,    0.0,  276.6},
+        {-12.65,  -4.57,  -7.46,    0.0,   97.9,     0,    0.0,    0.0},
+        {-18.22, -15.24, -18.54,    0.0,  128.2,     0,    0.0,    0.0},
+    };
+
+    // z6: 7 basis terms.
+    static const int    j6[7] = {0, 0, 0, 1, 1, 1, 2};
+    static const int    k6[7] = {0, 1, 2, 0, 1, 2, 0};
+    static const double q6[13][7] = {
+        {-27.85,  -7.78,  27.47,  -32.1,   14.4,    9.5,   -67},
+        {-28.91,  -3.57,  22.92,    7.7,   12.6,    1.6,  -572},
+        {-26.72,  -8.74,   9.36,  -30.3,    5.6,   17.2, -1104},
+        {-29.04,  -9.69,  13.63,  -49.4,   36.3,   17.7, -1129},
+        {-12.39,  -2.16,  10.23,  -92.6,   19.8,   27.6,  -365},
+        {-18.99,  -1.93,  15.90,  -57.2,   -8.0,   19.9,  -554},
+        {-38.29,   2.59,  16.20,  -10.5,    1.4,    0.4,  -960},
+        {-36.83,   4.20,  15.76,   22.3,   11.1,   10.0, -1367},
+        {-28.37,   1.99,   9.28,   50.4,   17.2,   13.7, -1351},
+        {-24.68,  -1.37,   3.52,   86.8,   19.8,   21.3, -1380},
+        {-15.32,   4.01,  -6.03,   29.2,   14.1,    0.4,  -563},
+        {-13.73, -10.92,  -8.30,  -74.4,  196.4,  -42.0,   536},
+        {-29.53, -20.34, -18.74,  -39.5,  326.8, -262.3,  1598},
+    };
+
+    int m;
+    const int*    jj;
+    const int*    kk;
+    const double* q;     // flat pointer into the chosen table
+    int stride;
+    if (solved == 31)      { m = 8; jj = j5; kk = k5; q = &q5[0][0]; stride = 8; }
+    else if (solved == 95) { m = 7; jj = j6; kk = k6; q = &q6[0][0]; stride = 7; }
+    else return std::numeric_limits<double>::quiet_NaN();   // 2p: no recipe
+
+    // Colour basis functions (clamped, mirrors zpt.py).
+    const double c[5] = {
+        1.0,
+        std::max(-0.24, std::min(0.24, colour - 1.48)),
+        std::pow(std::min(0.24, std::max(0.0, 1.48 - colour)), 3.0),
+        std::min(0.0, colour - 1.24),
+        std::max(0.0, colour - 1.72),
+    };
+    const double b[3] = {1.0, sinBeta, sinBeta * sinBeta - 1.0 / 3.0};
+
+    // Locate the G bin and the linear interpolation weight h.
+    constexpr int n = 13;
+    int dig = 0;
+    while (dig < n && gMag >= gNodes[dig]) ++dig;
+    int ig = std::max(0, std::min(n - 2, dig - 1));
+    double h = (gNodes[ig + 1] - gNodes[ig]) > 0
+                   ? (gMag - gNodes[ig]) / (gNodes[ig + 1] - gNodes[ig])
+                   : 0.0;
+    h = std::max(0.0, std::min(1.0, h));
+
+    double zpt = 0.0;     // micro-arcseconds
+    for (int i = 0; i < m; ++i) {
+        double qi = (1.0 - h) * q[ig * stride + i] + h * q[(ig + 1) * stride + i];
+        zpt += qi * c[jj[i]] * b[kk[i]];
+    }
+    return zpt * 0.001;   // -> mas
+}
+
+// El-Badry, Rix & Heintz (2021), Eq. (16): parallax-error inflation factor.
+double elBadryErrorInflation(double gMag)
+{
+    return 0.21 * std::exp(-std::pow((gMag - 12.65) / 0.9, 2.0))
+           + 1.141 + 0.0040 * gMag - 0.00062 * gMag * gMag;
+}
+
+} // namespace
+
+void SEDFitDialog::applyGaiaDistanceCorrection()
+{
+    // Build the source selector: prefer the Gaia source_id, fall back to a
+    // small cone search on the stored coordinates.
+    const QString sourceId = _star->getSourceId().trimmed();
+    bool sourceIdNumeric = false;
+    sourceId.toLongLong(&sourceIdNumeric);
+
+    QString whereClause;
+    if (sourceIdNumeric) {
+        whereClause = "source_id = " + sourceId;
+    } else if (Star::isSet(_star->getRa()) && Star::isSet(_star->getDec())) {
+        whereClause = QString("1 = CONTAINS(POINT('ICRS', ra, dec), "
+                              "CIRCLE('ICRS', %1, %2, 0.01))")
+                          .arg(_star->getRa(), 0, 'f', 10)
+                          .arg(_star->getDec(), 0, 'f', 10);
+    } else {
+        QMessageBox::warning(this, tr("Gaia query"),
+            tr("This star has no Gaia source_id or coordinates to query."));
+        return;
+    }
+
+    const QString adql =
+        "SELECT TOP 1 phot_g_mean_mag, parallax, parallax_error, "
+        "nu_eff_used_in_astrometry, pseudocolour, astrometric_params_solved, "
+        "ra, dec FROM gaiadr3.gaia_source WHERE " + whereClause;
+
+    LOG_DEBUG("SED", QString("Gaia ADQL: %1").arg(adql));
+
+    QNetworkRequest req(QUrl("https://gea.esac.esa.int/tap-server/tap/sync"));
+    req.setHeader(QNetworkRequest::ContentTypeHeader,
+                  "application/x-www-form-urlencoded");
+    req.setRawHeader("User-Agent", "ASTRA/1.0");
+
+    QUrlQuery post;
+    post.addQueryItem("REQUEST", "doQuery");
+    post.addQueryItem("LANG", "ADQL");
+    post.addQueryItem("FORMAT", "csv");
+    post.addQueryItem("QUERY", adql);
+
+    QNetworkAccessManager nam;
+    _distCorrectBtn->setEnabled(false);
+    QApplication::setOverrideCursor(Qt::WaitCursor);
+
+    QNetworkReply* reply =
+        nam.post(req, post.toString(QUrl::FullyEncoded).toUtf8());
+    QEventLoop loop;
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+    connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timeout.start(30000);
+    loop.exec();
+
+    QApplication::restoreOverrideCursor();
+    _distCorrectBtn->setEnabled(_fixDistCb->isChecked());
+
+    if (!timeout.isActive()) {
+        reply->abort();
+        reply->deleteLater();
+        QMessageBox::warning(this, tr("Gaia query"),
+                             tr("The Gaia archive query timed out."));
+        return;
+    }
+    if (reply->error() != QNetworkReply::NoError) {
+        const QString msg = reply->errorString();
+        reply->deleteLater();
+        QMessageBox::warning(this, tr("Gaia query"),
+            tr("Gaia archive query failed:\n%1").arg(msg));
+        return;
+    }
+
+    const QString body = QString::fromUtf8(reply->readAll());
+    reply->deleteLater();
+
+    const QStringList lines = body.split('\n', Qt::SkipEmptyParts);
+    if (lines.size() < 2) {
+        QMessageBox::warning(this, tr("Gaia query"),
+            tr("No matching Gaia DR3 source was found."));
+        return;
+    }
+
+    const QStringList headers = lines[0].split(',');
+    QMap<QString, int> idx;
+    for (int i = 0; i < headers.size(); ++i)
+        idx[headers[i].trimmed().toLower().remove('"')] = i;
+    const QStringList values = lines[1].split(',');
+
+    auto getD = [&](const QString& col) -> double {
+        int i = idx.value(col.toLower(), -1);
+        if (i < 0 || i >= values.size())
+            return std::numeric_limits<double>::quiet_NaN();
+        QString s = values[i].trimmed().remove('"');
+        if (s.isEmpty()) return std::numeric_limits<double>::quiet_NaN();
+        bool ok; double v = s.toDouble(&ok);
+        return ok ? v : std::numeric_limits<double>::quiet_NaN();
+    };
+
+    const double gMag    = getD("phot_g_mean_mag");
+    const double plx     = getD("parallax");            // mas
+    const double plxErr  = getD("parallax_error");      // mas
+    const double nuEff   = getD("nu_eff_used_in_astrometry");
+    const double pscol   = getD("pseudocolour");
+    const double ra      = getD("ra");
+    const double dec     = getD("dec");
+    const int    solved  = static_cast<int>(getD("astrometric_params_solved"));
+
+    if (std::isnan(plx) || plx <= 0.0) {
+        QMessageBox::warning(this, tr("Gaia query"),
+            tr("Gaia returned no usable (positive) parallax for this source."));
+        return;
+    }
+
+    // Ecliptic latitude from ICRS coordinates (J2000 mean obliquity).
+    constexpr double kDeg2Rad = M_PI / 180.0;
+    constexpr double kEps     = 23.439279 * kDeg2Rad;
+    double sinBeta = std::sin(dec * kDeg2Rad) * std::cos(kEps)
+                   - std::cos(dec * kDeg2Rad) * std::sin(kEps) * std::sin(ra * kDeg2Rad);
+
+    const double colour = (solved == 95) ? pscol : nuEff;
+    double zpo = lindegrenParallaxZpo(gMag, colour, sinBeta, solved);
+
+    double plxCorr = plx;
+    QString zpoNote;
+    if (!std::isnan(zpo)) {
+        plxCorr = plx - zpo;   // corrected = catalogue - Z
+        zpoNote = tr("Zero-point (Lindegren 2021): %1 mas").arg(zpo, 0, 'f', 4);
+    } else {
+        zpoNote = tr("Zero-point: not available for this solution type "
+                     "(astrometric_params_solved=%1); using raw parallax.")
+                      .arg(solved);
+    }
+    if (plxCorr <= 0.0) {
+        QMessageBox::warning(this, tr("Gaia query"),
+            tr("The zero-point-corrected parallax is non-positive; "
+               "cannot derive a distance."));
+        return;
+    }
+
+    double plxErrCorr = plxErr;
+    if (!std::isnan(plxErr) && !std::isnan(gMag))
+        plxErrCorr = plxErr * elBadryErrorInflation(gMag);
+
+    const double dKpc    = 1.0 / plxCorr;                       // mas -> kpc
+    const double dErrKpc = std::isnan(plxErrCorr) ? 0.0
+                                                  : plxErrCorr / (plxCorr * plxCorr);
+
+    _fixDistCb->setChecked(true);
+    _distSpin->setValue(dKpc);
+    _distErrSpin->setValue(dErrKpc);
+
+    QMessageBox::information(this, tr("Distance corrected"),
+        tr("Applied Gaia DR3 parallax corrections.\n\n"
+           "Raw parallax: %1 ± %2 mas\n"
+           "%3\n"
+           "Error inflation (El-Badry 2021): ×%4\n\n"
+           "Distance: %5 ± %6 kpc")
+            .arg(plx, 0, 'f', 4)
+            .arg(std::isnan(plxErr) ? 0.0 : plxErr, 0, 'f', 4)
+            .arg(zpoNote)
+            .arg(std::isnan(gMag) ? 1.0 : elBadryErrorInflation(gMag), 0, 'f', 3)
+            .arg(dKpc, 0, 'f', 4)
+            .arg(dErrKpc, 0, 'f', 4));
+
+    LOG_INFO("SED", QString("Gaia distance correction for %1: plx %2 -> %3 mas, "
+                            "d = %4 ± %5 kpc")
+                        .arg(_star->getSourceId())
+                        .arg(plx).arg(plxCorr).arg(dKpc).arg(dErrKpc));
 }
 
 void SEDFitDialog::populateParamsFromFit() {
@@ -1265,6 +1568,13 @@ void SEDFitDialog::onFitSelected(int index) {
         _currentFitIndex = index;
     }
 
+    // Overlay the canonical include/exclude flags so the plot and table agree
+    // with the single source of truth.
+    if (_currentFitIndex >= 0 && _currentFitIndex < static_cast<int>(_fits.size())) {
+        ensureCanonicalPhotometryPoints();
+        applyCanonicalFlagsToFit(_fits[_currentFitIndex]);
+    }
+
     updatePlot();
     updateResidualPlot();
     updateParameterDisplay();
@@ -1843,19 +2153,87 @@ void SEDFitDialog::updateParameterDisplay()
 // Photometry table
 // ═══════════════════════════════════════════════════════════════════
 
+// ── Canonical (per-star) SED photometry points ──────────────────────
+
+std::vector<SEDPhotometryPoint>& SEDFitDialog::canonicalPhotometryPoints()
+{
+    auto phot = _star->getPhotometry();
+    if (!phot) {
+        phot = std::make_shared<Photometry>();
+        _star->setPhotometry(phot);
+    }
+    return phot->mutableSedPhotometryPoints();
+}
+
+void SEDFitDialog::ensureCanonicalPhotometryPoints()
+{
+    auto& canon = canonicalPhotometryPoints();
+    if (!canon.empty()) return;
+
+    // Seed from existing fits (backward compatibility for stars whose points
+    // only live on individual SED models). Prefer the best fit, otherwise the
+    // fit carrying the most observed points.
+    const SEDModel* source = nullptr;
+    for (const auto& f : _fits) {
+        if (f && f->isBestFit && !f->observedPoints.empty()) { source = f.get(); break; }
+    }
+    if (!source) {
+        for (const auto& f : _fits) {
+            if (f && (!source || f->observedPoints.size() > source->observedPoints.size()))
+                source = f.get();
+        }
+    }
+    if (!source || source->observedPoints.empty()) return;
+
+    canon = source->observedPoints;
+    persistCanonicalPhotometryPoints();
+}
+
+void SEDFitDialog::persistCanonicalPhotometryPoints()
+{
+    if (!_dbm) return;
+    auto phot = _star->getPhotometry();
+    if (phot)
+        _dbm->saveSedPhotometryPointsForStar(_star->getId(), phot);
+}
+
+void SEDFitDialog::applyCanonicalFlagsToFit(const std::shared_ptr<SEDModel>& model)
+{
+    if (!model) return;
+    const auto& canon = canonicalPhotometryPoints();
+    if (canon.empty()) return;
+
+    auto key = [](const SEDPhotometryPoint& p) {
+        return (p.system.trimmed() + '|' + p.passband.trimmed()).toLower();
+    };
+    for (auto& p : model->observedPoints) {
+        const QString k = key(p);
+        for (const auto& c : canon) {
+            if (key(c) == k) { p.flag = c.flag; break; }
+        }
+    }
+}
+
 void SEDFitDialog::updatePhotometryTable()
 {
     _updatingPhotTable = true;
     _photTable->setRowCount(0);
 
-    if (_currentFitIndex < 0 || _currentFitIndex >= static_cast<int>(_fits.size())) {
-        _updatingPhotTable = false;
-        return;
-    }
-
-    auto& model = _fits[_currentFitIndex];
-    const auto& pts = model->observedPoints;
+    ensureCanonicalPhotometryPoints();
+    const auto& pts = canonicalPhotometryPoints();
     _photTable->setRowCount(static_cast<int>(pts.size()));
+
+    // Residuals are fit-specific: look them up from the currently selected
+    // fit's observed points, matched by system+passband.
+    QMap<QString, QString> residualByKey;
+    if (_currentFitIndex >= 0 && _currentFitIndex < static_cast<int>(_fits.size())) {
+        for (const auto& p : _fits[_currentFitIndex]->observedPoints) {
+            if (p.diffErr > 0) {
+                const QString k = (p.system.trimmed() + '|' + p.passband.trimmed()).toLower();
+                residualByKey[k] = QString::number(p.diff / p.diffErr, 'f', 2);
+            }
+        }
+    }
 
     for (int i = 0; i < static_cast<int>(pts.size()); ++i) {
         const auto& p = pts[i];
@@ -1891,9 +2269,8 @@ void SEDFitDialog::updatePhotometryTable()
         setEditable(PC_MagErr,
             p.magnitudeErr != 0 ? QString::number(p.magnitudeErr, 'f', 4) : "-");
 
-        setReadOnly(PC_Residual,
-            (p.diffErr > 0) ? QString::number(p.diff / p.diffErr, 'f', 2)
-                            : "-");
+        const QString k = (p.system.trimmed() + '|' + p.passband.trimmed()).toLower();
+        setReadOnly(PC_Residual, residualByKey.value(k, "-"));
         setReadOnly(PC_Catalog, p.vizierCatalog);
     }
 
@@ -1903,11 +2280,8 @@ void SEDFitDialog::updatePhotometryTable()
 void SEDFitDialog::onPhotometryFlagToggled(int row, int column)
 {
     if (_updatingPhotTable) return;
-    if (_currentFitIndex < 0 || _currentFitIndex >= static_cast<int>(_fits.size()))
-        return;
 
-    auto& model = _fits[_currentFitIndex];
-    auto& pts = model->observedPoints;
+    auto& pts = canonicalPhotometryPoints();
     if (row < 0 || row >= static_cast<int>(pts.size())) return;
 
     bool changed = false;
@@ -1943,14 +2317,14 @@ void SEDFitDialog::onPhotometryFlagToggled(int row, int column)
 
     if (!changed) return;
 
-    if (_dbm) {
-        _dbm->saveSEDModelForStar(_star->getId(), model);
-    } else if (!model->getModelDataFile().isEmpty()) {
-        model->saveDataToFile(model->getModelDataFile());
-    }
+    persistCanonicalPhotometryPoints();
 
-    if (column == PC_Include)
+    if (column == PC_Include) {
+        // Reflect the change on the plotted fit and re-render.
+        if (_currentFitIndex >= 0 && _currentFitIndex < static_cast<int>(_fits.size()))
+            applyCanonicalFlagsToFit(_fits[_currentFitIndex]);
         updatePlot(true);
+    }
 }
 
 // ═══════════════════════════════════════════════════════════════════
@@ -2182,7 +2556,11 @@ void SEDFitDialog::onRunFit()
     tmpDir.setAutoRemove(false);
     _workDir = tmpDir.path();
 
-    writePhotometryDat(_workDir + "/photometry.dat");
+    // Only feed ISIS the saved photometry when the toggle is on; otherwise
+    // leave photometry.dat absent so ISIS re-queries the archives.
+    const bool useSaved = !_useSavedPhotCb || _useSavedPhotCb->isChecked();
+    if (useSaved)
+        writePhotometryDat(_workDir + "/photometry.dat");
 
     // Write script
     QString scriptPath = _workDir + "/photometry.sl";
@@ -2272,6 +2650,14 @@ void SEDFitDialog::importFitResults(const QString& workDir)
         newModel->isBestFit = true;
 
     phot->addSEDModel(newModel);
+
+    // Merge the freshly fitted/queried photometry into the canonical set
+    // (single source of truth): add points that were missing, refresh those
+    // that already exist (keeping the user's include/exclude choice).
+    if (phot->mergeSedPhotometryPoints(newModel->observedPoints))
+        persistCanonicalPhotometryPoints();
+    // Reflect the canonical include/exclude flags on the new fit for display.
+    applyCanonicalFlagsToFit(newModel);
 
     // Save to database
     if (_dbm) {
