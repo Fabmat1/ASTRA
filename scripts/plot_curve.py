@@ -130,9 +130,17 @@ def plot_rv_and_lightcurves(
         lc_bins=None, binning_config=None,
         show_rv_legend=True, show_lc_legend=True,
         legend_loc="upper right", figsize=None, fontsize=None,
+        marker_scale=1.0, lc_marker_scale=1.0,
         output_path=None, output_dir="plots", dpi=300, show=True):
 
     label = ad.star_label(star)
+
+    # marker sizes: global scale, with LC markers additionally scaled
+    # relative to the RV markers
+    ms_rv     = 10 * marker_scale                    # RV data points
+    ms_rv_res =  8 * marker_scale                    # chi_RV residuals
+    ms_lc     =  6 * marker_scale * lc_marker_scale  # LC points
+    ms_lc_res =  5 * marker_scale * lc_marker_scale  # chi_LC residuals
 
     # --- RV data + fit ---
     curve_id, rv = ad.load_rv_curve(conn, star["id"])
@@ -235,7 +243,7 @@ def plot_rv_and_lightcurves(
         m = rv["instrument"] == inst
         for sh in (-1, 0, 1):
             ax_rv.errorbar(rv_ph[m] + sh, rv["rv"][m], yerr=rv["err"][m],
-                           fmt=".", color=icol[inst], markersize=10,
+                           fmt=".", color=icol[inst], markersize=ms_rv,
                            elinewidth=1.2, label=inst if sh == 0 else "",
                            zorder=5, markeredgecolor="white",
                            markeredgewidth=0.4)
@@ -249,7 +257,7 @@ def plot_rv_and_lightcurves(
         m = rv["instrument"] == inst
         for sh in (-1, 0, 1):
             ax_res.errorbar(rv_ph[m] + sh, chi[m], yerr=1, fmt=".",
-                            color=icol[inst], markersize=8, elinewidth=1.2,
+                            color=icol[inst], markersize=ms_rv_res, elinewidth=1.2,
                             zorder=5, markeredgecolor="white",
                             markeredgewidth=0.4)
     ax_res.axhline(0, color="grey", ls="--", lw=0.8, zorder=3)
@@ -309,7 +317,7 @@ def plot_rv_and_lightcurves(
                 pb, fb, eb = bin_data(lph, fn_, en, nbins=nb)
                 for sh in (-1, 0, 1):
                     ax_lc.errorbar(pb + sh, fb, yerr=eb, fmt=".", color=col_,
-                                   markersize=6, elinewidth=0.5,
+                                   markersize=ms_lc, elinewidth=0.5,
                                    label=f"{lab} (n={nb})" if sh == 0 else "",
                                    zorder=5, markeredgecolor="white",
                                    markeredgewidth=0.4)
@@ -317,7 +325,7 @@ def plot_rv_and_lightcurves(
             else:
                 for sh in (-1, 0, 1):
                     ax_lc.errorbar(lph + sh, fn_, yerr=en, fmt=".", color=col_,
-                                   markersize=6, elinewidth=0.5,
+                                   markersize=ms_lc_res, elinewidth=0.5,
                                    label=lab if sh == 0 else "", zorder=5,
                                    markeredgecolor="white",
                                    markeredgewidth=0.4)
@@ -407,6 +415,12 @@ if __name__ == "__main__":
     p.add_argument("--lc_bins", type=int, default=None)
     p.add_argument("--binning", type=str, default=None,
                    help="Per-survey binning, e.g. 'TESS:100,ZTF:none'")
+
+    p.add_argument("--marker-scale", type=float, default=1.0,
+                   help="Scale factor for all marker sizes (default 1.0)")
+    p.add_argument("--lc-marker-scale", type=float, default=1.0,
+                   help="Extra scale factor for lightcurve markers relative "
+                        "to RV markers (default 1.0)")
     # appearance
     p.add_argument("--no-rv-legend", action="store_true")
     p.add_argument("--no-lc-legend", action="store_true")
@@ -463,5 +477,7 @@ if __name__ == "__main__":
         show_rv_legend=not args.no_rv_legend,
         show_lc_legend=not args.no_lc_legend,
         legend_loc=args.legend_loc, figsize=fs, fontsize=fsd,
+        marker_scale=args.marker_scale,
+        lc_marker_scale=args.lc_marker_scale,
         output_path=args.output, output_dir=args.output_dir,
         dpi=args.dpi, show=not args.no_show)
