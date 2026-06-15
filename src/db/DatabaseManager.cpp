@@ -1058,6 +1058,11 @@ bool DatabaseManager::saveStars(const QString& projectId, const std::vector<std:
     return _stars->saveStars(projectId, stars);
 }
 
+bool DatabaseManager::moveStarsToProject(const std::vector<QString>& starIds, const QString& targetProjectId)
+{
+    return _stars->moveStarsToProject(starIds, targetProjectId);
+}
+
 bool DatabaseManager::updateStar(const QString& projectId, std::shared_ptr<Star> star)
 {
     return _stars->updateStar(projectId, star);

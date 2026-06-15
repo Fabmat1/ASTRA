@@ -52,6 +52,31 @@ bool StarRepository::saveStars(const QString& projectId, const std::vector<std::
     }
 }
 
+bool StarRepository::moveStarsToProject(const std::vector<QString>& starIds,
+                                        const QString& targetProjectId)
+{
+    if (starIds.empty() || targetProjectId.isEmpty())
+        return false;
+
+    QSqlDatabase db = _db.threadConnection();
+    db.transaction();
+
+    QSqlQuery q(db);
+    q.prepare("UPDATE stars SET project_id = :pid WHERE id = :sid");
+    for (const auto& id : starIds) {
+        q.bindValue(":pid", targetProjectId);
+        q.bindValue(":sid", id);
+        if (!q.exec()) {
+            LOG_WARNING("DB", QString("moveStarsToProject failed for %1: %2")
+                                  .arg(id, q.lastError().text()));
+            db.rollback();
+            return false;
+        }
+    }
+    db.commit();
+    return true;
+}
+
 bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> star)
 {
     // Generate UUID if star doesn't have one

@@ -50,6 +50,7 @@ public:
     bool deleteProject(const QString& projectId);
     bool saveStar(const QString& projectId, std::shared_ptr<Star> star);
     bool saveStars(const QString& projectId, const std::vector<std::shared_ptr<Star>>& stars);
+    bool moveStarsToProject(const std::vector<QString>& starIds, const QString& targetProjectId);
     std::vector<std::shared_ptr<Star>> loadStars(const QString& projectId);
     bool updateStar(const QString& projectId, std::shared_ptr<Star> star);
     bool deleteStar(const QString& projectId, const QString& starId);

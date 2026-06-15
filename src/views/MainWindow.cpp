@@ -426,6 +426,26 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             _receiveStarsAction->setStatusTip(tr("Import stars from a shared .astra file"));
             _starsMenu->addAction(_receiveStarsAction);
             _starsMenu->addSeparator();
+
+            // Copy / Move selected stars (with all attached data) to another
+            // project. Both submenus are repopulated each time they open.
+            QMenu* copyToProjectMenu = _starsMenu->addMenu(tr("Copy to Project"));
+            copyToProjectMenu->setStatusTip(
+                tr("Copy the selected stars and all their data into another project"));
+            connect(copyToProjectMenu, &QMenu::aboutToShow, this,
+                    [this, copyToProjectMenu] {
+                        _projectView->populateCopyToProjectMenu(copyToProjectMenu);
+                    });
+
+            QMenu* moveToProjectMenu = _starsMenu->addMenu(tr("Move to Project"));
+            moveToProjectMenu->setStatusTip(
+                tr("Move the selected stars and all their data into another project"));
+            connect(moveToProjectMenu, &QMenu::aboutToShow, this,
+                    [this, moveToProjectMenu] {
+                        _projectView->populateMoveToProjectMenu(moveToProjectMenu);
+                    });
+
+            _starsMenu->addSeparator();
             _removeStarAction = _starsMenu->addAction("&Remove Selected");
             _starsMenu->addSeparator();
             _detailWindowAction = _starsMenu->addAction("View &Detail Window");

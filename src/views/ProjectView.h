@@ -166,6 +166,13 @@ public:
     void refreshTable();  // Add this line
     void receivePackageFile(const QString &path);
 
+    // (Re)fills `menu` with one entry per other project that copies / moves the
+    // currently selected stars there. Used by both the right-click menu and the
+    // Stars menu bar. Safe to call when no project is open (yields a disabled
+    // placeholder entry).
+    void populateCopyToProjectMenu(QMenu* menu);
+    void populateMoveToProjectMenu(QMenu* menu);
+
   public slots:
     void onAddStar();
     void onImportStars();
@@ -198,6 +205,10 @@ private:
     std::vector<std::shared_ptr<Star>> getSelectedStars() const;
     QModelIndex mapToSource(const QModelIndex& proxyIndex) const;
 
+    void populateTargetProjectMenu(QMenu* menu, bool move);
+    void copySelectedToProject(std::shared_ptr<Project> target);
+    void moveSelectedToProject(std::shared_ptr<Project> target);
+
     ApplicationController* _controller;
     std::shared_ptr<Project> _currentProject;
 
@@ -219,6 +230,8 @@ private:
     QAction* _reloadMetricsAction;
     QAction* _configureColumnsAction;
     QAction               *_shareAction = nullptr;
+    QMenu                 *_copyToProjectMenu = nullptr;
+    QMenu                 *_moveToProjectMenu = nullptr;
 
     QModelIndex _rightClickedIndex;
     BooleanColumnDelegate* _boolDelegate = nullptr;

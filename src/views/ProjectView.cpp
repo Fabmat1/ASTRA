@@ -157,6 +157,14 @@ void ProjectView::setupContextMenus()
     connect(_shareAction, &QAction::triggered, this,
             &ProjectView::onShareStars);
 
+    _copyToProjectMenu = _tableContextMenu->addMenu("Copy to Project");
+    connect(_copyToProjectMenu, &QMenu::aboutToShow, this,
+            [this] { populateCopyToProjectMenu(_copyToProjectMenu); });
+
+    _moveToProjectMenu = _tableContextMenu->addMenu("Move to Project");
+    connect(_moveToProjectMenu, &QMenu::aboutToShow, this,
+            [this] { populateMoveToProjectMenu(_moveToProjectMenu); });
+
     _openDetailAction = _tableContextMenu->addAction("Open Detail View");
     connect(_openDetailAction, &QAction::triggered, this, &ProjectView::onShowDetailWindow);
     
@@ -379,7 +387,9 @@ void ProjectView::onTableContextMenu(const QPoint& pos)
     _openDetailAction->setEnabled(index.isValid());
     _removeSelectedAction->setEnabled(hasSelection);
     _reloadMetricsAction->setEnabled(hasSelection);
-    if (_shareAction) _shareAction->setEnabled(true); 
+    if (_shareAction) _shareAction->setEnabled(true);
+    if (_copyToProjectMenu) _copyToProjectMenu->menuAction()->setEnabled(hasSelection);
+    if (_moveToProjectMenu) _moveToProjectMenu->menuAction()->setEnabled(hasSelection);
 
     _tableContextMenu->exec(_starTable->viewport()->mapToGlobal(pos));
 }
@@ -514,6 +524,86 @@ void ProjectView::onShareStars() {
     }
 
     StarShare::exportStarsInteractive(this, _controller, stars);
+}
+
+void ProjectView::populateCopyToProjectMenu(QMenu* menu)
+{
+    populateTargetProjectMenu(menu, /*move=*/false);
+}
+
+void ProjectView::populateMoveToProjectMenu(QMenu* menu)
+{
+    populateTargetProjectMenu(menu, /*move=*/true);
+}
+
+void ProjectView::populateTargetProjectMenu(QMenu* menu, bool move)
+{
+    if (!menu) return;
+    menu->clear();
+
+    const auto projects = _controller->getProjects();
+    const QString currentId = _currentProject ? _currentProject->getId() : QString();
+
+    bool any = false;
+    for (const auto& project : projects) {
+        if (!project || project->getId() == currentId)
+            continue;
+        any = true;
+        QAction* act = menu->addAction(project->getName());
+        if (move)
+            connect(act, &QAction::triggered, this,
+                    [this, project] { moveSelectedToProject(project); });
+        else
+            connect(act, &QAction::triggered, this,
+                    [this, project] { copySelectedToProject(project); });
+    }
+
+    if (!any) {
+        QAction* placeholder = menu->addAction("(no other projects)");
+        placeholder->setEnabled(false);
+    }
+}
+
+void ProjectView::copySelectedToProject(std::shared_ptr<Project> target)
+{
+    if (!target) return;
+
+    auto stars = getSelectedStars();
+    if (stars.empty()) {
+        QMessageBox::information(this, "Copy to Project", "No stars selected.");
+        return;
+    }
+
+    const int n = StarShare::copyStarsToProject(this, _controller, stars, target);
+    if (n > 0)
+        updateStatusBar(QString("Copied %1 star%2 to \"%3\".")
+                            .arg(n)
+                            .arg(n != 1 ? "s" : "")
+                            .arg(target->getName()));
+}
+
+void ProjectView::moveSelectedToProject(std::shared_ptr<Project> target)
+{
+    if (!target || !_currentProject || !_tableModel) return;
+
+    auto stars = getSelectedStars();
+    if (stars.empty()) {
+        QMessageBox::information(this, "Move to Project", "No stars selected.");
+        return;
+    }
+
+    const int n = StarShare::moveStarsToProject(this, _controller, stars,
+                                                _currentProject, target);
+    if (n > 0) {
+        // The moved stars were detached from the current project in-memory;
+        // refresh the table to reflect their removal.
+        _tableModel->refresh();
+        updateStatusBar(QString("Moved %1 star%2 to \"%3\". %4 stars remaining.")
+                            .arg(n)
+                            .arg(n != 1 ? "s" : "")
+                            .arg(target->getName())
+                            .arg(_currentProject->getStarCount()));
+    }
 }
 
 void ProjectView::onImportStars()

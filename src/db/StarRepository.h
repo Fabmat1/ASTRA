@@ -15,6 +15,10 @@ public:
 
     bool saveStar(const QString& projectId, std::shared_ptr<Star> star);
     bool saveStars(const QString& projectId, const std::vector<std::shared_ptr<Star>>& stars);
+    // Reassigns the given stars to another project. All attached data
+    // (spectra, photometry, SEDs, RV, periodograms) is linked by star_id and
+    // therefore moves with the star automatically. Runs in one transaction.
+    bool moveStarsToProject(const std::vector<QString>& starIds, const QString& targetProjectId);
     bool updateStar(const QString& projectId, std::shared_ptr<Star> star);
     bool deleteStar(const QString& projectId, const QString& starId);
     size_t getStarCountForProject(const QString& projectId);

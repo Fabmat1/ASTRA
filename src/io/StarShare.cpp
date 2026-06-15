@@ -22,6 +22,7 @@
 #include <QUuid>
 #include <QtConcurrent>
 
+#include <algorithm>
 #include <functional>
 
 namespace {
@@ -384,6 +385,143 @@ void exportStarsInteractive(QWidget *parent,
                                  .arg(stars.size())
                                  .arg(stars.size() != 1 ? "s" : "")
                                  .arg(path));
+}
+
+int copyStarsToProject(QWidget *parent, ApplicationController *controller,
+                       const std::vector<std::shared_ptr<Star>> &stars,
+                       std::shared_ptr<Project>                  target) {
+    if (!controller || !target || stars.empty())
+        return 0;
+
+    DatabaseManager *dbm      = controller->databaseManager();
+    const QString    targetId = target->getId();
+
+    struct CopyOutcome {
+        bool    ok    = false;
+        int     saved = 0;
+        QString error;
+    };
+
+    // The whole pipeline runs off the GUI thread behind a modal progress bar:
+    // serializing to a buffer deep-loads lazy side-files, reading it back yields
+    // detached star objects holding all their data in memory, and persisting
+    // (with remapped IDs + cleared data-file paths) writes fresh DataStore
+    // files so the copies never share storage with the originals.
+    const CopyOutcome out = runWithProgress<CopyOutcome>(
+        parent, QStringLiteral("Copying stars…"),
+        [dbm, targetId, stars](const StarPackage::ProgressFn &report)
+            -> CopyOutcome {
+            CopyOutcome o;
+
+            // Serialize → progress 0..45.
+            QString          err;
+            const QByteArray buf = StarPackage::writeToBuffer(
+                stars, StarPackage::ExportOptions{}, &err,
+                StarPackage::InstrumentResolver{},
+                [&report](int p, const QString &ph) {
+                    report(int(p * 0.45), ph);
+                });
+            if (buf.isEmpty()) {
+                o.error = err.isEmpty()
+                              ? QStringLiteral("Failed to serialize stars.")
+                              : err;
+                return o;
+            }
+
+            // Read back → progress 45..55.
+            auto pkg = StarPackage::readFromBuffer(
+                buf, [&report](int p, const QString &ph) {
+                    report(45 + int(p * 0.10), ph);
+                });
+            if (!pkg.success) {
+                o.error = pkg.error;
+                return o;
+            }
+
+            // Persist into the target project → progress 55..100. Instruments
+            // are referenced by id and live in the same database, so there is
+            // nothing to import for them here.
+            dbm->beginTransaction();
+            const int n = int(pkg.stars.size());
+            int       i = 0;
+            o.ok        = true;
+            for (auto &star : pkg.stars) {
+                ++i;
+                if (!star)
+                    continue;
+                remapIdsForImport(star);
+                if (!persistImportedStar(dbm, targetId, star)) {
+                    o.ok = false;
+                    break;
+                }
+                ++o.saved;
+                report(55 + int(45.0 * i / std::max(1, n)),
+                       QStringLiteral("Saving star %1 of %2").arg(i).arg(n));
+            }
+            if (o.ok)
+                dbm->commitTransaction();
+            else
+                dbm->rollbackTransaction();
+            return o;
+        });
+
+    if (!out.ok) {
+        QMessageBox::critical(
+            parent, "Copy Failed",
+            QString("Could not copy stars:\n%1").arg(out.error));
+        return -1;
+    }
+
+    // Drop any in-memory star cache for the target so the next time it is
+    // opened it reloads from the database (with proper lazy loaders) and shows
+    // the freshly copied stars.
+    target->setStars({}, false);
+
+    QMessageBox::information(
+        parent, "Stars Copied",
+        QString("Copied %1 star%2 to project \"%3\".")
+            .arg(out.saved)
+            .arg(out.saved != 1 ? "s" : "")
+            .arg(target->getName()));
+    return out.saved;
+}
+
+int moveStarsToProject(QWidget *parent, ApplicationController *controller,
+                       const std::vector<std::shared_ptr<Star>> &stars,
+                       std::shared_ptr<Project>                  source,
+                       std::shared_ptr<Project>                  target) {
+    if (!controller || !target || stars.empty())
+        return 0;
+
+    DatabaseManager     *dbm = controller->databaseManager();
+    std::vector<QString> ids;
+    ids.reserve(stars.size());
+    for (const auto &s : stars)
+        if (s && !s->getId().isEmpty())
+            ids.push_back(s->getId());
+    if (ids.empty())
+        return 0;
+
+    if (!dbm->moveStarsToProject(ids, target->getId())) {
+        QMessageBox::critical(
+            parent, "Move Failed",
+            "Could not move the stars. No changes were made.");
+        return -1;
+    }
+
+    // Detach the moved stars from the source's in-memory list (the caller
+    // refreshes its view) and invalidate the target cache so it reloads fresh.
+    if (source)
+        source->removeStars(stars);
+    target->setStars({}, false);
+
+    QMessageBox::information(
+        parent, "Stars Moved",
+        QString("Moved %1 star%2 to project \"%3\".")
+            .arg(ids.size())
+            .arg(ids.size() != 1 ? "s" : "")
+            .arg(target->getName()));
+    return int(ids.size());
 }
 
 } // namespace StarShare
