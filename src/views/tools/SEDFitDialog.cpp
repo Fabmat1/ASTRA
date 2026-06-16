@@ -1197,24 +1197,14 @@ void SEDFitDialog::initDefaultFitParams() {
     bool   teffFromValue = false, loggFromValue = false, heFromValue = false;
 
     // ── Third priority: midpoint of the selected grid's boundaries ─────
-    bool   gridOk   = false;
-    double gTeffMin = 0, gTeffMax = 0, gLoggMin = 0, gLoggMax = 0, gHeMin = 0,
-           gHeMax = 0;
     if (_gridSelector1) {
         if (auto g = _gridSelector1->selectedGrid()) {
-            gridOk   = true;
-            gTeffMin = g->teffMin;
-            gTeffMax = g->teffMax;
-            gLoggMin = g->loggMin;
-            gLoggMax = g->loggMax;
-            gHeMin   = g->heMin;
-            gHeMax   = g->heMax;
-            if (gTeffMax > gTeffMin)
-                teff = 0.5 * (gTeffMin + gTeffMax);
-            if (gLoggMax > gLoggMin)
-                logg = 0.5 * (gLoggMin + gLoggMax);
-            if (gHeMax > gHeMin)
-                he = 0.5 * (gHeMin + gHeMax);
+            if (g->teffMax > g->teffMin)
+                teff = 0.5 * (g->teffMin + g->teffMax);
+            if (g->loggMax > g->loggMin)
+                logg = 0.5 * (g->loggMin + g->loggMax);
+            if (g->heMax > g->heMin)
+                he = 0.5 * (g->heMin + g->heMax);
         }
     }
 
@@ -1266,18 +1256,16 @@ void SEDFitDialog::initDefaultFitParams() {
     double heMin = 0, heMax = 0;
     bool   heRange = false, heFrozen = false;
 
+    // When we have a real fitted/spectroscopic value, freeze it within its
+    // uncertainty range. Otherwise (only grid midpoints or plain defaults)
+    // leave Teff/logg/He free with no min/max so the fit can explore them.
     if (teffFromValue) {
         double tot = teffError(teff, eTeff, heRich);
         teffMin    = std::max(teff - tot, 3000.0);
         teffMax    = teff + tot;
         teffRange  = true;
         teffFrozen = true;
-    } else if (gridOk && gTeffMax > gTeffMin) {
-        teffMin    = gTeffMin;
-        teffMax    = gTeffMax;
-        teffRange  = true;
-        teffFrozen = false;
-    } // else: pure default -> no range, unfrozen
+    }
 
     if (loggFromValue) {
         double tot = loggError(teff, logg, eLogg, heRich);
@@ -1285,11 +1273,6 @@ void SEDFitDialog::initDefaultFitParams() {
         loggMax    = std::min(logg + tot, 9.5);
         loggRange  = true;
         loggFrozen = true;
-    } else if (gridOk && gLoggMax > gLoggMin) {
-        loggMin    = gLoggMin;
-        loggMax    = gLoggMax;
-        loggRange  = true;
-        loggFrozen = false;
     }
 
     if (heFromValue) {
@@ -1298,11 +1281,6 @@ void SEDFitDialog::initDefaultFitParams() {
         heMax      = std::min(he + tot, 0.0);
         heRange    = true;
         heFrozen   = true;
-    } else if (gridOk && gHeMax > gHeMin) {
-        heMin    = gHeMin;
-        heMax    = gHeMax;
-        heRange  = true;
-        heFrozen = false;
     }
 
     _fitParams = {
@@ -2206,11 +2184,38 @@ void SEDFitDialog::applyCanonicalFlagsToFit(const std::shared_ptr<SEDModel>& mod
     auto key = [](const SEDPhotometryPoint& p) {
         return (p.system.trimmed() + '|' + p.passband.trimmed()).toLower();
     };
+    auto findCanon = [&](const QString& k) -> const SEDPhotometryPoint* {
+        for (const auto& c : canon)
+            if (key(c) == k) return &c;
+        return nullptr;
+    };
+
+    // 1. Sync the user's include/exclude choice onto the points the fit emitted.
+    //    Excluded bands are dropped from the fit (or echoed without SED flux),
+    //    so fall back to the canonical SED data for those, otherwise the point
+    //    can't be plotted at all.
+    QSet<QString> present;
     for (auto& p : model->observedPoints) {
         const QString k = key(p);
-        for (const auto& c : canon) {
-            if (key(c) == k) { p.flag = c.flag; break; }
+        present.insert(k);
+        const auto* c = findCanon(k);
+        if (!c) continue;
+        p.flag = c->flag;
+        if (!(p.lambda > 0.0 && p.flux > 0.0) &&
+            c->lambda > 0.0 && c->flux > 0.0) {
+            p.lambda    = c->lambda;    p.lambdaMin = c->lambdaMin;
+            p.lambdaMax = c->lambdaMax; p.flux      = c->flux;
+            p.fluxMin   = c->fluxMin;   p.fluxMax   = c->fluxMax;
         }
+    }
+
+    // 2. Canonical points the fit omitted entirely: add them back (using their
+    //    last-known SED data) so excluded points still appear on the plot and
+    //    re-checking them in the table brings them back.
+    for (const auto& c : canon) {
+        if (present.contains(key(c))) continue;
+        if (c.lambda > 0.0 && c.flux > 0.0)
+            model->observedPoints.push_back(c);
     }
 }
 

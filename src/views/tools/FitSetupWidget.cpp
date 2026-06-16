@@ -165,6 +165,8 @@ void FitSetupWidget::setupUi()
     if (_ctx.panel) {
         connect(_ctx.panel, &SpectraPanel::fitPreviewEdited,
                 this, &FitSetupWidget::onFitPreviewEdited);
+        connect(_ctx.panel, &SpectraPanel::selectionChanged,
+                this, &FitSetupWidget::onPanelSelectionChanged);
     }
     updateBackendSpecificUi();
 }
@@ -634,6 +636,42 @@ void FitSetupWidget::onSpectrumListRowChanged(int row)
     pushPreviewToPanel();
 }
 
+void FitSetupWidget::onPanelSelectionChanged(const QString& spectrumId,
+                                             const QString& /*fitId*/)
+{
+    // The panel emits this both when the user clicks a tab and when we drive it
+    // ourselves. While the Fit Setup preview is active we want the panel to keep
+    // showing the raw spectrum with the fit-preview overlay (anchors, ignore
+    // regions, fit range) - not the best-fit model that displaySpectrum() picks
+    // by default. The re-entrancy guard stops the panel→list→panel sync looping.
+    if (!_previewActive || _syncingPanelSelection || spectrumId.isEmpty())
+        return;
+
+    _syncingPanelSelection = true;
+
+    if (spectrumId != _currentId) {
+        // User navigated to a different spectrum via the panel's tab bar.
+        // Mirror it in the list so the row highlights; the row-change handler
+        // re-establishes the raw + preview view for the new spectrum.
+        for (int i = 0; i < _spectraList->count(); ++i) {
+            if (_spectraList->item(i)->data(Qt::UserRole).toString() == spectrumId) {
+                _spectraList->setCurrentRow(i);
+                break;
+            }
+        }
+    } else {
+        // Same spectrum, but displaySpectrum() reverted to the best-fit model.
+        // Restore the raw spectrum and re-apply the fit-preview overlay.
+        if (_ctx.panel) {
+            _ctx.panel->clearFitSelection();
+            _ctx.panel->setDisplayMode(SpectraPanel::DisplayRaw);
+        }
+        pushPreviewToPanel();
+    }
+
+    _syncingPanelSelection = false;
+}
+
 void FitSetupWidget::commitEditorToState()
 {
     if (_currentId.isEmpty() || !_configs.contains(_currentId)) return;
@@ -823,7 +861,37 @@ FitSetupWidget::PerSpec FitSetupWidget::makeDefaultConfig(
     const auto* mode = inst->mode(modeKey);
     if (!mode || !mode->hasSpectralProperties()) return cfg;
 
-    const auto& d = mode->spectral().fitDefaults;
+    const auto& spec = mode->spectral();
+
+    // Derive the actual resolution from the instrument mode's R(λ) model.
+    // DIGGA expresses resolution as the linear form res_offset + res_slope·λ,
+    // which is exactly the constant/linear ResolutionModel coefficients.
+    const auto& resModel = spec.resolution;
+    if (resModel.isValid()) {
+        const auto& c = resModel.coefficients;
+        if (c.size() == 1) {
+            cfg.resOffset = c[0];
+            cfg.resSlope  = 0.0;
+        } else if (c.size() == 2) {
+            cfg.resOffset = c[0];
+            cfg.resSlope  = c[1];
+        } else {
+            // Higher-order model: linearise R(λ) across the fit band so the
+            // offset+slope form best approximates the true resolution there.
+            const double lo = cfg.wlMin, hi = cfg.wlMax;
+            if (hi > lo) {
+                const double rlo = resModel.at(lo), rhi = resModel.at(hi);
+                cfg.resSlope  = (rhi - rlo) / (hi - lo);
+                cfg.resOffset = rlo - cfg.resSlope * lo;
+            } else {
+                cfg.resOffset = resModel.at(lo);
+                cfg.resSlope  = 0.0;
+            }
+        }
+    }
+
+    // Explicit per-mode fit defaults (if a user saved them) take precedence.
+    const auto& d = spec.fitDefaults;
     if (d.wlMin)     cfg.wlMin     = *d.wlMin;
     if (d.wlMax)     cfg.wlMax     = *d.wlMax;
     if (d.resOffset) cfg.resOffset = *d.resOffset;

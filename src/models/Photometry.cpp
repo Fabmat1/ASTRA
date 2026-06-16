@@ -878,6 +878,13 @@ bool Photometry::mergeSedPhotometryPoints(const std::vector<SEDPhotometryPoint>&
             const int keepFlag = it->flag;
             SEDPhotometryPoint merged = in;
             merged.flag = keepFlag;
+            // Excluded/non-fitted bands come back from the fit without valid SED
+            // flux; don't let that erase the data we need to keep plotting them.
+            if (!(in.lambda > 0.0 && in.flux > 0.0)) {
+                merged.lambda    = it->lambda;    merged.lambdaMin = it->lambdaMin;
+                merged.lambdaMax = it->lambdaMax; merged.flux      = it->flux;
+                merged.fluxMin   = it->fluxMin;   merged.fluxMax   = it->fluxMax;
+            }
             *it = merged;
             changed = true;
         }

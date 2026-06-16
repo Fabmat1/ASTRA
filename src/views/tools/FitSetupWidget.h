@@ -60,6 +60,7 @@ private slots:
     void onResetToModeDefault();
     void onFitPreviewEdited(const FitPreviewConfig& pc);
     void onPreviewScript();
+    void onPanelSelectionChanged(const QString& spectrumId, const QString& fitId);
 
 private:
     struct PerSpec {
@@ -161,6 +162,7 @@ private:
 
     bool _applyingPreviewEdit = false;
     bool _previewActive = false;
+    bool _syncingPanelSelection = false;   // guards panel↔list selection sync
 
     // ── ISIS (interactive) options ──────────────────────────────
     astra::fitting::IsisInteractiveOptions _isisInteractiveOptions;
