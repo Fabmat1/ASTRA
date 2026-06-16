@@ -962,14 +962,27 @@ void RadialVelocityCurve::reconcileWithSpectra(
             if (_pointPersistCb) _pointPersistCb(pt);
             changed = true;
         } else {
+            bool localChanged = false;
             if (linkDrifted) {
                 existing->setSourceFit(best);
                 existing->setSourceSpectrum(spec);
                 existing->applyFromFit(*best);
+                localChanged = true;
             }
-            if (bjdMissing) resolveBjd(existing);
-            if (_pointPersistCb) _pointPersistCb(existing);
-            changed = true;
+            if (bjdMissing) {
+                resolveBjd(existing);
+                // Only a real change if the BJD was actually resolved. When the
+                // instrument can't be resolved the BJD stays missing; reporting
+                // "changed" anyway makes every reconcile notify listeners, and a
+                // listener that re-syncs (e.g. RVPanel::populate) then recurses
+                // without end → stack overflow. A no-op must stay silent.
+                const double nb = existing->getBJD();
+                if (nb > 0.0 && !std::isnan(nb)) localChanged = true;
+            }
+            if (localChanged) {
+                if (_pointPersistCb) _pointPersistCb(existing);
+                changed = true;
+            }
         }
     }
 
