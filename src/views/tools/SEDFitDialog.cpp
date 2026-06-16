@@ -1209,17 +1209,19 @@ void SEDFitDialog::initDefaultFitParams() {
     }
 
     // ── Second priority: Star spectroscopic fields (manual input) ──────
-    if (Star::isSet(_star->getTeff())) {
+    // Treat a stored 0 as "not set" (some stars carry 0 instead of NaN);
+    // otherwise we'd freeze the fit on a bogus zero value + range.
+    if (Star::isSet(_star->getTeff()) && _star->getTeff() > 0.0) {
         teff  = _star->getTeff();
         eTeff = Star::isSet(_star->getETeff()) ? _star->getETeff() : 0.0;
         teffFromValue = true;
     }
-    if (Star::isSet(_star->getLogg())) {
+    if (Star::isSet(_star->getLogg()) && _star->getLogg() > 0.0) {
         logg  = _star->getLogg();
         eLogg = Star::isSet(_star->getELogg()) ? _star->getELogg() : 0.0;
         loggFromValue = true;
     }
-    if (Star::isSet(_star->getHe())) {
+    if (Star::isSet(_star->getHe()) && _star->getHe() != 0.0) {
         he          = _star->getHe();
         eHe         = Star::isSet(_star->getEHe()) ? _star->getEHe() : 0.0;
         heFromValue = true;
