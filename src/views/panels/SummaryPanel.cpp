@@ -421,7 +421,11 @@ QWidget* SummaryPanel::createNameHeader()
             refresh();                     // re-render this panel
         }
     });
-    nameRow->addWidget(editBtn);
+    // Align to the top of the row rather than its geometric centre: the 20px
+    // label box carries descent/leading space below the glyphs, so a centred
+    // pen drifts down toward the alias line. Top alignment puts the icon on the
+    // name's optical (cap-height) centre.
+    nameRow->addWidget(editBtn, 0, Qt::AlignTop);
     nameRow->addStretch();
 
     nameCol->addLayout(nameRow);

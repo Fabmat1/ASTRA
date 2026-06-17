@@ -360,6 +360,59 @@ struct BasisTerm {
 };
 
 // ──────────────────────────────────────────────────────────────────────
+// Per-frequency normal-equations solve:  p[i] = (XTy)^T (XTX)^-1 (XTy)
+//
+// XTX is symmetric positive-definite, so only its lower triangle is filled;
+// Eigen's ldlt() reads exactly that triangle (UpLo == Lower by default), which
+// makes this numerically identical to filling the full matrix while halving the
+// getXTX calls. Templating on the (small, fixed) basis dimension lets Eigen
+// stack-allocate and fully unroll the solve, removing the per-bin heap traffic a
+// dynamic MatrixXd would otherwise incur across millions of frequency bins.
+// ──────────────────────────────────────────────────────────────────────
+
+template <int Dim, typename FXTX, typename FXTy>
+void solveGLSLoop(int Nf, const BasisTerm* order,
+                  const FXTX& getXTX, const FXTy& getXTy, double* output)
+{
+    #pragma omp parallel
+    {
+        Eigen::Matrix<double, Dim, Dim> XTX;
+        Eigen::Matrix<double, Dim, 1>   XTy;
+        #pragma omp for schedule(static)
+        for (int i = 0; i < Nf; ++i) {
+            for (int b = 0; b < Dim; ++b) {
+                for (int a = 0; a <= b; ++a)
+                    XTX(b, a) = getXTX(order[a], order[b], i);
+                XTy(b) = getXTy(order[b], i);
+            }
+            output[i] = XTy.dot(XTX.ldlt().solve(XTy));
+        }
+    }
+}
+
+// Fallback for large nterms (basis dim > 7): dynamic size, but the working
+// matrices are allocated once per thread rather than once per frequency bin.
+template <typename FXTX, typename FXTy>
+void solveGLSLoopDyn(int Nf, int Dim, const BasisTerm* order,
+                     const FXTX& getXTX, const FXTy& getXTy, double* output)
+{
+    #pragma omp parallel
+    {
+        Eigen::MatrixXd XTX(Dim, Dim);
+        Eigen::VectorXd XTy(Dim);
+        #pragma omp for schedule(static)
+        for (int i = 0; i < Nf; ++i) {
+            for (int b = 0; b < Dim; ++b) {
+                for (int a = 0; a <= b; ++a)
+                    XTX(b, a) = getXTX(order[a], order[b], i);
+                XTy(b) = getXTy(order[b], i);
+            }
+            output[i] = XTy.dot(XTX.ldlt().solve(XTy));
+        }
+    }
+}
+
+// ──────────────────────────────────────────────────────────────────────
 // Core GLS computation
 // ──────────────────────────────────────────────────────────────────────
 
@@ -442,18 +495,18 @@ void gls_fast(const vector<double>& t_in,
         return A.is_sin ? Syw[A.index][i] : Cyw[A.index][i];
     };
 
-    #pragma omp parallel for
-    for (int i = 0; i < Nf; ++i) {
-        Eigen::MatrixXd XTX(order_size, order_size);
-        Eigen::VectorXd XTy(order_size);
-
-        for (size_t b = 0; b < order_size; ++b) {
-            for (size_t a = 0; a < order_size; ++a)
-                XTX(b, a) = getXTX(order[a], order[b], i);
-            XTy(b) = getXTy(order[b], i);
-        }
-
-        output[i] = XTy.dot(XTX.ldlt().solve(XTy));
+    const BasisTerm* ord = order.data();
+    switch (order_size) {
+        case 1: solveGLSLoop<1>(Nf, ord, getXTX, getXTy, output); break;
+        case 2: solveGLSLoop<2>(Nf, ord, getXTX, getXTy, output); break;
+        case 3: solveGLSLoop<3>(Nf, ord, getXTX, getXTy, output); break;
+        case 4: solveGLSLoop<4>(Nf, ord, getXTX, getXTy, output); break;
+        case 5: solveGLSLoop<5>(Nf, ord, getXTX, getXTy, output); break;
+        case 6: solveGLSLoop<6>(Nf, ord, getXTX, getXTy, output); break;
+        case 7: solveGLSLoop<7>(Nf, ord, getXTX, getXTy, output); break;
+        default:
+            solveGLSLoopDyn(Nf, (int)order_size, ord, getXTX, getXTy, output);
+            break;
     }
 
     if (normalization == 0) {
