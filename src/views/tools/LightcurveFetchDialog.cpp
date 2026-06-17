@@ -1524,29 +1524,22 @@ QWidget* LightcurveFetchDialog::buildPreviewsTab()
     _previewTitle->setStyleSheet("font-size: 16px; font-weight: bold;");
     root->addWidget(_previewTitle);
 
+    // The TESS CROWDSAP value is folded into this description line (see
+    // refreshPreviewsTab) so the layout is identical for every preview and the
+    // image area never changes size between frames. RichText lets us colour it.
     _previewDesc = new QLabel;
+    _previewDesc->setTextFormat(Qt::RichText);
     _previewDesc->setAlignment(Qt::AlignCenter);
     _previewDesc->setWordWrap(true);
     _previewDesc->setStyleSheet("color: gray;");
     root->addWidget(_previewDesc);
 
-    // CROWDSAP - only shown when the TESS image is on screen.
-    _crowdsapTabLabel = new QLabel;
-    _crowdsapTabLabel->setTextFormat(Qt::RichText);
-    _crowdsapTabLabel->setAlignment(Qt::AlignCenter);
-    _crowdsapTabLabel->setStyleSheet(
-        "QLabel { font-size: 13px; padding: 4px 6px; }");
-    root->addWidget(_crowdsapTabLabel);
-
     _previewImage = new QLabel;
     _previewImage->setAlignment(Qt::AlignCenter);
     _previewImage->setMinimumSize(480, 480);
     _previewImage->setStyleSheet("color: gray;");
-    // Re-fit the pixmap whenever the label's geometry settles. The CROWDSAP
-    // row (shown only for TESS) changes the height available here, and that
-    // relayout lands *after* refreshPreviewsTab() runs, so scaling solely off
-    // the size at refresh time would crop the TESS frame. Rescaling on resize
-    // keeps every preview fitted to the final geometry.
+    // Re-fit the pixmap whenever the label's geometry settles, so every preview
+    // (and dialog resize) stays fitted to the final geometry.
     _previewImage->installEventFilter(this);
     root->addWidget(_previewImage, 1);
 
@@ -1593,15 +1586,30 @@ void LightcurveFetchDialog::refreshPreviewsTab()
 
     _previewTitle->setText(QString("%1   (%2 / %3)")
         .arg(e.title).arg(_previewIndex + 1).arg(entries.size()));
-    _previewDesc->setText(e.description);
 
-    // Toggle the CROWDSAP row *before* fitting the image: it only shows for
-    // TESS and steals vertical space from _previewImage. Setting it first lets
-    // the resulting relayout drive the (eventFilter-based) rescale, so the
-    // TESS frame is fitted to its final, smaller height instead of being
-    // scaled too tall and then clipped by the label.
+    // For TESS, append the CROWDSAP value to the description line rather than
+    // using a separate row, so the image area stays the same size across all
+    // previews (an extra row would otherwise squeeze the TESS frame).
     const bool isTess = (e.filename == QLatin1String("tess_preview.png"));
-    _crowdsapTabLabel->setVisible(isTess);
+    QString desc = e.description;
+    if (isTess) {
+        const double v = _star->getTessCrowdsap();
+        if (Star::isSet(v)) {
+            QString interp = "uncontaminated";
+            QString color  = "#7dbd5e";
+            if      (v < 0.5)  { interp = "heavily contaminated";  color = "#c46060"; }
+            else if (v < 0.8)  { interp = "contaminated";          color = "#dca84d"; }
+            else if (v < 0.95) { interp = "slightly contaminated"; color = "#dca84d"; }
+            desc += QString("&nbsp;&nbsp;&middot;&nbsp;&nbsp;"
+                            "<b>CROWDSAP</b> = "
+                            "<span style=\"color:%1;font-weight:bold;\">%2</span> "
+                            "(%3)")
+                        .arg(color).arg(v, 0, 'f', 3).arg(interp);
+        } else {
+            desc += "&nbsp;&nbsp;&middot;&nbsp;&nbsp;CROWDSAP not available";
+        }
+    }
+    _previewDesc->setText(desc);
 
     const QString path = previewPath(e.filename);
     QPixmap pm;
@@ -1616,25 +1624,6 @@ void LightcurveFetchDialog::refreshPreviewsTab()
         _previewImage->setText(QString("(no %1 preview yet)").arg(e.title));
         _previewImage->setToolTip(QString());
         _previewImage->setStyleSheet("color: gray;");
-    }
-
-    if (isTess) {
-        const double v = _star->getTessCrowdsap();
-        if (Star::isSet(v)) {
-            QString interp = "uncontaminated";
-            QString color  = "#7dbd5e";
-            if      (v < 0.5)  { interp = "heavily contaminated";  color = "#c46060"; }
-            else if (v < 0.8)  { interp = "contaminated";          color = "#dca84d"; }
-            else if (v < 0.95) { interp = "slightly contaminated"; color = "#dca84d"; }
-            _crowdsapTabLabel->setText(
-                QString("TESS <b>CROWDSAP</b> = "
-                        "<span style=\"color:%1;font-weight:bold;\">%2</span>  "
-                        "<span style=\"color:gray;\">(%3)</span>  ")
-                    .arg(color).arg(v, 0, 'f', 3).arg(interp));
-        } else {
-            _crowdsapTabLabel->setText(
-                "<span style=\"color:gray;\">TESS CROWDSAP not available.</span>");
-        }
     }
 }
 

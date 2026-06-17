@@ -222,7 +222,6 @@ private slots:
     QLabel*      _previewDesc       = nullptr;
     QLabel*      _previewImage      = nullptr;
     QPixmap      _previewPixmap;                  // unscaled source for the current preview
-    QLabel*      _crowdsapTabLabel  = nullptr;   // already existed; keep it
     QPushButton* _prevPreviewBtn    = nullptr;
     QPushButton* _nextPreviewBtn    = nullptr;
     int          _previewIndex      = 0;
