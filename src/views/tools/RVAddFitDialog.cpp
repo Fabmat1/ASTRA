@@ -69,10 +69,10 @@ RVAddFitDialog::RVAddFitDialog(std::shared_ptr<Star> star,
     buildBootstrapTab(bsTab);
     buildManualTab(manualTab);
 
+    _tabs->addTab(bsTab,     "χ² Landscape");
     _tabs->addTab(mcmcTab,   "RV-MCMC");
     _tabs->addTab(photTab,   "From Photometry");
     _tabs->addTab(pgTab,     "RV Periodogram");
-    _tabs->addTab(bsTab,     "χ² Landscape");
     _tabs->addTab(manualTab, "Manual");
     _bsTabIndex     = _tabs->indexOf(bsTab);
     _manualTabIndex = _tabs->indexOf(manualTab);
@@ -86,7 +86,7 @@ RVAddFitDialog::RVAddFitDialog(std::shared_ptr<Star> star,
     connect(_buttons, &QDialogButtonBox::rejected, this, &QDialog::reject);
     connect(_tabs, &QTabWidget::currentChanged, this, &RVAddFitDialog::onTabChanged);
 
-    _tabs->setCurrentIndex(0);     // RV-MCMC default
+    _tabs->setCurrentIndex(0);     // χ² Landscape default
     onTabChanged(0);
 
     populatePeriodogramSources();
@@ -956,10 +956,24 @@ LMResult fitCircularLM(const std::vector<double>& t,
 double fitCellChi2(const std::vector<double>& t,
                    const std::vector<double>& y,
                    const std::vector<double>& sigma,
-                   double P0, double Pmin, double Pmax)
+                   double P0, double Pmin, double Pmax,
+                   double Kmin, double Kmax, double gMin, double gMax)
 {
     const int N = int(t.size());
     if (N < 4 || !(P0 > 0)) return std::numeric_limits<double>::infinity();
+
+    // Clamp γ and the semi-amplitude K=√(Kc²+Ks²) into their bounds while
+    // preserving the phase (scale Kc,Ks together). Two compares + a hypot per
+    // call — negligible against the LM step it guards.
+    auto clampParams = [&](double& Kc, double& Ks, double& g){
+        g = std::clamp(g, gMin, gMax);
+        const double K = std::hypot(Kc, Ks);
+        if (Kmax > 0.0 && K > Kmax) { const double f = Kmax / K; Kc *= f; Ks *= f; }
+        else if (Kmin > 0.0 && K < Kmin) {
+            if (K > 1e-12) { const double f = Kmin / K; Kc *= f; Ks *= f; }
+            else           { Ks = Kmin; }   // degenerate zero amplitude
+        }
+    };
 
     double Kc=0.0, Ks=0.0, gamma=0.0, P=std::clamp(P0, Pmin, Pmax);
     {
@@ -968,6 +982,7 @@ double fitCellChi2(const std::vector<double>& t,
         if (sumW>0) gamma = sumY/sumW;
         double m=0; for (int i=0;i<N;++i) m=std::max(m, std::abs(y[i]-gamma));
         Ks = m;
+        clampParams(Kc, Ks, gamma);
     }
 
     auto residuals = [&](double Kc, double Ks, double gamma, double P,
@@ -1028,6 +1043,7 @@ double fitCellChi2(const std::vector<double>& t,
         }
         double Kc2=Kc+delta[0], Ks2=Ks+delta[1], g2=gamma+delta[2];
         double P2=std::clamp(P+delta[3], Pmin, Pmax);
+        clampParams(Kc2, Ks2, g2);
 
         std::vector<double> r2; residuals(Kc2,Ks2,g2,P2,r2);
         double chi2New=0; for (double v:r2) chi2New+=v*v;
@@ -2206,7 +2222,8 @@ void RVAddFitDialog::buildBootstrapTab(QWidget* parent)
     auto* gridBtns = new QHBoxLayout;
     _bsOptimalBtn = new QToolButton;
     _bsOptimalBtn->setText("Optimal");
-    _bsOptimalBtn->setToolTip("Auto-fill empty fields from the RV sampling.");
+    _bsOptimalBtn->setToolTip("Auto-fill empty fields from the RV sampling, and "
+                              "reset the K / γ bounds from the RV span.");
     gridBtns->addWidget(_bsOptimalBtn);
     gridBtns->addStretch();
     _bsRunBtn = new QPushButton("Run scan");
@@ -2217,6 +2234,34 @@ void RVAddFitDialog::buildBootstrapTab(QWidget* parent)
 
     connect(_bsOptimalBtn, &QToolButton::clicked, this, &RVAddFitDialog::onBsOptimal);
     connect(_bsRunBtn,     &QPushButton::clicked, this, &RVAddFitDialog::onBsRun);
+
+    // Parameter bounds: constrain the per-cell circular fit. K is the semi-
+    // amplitude √(Kc²+Ks²); γ the systemic velocity. Both are clamped at every
+    // LM iteration of every grid cell, so a sensible range keeps the landscape
+    // physical (and is cheap — just two clamps per step).
+    auto* boundBox  = new QGroupBox("Parameter bounds");
+    auto* boundForm = new QFormLayout(boundBox);
+    _bsKMin     = mk(0.0,      1.0e6, 4, 1.0);
+    _bsKMax     = mk(0.0,      1.0e6, 4, 1.0);
+    _bsGammaMin = mk(-1.0e6,   1.0e6, 4, 1.0);
+    _bsGammaMax = mk(-1.0e6,   1.0e6, 4, 1.0);
+    _bsKMin->setSuffix(" km/s");  _bsKMax->setSuffix(" km/s");
+    _bsGammaMin->setSuffix(" km/s"); _bsGammaMax->setSuffix(" km/s");
+    _bsKMin->setToolTip("Lower bound on the semi-amplitude K used in every "
+                        "per-cell fit of the scan.");
+    _bsKMax->setToolTip("Upper bound on the semi-amplitude K used in every "
+                        "per-cell fit of the scan.");
+    _bsGammaMin->setToolTip("Lower bound on the systemic velocity γ.");
+    _bsGammaMax->setToolTip("Upper bound on the systemic velocity γ.");
+    auto* kRow = new QHBoxLayout;
+    kRow->addWidget(_bsKMin); kRow->addWidget(new QLabel("…")); kRow->addWidget(_bsKMax);
+    boundForm->addRow("K range:", kRow);
+    auto* gRow = new QHBoxLayout;
+    gRow->addWidget(_bsGammaMin); gRow->addWidget(new QLabel("…")); gRow->addWidget(_bsGammaMax);
+    boundForm->addRow("γ range:", gRow);
+    ctlLay->addWidget(boundBox);
+
+    bsInitParamBounds();
 
     // Peak detection
     auto* peakBox = new QGroupBox("Candidate minima");
@@ -2248,8 +2293,6 @@ void RVAddFitDialog::buildBootstrapTab(QWidget* parent)
     _bsPeriodTol->setToolTip("Prior width in multiples of the minimum's σ_P "
                              "(from the landscape curvature).");
     fitForm->addRow("Period prior width (×σ_P)", _bsPeriodTol);
-    _bsEllipsoidal = new QCheckBox("Ellipsoidal (fit at 2·P_peak)");
-    fitForm->addRow(_bsEllipsoidal);
     _bsFitBtn = new QPushButton("Fit selected minima…");
     fitForm->addRow(_bsFitBtn);
     ctlLay->addWidget(fitBox);
@@ -2264,6 +2307,27 @@ void RVAddFitDialog::buildBootstrapTab(QWidget* parent)
 }
 
 // ───────────────────────────────────────────────────────────────────
+// Seed the K / γ bounds from the RV span. With ΔRV = max_rv − min_rv:
+//   K ∈ [ΔRV/2, ΔRV·1.5]      γ ∈ [min_rv − ΔRV/4, max_rv + ΔRV/4]
+void RVAddFitDialog::bsInitParamBounds()
+{
+    if (!_bsKMin || !_bsKMax || !_bsGammaMin || !_bsGammaMax) return;
+
+    auto data = buildRVData();
+    if (data.rv.size() < 2) return;   // keep whatever defaults exist
+
+    double minRV = data.rv.front(), maxRV = data.rv.front();
+    for (double v : data.rv) { minRV = std::min(minRV, v); maxRV = std::max(maxRV, v); }
+    const double dRV = maxRV - minRV;
+    if (!(dRV > 0.0)) return;
+
+    _bsKMin->setValue(dRV * 0.5);
+    _bsKMax->setValue(dRV * 1.5);
+    _bsGammaMin->setValue(minRV - dRV * 0.25);
+    _bsGammaMax->setValue(maxRV + dRV * 0.25);
+}
+
+// ───────────────────────────────────────────────────────────────────
 void RVAddFitDialog::onBsOptimal()
 {
     auto data = buildRVData();
@@ -2272,6 +2336,7 @@ void RVAddFitDialog::onBsOptimal()
             "Need ≥ 4 unflagged RV points with BJD.");
         return;
     }
+    bsInitParamBounds();
     QVector<double> t(data.bjd.begin(), data.bjd.end());
 
     double mn = _bsMinP->value();   // 0 ⇒ auto
@@ -2318,6 +2383,12 @@ void RVAddFitDialog::onBsRun()
     auto s = std::make_shared<std::vector<double>>(data.rv_err);
     const int dof = std::max(1, int(data.bjd.size()) - 4);
 
+    // K / γ bounds applied in every per-cell fit (read once, off the GUI thread).
+    const double Kmin = _bsKMin ? _bsKMin->value() : 0.0;
+    const double Kmax = _bsKMax ? _bsKMax->value() : 0.0;
+    const double gMin = _bsGammaMin ? _bsGammaMin->value() : -1e30;
+    const double gMax = _bsGammaMax ? _bsGammaMax->value() :  1e30;
+
     const int Nf = grid.Nf;
     auto chi2 = std::make_shared<std::vector<double>>(Nf,
                     std::numeric_limits<double>::infinity());
@@ -2348,7 +2419,8 @@ void RVAddFitDialog::onBsRun()
     QPointer<QProgressDialog> pd   = dlg;
 
     std::thread driver([self, pd, grid, Nf, dof, t, y, s,
-                        chi2, progress, cancelled]() mutable
+                        chi2, progress, cancelled,
+                        Kmin, Kmax, gMin, gMax]() mutable
     {
         const double f0 = grid.f0, df = grid.df;
         auto cellWork = [&](int lo, int hi){
@@ -2364,7 +2436,8 @@ void RVAddFitDialog::onBsRun()
                 }
                 const double Pmin = (fHi > 0.0) ? 1.0 / fHi : 1.0 / fi;
                 const double Pmax = (fLo > 0.0) ? 1.0 / fLo : 1.0 / (0.5 * fi);
-                (*chi2)[i] = fitCellChi2(*t, *y, *s, 1.0 / fi, Pmin, Pmax);
+                (*chi2)[i] = fitCellChi2(*t, *y, *s, 1.0 / fi, Pmin, Pmax,
+                                         Kmin, Kmax, gMin, gMax);
                 progress->fetch_add(1);
             }
         };
@@ -2584,14 +2657,12 @@ void RVAddFitDialog::onBsFitPeaks()
         return;
     }
     const double tolMul = _bsPeriodTol->value();
-    const bool ellips   = _bsEllipsoidal->isChecked();
 
     QStringList failed;
     QList<std::shared_ptr<RVFit>> fits;
     for (auto* it : items) {
         double P     = it->data(Qt::UserRole + 0).toDouble();
         double sigma = it->data(Qt::UserRole + 1).toDouble();
-        if (ellips) { P *= 2.0; sigma *= 2.0; }
         if (!(sigma > 0)) sigma = std::max(1e-6, 0.02 * P);
         const double priorW = sigma * std::max(1e-3, tolMul);
 

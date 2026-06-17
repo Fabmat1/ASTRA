@@ -82,6 +82,7 @@ private:
     // ── Bootstrap tab helpers
     void bsReplot();
     void bsAddPeakItem(double period, double sigma, double chi2, double prob);
+    void bsInitParamBounds();   // seed K / γ bounds from the RV span
 
     rv_mcmc::MCMCConfig collectMCMCConfig() const;
     rv_mcmc::RVData     buildRVData()       const;
@@ -189,6 +190,10 @@ private:
     PreciseDoubleSpinBox* _bsMaxP   = nullptr;
     QSpinBox*       _bsNSamp        = nullptr;
     QDoubleSpinBox* _bsOversample   = nullptr;
+    PreciseDoubleSpinBox* _bsKMin   = nullptr;   // amplitude K bounds applied
+    PreciseDoubleSpinBox* _bsKMax   = nullptr;   // per grid cell during the scan
+    PreciseDoubleSpinBox* _bsGammaMin = nullptr; // systemic γ bounds
+    PreciseDoubleSpinBox* _bsGammaMax = nullptr;
     QToolButton*    _bsOptimalBtn   = nullptr;
     QPushButton*    _bsRunBtn       = nullptr;
     QLabel*         _bsInfoLabel    = nullptr;
@@ -196,7 +201,6 @@ private:
     QPushButton*    _bsDetectBtn    = nullptr;
     QListWidget*    _bsPeaksList    = nullptr;
     QDoubleSpinBox* _bsPeriodTol    = nullptr;   // ×σ_P prior width for re-fit
-    QCheckBox*      _bsEllipsoidal  = nullptr;   // fit at 2·P_peak
     QPushButton*    _bsFitBtn       = nullptr;
 
     Periodogram::Grid _bsGrid;          // frequency grid scanned
