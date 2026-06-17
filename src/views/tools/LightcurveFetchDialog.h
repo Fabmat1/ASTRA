@@ -2,6 +2,7 @@
 
 #include <QDialog>
 #include <QList>
+#include <QPixmap>
 #include <QTextEdit>
 #include <memory>
 #include "views/panels/PeriodogramPanel.h"
@@ -43,6 +44,9 @@ public:
                           const QString&         projectId,
                           QWidget*               parent = nullptr);
     ~LightcurveFetchDialog() override;
+
+protected:
+    bool eventFilter(QObject* watched, QEvent* event) override;
 
     LCPanel*          lcPanel()         const { return _lcPanel; }
     PeriodogramPanel* periodogramPanel() const { return _periodogramPanel; }
@@ -133,7 +137,8 @@ private slots:
     void     refreshFitSourceCombo();
     void     refreshFitFilterCombo();
     void     refreshPreviewsTab();
-    QString  previewDir() const;        
+    void     rescalePreviewImage();     // re-fit _previewPixmap to the (settled) label size
+    QString  previewDir() const;
     QString  previewPath(const QString& filename) const;
     double   readCrowdsapFile(const QString& path) const;
 
@@ -216,6 +221,7 @@ private slots:
     QLabel*      _previewTitle      = nullptr;
     QLabel*      _previewDesc       = nullptr;
     QLabel*      _previewImage      = nullptr;
+    QPixmap      _previewPixmap;                  // unscaled source for the current preview
     QLabel*      _crowdsapTabLabel  = nullptr;   // already existed; keep it
     QPushButton* _prevPreviewBtn    = nullptr;
     QPushButton* _nextPreviewBtn    = nullptr;

@@ -22,6 +22,7 @@
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QDoubleSpinBox>
+#include <QEvent>
 #include <QFileInfo>
 #include <QFormLayout>
 #include <QFrame>
@@ -1541,6 +1542,12 @@ QWidget* LightcurveFetchDialog::buildPreviewsTab()
     _previewImage->setAlignment(Qt::AlignCenter);
     _previewImage->setMinimumSize(480, 480);
     _previewImage->setStyleSheet("color: gray;");
+    // Re-fit the pixmap whenever the label's geometry settles. The CROWDSAP
+    // row (shown only for TESS) changes the height available here, and that
+    // relayout lands *after* refreshPreviewsTab() runs, so scaling solely off
+    // the size at refresh time would crop the TESS frame. Rescaling on resize
+    // keeps every preview fitted to the final geometry.
+    _previewImage->installEventFilter(this);
     root->addWidget(_previewImage, 1);
 
     auto* nav = new QHBoxLayout;
@@ -1588,26 +1595,29 @@ void LightcurveFetchDialog::refreshPreviewsTab()
         .arg(e.title).arg(_previewIndex + 1).arg(entries.size()));
     _previewDesc->setText(e.description);
 
+    // Toggle the CROWDSAP row *before* fitting the image: it only shows for
+    // TESS and steals vertical space from _previewImage. Setting it first lets
+    // the resulting relayout drive the (eventFilter-based) rescale, so the
+    // TESS frame is fitted to its final, smaller height instead of being
+    // scaled too tall and then clipped by the label.
+    const bool isTess = (e.filename == QLatin1String("tess_preview.png"));
+    _crowdsapTabLabel->setVisible(isTess);
+
     const QString path = previewPath(e.filename);
     QPixmap pm;
     if (QFileInfo::exists(path) && pm.load(path) && !pm.isNull()) {
-        const QSize tgt = (_previewImage->size().isValid() && _previewImage->width() > 64)
-                            ? _previewImage->size()
-                            : QSize(640, 640);
-        _previewImage->setPixmap(
-            pm.scaled(tgt, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+        _previewPixmap = pm;
         _previewImage->setToolTip(path);
         _previewImage->setStyleSheet("");
+        rescalePreviewImage();
     } else {
+        _previewPixmap = QPixmap();
         _previewImage->clear();
         _previewImage->setText(QString("(no %1 preview yet)").arg(e.title));
         _previewImage->setToolTip(QString());
         _previewImage->setStyleSheet("color: gray;");
     }
 
-    // CROWDSAP visible only when TESS preview is on screen.
-    const bool isTess = (e.filename == QLatin1String("tess_preview.png"));
-    _crowdsapTabLabel->setVisible(isTess);
     if (isTess) {
         const double v = _star->getTessCrowdsap();
         if (Star::isSet(v)) {
@@ -1626,6 +1636,24 @@ void LightcurveFetchDialog::refreshPreviewsTab()
                 "<span style=\"color:gray;\">TESS CROWDSAP not available.</span>");
         }
     }
+}
+
+void LightcurveFetchDialog::rescalePreviewImage()
+{
+    if (!_previewImage || _previewPixmap.isNull()) return;
+
+    const QSize tgt = (_previewImage->size().isValid() && _previewImage->width() > 64)
+                        ? _previewImage->size()
+                        : QSize(640, 640);
+    _previewImage->setPixmap(
+        _previewPixmap.scaled(tgt, Qt::KeepAspectRatio, Qt::SmoothTransformation));
+}
+
+bool LightcurveFetchDialog::eventFilter(QObject* watched, QEvent* event)
+{
+    if (watched == _previewImage && event->type() == QEvent::Resize)
+        rescalePreviewImage();
+    return QDialog::eventFilter(watched, event);
 }
 
 void LightcurveFetchDialog::refreshViewerSourceCombo()
