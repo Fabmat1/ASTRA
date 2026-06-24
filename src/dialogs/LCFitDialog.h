@@ -160,6 +160,7 @@ class LCFitDialog : public QDialog {
     QSpinBox *_lmMaxIter = nullptr;
     QCheckBox *_lmCont = nullptr;
     QCheckBox *_sinIPrior = nullptr;
+    QCheckBox *_plotEnabled = nullptr;
     QMap<QString, QCheckBox *> _vary;
 
     // - Advanced page -

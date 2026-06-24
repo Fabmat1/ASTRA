@@ -704,6 +704,18 @@ QWidget *LCFitDialog::buildSolverPage() {
   _method->addItem(LCFitRunner::methodLabel(LCFitRunner::Method::Mcmc),
                    int(LCFitRunner::Method::Mcmc));
   mLay->addRow(tr("Method:"), _method);
+
+  _plotEnabled = new QCheckBox(tr("Enable gnuplot plotting during fit"));
+#if defined(Q_OS_MACOS)
+  // gnuplot's qt/x11 terminals are unavailable/unreliable on macOS, so
+  // plotting is forced off and the toggle is locked.
+  _plotEnabled->setChecked(false);
+  _plotEnabled->setEnabled(false);
+  _plotEnabled->setToolTip(tr("Plotting is unavailable on macOS"));
+#else
+  _plotEnabled->setChecked(true);
+#endif
+  mLay->addRow(_plotEnabled);
   root->addWidget(mBox);
 
   auto *lmBox = new QGroupBox(tr("Levenberg-Marquardt"));
@@ -1139,7 +1151,14 @@ QJsonObject LCFitDialog::buildFullConfig() const {
     cfg["noise"]            = 0;
     cfg["seed"]             = 42;
     cfg["nfile"]            = 1;
-    cfg["plot_device"]      = "qt";
+#if defined(Q_OS_MACOS)
+    // gnuplot does not work reliably on macOS; never enable plotting there.
+    cfg["plot_device"]      = "none";
+#else
+    cfg["plot_device"]      = (_plotEnabled && _plotEnabled->isChecked())
+                                  ? QStringLiteral("qt")
+                                  : QStringLiteral("none");
+#endif
     cfg["residual_offset"]  = 0.0;
     cfg["autoscale"]        = true;
     cfg["sstar1"]           = 1;
