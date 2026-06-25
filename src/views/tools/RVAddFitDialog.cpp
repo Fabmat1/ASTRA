@@ -1548,7 +1548,8 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidFixedPhase(
 
 // ───────────────────────────────────────────────────────────────────
 std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidLMFull(
-    double pSeed, double pSigma, double pErrLandscape, QString* errOut) const
+    double pSeed, double pSigma, double pErrLandscape, double prob,
+    QString* errOut) const
 {
     auto data = buildRVData();
     if (data.bjd.size() < 4) {
@@ -1576,8 +1577,8 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidLMFull(
     fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
     fit->setCurveId(_curve ? _curve->getId() : QString());
     fit->setCreationDate(QDateTime::currentDateTime());
-    fit->setFitMethod(QString("LM χ²-landscape (P_seed=%1)")
-                          .arg(pSeed, 0, 'f', 6));
+    fit->setFitMethod(QString("χ² bootstrap (p=%1)")
+                          .arg(prob, 0, 'f', 3));
     fit->setPeriod(R.P);
     fit->setK(R.K);
     fit->setGamma(R.gamma);
@@ -2263,7 +2264,8 @@ void RVAddFitDialog::buildBootstrapTab(QWidget* parent)
         "the whole period range is covered). The data χ² of each final fit forms "
         "a landscape whose minima are candidate periods. Re-fit a minimum to get "
         "the full solution with errors; its probability of being the true period "
-        "is estimated from how deep its χ² is relative to the other minima.");
+        "is its posterior mass (Laplace approximation) measured against the "
+        "integral of the whole probability landscape.");
     info->setWordWrap(true);
     outer->addWidget(info);
 
@@ -2284,7 +2286,7 @@ void RVAddFitDialog::buildBootstrapTab(QWidget* parent)
     tbar->addWidget(new QLabel("Y:"));
     _bsYAxis = new QComboBox;
     _bsYAxis->addItem("χ²", 0);
-    _bsYAxis->addItem("Rel. likelihood", 1);
+    _bsYAxis->addItem("Probability density", 1);
     tbar->addWidget(_bsYAxis);
     tbar->addStretch();
     _bsInfoLabel = new QLabel("Not computed.");
@@ -2629,9 +2631,11 @@ void RVAddFitDialog::bsReplot()
     _bsPlot->clearItems();
 
     const bool periodMode = !_bsXAxis || _bsXAxis->currentData().toInt() == 0;
-    const bool likeMode   = _bsYAxis && _bsYAxis->currentData().toInt() == 1;
+    const bool pdfMode     = _bsYAxis && _bsYAxis->currentData().toInt() == 1;
     _bsPlot->xAxis->setLabel(periodMode ? "Period [d]" : "Frequency [1/d]");
-    _bsPlot->yAxis->setLabel(likeMode ? "Relative likelihood" : "χ²");
+    _bsPlot->yAxis->setLabel(pdfMode
+        ? (periodMode ? "Probability density [1/d]" : "Probability density [d]")
+        : "χ²");
     if (periodMode) {
         _bsPlot->xAxis->setScaleType(QCPAxis::stLogarithmic);
         QSharedPointer<QCPAxisTickerLog> tk(new QCPAxisTickerLog);
@@ -2643,19 +2647,37 @@ void RVAddFitDialog::bsReplot()
 
     const int Nf = std::min<int>(_bsChi2.size(), _bsGrid.Nf);
     if (Nf > 1 && _bsGrid.isValid()) {
+        const double df = _bsGrid.df;
+        // Normalisation of the (error-rescaled) likelihood into a proper PDF.
+        // The grid is uniform in frequency, so Z = ∫ L df ≈ Σ L·df is the
+        // frequency-space normaliser (flat-in-frequency posterior). The period
+        // density follows by the change-of-variable Jacobian |df/dP| = f²,
+        // i.e. p_P(P) = p_f(f)·f², which integrates to 1 over P automatically.
+        double Z = 0.0;
+        if (pdfMode) {
+            for (int i = 0; i < Nf; ++i) {
+                const double c = _bsChi2[i];
+                if (!std::isfinite(c)) continue;
+                Z += std::exp(-(c - _bsChi2Min) / (2.0 * _bsScale)) * df;
+            }
+        }
         QVector<double> x, yv;
         x.reserve(Nf); yv.reserve(Nf);
         for (int i = 0; i < Nf; ++i) {
-            const double f = _bsGrid.f0 + i * _bsGrid.df;
+            const double f = _bsGrid.f0 + i * df;
             const double c = _bsChi2[i];
             if (!std::isfinite(c) || !(f > 0.0)) continue;
             x.append(periodMode ? 1.0 / f : f);
-            yv.append(likeMode
-                ? std::exp(-(c - _bsChi2Min) / (2.0 * _bsScale))
-                : c);
+            if (pdfMode) {
+                const double pf = (Z > 0.0)
+                    ? std::exp(-(c - _bsChi2Min) / (2.0 * _bsScale)) / Z : 0.0;
+                yv.append(periodMode ? pf * f * f : pf);
+            } else {
+                yv.append(c);
+            }
         }
         auto* g = _bsPlot->addGraph();
-        g->setName(likeMode ? "Likelihood" : "χ²");
+        g->setName(pdfMode ? "Probability density" : "χ²");
         QPen pen(PanelUtils::lcColor(0)); pen.setWidthF(1.2);
         g->setPen(pen);
         g->setAdaptiveSampling(true);
@@ -2696,6 +2718,7 @@ void RVAddFitDialog::bsAddPeakItem(double period, double sigma,
     auto* item = new QListWidgetItem(text, _bsPeaksList);
     item->setData(Qt::UserRole + 0, period);
     item->setData(Qt::UserRole + 1, s);
+    item->setData(Qt::UserRole + 2, prob);
     item->setSelected(true);
 }
 
@@ -2732,8 +2755,19 @@ void RVAddFitDialog::onBsDetectPeaks()
         if (!close) chosen.append(i);
     }
 
-    // Parabolic refinement (in frequency) → refined P, σ_P and vertex χ².
-    struct Cand { double P, sigP, chi2v; };
+    // Total probability mass of the whole landscape: Z = Σ L over every grid
+    // cell (the df factor is common to Z and each basin below, so it cancels).
+    double Zland = 0.0;
+    for (int k = 0; k < Nf; ++k) {
+        const double c = _bsChi2[k];
+        if (std::isfinite(c))
+            Zland += std::exp(-(c - _bsChi2Min) / (2.0 * _bsScale));
+    }
+
+    // Parabolic refinement (in frequency) → refined P, σ_P and vertex χ²; plus
+    // the posterior probability contained in each minimum's basin (the integral
+    // of the normalised PDF over the χ² valley around it).
+    struct Cand { double P, sigP, chi2v, prob; };
     QVector<Cand> peaks;
     const double h = _bsGrid.df;
     for (int i : chosen) {
@@ -2749,18 +2783,26 @@ void RVAddFitDialog::onBsDetectPeaks()
             const double sigF = h * std::sqrt(2.0 * _bsScale / denom);
             if (fPeak > 0.0) sigP = sigF / (fPeak * fPeak);
         }
-        if (fPeak > 0.0)
-            peaks.append({1.0 / fPeak, sigP, std::min(chi2v, y0)});
-    }
+        if (!(fPeak > 0.0)) continue;
 
-    // Probability that each minimum is the true period: relative likelihood
-    // exp(−Δχ²/2s) normalised over the candidate set (error-rescaled by s so it
-    // reflects the actual noise level, not under/over-estimated formal errors).
-    double wsum = 0.0;
-    QVector<double> w(peaks.size());
-    for (int i = 0; i < peaks.size(); ++i) {
-        w[i] = std::exp(-(peaks[i].chi2v - _bsChi2Min) / (2.0 * _bsScale));
-        wsum += w[i];
+        // Integrate the PDF over this minimum's basin: walk outward from the
+        // grid minimum to the χ² crest on each side (where the landscape turns
+        // back down towards a neighbouring minimum), then sum L there. Strict
+        // comparisons keep adjacent basins disjoint, so the peak probabilities
+        // sum to ≤ 1 — the remainder is mass in undetected minima elsewhere in
+        // the scanned range. This answers "is this the correct period over the
+        // whole range?" rather than only comparing the detected candidates.
+        int lo = i, hi = i;
+        while (lo > 0      && _bsChi2[lo-1] > _bsChi2[lo]) --lo;
+        while (hi < Nf - 1 && _bsChi2[hi+1] > _bsChi2[hi]) ++hi;
+        double basin = 0.0;
+        for (int k = lo; k <= hi; ++k) {
+            const double c = _bsChi2[k];
+            if (std::isfinite(c))
+                basin += std::exp(-(c - _bsChi2Min) / (2.0 * _bsScale));
+        }
+        const double prob = (Zland > 0.0) ? std::min(1.0, basin / Zland) : 0.0;
+        peaks.append({1.0 / fPeak, sigP, std::min(chi2v, y0), prob});
     }
 
     // Present sorted by period for a stable reading order.
@@ -2770,10 +2812,9 @@ void RVAddFitDialog::onBsDetectPeaks()
               [&](int a, int b){ return peaks[a].P < peaks[b].P; });
 
     _bsPeaksList->clear();
-    for (int idx : order) {
-        const double prob = (wsum > 0.0) ? w[idx] / wsum : 0.0;
-        bsAddPeakItem(peaks[idx].P, peaks[idx].sigP, peaks[idx].chi2v, prob);
-    }
+    for (int idx : order)
+        bsAddPeakItem(peaks[idx].P, peaks[idx].sigP, peaks[idx].chi2v,
+                      peaks[idx].prob);
     bsReplot();
 }
 
@@ -2794,11 +2835,12 @@ void RVAddFitDialog::onBsFitPeaks()
     for (auto* it : items) {
         double P     = it->data(Qt::UserRole + 0).toDouble();
         double sigma = it->data(Qt::UserRole + 1).toDouble();
+        const double prob = it->data(Qt::UserRole + 2).toDouble();
         if (!(sigma > 0)) sigma = std::max(1e-6, 0.02 * P);
         const double priorW = sigma * std::max(1e-3, tolMul);
 
         QString err;
-        auto fit = fitSinusoidLMFull(P, priorW, sigma, &err);
+        auto fit = fitSinusoidLMFull(P, priorW, sigma, prob, &err);
         if (!fit) { failed << QString("P=%1 d: %2").arg(P).arg(err); continue; }
         fits.append(fit);
     }

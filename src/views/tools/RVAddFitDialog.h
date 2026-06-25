@@ -124,6 +124,7 @@ private:
     std::shared_ptr<RVFit> fitSinusoidLMFull(double pSeed,
                                              double pSigma,
                                              double pErrLandscape,
+                                             double prob,
                                              QString* errOut = nullptr) const;
 
     std::shared_ptr<Star> _star;
