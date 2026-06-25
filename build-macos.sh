@@ -1,0 +1,564 @@
+#!/usr/bin/env bash
+# Build a self-contained ASTRA .app (and .dmg) for Apple Silicon macOS.
+#
+# Usage:   ./build-macos.sh [VERSION]
+# Env overrides:
+#   QT_FROM        = brew (default) | aqt        # where Qt6 comes from
+#   ASTRA_WITH_CCFITS = 1 (default) | 0          # build CCfits for FITS support
+#   OPENBLAS_VERSION  = 0.3.27 (only for source fallback)
+#   JOBS              = number of parallel build jobs (default: all cores)
+#
+# Unlike the Linux AppImage build there is NO container: macOS apps must be
+# built natively on macOS. Run this on the target Mac (Apple Silicon).
+# First run does a one-time OpenBLAS/CCfits source build (~5-8 min, cached);
+# later runs reuse the cache.
+set -euo pipefail
+
+VERSION="${1:-0.3.3}"
+QT_FROM="${QT_FROM:-brew}"
+ASTRA_WITH_CCFITS="${ASTRA_WITH_CCFITS:-1}"
+OPENBLAS_VERSION="${OPENBLAS_VERSION:-0.3.27}"
+# Bundled helper programs (mirrors what build-appimage.sh ships). ISIS is not
+# bundled on macOS (its S-Lang/PGPLOT stack doesn't build cleanly on Apple Si).
+ASTRA_BUNDLE_LCURVE="${ASTRA_BUNDLE_LCURVE:-1}"   # lcurve_re fitting binaries
+ASTRA_BUNDLE_LCQUERY="${ASTRA_BUNDLE_LCQUERY:-1}" # lightcurvequery Python sources
+LCURVE_REPO="${LCURVE_REPO:-https://github.com/Fabmat1/lcurve_re.git}"
+LCURVE_REF="${LCURVE_REF:-main}"
+JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
+SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CACHE="${HOME}/.cache/astra-build-macos"
+BUILD_DIR="${SRC_DIR}/build-macos"
+
+# ── 0. Sanity checks ────────────────────────────────────────────────────────
+[[ "$(uname -s)" == "Darwin" ]] || { echo "This script must run on macOS."; exit 1; }
+[[ -f "${SRC_DIR}/CMakeLists.txt" ]] || { echo "Run from the ASTRA repo root."; exit 1; }
+if [[ "$(uname -m)" != "arm64" ]]; then
+  echo "WARNING: host arch is $(uname -m), not arm64 — this will build an Intel app."
+fi
+
+command -v brew >/dev/null 2>&1 || {
+  echo "Homebrew not found. Install it from https://brew.sh then re-run."
+  exit 1
+}
+BREW_PREFIX="$(brew --prefix)"
+mkdir -p "${CACHE}"
+
+# We pin the C/C++ compiler to Apple Clang from the Command Line Tools. If CMake
+# instead picks up Homebrew's LLVM clang (often on PATH), object files compile
+# against LLVM's libc++ but link against the system libc++ -> undefined
+# __hash_memory. /usr/bin/clang++ guarantees compile and link use one libc++.
+[[ -x /usr/bin/clang++ ]] || {
+  echo "/usr/bin/clang++ not found. Install Xcode Command Line Tools: xcode-select --install"
+  exit 1
+}
+
+echo ">>> ASTRA ${VERSION}  |  $(uname -m)  |  $(sw_vers -productName) $(sw_vers -productVersion)"
+echo ">>> Compiler: $(/usr/bin/clang++ --version | head -1)"
+
+# ── 1. Ensure submodules ────────────────────────────────────────────────────
+git -C "${SRC_DIR}" submodule update --init --recursive
+
+# ── 2. Homebrew dependencies ────────────────────────────────────────────────
+# gcc -> gfortran (DIGGA declares `LANGUAGES ... Fortran`, so CMake needs a
+#                  Fortran compiler at configure time even with no .f sources)
+# libomp -> OpenMP for Apple Clang (DIGGA + rv_mcmc require it)
+BREW_PKGS=(cmake pkg-config wget gcc libomp eigen boost fftw nlohmann-json tbb cfitsio openblas python numpy)
+# dylibbundler self-contains the non-Qt lcurve helper binaries' dylibs (Boost,
+# libomp, ...) — macdeployqt only handles the main Qt app, not arbitrary execs.
+[[ "${ASTRA_BUNDLE_LCURVE}" == "1" ]] && BREW_PKGS+=(dylibbundler)
+[[ "${QT_FROM}" == "brew" ]] && BREW_PKGS+=(qt)
+
+echo ">>> Installing/updating Homebrew packages: ${BREW_PKGS[*]}"
+brew install "${BREW_PKGS[@]}" 2>&1 | grep -vE '^(Warning: .* already installed|==> )' || true
+
+LIBOMP="$(brew --prefix libomp)"
+# gfortran lives in the gcc keg; pick whatever version brew installed.
+FORTRAN_COMPILER="$(ls "${BREW_PREFIX}/bin/gfortran"* 2>/dev/null | sort -V | tail -1 || true)"
+[[ -n "${FORTRAN_COMPILER}" ]] || { echo "gfortran not found after 'brew install gcc'."; exit 1; }
+echo ">>> Using Fortran compiler: ${FORTRAN_COMPILER}"
+
+# ── 3. Qt6 ──────────────────────────────────────────────────────────────────
+if [[ "${QT_FROM}" == "brew" ]]; then
+  QT_PREFIX="$(brew --prefix qt)"
+else
+  # aqtinstall fallback (Qt for macOS, universal/arm64).
+  python3 -m pip install --quiet --user aqtinstall
+  QT_VERSION="${QT_VERSION:-6.11.1}"
+  python3 -m aqt install-qt mac desktop "${QT_VERSION}" clang_64 -O "${CACHE}/Qt"
+  QT_PREFIX="${CACHE}/Qt/${QT_VERSION}/macos"
+fi
+MACDEPLOYQT="${QT_PREFIX}/bin/macdeployqt"
+[[ -x "${MACDEPLOYQT}" ]] || { echo "macdeployqt not found at ${MACDEPLOYQT}"; exit 1; }
+echo ">>> Qt6 prefix: ${QT_PREFIX}"
+
+# ── 4. OpenBLAS (DIGGA needs the OpenBLAS::OpenBLAS CMake target) ────────────
+# Prefer Homebrew's openblas IF it ships a CMake package config; otherwise
+# build from source with CMake (guarantees the config + LAPACKE headers,
+# matching the known-good Linux build).
+OPENBLAS_BREW="$(brew --prefix openblas 2>/dev/null || true)"
+if [[ -z "${OPENBLAS_BREW}" ]]; then
+  brew install openblas >/dev/null 2>&1 || true
+  OPENBLAS_BREW="$(brew --prefix openblas 2>/dev/null || true)"
+fi
+OPENBLAS_PREFIX=""
+if [[ -n "${OPENBLAS_BREW}" ]] && find "${OPENBLAS_BREW}" -name 'OpenBLASConfig.cmake' 2>/dev/null | grep -q .; then
+  OPENBLAS_PREFIX="${OPENBLAS_BREW}"
+  echo ">>> Using Homebrew OpenBLAS (CMake config found): ${OPENBLAS_PREFIX}"
+else
+  OPENBLAS_PREFIX="${CACHE}/openblas/install"
+  STAMP="${CACHE}/openblas/${OPENBLAS_VERSION}.stamp"
+  if [[ -f "${STAMP}" ]]; then
+    echo ">>> Using cached source-built OpenBLAS ${OPENBLAS_VERSION}"
+  else
+    echo ">>> Building OpenBLAS ${OPENBLAS_VERSION} from source (one-time, ~5 min)"
+    rm -rf "${CACHE}/openblas/src" "${CACHE}/openblas/build"
+    mkdir -p "${CACHE}/openblas/src"
+    wget -q -O "${CACHE}/openblas/src.tgz" \
+      "https://github.com/OpenMathLib/OpenBLAS/releases/download/v${OPENBLAS_VERSION}/OpenBLAS-${OPENBLAS_VERSION}.tar.gz"
+    tar xf "${CACHE}/openblas/src.tgz" -C "${CACHE}/openblas/src" --strip-components=1
+    # USE_OPENMP=0 on purpose: with OpenMP on, OpenBLAS's C objects pull in
+    # Apple Clang's libomp (__kmpc_*) but the shared lib is linked by gfortran
+    # (libgomp) -> unresolved symbols. Without it OpenBLAS uses its own pthread
+    # threading, which is self-contained and the standard macOS recommendation.
+    # DIGGA/rv_mcmc still get their own OpenMP (libomp) independently.
+    # CMAKE_POLICY_VERSION_MINIMUM works around CMake 4.x dropping <3.5 compat.
+    cmake -S "${CACHE}/openblas/src" -B "${CACHE}/openblas/build" \
+      -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_INSTALL_PREFIX="${OPENBLAS_PREFIX}" \
+      -DBUILD_SHARED_LIBS=ON -DUSE_OPENMP=0 -DUSE_THREAD=1 -DDYNAMIC_ARCH=ON
+    cmake --build "${CACHE}/openblas/build" -j"${JOBS}"
+    cmake --install "${CACHE}/openblas/build"
+    touch "${STAMP}"
+  fi
+fi
+
+# ── 4b. FindOpenBLAS shim ───────────────────────────────────────────────────
+# DIGGA does `find_package(OpenBLAS REQUIRED)` then links OpenBLAS::OpenBLAS,
+# but OpenBLAS's various CMake configs don't reliably define that namespaced
+# target. find_package tries Module mode first, so a FindOpenBLAS.cmake on
+# CMAKE_MODULE_PATH wins and lets us define the target deterministically,
+# pointing at the OpenBLAS we resolved above (libopenblas bundles LAPACK[E]).
+CMAKE_MODULES="${CACHE}/cmake-modules"
+mkdir -p "${CMAKE_MODULES}"
+cat > "${CMAKE_MODULES}/FindOpenBLAS.cmake" <<EOF
+# Auto-generated by build-macos.sh — defines OpenBLAS::OpenBLAS for DIGGA.
+if(NOT TARGET OpenBLAS::OpenBLAS)
+  find_path(OpenBLAS_INCLUDE_DIR NAMES openblas_config.h cblas.h
+    HINTS "${OPENBLAS_PREFIX}/include" "${OPENBLAS_PREFIX}/include/openblas")
+  find_library(OpenBLAS_LIBRARY NAMES openblas
+    HINTS "${OPENBLAS_PREFIX}/lib")
+  include(FindPackageHandleStandardArgs)
+  find_package_handle_standard_args(OpenBLAS
+    REQUIRED_VARS OpenBLAS_LIBRARY OpenBLAS_INCLUDE_DIR)
+  if(OpenBLAS_FOUND)
+    add_library(OpenBLAS::OpenBLAS UNKNOWN IMPORTED)
+    set_target_properties(OpenBLAS::OpenBLAS PROPERTIES
+      IMPORTED_LOCATION "\${OpenBLAS_LIBRARY}"
+      INTERFACE_INCLUDE_DIRECTORIES "\${OpenBLAS_INCLUDE_DIR}")
+  endif()
+endif()
+EOF
+
+# rv_mcmc does `find_package(FFTW3 REQUIRED)` then links a BARE `fftw3` name,
+# which CMake turns into a plain -lfftw3 with no include/lib path. Provide a
+# real `fftw3` imported target (Module mode wins over brew's config) so FFTW's
+# header and full library path propagate — no global -I/-L needed, which keeps
+# Homebrew's lib dir off the link line (it can shadow the system libc++ and
+# cause undefined __hash_memory).
+FFTW_PREFIX="$(brew --prefix fftw)"
+cat > "${CMAKE_MODULES}/FindFFTW3.cmake" <<EOF
+# Auto-generated by build-macos.sh — provides the bare \`fftw3\` target rv_mcmc
+# links (plus FFTW3::fftw3), with include/lib resolved under Homebrew.
+if(NOT TARGET fftw3)
+  find_path(FFTW3_INCLUDE_DIR NAMES fftw3.h HINTS "${FFTW_PREFIX}/include")
+  find_library(FFTW3_LIBRARY  NAMES fftw3   HINTS "${FFTW_PREFIX}/lib")
+  include(FindPackageHandleStandardArgs)
+  find_package_handle_standard_args(FFTW3
+    REQUIRED_VARS FFTW3_LIBRARY FFTW3_INCLUDE_DIR)
+  add_library(fftw3 UNKNOWN IMPORTED)
+  set_target_properties(fftw3 PROPERTIES
+    IMPORTED_LOCATION "\${FFTW3_LIBRARY}"
+    INTERFACE_INCLUDE_DIRECTORIES "\${FFTW3_INCLUDE_DIR}")
+  if(NOT TARGET FFTW3::fftw3)
+    add_library(FFTW3::fftw3 ALIAS fftw3)
+  endif()
+endif()
+EOF
+
+# ── 5. CCfits (optional — enables FITS spectra support) ─────────────────────
+# Prefer a system CCfits (Homebrew bottle, built with Apple Clang -> ABI matches
+# our Apple-Clang build). Only fall back to a source build if none is installed.
+CCFITS_PREFIX=""
+SYS_CCFITS=0
+if [[ "${ASTRA_WITH_CCFITS}" == "1" ]] && pkg-config --exists ccfits 2>/dev/null; then
+  echo ">>> Using system CCfits $(pkg-config --modversion ccfits) — FITS enabled"
+  SYS_CCFITS=1
+elif [[ "${ASTRA_WITH_CCFITS}" == "1" ]]; then
+  CCFITS_PREFIX="${CACHE}/ccfits/install"
+  CCFITS_STAMP="${CACHE}/ccfits/2.6.stamp"
+  CFITSIO_PREFIX="$(brew --prefix cfitsio)"
+  if [[ -f "${CCFITS_STAMP}" ]]; then
+    echo ">>> Using cached CCfits"
+  else
+    echo ">>> Building CCfits 2.6 from source (one-time; FITS support)"
+    if (
+      set -e
+      rm -rf "${CACHE}/ccfits/src"
+      mkdir -p "${CACHE}/ccfits/src"
+      wget -q -O "${CACHE}/ccfits/src.tgz" \
+        "https://heasarc.gsfc.nasa.gov/fitsio/CCfits/CCfits-2.6.tar.gz"
+      # Don't assume the tarball layout — extract, then locate the build system.
+      tar xf "${CACHE}/ccfits/src.tgz" -C "${CACHE}/ccfits/src"
+      CONFIGURE="$(find "${CACHE}/ccfits/src" -maxdepth 3 -name configure -type f -print -quit)"
+      CMAKELISTS="$(find "${CACHE}/ccfits/src" -maxdepth 3 -name CMakeLists.txt -type f -print -quit)"
+      if [[ -n "${CONFIGURE}" ]]; then
+        cd "$(dirname "${CONFIGURE}")"
+        ./configure --prefix="${CCFITS_PREFIX}" --with-cfitsio="${CFITSIO_PREFIX}"
+        make -j"${JOBS}"
+        make install
+      elif [[ -n "${CMAKELISTS}" ]]; then
+        SD="$(dirname "${CMAKELISTS}")"
+        cmake -S "${SD}" -B "${SD}/_build" \
+          -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+          -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_INSTALL_PREFIX="${CCFITS_PREFIX}" \
+          -DCMAKE_PREFIX_PATH="${CFITSIO_PREFIX}"
+        cmake --build "${SD}/_build" -j"${JOBS}"
+        cmake --install "${SD}/_build"
+      else
+        echo "No configure or CMakeLists.txt found in extracted CCfits source"; exit 1
+      fi
+    ); then
+      touch "${CCFITS_STAMP}"
+    else
+      echo "!!! CCfits build failed — continuing WITHOUT FITS support."
+      echo "!!! Re-run with ASTRA_WITH_CCFITS=0 to silence this, or fix and retry."
+      CCFITS_PREFIX=""
+    fi
+  fi
+fi
+
+# ── 6. Header-only dep: ankerl/unordered_dense (DIGGA) ──────────────────────
+DEPS_INC="${CACHE}/include"
+mkdir -p "${DEPS_INC}/ankerl"
+if [[ ! -f "${DEPS_INC}/ankerl/unordered_dense.h" ]]; then
+  wget -q -O "${DEPS_INC}/ankerl/unordered_dense.h" \
+    https://raw.githubusercontent.com/martinus/unordered_dense/v4.4.0/include/ankerl/unordered_dense.h
+fi
+ln -sf "${DEPS_INC}/ankerl/unordered_dense.h" "${DEPS_INC}/unordered_dense.h"
+
+# ── 7. Idempotent source patches (no-op if already fixed/committed) ──────────
+# BSD-safe in-place edits via perl. Mirrors build-appimage.sh's self-healing.
+RV="${SRC_DIR}/external/rv_mcmc/src/vector_operations.cpp"
+# (a) Replace the GNU-only `2j` imaginary literal — Apple Clang rejects it.
+if grep -q '2j \* M_PI' "${RV}"; then
+  echo ">>> Patching rv_mcmc: 2j -> std::complex<double>(0.0, 2.0)"
+  perl -i -pe 's/\b2j\b/std::complex<double>(0.0, 2.0)/g' "${RV}"
+fi
+# (b) Missing standard includes some toolchains need.
+PHOTO="${SRC_DIR}/src/models/Photometry.cpp"
+grep -q '#include <unordered_set>' "${PHOTO}" || \
+  perl -0pi -e 's/(#include <QJsonObject>\n)/$1#include <unordered_set>\n/' "${PHOTO}" || true
+SFIP="${SRC_DIR}/src/importWizard/SpectralFitImportPage.cpp"
+grep -q '#include <charconv>' "${SFIP}" || \
+  perl -0pi -e 's/(#include )/#include <charconv>\n$1/' "${SFIP}" || true
+# (c) Strip the x86-only baseline-ISA flags from the top-level CMakeLists —
+#     Apple Clang on arm64 rejects `-march=x86-64-v3`. These tokens appear only
+#     in that one add_compile_options() block (DIGGA uses `-march=native`, which
+#     this does not touch). No-op once removed / on an already-guarded tree.
+CML="${SRC_DIR}/CMakeLists.txt"
+if grep -qE -- '-march=x86-64-v3' "${CML}"; then
+  echo ">>> Removing x86-only -march/-mtune flags from CMakeLists.txt (ARM host)"
+  perl -i -ne 'print unless /^\s*-mtune=generic\s*$/ || /^\s*-march=x86-64-v3\b/' "${CML}"
+fi
+# (d) DIGGA: std::sqrt/std::log are constexpr only as a libstdc++ (GCC) extension;
+#     Apple Clang's libc++ rejects the constexpr initializer. Use const instead.
+DIGGA_RES="${SRC_DIR}/external/DIGGA/src/Resolution.cpp"
+if grep -q 'constexpr double SIGMA_FROM_FWHM' "${DIGGA_RES}"; then
+  echo ">>> Patching DIGGA Resolution.cpp: constexpr -> const (SIGMA_FROM_FWHM)"
+  perl -i -pe 's/constexpr(\s+double\s+SIGMA_FROM_FWHM\b)/const$1/' "${DIGGA_RES}"
+fi
+# (e) Give CMakeLists a hard switch to force-disable CCfits. Its auto-detection
+#     can latch onto a partial/leftover CCfits (or brew cfitsio) and then ASTRA
+#     links -lCCfits even when no usable CCfits exists. The switch lets the build
+#     deterministically turn FITS off when CCfits isn't available.
+if ! grep -q 'ASTRA_DISABLE_CCFITS' "${CML}"; then
+  echo ">>> Adding ASTRA_DISABLE_CCFITS override to CMakeLists.txt"
+  perl -0pi -e 's/if\(CCFITS_FOUND\)\n(\s*)message\(STATUS "CCfits support enabled"\)/if(ASTRA_DISABLE_CCFITS)\n    set(CCFITS_FOUND FALSE)\nendif()\n\nif(CCFITS_FOUND)\n${1}message(STATUS "CCfits support enabled")/' "${CML}"
+fi
+
+# ── 7b. Ensure Info.plist.in exists (CMakeLists references it for the bundle) ─
+# Written here as a fallback so the build works even if the file wasn't
+# committed/transferred. CMake substitutes the ${MACOSX_BUNDLE_*} placeholders,
+# so this heredoc is single-quoted to keep them literal.
+if [[ ! -f "${SRC_DIR}/Info.plist.in" ]]; then
+  echo ">>> Info.plist.in missing — writing a default one"
+  cat > "${SRC_DIR}/Info.plist.in" <<'PLIST_EOF'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleExecutable</key>
+	<string>${MACOSX_BUNDLE_EXECUTABLE_NAME}</string>
+	<key>CFBundleName</key>
+	<string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+	<key>CFBundleDisplayName</key>
+	<string>${MACOSX_BUNDLE_BUNDLE_NAME}</string>
+	<key>CFBundleIdentifier</key>
+	<string>${MACOSX_BUNDLE_GUI_IDENTIFIER}</string>
+	<key>CFBundleVersion</key>
+	<string>${MACOSX_BUNDLE_BUNDLE_VERSION}</string>
+	<key>CFBundleShortVersionString</key>
+	<string>${MACOSX_BUNDLE_SHORT_VERSION_STRING}</string>
+	<key>CFBundleIconFile</key>
+	<string>${MACOSX_BUNDLE_ICON_FILE}</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>NSHumanReadableCopyright</key>
+	<string>${MACOSX_BUNDLE_COPYRIGHT}</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSPrincipalClass</key>
+	<string>NSApplication</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>12.0</string>
+</dict>
+</plist>
+PLIST_EOF
+fi
+
+# ── 8. Configure & build ASTRA ──────────────────────────────────────────────
+PREFIX_PATH="${QT_PREFIX};${BREW_PREFIX};${OPENBLAS_PREFIX};${LIBOMP}"
+[[ -n "${CCFITS_PREFIX}" ]] && PREFIX_PATH="${PREFIX_PATH};${CCFITS_PREFIX};$(brew --prefix cfitsio)"
+
+rm -rf "${BUILD_DIR}"
+# Narrow extra include dirs only (no blanket -L/opt/homebrew/lib — that can put
+# a Homebrew libc++ ahead of the system one and break the final link). fftw and
+# the other deps resolve through proper CMake targets; cfitsio's header is the
+# one thing pulled in by a bare include (via CCfits), so add just that dir.
+EXTRA_INC="-isystem ${DEPS_INC}"
+# When CCfits isn't available, hard-disable it so ASTRA's auto-detection can't
+# latch onto a partial install and force a -lCCfits the linker can't satisfy.
+CCFITS_ARGS=()
+EXTRA_LINK=""
+if [[ "${SYS_CCFITS}" == "1" || -n "${CCFITS_PREFIX}" ]]; then
+  # FITS enabled — make sure cfitsio's header (fitsio.h, pulled in by CCfits) is
+  # on the include path regardless of how CCfits itself was found.
+  EXTRA_INC="${EXTRA_INC} -isystem $(brew --prefix cfitsio)/include"
+  # ASTRA's CMakeLists links a *bare* -lCCfits but never feeds the linker the
+  # library search dir that pkg-config (or the source build) reports. On Linux
+  # libCCfits sits in /usr/lib so the default search finds it; on macOS it's in
+  # a Homebrew keg path the linker doesn't scan. Add the -L explicitly.
+  if [[ "${SYS_CCFITS}" == "1" ]]; then
+    EXTRA_LINK="$(pkg-config --libs-only-L ccfits 2>/dev/null) -L$(brew --prefix cfitsio)/lib"
+  else
+    EXTRA_LINK="-L${CCFITS_PREFIX}/lib -L$(brew --prefix cfitsio)/lib"
+  fi
+else
+  CCFITS_ARGS=(-DASTRA_DISABLE_CCFITS=ON)
+  echo ">>> Building WITHOUT FITS support (CCfits unavailable)"
+fi
+cmake -S "${SRC_DIR}" -B "${BUILD_DIR}" \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_C_COMPILER=/usr/bin/clang \
+  -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
+  -DCMAKE_PREFIX_PATH="${PREFIX_PATH}" \
+  -DCMAKE_MODULE_PATH="${CMAKE_MODULES}" \
+  -DCMAKE_Fortran_COMPILER="${FORTRAN_COMPILER}" \
+  -DCMAKE_CXX_FLAGS="${EXTRA_INC}" \
+  -DCMAKE_EXE_LINKER_FLAGS="${EXTRA_LINK}" \
+  ${CCFITS_ARGS[@]+"${CCFITS_ARGS[@]}"} \
+  -DDIGGA_ENABLE_CUDA=OFF \
+  -DBUILD_TESTING=OFF \
+  -DOpenMP_ROOT="${LIBOMP}" \
+  -DOpenMP_C_FLAGS="-Xpreprocessor -fopenmp -I${LIBOMP}/include" \
+  -DOpenMP_C_LIB_NAMES="omp" \
+  -DOpenMP_CXX_FLAGS="-Xpreprocessor -fopenmp -I${LIBOMP}/include" \
+  -DOpenMP_CXX_LIB_NAMES="omp" \
+  -DOpenMP_omp_LIBRARY="${LIBOMP}/lib/libomp.dylib"
+
+cmake --build "${BUILD_DIR}" -j"${JOBS}"
+
+# ── 9. Locate the produced .app ─────────────────────────────────────────────
+APP="$(find "${BUILD_DIR}" -maxdepth 2 -name 'ASTRA.app' -type d | head -1)"
+[[ -n "${APP}" ]] || { echo "Build finished but ASTRA.app not found."; exit 1; }
+echo ">>> Built bundle: ${APP}"
+
+# ── 10. App icon (.icns) from the SVG/PNG ───────────────────────────────────
+ICON_SRC=""
+for cand in resources/linux/icons/astra.png resources/icons/astra.png resources/linux/icons/astra.svg; do
+  [[ -f "${SRC_DIR}/${cand}" ]] && { ICON_SRC="${SRC_DIR}/${cand}"; break; }
+done
+if [[ -n "${ICON_SRC}" ]]; then
+  echo ">>> Generating astra.icns from ${ICON_SRC##*/}"
+  ICONSET="${BUILD_DIR}/astra.iconset"
+  rm -rf "${ICONSET}"; mkdir -p "${ICONSET}"
+  # Rasterise to a big square PNG first (sips can read PNG; SVG needs rsvg/qlmanage).
+  BASE_PNG="${BUILD_DIR}/astra_1024.png"
+  if [[ "${ICON_SRC}" == *.svg ]]; then
+    if command -v rsvg-convert >/dev/null 2>&1; then
+      rsvg-convert -w 1024 -h 1024 "${ICON_SRC}" -o "${BASE_PNG}"
+    else
+      # qlmanage ships with macOS; fall back to it for SVG -> PNG.
+      qlmanage -t -s 1024 -o "${BUILD_DIR}" "${ICON_SRC}" >/dev/null 2>&1 || true
+      mv "${BUILD_DIR}/$(basename "${ICON_SRC}").png" "${BASE_PNG}" 2>/dev/null || cp "${ICON_SRC}" "${BASE_PNG}"
+    fi
+  else
+    sips -s format png -z 1024 1024 "${ICON_SRC}" --out "${BASE_PNG}" >/dev/null
+  fi
+  # iconutil only accepts the canonical iconset names; an unexpected file (e.g.
+  # icon_64x64.png) makes it reject the whole set. 64px is covered by 32@2x.
+  for sz in 16 32 128 256 512; do
+    sips -z "${sz}" "${sz}"           "${BASE_PNG}" --out "${ICONSET}/icon_${sz}x${sz}.png"     >/dev/null
+    sips -z "$((sz*2))" "$((sz*2))"   "${BASE_PNG}" --out "${ICONSET}/icon_${sz}x${sz}@2x.png"  >/dev/null
+  done
+  iconutil -c icns "${ICONSET}" -o "${APP}/Contents/Resources/astra.icns" || \
+    echo "!!! iconutil failed — bundle will use a default icon."
+else
+  echo "!!! No icon source found — bundle will use a default icon."
+fi
+
+# ── 11. Bundle Qt + dylibs, sign, and package ───────────────────────────────
+# Homebrew installs Qt6 as split kegs (qtbase, qtsvg, …). Some frameworks ASTRA
+# pulls in transitively — QtPdf (QPrinter PDF export via qcustomplot) and the
+# QtVirtualKeyboard input-context plugin — live in keg lib dirs that aren't in
+# the rpath list macdeployqt derives from the binary, so it can't resolve them
+# ("Cannot resolve rpath @rpath/QtPdf.framework"). Add the Qt lib/Frameworks
+# dirs as temporary rpaths so macdeployqt finds & bundles them, then strip the
+# absolute paths afterward to keep the .app relocatable.
+EXE="${APP}/Contents/MacOS/ASTRA"
+ADDED_RPATHS=()
+for d in "${QT_PREFIX}/lib" "${QT_PREFIX}/Frameworks" \
+         "${BREW_PREFIX}"/opt/qt*/lib "${BREW_PREFIX}"/opt/qt*/Frameworks; do
+  [[ -d "${d}" ]] || continue
+  if install_name_tool -add_rpath "${d}" "${EXE}" 2>/dev/null; then
+    ADDED_RPATHS+=("${d}")
+  fi
+done
+
+echo ">>> Running macdeployqt (bundling Qt frameworks + plugins)"
+"${MACDEPLOYQT}" "${APP}" -always-overwrite
+
+for d in ${ADDED_RPATHS[@]+"${ADDED_RPATHS[@]}"}; do
+  install_name_tool -delete_rpath "${d}" "${EXE}" 2>/dev/null || true
+done
+
+# ── 11b. Bundle external helper programs (lcurve, lightcurvequery) ───────────
+# ASTRA resolves these at runtime relative to the executable (Contents/MacOS):
+#   lcurve         -> Contents/libexec/astra/lcurve   (ASTRA_LCURVE_BUNDLE_RELDIR)
+#   lightcurvequery-> Contents/share/astra/lightcurvequery (ASTRA_LCQUERY_BUNDLE_RELDIR)
+# These mirror what build-appimage.sh ships (steps 7b / install rules).
+
+if [[ "${ASTRA_BUNDLE_LCURVE}" == "1" ]]; then
+  # Non-fatal: lcurve_re is a separately-maintained native build. If it fails we
+  # still ship a working .app — lcurve just falls back to Settings/PATH at run-
+  # time. Re-run with ASTRA_BUNDLE_LCURVE=0 to skip it outright.
+  if (
+    set -e
+    LCURVE_BINS=(lcurve_levmarq lcurve_mcmc lcurve_simplex)
+    LCURVE_SRC="${CACHE}/lcurve_re"
+    LCURVE_BUILD="${LCURVE_SRC}/build"
+    echo ">>> Building lcurve fitting binaries (${LCURVE_REF})"
+    if [[ ! -d "${LCURVE_SRC}/.git" ]]; then
+      rm -rf "${LCURVE_SRC}"
+      git clone --depth 1 --branch "${LCURVE_REF}" "${LCURVE_REPO}" "${LCURVE_SRC}"
+    else
+      git -C "${LCURVE_SRC}" fetch --depth 1 origin "${LCURVE_REF}" && \
+        git -C "${LCURVE_SRC}" checkout -q FETCH_HEAD || true
+    fi
+    # gnuplot-iostream is a header-only dep lcurve_re needs at build time (same as
+    # the AppImage build). Fetch it once and point lcurve's CMake at it.
+    GP_INC="${CACHE}/include"
+    mkdir -p "${GP_INC}"
+    [[ -f "${GP_INC}/gnuplot-iostream.h" ]] || \
+      wget -q -O "${GP_INC}/gnuplot-iostream.h" \
+        https://raw.githubusercontent.com/dstahlke/gnuplot-iostream/master/gnuplot-iostream.h
+    # Build with the same Apple-Clang + libomp toolchain as ASTRA so the bundled
+    # binaries share one libc++/libomp ABI. CUDA off (no NVIDIA on macOS).
+    rm -rf "${LCURVE_BUILD}"
+    cmake -S "${LCURVE_SRC}" -B "${LCURVE_BUILD}" \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_C_COMPILER=/usr/bin/clang \
+      -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
+      -DCMAKE_PREFIX_PATH="${BREW_PREFIX};${LIBOMP}" \
+      -DGNUPLOT_IOSTREAM_INCLUDE_DIR="${GP_INC}" \
+      -DCMAKE_CXX_FLAGS="-isystem ${GP_INC}" \
+      -DLCURVE_ENABLE_CUDA=OFF \
+      -DOpenMP_ROOT="${LIBOMP}" \
+      -DOpenMP_C_FLAGS="-Xpreprocessor -fopenmp -I${LIBOMP}/include" \
+      -DOpenMP_C_LIB_NAMES="omp" \
+      -DOpenMP_CXX_FLAGS="-Xpreprocessor -fopenmp -I${LIBOMP}/include" \
+      -DOpenMP_CXX_LIB_NAMES="omp" \
+      -DOpenMP_omp_LIBRARY="${LIBOMP}/lib/libomp.dylib"
+    cmake --build "${LCURVE_BUILD}" --target "${LCURVE_BINS[@]}" -j"${JOBS}"
+
+    LCURVE_DEST="${APP}/Contents/libexec/astra/lcurve"
+    mkdir -p "${LCURVE_DEST}"
+    for b in "${LCURVE_BINS[@]}"; do
+      found="$(find "${LCURVE_BUILD}" -name "${b}" -type f -perm -u+x | head -1)"
+      [[ -n "${found}" ]] || { echo "lcurve build missing ${b}"; exit 1; }
+      cp -f "${found}" "${LCURVE_DEST}/"
+      # Copy each binary's non-system dylib deps next to it and rewrite the load
+      # paths to @loader_path/libs so the bundle is self-contained & relocatable.
+      dylibbundler -of -b -x "${LCURVE_DEST}/${b}" \
+        -d "${LCURVE_DEST}/libs" -p "@loader_path/libs/" >/dev/null
+    done
+    echo ">>> lcurve bundled at Contents/libexec/astra/lcurve ($(ls "${LCURVE_DEST}" | tr '\n' ' '))"
+  ); then
+    :
+  else
+    echo "!!! lcurve build/bundle failed — shipping .app WITHOUT bundled lcurve."
+    echo "!!! lcurve will be resolved from the Settings dialog / PATH at runtime."
+  fi
+fi
+
+if [[ "${ASTRA_BUNDLE_LCQUERY}" == "1" ]]; then
+  LCQ_SRC="${SRC_DIR}/external/lightcurvequery"
+  if [[ -f "${LCQ_SRC}/lightcurvequery.py" ]]; then
+    echo ">>> Bundling lightcurvequery Python sources"
+    LCQ_DEST="${APP}/Contents/share/astra/lightcurvequery"
+    rm -rf "${LCQ_DEST}"; mkdir -p "${LCQ_DEST}"
+    # Mirror the install(DIRECTORY ... EXCLUDE) filters from CMakeLists.txt so we
+    # ship clean read-only sources (no VCS, venv, caches or per-run outputs).
+    rsync -a \
+      --exclude '.git*' --exclude '.venv' --exclude '.idea' \
+      --exclude '__pycache__' --exclude 'lightcurves' --exclude 'mastDownload' \
+      --exclude 'lcplots' --exclude 'pgramplots' --exclude 'rvplots' \
+      "${LCQ_SRC}/" "${LCQ_DEST}/"
+  else
+    echo "!!! lightcurvequery submodule missing — skipping (run: git submodule update --init)"
+  fi
+fi
+
+# Ad-hoc (self-)signature so Gatekeeper reports "unidentified developer"
+# (right-click → Open works) instead of "damaged and can't be opened".
+echo ">>> Ad-hoc code-signing the bundle"
+codesign --force --deep --sign - "${APP}" || echo "!!! codesign failed (non-fatal)"
+
+# ── 12. Build the .dmg with hdiutil (built into macOS, no extra deps) ───────
+OUT_DMG="${SRC_DIR}/astra-${VERSION}-arm64.dmg"
+STAGE="${BUILD_DIR}/dmg-stage"
+rm -rf "${STAGE}" "${OUT_DMG}"; mkdir -p "${STAGE}"
+cp -R "${APP}" "${STAGE}/"
+ln -s /Applications "${STAGE}/Applications"     # drag-to-install affordance
+echo ">>> Creating ${OUT_DMG##*/}"
+hdiutil create -volname "ASTRA ${VERSION}" -srcfolder "${STAGE}" \
+  -ov -format UDZO "${OUT_DMG}" >/dev/null
+shasum -a 256 "${OUT_DMG}" > "${OUT_DMG}.sha256"
+
+echo
+echo "=== Build complete ==="
+ls -lh "${OUT_DMG}" "${OUT_DMG}.sha256"
+echo
+echo "Test locally:    open \"${APP}\""
+echo "Ship the .dmg:   astra-${VERSION}-arm64.dmg"
+echo
+echo "Note: the .dmg is ad-hoc signed, not notarized. On first launch the"
+echo "recipient must right-click ASTRA.app → Open (once) to bypass Gatekeeper,"
+echo "or run:  xattr -dr com.apple.quarantine /Applications/ASTRA.app"
