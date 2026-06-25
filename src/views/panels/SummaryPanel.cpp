@@ -194,28 +194,44 @@ inline double massFunctionMsun(double K_kms, double P_days, double e) {
     return C * std::pow(K_kms, 3) * P_days * std::pow(ef, 1.5);
 }
 
-// Solve  M2³·sin³i = f·(M1+M2)²
+// Solve  M2³·sin³i = f·(M1+M2)²  for M2.
 double solveCompanionMass(double f, double M1, double sini) {
     if (!std::isfinite(f) || f <= 0.0 || !std::isfinite(M1) || M1 <= 0.0 ||
         !std::isfinite(sini) || sini <= 0.0)
         return std::numeric_limits<double>::quiet_NaN();
 
-    const double s3 = sini * sini * sini;
-    double       M2 = std::cbrt(f * M1 * M1) / sini;
-    if (M2 <= 0.0)
-        M2 = 0.1;
+    // Reduce to the edge-on form  M2³ = fp·(M1+M2)²  with fp = f / sin³i.
+    const double fp = f / (sini * sini * sini);
 
+    // Fixed-point pre-iteration  M2 = cbrt(fp·(M1+M2)²).  Its derivative at the
+    // root is (2/3)·M2/(M1+M2) < 1, so it is a contraction that climbs to the
+    // root monotonically from below for *any* seed. A bare Newton step, by
+    // contrast, overshoots into M2 < 0 for massive companions (q ≳ 1) — the
+    // seed lands left of the curve's minimum where g is still decreasing — and
+    // the old clamp then trapped it at ~1e-6 (i.e. a spurious M2 ≈ 0).
+    double M2 = std::cbrt(fp) * std::cbrt(M1 * M1); // small-M2 seed
     for (int i = 0; i < 80; ++i) {
-        const double sum = M1 + M2;
-        const double g   = M2 * M2 * M2 * s3 - f * sum * sum;
-        const double gp  = 3.0 * M2 * M2 * s3 - 2.0 * f * sum;
-        if (std::abs(gp) < 1e-30)
+        const double sum  = M1 + M2;
+        const double next = std::cbrt(fp * sum * sum);
+        const bool   done = std::abs(next - M2) < 1e-13 * std::max(next, 1e-9);
+        M2 = next;
+        if (done)
             break;
+    }
+
+    // Newton polish for quadratic convergence on g(M2) = M2³ - fp·(M1+M2)².
+    for (int i = 0; i < 20; ++i) {
+        const double sum = M1 + M2;
+        const double g   = M2 * M2 * M2 - fp * sum * sum;
+        const double gp  = 3.0 * M2 * M2 - 2.0 * fp * sum;
+        if (gp <= 0.0)
+            break; // left of the minimum; pre-iteration already has the root
         const double dM = g / gp;
-        M2 -= dM;
-        if (M2 <= 0.0)
-            M2 = 1e-6;
-        if (std::abs(dM) < 1e-12)
+        const double cand = M2 - dM;
+        if (cand <= 0.0)
+            break; // reject an overshoot, keep the pre-iteration value
+        M2 = cand;
+        if (std::abs(dM) < 1e-12 * std::max(M2, 1e-6))
             break;
     }
     return M2;
@@ -1684,6 +1700,28 @@ QWidget *SummaryPanel::createCompanionSection() {
     }
 
     QWidget *grid = buildPropertyGrid(rows, valCol, labelCol);
+
+    // Warn when the photometric mass ratio could not be reconciled with the RV
+    // mass function (it implied sin i > 1), so M₂(true) was withheld or taken
+    // from the inclination instead of q·M₁.
+    if (_cachedMassTrueInconsistent) {
+        QWidget     *wrap = new QWidget;
+        QVBoxLayout *vl   = new QVBoxLayout(wrap);
+        vl->setContentsMargins(0, 0, 0, 0);
+        vl->setSpacing(6);
+        vl->addWidget(grid);
+
+        QLabel *warn = new QLabel(
+            tr("⚠ q is incompatible with the RV mass function "
+               "(implies sin i > 1); M₂(true) not taken from q·M₁."));
+        warn->setWordWrap(true);
+        warn->setStyleSheet(
+            "font-size: 11px; color: #d08a30; background: transparent; "
+            "border: none;");
+        vl->addWidget(warn);
+        return createSectionFrame("Companion", wrap);
+    }
+
     return createSectionFrame("Companion", grid);
 }
 
@@ -1848,6 +1886,7 @@ void SummaryPanel::ensureCompanionMasses() {
         _cachedMassInputs = in;
         _hasMassCache     = true;
 
+        _cachedMassTrueInconsistent = false;
         if (!in.valid) {
             _cachedMassMin  = {};
             _cachedMassTrue = {};
@@ -1858,15 +1897,53 @@ void SummaryPanel::ensureCompanionMasses() {
                                                  in.eM1, in.e, in.ee, 1.0, 0.0);
             _cachedMassMin    = {mMin, sMin};
 
-            // M2 (true): prefer the measured mass ratio q = M2/M1, which is
-            // inclination-independent; otherwise fall back to the
-            // inclination-derived value from the mass function.
+            // M2 (true). Two light-curve constraints can pin the companion
+            // mass: the mass ratio q = M2/M1 and the orbital inclination i.
+            // The spectroscopic mass function f = M2³sin³i/(M1+M2)² ties them
+            // to the RV data. Multiplying q·M1 blindly ignores f and lets the
+            // result drop *below* the edge-on floor M2_min whenever the
+            // photometric q is incompatible with the RV semi-amplitude. So we
+            // derive the mass self-consistently and flag irreconcilable data.
             if (in.hasQ) {
-                const double mT = in.q * in.M1;
-                const double rq = (in.q > 0.0) ? in.eQ / in.q : 0.0;
-                const double rm = (in.M1 > 0.0) ? in.eM1 / in.M1 : 0.0;
-                const double sT = mT * std::sqrt(rq * rq + rm * rm);
-                _cachedMassTrue = {mT, sT};
+                const double f = massFunctionMsun(in.K, in.P, in.e);
+                // Inclination implied by (f, q, M1) through the mass function:
+                //   f = q³·M1·sin³i / (1+q)²   ⇒   sin³i = f(1+q)² / (q³·M1).
+                const double oneP = 1.0 + in.q;
+                const double s3   = (in.q > 0.0 && in.M1 > 0.0)
+                                        ? f * oneP * oneP /
+                                              (in.q * in.q * in.q * in.M1)
+                                        : std::numeric_limits<double>::quiet_NaN();
+                const double siniImp =
+                    std::isfinite(s3) ? std::cbrt(s3)
+                                      : std::numeric_limits<double>::quiet_NaN();
+
+                if (std::isfinite(siniImp) && siniImp <= 1.0 + 1e-6) {
+                    // Consistent: q·M1 satisfies the mass function with a
+                    // physical sin i ≤ 1, hence it is guaranteed to sit on or
+                    // above M2_min (which is the same curve evaluated at i=90°).
+                    const double mT = in.q * in.M1;
+                    const double rq = (in.q > 0.0) ? in.eQ / in.q : 0.0;
+                    const double rm = (in.M1 > 0.0) ? in.eM1 / in.M1 : 0.0;
+                    const double sT = mT * std::sqrt(rq * rq + rm * rm);
+                    _cachedMassTrue = {mT, sT};
+                } else {
+                    // q and the RV mass function disagree (they would require
+                    // sin i > 1). Don't report a sub-floor q·M1. Fall back to
+                    // the inclination-derived mass when one is available (it is
+                    // always ≥ M2_min); otherwise leave the true mass unset so
+                    // only the M2_min lower limit is shown.
+                    _cachedMassTrueInconsistent = true;
+                    if (in.hasIncl) {
+                        const double mT =
+                            m2Of(in.P, in.K, in.M1, in.e, in.sini);
+                        const double sT = propagateM2Error(
+                            in.P, in.eP, in.K, in.eK, in.M1, in.eM1, in.e,
+                            in.ee, in.sini, in.esini);
+                        _cachedMassTrue = {mT, sT};
+                    } else {
+                        _cachedMassTrue = {};
+                    }
+                }
             } else if (in.hasIncl) {
                 const double mT = m2Of(in.P, in.K, in.M1, in.e, in.sini);
                 const double sT =

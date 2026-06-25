@@ -11,6 +11,7 @@
 class Star;
 class RadialVelocityCurve;
 class RVFit;
+class LCFit;
 class DatabaseManager;
 class PeriodogramRecord;
 
@@ -102,6 +103,20 @@ private:
                                           double pSigma,
                                           QString* errOut = nullptr) const;
 
+    // Circular LM fit with the phase φ HARD-FIXED so the RV node coincides with
+    // the supplied light-curve ephemeris (t0LcBJD at period P, i.e. conjunction
+    // where a circular RV equals γ). Only K and γ are fitted (a 2-parameter
+    // weighted linear least squares); P and φ are held fixed. Used by the
+    // Photometry tab's "same phase as LC fit" option. nullptr on failure.
+    std::shared_ptr<RVFit> fitSinusoidFixedPhase(double period,
+                                                 double t0LcBJD,
+                                                 QString* errOut = nullptr) const;
+
+    // Find the best light-curve fit (across all LC sources) whose period matches
+    // `period` within a small relative tolerance, or nullptr if none. Used to
+    // associate a photometric peak with an LC fit for phase locking.
+    std::shared_ptr<LCFit> findLcFitForPeriod(double period) const;
+
     // Like fitSinusoidLM but also stamps the fitted χ² and 1σ parameter errors
     // (K, γ, φ, P) derived from the covariance at the solution. pErrLandscape is
     // a fallback period uncertainty (e.g. from the χ² landscape curvature) used
@@ -153,6 +168,7 @@ private:
     QCheckBox*      _photEccentric = nullptr;
     QDoubleSpinBox* _photPeriodTol = nullptr;   // multiplier on σ_P (sigma window)
     QCheckBox*      _photEllipsoidal = nullptr; // use 2*P
+    QCheckBox*      _photSamePhase   = nullptr; // lock RV phase to the LC fit ephemeris
 
     // ── Periodogram tab
     QCustomPlot*    _pgPlot         = nullptr;

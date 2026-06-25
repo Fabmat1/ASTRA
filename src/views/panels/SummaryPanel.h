@@ -66,6 +66,9 @@ class SummaryPanel : public DetailPanel {
     MassInputs _cachedMassInputs;
     MassResult _cachedMassMin;
     MassResult _cachedMassTrue;
+    // Set when the photometric mass ratio q cannot be reconciled with the RV
+    // mass function (it would require sin i > 1). Drives a warning in the UI.
+    bool       _cachedMassTrueInconsistent = false;
     bool       _hasMassCache = false;
 
     QColor logPColor(double logP) const;

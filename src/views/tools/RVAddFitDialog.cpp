@@ -3,6 +3,7 @@
 
 #include "db/DatabaseManager.h"
 #include "models/PeriodogramRecord.h"
+#include "models/Photometry.h"
 #include "models/RadialVelocity.h"
 #include "models/Star.h"
 #include "utils/Logger.h"
@@ -371,10 +372,25 @@ void RVAddFitDialog::buildPhotTab(QWidget* parent)
     _photEllipsoidal = new QCheckBox("Ellipsoidal (search at 2·P_phot)");
     _photEccentric   = new QCheckBox("Eccentric orbit");
 
+    _photSamePhase = new QCheckBox("Lock RV phase to LC fit (same phase)");
+    _photSamePhase->setChecked(true);
+    _photSamePhase->setToolTip(
+        "When a light-curve fit is associated with the selected photometric "
+        "period, hold the RV phase fixed so the RV node coincides with the LC "
+        "fit's ephemeris (T₀, period); only K and γ are fitted. Applies to "
+        "circular fits only (ignored for eccentric orbits, and when no matching "
+        "LC fit exists).");
+
     form->addRow("Period prior width (×σ_P)", _photPeriodTol);
     form->addRow(_photEllipsoidal);
     form->addRow(_photEccentric);
+    form->addRow(_photSamePhase);
     lay->addWidget(opts);
+
+    // Same-phase locking is circular-only; grey it out for eccentric fits so the
+    // UI makes clear the option has no effect there.
+    connect(_photEccentric, &QCheckBox::toggled, this,
+            [this](bool ecc){ _photSamePhase->setEnabled(!ecc); });
 
     _runPhotBtn = new QPushButton("Fit selected peaks…");
     auto* btnRow = new QHBoxLayout;
@@ -1431,6 +1447,106 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitKeplerianLM(
 }
 
 // ───────────────────────────────────────────────────────────────────
+std::shared_ptr<LCFit> RVAddFitDialog::findLcFitForPeriod(double period) const
+{
+    if (!_star || !(period > 0)) return nullptr;
+    auto phot = _star->getPhotometry();
+    if (!phot) return nullptr;
+
+    constexpr double relTol = 0.02;   // 2% period match window
+    std::shared_ptr<LCFit> best;
+    double bestScore = std::numeric_limits<double>::max();
+    for (const auto& src : phot->getLightcurveSources()) {
+        for (const auto& f : phot->getLCFits(src)) {
+            if (!f || !(f->period > 0)) continue;
+            const double rel = std::abs(f->period - period) / period;
+            if (rel > relTol) continue;
+            // Closest period wins; prefer the flagged best fit, then lower χ².
+            double score = rel;
+            if (f->isBestFit) score -= 1.0;
+            if (f->chi2 > 0)  score += 1e-6 * f->chi2;
+            if (score < bestScore) { bestScore = score; best = f; }
+        }
+    }
+    return best;
+}
+
+// ───────────────────────────────────────────────────────────────────
+std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidFixedPhase(
+    double period, double t0LcBJD, QString* errOut) const
+{
+    auto data = buildRVData();
+    if (data.bjd.size() < 2) {
+        if (errOut) *errOut = "Need ≥ 2 unflagged RV points with BJD.";
+        return nullptr;
+    }
+    if (!(period > 0)) {
+        if (errOut) *errOut = "Invalid LC period for phase locking.";
+        return nullptr;
+    }
+
+    // Phase against the SAME reference epoch updateFitReferences() will assign
+    // (as fitSinusoidLM does) so the stored φ is consistent with the curve.
+    double t0   = data.bjd.front();
+    double mjd0 = 0.0;
+    if (_curve) {
+        double refBjd = 0.0, refMjd = 0.0;
+        if (_curve->computeReferenceEpoch(refBjd, refMjd) && refBjd > 0.0) {
+            t0   = refBjd;
+            mjd0 = refMjd;
+        }
+    }
+
+    // Lock φ so the RV node (where a circular RV equals γ) coincides with the
+    // LC conjunction t0LcBJD:
+    //   sin(2π((t0Lc − tRef)/P + φ)) = 0  ⇒  φ = −(t0Lc − tRef)/P  (mod 1).
+    double phi = -((t0LcBJD - t0) / period);
+    phi -= std::floor(phi);
+
+    // With φ and P fixed the circular model RV_i = γ + K·c_i is linear in
+    // (γ, K), where c_i = sin(2π((bjd_i − tRef)/P + φ)). Solve the weighted 2×2
+    // normal equations.
+    double Sw = 0, Sc = 0, Scc = 0, Sy = 0, Scy = 0;
+    for (size_t i = 0; i < data.bjd.size(); ++i) {
+        const double theta = (data.bjd[i] - t0) / period;
+        const double c = std::sin(2.0 * M_PI * (theta + phi));
+        const double s = (data.rv_err[i] > 0) ? data.rv_err[i] : 1.0;
+        const double w = 1.0 / (s * s);
+        const double y = data.rv[i];
+        Sw += w; Sc += w * c; Scc += w * c * c; Sy += w * y; Scy += w * c * y;
+    }
+    const double det = Sw * Scc - Sc * Sc;
+    if (!(std::abs(det) > 1e-30)) {
+        if (errOut)
+            *errOut = "Phase-locked design is singular (RV points cover too "
+                      "little phase).";
+        return nullptr;
+    }
+    double gamma = (Sy * Scc - Scy * Sc) / det;
+    double K     = (Sw * Scy - Sc  * Sy) / det;
+
+    // Canonicalise a negative amplitude: −K·sin(x) = K·sin(x + π) ⇒ φ += 0.5.
+    if (K < 0.0) { K = -K; phi += 0.5; }
+    phi -= std::floor(phi);
+
+    auto fit = std::make_shared<RVFit>();
+    fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    fit->setCurveId(_curve ? _curve->getId() : QString());
+    fit->setCreationDate(QDateTime::currentDateTime());
+    fit->setFitMethod(QString("LM phase-locked to LC (P=%1, T₀=%2)")
+                          .arg(period, 0, 'f', 6)
+                          .arg(t0LcBJD, 0, 'f', 6));
+    fit->setPeriod(period);
+    fit->setK(K);
+    fit->setGamma(gamma);
+    fit->setPhi(phi);                // relative to t0 == tRefBJD
+    fit->setReferenceTime(t0, mjd0);
+    fit->setEccentric(false);
+    fit->setBestFit(false);
+    return fit;
+}
+
+// ───────────────────────────────────────────────────────────────────
 std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidLMFull(
     double pSeed, double pSigma, double pErrLandscape, QString* errOut) const
 {
@@ -1493,19 +1609,34 @@ void RVAddFitDialog::onRunPhotFit()
     const double tolMul = _photPeriodTol->value();
     const bool ellips   = _photEllipsoidal->isChecked();
     const bool ecc      = _photEccentric && _photEccentric->isChecked();
+    const bool samePhase = !ecc && _photSamePhase && _photSamePhase->isChecked();
 
     QStringList failed;
     QList<std::shared_ptr<RVFit>> fits;
     for (auto* it : items) {
-        double P     = it->data(Qt::UserRole + 0).toDouble();
+        const double Praw  = it->data(Qt::UserRole + 0).toDouble();
+        double P     = Praw;
         double sigma = it->data(Qt::UserRole + 1).toDouble();
         if (ellips) { P *= 2.0; sigma *= 2.0; }
         if (!(sigma > 0)) sigma = std::max(1e-6, 0.02 * P);
         sigma *= std::max(1e-3, tolMul);
 
+        // Same-phase (circular only): if an LC fit is associated with this
+        // photometric period, lock the RV phase to its ephemeris and fit only
+        // K and γ. The LC fit's own period is used (doubled for ellipsoidal),
+        // since its T₀ is tied to that period.
+        std::shared_ptr<LCFit> lc;
+        if (samePhase) lc = findLcFitForPeriod(Praw);
+
         QString err;
-        auto fit = ecc ? fitKeplerianLM(P, sigma, &err)
-                       : fitSinusoidLM(P, sigma, &err);
+        std::shared_ptr<RVFit> fit;
+        if (lc) {
+            const double pRv = ellips ? 2.0 * lc->period : lc->period;
+            fit = fitSinusoidFixedPhase(pRv, lc->t0BJD, &err);
+        } else {
+            fit = ecc ? fitKeplerianLM(P, sigma, &err)
+                      : fitSinusoidLM(P, sigma, &err);
+        }
         if (!fit) { failed << QString("P=%1 d: %2").arg(P).arg(err); continue; }
         fits.append(fit);
     }

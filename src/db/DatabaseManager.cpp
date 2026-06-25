@@ -881,10 +881,18 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
         if (idxTessCrowdsap >= 0 && !query.isNull(idxTessCrowdsap)) star->setTessCrowdsap(query.value(idxTessCrowdsap).toDouble());
         if (idxPhotPeaksJson >= 0 && !query.isNull(idxPhotPeaksJson)) star->setPhotPeaksJson(query.value(idxPhotPeaksJson).toString());
 
-        if (idxCompMassMin >= 0)   star->setCompMassMin(query.value(idxCompMassMin).toDouble());
-        if (idxCompEMassMin >= 0)  star->setECompMassMin(query.value(idxCompEMassMin).toDouble());
-        if (idxCompMassTrue >= 0)  star->setCompMassTrue(query.value(idxCompMassTrue).toDouble());
-        if (idxCompEMassTrue >= 0) star->setECompMassTrue(query.value(idxCompEMassTrue).toDouble());
+        // These default to NaN ("unset") and are persisted as NULL when unset
+        // (dblVar maps NaN→NULL). QVariant::toDouble() turns a NULL back into
+        // 0.0, which would wrongly surface as "M₂ = 0.0000"; preserve the NaN
+        // sentinel by only assigning when the column actually holds a value.
+        if (idxCompMassMin >= 0 && !query.isNull(idxCompMassMin))
+            star->setCompMassMin(query.value(idxCompMassMin).toDouble());
+        if (idxCompEMassMin >= 0 && !query.isNull(idxCompEMassMin))
+            star->setECompMassMin(query.value(idxCompEMassMin).toDouble());
+        if (idxCompMassTrue >= 0 && !query.isNull(idxCompMassTrue))
+            star->setCompMassTrue(query.value(idxCompMassTrue).toDouble());
+        if (idxCompEMassTrue >= 0 && !query.isNull(idxCompEMassTrue))
+            star->setECompMassTrue(query.value(idxCompEMassTrue).toDouble());
         stars.push_back(std::move(star));
     }
 
