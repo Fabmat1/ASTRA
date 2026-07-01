@@ -757,6 +757,28 @@
                     }
                 }
             ]
+        },
+        {
+            "name": "FEROS",
+            "full_name": "Fibre-fed Extended Range Optical Spectrograph (MPG/ESO 2.2m, La Silla)",
+            "latitude": -29.2563,
+            "longitude": -70.7380,
+            "altitude": 2335.0,
+            "modes": [
+                {
+                    "key": "echelle",
+                    "display_name": "FEROS Echelle",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "echelle",
+                        "resolution_coefficients": [
+                            48000.0
+                        ],
+                        "wavelength_min": 3500.0,
+                        "wavelength_max": 9200.0
+                    }
+                }
+            ]
         }
     ]
 }
