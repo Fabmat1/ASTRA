@@ -7,6 +7,7 @@
 #include <vector>
 #include <functional>
 #include <unordered_map>
+#include "AsymmetricErrors.h"
 #include "RadialVelocity.h"
 
 class Photometry;
@@ -92,6 +93,20 @@ public:
     void setHe(double he) { _he = he; }
     void setEHe(double e_he) { _e_he = e_he; }
 
+    // Optional asymmetric atmospheric errors (NaN = unset → symmetric applies)
+    double getETeffUp() const   { return _e_teff_up; }
+    double getETeffDown() const { return _e_teff_down; }
+    void setETeffUp(double e)   { _e_teff_up = e; }
+    void setETeffDown(double e) { _e_teff_down = e; }
+    double getELoggUp() const   { return _e_logg_up; }
+    double getELoggDown() const { return _e_logg_down; }
+    void setELoggUp(double e)   { _e_logg_up = e; }
+    void setELoggDown(double e) { _e_logg_down = e; }
+    double getEHeUp() const   { return _e_he_up; }
+    double getEHeDown() const { return _e_he_down; }
+    void setEHeUp(double e)   { _e_he_up = e; }
+    void setEHeDown(double e) { _e_he_down = e; }
+
     // Radial velocity fields
     double getLogP() const { return _logp; }
     double getDeltaRV() const { return _deltaRV; }
@@ -126,14 +141,26 @@ public:
     void   setRVK(double v)        { _rvK = v; }
     double getRVEK() const         { return _rvEK; }
     void   setRVEK(double v)       { _rvEK = v; }
+    double getRVEKUp() const       { return _rvEKUp; }
+    void   setRVEKUp(double v)     { _rvEKUp = v; }
+    double getRVEKDown() const     { return _rvEKDown; }
+    void   setRVEKDown(double v)   { _rvEKDown = v; }
     double getRVPeriod() const     { return _rvPeriod; }
     void   setRVPeriod(double v)   { _rvPeriod = v; }
     double getRVEPeriod() const    { return _rvEPeriod; }
     void   setRVEPeriod(double v)  { _rvEPeriod = v; }
+    double getRVEPeriodUp() const     { return _rvEPeriodUp; }
+    void   setRVEPeriodUp(double v)   { _rvEPeriodUp = v; }
+    double getRVEPeriodDown() const   { return _rvEPeriodDown; }
+    void   setRVEPeriodDown(double v) { _rvEPeriodDown = v; }
     double getRVGamma() const      { return _rvGamma; }
     void   setRVGamma(double v)    { _rvGamma = v; }
     double getRVEGamma() const     { return _rvEGamma; }
     void   setRVEGamma(double v)   { _rvEGamma = v; }
+    double getRVEGammaUp() const     { return _rvEGammaUp; }
+    void   setRVEGammaUp(double v)   { _rvEGammaUp = v; }
+    double getRVEGammaDown() const   { return _rvEGammaDown; }
+    void   setRVEGammaDown(double v) { _rvEGammaDown = v; }
     double getRVEcc() const        { return _rvEcc; }
     void   setRVEcc(double v)      { _rvEcc = v; }
     double getRVPhi() const        { return _rvPhi; }
@@ -171,29 +198,75 @@ public:
     double getSedELum2() const       { return _sedELum2; }
     void   setSedELum2(double v)     { _sedELum2 = v; }
 
+    // Asymmetric SED errors (NaN = unset → symmetric error applies)
+    double getSedEMass1Up() const      { return _sedEMass1Up; }
+    void   setSedEMass1Up(double v)    { _sedEMass1Up = v; }
+    double getSedEMass1Down() const    { return _sedEMass1Down; }
+    void   setSedEMass1Down(double v)  { _sedEMass1Down = v; }
+    double getSedERadius1Up() const    { return _sedERadius1Up; }
+    void   setSedERadius1Up(double v)  { _sedERadius1Up = v; }
+    double getSedERadius1Down() const  { return _sedERadius1Down; }
+    void   setSedERadius1Down(double v){ _sedERadius1Down = v; }
+    double getSedELum1Up() const       { return _sedELum1Up; }
+    void   setSedELum1Up(double v)     { _sedELum1Up = v; }
+    double getSedELum1Down() const     { return _sedELum1Down; }
+    void   setSedELum1Down(double v)   { _sedELum1Down = v; }
+    double getSedEMass2Up() const      { return _sedEMass2Up; }
+    void   setSedEMass2Up(double v)    { _sedEMass2Up = v; }
+    double getSedEMass2Down() const    { return _sedEMass2Down; }
+    void   setSedEMass2Down(double v)  { _sedEMass2Down = v; }
+    double getSedERadius2Up() const    { return _sedERadius2Up; }
+    void   setSedERadius2Up(double v)  { _sedERadius2Up = v; }
+    double getSedERadius2Down() const  { return _sedERadius2Down; }
+    void   setSedERadius2Down(double v){ _sedERadius2Down = v; }
+    double getSedELum2Up() const       { return _sedELum2Up; }
+    void   setSedELum2Up(double v)     { _sedELum2Up = v; }
+    double getSedELum2Down() const     { return _sedELum2Down; }
+    void   setSedELum2Down(double v)   { _sedELum2Down = v; }
+
     // ── Companion mass ──────────────────────────────────────────────────────
     double getCompMassMin() const { return _compMassMin; }
     void   setCompMassMin(double v) { _compMassMin = v; }
     double getECompMassMin() const { return _eCompMassMin; }
     void   setECompMassMin(double v) { _eCompMassMin = v; }
+    double getECompMassMinUp() const     { return _eCompMassMinUp; }
+    void   setECompMassMinUp(double v)   { _eCompMassMinUp = v; }
+    double getECompMassMinDown() const   { return _eCompMassMinDown; }
+    void   setECompMassMinDown(double v) { _eCompMassMinDown = v; }
     double getCompMassTrue() const { return _compMassTrue; }
     void   setCompMassTrue(double v) { _compMassTrue = v; }
     double getECompMassTrue() const { return _eCompMassTrue; }
     void   setECompMassTrue(double v) { _eCompMassTrue = v; }
+    double getECompMassTrueUp() const     { return _eCompMassTrueUp; }
+    void   setECompMassTrueUp(double v)   { _eCompMassTrueUp = v; }
+    double getECompMassTrueDown() const   { return _eCompMassTrueDown; }
+    void   setECompMassTrueDown(double v) { _eCompMassTrueDown = v; }
 
     // ── Photometric light-curve parameters ──────────────────────────────────
     double getPhotPeriod() const     { return _photPeriod; }
     void   setPhotPeriod(double v)   { _photPeriod = v; }
     double getPhotEPeriod() const    { return _photEPeriod; }
     void   setPhotEPeriod(double v)  { _photEPeriod = v; }
+    double getPhotEPeriodUp() const     { return _photEPeriodUp; }
+    void   setPhotEPeriodUp(double v)   { _photEPeriodUp = v; }
+    double getPhotEPeriodDown() const   { return _photEPeriodDown; }
+    void   setPhotEPeriodDown(double v) { _photEPeriodDown = v; }
     double getPhotIncl() const       { return _photIncl; }
     void   setPhotIncl(double v)     { _photIncl = v; }
     double getPhotEIncl() const      { return _photEIncl; }
     void   setPhotEIncl(double v)    { _photEIncl = v; }
+    double getPhotEInclUp() const     { return _photEInclUp; }
+    void   setPhotEInclUp(double v)   { _photEInclUp = v; }
+    double getPhotEInclDown() const   { return _photEInclDown; }
+    void   setPhotEInclDown(double v) { _photEInclDown = v; }
     double getPhotQ() const          { return _photQ; }
     void   setPhotQ(double v)        { _photQ = v; }
     double getPhotEQ() const         { return _photEQ; }
     void   setPhotEQ(double v)       { _photEQ = v; }
+    double getPhotEQUp() const     { return _photEQUp; }
+    void   setPhotEQUp(double v)   { _photEQUp = v; }
+    double getPhotEQDown() const   { return _photEQDown; }
+    void   setPhotEQDown(double v) { _photEQDown = v; }
 
     // ── Dataset availability flags ──────────────────────────────────────────
     bool getHasTess() const          { return _hasTess; }
@@ -337,6 +410,14 @@ private:
     double _he;
     double _e_he;
 
+    // Asymmetric atmospheric errors (NaN = unset → symmetric applies)
+    double _e_teff_up   = AsymErr::unset;
+    double _e_teff_down = AsymErr::unset;
+    double _e_logg_up   = AsymErr::unset;
+    double _e_logg_down = AsymErr::unset;
+    double _e_he_up     = AsymErr::unset;
+    double _e_he_down   = AsymErr::unset;
+
     // Radial velocity fields
     double _logp;
     double _deltaRV;
@@ -378,10 +459,16 @@ private:
     int    _rvNPoints  = 0;
     double _rvK        = std::numeric_limits<double>::quiet_NaN();
     double _rvEK       = std::numeric_limits<double>::quiet_NaN();
+    double _rvEKUp     = AsymErr::unset;
+    double _rvEKDown   = AsymErr::unset;
     double _rvPeriod   = std::numeric_limits<double>::quiet_NaN();
     double _rvEPeriod  = std::numeric_limits<double>::quiet_NaN();
+    double _rvEPeriodUp   = AsymErr::unset;
+    double _rvEPeriodDown = AsymErr::unset;
     double _rvGamma    = std::numeric_limits<double>::quiet_NaN();
     double _rvEGamma   = std::numeric_limits<double>::quiet_NaN();
+    double _rvEGammaUp   = AsymErr::unset;
+    double _rvEGammaDown = AsymErr::unset;
     double _rvEcc      = std::numeric_limits<double>::quiet_NaN();
     double _rvPhi      = std::numeric_limits<double>::quiet_NaN();
     double _rvT0       = std::numeric_limits<double>::quiet_NaN();
@@ -402,19 +489,42 @@ private:
     double _sedLum2     = std::numeric_limits<double>::quiet_NaN();
     double _sedELum2    = std::numeric_limits<double>::quiet_NaN();
 
+    double _sedEMass1Up     = AsymErr::unset;
+    double _sedEMass1Down   = AsymErr::unset;
+    double _sedERadius1Up   = AsymErr::unset;
+    double _sedERadius1Down = AsymErr::unset;
+    double _sedELum1Up      = AsymErr::unset;
+    double _sedELum1Down    = AsymErr::unset;
+    double _sedEMass2Up     = AsymErr::unset;
+    double _sedEMass2Down   = AsymErr::unset;
+    double _sedERadius2Up   = AsymErr::unset;
+    double _sedERadius2Down = AsymErr::unset;
+    double _sedELum2Up      = AsymErr::unset;
+    double _sedELum2Down    = AsymErr::unset;
+
     // Companion mass
     double _compMassMin   = std::numeric_limits<double>::quiet_NaN();
     double _eCompMassMin  = std::numeric_limits<double>::quiet_NaN();
+    double _eCompMassMinUp   = AsymErr::unset;
+    double _eCompMassMinDown = AsymErr::unset;
     double _compMassTrue  = std::numeric_limits<double>::quiet_NaN();
     double _eCompMassTrue = std::numeric_limits<double>::quiet_NaN();
+    double _eCompMassTrueUp   = AsymErr::unset;
+    double _eCompMassTrueDown = AsymErr::unset;
 
     // Photometric light-curve
     double _photPeriod  = std::numeric_limits<double>::quiet_NaN();
     double _photEPeriod = std::numeric_limits<double>::quiet_NaN();
+    double _photEPeriodUp   = AsymErr::unset;
+    double _photEPeriodDown = AsymErr::unset;
     double _photIncl    = std::numeric_limits<double>::quiet_NaN();
     double _photEIncl   = std::numeric_limits<double>::quiet_NaN();
+    double _photEInclUp   = AsymErr::unset;
+    double _photEInclDown = AsymErr::unset;
     double _photQ       = std::numeric_limits<double>::quiet_NaN();
     double _photEQ      = std::numeric_limits<double>::quiet_NaN();
+    double _photEQUp    = AsymErr::unset;
+    double _photEQDown  = AsymErr::unset;
 
     // Dataset availability
     bool _hasTess     = false;

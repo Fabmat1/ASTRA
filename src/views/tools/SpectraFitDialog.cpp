@@ -531,16 +531,26 @@ void SpectraFitDialog::propagateBestFitParams(
 {
     if (!_star || !fit) return;
     bool changed = false;
-    auto setIf = [&](double v, auto setter, auto errSetter, double err) {
+    auto setIf = [&](double v, auto setter, auto errSetter, double err,
+                     auto errUpSetter, double errUp,
+                     auto errDownSetter, double errDown) {
         if (!std::isnan(v) && v != 0.0) {
             (_star.get()->*setter)(v);
             (_star.get()->*errSetter)(std::isnan(err) ? 0.0 : err);
+            (_star.get()->*errUpSetter)(errUp);
+            (_star.get()->*errDownSetter)(errDown);
             changed = true;
         }
     };
-    setIf(fit->teff, &Star::setTeff,  &Star::setETeff,  fit->teffError);
-    setIf(fit->logg, &Star::setLogg,  &Star::setELogg,  fit->loggError);
-    setIf(fit->he,   &Star::setHe,    &Star::setEHe,    fit->heError);
+    setIf(fit->teff, &Star::setTeff,  &Star::setETeff,  fit->teffError,
+          &Star::setETeffUp, fit->teffErrorUp,
+          &Star::setETeffDown, fit->teffErrorDown);
+    setIf(fit->logg, &Star::setLogg,  &Star::setELogg,  fit->loggError,
+          &Star::setELoggUp, fit->loggErrorUp,
+          &Star::setELoggDown, fit->loggErrorDown);
+    setIf(fit->he,   &Star::setHe,    &Star::setEHe,    fit->heError,
+          &Star::setEHeUp, fit->heErrorUp,
+          &Star::setEHeDown, fit->heErrorDown);
 
     if (changed) {
         if (_dbm && !_projectId.isEmpty())

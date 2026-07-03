@@ -187,7 +187,15 @@ void LCFitDialog::setupUi() {
             &LCFitDialog::onPageChanged);
     updateNavButtons();
 
+    // Live conflict check across every field that becomes a prior.
+    for (QLineEdit *e : {_logg1, _logg2, _M1, _M2, _R1, _R2, _K1, _K2, _M2min,
+                         _qObs, _Mtot})
+        if (e)
+            connect(e, &QLineEdit::textChanged, this,
+                    &LCFitDialog::updatePriorConflictWarning);
+
     populateFromStar();
+    updatePriorConflictWarning();
 }
 
 // ── Auto-populate from Star ────────────────────────────────────────────────
@@ -285,8 +293,10 @@ QWidget *LCFitDialog::buildHeader() {
 // ── Stars tab ──────────────────────────────────────────────────────
 
   QWidget *LCFitDialog::buildStarsPage() {
-      auto *page = new QWidget;
-      auto *root = new QHBoxLayout(page);
+      auto *page  = new QWidget;
+      auto *outer = new QVBoxLayout(page);
+      auto *root  = new QHBoxLayout;
+      outer->addLayout(root, 1);
 
       auto makeStarBox = [&](const QString &title, QComboBox *&type,
                              QLineEdit *&T, QLineEdit *&logg, QLineEdit *&M,
@@ -337,22 +347,30 @@ QWidget *LCFitDialog::buildHeader() {
       side->addStretch();
       root->addLayout(side);
 
+      _priorWarnStars = new QLabel;
+      _priorWarnStars->setWordWrap(true);
+      _priorWarnStars->setTextFormat(Qt::RichText);
+      _priorWarnStars->setStyleSheet("color: #dca84d;");
+      _priorWarnStars->hide();
+      outer->addWidget(_priorWarnStars);
+
       return page;
   }
 
   void LCFitDialog::onGuessMSClicked() {
       _type2->setCurrentText("ms");
       setMeas(_T2, LCFitPhysics::AsymMeasurement{3500, 1000, 1500});
-      setMeas(_logg2, LCFitPhysics::AsymMeasurement{4.7, 0.5, 0.5});
-      // Mass and radius of the companion are intentionally left untouched.
+      // No log g₂ guess: it would act as a prior that fights the M₂/R₂
+      // constraints. Mass and radius are intentionally left untouched too.
+      setMeas(_logg2, std::nullopt);
       recomputeMtot();
       recomputeM2Min();
   }
 
   void LCFitDialog::onGuessWDClicked() {
       _type2->setCurrentText("wd");
-      setMeas(_T2, LCFitPhysics::AsymMeasurement{20000, 15000, 30000});
-      setMeas(_logg2, LCFitPhysics::AsymMeasurement{8.0, 0.7, 0.7});
+      setMeas(_T2, LCFitPhysics::AsymMeasurement{10000, 5000, 20000});
+      setMeas(_logg2, std::nullopt);
       recomputeMtot();
       recomputeM2Min();
   }
@@ -424,6 +442,14 @@ QWidget *LCFitDialog::buildConstraintsPage() {
   sl->addRow(btn);
 
   root->addWidget(startBox);
+
+  _priorWarnConstraints = new QLabel;
+  _priorWarnConstraints->setWordWrap(true);
+  _priorWarnConstraints->setTextFormat(Qt::RichText);
+  _priorWarnConstraints->setStyleSheet("color: #dca84d;");
+  _priorWarnConstraints->hide();
+  root->addWidget(_priorWarnConstraints);
+
   root->addStretch();
   return page;
 }
@@ -1072,6 +1098,61 @@ LCFitPhysics::PriorInputs LCFitDialog::collectPriors() const {
   return p;
 }
 
+// Groups of priors that over-determine each other through exact physical
+// relations. Feeding all members of a group to the solver makes the priors
+// fight (each pulls the shared quantity toward a slightly different value),
+// so the user is warned before the run starts.
+QStringList LCFitDialog::redundantPriorCombos() const {
+  const auto p = collectPriors();
+  auto on = [](const std::optional<LCFitPhysics::AsymMeasurement> &m) {
+    return m && m->isValid();
+  };
+  QStringList out;
+  auto flag = [&](std::initializer_list<bool> members, const QString &names,
+                  const QString &relation) {
+    for (bool b : members)
+      if (!b)
+        return;
+    out << QString("<b>%1</b> (%2)").arg(names, relation);
+  };
+  flag({on(p.logg1), on(p.M1), on(p.R1)}, tr("log g₁ + M₁ + R₁"),
+       tr("log g follows from M and R"));
+  flag({on(p.logg2), on(p.M2), on(p.R2)}, tr("log g₂ + M₂ + R₂"),
+       tr("log g follows from M and R"));
+  flag({on(p.q), on(p.M1), on(p.M2)}, tr("q + M₁ + M₂"), tr("q = M₂/M₁"));
+  flag({on(p.Mtotal), on(p.M1), on(p.M2)}, tr("M_total + M₁ + M₂"),
+       tr("M_total = M₁ + M₂"));
+  if (!on(p.M2))
+    flag({on(p.Mtotal), on(p.q), on(p.M1)}, tr("M_total + q + M₁"),
+         tr("any two fix the third"));
+  if (!on(p.M1))
+    flag({on(p.Mtotal), on(p.q), on(p.M2)}, tr("M_total + q + M₂"),
+         tr("any two fix the third"));
+  flag({on(p.K1), on(p.K2), on(p.q)}, tr("K₁ + K₂ + q"), tr("q = K₁/K₂"));
+  if (!on(p.q))
+    flag({on(p.K1), on(p.K2), on(p.M1), on(p.M2)}, tr("K₁ + K₂ + M₁ + M₂"),
+         tr("both pairs fix q"));
+  flag({on(p.K1), on(p.M1), on(p.M2min)}, tr("K₁ + M₁ + M₂_min"),
+       tr("M₂_min follows from K₁, P and M₁"));
+  return out;
+}
+
+void LCFitDialog::updatePriorConflictWarning() {
+  const QStringList clashes = redundantPriorCombos();
+  const QString     text =
+      clashes.isEmpty()
+              ? QString()
+              : tr("⚠ Conflicting priors — each group over-determines "
+                   "itself, drop one member: %1")
+                    .arg(clashes.join(tr("; ")));
+  for (QLabel *l : {_priorWarnStars, _priorWarnConstraints}) {
+    if (!l)
+      continue;
+    l->setText(text);
+    l->setVisible(!text.isEmpty());
+  }
+}
+
 QSet<QString> LCFitDialog::collectVaried() const {
   QSet<QString> s;
   for (auto it = _vary.cbegin(); it != _vary.cend(); ++it)
@@ -1191,6 +1272,11 @@ QJsonObject LCFitDialog::buildFullConfig() const {
     cfg["anneal_enabled"]         = _anneal->isChecked();
     cfg["anneal_T0"]              = _annealT0->value();
     cfg["anneal_steps"]           = _mcmcBurn->value() / 2;
+    // Percentile errors need an honest posterior: sample with the data-error
+    // rescale (χ²/χ²_red) and the priors at face value. prior_weight below
+    // stays inflated only as the LM fitting heuristic.
+    cfg["scale_data_errors"]      = true;
+    cfg["mcmc_prior_weight"]      = 1.0;
 
     // LM
     cfg["lm_max_iter"]             = _lmMaxIter->value();
@@ -1204,6 +1290,11 @@ QJsonObject LCFitDialog::buildFullConfig() const {
     cfg["lm_prior_balance_target"] = 1.0;
     cfg["lm_log_path"] = QDir(_tempDir).absoluteFilePath("lm_iter_log.txt");
     cfg["lm_verbose"]  = true;
+    // Short posterior sampling around the LM optimum: replaces the
+    // symmetric (JᵀJ)⁻¹ errors with 15.9/84.1-percentile intervals.
+    cfg["lm_error_mcmc"]              = true;
+    cfg["lm_error_mcmc_steps"]        = 8000;
+    cfg["lm_error_mcmc_prior_weight"] = 1.0;
 
     cfg["prior_weight"] = priorWeight;
     cfg["priors"]       = toJsonMap(priors);
@@ -1249,6 +1340,18 @@ void LCFitDialog::onRunClicked() {
   if (_in.binnedPoints.empty()) {
     QMessageBox::warning(this, tr("Run fit"), tr("No binned points to fit."));
     return;
+  }
+
+  if (const QStringList clashes = redundantPriorCombos(); !clashes.isEmpty()) {
+    const auto btn = QMessageBox::warning(
+        this, tr("Conflicting priors"),
+        tr("<p>These priors over-determine each other and will fight "
+           "during the fit:</p><ul><li>%1</li></ul>"
+           "<p>Consider dropping one prior from each group. Run anyway?</p>")
+            .arg(clashes.join("</li><li>")),
+        QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+    if (btn != QMessageBox::Yes)
+      return;
   }
 
   QString err;
@@ -1379,8 +1482,15 @@ bool LCFitDialog::parseAugmentedConfig(const QString &path, QString *err) {
 
 void LCFitDialog::populateResultsView() {
     _results->setRowCount(0);
-    const QJsonObject summary = _augmented.value("lm_summary").toObject();
-    const QJsonObject results = _augmented.value("lm_results").toObject();
+    // Both solvers now write a solver-agnostic "fit_results" block carrying
+    // asymmetric percentile errors; older outputs only have lm_summary /
+    // lm_results (symmetric covariance σ).
+    const QJsonObject fitRes  = _augmented.value("fit_results").toObject();
+    const bool        haveFR  = !fitRes.isEmpty();
+    const QJsonObject summary =
+        haveFR ? fitRes : _augmented.value("lm_summary").toObject();
+    const QJsonObject results =
+        haveFR ? fitRes : _augmented.value("lm_results").toObject();
     const QJsonObject mp =
         _initialModelParameters; // ← was _augmented.value("model_parameters")
 
@@ -1451,6 +1561,26 @@ void LCFitDialog::populateResultsView() {
 
     const QJsonObject bestPars = summary.value("best_pars").toObject();
     const QJsonObject sigmas   = results.value("sigma").toObject();
+    const QJsonObject sigmasUp   = results.value("sigma_up").toObject();
+    const QJsonObject sigmasDown = results.value("sigma_down").toObject();
+
+    // "+u / −d" when the interval is genuinely asymmetric, "± σ" otherwise.
+    auto sigmaText = [&](const QString &name, double scale) -> QString {
+        if (sigmasUp.contains(name) && sigmasDown.contains(name)) {
+            double u = sigmasUp.value(name).toDouble() * scale;
+            double d = sigmasDown.value(name).toDouble() * scale;
+            AsymErr::repairCollapsedInterval(
+                u, d, sigmas.value(name).toDouble() * scale);
+            if (!AsymErr::nearlySymmetric(u, d))
+                return QString("+%1 / −%2")
+                    .arg(QString::number(u, 'g', 3),
+                         QString::number(d, 'g', 3));
+        }
+        if (sigmas.contains(name))
+            return QString::number(sigmas.value(name).toDouble() * scale,
+                                   'g', 3);
+        return QStringLiteral("-");
+    };
 
     auto setDeltaCell = [&](int row, double best, double sig, double storedVal,
                             double storedSig, bool haveStored) {
@@ -1496,10 +1626,7 @@ void LCFitDialog::populateResultsView() {
         _results->setItem(
             row, 1,
             new QTableWidgetItem(QString::number(best * scale, 'g', 6)));
-        _results->setItem(
-            row, 2,
-            new QTableWidgetItem(
-                std::isnan(sig) ? "-" : QString::number(sig * scale, 'g', 3)));
+        _results->setItem(row, 2, new QTableWidgetItem(sigmaText(name, scale)));
         _results->setItem(
             row, 3,
             new QTableWidgetItem(std::isfinite(initial)
@@ -1541,7 +1668,7 @@ void LCFitDialog::populateResultsView() {
         const double vs = bestPars.value("velocity_scale").toDouble();
         const double aKm =
             vs * _in.period * LCFitPhysics::kDay2Sec / (2.0 * M_PI);
-        const double R1 = r1 * aKm / LCFitPhysics::kRsunKm;
+        double R1 = r1 * aKm / LCFitPhysics::kRsunKm;
 
         const double sR =
             sigmas.contains("r1") ? sigmas.value("r1").toDouble() : 0.0;
@@ -1557,6 +1684,27 @@ void LCFitDialog::populateResultsView() {
                 (_in.period > 0 ? (sP / _in.period) * (sP / _in.period) : 0.0));
             sR1 = R1 * rel;
         }
+
+        // Prefer the solver's per-sample propagation (keeps the r1–vs
+        // correlation and asymmetry) over the relative-error estimate.
+        QString sR1Txt;
+        const QJsonObject impR1 =
+            fitRes.value("implied").toObject().value("R1_Rsun").toObject();
+        if (!impR1.isEmpty()) {
+            R1 = impR1.value("value").toDouble(R1);
+            double u = impR1.value("sigma_up").toDouble();
+            double d = impR1.value("sigma_down").toDouble();
+            AsymErr::repairCollapsedInterval(u, d,
+                                             impR1.value("sigma").toDouble());
+            sR1 = 0.5 * (u + d);
+            if (!AsymErr::nearlySymmetric(u, d))
+                sR1Txt = QString("+%1 / −%2")
+                             .arg(QString::number(u, 'g', 3),
+                                  QString::number(d, 'g', 3));
+        }
+        if (sR1Txt.isEmpty())
+            sR1Txt = sR1 > 0 ? QString::number(sR1, 'g', 3)
+                             : QStringLiteral("-");
 
         const double initR1c = firstFloat(mp.value("r1").toString());
         const double initVs = firstFloat(mp.value("velocity_scale").toString());
@@ -1597,9 +1745,7 @@ void LCFitDialog::populateResultsView() {
         }
         _results->setItem(row, 1,
                           new QTableWidgetItem(QString::number(R1, 'g', 4)));
-        _results->setItem(
-            row, 2,
-            new QTableWidgetItem(sR1 > 0 ? QString::number(sR1, 'g', 3) : "-"));
+        _results->setItem(row, 2, new QTableWidgetItem(sR1Txt));
         _results->setItem(
             row, 3,
             new QTableWidgetItem(
@@ -1627,24 +1773,47 @@ bool LCFitDialog::persistFit(bool asBest) {
     fit->wavelengthNm  = _wlSpin ? _wlSpin->value() : _in.wavelengthNm;
     fit->config.json() = _augmented;
 
-    const QJsonObject summary  = _augmented.value("lm_summary").toObject();
-    const QJsonObject results  = _augmented.value("lm_results").toObject();
-    const QJsonObject bestPars = summary.value("best_pars").toObject();
-    const QJsonObject sigmas   = results.value("sigma").toObject();
+    // Prefer the solver-agnostic "fit_results" block (posterior percentile
+    // errors, possibly asymmetric); fall back to the legacy lm_* blocks
+    // (symmetric covariance σ) for outputs of older solver builds.
+    const QJsonObject fitRes  = _augmented.value("fit_results").toObject();
+    const bool        haveFR  = !fitRes.isEmpty();
+    const QJsonObject summary =
+        haveFR ? fitRes : _augmented.value("lm_summary").toObject();
+    const QJsonObject results =
+        haveFR ? fitRes : _augmented.value("lm_results").toObject();
+    const QJsonObject bestPars   = summary.value("best_pars").toObject();
+    const QJsonObject sigmas     = results.value("sigma").toObject();
+    const QJsonObject sigmasUp   = results.value("sigma_up").toObject();
+    const QJsonObject sigmasDown = results.value("sigma_down").toObject();
 
-    auto set = [&](const QString &k, double &v, double &e) {
+    auto set = [&](const QString &k, double &v, double &e, double &eUp,
+                   double &eDown) {
         if (bestPars.contains(k))
             v = bestPars.value(k).toDouble();
-        if (sigmas.contains(k))
+        if (sigmasUp.contains(k) && sigmasDown.contains(k)) {
+            // Storage merge rule: near-symmetric intervals collapse to a
+            // single symmetric error, genuinely asymmetric ones keep both.
+            double u = sigmasUp.value(k).toDouble();
+            double d = sigmasDown.value(k).toDouble();
+            AsymErr::repairCollapsedInterval(u, d, sigmas.value(k).toDouble());
+            const auto st = AsymErr::toStorage(u, d);
+            e     = st.sym;
+            eUp   = st.up;
+            eDown = st.down;
+        } else if (sigmas.contains(k)) {
             e = sigmas.value(k).toDouble();
+        }
     };
-    set("q", fit->q, fit->qError);
-    set("iangle", fit->inclination, fit->inclinationError);
-    set("r1", fit->r1, fit->r1Error);
-    set("r2", fit->r2, fit->r2Error);
-    set("velocity_scale", fit->velocityScale, fit->velocityScaleError);
-    set("t1", fit->t1, fit->t1Error);
-    set("t2", fit->t2, fit->t2Error);
+    set("q", fit->q, fit->qError, fit->qErrorUp, fit->qErrorDown);
+    set("iangle", fit->inclination, fit->inclinationError,
+        fit->inclinationErrorUp, fit->inclinationErrorDown);
+    set("r1", fit->r1, fit->r1Error, fit->r1ErrorUp, fit->r1ErrorDown);
+    set("r2", fit->r2, fit->r2Error, fit->r2ErrorUp, fit->r2ErrorDown);
+    set("velocity_scale", fit->velocityScale, fit->velocityScaleError,
+        fit->velocityScaleErrorUp, fit->velocityScaleErrorDown);
+    set("t1", fit->t1, fit->t1Error, fit->t1ErrorUp, fit->t1ErrorDown);
+    set("t2", fit->t2, fit->t2Error, fit->t2ErrorUp, fit->t2ErrorDown);
 
     // lcurve returns t0 in the same units as its time axis. We folded the input
     // at T0_input = 0 (computeBinnedFitLightcurve uses fmod(t/P, 1)), so t0 from
@@ -1656,13 +1825,28 @@ bool LCFitDialog::persistFit(bool asBest) {
         t0_phase_err = sigmas.value("t0").toDouble();
     fit->t0BJD = t0_phase * _in.period;
     fit->t0BJDError = std::hypot(t0_phase_err * _in.period, t0_phase * _in.periodError);
+    if (sigmasUp.contains("t0") && sigmasDown.contains("t0")) {
+        // Convert each side separately; the (symmetric) period error enters
+        // both sides through the cycle-count term.
+        auto side = [&](double phErr) {
+            return std::hypot(phErr * _in.period, t0_phase * _in.periodError);
+        };
+        double u = sigmasUp.value("t0").toDouble();
+        double d = sigmasDown.value("t0").toDouble();
+        AsymErr::repairCollapsedInterval(u, d, t0_phase_err);
+        const auto st = AsymErr::toStorage(side(u), side(d));
+        fit->t0BJDError     = st.sym;
+        fit->t0BJDErrorUp   = st.up;
+        fit->t0BJDErrorDown = st.down;
+    }
 
     fit->period      = _in.period;
     fit->periodError = _in.periodError;
     fit->chi2        = summary.value("best_chisq_lc")
                            .toDouble(summary.value("best_sum_sq").toDouble());
-    fit->rms =
-        std::sqrt(std::max(0.0, results.value("residual_variance").toDouble()));
+    fit->rms = std::sqrt(std::max(
+        0.0, results.value("residual_variance")
+                 .toDouble(results.value("reduced_chi2").toDouble())));
 
     fit->inputPoints.assign(_in.binnedPoints.begin(), _in.binnedPoints.end());
 
@@ -1725,10 +1909,16 @@ bool LCFitDialog::persistFit(bool asBest) {
                               _in.filter, fit->getId());
         _in.star->setPhotPeriod(fit->period);
         _in.star->setPhotEPeriod(fit->periodError);
+        _in.star->setPhotEPeriodUp(fit->periodErrorUp);
+        _in.star->setPhotEPeriodDown(fit->periodErrorDown);
         _in.star->setPhotIncl(fit->inclination);
         _in.star->setPhotEIncl(fit->inclinationError);
+        _in.star->setPhotEInclUp(fit->inclinationErrorUp);
+        _in.star->setPhotEInclDown(fit->inclinationErrorDown);
         _in.star->setPhotQ(fit->q);
         _in.star->setPhotEQ(fit->qError);
+        _in.star->setPhotEQUp(fit->qErrorUp);
+        _in.star->setPhotEQDown(fit->qErrorDown);
         _in.star->markSummaryDirty();
     }
 

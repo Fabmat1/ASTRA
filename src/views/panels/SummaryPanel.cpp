@@ -3,6 +3,7 @@
 
 #include "controllers/ApplicationController.h"
 #include "dialogs/ReidentifyStarDialog.h"
+#include "models/AsymmetricErrors.h"
 #include "models/Photometry.h"
 #include "models/RadialVelocity.h"
 #include "models/Spectrum.h"
@@ -176,12 +177,29 @@ struct ValDisp {
     QString display;
     QString copy;
 };
+// Formats "v ± e unit"; when an asymmetric interval is set (errUp/errDown
+// finite, see AsymmetricErrors.h) renders "v ⁺ᵘ₋d unit" instead, using the
+// same rich-text superscript/subscript style as the SED inventory.
 inline ValDisp fmtValErr(double v, double err, int prec,
-                         const QString &unit = "") {
+                         const QString &unit = "",
+                         double errUp = AsymErr::unset,
+                         double errDown = AsymErr::unset) {
     QString num = QString::number(v, 'f', prec);
     QString s   = num;
-    if (std::isfinite(err) && err > 0.0)
+    const double up   = AsymErr::upOr(errUp, err);
+    const double down = AsymErr::downOr(errDown, err);
+    if (AsymErr::hasAsymmetric(errUp, errDown) &&
+        std::isfinite(up) && std::isfinite(down) && (up > 0.0 || down > 0.0)) {
+        if (up == down)
+            s += QString(" ± %1").arg(up, 0, 'f', prec);
+        else
+            s += QString("<sup><small>+%1</small></sup>"
+                         "<sub><small>−%2</small></sub>")
+                     .arg(up, 0, 'f', prec)
+                     .arg(down, 0, 'f', prec);
+    } else if (std::isfinite(err) && err > 0.0) {
         s += QString(" ± %1").arg(err, 0, 'f', prec);
+    }
     if (!unit.isEmpty())
         s += " " + unit;
     return {s, num};
@@ -265,6 +283,94 @@ double propagateM2Error(double P, double eP, double K, double eK, double M1,
     add(sini, esini, [&](double x) { return m2Of(P, K, M1, e, x); });
     return std::sqrt(var);
 }
+
+// ── Two-piece-Gaussian Monte-Carlo propagation ──────────────────────────
+// As soon as an input carries an asymmetric interval, linearised Gaussian
+// propagation is biased (and adding per-side errors in quadrature is worse,
+// Barlow 2003). Instead each input's posterior is reconstructed from
+// (v, σ₊, σ₋) as a two-piece ("dimidiated") Gaussian — z ~ N(0,1) scaled by
+// σ₊ above the centre and σ₋ below it. Unlike the continuous split normal,
+// this reproduces the stored 15.9/50/84.1 percentiles *exactly*, which is
+// precisely the information (v, σ₊, σ₋) encodes. Inputs are drawn jointly
+// (independently of each other) and the target is evaluated per draw; the
+// returned up/down are the distances from `central` to the 84.1/15.9
+// percentiles — the same convention the fit solvers use. Bounded inputs
+// are redrawn until they land inside their physical range (truncation).
+class SplitNormalMC {
+  public:
+    // sym is the legacy symmetric σ; up/down (NaN = unset) override it.
+    void add(double v, double sym, double up, double down, double lo,
+             double hi) {
+        if (AsymErr::hasAsymmetric(up, down))
+            _anyAsym = true;
+        Input in;
+        in.v    = v;
+        in.up   = std::max(0.0, AsymErr::upOr(up, sym));
+        in.down = std::max(0.0, AsymErr::downOr(down, sym));
+        if (!std::isfinite(in.up))   in.up = 0.0;
+        if (!std::isfinite(in.down)) in.down = 0.0;
+        in.lo = lo;
+        in.hi = hi;
+        _inputs.push_back(in);
+    }
+
+    // Only worth running when some input is genuinely two-sided; otherwise
+    // the linearised path is equivalent and much cheaper.
+    bool anyAsymmetric() const { return _anyAsym; }
+
+    // eval receives the drawn inputs (in add() order); NaN results are
+    // skipped. Returns false when too few draws evaluate to a finite mass.
+    template <typename F>
+    bool run(double central, F &&eval, double &outUp, double &outDown,
+             int n = 20000) const {
+        std::mt19937_64 rng(0x5eedULL);
+        std::normal_distribution<double> gauss(0.0, 1.0);
+
+        std::vector<double> x(_inputs.size());
+        std::vector<double> out;
+        out.reserve(n);
+        for (int k = 0; k < n; ++k) {
+            for (size_t j = 0; j < _inputs.size(); ++j) {
+                const auto &in = _inputs[j];
+                double      d  = in.v;
+                if (in.up > 0.0 || in.down > 0.0) {
+                    bool inside = false;
+                    for (int attempt = 0; attempt < 50 && !inside; ++attempt) {
+                        const double z = gauss(rng);
+                        d = in.v + z * (z >= 0.0 ? in.up : in.down);
+                        inside = d >= in.lo && d <= in.hi;
+                    }
+                    if (!inside)
+                        d = std::clamp(d, in.lo, in.hi);
+                }
+                x[j] = d;
+            }
+            const double m = eval(x);
+            if (std::isfinite(m))
+                out.push_back(m);
+        }
+        if (out.size() < 100)
+            return false;
+        std::sort(out.begin(), out.end());
+        auto pct = [&](double p) {
+            const double idx = p * (out.size() - 1);
+            const size_t lo  = static_cast<size_t>(std::floor(idx));
+            const size_t hi  = static_cast<size_t>(std::ceil(idx));
+            const double w   = idx - lo;
+            return out[lo] * (1.0 - w) + out[hi] * w;
+        };
+        outUp   = std::max(0.0, pct(0.841) - central);
+        outDown = std::max(0.0, central - pct(0.159));
+        return true;
+    }
+
+  private:
+    struct Input {
+        double v, up, down, lo, hi;
+    };
+    std::vector<Input> _inputs;
+    bool               _anyAsym = false;
+};
 
 QWidget *buildPropertyGrid(const std::vector<PropRow> &rows,
                            const QColor &valCol, const QColor &labelCol) {
@@ -692,10 +798,12 @@ QWidget *SummaryPanel::createPropertiesSection() {
     const QColor labelCol = mutedTextColor();
 
     auto addV = [&](std::vector<PropRow> &rows, const QString &l, double v,
-                    double err, int prec, const QString &unit = "") {
+                    double err, int prec, const QString &unit = "",
+                    double errUp = AsymErr::unset,
+                    double errDown = AsymErr::unset) {
         if (!has(v))
             return;
-        auto d = fmtValErr(v, err, prec, unit);
+        auto d = fmtValErr(v, err, prec, unit, errUp, errDown);
         rows.push_back({l, d.display, d.copy});
     };
     auto addPlain = [&](std::vector<PropRow> &rows, const QString &l, double v,
@@ -753,17 +861,26 @@ QWidget *SummaryPanel::createPropertiesSection() {
         }
     }
     if (bestLC) {
-        addV(photoF, "LC Period", bestLC->period, bestLC->periodError, 6, "d");
-        addV(photoF, "T₀ (BJD)", bestLC->t0BJD, bestLC->t0BJDError, 6, "");
+        addV(photoF, "LC Period", bestLC->period, bestLC->periodError, 6, "d",
+             bestLC->periodErrorUp, bestLC->periodErrorDown);
+        addV(photoF, "T₀ (BJD)", bestLC->t0BJD, bestLC->t0BJDError, 6, "",
+             bestLC->t0BJDErrorUp, bestLC->t0BJDErrorDown);
         addV(photoF, "Inclination", bestLC->inclination,
-             bestLC->inclinationError, 2, "°");
-        addV(photoF, "q (M₂/M₁)", bestLC->q, bestLC->qError, 3, "");
-        addV(photoF, "r₁/a", bestLC->r1, bestLC->r1Error, 4, "");
-        addV(photoF, "r₂/a", bestLC->r2, bestLC->r2Error, 4, "");
-        addV(photoF, "T₁", bestLC->t1, bestLC->t1Error, 0, "K");
-        addV(photoF, "T₂", bestLC->t2, bestLC->t2Error, 0, "K");
+             bestLC->inclinationError, 2, "°",
+             bestLC->inclinationErrorUp, bestLC->inclinationErrorDown);
+        addV(photoF, "q (M₂/M₁)", bestLC->q, bestLC->qError, 3, "",
+             bestLC->qErrorUp, bestLC->qErrorDown);
+        addV(photoF, "r₁/a", bestLC->r1, bestLC->r1Error, 4, "",
+             bestLC->r1ErrorUp, bestLC->r1ErrorDown);
+        addV(photoF, "r₂/a", bestLC->r2, bestLC->r2Error, 4, "",
+             bestLC->r2ErrorUp, bestLC->r2ErrorDown);
+        addV(photoF, "T₁", bestLC->t1, bestLC->t1Error, 0, "K",
+             bestLC->t1ErrorUp, bestLC->t1ErrorDown);
+        addV(photoF, "T₂", bestLC->t2, bestLC->t2Error, 0, "K",
+             bestLC->t2ErrorUp, bestLC->t2ErrorDown);
         addV(photoF, "v_scale", bestLC->velocityScale,
-             bestLC->velocityScaleError, 2, "km/s");
+             bestLC->velocityScaleError, 2, "km/s",
+             bestLC->velocityScaleErrorUp, bestLC->velocityScaleErrorDown);
         addPlain(photoF, "LC χ²", bestLC->chi2, 2);
         addPlain(photoF, "LC rms", bestLC->rms, 4);
 
@@ -778,15 +895,21 @@ QWidget *SummaryPanel::createPropertiesSection() {
 
     // ── Atmospheric ────────────────────────────────────────────────────────
     std::vector<PropRow> atmosC, atmosF;
-    addV(atmosC, "T_eff", S.getTeff(), S.getETeff(), 0, "K");
-    addV(atmosC, "log g", S.getLogg(), S.getELogg(), 2, "dex");
-    addV(atmosC, "log(He/H)", S.getHe(), S.getEHe(), 2);
+    addV(atmosC, "T_eff", S.getTeff(), S.getETeff(), 0, "K",
+         S.getETeffUp(), S.getETeffDown());
+    addV(atmosC, "log g", S.getLogg(), S.getELogg(), 2, "dex",
+         S.getELoggUp(), S.getELoggDown());
+    addV(atmosC, "log(He/H)", S.getHe(), S.getEHe(), 2, "",
+         S.getEHeUp(), S.getEHeDown());
 
     if (!S.getSpecClass().isEmpty())
         atmosF.push_back({"Spec. Class", S.getSpecClass(), S.getSpecClass()});
-    addV(atmosF, "T_eff", S.getTeff(), S.getETeff(), 0, "K");
-    addV(atmosF, "log g", S.getLogg(), S.getELogg(), 3, "dex");
-    addV(atmosF, "log(He/H)", S.getHe(), S.getEHe(), 3);
+    addV(atmosF, "T_eff", S.getTeff(), S.getETeff(), 0, "K",
+         S.getETeffUp(), S.getETeffDown());
+    addV(atmosF, "log g", S.getLogg(), S.getELogg(), 3, "dex",
+         S.getELoggUp(), S.getELoggDown());
+    addV(atmosF, "log(He/H)", S.getHe(), S.getEHe(), 3, "",
+         S.getEHeUp(), S.getEHeDown());
     if (S.getNSpectra() > 0)
         atmosF.push_back({"N Spectra", QString::number(S.getNSpectra()),
                           QString::number(S.getNSpectra())});
@@ -868,22 +991,28 @@ QWidget *SummaryPanel::createOrbitalFitSection() {
 
     std::vector<PropRow> compact, full;
     auto pushV = [&](std::vector<PropRow> &rows, const QString &l, double v,
-                     double e, int p, const QString &u = "") {
-        auto d = fmtValErr(v, e, p, u);
+                     double e, int p, const QString &u = "",
+                     double eUp = AsymErr::unset,
+                     double eDown = AsymErr::unset) {
+        auto d = fmtValErr(v, e, p, u, eUp, eDown);
         rows.push_back({l, d.display, d.copy});
     };
 
     pushV(compact, "Period", bestFit->getPeriod(), bestFit->getPeriodError(), 6,
-          "d");
-    pushV(compact, "K", bestFit->getK(), bestFit->getKError(), 2, "km/s");
+          "d", bestFit->getPeriodErrorUp(), bestFit->getPeriodErrorDown());
+    pushV(compact, "K", bestFit->getK(), bestFit->getKError(), 2, "km/s",
+          bestFit->getKErrorUp(), bestFit->getKErrorDown());
     pushV(compact, "γ", bestFit->getGamma(), bestFit->getGammaError(), 2,
-          "km/s");
-    pushV(compact, "T₀ (ϕ)", bestFit->getPhi(), bestFit->getPhiError(), 4);
+          "km/s", bestFit->getGammaErrorUp(), bestFit->getGammaErrorDown());
+    pushV(compact, "T₀ (ϕ)", bestFit->getPhi(), bestFit->getPhiError(), 4, "",
+          bestFit->getPhiErrorUp(), bestFit->getPhiErrorDown());
     if (bestFit->isEccentric()) {
         pushV(compact, "e", bestFit->getEccentricity(),
-              bestFit->getEccentricityError(), 4);
+              bestFit->getEccentricityError(), 4, "",
+              bestFit->getEccentricityErrorUp(),
+              bestFit->getEccentricityErrorDown());
         pushV(compact, "ω", bestFit->getOmega(), bestFit->getOmegaError(), 1,
-              "°");
+              "°", bestFit->getOmegaErrorUp(), bestFit->getOmegaErrorDown());
     }
     if (has(bestFit->getRms())) {
         QString n = QString::number(bestFit->getRms(), 'f', 2);
@@ -1663,15 +1792,20 @@ QWidget *SummaryPanel::createCompanionSection() {
     std::vector<PropRow> rows;
 
     if (hasM1) {
-        auto d = fmtValErr(m1, eM1, 3, "M☉");
+        auto d = fmtValErr(m1, eM1, 3, "M☉", _ctx.star->getSedEMass1Up(),
+                           _ctx.star->getSedEMass1Down());
         rows.push_back({"M₁ (SED)", d.display, d.copy});
     }
     if (hasMin) {
-        auto d = fmtValErr(mMin, eMin, 3, "M☉");
+        auto d = fmtValErr(mMin, eMin, 3, "M☉",
+                           _ctx.star->getECompMassMinUp(),
+                           _ctx.star->getECompMassMinDown());
         rows.push_back({"M₂ (min)", d.display, d.copy});
     }
     if (hasTrue) {
-        auto d = fmtValErr(mTrue, eTrue, 3, "M☉");
+        auto d = fmtValErr(mTrue, eTrue, 3, "M☉",
+                           _ctx.star->getECompMassTrueUp(),
+                           _ctx.star->getECompMassTrueDown());
         rows.push_back({"M₂ (true)", d.display, d.copy});
     }
     if (hasMassFunc) {
@@ -1690,12 +1824,14 @@ QWidget *SummaryPanel::createCompanionSection() {
         rows.push_back({"a", n + unit, n});
     }
     if (hasIncl) {
-        auto d = fmtValErr(incl, eIncl, 2, "°");
+        auto d = fmtValErr(incl, eIncl, 2, "°", _ctx.star->getPhotEInclUp(),
+                           _ctx.star->getPhotEInclDown());
         rows.push_back({"i (LC)", d.display, d.copy});
     }
     if (hasQ) {
         auto d =
-            fmtValErr(_ctx.star->getPhotQ(), _ctx.star->getPhotEQ(), 3, "");
+            fmtValErr(_ctx.star->getPhotQ(), _ctx.star->getPhotEQ(), 3, "",
+                      _ctx.star->getPhotEQUp(), _ctx.star->getPhotEQDown());
         rows.push_back({"q (LC)", d.display, d.copy});
     }
 
@@ -1825,7 +1961,13 @@ bool SummaryPanel::MassInputs::sameAs(const MassInputs &o) const noexcept {
     return valid == o.valid && hasIncl == o.hasIncl && hasQ == o.hasQ &&
            eq(P, o.P) && eq(eP, o.eP) && eq(K, o.K) && eq(eK, o.eK) &&
            eq(M1, o.M1) && eq(eM1, o.eM1) && eq(e, o.e) && eq(ee, o.ee) &&
-           eq(sini, o.sini) && eq(esini, o.esini) && eq(q, o.q) && eq(eQ, o.eQ);
+           eq(sini, o.sini) && eq(esini, o.esini) && eq(q, o.q) &&
+           eq(eQ, o.eQ) && eq(ePUp, o.ePUp) && eq(ePDown, o.ePDown) &&
+           eq(eKUp, o.eKUp) && eq(eKDown, o.eKDown) && eq(eM1Up, o.eM1Up) &&
+           eq(eM1Down, o.eM1Down) && eq(eeUp, o.eeUp) &&
+           eq(eeDown, o.eeDown) && eq(eQUp, o.eQUp) &&
+           eq(eQDown, o.eQDown) && eq(iDeg, o.iDeg) && eq(eIDeg, o.eIDeg) &&
+           eq(eIDegUp, o.eIDegUp) && eq(eIDegDown, o.eIDegDown);
 }
 
 void SummaryPanel::ensureCompanionMasses() {
@@ -1835,24 +1977,36 @@ void SummaryPanel::ensureCompanionMasses() {
     std::shared_ptr<RVFit> fit     = rvCurve ? rvCurve->getBestFit() : nullptr;
 
     if (fit && fit->getPeriod() > 0) {
-        in.P  = fit->getPeriod();
-        in.eP = fit->getPeriodError();
-        in.K  = fit->getK();
-        in.eK = fit->getKError();
+        in.P      = fit->getPeriod();
+        in.eP     = fit->getPeriodError();
+        in.ePUp   = fit->getPeriodErrorUp();
+        in.ePDown = fit->getPeriodErrorDown();
+        in.K      = fit->getK();
+        in.eK     = fit->getKError();
+        in.eKUp   = fit->getKErrorUp();
+        in.eKDown = fit->getKErrorDown();
         if (fit->isEccentric()) {
-            in.e  = fit->getEccentricity();
-            in.ee = fit->getEccentricityError();
+            in.e      = fit->getEccentricity();
+            in.ee     = fit->getEccentricityError();
+            in.eeUp   = fit->getEccentricityErrorUp();
+            in.eeDown = fit->getEccentricityErrorDown();
         }
     } else {
-        in.P  = _ctx.star->getRVPeriod();
-        in.eP = _ctx.star->getRVEPeriod();
-        in.K  = _ctx.star->getRVK();
-        in.eK = _ctx.star->getRVEK();
+        in.P      = _ctx.star->getRVPeriod();
+        in.eP     = _ctx.star->getRVEPeriod();
+        in.ePUp   = _ctx.star->getRVEPeriodUp();
+        in.ePDown = _ctx.star->getRVEPeriodDown();
+        in.K      = _ctx.star->getRVK();
+        in.eK     = _ctx.star->getRVEK();
+        in.eKUp   = _ctx.star->getRVEKUp();
+        in.eKDown = _ctx.star->getRVEKDown();
         if (Star::isSet(_ctx.star->getRVEcc()))
             in.e = _ctx.star->getRVEcc();
     }
-    in.M1  = _ctx.star->getSedMass1();
-    in.eM1 = _ctx.star->getSedEMass1();
+    in.M1      = _ctx.star->getSedMass1();
+    in.eM1     = _ctx.star->getSedEMass1();
+    in.eM1Up   = _ctx.star->getSedEMass1Up();
+    in.eM1Down = _ctx.star->getSedEMass1Down();
 
     const double iDeg = _ctx.star->getPhotIncl();
     if (Star::isSet(iDeg) && iDeg > 0.0) {
@@ -1864,6 +2018,10 @@ void SummaryPanel::ensureCompanionMasses() {
         in.esini               = (std::isfinite(eiDeg) && eiDeg > 0.0)
                                      ? std::abs(std::cos(iRad)) * eiDeg * D2R
                                      : 0.0;
+        in.iDeg     = iDeg;
+        in.eIDeg    = (std::isfinite(eiDeg) && eiDeg > 0.0) ? eiDeg : 0.0;
+        in.eIDegUp  = _ctx.star->getPhotEInclUp();
+        in.eIDegDown = _ctx.star->getPhotEInclDown();
     }
 
     // Mass ratio q = M2/M1 from the light-curve solution. When present it gives
@@ -1872,8 +2030,10 @@ void SummaryPanel::ensureCompanionMasses() {
     const double eqVal = _ctx.star->getPhotEQ();
     in.hasQ            = Star::isSet(qVal) && qVal > 0.0;
     if (in.hasQ) {
-        in.q  = qVal;
-        in.eQ = (std::isfinite(eqVal) && eqVal > 0.0) ? eqVal : 0.0;
+        in.q      = qVal;
+        in.eQ     = (std::isfinite(eqVal) && eqVal > 0.0) ? eqVal : 0.0;
+        in.eQUp   = _ctx.star->getPhotEQUp();
+        in.eQDown = _ctx.star->getPhotEQDown();
     }
 
     in.valid = std::isfinite(in.P) && in.P > 0.0 && std::isfinite(in.K) &&
@@ -1891,11 +2051,61 @@ void SummaryPanel::ensureCompanionMasses() {
             _cachedMassMin  = {};
             _cachedMassTrue = {};
         } else {
+            constexpr double kInf = std::numeric_limits<double>::infinity();
+
+            // Symmetric inputs keep the fast linearised errors; any input
+            // with an asymmetric interval switches the result to split-
+            // normal MC percentiles (stored through the merge rule, so a
+            // near-symmetric outcome collapses back to a single σ).
+            auto applyMC = [](MassResult r, const SplitNormalMC &mc,
+                              auto &&eval) {
+                double u = 0.0, d = 0.0;
+                if (mc.anyAsymmetric() && mc.run(r.value, eval, u, d)) {
+                    const auto st = AsymErr::toStorage(u, d);
+                    r.error   = st.sym;
+                    r.errUp   = st.up;
+                    r.errDown = st.down;
+                }
+                return r;
+            };
+            auto addCommon = [&](SplitNormalMC &mc) {
+                mc.add(in.P, in.eP, in.ePUp, in.ePDown, 1e-9, kInf);
+                mc.add(in.K, in.eK, in.eKUp, in.eKDown, 1e-9, kInf);
+                mc.add(in.M1, in.eM1, in.eM1Up, in.eM1Down, 1e-9, kInf);
+                mc.add(in.e, in.ee, in.eeUp, in.eeDown, 0.0, 0.999);
+            };
+            // True mass from the mass function at the stored inclination.
+            auto inclMass = [&]() -> MassResult {
+                const double mT = m2Of(in.P, in.K, in.M1, in.e, in.sini);
+                const double sT =
+                    propagateM2Error(in.P, in.eP, in.K, in.eK, in.M1, in.eM1,
+                                     in.e, in.ee, in.sini, in.esini);
+                SplitNormalMC mc;
+                addCommon(mc);
+                // Resample the inclination itself (degrees); sin i folds
+                // naturally at 90°, so the range spans both sides.
+                mc.add(in.iDeg, in.eIDeg, in.eIDegUp, in.eIDegDown, 0.01,
+                       179.99);
+                return applyMC({mT, sT}, mc, [](const std::vector<double> &x) {
+                    const double s = std::sin(x[4] * M_PI / 180.0);
+                    return s > 1e-6
+                               ? m2Of(x[0], x[1], x[2], x[3], s)
+                               : std::numeric_limits<double>::quiet_NaN();
+                });
+            };
+
             // M2 (min): edge-on (sin i = 1) lower bound from the mass function.
             const double mMin = m2Of(in.P, in.K, in.M1, in.e, 1.0);
             const double sMin = propagateM2Error(in.P, in.eP, in.K, in.eK, in.M1,
                                                  in.eM1, in.e, in.ee, 1.0, 0.0);
-            _cachedMassMin    = {mMin, sMin};
+            {
+                SplitNormalMC mc;
+                addCommon(mc);
+                _cachedMassMin =
+                    applyMC({mMin, sMin}, mc, [](const std::vector<double> &x) {
+                        return m2Of(x[0], x[1], x[2], x[3], 1.0);
+                    });
+            }
 
             // M2 (true). Two light-curve constraints can pin the companion
             // mass: the mass ratio q = M2/M1 and the orbital inclination i.
@@ -1925,7 +2135,13 @@ void SummaryPanel::ensureCompanionMasses() {
                     const double rq = (in.q > 0.0) ? in.eQ / in.q : 0.0;
                     const double rm = (in.M1 > 0.0) ? in.eM1 / in.M1 : 0.0;
                     const double sT = mT * std::sqrt(rq * rq + rm * rm);
-                    _cachedMassTrue = {mT, sT};
+                    SplitNormalMC mc;
+                    mc.add(in.q, in.eQ, in.eQUp, in.eQDown, 1e-9, kInf);
+                    mc.add(in.M1, in.eM1, in.eM1Up, in.eM1Down, 1e-9, kInf);
+                    _cachedMassTrue = applyMC(
+                        {mT, sT}, mc, [](const std::vector<double> &x) {
+                            return x[0] * x[1];
+                        });
                 } else {
                     // q and the RV mass function disagree (they would require
                     // sin i > 1). Don't report a sub-floor q·M1. Fall back to
@@ -1934,22 +2150,13 @@ void SummaryPanel::ensureCompanionMasses() {
                     // only the M2_min lower limit is shown.
                     _cachedMassTrueInconsistent = true;
                     if (in.hasIncl) {
-                        const double mT =
-                            m2Of(in.P, in.K, in.M1, in.e, in.sini);
-                        const double sT = propagateM2Error(
-                            in.P, in.eP, in.K, in.eK, in.M1, in.eM1, in.e,
-                            in.ee, in.sini, in.esini);
-                        _cachedMassTrue = {mT, sT};
+                        _cachedMassTrue = inclMass();
                     } else {
                         _cachedMassTrue = {};
                     }
                 }
             } else if (in.hasIncl) {
-                const double mT = m2Of(in.P, in.K, in.M1, in.e, in.sini);
-                const double sT =
-                    propagateM2Error(in.P, in.eP, in.K, in.eK, in.M1, in.eM1,
-                                     in.e, in.ee, in.sini, in.esini);
-                _cachedMassTrue = {mT, sT};
+                _cachedMassTrue = inclMass();
             } else {
                 _cachedMassTrue = {};
             }
@@ -1976,12 +2183,28 @@ void SummaryPanel::ensureCompanionMasses() {
         s.setECompMassMin(_cachedMassMin.error);
         changed = true;
     }
+    if (neq(s.getECompMassMinUp(), _cachedMassMin.errUp)) {
+        s.setECompMassMinUp(_cachedMassMin.errUp);
+        changed = true;
+    }
+    if (neq(s.getECompMassMinDown(), _cachedMassMin.errDown)) {
+        s.setECompMassMinDown(_cachedMassMin.errDown);
+        changed = true;
+    }
     if (neq(s.getCompMassTrue(), _cachedMassTrue.value)) {
         s.setCompMassTrue(_cachedMassTrue.value);
         changed = true;
     }
     if (neq(s.getECompMassTrue(), _cachedMassTrue.error)) {
         s.setECompMassTrue(_cachedMassTrue.error);
+        changed = true;
+    }
+    if (neq(s.getECompMassTrueUp(), _cachedMassTrue.errUp)) {
+        s.setECompMassTrueUp(_cachedMassTrue.errUp);
+        changed = true;
+    }
+    if (neq(s.getECompMassTrueDown(), _cachedMassTrue.errDown)) {
+        s.setECompMassTrueDown(_cachedMassTrue.errDown);
         changed = true;
     }
     if (changed)

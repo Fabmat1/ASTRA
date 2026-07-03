@@ -1,5 +1,6 @@
 #include "StarRepository.h"
 #include "DBAccess.h"
+#include "SqlValue.h"
 #include "models/Star.h"
 #include "models/Project.h"
 #include <QSqlQuery>
@@ -92,20 +93,34 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
             pmra_pmdec_corr, plx_pmdec_corr, plx_pmra_corr,
             gmag, e_gmag, bp, e_bp, rp, e_rp, bp_rp,
             spec_class, teff, e_teff, logg, e_logg, he, e_he,
+            e_teff_up, e_teff_down, e_logg_up, e_logg_down, e_he_up, e_he_down,
             logp, deltaRV, e_deltaRV, rv_avg, e_rv_avg, rv_med, e_rv_med,
             n_spectra, n_fit_spectra,
             rv_timespan, rv_npoints, rv_k, rv_e_k,
             rv_period, rv_e_period, rv_gamma, rv_e_gamma,
+            rv_e_k_up, rv_e_k_down, rv_e_period_up, rv_e_period_down,
+            rv_e_gamma_up, rv_e_gamma_down,
             rv_ecc, rv_phi, rv_t0, rv_chi2, rv_rms,
             sed_mass1, sed_e_mass1, sed_radius1, sed_e_radius1,
             sed_lum1, sed_e_lum1,
             sed_mass2, sed_e_mass2, sed_radius2, sed_e_radius2,
             sed_lum2, sed_e_lum2,
+            sed_e_mass1_up, sed_e_mass1_down,
+            sed_e_radius1_up, sed_e_radius1_down,
+            sed_e_lum1_up, sed_e_lum1_down,
+            sed_e_mass2_up, sed_e_mass2_down,
+            sed_e_radius2_up, sed_e_radius2_down,
+            sed_e_lum2_up, sed_e_lum2_down,
             phot_period, phot_e_period, phot_incl, phot_e_incl,
             phot_q, phot_e_q,
-            has_tess, has_gaia, has_ztf, has_atlas, has_blackgem, 
+            phot_e_period_up, phot_e_period_down,
+            phot_e_incl_up, phot_e_incl_down,
+            phot_e_q_up, phot_e_q_down,
+            has_tess, has_gaia, has_ztf, has_atlas, has_blackgem,
             tess_crowdsap, phot_peaks_json,
-            comp_mass_min, comp_e_mass_min, comp_mass_true, comp_e_mass_true,  
+            comp_mass_min, comp_e_mass_min, comp_mass_true, comp_e_mass_true,
+            comp_e_mass_min_up, comp_e_mass_min_down,
+            comp_e_mass_true_up, comp_e_mass_true_down,
             bibcodes
         ) VALUES (
             :id, :project_id, :alias, :source_id, :tic, :jname,
@@ -113,20 +128,34 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
             :pmra_pmdec_corr, :plx_pmdec_corr, :plx_pmra_corr,
             :gmag, :e_gmag, :bp, :e_bp, :rp, :e_rp, :bp_rp,
             :spec_class, :teff, :e_teff, :logg, :e_logg, :he, :e_he,
+            :e_teff_up, :e_teff_down, :e_logg_up, :e_logg_down, :e_he_up, :e_he_down,
             :logp, :deltaRV, :e_deltaRV, :rv_avg, :e_rv_avg, :rv_med, :e_rv_med,
             :n_spectra, :n_fit_spectra,
             :rv_timespan, :rv_npoints, :rv_k, :rv_e_k,
             :rv_period, :rv_e_period, :rv_gamma, :rv_e_gamma,
+            :rv_e_k_up, :rv_e_k_down, :rv_e_period_up, :rv_e_period_down,
+            :rv_e_gamma_up, :rv_e_gamma_down,
             :rv_ecc, :rv_phi, :rv_t0, :rv_chi2, :rv_rms,
             :sed_mass1, :sed_e_mass1, :sed_radius1, :sed_e_radius1,
             :sed_lum1, :sed_e_lum1,
             :sed_mass2, :sed_e_mass2, :sed_radius2, :sed_e_radius2,
             :sed_lum2, :sed_e_lum2,
+            :sed_e_mass1_up, :sed_e_mass1_down,
+            :sed_e_radius1_up, :sed_e_radius1_down,
+            :sed_e_lum1_up, :sed_e_lum1_down,
+            :sed_e_mass2_up, :sed_e_mass2_down,
+            :sed_e_radius2_up, :sed_e_radius2_down,
+            :sed_e_lum2_up, :sed_e_lum2_down,
             :phot_period, :phot_e_period, :phot_incl, :phot_e_incl,
             :phot_q, :phot_e_q,
+            :phot_e_period_up, :phot_e_period_down,
+            :phot_e_incl_up, :phot_e_incl_down,
+            :phot_e_q_up, :phot_e_q_down,
             :has_tess, :has_gaia, :has_ztf, :has_atlas, :has_blackgem,
             :tess_crowdsap, :phot_peaks_json,
-            :comp_mass_min, :comp_e_mass_min, :comp_mass_true, :comp_e_mass_true, 
+            :comp_mass_min, :comp_e_mass_min, :comp_mass_true, :comp_e_mass_true,
+            :comp_e_mass_min_up, :comp_e_mass_min_down,
+            :comp_e_mass_true_up, :comp_e_mass_true_down,
             :bibcodes
         )
     )");
@@ -165,7 +194,13 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
     query.bindValue(":e_logg", star->getELogg());
     query.bindValue(":he", star->getHe());
     query.bindValue(":e_he", star->getEHe());
-    
+    query.bindValue(":e_teff_up", SqlValue::fromDouble(star->getETeffUp()));
+    query.bindValue(":e_teff_down", SqlValue::fromDouble(star->getETeffDown()));
+    query.bindValue(":e_logg_up", SqlValue::fromDouble(star->getELoggUp()));
+    query.bindValue(":e_logg_down", SqlValue::fromDouble(star->getELoggDown()));
+    query.bindValue(":e_he_up", SqlValue::fromDouble(star->getEHeUp()));
+    query.bindValue(":e_he_down", SqlValue::fromDouble(star->getEHeDown()));
+
     query.bindValue(":logp", star->getLogP());
     query.bindValue(":deltaRV", star->getDeltaRV());
     query.bindValue(":e_deltaRV", star->getEDeltaRV());
@@ -185,6 +220,12 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
     query.bindValue(":rv_e_period", star->getRVEPeriod());
     query.bindValue(":rv_gamma", star->getRVGamma());
     query.bindValue(":rv_e_gamma", star->getRVEGamma());
+    query.bindValue(":rv_e_k_up", SqlValue::fromDouble(star->getRVEKUp()));
+    query.bindValue(":rv_e_k_down", SqlValue::fromDouble(star->getRVEKDown()));
+    query.bindValue(":rv_e_period_up", SqlValue::fromDouble(star->getRVEPeriodUp()));
+    query.bindValue(":rv_e_period_down", SqlValue::fromDouble(star->getRVEPeriodDown()));
+    query.bindValue(":rv_e_gamma_up", SqlValue::fromDouble(star->getRVEGammaUp()));
+    query.bindValue(":rv_e_gamma_down", SqlValue::fromDouble(star->getRVEGammaDown()));
     query.bindValue(":rv_ecc", star->getRVEcc());
     query.bindValue(":rv_phi", star->getRVPhi());
     query.bindValue(":rv_t0", star->getRVT0());
@@ -203,6 +244,18 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
     query.bindValue(":sed_e_radius2", star->getSedERadius2());
     query.bindValue(":sed_lum2", star->getSedLum2());
     query.bindValue(":sed_e_lum2", star->getSedELum2());
+    query.bindValue(":sed_e_mass1_up", SqlValue::fromDouble(star->getSedEMass1Up()));
+    query.bindValue(":sed_e_mass1_down", SqlValue::fromDouble(star->getSedEMass1Down()));
+    query.bindValue(":sed_e_radius1_up", SqlValue::fromDouble(star->getSedERadius1Up()));
+    query.bindValue(":sed_e_radius1_down", SqlValue::fromDouble(star->getSedERadius1Down()));
+    query.bindValue(":sed_e_lum1_up", SqlValue::fromDouble(star->getSedELum1Up()));
+    query.bindValue(":sed_e_lum1_down", SqlValue::fromDouble(star->getSedELum1Down()));
+    query.bindValue(":sed_e_mass2_up", SqlValue::fromDouble(star->getSedEMass2Up()));
+    query.bindValue(":sed_e_mass2_down", SqlValue::fromDouble(star->getSedEMass2Down()));
+    query.bindValue(":sed_e_radius2_up", SqlValue::fromDouble(star->getSedERadius2Up()));
+    query.bindValue(":sed_e_radius2_down", SqlValue::fromDouble(star->getSedERadius2Down()));
+    query.bindValue(":sed_e_lum2_up", SqlValue::fromDouble(star->getSedELum2Up()));
+    query.bindValue(":sed_e_lum2_down", SqlValue::fromDouble(star->getSedELum2Down()));
 
     query.bindValue(":phot_period", star->getPhotPeriod());
     query.bindValue(":phot_e_period", star->getPhotEPeriod());
@@ -210,6 +263,12 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
     query.bindValue(":phot_e_incl", star->getPhotEIncl());
     query.bindValue(":phot_q", star->getPhotQ());
     query.bindValue(":phot_e_q", star->getPhotEQ());
+    query.bindValue(":phot_e_period_up", SqlValue::fromDouble(star->getPhotEPeriodUp()));
+    query.bindValue(":phot_e_period_down", SqlValue::fromDouble(star->getPhotEPeriodDown()));
+    query.bindValue(":phot_e_incl_up", SqlValue::fromDouble(star->getPhotEInclUp()));
+    query.bindValue(":phot_e_incl_down", SqlValue::fromDouble(star->getPhotEInclDown()));
+    query.bindValue(":phot_e_q_up", SqlValue::fromDouble(star->getPhotEQUp()));
+    query.bindValue(":phot_e_q_down", SqlValue::fromDouble(star->getPhotEQDown()));
 
     query.bindValue(":has_tess", star->getHasTess() ? 1 : 0);
     query.bindValue(":has_gaia", star->getHasGaia() ? 1 : 0);
@@ -226,6 +285,10 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
     query.bindValue(":comp_e_mass_min", star->getECompMassMin());
     query.bindValue(":comp_mass_true", star->getCompMassTrue());
     query.bindValue(":comp_e_mass_true", star->getECompMassTrue());
+    query.bindValue(":comp_e_mass_min_up", SqlValue::fromDouble(star->getECompMassMinUp()));
+    query.bindValue(":comp_e_mass_min_down", SqlValue::fromDouble(star->getECompMassMinDown()));
+    query.bindValue(":comp_e_mass_true_up", SqlValue::fromDouble(star->getECompMassTrueUp()));
+    query.bindValue(":comp_e_mass_true_down", SqlValue::fromDouble(star->getECompMassTrueDown()));
 
     // Convert bibcodes to JSON array
     QJsonArray bibcodesArray;
@@ -343,6 +406,9 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
             rp = :rp, e_rp = :e_rp, bp_rp = :bp_rp,
             spec_class = :spec_class, teff = :teff, e_teff = :e_teff,
             logg = :logg, e_logg = :e_logg, he = :he, e_he = :e_he,
+            e_teff_up = :e_teff_up, e_teff_down = :e_teff_down,
+            e_logg_up = :e_logg_up, e_logg_down = :e_logg_down,
+            e_he_up = :e_he_up, e_he_down = :e_he_down,
             logp = :logp, deltaRV = :deltaRV, e_deltaRV = :e_deltaRV,
             rv_avg = :rv_avg, e_rv_avg = :e_rv_avg, rv_med = :rv_med, e_rv_med = :e_rv_med,
             n_spectra = :n_spectra, n_fit_spectra = :n_fit_spectra,
@@ -350,6 +416,9 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
             rv_k = :rv_k, rv_e_k = :rv_e_k,
             rv_period = :rv_period, rv_e_period = :rv_e_period,
             rv_gamma = :rv_gamma, rv_e_gamma = :rv_e_gamma,
+            rv_e_k_up = :rv_e_k_up, rv_e_k_down = :rv_e_k_down,
+            rv_e_period_up = :rv_e_period_up, rv_e_period_down = :rv_e_period_down,
+            rv_e_gamma_up = :rv_e_gamma_up, rv_e_gamma_down = :rv_e_gamma_down,
             rv_ecc = :rv_ecc, rv_phi = :rv_phi, rv_t0 = :rv_t0,
             rv_chi2 = :rv_chi2, rv_rms = :rv_rms,
             sed_mass1 = :sed_mass1, sed_e_mass1 = :sed_e_mass1,
@@ -358,11 +427,24 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
             sed_mass2 = :sed_mass2, sed_e_mass2 = :sed_e_mass2,
             sed_radius2 = :sed_radius2, sed_e_radius2 = :sed_e_radius2,
             sed_lum2 = :sed_lum2, sed_e_lum2 = :sed_e_lum2,
+            sed_e_mass1_up = :sed_e_mass1_up, sed_e_mass1_down = :sed_e_mass1_down,
+            sed_e_radius1_up = :sed_e_radius1_up, sed_e_radius1_down = :sed_e_radius1_down,
+            sed_e_lum1_up = :sed_e_lum1_up, sed_e_lum1_down = :sed_e_lum1_down,
+            sed_e_mass2_up = :sed_e_mass2_up, sed_e_mass2_down = :sed_e_mass2_down,
+            sed_e_radius2_up = :sed_e_radius2_up, sed_e_radius2_down = :sed_e_radius2_down,
+            sed_e_lum2_up = :sed_e_lum2_up, sed_e_lum2_down = :sed_e_lum2_down,
             phot_period = :phot_period, phot_e_period = :phot_e_period,
             phot_incl = :phot_incl, phot_e_incl = :phot_e_incl,
             phot_q = :phot_q, phot_e_q = :phot_e_q,
+            phot_e_period_up = :phot_e_period_up, phot_e_period_down = :phot_e_period_down,
+            phot_e_incl_up = :phot_e_incl_up, phot_e_incl_down = :phot_e_incl_down,
+            phot_e_q_up = :phot_e_q_up, phot_e_q_down = :phot_e_q_down,
             comp_mass_min = :comp_mass_min, comp_e_mass_min = :comp_e_mass_min,
             comp_mass_true = :comp_mass_true, comp_e_mass_true = :comp_e_mass_true,
+            comp_e_mass_min_up = :comp_e_mass_min_up,
+            comp_e_mass_min_down = :comp_e_mass_min_down,
+            comp_e_mass_true_up = :comp_e_mass_true_up,
+            comp_e_mass_true_down = :comp_e_mass_true_down,
             has_tess = :has_tess, has_gaia = :has_gaia, has_ztf = :has_ztf,
             has_atlas = :has_atlas, has_blackgem = :has_blackgem,
             bibcodes = :bibcodes
@@ -403,6 +485,12 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
     query.bindValue(":e_logg", star->getELogg());
     query.bindValue(":he", star->getHe());
     query.bindValue(":e_he", star->getEHe());
+    query.bindValue(":e_teff_up", SqlValue::fromDouble(star->getETeffUp()));
+    query.bindValue(":e_teff_down", SqlValue::fromDouble(star->getETeffDown()));
+    query.bindValue(":e_logg_up", SqlValue::fromDouble(star->getELoggUp()));
+    query.bindValue(":e_logg_down", SqlValue::fromDouble(star->getELoggDown()));
+    query.bindValue(":e_he_up", SqlValue::fromDouble(star->getEHeUp()));
+    query.bindValue(":e_he_down", SqlValue::fromDouble(star->getEHeDown()));
 
     query.bindValue(":logp", star->getLogP());
     query.bindValue(":deltaRV", star->getDeltaRV());
@@ -423,6 +511,12 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
     query.bindValue(":rv_e_period", star->getRVEPeriod());
     query.bindValue(":rv_gamma", star->getRVGamma());
     query.bindValue(":rv_e_gamma", star->getRVEGamma());
+    query.bindValue(":rv_e_k_up", SqlValue::fromDouble(star->getRVEKUp()));
+    query.bindValue(":rv_e_k_down", SqlValue::fromDouble(star->getRVEKDown()));
+    query.bindValue(":rv_e_period_up", SqlValue::fromDouble(star->getRVEPeriodUp()));
+    query.bindValue(":rv_e_period_down", SqlValue::fromDouble(star->getRVEPeriodDown()));
+    query.bindValue(":rv_e_gamma_up", SqlValue::fromDouble(star->getRVEGammaUp()));
+    query.bindValue(":rv_e_gamma_down", SqlValue::fromDouble(star->getRVEGammaDown()));
     query.bindValue(":rv_ecc", star->getRVEcc());
     query.bindValue(":rv_phi", star->getRVPhi());
     query.bindValue(":rv_t0", star->getRVT0());
@@ -441,6 +535,18 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
     query.bindValue(":sed_e_radius2", star->getSedERadius2());
     query.bindValue(":sed_lum2", star->getSedLum2());
     query.bindValue(":sed_e_lum2", star->getSedELum2());
+    query.bindValue(":sed_e_mass1_up", SqlValue::fromDouble(star->getSedEMass1Up()));
+    query.bindValue(":sed_e_mass1_down", SqlValue::fromDouble(star->getSedEMass1Down()));
+    query.bindValue(":sed_e_radius1_up", SqlValue::fromDouble(star->getSedERadius1Up()));
+    query.bindValue(":sed_e_radius1_down", SqlValue::fromDouble(star->getSedERadius1Down()));
+    query.bindValue(":sed_e_lum1_up", SqlValue::fromDouble(star->getSedELum1Up()));
+    query.bindValue(":sed_e_lum1_down", SqlValue::fromDouble(star->getSedELum1Down()));
+    query.bindValue(":sed_e_mass2_up", SqlValue::fromDouble(star->getSedEMass2Up()));
+    query.bindValue(":sed_e_mass2_down", SqlValue::fromDouble(star->getSedEMass2Down()));
+    query.bindValue(":sed_e_radius2_up", SqlValue::fromDouble(star->getSedERadius2Up()));
+    query.bindValue(":sed_e_radius2_down", SqlValue::fromDouble(star->getSedERadius2Down()));
+    query.bindValue(":sed_e_lum2_up", SqlValue::fromDouble(star->getSedELum2Up()));
+    query.bindValue(":sed_e_lum2_down", SqlValue::fromDouble(star->getSedELum2Down()));
 
     query.bindValue(":phot_period", star->getPhotPeriod());
     query.bindValue(":phot_e_period", star->getPhotEPeriod());
@@ -448,11 +554,21 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
     query.bindValue(":phot_e_incl", star->getPhotEIncl());
     query.bindValue(":phot_q", star->getPhotQ());
     query.bindValue(":phot_e_q", star->getPhotEQ());
+    query.bindValue(":phot_e_period_up", SqlValue::fromDouble(star->getPhotEPeriodUp()));
+    query.bindValue(":phot_e_period_down", SqlValue::fromDouble(star->getPhotEPeriodDown()));
+    query.bindValue(":phot_e_incl_up", SqlValue::fromDouble(star->getPhotEInclUp()));
+    query.bindValue(":phot_e_incl_down", SqlValue::fromDouble(star->getPhotEInclDown()));
+    query.bindValue(":phot_e_q_up", SqlValue::fromDouble(star->getPhotEQUp()));
+    query.bindValue(":phot_e_q_down", SqlValue::fromDouble(star->getPhotEQDown()));
 
     query.bindValue(":comp_mass_min", star->getCompMassMin());
     query.bindValue(":comp_e_mass_min", star->getECompMassMin());
     query.bindValue(":comp_mass_true", star->getCompMassTrue());
     query.bindValue(":comp_e_mass_true", star->getECompMassTrue());
+    query.bindValue(":comp_e_mass_min_up", SqlValue::fromDouble(star->getECompMassMinUp()));
+    query.bindValue(":comp_e_mass_min_down", SqlValue::fromDouble(star->getECompMassMinDown()));
+    query.bindValue(":comp_e_mass_true_up", SqlValue::fromDouble(star->getECompMassTrueUp()));
+    query.bindValue(":comp_e_mass_true_down", SqlValue::fromDouble(star->getECompMassTrueDown()));
 
     query.bindValue(":has_tess", star->getHasTess() ? 1 : 0);
     query.bindValue(":has_gaia", star->getHasGaia() ? 1 : 0);

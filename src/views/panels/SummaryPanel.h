@@ -45,10 +45,15 @@ class SummaryPanel : public DetailPanel {
                                           QWidget       *compactContent,
                                           QWidget       *expandedContent);
 
-    // ── Companion-mass derivation (cached, analytical error propagation) ──
+    // ── Companion-mass derivation (cached error propagation) ──
+    // Symmetric inputs go through the analytical (linearised) path; as soon
+    // as any input carries an asymmetric interval the errors come from
+    // split-normal Monte-Carlo resampling instead (errUp/errDown set).
     struct MassResult {
         double value = std::numeric_limits<double>::quiet_NaN();
         double error = std::numeric_limits<double>::quiet_NaN();
+        double errUp   = std::numeric_limits<double>::quiet_NaN();
+        double errDown = std::numeric_limits<double>::quiet_NaN();
         bool   valid() const { return std::isfinite(value) && value > 0.0; }
     };
     struct MassInputs {
@@ -56,6 +61,16 @@ class SummaryPanel : public DetailPanel {
         double M1 = 0, eM1 = 0, e = 0, ee = 0;
         double sini = 0, esini = 0;
         double q = 0, eQ = 0;
+        // Asymmetric 1σ intervals (NaN = unset → symmetric error applies).
+        // The inclination is carried in degrees for the MC resampling.
+        static constexpr double kUnset = std::numeric_limits<double>::quiet_NaN();
+        double ePUp = kUnset, ePDown = kUnset;
+        double eKUp = kUnset, eKDown = kUnset;
+        double eM1Up = kUnset, eM1Down = kUnset;
+        double eeUp = kUnset, eeDown = kUnset;
+        double eQUp = kUnset, eQDown = kUnset;
+        double iDeg = 0, eIDeg = 0;
+        double eIDegUp = kUnset, eIDegDown = kUnset;
         bool   hasIncl = false;
         bool   hasQ    = false;
         bool   valid   = false;

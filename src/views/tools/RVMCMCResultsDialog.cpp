@@ -411,16 +411,32 @@ std::shared_ptr<RVFit> RVMCMCResultsDialog::fitFromSubChain(
 
     for (int k = 0; k < dim; ++k) {
         const double med = quantile(k, 0.5);
-        const double q16 = quantile(k, 0.16);
-        const double q84 = quantile(k, 0.84);
-        const double err = 0.5 * (q84 - q16);
+        const double q16 = quantile(k, 0.159);
+        const double q84 = quantile(k, 0.841);
+        double err = 0.5 * (q84 - q16);
+        // Asymmetric 1σ bounds: distances from the median to the 15.9/84.1
+        // posterior percentiles (AsymErr convention). Sides that agree within
+        // 10% collapse to a single symmetric error — their mean.
+        double up   = std::max(0.0, q84 - med);
+        double down = std::max(0.0, med - q16);
+        if (AsymErr::nearlySymmetric(up, down)) {
+            err = 0.5 * (up + down);
+            up = down = AsymErr::unset;
+        }
 
-        if      (names[k] == "period")       { fit->setPeriod(med);       fit->setPeriodError(err); }
-        else if (names[k] == "amplitude")    { fit->setK(med);            fit->setKError(err); }
-        else if (names[k] == "offset")       { fit->setGamma(med);        fit->setGammaError(err); }
-        else if (names[k] == "phase")        { fit->setPhi(med);          fit->setPhiError(err); }
-        else if (names[k] == "eccentricity") { fit->setEccentricity(med); fit->setEccentricityError(err); }
-        else if (names[k] == "omega")        { fit->setOmega(med);        fit->setOmegaError(err); }
+        if      (names[k] == "period")       { fit->setPeriod(med);       fit->setPeriodError(err);
+                                               fit->setPeriodErrorUp(up);  fit->setPeriodErrorDown(down); }
+        else if (names[k] == "amplitude")    { fit->setK(med);            fit->setKError(err);
+                                               fit->setKErrorUp(up);      fit->setKErrorDown(down); }
+        else if (names[k] == "offset")       { fit->setGamma(med);        fit->setGammaError(err);
+                                               fit->setGammaErrorUp(up);  fit->setGammaErrorDown(down); }
+        else if (names[k] == "phase")        { fit->setPhi(med);          fit->setPhiError(err);
+                                               fit->setPhiErrorUp(up);    fit->setPhiErrorDown(down); }
+        else if (names[k] == "eccentricity") { fit->setEccentricity(med); fit->setEccentricityError(err);
+                                               fit->setEccentricityErrorUp(up);
+                                               fit->setEccentricityErrorDown(down); }
+        else if (names[k] == "omega")        { fit->setOmega(med);        fit->setOmegaError(err);
+                                               fit->setOmegaErrorUp(up);  fit->setOmegaErrorDown(down); }
     }
     bool ecc = (dim == 6);
     fit->setEccentric(ecc);

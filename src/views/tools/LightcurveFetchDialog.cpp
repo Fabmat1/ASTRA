@@ -572,6 +572,23 @@ QWidget *LightcurveFetchDialog::buildFitTab() {
 
     sv->addWidget(fitsBox, 1);
 
+    // ── Parameters of the selected existing fit ─────────────────────────
+    auto *detBox = new QGroupBox(tr("Selected fit parameters"));
+    auto *detLay = new QVBoxLayout(detBox);
+    detLay->setContentsMargins(4, 4, 4, 4);
+    _fitDetailsLabel = new QLabel(tr("Select a fit to see its parameters."));
+    _fitDetailsLabel->setTextFormat(Qt::RichText);
+    _fitDetailsLabel->setWordWrap(true);
+    _fitDetailsLabel->setAlignment(Qt::AlignTop | Qt::AlignLeft);
+    _fitDetailsLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    auto *detScroll = new QScrollArea;
+    detScroll->setWidget(_fitDetailsLabel);
+    detScroll->setWidgetResizable(true);
+    detScroll->setFrameShape(QFrame::NoFrame);
+    detScroll->setFixedHeight(200);
+    detLay->addWidget(detScroll);
+    sv->addWidget(detBox);
+
     _fitRunBtn = new QPushButton;
     _fitRunBtn->setEnabled(false);
     connect(_fitRunBtn, &QPushButton::clicked, this,
@@ -587,6 +604,7 @@ QWidget *LightcurveFetchDialog::buildFitTab() {
                     _setBestFitBtn->setEnabled(any);
                 if (_deleteFitBtn)
                     _deleteFitBtn->setEnabled(any);
+                updateSelectedFitDetails();
             });
 
     root->addWidget(sidebar);
@@ -624,10 +642,22 @@ void LightcurveFetchDialog::refreshFitSourceCombo() {
         for (const auto &s : sources)
             _fitSourceCombo->addItem(s);
     }
-    if (!prev.isEmpty()) {
-        const int idx = _fitSourceCombo->findText(prev);
-        if (idx >= 0)
-            _fitSourceCombo->setCurrentIndex(idx);
+    const int restored = prev.isEmpty() ? -1 : _fitSourceCombo->findText(prev);
+    if (restored >= 0) {
+        _fitSourceCombo->setCurrentIndex(restored);
+    } else if (phot && _fitSourceCombo->count() > 0) {
+        // No previous choice to restore: default to the best-sampled source.
+        int bestIdx = 0;
+        int bestN   = -1;
+        for (int i = 0; i < _fitSourceCombo->count(); ++i) {
+            const int n =
+                int(phot->getLightcurve(_fitSourceCombo->itemText(i)).size());
+            if (n > bestN) {
+                bestN   = n;
+                bestIdx = i;
+            }
+        }
+        _fitSourceCombo->setCurrentIndex(bestIdx);
     }
     refreshFitFilterCombo();
 }
@@ -641,23 +671,36 @@ void LightcurveFetchDialog::refreshFitFilterCombo() {
 
     auto          phot = _star ? _star->getPhotometry() : nullptr;
     const QString src  = _fitSourceCombo->currentText();
+    QHash<QString, int> counts;
     if (phot && !src.isEmpty()) {
-        const auto    pts = phot->getLightcurve(src);
-        QSet<QString> seen;
+        const auto pts = phot->getLightcurve(src);
         for (const auto &p : pts)
             if (!p.filter.isEmpty())
-                seen.insert(p.filter);
-        QStringList filters(seen.begin(), seen.end());
+                ++counts[p.filter];
+        QStringList filters = counts.keys();
         std::sort(filters.begin(), filters.end());
-        if (filters.isEmpty())
+        if (filters.isEmpty()) {
             filters << ""; // unfiltered series
+            counts[""] = int(pts.size());
+        }
         for (const auto &f : filters)
             _fitFilterCombo->addItem(f.isEmpty() ? tr("(unfiltered)") : f, f);
     }
-    if (!prev.isEmpty()) {
-        const int idx = _fitFilterCombo->findText(prev);
-        if (idx >= 0)
-            _fitFilterCombo->setCurrentIndex(idx);
+    const int restored = prev.isEmpty() ? -1 : _fitFilterCombo->findText(prev);
+    if (restored >= 0) {
+        _fitFilterCombo->setCurrentIndex(restored);
+    } else if (_fitFilterCombo->count() > 0) {
+        // No previous choice to restore: default to the best-sampled filter.
+        int bestIdx = 0;
+        int bestN   = -1;
+        for (int i = 0; i < _fitFilterCombo->count(); ++i) {
+            const int n = counts.value(_fitFilterCombo->itemData(i).toString());
+            if (n > bestN) {
+                bestN   = n;
+                bestIdx = i;
+            }
+        }
+        _fitFilterCombo->setCurrentIndex(bestIdx);
     }
 }
 
@@ -2095,12 +2138,15 @@ void LightcurveFetchDialog::onFitRunClicked() {
     }
 
     LCFitDialog dlg(in, this);
-    if (dlg.exec() == QDialog::Accepted) {
-        if (_fitLcPanel)
-            _fitLcPanel->refresh();
-        if (_lcPanel)
-            _lcPanel->refresh();
-    }
+    dlg.exec();
+    // Fits may have been saved regardless of how the dialog was closed
+    // (persistFit mirrors them into the in-memory Photometry), so refresh
+    // the existing-fits tree and the plots unconditionally.
+    refreshExistingFitsTree();
+    if (_fitLcPanel)
+        _fitLcPanel->refresh();
+    if (_lcPanel)
+        _lcPanel->refresh();
 }
 
 void LightcurveFetchDialog::onAddRVPeriodClicked()
@@ -2244,11 +2290,65 @@ void LightcurveFetchDialog::refreshExistingFitsTree() {
             _setBestFitBtn->setEnabled(false);
         if (_deleteFitBtn)
             _deleteFitBtn->setEnabled(false);
+        updateSelectedFitDetails();
     }
 
     // Button enabling on selection change is handled by the connection made
     // once in buildFitTab(); re-connecting here (per refresh) would stack
     // duplicate connections, and Qt::UniqueConnection asserts on lambdas.
+}
+
+void LightcurveFetchDialog::updateSelectedFitDetails() {
+    if (!_fitDetailsLabel)
+        return;
+    QString    src, filt;
+    const auto fit = selectedExistingFit(&src, &filt);
+    if (!fit) {
+        _fitDetailsLabel->setText(tr("Select a fit to see its parameters."));
+        return;
+    }
+
+    auto err = [](double e, double up, double down) -> QString {
+        if (AsymErr::hasAsymmetric(up, down))
+            return QString(" +%1 / −%2")
+                .arg(QString::number(AsymErr::upOr(up, e), 'g', 3),
+                     QString::number(AsymErr::downOr(down, e), 'g', 3));
+        return e > 0 ? QString(" ± %1").arg(QString::number(e, 'g', 3))
+                     : QString();
+    };
+    QString rows;
+    auto    row = [&](const QString &name, double v, double e = 0.0,
+                      double up = AsymErr::unset, double down = AsymErr::unset,
+                      int prec = 6) {
+        rows += QString("<tr><td>%1&nbsp;&nbsp;</td>"
+                        "<td style='white-space:nowrap;'>%2%3</td></tr>")
+                    .arg(name, QString::number(v, 'g', prec), err(e, up, down));
+    };
+    row(tr("q = M₂/M₁"), fit->q, fit->qError, fit->qErrorUp, fit->qErrorDown);
+    row(tr("i [°]"), fit->inclination, fit->inclinationError,
+        fit->inclinationErrorUp, fit->inclinationErrorDown);
+    row(tr("r₁ (R₁/a)"), fit->r1, fit->r1Error, fit->r1ErrorUp,
+        fit->r1ErrorDown);
+    row(tr("r₂ (R₂/a)"), fit->r2, fit->r2Error, fit->r2ErrorUp,
+        fit->r2ErrorDown);
+    row(tr("v_scale [km/s]"), fit->velocityScale, fit->velocityScaleError,
+        fit->velocityScaleErrorUp, fit->velocityScaleErrorDown);
+    row(tr("T₁ [K]"), fit->t1, fit->t1Error, fit->t1ErrorUp, fit->t1ErrorDown);
+    row(tr("T₂ [K]"), fit->t2, fit->t2Error, fit->t2ErrorUp, fit->t2ErrorDown);
+    row(tr("P [d]"), fit->period, fit->periodError, fit->periodErrorUp,
+        fit->periodErrorDown, 8);
+    row(tr("T₀ [BJD]"), fit->t0BJD, fit->t0BJDError, fit->t0BJDErrorUp,
+        fit->t0BJDErrorDown, 12);
+    row(tr("χ²"), fit->chi2, 0.0, AsymErr::unset, AsymErr::unset, 4);
+    row(tr("RMS"), fit->rms, 0.0, AsymErr::unset, AsymErr::unset, 4);
+
+    const QString head =
+        tr("<b>%1</b>%2<br><span style='color:gray;'>%3 / %4 · %5</span>")
+            .arg(fit->label.isEmpty() ? fit->getId() : fit->label,
+                 fit->isBestFit ? tr(" · ★ best") : QString(), src,
+                 filt.isEmpty() ? tr("(unfiltered)") : filt,
+                 fit->creationDate.toString("yyyy-MM-dd hh:mm"));
+    _fitDetailsLabel->setText(head + "<table>" + rows + "</table>");
 }
 
 std::shared_ptr<LCFit>

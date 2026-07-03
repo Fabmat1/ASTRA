@@ -179,6 +179,30 @@ QPair<double, double> addRVDataToPlot(
         yHi = std::max(yHi, y + e);
     }
 
+    // QCPGraph sorts its data by key (x) on setData, while the parallel error
+    // array handed to QCPErrorBars is paired to those points strictly by index
+    // (see QCPErrorBars::getErrorBarLines). If we pass an unsorted key vector,
+    // the scatter reorders the points but NOT the error array, so every error
+    // bar attaches to the wrong point. This bit the folded (phase) view, whose
+    // keys interleave the −1 and 0 wings and are therefore not monotonic. Sort
+    // the (x, y, e) triples together up-front and tell setData the data is
+    // already sorted, keeping point↔error alignment intact for both wings.
+    {
+        QVector<int> order(px.size());
+        std::iota(order.begin(), order.end(), 0);
+        std::sort(order.begin(), order.end(),
+                  [&](int a, int b) { return px[a] < px[b]; });
+        QVector<double> sx(px.size()), sy(py.size()), se(pe.size());
+        for (int i = 0; i < order.size(); ++i) {
+            sx[i] = px[order[i]];
+            sy[i] = py[order[i]];
+            se[i] = pe[order[i]];
+        }
+        px.swap(sx);
+        py.swap(sy);
+        pe.swap(se);
+    }
+
     // Make sure a layer exists below "main" for error bars
     if (!plot->layer("errorbars")) {
         plot->addLayer("errorbars", plot->layer("main"), QCustomPlot::limBelow);
@@ -196,7 +220,7 @@ QPair<double, double> addRVDataToPlot(
     QCPGraph* scatter = plot->addGraph();
     scatter->setLineStyle(QCPGraph::lsNone);
     scatter->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle, ptCol, ptCol, 7));
-    scatter->setData(px, py);
+    scatter->setData(px, py, /*alreadySorted=*/true);
     scatter->removeFromLegend();
 
     errorBars->setDataPlottable(scatter);

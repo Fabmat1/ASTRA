@@ -7,6 +7,7 @@
 #include "RadialVelocityRepository.h"
 #include "InstrumentRepository.h"
 #include "PeriodogramRepository.h"
+#include "SqlValue.h"
 
 #include "models/Project.h"
 #include "models/Star.h"
@@ -152,10 +153,16 @@ bool DatabaseManager::createTables()
             spec_class TEXT,
             teff REAL,
             e_teff REAL,
+            e_teff_up REAL,
+            e_teff_down REAL,
             logg REAL,
             e_logg REAL,
+            e_logg_up REAL,
+            e_logg_down REAL,
             he REAL,
             e_he REAL,
+            e_he_up REAL,
+            e_he_down REAL,
             logp REAL,
             deltaRV REAL,
             e_deltaRV REAL,
@@ -170,10 +177,16 @@ bool DatabaseManager::createTables()
             rv_npoints INTEGER DEFAULT 0,
             rv_k REAL DEFAULT 0,
             rv_e_k REAL DEFAULT 0,
+            rv_e_k_up REAL,
+            rv_e_k_down REAL,
             rv_period REAL DEFAULT 0,
             rv_e_period REAL DEFAULT 0,
+            rv_e_period_up REAL,
+            rv_e_period_down REAL,
             rv_gamma REAL DEFAULT 0,
             rv_e_gamma REAL DEFAULT 0,
+            rv_e_gamma_up REAL,
+            rv_e_gamma_down REAL,
             rv_ecc REAL DEFAULT 0,
             rv_phi REAL DEFAULT 0,
             rv_t0 REAL DEFAULT 0,
@@ -181,22 +194,40 @@ bool DatabaseManager::createTables()
             rv_rms REAL DEFAULT 0,
             sed_mass1 REAL DEFAULT 0,
             sed_e_mass1 REAL DEFAULT 0,
+            sed_e_mass1_up REAL,
+            sed_e_mass1_down REAL,
             sed_radius1 REAL DEFAULT 0,
             sed_e_radius1 REAL DEFAULT 0,
+            sed_e_radius1_up REAL,
+            sed_e_radius1_down REAL,
             sed_lum1 REAL DEFAULT 0,
             sed_e_lum1 REAL DEFAULT 0,
+            sed_e_lum1_up REAL,
+            sed_e_lum1_down REAL,
             sed_mass2 REAL DEFAULT 0,
             sed_e_mass2 REAL DEFAULT 0,
+            sed_e_mass2_up REAL,
+            sed_e_mass2_down REAL,
             sed_radius2 REAL DEFAULT 0,
             sed_e_radius2 REAL DEFAULT 0,
+            sed_e_radius2_up REAL,
+            sed_e_radius2_down REAL,
             sed_lum2 REAL DEFAULT 0,
             sed_e_lum2 REAL DEFAULT 0,
+            sed_e_lum2_up REAL,
+            sed_e_lum2_down REAL,
             phot_period REAL DEFAULT 0,
             phot_e_period REAL DEFAULT 0,
+            phot_e_period_up REAL,
+            phot_e_period_down REAL,
             phot_incl REAL DEFAULT 0,
             phot_e_incl REAL DEFAULT 0,
+            phot_e_incl_up REAL,
+            phot_e_incl_down REAL,
             phot_q REAL DEFAULT 0,
             phot_e_q REAL DEFAULT 0,
+            phot_e_q_up REAL,
+            phot_e_q_down REAL,
             has_tess INTEGER DEFAULT 0,
             has_gaia INTEGER DEFAULT 0,
             has_ztf INTEGER DEFAULT 0,
@@ -205,8 +236,12 @@ bool DatabaseManager::createTables()
             tess_crowdsap REAL,
             comp_mass_min REAL,
             comp_e_mass_min REAL,
+            comp_e_mass_min_up REAL,
+            comp_e_mass_min_down REAL,
             comp_mass_true REAL,
             comp_e_mass_true REAL,
+            comp_e_mass_true_up REAL,
+            comp_e_mass_true_down REAL,
             phot_peaks_json TEXT,
             FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
         )
@@ -304,6 +339,15 @@ bool DatabaseManager::createTables()
             t2 REAL DEFAULT 0,                t2_error REAL DEFAULT 0,
             period REAL DEFAULT 0,            period_error REAL DEFAULT 0,
             t0_bjd REAL DEFAULT 0,            t0_bjd_error REAL DEFAULT 0,
+            q_error_up REAL,                  q_error_down REAL,
+            iangle_error_up REAL,             iangle_error_down REAL,
+            r1_error_up REAL,                 r1_error_down REAL,
+            r2_error_up REAL,                 r2_error_down REAL,
+            velocity_scale_error_up REAL,     velocity_scale_error_down REAL,
+            t1_error_up REAL,                 t1_error_down REAL,
+            t2_error_up REAL,                 t2_error_down REAL,
+            period_error_up REAL,             period_error_down REAL,
+            t0_bjd_error_up REAL,             t0_bjd_error_down REAL,
             chi2 REAL DEFAULT 0,              rms REAL DEFAULT 0,
             config_json TEXT,
             data_file TEXT,
@@ -353,6 +397,22 @@ bool DatabaseManager::createTables()
             macroturbulence_error REAL DEFAULT 0,
             microturbulence REAL DEFAULT 0,
             microturbulence_error REAL DEFAULT 0,
+            teff_error_up REAL,
+            teff_error_down REAL,
+            logg_error_up REAL,
+            logg_error_down REAL,
+            he_error_up REAL,
+            he_error_down REAL,
+            vsini_error_up REAL,
+            vsini_error_down REAL,
+            radial_velocity_error_up REAL,
+            radial_velocity_error_down REAL,
+            metallicity_error_up REAL,
+            metallicity_error_down REAL,
+            macroturbulence_error_up REAL,
+            macroturbulence_error_down REAL,
+            microturbulence_error_up REAL,
+            microturbulence_error_down REAL,
             model_data_file TEXT,
             FOREIGN KEY(spectrum_id) REFERENCES spectra(id) ON DELETE CASCADE
         )
@@ -411,6 +471,20 @@ bool DatabaseManager::createTables()
           eccentricity_error REAL DEFAULT 0,
           omega REAL DEFAULT 0,
           omega_error REAL DEFAULT 0,
+          k_error_up REAL,
+          k_error_down REAL,
+          gamma_error_up REAL,
+          gamma_error_down REAL,
+          period_error_up REAL,
+          period_error_down REAL,
+          phi_error_up REAL,
+          phi_error_down REAL,
+          t0_error_up REAL,
+          t0_error_down REAL,
+          eccentricity_error_up REAL,
+          eccentricity_error_down REAL,
+          omega_error_up REAL,
+          omega_error_down REAL,
           is_best_fit INTEGER DEFAULT 0,
           fit_method TEXT,
           chi2 REAL DEFAULT 0,
@@ -610,6 +684,94 @@ bool DatabaseManager::runMigrations()
 
         // Procedural card-art seed (0 → derived from project id)
         "ALTER TABLE projects ADD COLUMN art_seed INTEGER DEFAULT 0",
+
+        // Asymmetric (upper/lower) 1σ errors. NULL = unset → the symmetric
+        // *_error column applies in both directions (see AsymmetricErrors.h).
+        "ALTER TABLE spectral_fits ADD COLUMN teff_error_up REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN teff_error_down REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN logg_error_up REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN logg_error_down REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN he_error_up REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN he_error_down REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN vsini_error_up REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN vsini_error_down REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN radial_velocity_error_up REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN radial_velocity_error_down REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN metallicity_error_up REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN metallicity_error_down REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN macroturbulence_error_up REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN macroturbulence_error_down REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN microturbulence_error_up REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN microturbulence_error_down REAL",
+
+        "ALTER TABLE rv_fits ADD COLUMN k_error_up REAL",
+        "ALTER TABLE rv_fits ADD COLUMN k_error_down REAL",
+        "ALTER TABLE rv_fits ADD COLUMN gamma_error_up REAL",
+        "ALTER TABLE rv_fits ADD COLUMN gamma_error_down REAL",
+        "ALTER TABLE rv_fits ADD COLUMN period_error_up REAL",
+        "ALTER TABLE rv_fits ADD COLUMN period_error_down REAL",
+        "ALTER TABLE rv_fits ADD COLUMN phi_error_up REAL",
+        "ALTER TABLE rv_fits ADD COLUMN phi_error_down REAL",
+        "ALTER TABLE rv_fits ADD COLUMN t0_error_up REAL",
+        "ALTER TABLE rv_fits ADD COLUMN t0_error_down REAL",
+        "ALTER TABLE rv_fits ADD COLUMN eccentricity_error_up REAL",
+        "ALTER TABLE rv_fits ADD COLUMN eccentricity_error_down REAL",
+        "ALTER TABLE rv_fits ADD COLUMN omega_error_up REAL",
+        "ALTER TABLE rv_fits ADD COLUMN omega_error_down REAL",
+
+        "ALTER TABLE lc_fits ADD COLUMN q_error_up REAL",
+        "ALTER TABLE lc_fits ADD COLUMN q_error_down REAL",
+        "ALTER TABLE lc_fits ADD COLUMN iangle_error_up REAL",
+        "ALTER TABLE lc_fits ADD COLUMN iangle_error_down REAL",
+        "ALTER TABLE lc_fits ADD COLUMN r1_error_up REAL",
+        "ALTER TABLE lc_fits ADD COLUMN r1_error_down REAL",
+        "ALTER TABLE lc_fits ADD COLUMN r2_error_up REAL",
+        "ALTER TABLE lc_fits ADD COLUMN r2_error_down REAL",
+        "ALTER TABLE lc_fits ADD COLUMN velocity_scale_error_up REAL",
+        "ALTER TABLE lc_fits ADD COLUMN velocity_scale_error_down REAL",
+        "ALTER TABLE lc_fits ADD COLUMN t1_error_up REAL",
+        "ALTER TABLE lc_fits ADD COLUMN t1_error_down REAL",
+        "ALTER TABLE lc_fits ADD COLUMN t2_error_up REAL",
+        "ALTER TABLE lc_fits ADD COLUMN t2_error_down REAL",
+        "ALTER TABLE lc_fits ADD COLUMN period_error_up REAL",
+        "ALTER TABLE lc_fits ADD COLUMN period_error_down REAL",
+        "ALTER TABLE lc_fits ADD COLUMN t0_bjd_error_up REAL",
+        "ALTER TABLE lc_fits ADD COLUMN t0_bjd_error_down REAL",
+
+        "ALTER TABLE stars ADD COLUMN e_teff_up REAL",
+        "ALTER TABLE stars ADD COLUMN e_teff_down REAL",
+        "ALTER TABLE stars ADD COLUMN e_logg_up REAL",
+        "ALTER TABLE stars ADD COLUMN e_logg_down REAL",
+        "ALTER TABLE stars ADD COLUMN e_he_up REAL",
+        "ALTER TABLE stars ADD COLUMN e_he_down REAL",
+        "ALTER TABLE stars ADD COLUMN rv_e_k_up REAL",
+        "ALTER TABLE stars ADD COLUMN rv_e_k_down REAL",
+        "ALTER TABLE stars ADD COLUMN rv_e_period_up REAL",
+        "ALTER TABLE stars ADD COLUMN rv_e_period_down REAL",
+        "ALTER TABLE stars ADD COLUMN rv_e_gamma_up REAL",
+        "ALTER TABLE stars ADD COLUMN rv_e_gamma_down REAL",
+        "ALTER TABLE stars ADD COLUMN phot_e_period_up REAL",
+        "ALTER TABLE stars ADD COLUMN phot_e_period_down REAL",
+        "ALTER TABLE stars ADD COLUMN phot_e_incl_up REAL",
+        "ALTER TABLE stars ADD COLUMN phot_e_incl_down REAL",
+        "ALTER TABLE stars ADD COLUMN phot_e_q_up REAL",
+        "ALTER TABLE stars ADD COLUMN phot_e_q_down REAL",
+        "ALTER TABLE stars ADD COLUMN sed_e_mass1_up REAL",
+        "ALTER TABLE stars ADD COLUMN sed_e_mass1_down REAL",
+        "ALTER TABLE stars ADD COLUMN sed_e_radius1_up REAL",
+        "ALTER TABLE stars ADD COLUMN sed_e_radius1_down REAL",
+        "ALTER TABLE stars ADD COLUMN sed_e_lum1_up REAL",
+        "ALTER TABLE stars ADD COLUMN sed_e_lum1_down REAL",
+        "ALTER TABLE stars ADD COLUMN sed_e_mass2_up REAL",
+        "ALTER TABLE stars ADD COLUMN sed_e_mass2_down REAL",
+        "ALTER TABLE stars ADD COLUMN sed_e_radius2_up REAL",
+        "ALTER TABLE stars ADD COLUMN sed_e_radius2_down REAL",
+        "ALTER TABLE stars ADD COLUMN sed_e_lum2_up REAL",
+        "ALTER TABLE stars ADD COLUMN sed_e_lum2_down REAL",
+        "ALTER TABLE stars ADD COLUMN comp_e_mass_min_up REAL",
+        "ALTER TABLE stars ADD COLUMN comp_e_mass_min_down REAL",
+        "ALTER TABLE stars ADD COLUMN comp_e_mass_true_up REAL",
+        "ALTER TABLE stars ADD COLUMN comp_e_mass_true_down REAL",
     };
 
     for (const QString& sql : alterQueries) {
@@ -768,6 +930,42 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
     const int idxCompEMassMin = rec.indexOf("comp_e_mass_min");
     const int idxCompMassTrue = rec.indexOf("comp_mass_true");
     const int idxCompEMassTrue = rec.indexOf("comp_e_mass_true");
+    const int idxCompEMassMinUp = rec.indexOf("comp_e_mass_min_up");
+    const int idxCompEMassMinDown = rec.indexOf("comp_e_mass_min_down");
+    const int idxCompEMassTrueUp = rec.indexOf("comp_e_mass_true_up");
+    const int idxCompEMassTrueDown = rec.indexOf("comp_e_mass_true_down");
+
+    // Asymmetric error columns (NULL / missing → NaN via SqlValue::toDoubleOrNaN)
+    const int idxETeffUp = rec.indexOf("e_teff_up");
+    const int idxETeffDown = rec.indexOf("e_teff_down");
+    const int idxELoggUp = rec.indexOf("e_logg_up");
+    const int idxELoggDown = rec.indexOf("e_logg_down");
+    const int idxEHeUp = rec.indexOf("e_he_up");
+    const int idxEHeDown = rec.indexOf("e_he_down");
+    const int idxRvEKUp = rec.indexOf("rv_e_k_up");
+    const int idxRvEKDown = rec.indexOf("rv_e_k_down");
+    const int idxRvEPeriodUp = rec.indexOf("rv_e_period_up");
+    const int idxRvEPeriodDown = rec.indexOf("rv_e_period_down");
+    const int idxRvEGammaUp = rec.indexOf("rv_e_gamma_up");
+    const int idxRvEGammaDown = rec.indexOf("rv_e_gamma_down");
+    const int idxPhotEPeriodUp = rec.indexOf("phot_e_period_up");
+    const int idxPhotEPeriodDown = rec.indexOf("phot_e_period_down");
+    const int idxPhotEInclUp = rec.indexOf("phot_e_incl_up");
+    const int idxPhotEInclDown = rec.indexOf("phot_e_incl_down");
+    const int idxPhotEQUp = rec.indexOf("phot_e_q_up");
+    const int idxPhotEQDown = rec.indexOf("phot_e_q_down");
+    const int idxSedEMass1Up = rec.indexOf("sed_e_mass1_up");
+    const int idxSedEMass1Down = rec.indexOf("sed_e_mass1_down");
+    const int idxSedERadius1Up = rec.indexOf("sed_e_radius1_up");
+    const int idxSedERadius1Down = rec.indexOf("sed_e_radius1_down");
+    const int idxSedELum1Up = rec.indexOf("sed_e_lum1_up");
+    const int idxSedELum1Down = rec.indexOf("sed_e_lum1_down");
+    const int idxSedEMass2Up = rec.indexOf("sed_e_mass2_up");
+    const int idxSedEMass2Down = rec.indexOf("sed_e_mass2_down");
+    const int idxSedERadius2Up = rec.indexOf("sed_e_radius2_up");
+    const int idxSedERadius2Down = rec.indexOf("sed_e_radius2_down");
+    const int idxSedELum2Up = rec.indexOf("sed_e_lum2_up");
+    const int idxSedELum2Down = rec.indexOf("sed_e_lum2_down");
 
     // Pre-allocate
     const size_t estimatedCount = _stars->getStarCountForProject(projectId);
@@ -809,6 +1007,12 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
         star->setELogg(query.value(idxELogg).toDouble());
         star->setHe(query.value(idxHe).toDouble());
         star->setEHe(query.value(idxEHe).toDouble());
+        star->setETeffUp(SqlValue::toDoubleOrNaN(query, idxETeffUp));
+        star->setETeffDown(SqlValue::toDoubleOrNaN(query, idxETeffDown));
+        star->setELoggUp(SqlValue::toDoubleOrNaN(query, idxELoggUp));
+        star->setELoggDown(SqlValue::toDoubleOrNaN(query, idxELoggDown));
+        star->setEHeUp(SqlValue::toDoubleOrNaN(query, idxEHeUp));
+        star->setEHeDown(SqlValue::toDoubleOrNaN(query, idxEHeDown));
         
         star->setLogP(query.value(idxLogp).toDouble());
         star->setDeltaRV(query.value(idxDeltaRV).toDouble());
@@ -873,6 +1077,31 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
         if (idxPhotQ >= 0)       star->setPhotQ(query.value(idxPhotQ).toDouble());
         if (idxPhotEQ >= 0)      star->setPhotEQ(query.value(idxPhotEQ).toDouble());
 
+        star->setRVEKUp(SqlValue::toDoubleOrNaN(query, idxRvEKUp));
+        star->setRVEKDown(SqlValue::toDoubleOrNaN(query, idxRvEKDown));
+        star->setRVEPeriodUp(SqlValue::toDoubleOrNaN(query, idxRvEPeriodUp));
+        star->setRVEPeriodDown(SqlValue::toDoubleOrNaN(query, idxRvEPeriodDown));
+        star->setRVEGammaUp(SqlValue::toDoubleOrNaN(query, idxRvEGammaUp));
+        star->setRVEGammaDown(SqlValue::toDoubleOrNaN(query, idxRvEGammaDown));
+        star->setPhotEPeriodUp(SqlValue::toDoubleOrNaN(query, idxPhotEPeriodUp));
+        star->setPhotEPeriodDown(SqlValue::toDoubleOrNaN(query, idxPhotEPeriodDown));
+        star->setPhotEInclUp(SqlValue::toDoubleOrNaN(query, idxPhotEInclUp));
+        star->setPhotEInclDown(SqlValue::toDoubleOrNaN(query, idxPhotEInclDown));
+        star->setPhotEQUp(SqlValue::toDoubleOrNaN(query, idxPhotEQUp));
+        star->setPhotEQDown(SqlValue::toDoubleOrNaN(query, idxPhotEQDown));
+        star->setSedEMass1Up(SqlValue::toDoubleOrNaN(query, idxSedEMass1Up));
+        star->setSedEMass1Down(SqlValue::toDoubleOrNaN(query, idxSedEMass1Down));
+        star->setSedERadius1Up(SqlValue::toDoubleOrNaN(query, idxSedERadius1Up));
+        star->setSedERadius1Down(SqlValue::toDoubleOrNaN(query, idxSedERadius1Down));
+        star->setSedELum1Up(SqlValue::toDoubleOrNaN(query, idxSedELum1Up));
+        star->setSedELum1Down(SqlValue::toDoubleOrNaN(query, idxSedELum1Down));
+        star->setSedEMass2Up(SqlValue::toDoubleOrNaN(query, idxSedEMass2Up));
+        star->setSedEMass2Down(SqlValue::toDoubleOrNaN(query, idxSedEMass2Down));
+        star->setSedERadius2Up(SqlValue::toDoubleOrNaN(query, idxSedERadius2Up));
+        star->setSedERadius2Down(SqlValue::toDoubleOrNaN(query, idxSedERadius2Down));
+        star->setSedELum2Up(SqlValue::toDoubleOrNaN(query, idxSedELum2Up));
+        star->setSedELum2Down(SqlValue::toDoubleOrNaN(query, idxSedELum2Down));
+
         if (idxHasTess >= 0)     star->setHasTess(query.value(idxHasTess).toInt() != 0);
         if (idxHasGaia >= 0)     star->setHasGaia(query.value(idxHasGaia).toInt() != 0);
         if (idxHasZtf >= 0)      star->setHasZtf(query.value(idxHasZtf).toInt() != 0);
@@ -893,6 +1122,10 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
             star->setCompMassTrue(query.value(idxCompMassTrue).toDouble());
         if (idxCompEMassTrue >= 0 && !query.isNull(idxCompEMassTrue))
             star->setECompMassTrue(query.value(idxCompEMassTrue).toDouble());
+        star->setECompMassMinUp(SqlValue::toDoubleOrNaN(query, idxCompEMassMinUp));
+        star->setECompMassMinDown(SqlValue::toDoubleOrNaN(query, idxCompEMassMinDown));
+        star->setECompMassTrueUp(SqlValue::toDoubleOrNaN(query, idxCompEMassTrueUp));
+        star->setECompMassTrueDown(SqlValue::toDoubleOrNaN(query, idxCompEMassTrueDown));
         stars.push_back(std::move(star));
     }
 

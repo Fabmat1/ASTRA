@@ -9,6 +9,7 @@
 #include <limits>
 
 #include "Time.h"
+#include "AsymmetricErrors.h"
 
 class Spectrum;
 class SpectralFit;
@@ -221,6 +222,43 @@ public:
     void setOmega(double omega) { _omega = omega; }
     void setOmegaError(double error) { _omegaError = error; }
 
+    // ── Optional asymmetric 1σ errors (value +up/−down, positive magnitudes).
+    //    NaN = unset → the symmetric error applies (see AsymmetricErrors.h).
+    double getKErrorUp() const   { return _KErrorUp; }
+    double getKErrorDown() const { return _KErrorDown; }
+    void setKErrorUp(double e)   { _KErrorUp = e; }
+    void setKErrorDown(double e) { _KErrorDown = e; }
+
+    double getGammaErrorUp() const   { return _gammaErrorUp; }
+    double getGammaErrorDown() const { return _gammaErrorDown; }
+    void setGammaErrorUp(double e)   { _gammaErrorUp = e; }
+    void setGammaErrorDown(double e) { _gammaErrorDown = e; }
+
+    double getPeriodErrorUp() const   { return _periodErrorUp; }
+    double getPeriodErrorDown() const { return _periodErrorDown; }
+    void setPeriodErrorUp(double e)   { _periodErrorUp = e; }
+    void setPeriodErrorDown(double e) { _periodErrorDown = e; }
+
+    double getPhiErrorUp() const   { return _phiErrorUp; }
+    double getPhiErrorDown() const { return _phiErrorDown; }
+    void setPhiErrorUp(double e)   { _phiErrorUp = e; }
+    void setPhiErrorDown(double e) { _phiErrorDown = e; }
+
+    double getT0ErrorUp() const   { return _t0ErrorUp; }
+    double getT0ErrorDown() const { return _t0ErrorDown; }
+    void setT0ErrorUp(double e)   { _t0ErrorUp = e; }
+    void setT0ErrorDown(double e) { _t0ErrorDown = e; }
+
+    double getEccentricityErrorUp() const   { return _eccentricityErrorUp; }
+    double getEccentricityErrorDown() const { return _eccentricityErrorDown; }
+    void setEccentricityErrorUp(double e)   { _eccentricityErrorUp = e; }
+    void setEccentricityErrorDown(double e) { _eccentricityErrorDown = e; }
+
+    double getOmegaErrorUp() const   { return _omegaErrorUp; }
+    double getOmegaErrorDown() const { return _omegaErrorDown; }
+    void setOmegaErrorUp(double e)   { _omegaErrorUp = e; }
+    void setOmegaErrorDown(double e) { _omegaErrorDown = e; }
+
     // Calculate RV at given time
     double calculateRV(double bjd) const;
     double calculateRV(const Time& t) const;      // convenience overload
@@ -289,6 +327,22 @@ public:
     double _eccentricityError;
     double _omega;
     double _omegaError;
+
+    // Asymmetric errors; NaN = unset (fall back to the symmetric error).
+    double _KErrorUp            = AsymErr::unset;
+    double _KErrorDown          = AsymErr::unset;
+    double _gammaErrorUp        = AsymErr::unset;
+    double _gammaErrorDown      = AsymErr::unset;
+    double _periodErrorUp       = AsymErr::unset;
+    double _periodErrorDown     = AsymErr::unset;
+    double _phiErrorUp          = AsymErr::unset;
+    double _phiErrorDown        = AsymErr::unset;
+    double _t0ErrorUp           = AsymErr::unset;
+    double _t0ErrorDown         = AsymErr::unset;
+    double _eccentricityErrorUp   = AsymErr::unset;
+    double _eccentricityErrorDown = AsymErr::unset;
+    double _omegaErrorUp        = AsymErr::unset;
+    double _omegaErrorDown      = AsymErr::unset;
 
     double _tRefBJD = 0.0;
     double _tRefMJD = 0.0;

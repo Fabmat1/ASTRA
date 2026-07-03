@@ -2,6 +2,8 @@
 #include "RVMCMCResultsDialog.h"
 
 #include "db/DatabaseManager.h"
+#include "fitting/RVErrorMC.h"
+#include "models/AsymmetricErrors.h"
 #include "models/PeriodogramRecord.h"
 #include "models/Photometry.h"
 #include "models/RadialVelocity.h"
@@ -1337,6 +1339,82 @@ KeplerLMResult keplerLM(const std::vector<double>& t,
     return R;
 }
 
+// ── MC percentile errors around the LM optimum ─────────────────────────
+// Storage rule for a percentile interval: when the two sides agree within
+// 10% the pair collapses to a single symmetric error (their mean) and the
+// asymmetric fields stay unset; otherwise both sides are stored alongside
+// the symmetrized legacy value.
+struct MergedErr { double sym, up, down; };
+
+MergedErr mergeSides(const RVErrorMC::ParamErr& e)
+{
+    if (AsymErr::nearlySymmetric(e.up, e.down))
+        return { 0.5 * (e.up + e.down), AsymErr::unset, AsymErr::unset };
+    return { e.sym, e.up, e.down };
+}
+
+// Stamp 15.9/84.1-percentile errors from a short Metropolis chain run around
+// the LM solution. The chain includes the same Gaussian period prior
+// (P0, sigP) the LM fit was constrained with. On sampler failure whatever
+// errors the caller already set (e.g. covariance-based) are left untouched.
+void applyCircularMCErrors(RVFit& fit,
+                           const std::vector<double>& t,
+                           const std::vector<double>& y,
+                           const std::vector<double>& s,
+                           double K, double gamma, double phi, double P,
+                           double P0, double sigP)
+{
+    const auto mc = RVErrorMC::sampleCircular(t, y, s, K, gamma, phi, P,
+                                              P0, sigP);
+    if (!mc.ok) return;
+    const auto k = mergeSides(mc.K);
+    fit.setKError(k.sym);
+    fit.setKErrorUp(k.up);            fit.setKErrorDown(k.down);
+    const auto g = mergeSides(mc.gamma);
+    fit.setGammaError(g.sym);
+    fit.setGammaErrorUp(g.up);        fit.setGammaErrorDown(g.down);
+    const auto ph = mergeSides(mc.phi);
+    fit.setPhiError(ph.sym);
+    fit.setPhiErrorUp(ph.up);         fit.setPhiErrorDown(ph.down);
+    const auto p = mergeSides(mc.P);
+    fit.setPeriodError(p.sym);
+    fit.setPeriodErrorUp(p.up);       fit.setPeriodErrorDown(p.down);
+}
+
+void applyKeplerianMCErrors(RVFit& fit,
+                            const std::vector<double>& t,
+                            const std::vector<double>& y,
+                            const std::vector<double>& s,
+                            const KeplerLMResult& R,
+                            double P0, double sigP,
+                            double eMin, double eMax)
+{
+    const auto mc = RVErrorMC::sampleKeplerian(t, y, s,
+                                               R.P, R.K, R.gamma, R.phi,
+                                               R.e, R.omega,
+                                               P0, sigP, eMin, eMax);
+    if (!mc.ok) return;
+    const auto p = mergeSides(mc.P);
+    fit.setPeriodError(p.sym);
+    fit.setPeriodErrorUp(p.up);       fit.setPeriodErrorDown(p.down);
+    const auto k = mergeSides(mc.K);
+    fit.setKError(k.sym);
+    fit.setKErrorUp(k.up);            fit.setKErrorDown(k.down);
+    const auto g = mergeSides(mc.gamma);
+    fit.setGammaError(g.sym);
+    fit.setGammaErrorUp(g.up);        fit.setGammaErrorDown(g.down);
+    const auto ph = mergeSides(mc.phi);
+    fit.setPhiError(ph.sym);
+    fit.setPhiErrorUp(ph.up);         fit.setPhiErrorDown(ph.down);
+    const auto e = mergeSides(mc.e);
+    fit.setEccentricityError(e.sym);
+    fit.setEccentricityErrorUp(e.up);
+    fit.setEccentricityErrorDown(e.down);
+    const auto w = mergeSides(mc.omega);
+    fit.setOmegaError(w.sym);
+    fit.setOmegaErrorUp(w.up);        fit.setOmegaErrorDown(w.down);
+}
+
 } // namespace
 
 std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidLM(
@@ -1367,7 +1445,7 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidLM(
     for (size_t i = 0; i < data.bjd.size(); ++i)
         t[i] = data.bjd[i] - t0;
 
-    auto R = fitCircularLM(t, y, s, pSeed, pSigma);
+    auto R = fitCircularLMFull(t, y, s, pSeed, pSigma);
     if (!R.ok) {
         if (errOut)
             *errOut = R.msg;
@@ -1386,6 +1464,14 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidLM(
     fit->setGamma(R.gamma);
     fit->setPhi(R.phi);              // now relative to t0 == tRefBJD
     fit->setReferenceTime(t0, mjd0); // consistent even before attach
+    fit->setChi2(R.chi2);
+    // Covariance errors as a baseline, refined by the MC percentiles below.
+    fit->setKError(R.Kerr);
+    fit->setGammaError(R.gammaErr);
+    fit->setPhiError(R.phiErr);
+    fit->setPeriodError(R.Perr);
+    applyCircularMCErrors(*fit, t, y, s, R.K, R.gamma, R.phi, R.P,
+                          pSeed, pSigma);
     fit->setEccentric(false);
     fit->setBestFit(false);
     return fit;
@@ -1442,6 +1528,9 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitKeplerianLM(
     fit->setEccentric(true);
     fit->setEccentricity(R.e);
     fit->setOmega(R.omega);
+    fit->setChi2(R.chi2);
+    applyKeplerianMCErrors(*fit, t, y, s, R, pSeed, pSigma,
+                           /*eMin=*/0.0, /*eMax=*/0.9);
     fit->setBestFit(false);
     return fit;
 }
@@ -1473,7 +1562,7 @@ std::shared_ptr<LCFit> RVAddFitDialog::findLcFitForPeriod(double period) const
 
 // ───────────────────────────────────────────────────────────────────
 std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidFixedPhase(
-    double period, double t0LcBJD, QString* errOut) const
+    double period, double t0LcBJD, QString* errOut, const LCFit* lcFit) const
 {
     auto data = buildRVData();
     if (data.bjd.size() < 2) {
@@ -1529,6 +1618,23 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidFixedPhase(
     if (K < 0.0) { K = -K; phi += 0.5; }
     phi -= std::floor(phi);
 
+    // The model is linear in (γ, K), so the posterior is exactly Gaussian:
+    // cov = s²·A⁻¹ with A = [[Sw, Sc],[Sc, Scc]] and s² = χ²/(n−2) (the same
+    // reduced-χ² error rescaling the free LM fits use). No MC pass or
+    // asymmetric bounds are needed here.
+    double chi2 = 0.0;
+    for (size_t i = 0; i < data.bjd.size(); ++i) {
+        const double theta = (data.bjd[i] - t0) / period;
+        const double m = gamma + K * std::sin(2.0 * M_PI * (theta + phi));
+        const double s = (data.rv_err[i] > 0) ? data.rv_err[i] : 1.0;
+        const double r = (data.rv[i] - m) / s;
+        chi2 += r * r;
+    }
+    const int dofFp = std::max(1, int(data.bjd.size()) - 2);
+    const double s2 = chi2 / dofFp;
+    const double gammaErr = std::sqrt(std::max(0.0, s2 * Scc / det));
+    const double KErr     = std::sqrt(std::max(0.0, s2 * Sw  / det));
+
     auto fit = std::make_shared<RVFit>();
     fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
     fit->setCurveId(_curve ? _curve->getId() : QString());
@@ -1541,6 +1647,43 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidFixedPhase(
     fit->setGamma(gamma);
     fit->setPhi(phi);                // relative to t0 == tRefBJD
     fit->setReferenceTime(t0, mjd0);
+    fit->setChi2(chi2);
+    fit->setKError(KErr);
+    fit->setGammaError(gammaErr);
+
+    // P and φ are hard-fixed to the LC ephemeris, so their uncertainty is the
+    // ephemeris' own, propagated. φ = −(T₀ − tRef)/P gives
+    // σφ² = (σT₀/P)² + ((T₀ − tRef)/P²·σP)²; the second term carries the
+    // cycle-count drift between the LC epoch and the RV reference epoch.
+    if (lcFit && lcFit->period > 0.0) {
+        const double f = period / lcFit->period;   // 2 for ellipsoidal fits
+        if (lcFit->periodError > 0.0)
+            fit->setPeriodError(f * lcFit->periodError);
+        const double pUp   = f * lcFit->periodErrorUp;    // NaN stays NaN
+        const double pDown = f * lcFit->periodErrorDown;
+        if (AsymErr::nearlySymmetric(pUp, pDown)) {
+            // Sides agree within 10% — keep only their mean as symmetric.
+            fit->setPeriodError(0.5 * (pUp + pDown));
+        } else {
+            if (AsymErr::isSet(pUp))   fit->setPeriodErrorUp(pUp);
+            if (AsymErr::isSet(pDown)) fit->setPeriodErrorDown(pDown);
+        }
+
+        const double sT0 = AsymErr::symmetrized(
+            lcFit->t0BJDError, lcFit->t0BJDErrorUp, lcFit->t0BJDErrorDown);
+        const double sP = f * AsymErr::symmetrized(
+            lcFit->periodError, lcFit->periodErrorUp, lcFit->periodErrorDown);
+        double varPhi = 0.0;
+        if (sT0 > 0.0) varPhi += (sT0 / period) * (sT0 / period);
+        if (sP > 0.0) {
+            const double d = (t0LcBJD - t0) / (period * period) * sP;
+            varPhi += d * d;
+        }
+        // A phase is only defined mod 1; beyond ~0.5 the error is saturated.
+        if (varPhi > 0.0)
+            fit->setPhiError(std::min(0.5, std::sqrt(varPhi)));
+    }
+
     fit->setEccentric(false);
     fit->setBestFit(false);
     return fit;
@@ -1592,6 +1735,8 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidLMFull(
     // curvature estimate when the covariance is degenerate (Perr ≈ 0).
     fit->setPeriodError((R.Perr > 0 && std::isfinite(R.Perr))
                             ? R.Perr : std::max(0.0, pErrLandscape));
+    applyCircularMCErrors(*fit, t, y, s, R.K, R.gamma, R.phi, R.P,
+                          pSeed, pSigma);
     fit->setEccentric(false);
     fit->setBestFit(false);
     return fit;
@@ -1633,7 +1778,7 @@ void RVAddFitDialog::onRunPhotFit()
         std::shared_ptr<RVFit> fit;
         if (lc) {
             const double pRv = ellips ? 2.0 * lc->period : lc->period;
-            fit = fitSinusoidFixedPhase(pRv, lc->t0BJD, &err);
+            fit = fitSinusoidFixedPhase(pRv, lc->t0BJD, &err, lc.get());
         } else {
             fit = ecc ? fitKeplerianLM(P, sigma, &err)
                       : fitSinusoidLM(P, sigma, &err);

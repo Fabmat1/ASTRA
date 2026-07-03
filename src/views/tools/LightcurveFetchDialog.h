@@ -143,6 +143,7 @@ private slots:
     double   readCrowdsapFile(const QString& path) const;
 
     void     refreshExistingFitsTree();
+    void     updateSelectedFitDetails();
     std::shared_ptr<LCFit>
     selectedExistingFit(QString *outSource = nullptr,
                         QString *outFilter = nullptr) const;
@@ -243,6 +244,7 @@ private slots:
     QLabel*      _fitInfoLabel      = nullptr;
 
     QTreeWidget *_existingFitsTree = nullptr;
+    QLabel      *_fitDetailsLabel  = nullptr;
     QPushButton *_plotFitBtn       = nullptr;
     QPushButton *_setBestFitBtn    = nullptr;
     QPushButton *_deleteFitBtn     = nullptr;

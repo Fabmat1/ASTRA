@@ -1,5 +1,6 @@
 #include "PhotometryRepository.h"
 #include "DBAccess.h"
+#include "SqlValue.h"
 #include "models/Photometry.h"
 #include <QSqlQuery>
 #include <QSqlError>
@@ -510,6 +511,12 @@ bool PhotometryRepository::saveLCFit(const QString         &starId,
             velocity_scale, velocity_scale_error,
             t1, t1_error, t2, t2_error,
             period, period_error, t0_bjd, t0_bjd_error,
+            q_error_up, q_error_down, iangle_error_up, iangle_error_down,
+            r1_error_up, r1_error_down, r2_error_up, r2_error_down,
+            velocity_scale_error_up, velocity_scale_error_down,
+            t1_error_up, t1_error_down, t2_error_up, t2_error_down,
+            period_error_up, period_error_down,
+            t0_bjd_error_up, t0_bjd_error_down,
             chi2, rms, config_json, data_file
         ) VALUES (
             :id, :lcid, :cdate, :label, :best,
@@ -519,6 +526,12 @@ bool PhotometryRepository::saveLCFit(const QString         &starId,
             :vs, :vse,
             :t1, :t1e, :t2, :t2e,
             :p, :pe, :t0, :t0e,
+            :qeu, :qed, :ieu, :ied,
+            :r1eu, :r1ed, :r2eu, :r2ed,
+            :vseu, :vsed,
+            :t1eu, :t1ed, :t2eu, :t2ed,
+            :peu, :ped,
+            :t0eu, :t0ed,
             :chi2, :rms, :json, :df
         )
     )");
@@ -547,6 +560,24 @@ bool PhotometryRepository::saveLCFit(const QString         &starId,
     q.bindValue(":pe", fit->periodError);
     q.bindValue(":t0", fit->t0BJD);
     q.bindValue(":t0e", fit->t0BJDError);
+    q.bindValue(":qeu", SqlValue::fromDouble(fit->qErrorUp));
+    q.bindValue(":qed", SqlValue::fromDouble(fit->qErrorDown));
+    q.bindValue(":ieu", SqlValue::fromDouble(fit->inclinationErrorUp));
+    q.bindValue(":ied", SqlValue::fromDouble(fit->inclinationErrorDown));
+    q.bindValue(":r1eu", SqlValue::fromDouble(fit->r1ErrorUp));
+    q.bindValue(":r1ed", SqlValue::fromDouble(fit->r1ErrorDown));
+    q.bindValue(":r2eu", SqlValue::fromDouble(fit->r2ErrorUp));
+    q.bindValue(":r2ed", SqlValue::fromDouble(fit->r2ErrorDown));
+    q.bindValue(":vseu", SqlValue::fromDouble(fit->velocityScaleErrorUp));
+    q.bindValue(":vsed", SqlValue::fromDouble(fit->velocityScaleErrorDown));
+    q.bindValue(":t1eu", SqlValue::fromDouble(fit->t1ErrorUp));
+    q.bindValue(":t1ed", SqlValue::fromDouble(fit->t1ErrorDown));
+    q.bindValue(":t2eu", SqlValue::fromDouble(fit->t2ErrorUp));
+    q.bindValue(":t2ed", SqlValue::fromDouble(fit->t2ErrorDown));
+    q.bindValue(":peu", SqlValue::fromDouble(fit->periodErrorUp));
+    q.bindValue(":ped", SqlValue::fromDouble(fit->periodErrorDown));
+    q.bindValue(":t0eu", SqlValue::fromDouble(fit->t0BJDErrorUp));
+    q.bindValue(":t0ed", SqlValue::fromDouble(fit->t0BJDErrorDown));
     q.bindValue(":chi2", fit->chi2);
     q.bindValue(":rms", fit->rms);
     q.bindValue(":json", fit->config.toJsonString());
@@ -598,6 +629,24 @@ PhotometryRepository::loadLCFitsForLightcurve(const QString &lightcurveId) {
         f->periodError        = q.value("period_error").toDouble();
         f->t0BJD              = q.value("t0_bjd").toDouble();
         f->t0BJDError         = q.value("t0_bjd_error").toDouble();
+        f->qErrorUp             = SqlValue::toDoubleOrNaN(q, "q_error_up");
+        f->qErrorDown           = SqlValue::toDoubleOrNaN(q, "q_error_down");
+        f->inclinationErrorUp   = SqlValue::toDoubleOrNaN(q, "iangle_error_up");
+        f->inclinationErrorDown = SqlValue::toDoubleOrNaN(q, "iangle_error_down");
+        f->r1ErrorUp            = SqlValue::toDoubleOrNaN(q, "r1_error_up");
+        f->r1ErrorDown          = SqlValue::toDoubleOrNaN(q, "r1_error_down");
+        f->r2ErrorUp            = SqlValue::toDoubleOrNaN(q, "r2_error_up");
+        f->r2ErrorDown          = SqlValue::toDoubleOrNaN(q, "r2_error_down");
+        f->velocityScaleErrorUp   = SqlValue::toDoubleOrNaN(q, "velocity_scale_error_up");
+        f->velocityScaleErrorDown = SqlValue::toDoubleOrNaN(q, "velocity_scale_error_down");
+        f->t1ErrorUp            = SqlValue::toDoubleOrNaN(q, "t1_error_up");
+        f->t1ErrorDown          = SqlValue::toDoubleOrNaN(q, "t1_error_down");
+        f->t2ErrorUp            = SqlValue::toDoubleOrNaN(q, "t2_error_up");
+        f->t2ErrorDown          = SqlValue::toDoubleOrNaN(q, "t2_error_down");
+        f->periodErrorUp        = SqlValue::toDoubleOrNaN(q, "period_error_up");
+        f->periodErrorDown      = SqlValue::toDoubleOrNaN(q, "period_error_down");
+        f->t0BJDErrorUp         = SqlValue::toDoubleOrNaN(q, "t0_bjd_error_up");
+        f->t0BJDErrorDown       = SqlValue::toDoubleOrNaN(q, "t0_bjd_error_down");
         f->chi2               = q.value("chi2").toDouble();
         f->rms                = q.value("rms").toDouble();
         f->config.fromJsonString(q.value("config_json").toString());
@@ -631,7 +680,10 @@ void PhotometryRepository::propagateBestLCFitToStar(const QString &starId,
         SELECT period, period_error,
                iangle, iangle_error,
                q,      q_error,
-               filter, wavelength_nm
+               filter, wavelength_nm,
+               period_error_up, period_error_down,
+               iangle_error_up, iangle_error_down,
+               q_error_up,      q_error_down
         FROM lc_fits WHERE id = :id
     )");
     q.bindValue(":id", fitId);
@@ -644,19 +696,34 @@ void PhotometryRepository::propagateBestLCFitToStar(const QString &starId,
     const double eIncl   = q.value(3).toDouble();
     const double qMass   = q.value(4).toDouble();
     const double eQMass  = q.value(5).toDouble();
+    const double ePeriodUp   = SqlValue::toDoubleOrNaN(q, 8);
+    const double ePeriodDown = SqlValue::toDoubleOrNaN(q, 9);
+    const double eInclUp     = SqlValue::toDoubleOrNaN(q, 10);
+    const double eInclDown   = SqlValue::toDoubleOrNaN(q, 11);
+    const double eQMassUp    = SqlValue::toDoubleOrNaN(q, 12);
+    const double eQMassDown  = SqlValue::toDoubleOrNaN(q, 13);
 
     QSqlQuery upd(db);
     upd.prepare(R"(
         UPDATE stars SET
             phot_period   = :p,  phot_e_period = :pe,
             phot_incl     = :i,  phot_e_incl   = :ie,
-            phot_q        = :q,  phot_e_q      = :qe
+            phot_q        = :q,  phot_e_q      = :qe,
+            phot_e_period_up = :peu, phot_e_period_down = :ped,
+            phot_e_incl_up   = :ieu, phot_e_incl_down   = :ied,
+            phot_e_q_up      = :qeu, phot_e_q_down      = :qed
         WHERE id = :sid
     )");
     upd.bindValue(":p", period);
     upd.bindValue(":pe", ePeriod);
     upd.bindValue(":i", incl);
     upd.bindValue(":ie", eIncl);
+    upd.bindValue(":peu", SqlValue::fromDouble(ePeriodUp));
+    upd.bindValue(":ped", SqlValue::fromDouble(ePeriodDown));
+    upd.bindValue(":ieu", SqlValue::fromDouble(eInclUp));
+    upd.bindValue(":ied", SqlValue::fromDouble(eInclDown));
+    upd.bindValue(":qeu", SqlValue::fromDouble(eQMassUp));
+    upd.bindValue(":qed", SqlValue::fromDouble(eQMassDown));
     upd.bindValue(":q", qMass);
     upd.bindValue(":qe", eQMass);
     upd.bindValue(":sid", starId);

@@ -79,6 +79,8 @@ class LCFitDialog : public QDialog {
 
     LCFitPhysics::Observables collectObservables() const;
     LCFitPhysics::PriorInputs collectPriors() const;
+    QStringList redundantPriorCombos() const;
+    void updatePriorConflictWarning();
     LCFitPhysics::ModelInputs collectModelInputs() const;
     QSet<QString> collectVaried() const;
     QJsonObject buildFullConfig() const;
@@ -125,6 +127,10 @@ class LCFitDialog : public QDialog {
     QPushButton *_nextBtn = nullptr;
     QPushButton *_closeBtn = nullptr;
     QStringList _pageTitles;
+
+    // Live warning shown while the user types conflicting priors (one label
+    // per page that hosts prior inputs).
+    QLabel *_priorWarnStars = nullptr, *_priorWarnConstraints = nullptr;
 
     // Stars page
     QComboBox *_type1 = nullptr, *_type2 = nullptr;

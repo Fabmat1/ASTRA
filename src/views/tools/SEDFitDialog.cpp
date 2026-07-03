@@ -2698,35 +2698,57 @@ void SEDFitDialog::applyBestFitToStar(std::shared_ptr<SEDModel> model)
 {
     if (!model) return;
 
+    // Errors follow the storage merge rule: near-symmetric up/down collapse
+    // to a single symmetric error, genuinely asymmetric ones keep both sides.
     if (!model->components.empty()) {
         auto& c1 = model->components[0];
         if (c1.radius.isValid()) {
+            const auto e = AsymErr::toStorage(c1.radius.errUp, c1.radius.errDown);
             _star->setSedRadius1(c1.radius.value);
-            _star->setSedERadius1(c1.radius.symmetricError());
+            _star->setSedERadius1(e.sym);
+            _star->setSedERadius1Up(e.up);
+            _star->setSedERadius1Down(e.down);
         }
         if (c1.mass.isValid()) {
+            const auto e = AsymErr::toStorage(c1.mass.errUp, c1.mass.errDown);
             _star->setSedMass1(c1.mass.value);
-            _star->setSedEMass1(c1.mass.symmetricError());
+            _star->setSedEMass1(e.sym);
+            _star->setSedEMass1Up(e.up);
+            _star->setSedEMass1Down(e.down);
         }
         if (c1.luminosity.isValid()) {
+            const auto e = AsymErr::toStorage(c1.luminosity.errUp,
+                                              c1.luminosity.errDown);
             _star->setSedLum1(c1.luminosity.value);
-            _star->setSedELum1(c1.luminosity.symmetricError());
+            _star->setSedELum1(e.sym);
+            _star->setSedELum1Up(e.up);
+            _star->setSedELum1Down(e.down);
         }
     }
 
     if (model->components.size() > 1) {
         auto& c2 = model->components[1];
         if (c2.radius.isValid()) {
+            const auto e = AsymErr::toStorage(c2.radius.errUp, c2.radius.errDown);
             _star->setSedRadius2(c2.radius.value);
-            _star->setSedERadius2(c2.radius.symmetricError());
+            _star->setSedERadius2(e.sym);
+            _star->setSedERadius2Up(e.up);
+            _star->setSedERadius2Down(e.down);
         }
         if (c2.mass.isValid()) {
+            const auto e = AsymErr::toStorage(c2.mass.errUp, c2.mass.errDown);
             _star->setSedMass2(c2.mass.value);
-            _star->setSedEMass2(c2.mass.symmetricError());
+            _star->setSedEMass2(e.sym);
+            _star->setSedEMass2Up(e.up);
+            _star->setSedEMass2Down(e.down);
         }
         if (c2.luminosity.isValid()) {
+            const auto e = AsymErr::toStorage(c2.luminosity.errUp,
+                                              c2.luminosity.errDown);
             _star->setSedLum2(c2.luminosity.value);
-            _star->setSedELum2(c2.luminosity.symmetricError());
+            _star->setSedELum2(e.sym);
+            _star->setSedELum2Up(e.up);
+            _star->setSedELum2Down(e.down);
         }
     }
 }

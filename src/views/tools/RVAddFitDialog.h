@@ -108,9 +108,12 @@ private:
     // where a circular RV equals γ). Only K and γ are fitted (a 2-parameter
     // weighted linear least squares); P and φ are held fixed. Used by the
     // Photometry tab's "same phase as LC fit" option. nullptr on failure.
+    // When the source LC fit is supplied its period/T₀ uncertainties are
+    // propagated onto the (otherwise hard-fixed) period and phase.
     std::shared_ptr<RVFit> fitSinusoidFixedPhase(double period,
                                                  double t0LcBJD,
-                                                 QString* errOut = nullptr) const;
+                                                 QString* errOut = nullptr,
+                                                 const LCFit* lcFit = nullptr) const;
 
     // Find the best light-curve fit (across all LC sources) whose period matches
     // `period` within a small relative tolerance, or nullptr if none. Used to

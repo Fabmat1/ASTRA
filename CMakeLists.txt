@@ -356,6 +356,7 @@ set(SOURCES
     src/fitting/FitWorker.cpp
     src/fitting/StdStreamRedirector.cpp
     src/fitting/Periodogram.cpp
+    src/fitting/RVErrorMC.cpp
 
     # io
     src/io/StarPackage.cpp
@@ -496,6 +497,7 @@ set(HEADERS
     src/fitting/FitWorker.h
     src/fitting/StdStreamRedirector.h
     src/fitting/Periodogram.h
+    src/fitting/RVErrorMC.h
 
     # io
     src/io/StarPackage.h

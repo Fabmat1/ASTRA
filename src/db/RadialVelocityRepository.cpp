@@ -1,5 +1,6 @@
 #include "RadialVelocityRepository.h"
 #include "DBAccess.h"
+#include "SqlValue.h"
 #include "models/Star.h"
 #include "models/RadialVelocity.h"
 #include <QSqlQuery>
@@ -101,10 +102,20 @@ bool RadialVelocityRepository::saveRVFit(
         (id, curve_id, k, k_error, gamma, gamma_error,
          period, period_error, phi, phi_error, t0, t0_error,
          eccentricity, eccentricity_error, omega, omega_error,
+         k_error_up, k_error_down, gamma_error_up, gamma_error_down,
+         period_error_up, period_error_down, phi_error_up, phi_error_down,
+         t0_error_up, t0_error_down,
+         eccentricity_error_up, eccentricity_error_down,
+         omega_error_up, omega_error_down,
          is_best_fit, fit_method, chi2, rms)
         VALUES (:id, :curve_id, :k, :k_error, :gamma, :gamma_error,
                 :period, :period_error, :phi, :phi_error, :t0, :t0_error,
                 :ecc, :ecc_error, :omega, :omega_error,
+                :k_error_up, :k_error_down, :gamma_error_up, :gamma_error_down,
+                :period_error_up, :period_error_down, :phi_error_up, :phi_error_down,
+                :t0_error_up, :t0_error_down,
+                :ecc_error_up, :ecc_error_down,
+                :omega_error_up, :omega_error_down,
                 :is_best, :method, :chi2, :rms)
     )");
 
@@ -124,6 +135,20 @@ bool RadialVelocityRepository::saveRVFit(
     query.bindValue(":ecc_error", fit->getEccentricityError());
     query.bindValue(":omega", fit->getOmega());
     query.bindValue(":omega_error", fit->getOmegaError());
+    query.bindValue(":k_error_up", SqlValue::fromDouble(fit->getKErrorUp()));
+    query.bindValue(":k_error_down", SqlValue::fromDouble(fit->getKErrorDown()));
+    query.bindValue(":gamma_error_up", SqlValue::fromDouble(fit->getGammaErrorUp()));
+    query.bindValue(":gamma_error_down", SqlValue::fromDouble(fit->getGammaErrorDown()));
+    query.bindValue(":period_error_up", SqlValue::fromDouble(fit->getPeriodErrorUp()));
+    query.bindValue(":period_error_down", SqlValue::fromDouble(fit->getPeriodErrorDown()));
+    query.bindValue(":phi_error_up", SqlValue::fromDouble(fit->getPhiErrorUp()));
+    query.bindValue(":phi_error_down", SqlValue::fromDouble(fit->getPhiErrorDown()));
+    query.bindValue(":t0_error_up", SqlValue::fromDouble(fit->getT0ErrorUp()));
+    query.bindValue(":t0_error_down", SqlValue::fromDouble(fit->getT0ErrorDown()));
+    query.bindValue(":ecc_error_up", SqlValue::fromDouble(fit->getEccentricityErrorUp()));
+    query.bindValue(":ecc_error_down", SqlValue::fromDouble(fit->getEccentricityErrorDown()));
+    query.bindValue(":omega_error_up", SqlValue::fromDouble(fit->getOmegaErrorUp()));
+    query.bindValue(":omega_error_down", SqlValue::fromDouble(fit->getOmegaErrorDown()));
     query.bindValue(":is_best", fit->isBestFit() ? 1 : 0);
     query.bindValue(":method", fit->getFitMethod());
     query.bindValue(":chi2", fit->getChi2());
@@ -236,6 +261,20 @@ std::vector<std::shared_ptr<RVFit>> RadialVelocityRepository::loadRVFits(
             query.value("eccentricity_error").toDouble());
         fit->setOmega(query.value("omega").toDouble());
         fit->setOmegaError(query.value("omega_error").toDouble());
+        fit->setKErrorUp(SqlValue::toDoubleOrNaN(query, "k_error_up"));
+        fit->setKErrorDown(SqlValue::toDoubleOrNaN(query, "k_error_down"));
+        fit->setGammaErrorUp(SqlValue::toDoubleOrNaN(query, "gamma_error_up"));
+        fit->setGammaErrorDown(SqlValue::toDoubleOrNaN(query, "gamma_error_down"));
+        fit->setPeriodErrorUp(SqlValue::toDoubleOrNaN(query, "period_error_up"));
+        fit->setPeriodErrorDown(SqlValue::toDoubleOrNaN(query, "period_error_down"));
+        fit->setPhiErrorUp(SqlValue::toDoubleOrNaN(query, "phi_error_up"));
+        fit->setPhiErrorDown(SqlValue::toDoubleOrNaN(query, "phi_error_down"));
+        fit->setT0ErrorUp(SqlValue::toDoubleOrNaN(query, "t0_error_up"));
+        fit->setT0ErrorDown(SqlValue::toDoubleOrNaN(query, "t0_error_down"));
+        fit->setEccentricityErrorUp(SqlValue::toDoubleOrNaN(query, "eccentricity_error_up"));
+        fit->setEccentricityErrorDown(SqlValue::toDoubleOrNaN(query, "eccentricity_error_down"));
+        fit->setOmegaErrorUp(SqlValue::toDoubleOrNaN(query, "omega_error_up"));
+        fit->setOmegaErrorDown(SqlValue::toDoubleOrNaN(query, "omega_error_down"));
         fit->setBestFit(query.value("is_best_fit").toInt() != 0);
         fit->setFitMethod(query.value("fit_method").toString());
         fit->setChi2(query.value("chi2").toDouble());

@@ -9,6 +9,7 @@
 #include <functional>
 
 #include "Time.h"
+#include "AsymmetricErrors.h"
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Spectral model fit
@@ -68,6 +69,25 @@ public:
     double macroturbulenceError;
     double microturbulence;
     double microturbulenceError;
+
+    // Optional asymmetric 1σ errors (value +up/−down, positive magnitudes).
+    // NaN = unset → the symmetric *Error above applies (see AsymmetricErrors.h).
+    double teffErrorUp            = AsymErr::unset;
+    double teffErrorDown          = AsymErr::unset;
+    double loggErrorUp            = AsymErr::unset;
+    double loggErrorDown          = AsymErr::unset;
+    double heErrorUp              = AsymErr::unset;
+    double heErrorDown            = AsymErr::unset;
+    double vsiniErrorUp           = AsymErr::unset;
+    double vsiniErrorDown         = AsymErr::unset;
+    double radialVelocityErrorUp   = AsymErr::unset;
+    double radialVelocityErrorDown = AsymErr::unset;
+    double metallicityErrorUp     = AsymErr::unset;
+    double metallicityErrorDown   = AsymErr::unset;
+    double macroturbulenceErrorUp   = AsymErr::unset;
+    double macroturbulenceErrorDown = AsymErr::unset;
+    double microturbulenceErrorUp   = AsymErr::unset;
+    double microturbulenceErrorDown = AsymErr::unset;
 
 private:
     QString _id;

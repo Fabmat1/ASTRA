@@ -1,5 +1,6 @@
 #include "SpectrumRepository.h"
 #include "DBAccess.h"
+#include "SqlValue.h"
 #include "models/Spectrum.h"
 #include "utils/Logger.h"
 #include <QSqlQuery>
@@ -119,6 +120,14 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
             chi2, metallicity, metallicity_error,
             macroturbulence, macroturbulence_error,
             microturbulence, microturbulence_error,
+            teff_error_up, teff_error_down,
+            logg_error_up, logg_error_down,
+            he_error_up, he_error_down,
+            vsini_error_up, vsini_error_down,
+            radial_velocity_error_up, radial_velocity_error_down,
+            metallicity_error_up, metallicity_error_down,
+            macroturbulence_error_up, macroturbulence_error_down,
+            microturbulence_error_up, microturbulence_error_down,
             model_data_file
         ) VALUES (
             :id, :spectrum_id, :creation_date, :model_id, :is_best_fit, :is_flagged,
@@ -127,6 +136,14 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
             :chi2, :metallicity, :metallicity_error,
             :macroturbulence, :macroturbulence_error,
             :microturbulence, :microturbulence_error,
+            :teff_error_up, :teff_error_down,
+            :logg_error_up, :logg_error_down,
+            :he_error_up, :he_error_down,
+            :vsini_error_up, :vsini_error_down,
+            :radial_velocity_error_up, :radial_velocity_error_down,
+            :metallicity_error_up, :metallicity_error_down,
+            :macroturbulence_error_up, :macroturbulence_error_down,
+            :microturbulence_error_up, :microturbulence_error_down,
             :model_data_file
         )
     )");
@@ -154,6 +171,22 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
     query.bindValue(":macroturbulence_error", fit->macroturbulenceError);
     query.bindValue(":microturbulence", fit->microturbulence);
     query.bindValue(":microturbulence_error", fit->microturbulenceError);
+    query.bindValue(":teff_error_up", SqlValue::fromDouble(fit->teffErrorUp));
+    query.bindValue(":teff_error_down", SqlValue::fromDouble(fit->teffErrorDown));
+    query.bindValue(":logg_error_up", SqlValue::fromDouble(fit->loggErrorUp));
+    query.bindValue(":logg_error_down", SqlValue::fromDouble(fit->loggErrorDown));
+    query.bindValue(":he_error_up", SqlValue::fromDouble(fit->heErrorUp));
+    query.bindValue(":he_error_down", SqlValue::fromDouble(fit->heErrorDown));
+    query.bindValue(":vsini_error_up", SqlValue::fromDouble(fit->vsiniErrorUp));
+    query.bindValue(":vsini_error_down", SqlValue::fromDouble(fit->vsiniErrorDown));
+    query.bindValue(":radial_velocity_error_up", SqlValue::fromDouble(fit->radialVelocityErrorUp));
+    query.bindValue(":radial_velocity_error_down", SqlValue::fromDouble(fit->radialVelocityErrorDown));
+    query.bindValue(":metallicity_error_up", SqlValue::fromDouble(fit->metallicityErrorUp));
+    query.bindValue(":metallicity_error_down", SqlValue::fromDouble(fit->metallicityErrorDown));
+    query.bindValue(":macroturbulence_error_up", SqlValue::fromDouble(fit->macroturbulenceErrorUp));
+    query.bindValue(":macroturbulence_error_down", SqlValue::fromDouble(fit->macroturbulenceErrorDown));
+    query.bindValue(":microturbulence_error_up", SqlValue::fromDouble(fit->microturbulenceErrorUp));
+    query.bindValue(":microturbulence_error_down", SqlValue::fromDouble(fit->microturbulenceErrorDown));
     query.bindValue(":model_data_file", modelFile);
 
     return query.exec();
@@ -272,6 +305,22 @@ std::vector<std::shared_ptr<SpectralFit>> SpectrumRepository::loadSpectralFits(c
         fit->macroturbulenceError = query.value("macroturbulence_error").toDouble();
         fit->microturbulence = query.value("microturbulence").toDouble();
         fit->microturbulenceError = query.value("microturbulence_error").toDouble();
+        fit->teffErrorUp = SqlValue::toDoubleOrNaN(query, "teff_error_up");
+        fit->teffErrorDown = SqlValue::toDoubleOrNaN(query, "teff_error_down");
+        fit->loggErrorUp = SqlValue::toDoubleOrNaN(query, "logg_error_up");
+        fit->loggErrorDown = SqlValue::toDoubleOrNaN(query, "logg_error_down");
+        fit->heErrorUp = SqlValue::toDoubleOrNaN(query, "he_error_up");
+        fit->heErrorDown = SqlValue::toDoubleOrNaN(query, "he_error_down");
+        fit->vsiniErrorUp = SqlValue::toDoubleOrNaN(query, "vsini_error_up");
+        fit->vsiniErrorDown = SqlValue::toDoubleOrNaN(query, "vsini_error_down");
+        fit->radialVelocityErrorUp = SqlValue::toDoubleOrNaN(query, "radial_velocity_error_up");
+        fit->radialVelocityErrorDown = SqlValue::toDoubleOrNaN(query, "radial_velocity_error_down");
+        fit->metallicityErrorUp = SqlValue::toDoubleOrNaN(query, "metallicity_error_up");
+        fit->metallicityErrorDown = SqlValue::toDoubleOrNaN(query, "metallicity_error_down");
+        fit->macroturbulenceErrorUp = SqlValue::toDoubleOrNaN(query, "macroturbulence_error_up");
+        fit->macroturbulenceErrorDown = SqlValue::toDoubleOrNaN(query, "macroturbulence_error_down");
+        fit->microturbulenceErrorUp = SqlValue::toDoubleOrNaN(query, "microturbulence_error_up");
+        fit->microturbulenceErrorDown = SqlValue::toDoubleOrNaN(query, "microturbulence_error_down");
         fit->setModelDataFile(query.value("model_data_file").toString());
 
         fits.push_back(fit);

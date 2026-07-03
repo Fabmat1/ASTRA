@@ -13,6 +13,7 @@
 #include <cmath>
 
 #include "Time.h"
+#include "AsymmetricErrors.h"
 
 // ── Individual lightcurve point ──────────────────────────────
 
@@ -327,6 +328,18 @@ public:
     double t2                 = 0.0, t2Error                 = 0.0;
     double period             = 0.0, periodError             = 0.0;
     double t0BJD              = 0.0, t0BJDError              = 0.0;
+
+    // Optional asymmetric 1σ errors (value +up/−down, positive magnitudes).
+    // NaN = unset → the symmetric *Error above applies (see AsymmetricErrors.h).
+    double qErrorUp             = AsymErr::unset, qErrorDown             = AsymErr::unset;
+    double inclinationErrorUp   = AsymErr::unset, inclinationErrorDown   = AsymErr::unset;
+    double r1ErrorUp            = AsymErr::unset, r1ErrorDown            = AsymErr::unset;
+    double r2ErrorUp            = AsymErr::unset, r2ErrorDown            = AsymErr::unset;
+    double velocityScaleErrorUp = AsymErr::unset, velocityScaleErrorDown = AsymErr::unset;
+    double t1ErrorUp            = AsymErr::unset, t1ErrorDown            = AsymErr::unset;
+    double t2ErrorUp            = AsymErr::unset, t2ErrorDown            = AsymErr::unset;
+    double periodErrorUp        = AsymErr::unset, periodErrorDown        = AsymErr::unset;
+    double t0BJDErrorUp         = AsymErr::unset, t0BJDErrorDown         = AsymErr::unset;
 
     // Fit quality
     double chi2 = 0.0;

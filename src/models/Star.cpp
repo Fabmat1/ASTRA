@@ -21,9 +21,14 @@ std::vector<double> captureSummaryValues(const Star& s) {
         s.getLogP(), s.getDeltaRV(),
         s.getRVK(), s.getRVEK(), s.getRVPeriod(), s.getRVEPeriod(),
         s.getRVGamma(), s.getRVEGamma(),
+        s.getRVEKUp(), s.getRVEKDown(),
+        s.getRVEPeriodUp(), s.getRVEPeriodDown(),
+        s.getRVEGammaUp(), s.getRVEGammaDown(),
         s.getRVEcc(), s.getRVPhi(), s.getRVT0(), s.getRVChi2(), s.getRVRms(),
         double(s.getNSpectra()), double(s.getNFitSpectra()),
         s.getTeff(), s.getETeff(), s.getLogg(), s.getELogg(), s.getHe(), s.getEHe(),
+        s.getETeffUp(), s.getETeffDown(), s.getELoggUp(), s.getELoggDown(),
+        s.getEHeUp(), s.getEHeDown(),
         double(s.getHasTess()), double(s.getHasGaia()), double(s.getHasZtf()),
         double(s.getHasAtlas()), double(s.getHasBlackgem()),
         s.getSedMass1(), s.getSedEMass1(), s.getSedRadius1(), s.getSedERadius1(),
@@ -130,10 +135,16 @@ const std::unordered_map<QString, Star::FieldGetter>& Star::getFieldMap()
         { "spec_class",   [](const Star* s) { return QVariant(s->getSpecClass()); } },
         { "teff",         [](const Star* s) { return dblVar(s->getTeff()); } },
         { "e_teff",       [](const Star* s) { return dblVar(s->getETeff()); } },
+        { "e_teff_up",    [](const Star* s) { return dblVar(s->getETeffUp()); } },
+        { "e_teff_down",  [](const Star* s) { return dblVar(s->getETeffDown()); } },
         { "logg",         [](const Star* s) { return dblVar(s->getLogg()); } },
         { "e_logg",       [](const Star* s) { return dblVar(s->getELogg()); } },
+        { "e_logg_up",    [](const Star* s) { return dblVar(s->getELoggUp()); } },
+        { "e_logg_down",  [](const Star* s) { return dblVar(s->getELoggDown()); } },
         { "he",           [](const Star* s) { return dblVar(s->getHe()); } },
         { "e_he",         [](const Star* s) { return dblVar(s->getEHe()); } },
+        { "e_he_up",      [](const Star* s) { return dblVar(s->getEHeUp()); } },
+        { "e_he_down",    [](const Star* s) { return dblVar(s->getEHeDown()); } },
         { "n_spectra",    [](const Star* s) { return intVar(s->getNSpectra()); } },
         { "n_fit_spectra",[](const Star* s) { return intVar(s->getNFitSpectra()); } },
 
@@ -149,10 +160,16 @@ const std::unordered_map<QString, Star::FieldGetter>& Star::getFieldMap()
         { "rv_npoints",   [](const Star* s) { return intVar(s->getRVNPoints()); } },
         { "rv_k",         [](const Star* s) { return dblVar(s->getRVK()); } },
         { "rv_e_k",       [](const Star* s) { return dblVar(s->getRVEK()); } },
+        { "rv_e_k_up",    [](const Star* s) { return dblVar(s->getRVEKUp()); } },
+        { "rv_e_k_down",  [](const Star* s) { return dblVar(s->getRVEKDown()); } },
         { "rv_period",    [](const Star* s) { return dblVar(s->getRVPeriod()); } },
         { "rv_e_period",  [](const Star* s) { return dblVar(s->getRVEPeriod()); } },
+        { "rv_e_period_up",   [](const Star* s) { return dblVar(s->getRVEPeriodUp()); } },
+        { "rv_e_period_down", [](const Star* s) { return dblVar(s->getRVEPeriodDown()); } },
         { "rv_gamma",     [](const Star* s) { return dblVar(s->getRVGamma()); } },
         { "rv_e_gamma",   [](const Star* s) { return dblVar(s->getRVEGamma()); } },
+        { "rv_e_gamma_up",   [](const Star* s) { return dblVar(s->getRVEGammaUp()); } },
+        { "rv_e_gamma_down", [](const Star* s) { return dblVar(s->getRVEGammaDown()); } },
         { "rv_ecc",       [](const Star* s) { return dblVar(s->getRVEcc()); } },
         { "rv_phi",       [](const Star* s) { return dblVar(s->getRVPhi()); } },
         { "rv_t0",        [](const Star* s) { return dblVar(s->getRVT0()); } },
@@ -176,16 +193,26 @@ const std::unordered_map<QString, Star::FieldGetter>& Star::getFieldMap()
         // ── Photometric LC ──────────────────────────────────────────────────
         { "phot_period",    [](const Star* s) { return dblVar(s->getPhotPeriod()); } },
         { "phot_e_period",  [](const Star* s) { return dblVar(s->getPhotEPeriod()); } },
+        { "phot_e_period_up",   [](const Star* s) { return dblVar(s->getPhotEPeriodUp()); } },
+        { "phot_e_period_down", [](const Star* s) { return dblVar(s->getPhotEPeriodDown()); } },
         { "phot_incl",      [](const Star* s) { return dblVar(s->getPhotIncl()); } },
         { "phot_e_incl",    [](const Star* s) { return dblVar(s->getPhotEIncl()); } },
+        { "phot_e_incl_up",   [](const Star* s) { return dblVar(s->getPhotEInclUp()); } },
+        { "phot_e_incl_down", [](const Star* s) { return dblVar(s->getPhotEInclDown()); } },
         { "phot_q",         [](const Star* s) { return dblVar(s->getPhotQ()); } },
         { "phot_e_q",       [](const Star* s) { return dblVar(s->getPhotEQ()); } },
+        { "phot_e_q_up",    [](const Star* s) { return dblVar(s->getPhotEQUp()); } },
+        { "phot_e_q_down",  [](const Star* s) { return dblVar(s->getPhotEQDown()); } },
 
         // ── Companion Mass ──────────────────────────────────────────────────
         { "comp_mass_min",   [](const Star* s) { return dblVar(s->getCompMassMin()); } },
         { "e_comp_mass_min", [](const Star* s) { return dblVar(s->getECompMassMin()); } },
+        { "e_comp_mass_min_up",   [](const Star* s) { return dblVar(s->getECompMassMinUp()); } },
+        { "e_comp_mass_min_down", [](const Star* s) { return dblVar(s->getECompMassMinDown()); } },
         { "comp_mass_true",  [](const Star* s) { return dblVar(s->getCompMassTrue()); } },
         { "e_comp_mass_true",[](const Star* s) { return dblVar(s->getECompMassTrue()); } },
+        { "e_comp_mass_true_up",   [](const Star* s) { return dblVar(s->getECompMassTrueUp()); } },
+        { "e_comp_mass_true_down", [](const Star* s) { return dblVar(s->getECompMassTrueDown()); } },
 
         // ── TESS crowding ───────────────────────────────────────────────────
         { "tess_crowdsap",  [](const Star* s) { return dblVar(s->getTessCrowdsap()); } },
@@ -325,6 +352,9 @@ void Star::recomputeRVMetrics()
     _rvK = 0; _rvEK = 0;
     _rvPeriod = 0; _rvEPeriod = 0;
     _rvGamma = 0; _rvEGamma = 0;
+    _rvEKUp = AsymErr::unset; _rvEKDown = AsymErr::unset;
+    _rvEPeriodUp = AsymErr::unset; _rvEPeriodDown = AsymErr::unset;
+    _rvEGammaUp = AsymErr::unset; _rvEGammaDown = AsymErr::unset;
     _rvEcc = 0; _rvPhi = 0; _rvT0 = 0;
     _rvChi2 = 0; _rvRms = 0;
 
@@ -332,10 +362,16 @@ void Star::recomputeRVMetrics()
     if (bestFit) {
         _rvK       = bestFit->getK();
         _rvEK      = bestFit->getKError();
+        _rvEKUp    = bestFit->getKErrorUp();
+        _rvEKDown  = bestFit->getKErrorDown();
         _rvPeriod  = bestFit->getPeriod();
         _rvEPeriod = bestFit->getPeriodError();
+        _rvEPeriodUp   = bestFit->getPeriodErrorUp();
+        _rvEPeriodDown = bestFit->getPeriodErrorDown();
         _rvGamma   = bestFit->getGamma();
         _rvEGamma  = bestFit->getGammaError();
+        _rvEGammaUp   = bestFit->getGammaErrorUp();
+        _rvEGammaDown = bestFit->getGammaErrorDown();
         _rvEcc     = bestFit->getEccentricity();
         _rvPhi     = bestFit->getPhi();
         _rvT0      = bestFit->getT0();
@@ -353,6 +389,9 @@ void Star::recomputeSpectraMetrics()
     _teff = 0; _e_teff = 0;
     _logg = 0; _e_logg = 0;
     _he = 0;   _e_he = 0;
+    _e_teff_up = AsymErr::unset; _e_teff_down = AsymErr::unset;
+    _e_logg_up = AsymErr::unset; _e_logg_down = AsymErr::unset;
+    _e_he_up   = AsymErr::unset; _e_he_down   = AsymErr::unset;
 
     for (const auto& spec : _spectra) {
         if (!spec) continue;
@@ -368,6 +407,12 @@ void Star::recomputeSpectraMetrics()
             _e_logg = fit->loggError;
             _he     = fit->he;
             _e_he   = fit->heError;
+            _e_teff_up   = fit->teffErrorUp;
+            _e_teff_down = fit->teffErrorDown;
+            _e_logg_up   = fit->loggErrorUp;
+            _e_logg_down = fit->loggErrorDown;
+            _e_he_up     = fit->heErrorUp;
+            _e_he_down   = fit->heErrorDown;
         }
     }
 }
@@ -385,6 +430,12 @@ void Star::recomputePhotometryMetrics()
     _sedMass2 = 0; _sedEMass2 = 0;
     _sedRadius2 = 0; _sedERadius2 = 0;
     _sedLum2 = 0; _sedELum2 = 0;
+    _sedEMass1Up = AsymErr::unset; _sedEMass1Down = AsymErr::unset;
+    _sedERadius1Up = AsymErr::unset; _sedERadius1Down = AsymErr::unset;
+    _sedELum1Up = AsymErr::unset; _sedELum1Down = AsymErr::unset;
+    _sedEMass2Up = AsymErr::unset; _sedEMass2Down = AsymErr::unset;
+    _sedERadius2Up = AsymErr::unset; _sedERadius2Down = AsymErr::unset;
+    _sedELum2Up = AsymErr::unset; _sedELum2Down = AsymErr::unset;
 
     if (!_photometry) return;
 
@@ -404,26 +455,36 @@ void Star::recomputePhotometryMetrics()
         if (src.contains("blackgem") || src == "bg")   _hasBlackgem = true;
     }
 
-    // SED best fit - components is a public member
+    // SED best fit - components is a public member. Errors go through the
+    // storage merge rule: near-symmetric up/down collapse to a single
+    // symmetric error, genuinely asymmetric ones keep both sides.
     auto bestSed = _photometry->getBestSEDModel();
     if (bestSed) {
         if (bestSed->components.size() >= 1) {
             const auto& c = bestSed->components[0];
             _sedMass1    = c.mass.value;
-            _sedEMass1   = c.mass.symmetricError();
+            const auto m = AsymErr::toStorage(c.mass.errUp, c.mass.errDown);
+            _sedEMass1 = m.sym; _sedEMass1Up = m.up; _sedEMass1Down = m.down;
             _sedRadius1  = c.radius.value;
-            _sedERadius1 = c.radius.symmetricError();
+            const auto r = AsymErr::toStorage(c.radius.errUp, c.radius.errDown);
+            _sedERadius1 = r.sym; _sedERadius1Up = r.up; _sedERadius1Down = r.down;
             _sedLum1     = c.luminosity.value;
-            _sedELum1    = c.luminosity.symmetricError();
+            const auto l = AsymErr::toStorage(c.luminosity.errUp,
+                                              c.luminosity.errDown);
+            _sedELum1 = l.sym; _sedELum1Up = l.up; _sedELum1Down = l.down;
         }
         if (bestSed->components.size() >= 2) {
             const auto& c = bestSed->components[1];
             _sedMass2    = c.mass.value;
-            _sedEMass2   = c.mass.symmetricError();
+            const auto m = AsymErr::toStorage(c.mass.errUp, c.mass.errDown);
+            _sedEMass2 = m.sym; _sedEMass2Up = m.up; _sedEMass2Down = m.down;
             _sedRadius2  = c.radius.value;
-            _sedERadius2 = c.radius.symmetricError();
+            const auto r = AsymErr::toStorage(c.radius.errUp, c.radius.errDown);
+            _sedERadius2 = r.sym; _sedERadius2Up = r.up; _sedERadius2Down = r.down;
             _sedLum2     = c.luminosity.value;
-            _sedELum2    = c.luminosity.symmetricError();
+            const auto l = AsymErr::toStorage(c.luminosity.errUp,
+                                              c.luminosity.errDown);
+            _sedELum2 = l.sym; _sedELum2Up = l.up; _sedELum2Down = l.down;
         }
     }
 }
