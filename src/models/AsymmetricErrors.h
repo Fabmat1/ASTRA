@@ -14,6 +14,16 @@
 // default to NaN meaning "unset"; when unset, the symmetric error applies in
 // both directions. This keeps old databases (where the columns are NULL) and
 // all existing symmetric-error code paths working unchanged.
+//
+// NOTE: a zero up/down side is a VALID value, not a defect. It means the point
+// estimate sits at (or beyond) that edge of the credible interval — e.g. an
+// inclination optimum at 88.7° whose posterior bulk lies lower yields
+// sigma_up = 0, sigma_down = 32.25. The solver's interval endpoints are actual
+// posterior percentiles and always respect hard physical limits (e.g. i ≤ 90°).
+// Such a zero side must NOT be "repaired", mirrored, or symmetrized away:
+// doing so pushes the quoted edge past a physical bound. `nearlySymmetric`
+// treats a zero-vs-finite pair as asymmetric, so these intervals correctly stay
+// asymmetric through `toStorage`.
 // ─────────────────────────────────────────────────────────────────────────────
 namespace AsymErr {
 
@@ -50,20 +60,6 @@ inline bool nearlySymmetric(double up, double down, double relTol = 0.10)
     const double m = std::max(std::abs(up), std::abs(down));
     if (m <= 0.0) return true;
     return std::abs(up - down) <= relTol * m;
-}
-
-// Solvers occasionally report a degenerate interval where one side is
-// exactly zero (e.g. the posterior sampling collapsed against a parameter
-// bound) while the opposite side is finite. A zero side is a failed
-// estimate, not a real zero uncertainty: replace it with the symmetric
-// sigma when one is available, otherwise mirror the finite side.
-inline void repairCollapsedInterval(double &up, double &down, double sym = 0.0)
-{
-    if (!isSet(up) || !isSet(down)) return;
-    const bool upZero = up <= 0.0, downZero = down <= 0.0;
-    if (upZero == downZero) return;   // healthy — or hopeless (both zero)
-    const double repl = sym > 0.0 ? sym : (upZero ? down : up);
-    (upZero ? up : down) = repl;
 }
 
 // Storage form of an (up, down) interval: sym always holds the mean of the

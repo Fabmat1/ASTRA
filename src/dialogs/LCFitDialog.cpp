@@ -1569,12 +1569,17 @@ void LCFitDialog::populateResultsView() {
         if (sigmasUp.contains(name) && sigmasDown.contains(name)) {
             double u = sigmasUp.value(name).toDouble() * scale;
             double d = sigmasDown.value(name).toDouble() * scale;
-            AsymErr::repairCollapsedInterval(
-                u, d, sigmas.value(name).toDouble() * scale);
-            if (!AsymErr::nearlySymmetric(u, d))
-                return QString("+%1 / −%2")
+            if (!AsymErr::nearlySymmetric(u, d)) {
+                // A zero side means the estimate sits at the edge of the
+                // credible interval; flag it so the "+0" reads as intentional.
+                const QString atBound = (u == 0.0 || d == 0.0)
+                                            ? QStringLiteral(" ⚠")
+                                            : QString();
+                return QString("+%1 / −%2%3")
                     .arg(QString::number(u, 'g', 3),
-                         QString::number(d, 'g', 3));
+                         QString::number(d, 'g', 3),
+                         atBound);
+            }
         }
         if (sigmas.contains(name))
             return QString::number(sigmas.value(name).toDouble() * scale,
@@ -1694,8 +1699,6 @@ void LCFitDialog::populateResultsView() {
             R1 = impR1.value("value").toDouble(R1);
             double u = impR1.value("sigma_up").toDouble();
             double d = impR1.value("sigma_down").toDouble();
-            AsymErr::repairCollapsedInterval(u, d,
-                                             impR1.value("sigma").toDouble());
             sR1 = 0.5 * (u + d);
             if (!AsymErr::nearlySymmetric(u, d))
                 sR1Txt = QString("+%1 / −%2")
@@ -1796,7 +1799,6 @@ bool LCFitDialog::persistFit(bool asBest) {
             // single symmetric error, genuinely asymmetric ones keep both.
             double u = sigmasUp.value(k).toDouble();
             double d = sigmasDown.value(k).toDouble();
-            AsymErr::repairCollapsedInterval(u, d, sigmas.value(k).toDouble());
             const auto st = AsymErr::toStorage(u, d);
             e     = st.sym;
             eUp   = st.up;
@@ -1833,7 +1835,6 @@ bool LCFitDialog::persistFit(bool asBest) {
         };
         double u = sigmasUp.value("t0").toDouble();
         double d = sigmasDown.value("t0").toDouble();
-        AsymErr::repairCollapsedInterval(u, d, t0_phase_err);
         const auto st = AsymErr::toStorage(side(u), side(d));
         fit->t0BJDError     = st.sym;
         fit->t0BJDErrorUp   = st.up;
