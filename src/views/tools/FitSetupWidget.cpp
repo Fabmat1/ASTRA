@@ -602,8 +602,14 @@ void FitSetupWidget::refreshSpectraList()
     }
     _spectraList->blockSignals(false);
 
-    if (!_sortedSpectra.empty() && _currentId.isEmpty())
-        _spectraList->setCurrentRow(0);
+    if (!_sortedSpectra.empty()) {
+        // Keep the previously selected spectrum selected when the list is
+        // rebuilt (e.g. after a fit run reloads the star's spectra).
+        int row = 0;
+        for (int i = 0; i < (int)_sortedSpectra.size(); ++i)
+            if (_sortedSpectra[i]->getId() == _currentId) { row = i; break; }
+        _spectraList->setCurrentRow(row);
+    }
 }
 
 // =====================================================================

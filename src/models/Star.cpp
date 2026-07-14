@@ -520,7 +520,14 @@ void Star::setPhotometry(std::shared_ptr<Photometry> photometry)
 void Star::setSpectra(const std::vector<std::shared_ptr<Spectrum>>& spectra)
 {
     _spectra = spectra;
+    _spectraLoaded = true;
     recomputeSpectraMetrics();
+
+    // Replacing the spectrum objects severs the RV curve's per-spectrum
+    // callbacks (they live on the old objects). Re-attach so best-fit and
+    // flag changes on the new objects keep propagating to the RV points.
+    if (_rvCurve)
+        _rvCurve->attachToSpectra(_spectra);
 }
 
 void Star::markSummaryDirty()

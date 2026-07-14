@@ -470,8 +470,13 @@ public:
         const std::vector<std::shared_ptr<Spectrum>>& spectra);
     bool computeReferenceEpoch(double &bjdOut, double &mjdOut) const;
 
-  protected:
+    // Announce that points/fits were modified directly (e.g. flags edited on
+    // the point objects). Callers doing bulk edits should bracket them with
+    // beginBatchUpdate()/endBatchUpdate() so listeners get ONE notification
+    // instead of one per row - listeners typically rebuild whole plots.
     void notifyChanged();
+    void beginBatchUpdate();
+    void endBatchUpdate();
 
 private:
     QString _id;
@@ -488,6 +493,11 @@ private:
     std::vector<Listener> _listeners;
     ListenerToken         _nextToken     = 1;     // 0 reserved for "invalid"
     ListenerToken         _legacyToken   = kInvalidToken;  // for setChangeCallback shim
+
+    // Batch-update state: while _batchDepth > 0, notifyChanged() is swallowed
+    // and replayed once by the outermost endBatchUpdate().
+    int  _batchDepth   = 0;
+    bool _batchPending = false;
 
     BjdResolverCallback   _bjdResolverCb;
     PointPersistCallback  _pointPersistCb;

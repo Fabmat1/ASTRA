@@ -751,8 +751,21 @@ QWidget *LCFitDialog::buildSolverPage() {
   _lmMaxIter->setValue(200);
   _lmCont = new QCheckBox(tr("Prior continuation (ramp priors 0→1)"));
   _lmCont->setChecked(true);
+  _lmMultistart = new QSpinBox;
+  _lmMultistart->setRange(0, 64);
+  _lmMultistart->setValue(8);
+  _lmMultistart->setToolTip(
+      tr("Extra LM starts swept across the parameter space (inclination "
+         "stratified over its full range). Distinct χ² modes are clustered "
+         "and weighted by posterior mass; 0 disables multi-start."));
+  _lmMsSpan = mkSpin(0.1, 10.0, 2, 0.1, 1.0);
+  _lmMsSpan->setToolTip(
+      tr("Half-width of the start sampling box for the other free "
+         "parameters, in units of each parameter's range."));
   lmLay->addRow(tr("Max iterations:"), _lmMaxIter);
   lmLay->addRow(_lmCont);
+  lmLay->addRow(tr("Multi-starts:"), _lmMultistart);
+  lmLay->addRow(tr("Start span (× range):"), _lmMsSpan);
   root->addWidget(lmBox);
 
   auto *mcBox = new QGroupBox(tr("MCMC"));
@@ -1290,11 +1303,23 @@ QJsonObject LCFitDialog::buildFullConfig() const {
     cfg["lm_prior_balance_target"] = 1.0;
     cfg["lm_log_path"] = QDir(_tempDir).absoluteFilePath("lm_iter_log.txt");
     cfg["lm_verbose"]  = true;
+    // Multi-start: extra LM descents swept across the parameter space so
+    // distinct χ² modes are all found; modes are clustered and weighted by
+    // Laplace posterior mass, the highest-mass one is adopted.
+    cfg["lm_multistart"]      = _lmMultistart->value();
+    cfg["lm_multistart_span"] = _lmMsSpan->value();
+    cfg["lm_mode_tol_dsteps"] = 5.0;
+    cfg["lm_mode_tol_frac"]   = 0.02;
     // Short posterior sampling around the LM optimum: replaces the
     // symmetric (JᵀJ)⁻¹ errors with 15.9/84.1-percentile intervals.
+    // Steps are split across surviving modes in proportion to their mass
+    // (modes below lm_mode_min_weight are excluded), so multimodality is
+    // reflected in the percentile errors.
     cfg["lm_error_mcmc"]              = true;
     cfg["lm_error_mcmc_steps"]        = 8000;
     cfg["lm_error_mcmc_prior_weight"] = 1.0;
+    cfg["lm_error_mcmc_min_steps"]    = 500;
+    cfg["lm_mode_min_weight"]         = 0.005;
 
     cfg["prior_weight"] = priorWeight;
     cfg["priors"]       = toJsonMap(priors);

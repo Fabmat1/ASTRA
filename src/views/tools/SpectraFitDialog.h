@@ -1,8 +1,11 @@
 #pragma once
 
 #include <QDialog>
+#include <QHash>
 #include <memory>
 #include <vector>
+
+class QTimer;
 
 class Star;
 class Spectrum;
@@ -53,6 +56,8 @@ private:
     void setupUi();
     void rebuildTree();
     void refreshTreeStyling();
+    void styleFlagRow(QTreeWidgetItem* item);
+    void flushPendingFlagChanges();
     void updateBestMarkers();
     void setBestFitTied(const QString& fitId, bool markBest);
     void propagateBestFitParams(const std::shared_ptr<SpectralFit>& fit);
@@ -77,6 +82,13 @@ private:
     QPushButton*  _addFitBtn     = nullptr;
     QPushButton*  _redetectBtn   = nullptr;
     CheckStateDragger* _flagDragger = nullptr;
+
+    // Flag toggles are applied in-memory immediately but the DB writes,
+    // RV-point mirroring and summary recompute are coalesced here, so
+    // drag-flagging many rows costs one update instead of one per row.
+    QHash<QString, bool> _pendingSpectrumFlags;   // spectrumId → flagged
+    QHash<QString, bool> _pendingFitFlags;        // fitId → flagged
+    QTimer* _flagFlushTimer = nullptr;
 
     bool _updatingTree    = false;
     bool _syncingFromPanel = false;

@@ -1019,9 +1019,27 @@ void RadialVelocityCurve::setChangeCallback(ChangeCallback cb)
 
 void RadialVelocityCurve::notifyChanged()
 {
+    if (_batchDepth > 0) {
+        _batchPending = true;
+        return;
+    }
     // Snapshot first: a listener may add/remove listeners during dispatch.
     auto snapshot = _listeners;
     for (auto& l : snapshot) {
         if (l.cb) l.cb();
+    }
+}
+
+void RadialVelocityCurve::beginBatchUpdate()
+{
+    ++_batchDepth;
+}
+
+void RadialVelocityCurve::endBatchUpdate()
+{
+    if (_batchDepth == 0) return;
+    if (--_batchDepth == 0 && _batchPending) {
+        _batchPending = false;
+        notifyChanged();
     }
 }

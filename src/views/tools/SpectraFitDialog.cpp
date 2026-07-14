@@ -28,6 +28,7 @@
 #include <QUuid>
 #include <QComboBox>
 #include <QFormLayout>
+#include <QTimer>
 #include <algorithm>
 #include <cmath>
 
@@ -102,7 +103,12 @@ SpectraFitDialog::SpectraFitDialog(std::shared_ptr<Star> star,
         QString("Spectra Fit dialog opened for star %1").arg(_star->getSourceId()));
 }
 
-SpectraFitDialog::~SpectraFitDialog() = default;
+SpectraFitDialog::~SpectraFitDialog()
+{
+    // Backstop for teardown paths that skip QDialog::finished (e.g. the parent
+    // window closing): don't lose flag edits still sitting in the debounce.
+    flushPendingFlagChanges();
+}
 
 // ----------------------------------------------------------------------------
 
@@ -162,6 +168,16 @@ void SpectraFitDialog::setupUi()
     // Drag-toggle for the Flag column
     _flagDragger = new CheckStateDragger(_tree, kColFlag);
 
+    // Debounced flush for flag edits: fires once shortly after the last toggle
+    // (or drag) instead of doing DB writes + summary/plot updates per row.
+    _flagFlushTimer = new QTimer(this);
+    _flagFlushTimer->setSingleShot(true);
+    _flagFlushTimer->setInterval(250);
+    connect(_flagFlushTimer, &QTimer::timeout,
+            this, &SpectraFitDialog::flushPendingFlagChanges);
+    connect(this, &QDialog::finished,
+            this, [this](int) { flushPendingFlagChanges(); });
+
     connect(_tree, &QTreeWidget::itemClicked,
             this,  &SpectraFitDialog::onTreeItemClicked);
     connect(_tree, &QTreeWidget::itemChanged,
@@ -217,6 +233,13 @@ void SpectraFitDialog::setupUi()
             auto freshSpectra = _dbm->loadSpectra(_star->getId());
             _star->setSpectra(freshSpectra);
         }
+        // The reload replaced the spectrum objects. Re-sync the RV curve with
+        // them: this creates/repairs the RV point for any newly fitted
+        // spectrum and notifies the RV panels, and the summary recompute
+        // picks up the new fit counts / atmospheric parameters.
+        _star->ensureRVCurveSynced();
+        _star->markSummaryDirty();
+        _setup->refreshSpectraList();   // drop stale spectrum pointers
         rebuildTree();
         _panel->refresh();
         emit spectraUpdated();
@@ -377,26 +400,89 @@ void SpectraFitDialog::onTreeItemChanged(QTreeWidgetItem* item, int column)
     QString id   = item->data(kColName, kRoleId).toString();
     bool flagged = (item->checkState(kColFlag) == Qt::Checked);
 
+    // Apply the flag in-memory and restyle just this row now (cheap); defer
+    // the DB writes, RV-point mirroring and summary recompute to one batched
+    // flush so drag-flagging many rows stays responsive.
     if (kind == kKindSpectrum) {
         for (auto& s : _spectra) if (s->getId() == id) { s->setFlagged(flagged); break; }
-        if (_dbm) _dbm->updateSpectrumFlag(id, flagged);
+        _pendingSpectrumFlags[id] = flagged;
     } else if (kind == kKindFit) {
-        std::shared_ptr<Spectrum> owner;
-        std::shared_ptr<SpectralFit> targetFit;
+        for (auto& s : _spectra) {
+            bool found = false;
+            for (auto& f : s->getSpectralFits())
+                if (f->getId() == id) { f->setFlagged(flagged); found = true; break; }
+            if (found) break;
+        }
+        _pendingFitFlags[id] = flagged;
+    } else {
+        return;
+    }
+
+    styleFlagRow(item);
+    _flagFlushTimer->start();
+}
+
+void SpectraFitDialog::styleFlagRow(QTreeWidgetItem* item)
+{
+    const bool wasUpdating = _updatingTree;
+    _updatingTree = true;   // setFont/setForeground re-emit itemChanged
+
+    const bool flagged = (item->checkState(kColFlag) == Qt::Checked);
+    QFont f = item->font(kColName);
+    f.setStrikeOut(flagged);
+    item->setFont(kColName, f);
+
+    if (item->data(kColName, kRoleKind).toString() == kKindSpectrum) {
+        if (flagged)
+            item->setForeground(kColName, kFlaggedColor);
+        else
+            item->setData(kColName, Qt::ForegroundRole, QVariant());
+    }
+
+    _updatingTree = wasUpdating;
+}
+
+void SpectraFitDialog::flushPendingFlagChanges()
+{
+    if (_pendingSpectrumFlags.isEmpty() && _pendingFitFlags.isEmpty()) return;
+
+    const QHash<QString, bool> specFlags = std::move(_pendingSpectrumFlags);
+    const QHash<QString, bool> fitFlags  = std::move(_pendingFitFlags);
+    _pendingSpectrumFlags.clear();
+    _pendingFitFlags.clear();
+
+    // One transaction for all rows - individual commits fsync one by one and
+    // were the main source of drag lag.
+    const bool useTx = _dbm && _dbm->beginTransaction();
+
+    if (_dbm) {
+        for (auto it = specFlags.cbegin(); it != specFlags.cend(); ++it)
+            _dbm->updateSpectrumFlag(it.key(), it.value());
+        for (auto it = fitFlags.cbegin(); it != fitFlags.cend(); ++it)
+            _dbm->updateSpectralFitFlag(it.key(), it.value());
+    }
+
+    // Mirror fit flags onto their RV points with a single change notification
+    // (each notifyFitChanged also persists the point - inside the transaction).
+    auto curve = _star ? _star->getRVCurve() : nullptr;
+    if (curve) curve->beginBatchUpdate();
+    for (auto it = fitFlags.cbegin(); it != fitFlags.cend(); ++it) {
+        bool found = false;
         for (auto& s : _spectra) {
             for (auto& f : s->getSpectralFits()) {
-                if (f->getId() == id) { owner = s; targetFit = f; break; }
+                if (f->getId() == it.key()) {
+                    s->notifyFitChanged(f);
+                    found = true;
+                    break;
+                }
             }
-            if (targetFit) break;
+            if (found) break;
         }
-        if (targetFit) {
-            targetFit->isFlagged = flagged;
-            if (owner) owner->notifyFitChanged(targetFit);
-        }
-        if (_dbm) _dbm->updateSpectralFitFlag(id, flagged);
     }
-    
-    refreshTreeStyling();
+
+    if (useTx) _dbm->commitTransaction();
+    if (curve) curve->endBatchUpdate();
+
     if (_star) _star->markSummaryDirty();
 }
 

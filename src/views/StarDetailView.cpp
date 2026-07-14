@@ -324,6 +324,11 @@ void StarDetailView::onViewFitSpectra()
     connect(dialog, &SpectraFitDialog::starParametersChanged, this, [this]() {
         for (auto* p : _panels) if (p) p->refresh();
     });
+    // Fires when spectra or their fits change (new fit run, add/remove,
+    // flags, instrument re-detection) so the grid panels stay in sync.
+    connect(dialog, &SpectraFitDialog::spectraUpdated, this, [this]() {
+        for (auto* p : _panels) if (p) p->refresh();
+    });
 
     dialog->show();
 }

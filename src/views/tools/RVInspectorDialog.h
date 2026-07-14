@@ -40,8 +40,14 @@ public:
                        std::shared_ptr<RadialVelocityCurve> curve,
                        DatabaseManager* dbm,
                        QObject* parent = nullptr);
+    ~RVPointsTableModel() override;
 
     void reload();
+
+    /// Write out flag toggles accumulated by setData(). Called automatically
+    /// on a short debounce so flagging many points costs one DB transaction
+    /// and one plot/summary update; pass notify=false during teardown.
+    void flushPendingFlagChanges(bool notify = true);
 
     int rowCount(const QModelIndex& parent = {}) const override;
     int columnCount(const QModelIndex& parent = {}) const override;
@@ -80,6 +86,11 @@ private:
     DatabaseManager*                                   _dbm = nullptr;
     std::vector<std::shared_ptr<RadialVelocityPoint>>  _points;
     QHash<QString, std::shared_ptr<Spectrum>>          _spectraById;
+
+    // Flag toggles applied in-memory by setData() but not yet persisted /
+    // broadcast; flushed as one batch by _flagFlushTimer.
+    std::vector<std::shared_ptr<RadialVelocityPoint>>  _pendingFlagPoints;
+    class QTimer*                                      _flagFlushTimer = nullptr;
 };
 
 // ─────────────────────────────────────────────────────────────────────────────

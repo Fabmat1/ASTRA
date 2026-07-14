@@ -9,6 +9,7 @@
 #include "models/Spectrum.h"
 #include "models/Star.h"
 #include "models/Time.h"
+#include "utils/CheckStateDragger.h"
 #include "utils/Logger.h"
 #include "views/panels/DetailPanel.h"
 #include "views/panels/RVPanel.h"
@@ -33,6 +34,7 @@
 #include <QSplitter>
 #include <QStyledItemDelegate>
 #include <QTableView>
+#include <QTimer>
 #include <QUuid>
 #include <QVBoxLayout>
 
@@ -94,7 +96,19 @@ RVPointsTableModel::RVPointsTableModel(std::shared_ptr<Star> star,
     , _curve(std::move(curve))
     , _dbm(dbm)
 {
+    _flagFlushTimer = new QTimer(this);
+    _flagFlushTimer->setSingleShot(true);
+    _flagFlushTimer->setInterval(250);
+    connect(_flagFlushTimer, &QTimer::timeout,
+            this, [this] { flushPendingFlagChanges(); });
+
     reload();
+}
+
+RVPointsTableModel::~RVPointsTableModel()
+{
+    // Persist without notifying: sibling widgets may already be mid-teardown.
+    flushPendingFlagChanges(/*notify=*/false);
 }
 
 void RVPointsTableModel::reload()
@@ -297,18 +311,22 @@ bool RVPointsTableModel::setData(const QModelIndex& idx, const QVariant& value, 
     if (role == Qt::CheckStateRole && idx.column() == ColFlagged) {
         bool nf = (value.toInt() == Qt::Checked);
         if (p->isFlagged() == nf) return true;
+        // Apply in-memory only (point + linked fit); DB writes, curve
+        // notification and the summary recompute are debounced into
+        // flushPendingFlagChanges() so flagging many points stays snappy.
         p->setFlagged(nf);
         if (auto sp = linkedSpectrum(p)) {
             for (auto& f : sp->getSpectralFits()) {
                 if (f && f->getId() == p->getSpectralFitId()) {
                     f->setFlagged(nf);
-                    sp->notifyFitChanged(f);
-                    if (_dbm) _dbm->updateSpectralFitFlag(f->getId(), nf);
                     break;
                 }
             }
         }
-        changed = true;
+        _pendingFlagPoints.push_back(p);
+        _flagFlushTimer->start();
+        emit dataChanged(index(idx.row(), 0), index(idx.row(), ColCount - 1));
+        return true;
     }
     else if (role == Qt::EditRole && idx.column() == ColInstrument) {
         const QString id = value.toString();
@@ -359,6 +377,29 @@ bool RVPointsTableModel::setData(const QModelIndex& idx, const QVariant& value, 
         emit pointEdited(idx);
     }
     return true;
+}
+
+void RVPointsTableModel::flushPendingFlagChanges(bool notify)
+{
+    if (_pendingFlagPoints.empty()) return;
+
+    auto pending = std::move(_pendingFlagPoints);
+    _pendingFlagPoints.clear();
+
+    // One transaction for all rows - per-row commits fsync individually and
+    // were the main source of lag when flagging many points.
+    const bool useTx = _dbm && _dbm->beginTransaction();
+    for (const auto& p : pending) {
+        if (!p) continue;
+        if (_dbm && !p->getSpectralFitId().isEmpty())
+            _dbm->updateSpectralFitFlag(p->getSpectralFitId(), p->isFlagged());
+        if (_curve) _curve->persistPoint(p);
+    }
+    if (useTx) _dbm->commitTransaction();
+
+    // One notification: rebuilds every listening RV plot and (via the star's
+    // curve listener) recomputes the summary statistics once.
+    if (notify && _curve) _curve->notifyChanged();
 }
 
 bool RVPointsTableModel::canResetToFit(int row) const
@@ -968,6 +1009,9 @@ void RVInspectorDialog::setupUi()
     }
     _pointsTable->setSortingEnabled(false);
     _pointsTable->setContextMenuPolicy(Qt::CustomContextMenu);
+    // Drag across the Flag column to toggle many points in one gesture
+    // (same interaction as the spectra tree in the fit dialog).
+    new CheckStateDragger(_pointsTable, RVPointsTableModel::ColFlagged);
     _pointsTable->setItemDelegateForColumn(
         RVPointsTableModel::ColInstrument,
         new InstrumentColumnDelegate(_dbm, _pointsTable));
@@ -1031,6 +1075,12 @@ void RVInspectorDialog::setupUi()
             this, [this]() {
         if (_pointsModel) _pointsModel->reload();
         if (_plotPanel)   _plotPanel->refresh();
+    });
+
+    // Flush any flag edits still sitting in the debounce before the parent
+    // view refreshes its panels on dialog close.
+    connect(this, &QDialog::finished, this, [this](int) {
+        if (_pointsModel) _pointsModel->flushPendingFlagChanges();
     });
 
     // Initialise plot with whatever the solutions widget chose to display
