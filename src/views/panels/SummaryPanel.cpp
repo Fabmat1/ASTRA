@@ -8,6 +8,7 @@
 #include "models/RadialVelocity.h"
 #include "models/Spectrum.h"
 #include "db/DatabaseManager.h"
+#include "kinematics/StarKinematics.h"
 #include "models/Star.h"
 #include "utils/AppPaths.h"
 #include "utils/CrossRefResolver.h"
@@ -461,6 +462,7 @@ void SummaryPanel::refreshTheme() {
 
 QWidget *SummaryPanel::buildDashboard() {
     ensureCompanionMasses();
+    ensureGalacticKinematics();
 
     _refCardHost     = nullptr;
     _refSpinner      = nullptr;
@@ -484,6 +486,9 @@ QWidget *SummaryPanel::buildDashboard() {
 
     if (QWidget *comp = createCompanionSection())
         layout->addWidget(comp);
+
+    if (QWidget *gal = createGalacticSection())
+        layout->addWidget(gal);
 
     layout->addWidget(createDataInventorySection());
 
@@ -2209,4 +2214,120 @@ void SummaryPanel::ensureCompanionMasses() {
     }
     if (changed)
         s.persistSummary();
+}
+
+void SummaryPanel::ensureGalacticKinematics() {
+    // Assemble the input; when astrometry/RV is incomplete leave any stored
+    // values untouched (they may come from an import).
+    GalKin::KinematicsInput in;
+    _galInputsValid = GalKin::kinematicsInputFromStar(*_ctx.star, in);
+    if (!_galInputsValid)
+        return;
+
+    // Recompute only when the inputs actually changed (the MC costs a few ms;
+    // the panel rebuilds on every refresh).
+    auto same = [](const GalKin::KinematicsInput &a,
+                   const GalKin::KinematicsInput &b) {
+        auto eq = [](double x, double y) {
+            if (std::isnan(x) && std::isnan(y)) return true;
+            return x == y;
+        };
+        return eq(a.raDeg, b.raDeg) && eq(a.decDeg, b.decDeg) &&
+               eq(a.parallaxMas, b.parallaxMas) &&
+               eq(a.parallaxErrMas, b.parallaxErrMas) &&
+               eq(a.pmraMasYr, b.pmraMasYr) && eq(a.pmraErr, b.pmraErr) &&
+               eq(a.pmdecMasYr, b.pmdecMasYr) && eq(a.pmdecErr, b.pmdecErr) &&
+               eq(a.plxPmraCorr, b.plxPmraCorr) &&
+               eq(a.plxPmdecCorr, b.plxPmdecCorr) &&
+               eq(a.pmraPmdecCorr, b.pmraPmdecCorr) &&
+               eq(a.rvKmS, b.rvKmS) && eq(a.rvErrUp, b.rvErrUp) &&
+               eq(a.rvErrDown, b.rvErrDown);
+    };
+    const bool haveStored = Star::isSet(_ctx.star->getGalU()) &&
+                            Star::isSet(_ctx.star->getGalX());
+    if (_hasGalCache && same(_cachedGalInputs, in) && haveStored)
+        return;
+    _cachedGalInputs = in;
+    _hasGalCache     = true;
+
+    bool changed = false;
+    if (GalKin::computeAndStoreUVWXYZ(*_ctx.star,
+                                      GalKin::GalacticPotential::Model::AS,
+                                      10000, &changed) &&
+        changed)
+        _ctx.star->persistSummary();
+}
+
+QWidget *SummaryPanel::createGalacticSection() {
+    Star &s = *_ctx.star;
+
+    const bool hasUVW = Star::isSet(s.getGalU()) && Star::isSet(s.getGalV()) &&
+                        Star::isSet(s.getGalW());
+    const bool hasXYZ = Star::isSet(s.getGalX()) && Star::isSet(s.getGalY()) &&
+                        Star::isSet(s.getGalZ());
+    const bool hasPop = Star::isSet(s.getGalPThin()) ||
+                        Star::isSet(s.getGalPThick()) ||
+                        Star::isSet(s.getGalPHalo());
+    if (!hasUVW && !hasXYZ && !hasPop)
+        return nullptr;
+
+    const QColor valCol   = primaryTextColor();
+    const QColor labelCol = mutedTextColor();
+
+    std::vector<PropRow> rows;
+    if (hasUVW) {
+        auto u = fmtValErr(s.getGalU(), s.getGalEU(), 1, "km/s",
+                           s.getGalEUUp(), s.getGalEUDown());
+        auto v = fmtValErr(s.getGalV(), s.getGalEV(), 1, "km/s",
+                           s.getGalEVUp(), s.getGalEVDown());
+        auto w = fmtValErr(s.getGalW(), s.getGalEW(), 1, "km/s",
+                           s.getGalEWUp(), s.getGalEWDown());
+        rows.push_back({"U", u.display, u.copy});
+        rows.push_back({"V", v.display, v.copy});
+        rows.push_back({"W", w.display, w.copy});
+    }
+    if (hasXYZ) {
+        auto x = fmtValErr(s.getGalX(), s.getGalEX(), 3, "kpc",
+                           s.getGalEXUp(), s.getGalEXDown());
+        auto y = fmtValErr(s.getGalY(), s.getGalEY(), 3, "kpc",
+                           s.getGalEYUp(), s.getGalEYDown());
+        auto z = fmtValErr(s.getGalZ(), s.getGalEZ(), 3, "kpc",
+                           s.getGalEZUp(), s.getGalEZDown());
+        rows.push_back({"X", x.display, x.copy});
+        rows.push_back({"Y", y.display, y.copy});
+        rows.push_back({"Z", z.display, z.copy});
+    }
+    if (hasPop) {
+        auto addP = [&](const char *name, double p, double ep) {
+            if (!Star::isSet(p))
+                return;
+            auto d = fmtValErr(p, ep, 2, "");
+            rows.push_back({name, d.display, d.copy});
+        };
+        addP("P(thin)", s.getGalPThin(), s.getGalEPThin());
+        addP("P(thick)", s.getGalPThick(), s.getGalEPThick());
+        addP("P(halo)", s.getGalPHalo(), s.getGalEPHalo());
+    }
+
+    QWidget *grid = buildPropertyGrid(rows, valCol, labelCol);
+
+    // Footnote when the astrometry is incomplete so the values shown must
+    // come from an import rather than an in-app computation.
+    if (!_galInputsValid) {
+        QWidget     *wrap = new QWidget;
+        QVBoxLayout *vl   = new QVBoxLayout(wrap);
+        vl->setContentsMargins(0, 0, 0, 0);
+        vl->setSpacing(6);
+        vl->addWidget(grid);
+        QLabel *note = new QLabel(
+            tr("Imported values — astrometry/RV incomplete, cannot recompute."));
+        note->setWordWrap(true);
+        note->setStyleSheet(QString("font-size: 10px; color: %1; background: "
+                                    "transparent; border: none; font-style: italic;")
+                                .arg(mutedTextColor().name()));
+        vl->addWidget(note);
+        return createSectionFrame("Galactic Kinematics", wrap);
+    }
+
+    return createSectionFrame("Galactic Kinematics", grid);
 }

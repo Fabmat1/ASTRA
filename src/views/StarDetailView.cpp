@@ -355,8 +355,13 @@ void StarDetailView::onShowCMD()
 
 void StarDetailView::onCalculateOrbit()
 {
-    auto* dialog = new GalacticOrbitDialog(_star, this);
+    auto* dialog = new GalacticOrbitDialog(_star, _dbm, _projectId, this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
+
+    connect(dialog, &GalacticOrbitDialog::kinematicsSaved, this, [this]() {
+        for (auto* p : _panels) if (p) p->refresh();
+    });
+
     dialog->show();
 }
 

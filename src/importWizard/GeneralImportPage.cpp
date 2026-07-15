@@ -216,6 +216,24 @@ void GeneralImportPage::setupColumnAliases()
     _columnAliases["pmra_pmdec_corr"] = {"pmra_pmdec_corr", "pmra_pmdec_correlation", "corr_pmra_pmdec"};
     _columnAliases["plx_pmdec_corr"] = {"plx_pmdec_corr", "parallax_pmdec_corr", "corr_plx_pmdec"};
     _columnAliases["plx_pmra_corr"] = {"plx_pmra_corr", "parallax_pmra_corr", "corr_plx_pmra"};
+    _columnAliases["gal_u"] = {"gal_u", "u_vel", "u_lsr", "uvel"};
+    _columnAliases["gal_e_u"] = {"gal_e_u", "e_u", "u_err", "eu"};
+    _columnAliases["gal_v"] = {"gal_v", "v_vel", "v_lsr", "vvel"};
+    _columnAliases["gal_e_v"] = {"gal_e_v", "e_v", "v_err", "ev"};
+    _columnAliases["gal_w"] = {"gal_w", "w_vel", "w_lsr", "wvel"};
+    _columnAliases["gal_e_w"] = {"gal_e_w", "e_w", "w_err", "ew"};
+    _columnAliases["gal_x"] = {"gal_x", "x_gal", "xgal"};
+    _columnAliases["gal_e_x"] = {"gal_e_x", "e_x", "x_err"};
+    _columnAliases["gal_y"] = {"gal_y", "y_gal", "ygal"};
+    _columnAliases["gal_e_y"] = {"gal_e_y", "e_y", "y_err"};
+    _columnAliases["gal_z"] = {"gal_z", "z_gal", "zgal"};
+    _columnAliases["gal_e_z"] = {"gal_e_z", "e_z", "z_err"};
+    _columnAliases["gal_p_thin"] = {"gal_p_thin", "p_thin", "prob_thin", "p_thin_disk"};
+    _columnAliases["gal_e_p_thin"] = {"gal_e_p_thin", "e_p_thin"};
+    _columnAliases["gal_p_thick"] = {"gal_p_thick", "p_thick", "prob_thick", "p_thick_disk"};
+    _columnAliases["gal_e_p_thick"] = {"gal_e_p_thick", "e_p_thick"};
+    _columnAliases["gal_p_halo"] = {"gal_p_halo", "p_halo", "prob_halo"};
+    _columnAliases["gal_e_p_halo"] = {"gal_e_p_halo", "e_p_halo"};
 }
 
 QString GeneralImportPage::normalizeValue(const QVariant& value) const
@@ -310,6 +328,16 @@ double GeneralImportPage::toleranceForField(const QString& fieldName) const
     if (fieldName == "deltaRV")  return 0.1;
     if (fieldName == "e_deltaRV")return 0.1;
     if (fieldName == "logp")     return 0.01;
+
+    // Galactic kinematics
+    if (fieldName == "gal_u" || fieldName == "gal_v" || fieldName == "gal_w" ||
+        fieldName == "gal_e_u" || fieldName == "gal_e_v" || fieldName == "gal_e_w")
+        return 0.1;                                   // km/s
+    if (fieldName == "gal_x" || fieldName == "gal_y" || fieldName == "gal_z" ||
+        fieldName == "gal_e_x" || fieldName == "gal_e_y" || fieldName == "gal_e_z")
+        return 0.001;                                 // kpc
+    if (fieldName.startsWith("gal_p_") || fieldName.startsWith("gal_e_p_"))
+        return 0.001;                                 // probabilities
 
     // Correlation coefficients
     if (fieldName.contains("corr")) return 0.001;
@@ -1123,6 +1151,24 @@ void GeneralImportPage::applyValueToStar(std::shared_ptr<Star> star, const QStri
     else if (field == "e_rv_avg") star->setERVAvg(value.toDouble());
     else if (field == "rv_med") star->setRVMed(value.toDouble());
     else if (field == "e_rv_med") star->setERVMed(value.toDouble());
+    else if (field == "gal_u") star->setGalU(value.toDouble());
+    else if (field == "gal_e_u") star->setGalEU(value.toDouble());
+    else if (field == "gal_v") star->setGalV(value.toDouble());
+    else if (field == "gal_e_v") star->setGalEV(value.toDouble());
+    else if (field == "gal_w") star->setGalW(value.toDouble());
+    else if (field == "gal_e_w") star->setGalEW(value.toDouble());
+    else if (field == "gal_x") star->setGalX(value.toDouble());
+    else if (field == "gal_e_x") star->setGalEX(value.toDouble());
+    else if (field == "gal_y") star->setGalY(value.toDouble());
+    else if (field == "gal_e_y") star->setGalEY(value.toDouble());
+    else if (field == "gal_z") star->setGalZ(value.toDouble());
+    else if (field == "gal_e_z") star->setGalEZ(value.toDouble());
+    else if (field == "gal_p_thin") star->setGalPThin(value.toDouble());
+    else if (field == "gal_e_p_thin") star->setGalEPThin(value.toDouble());
+    else if (field == "gal_p_thick") star->setGalPThick(value.toDouble());
+    else if (field == "gal_e_p_thick") star->setGalEPThick(value.toDouble());
+    else if (field == "gal_p_halo") star->setGalPHalo(value.toDouble());
+    else if (field == "gal_e_p_halo") star->setGalEPHalo(value.toDouble());
 }
 
 std::vector<std::shared_ptr<Star>> GeneralImportPage::createStarsFromData()
@@ -1198,7 +1244,11 @@ bool GeneralImportPage::validatePage()
                 "teff", "e_teff", "logg", "e_logg", "he", "e_he",
                 "rv_med", "e_rv_med", "rv_avg", "e_rv_avg", "deltaRV", 
                 "e_deltaRV", "logp", "spec_class",
-                "pmra_pmdec_corr", "plx_pmdec_corr", "plx_pmra_corr"
+                "pmra_pmdec_corr", "plx_pmdec_corr", "plx_pmra_corr",
+                "gal_u", "gal_e_u", "gal_v", "gal_e_v", "gal_w", "gal_e_w",
+                "gal_x", "gal_e_x", "gal_y", "gal_e_y", "gal_z", "gal_e_z",
+                "gal_p_thin", "gal_e_p_thin", "gal_p_thick", "gal_e_p_thick",
+                "gal_p_halo", "gal_e_p_halo"
             };
             
             std::vector<DataRow> sampleData;

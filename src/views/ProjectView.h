@@ -178,6 +178,7 @@ public:
     void onImportStars();
     void onRemoveStar();
     void onReloadMetrics();
+    void onComputeGalacticKinematics();
     void onShowDetailWindow();
     void onConfigureColumns();
     void onCreatePlot();

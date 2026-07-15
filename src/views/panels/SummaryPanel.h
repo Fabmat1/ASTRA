@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DetailPanel.h"
+#include "kinematics/KinematicsCalculator.h"
 #include <limits>
 
 class QScrollArea;
@@ -38,6 +39,7 @@ class SummaryPanel : public DetailPanel {
     QWidget *createPropertiesSection();
     QWidget *createOrbitalFitSection();
     QWidget *createCompanionSection(); // ← was createCompanionMassBanner
+    QWidget *createGalacticSection();
     QWidget *createDataInventorySection();
     QWidget *createReferencesSection();
     QFrame  *createSectionFrame(const QString &title, QWidget *content);
@@ -77,6 +79,16 @@ class SummaryPanel : public DetailPanel {
         bool   sameAs(const MassInputs &o) const noexcept;
     };
     void ensureCompanionMasses();
+
+    // ── Galactic kinematics (UVW/XYZ) derivation ──
+    // Computed from the star's astrometry + systemic RV via the kinematics
+    // module (Monte-Carlo error propagation); persisted through
+    // persistSummary() when values changed. Cached on the assembled input so
+    // rebuilds don't re-run the MC.
+    void ensureGalacticKinematics();
+    GalKin::KinematicsInput _cachedGalInputs;
+    bool                    _hasGalCache = false;
+    bool                    _galInputsValid = false;
 
     MassInputs _cachedMassInputs;
     MassResult _cachedMassMin;

@@ -268,6 +268,76 @@ public:
     double getPhotEQDown() const   { return _photEQDown; }
     void   setPhotEQDown(double v) { _photEQDown = v; }
 
+    // ── Galactic kinematics ─────────────────────────────────────────────────
+    // Velocities: heliocentric UVW [km/s], right-handed, U positive toward
+    // the Galactic center (no LSR/solar-motion correction applied).
+    // Positions: galactocentric cartesian XYZ [kpc].
+    // Asymmetric errors follow the AsymErr convention (NaN = unset →
+    // symmetric applies).
+    double getGalU() const        { return _galU; }
+    void   setGalU(double v)      { _galU = v; }
+    double getGalEU() const       { return _galEU; }
+    void   setGalEU(double v)     { _galEU = v; }
+    double getGalEUUp() const     { return _galEUUp; }
+    void   setGalEUUp(double v)   { _galEUUp = v; }
+    double getGalEUDown() const   { return _galEUDown; }
+    void   setGalEUDown(double v) { _galEUDown = v; }
+    double getGalV() const        { return _galV; }
+    void   setGalV(double v)      { _galV = v; }
+    double getGalEV() const       { return _galEV; }
+    void   setGalEV(double v)     { _galEV = v; }
+    double getGalEVUp() const     { return _galEVUp; }
+    void   setGalEVUp(double v)   { _galEVUp = v; }
+    double getGalEVDown() const   { return _galEVDown; }
+    void   setGalEVDown(double v) { _galEVDown = v; }
+    double getGalW() const        { return _galW; }
+    void   setGalW(double v)      { _galW = v; }
+    double getGalEW() const       { return _galEW; }
+    void   setGalEW(double v)     { _galEW = v; }
+    double getGalEWUp() const     { return _galEWUp; }
+    void   setGalEWUp(double v)   { _galEWUp = v; }
+    double getGalEWDown() const   { return _galEWDown; }
+    void   setGalEWDown(double v) { _galEWDown = v; }
+
+    double getGalX() const        { return _galX; }
+    void   setGalX(double v)      { _galX = v; }
+    double getGalEX() const       { return _galEX; }
+    void   setGalEX(double v)     { _galEX = v; }
+    double getGalEXUp() const     { return _galEXUp; }
+    void   setGalEXUp(double v)   { _galEXUp = v; }
+    double getGalEXDown() const   { return _galEXDown; }
+    void   setGalEXDown(double v) { _galEXDown = v; }
+    double getGalY() const        { return _galY; }
+    void   setGalY(double v)      { _galY = v; }
+    double getGalEY() const       { return _galEY; }
+    void   setGalEY(double v)     { _galEY = v; }
+    double getGalEYUp() const     { return _galEYUp; }
+    void   setGalEYUp(double v)   { _galEYUp = v; }
+    double getGalEYDown() const   { return _galEYDown; }
+    void   setGalEYDown(double v) { _galEYDown = v; }
+    double getGalZ() const        { return _galZ; }
+    void   setGalZ(double v)      { _galZ = v; }
+    double getGalEZ() const       { return _galEZ; }
+    void   setGalEZ(double v)     { _galEZ = v; }
+    double getGalEZUp() const     { return _galEZUp; }
+    void   setGalEZUp(double v)   { _galEZUp = v; }
+    double getGalEZDown() const   { return _galEZDown; }
+    void   setGalEZDown(double v) { _galEZDown = v; }
+
+    // Population membership probabilities (0–1) with symmetric errors.
+    double getGalPThin() const       { return _galPThin; }
+    void   setGalPThin(double v)     { _galPThin = v; }
+    double getGalEPThin() const      { return _galEPThin; }
+    void   setGalEPThin(double v)    { _galEPThin = v; }
+    double getGalPThick() const      { return _galPThick; }
+    void   setGalPThick(double v)    { _galPThick = v; }
+    double getGalEPThick() const     { return _galEPThick; }
+    void   setGalEPThick(double v)   { _galEPThick = v; }
+    double getGalPHalo() const       { return _galPHalo; }
+    void   setGalPHalo(double v)     { _galPHalo = v; }
+    double getGalEPHalo() const      { return _galEPHalo; }
+    void   setGalEPHalo(double v)    { _galEPHalo = v; }
+
     // ── Dataset availability flags ──────────────────────────────────────────
     bool getHasTess() const          { return _hasTess; }
     void setHasTess(bool v)          { _hasTess = v; }
@@ -525,6 +595,38 @@ private:
     double _photEQ      = std::numeric_limits<double>::quiet_NaN();
     double _photEQUp    = AsymErr::unset;
     double _photEQDown  = AsymErr::unset;
+
+    // Galactic kinematics (heliocentric UVW, galactocentric XYZ; NaN = unset)
+    double _galU  = std::numeric_limits<double>::quiet_NaN();
+    double _galEU = std::numeric_limits<double>::quiet_NaN();
+    double _galEUUp   = AsymErr::unset;
+    double _galEUDown = AsymErr::unset;
+    double _galV  = std::numeric_limits<double>::quiet_NaN();
+    double _galEV = std::numeric_limits<double>::quiet_NaN();
+    double _galEVUp   = AsymErr::unset;
+    double _galEVDown = AsymErr::unset;
+    double _galW  = std::numeric_limits<double>::quiet_NaN();
+    double _galEW = std::numeric_limits<double>::quiet_NaN();
+    double _galEWUp   = AsymErr::unset;
+    double _galEWDown = AsymErr::unset;
+    double _galX  = std::numeric_limits<double>::quiet_NaN();
+    double _galEX = std::numeric_limits<double>::quiet_NaN();
+    double _galEXUp   = AsymErr::unset;
+    double _galEXDown = AsymErr::unset;
+    double _galY  = std::numeric_limits<double>::quiet_NaN();
+    double _galEY = std::numeric_limits<double>::quiet_NaN();
+    double _galEYUp   = AsymErr::unset;
+    double _galEYDown = AsymErr::unset;
+    double _galZ  = std::numeric_limits<double>::quiet_NaN();
+    double _galEZ = std::numeric_limits<double>::quiet_NaN();
+    double _galEZUp   = AsymErr::unset;
+    double _galEZDown = AsymErr::unset;
+    double _galPThin   = std::numeric_limits<double>::quiet_NaN();
+    double _galEPThin  = std::numeric_limits<double>::quiet_NaN();
+    double _galPThick  = std::numeric_limits<double>::quiet_NaN();
+    double _galEPThick = std::numeric_limits<double>::quiet_NaN();
+    double _galPHalo   = std::numeric_limits<double>::quiet_NaN();
+    double _galEPHalo  = std::numeric_limits<double>::quiet_NaN();
 
     // Dataset availability
     bool _hasTess     = false;

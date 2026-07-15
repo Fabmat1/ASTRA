@@ -391,6 +391,13 @@ set(SOURCES
     # io
     src/io/StarPackage.cpp
     src/io/StarShare.cpp
+
+    # kinematics
+    src/kinematics/GalacticPotential.cpp
+    src/kinematics/GalacticCoordinates.cpp
+    src/kinematics/OrbitIntegrator.cpp
+    src/kinematics/KinematicsCalculator.cpp
+    src/kinematics/StarKinematics.cpp
 )
 
 # Header files
@@ -532,7 +539,14 @@ set(HEADERS
 
     # io
     src/io/StarPackage.h
-    src/io/StarShare.h 
+    src/io/StarShare.h
+
+    # kinematics
+    src/kinematics/GalacticPotential.h
+    src/kinematics/GalacticCoordinates.h
+    src/kinematics/OrbitIntegrator.h
+    src/kinematics/KinematicsCalculator.h
+    src/kinematics/StarKinematics.h
 )
 
 # Create executable

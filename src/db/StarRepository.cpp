@@ -19,6 +19,42 @@
 
 StarRepository::StarRepository(DBAccess& db) : _db(db) {}
 
+// Galactic kinematics bindings shared by saveStar() and updateStarRow().
+// All values use the NaN→NULL sentinel convention.
+static void bindGalacticFields(QSqlQuery& query, const Star& star)
+{
+    query.bindValue(":gal_u", SqlValue::fromDouble(star.getGalU()));
+    query.bindValue(":gal_e_u", SqlValue::fromDouble(star.getGalEU()));
+    query.bindValue(":gal_e_u_up", SqlValue::fromDouble(star.getGalEUUp()));
+    query.bindValue(":gal_e_u_down", SqlValue::fromDouble(star.getGalEUDown()));
+    query.bindValue(":gal_v", SqlValue::fromDouble(star.getGalV()));
+    query.bindValue(":gal_e_v", SqlValue::fromDouble(star.getGalEV()));
+    query.bindValue(":gal_e_v_up", SqlValue::fromDouble(star.getGalEVUp()));
+    query.bindValue(":gal_e_v_down", SqlValue::fromDouble(star.getGalEVDown()));
+    query.bindValue(":gal_w", SqlValue::fromDouble(star.getGalW()));
+    query.bindValue(":gal_e_w", SqlValue::fromDouble(star.getGalEW()));
+    query.bindValue(":gal_e_w_up", SqlValue::fromDouble(star.getGalEWUp()));
+    query.bindValue(":gal_e_w_down", SqlValue::fromDouble(star.getGalEWDown()));
+    query.bindValue(":gal_x", SqlValue::fromDouble(star.getGalX()));
+    query.bindValue(":gal_e_x", SqlValue::fromDouble(star.getGalEX()));
+    query.bindValue(":gal_e_x_up", SqlValue::fromDouble(star.getGalEXUp()));
+    query.bindValue(":gal_e_x_down", SqlValue::fromDouble(star.getGalEXDown()));
+    query.bindValue(":gal_y", SqlValue::fromDouble(star.getGalY()));
+    query.bindValue(":gal_e_y", SqlValue::fromDouble(star.getGalEY()));
+    query.bindValue(":gal_e_y_up", SqlValue::fromDouble(star.getGalEYUp()));
+    query.bindValue(":gal_e_y_down", SqlValue::fromDouble(star.getGalEYDown()));
+    query.bindValue(":gal_z", SqlValue::fromDouble(star.getGalZ()));
+    query.bindValue(":gal_e_z", SqlValue::fromDouble(star.getGalEZ()));
+    query.bindValue(":gal_e_z_up", SqlValue::fromDouble(star.getGalEZUp()));
+    query.bindValue(":gal_e_z_down", SqlValue::fromDouble(star.getGalEZDown()));
+    query.bindValue(":gal_p_thin", SqlValue::fromDouble(star.getGalPThin()));
+    query.bindValue(":gal_e_p_thin", SqlValue::fromDouble(star.getGalEPThin()));
+    query.bindValue(":gal_p_thick", SqlValue::fromDouble(star.getGalPThick()));
+    query.bindValue(":gal_e_p_thick", SqlValue::fromDouble(star.getGalEPThick()));
+    query.bindValue(":gal_p_halo", SqlValue::fromDouble(star.getGalPHalo()));
+    query.bindValue(":gal_e_p_halo", SqlValue::fromDouble(star.getGalEPHalo()));
+}
+
 size_t StarRepository::getStarCountForProject(const QString& projectId)
 {
     QSqlQuery query(_db.threadConnection());
@@ -121,6 +157,14 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
             comp_mass_min, comp_e_mass_min, comp_mass_true, comp_e_mass_true,
             comp_e_mass_min_up, comp_e_mass_min_down,
             comp_e_mass_true_up, comp_e_mass_true_down,
+            gal_u, gal_e_u, gal_e_u_up, gal_e_u_down,
+            gal_v, gal_e_v, gal_e_v_up, gal_e_v_down,
+            gal_w, gal_e_w, gal_e_w_up, gal_e_w_down,
+            gal_x, gal_e_x, gal_e_x_up, gal_e_x_down,
+            gal_y, gal_e_y, gal_e_y_up, gal_e_y_down,
+            gal_z, gal_e_z, gal_e_z_up, gal_e_z_down,
+            gal_p_thin, gal_e_p_thin, gal_p_thick, gal_e_p_thick,
+            gal_p_halo, gal_e_p_halo,
             bibcodes
         ) VALUES (
             :id, :project_id, :alias, :source_id, :tic, :jname,
@@ -156,6 +200,14 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
             :comp_mass_min, :comp_e_mass_min, :comp_mass_true, :comp_e_mass_true,
             :comp_e_mass_min_up, :comp_e_mass_min_down,
             :comp_e_mass_true_up, :comp_e_mass_true_down,
+            :gal_u, :gal_e_u, :gal_e_u_up, :gal_e_u_down,
+            :gal_v, :gal_e_v, :gal_e_v_up, :gal_e_v_down,
+            :gal_w, :gal_e_w, :gal_e_w_up, :gal_e_w_down,
+            :gal_x, :gal_e_x, :gal_e_x_up, :gal_e_x_down,
+            :gal_y, :gal_e_y, :gal_e_y_up, :gal_e_y_down,
+            :gal_z, :gal_e_z, :gal_e_z_up, :gal_e_z_down,
+            :gal_p_thin, :gal_e_p_thin, :gal_p_thick, :gal_e_p_thick,
+            :gal_p_halo, :gal_e_p_halo,
             :bibcodes
         )
     )");
@@ -289,6 +341,8 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
     query.bindValue(":comp_e_mass_min_down", SqlValue::fromDouble(star->getECompMassMinDown()));
     query.bindValue(":comp_e_mass_true_up", SqlValue::fromDouble(star->getECompMassTrueUp()));
     query.bindValue(":comp_e_mass_true_down", SqlValue::fromDouble(star->getECompMassTrueDown()));
+
+    bindGalacticFields(query, *star);
 
     // Convert bibcodes to JSON array
     QJsonArray bibcodesArray;
@@ -445,6 +499,21 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
             comp_e_mass_min_down = :comp_e_mass_min_down,
             comp_e_mass_true_up = :comp_e_mass_true_up,
             comp_e_mass_true_down = :comp_e_mass_true_down,
+            gal_u = :gal_u, gal_e_u = :gal_e_u,
+            gal_e_u_up = :gal_e_u_up, gal_e_u_down = :gal_e_u_down,
+            gal_v = :gal_v, gal_e_v = :gal_e_v,
+            gal_e_v_up = :gal_e_v_up, gal_e_v_down = :gal_e_v_down,
+            gal_w = :gal_w, gal_e_w = :gal_e_w,
+            gal_e_w_up = :gal_e_w_up, gal_e_w_down = :gal_e_w_down,
+            gal_x = :gal_x, gal_e_x = :gal_e_x,
+            gal_e_x_up = :gal_e_x_up, gal_e_x_down = :gal_e_x_down,
+            gal_y = :gal_y, gal_e_y = :gal_e_y,
+            gal_e_y_up = :gal_e_y_up, gal_e_y_down = :gal_e_y_down,
+            gal_z = :gal_z, gal_e_z = :gal_e_z,
+            gal_e_z_up = :gal_e_z_up, gal_e_z_down = :gal_e_z_down,
+            gal_p_thin = :gal_p_thin, gal_e_p_thin = :gal_e_p_thin,
+            gal_p_thick = :gal_p_thick, gal_e_p_thick = :gal_e_p_thick,
+            gal_p_halo = :gal_p_halo, gal_e_p_halo = :gal_e_p_halo,
             has_tess = :has_tess, has_gaia = :has_gaia, has_ztf = :has_ztf,
             has_atlas = :has_atlas, has_blackgem = :has_blackgem,
             bibcodes = :bibcodes
@@ -569,6 +638,8 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
     query.bindValue(":comp_e_mass_min_down", SqlValue::fromDouble(star->getECompMassMinDown()));
     query.bindValue(":comp_e_mass_true_up", SqlValue::fromDouble(star->getECompMassTrueUp()));
     query.bindValue(":comp_e_mass_true_down", SqlValue::fromDouble(star->getECompMassTrueDown()));
+
+    bindGalacticFields(query, *star);
 
     query.bindValue(":has_tess", star->getHasTess() ? 1 : 0);
     query.bindValue(":has_gaia", star->getHasGaia() ? 1 : 0);

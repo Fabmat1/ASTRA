@@ -243,6 +243,36 @@ bool DatabaseManager::createTables()
             comp_e_mass_true_up REAL,
             comp_e_mass_true_down REAL,
             phot_peaks_json TEXT,
+            gal_u REAL,
+            gal_e_u REAL,
+            gal_e_u_up REAL,
+            gal_e_u_down REAL,
+            gal_v REAL,
+            gal_e_v REAL,
+            gal_e_v_up REAL,
+            gal_e_v_down REAL,
+            gal_w REAL,
+            gal_e_w REAL,
+            gal_e_w_up REAL,
+            gal_e_w_down REAL,
+            gal_x REAL,
+            gal_e_x REAL,
+            gal_e_x_up REAL,
+            gal_e_x_down REAL,
+            gal_y REAL,
+            gal_e_y REAL,
+            gal_e_y_up REAL,
+            gal_e_y_down REAL,
+            gal_z REAL,
+            gal_e_z REAL,
+            gal_e_z_up REAL,
+            gal_e_z_down REAL,
+            gal_p_thin REAL,
+            gal_e_p_thin REAL,
+            gal_p_thick REAL,
+            gal_e_p_thick REAL,
+            gal_p_halo REAL,
+            gal_e_p_halo REAL,
             FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
         )
     )";
@@ -772,6 +802,40 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE stars ADD COLUMN comp_e_mass_min_down REAL",
         "ALTER TABLE stars ADD COLUMN comp_e_mass_true_up REAL",
         "ALTER TABLE stars ADD COLUMN comp_e_mass_true_down REAL",
+
+        // Galactic kinematics: heliocentric UVW [km/s] (U toward GC),
+        // galactocentric cartesian XYZ [kpc], population membership
+        // probabilities. NULL = unset → NaN in the model.
+        "ALTER TABLE stars ADD COLUMN gal_u REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_u REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_u_up REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_u_down REAL",
+        "ALTER TABLE stars ADD COLUMN gal_v REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_v REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_v_up REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_v_down REAL",
+        "ALTER TABLE stars ADD COLUMN gal_w REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_w REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_w_up REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_w_down REAL",
+        "ALTER TABLE stars ADD COLUMN gal_x REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_x REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_x_up REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_x_down REAL",
+        "ALTER TABLE stars ADD COLUMN gal_y REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_y REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_y_up REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_y_down REAL",
+        "ALTER TABLE stars ADD COLUMN gal_z REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_z REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_z_up REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_z_down REAL",
+        "ALTER TABLE stars ADD COLUMN gal_p_thin REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_p_thin REAL",
+        "ALTER TABLE stars ADD COLUMN gal_p_thick REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_p_thick REAL",
+        "ALTER TABLE stars ADD COLUMN gal_p_halo REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_p_halo REAL",
     };
 
     for (const QString& sql : alterQueries) {
@@ -787,6 +851,61 @@ bool DatabaseManager::runMigrations()
         q.exec("UPDATE rv_points "
                 "SET rv_error_formal = rv_error "
                 "WHERE rv_error_formal = 0 AND rv_error_systematic = 0");
+    }
+
+    // One-time cleanup of galactic kinematics that were computed from a
+    // placeholder radial velocity. Bulk catalog imports store a missing RV as
+    // a literal 0.0 ± 0.0 (not NULL), which an earlier version of
+    // kinematicsInputFromStar accepted as RV = 0 km/s and turned into bogus
+    // gal_* values. The RV guard now requires a positive uncertainty; mirror
+    // that here and NULL the stored kinematics for stars that have no RV
+    // source with a positive error, so the corrupted rows do not linger.
+    // (gal_* columns were only added in this same migration pass, so guard on
+    // their existence for very old databases created before them.)
+    {
+        QSqlQuery chk(_db->threadConnection());
+        chk.exec("SELECT COUNT(*) FROM pragma_table_info('stars') "
+                 "WHERE name = 'gal_u'");
+        bool haveGalCols = chk.next() && chk.value(0).toInt() > 0;
+        if (haveGalCols) {
+            static const char* kGalCols[] = {
+                "gal_u", "gal_e_u", "gal_e_u_up", "gal_e_u_down",
+                "gal_v", "gal_e_v", "gal_e_v_up", "gal_e_v_down",
+                "gal_w", "gal_e_w", "gal_e_w_up", "gal_e_w_down",
+                "gal_x", "gal_e_x", "gal_e_x_up", "gal_e_x_down",
+                "gal_y", "gal_e_y", "gal_e_y_up", "gal_e_y_down",
+                "gal_z", "gal_e_z", "gal_e_z_up", "gal_e_z_down"};
+            QStringList setNull;
+            for (const char* c : kGalCols)
+                setNull << QString("%1 = NULL").arg(c);
+
+            // "usable RV" ⇔ some source has a positive, finite uncertainty.
+            // COALESCE(...,0) is essential: a bare `NULL > 0` yields NULL, and
+            // `NOT (false OR NULL)` is NULL — which matches no rows — so any
+            // NULL error column would silently disable the whole cleanup.
+            // gal_p_* population probabilities are import-only (never computed
+            // from RV) and are intentionally left untouched.
+            const QString sql =
+                "UPDATE stars SET " + setNull.join(", ") +
+                " WHERE (gal_u IS NOT NULL OR gal_x IS NOT NULL) "
+                "AND NOT ("
+                "  COALESCE(rv_e_gamma, 0) > 0 "
+                "  OR COALESCE(rv_e_gamma_up, 0) > 0 "
+                "  OR COALESCE(rv_e_gamma_down, 0) > 0 "
+                "  OR COALESCE(e_rv_med, 0) > 0 "
+                "  OR COALESCE(e_rv_avg, 0) > 0)";
+            QSqlQuery q(_db->threadConnection());
+            if (!q.exec(sql))
+                LOG_WARNING("Database",
+                            "gal_* RV-placeholder cleanup failed: " +
+                                q.lastError().text());
+            else if (q.numRowsAffected() > 0)
+                LOG_INFO("Database",
+                         QString("Cleared galactic kinematics for %1 star(s) "
+                                 "that had no radial velocity with a positive "
+                                 "uncertainty")
+                             .arg(q.numRowsAffected()));
+        }
     }
 
     return true;
@@ -967,6 +1086,38 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
     const int idxSedELum2Up = rec.indexOf("sed_e_lum2_up");
     const int idxSedELum2Down = rec.indexOf("sed_e_lum2_down");
 
+    // Galactic kinematics (NULL / missing → NaN sentinel)
+    const int idxGalU = rec.indexOf("gal_u");
+    const int idxGalEU = rec.indexOf("gal_e_u");
+    const int idxGalEUUp = rec.indexOf("gal_e_u_up");
+    const int idxGalEUDown = rec.indexOf("gal_e_u_down");
+    const int idxGalV = rec.indexOf("gal_v");
+    const int idxGalEV = rec.indexOf("gal_e_v");
+    const int idxGalEVUp = rec.indexOf("gal_e_v_up");
+    const int idxGalEVDown = rec.indexOf("gal_e_v_down");
+    const int idxGalW = rec.indexOf("gal_w");
+    const int idxGalEW = rec.indexOf("gal_e_w");
+    const int idxGalEWUp = rec.indexOf("gal_e_w_up");
+    const int idxGalEWDown = rec.indexOf("gal_e_w_down");
+    const int idxGalX = rec.indexOf("gal_x");
+    const int idxGalEX = rec.indexOf("gal_e_x");
+    const int idxGalEXUp = rec.indexOf("gal_e_x_up");
+    const int idxGalEXDown = rec.indexOf("gal_e_x_down");
+    const int idxGalY = rec.indexOf("gal_y");
+    const int idxGalEY = rec.indexOf("gal_e_y");
+    const int idxGalEYUp = rec.indexOf("gal_e_y_up");
+    const int idxGalEYDown = rec.indexOf("gal_e_y_down");
+    const int idxGalZ = rec.indexOf("gal_z");
+    const int idxGalEZ = rec.indexOf("gal_e_z");
+    const int idxGalEZUp = rec.indexOf("gal_e_z_up");
+    const int idxGalEZDown = rec.indexOf("gal_e_z_down");
+    const int idxGalPThin = rec.indexOf("gal_p_thin");
+    const int idxGalEPThin = rec.indexOf("gal_e_p_thin");
+    const int idxGalPThick = rec.indexOf("gal_p_thick");
+    const int idxGalEPThick = rec.indexOf("gal_e_p_thick");
+    const int idxGalPHalo = rec.indexOf("gal_p_halo");
+    const int idxGalEPHalo = rec.indexOf("gal_e_p_halo");
+
     // Pre-allocate
     const size_t estimatedCount = _stars->getStarCountForProject(projectId);
     stars.reserve(estimatedCount);
@@ -1122,6 +1273,39 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
             star->setCompMassTrue(query.value(idxCompMassTrue).toDouble());
         if (idxCompEMassTrue >= 0 && !query.isNull(idxCompEMassTrue))
             star->setECompMassTrue(query.value(idxCompEMassTrue).toDouble());
+        // Galactic kinematics: NaN sentinel for unset, like the comp_mass_*
+        // fields — never let NULL degrade to 0.0.
+        star->setGalU(SqlValue::toDoubleOrNaN(query, idxGalU));
+        star->setGalEU(SqlValue::toDoubleOrNaN(query, idxGalEU));
+        star->setGalEUUp(SqlValue::toDoubleOrNaN(query, idxGalEUUp));
+        star->setGalEUDown(SqlValue::toDoubleOrNaN(query, idxGalEUDown));
+        star->setGalV(SqlValue::toDoubleOrNaN(query, idxGalV));
+        star->setGalEV(SqlValue::toDoubleOrNaN(query, idxGalEV));
+        star->setGalEVUp(SqlValue::toDoubleOrNaN(query, idxGalEVUp));
+        star->setGalEVDown(SqlValue::toDoubleOrNaN(query, idxGalEVDown));
+        star->setGalW(SqlValue::toDoubleOrNaN(query, idxGalW));
+        star->setGalEW(SqlValue::toDoubleOrNaN(query, idxGalEW));
+        star->setGalEWUp(SqlValue::toDoubleOrNaN(query, idxGalEWUp));
+        star->setGalEWDown(SqlValue::toDoubleOrNaN(query, idxGalEWDown));
+        star->setGalX(SqlValue::toDoubleOrNaN(query, idxGalX));
+        star->setGalEX(SqlValue::toDoubleOrNaN(query, idxGalEX));
+        star->setGalEXUp(SqlValue::toDoubleOrNaN(query, idxGalEXUp));
+        star->setGalEXDown(SqlValue::toDoubleOrNaN(query, idxGalEXDown));
+        star->setGalY(SqlValue::toDoubleOrNaN(query, idxGalY));
+        star->setGalEY(SqlValue::toDoubleOrNaN(query, idxGalEY));
+        star->setGalEYUp(SqlValue::toDoubleOrNaN(query, idxGalEYUp));
+        star->setGalEYDown(SqlValue::toDoubleOrNaN(query, idxGalEYDown));
+        star->setGalZ(SqlValue::toDoubleOrNaN(query, idxGalZ));
+        star->setGalEZ(SqlValue::toDoubleOrNaN(query, idxGalEZ));
+        star->setGalEZUp(SqlValue::toDoubleOrNaN(query, idxGalEZUp));
+        star->setGalEZDown(SqlValue::toDoubleOrNaN(query, idxGalEZDown));
+        star->setGalPThin(SqlValue::toDoubleOrNaN(query, idxGalPThin));
+        star->setGalEPThin(SqlValue::toDoubleOrNaN(query, idxGalEPThin));
+        star->setGalPThick(SqlValue::toDoubleOrNaN(query, idxGalPThick));
+        star->setGalEPThick(SqlValue::toDoubleOrNaN(query, idxGalEPThick));
+        star->setGalPHalo(SqlValue::toDoubleOrNaN(query, idxGalPHalo));
+        star->setGalEPHalo(SqlValue::toDoubleOrNaN(query, idxGalEPHalo));
+
         star->setECompMassMinUp(SqlValue::toDoubleOrNaN(query, idxCompEMassMinUp));
         star->setECompMassMinDown(SqlValue::toDoubleOrNaN(query, idxCompEMassMinDown));
         star->setECompMassTrueUp(SqlValue::toDoubleOrNaN(query, idxCompEMassTrueUp));

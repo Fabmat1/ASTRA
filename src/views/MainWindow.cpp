@@ -470,10 +470,18 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             _fetchLightcurvesAction->setStatusTip(
                 tr("Start and monitor background lightcurve fetches for the "
                    "selected stars"));
+            _computeKinematicsAction =
+                _analysisMenu->addAction("Compute Galactic &Kinematics");
+            _computeKinematicsAction->setStatusTip(
+                tr("Calculate UVW space velocities and galactocentric XYZ "
+                   "positions (with Monte-Carlo errors) for the selected "
+                   "stars"));
             _analysisMenu->addSeparator();
             _instrumentConfigAction = _analysisMenu->addAction("&Instruments...");
 
             connect(_createPlotAction, &QAction::triggered, _projectView, &ProjectView::onCreatePlot);
+            connect(_computeKinematicsAction, &QAction::triggered, _projectView,
+                    &ProjectView::onComputeGalacticKinematics);
             // A single entry point: opens the sessions overview, which carries a
             // "New Fetch…" button to launch a batch fetch for the selection.
             connect(_fetchLightcurvesAction, &QAction::triggered,
@@ -505,6 +513,7 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             delete _analysisMenu;
             _analysisMenu = nullptr;
             _fetchLightcurvesAction = nullptr;
+            _computeKinematicsAction = nullptr;
         }
         
         // Remove Configure Columns from View menu

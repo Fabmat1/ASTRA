@@ -9,6 +9,7 @@
 #include "dialogs/ExportTableDialog.h"
 #include "io/StarPackage.h"
 #include "io/StarShare.h"
+#include "kinematics/StarKinematics.h"
 #include "models/ColumnPreset.h"
 #include "models/Project.h"
 #include "models/Star.h"
@@ -32,6 +33,7 @@
 #include <QMainWindow>
 #include <QMenu>
 #include <QMessageBox>
+#include <QProgressDialog>
 #include <QMimeData>
 #include <QPushButton>
 #include <QScrollBar>
@@ -669,6 +671,71 @@ void ProjectView::onReloadMetrics()
                         .arg(selectedStars.size())
                         .arg(selectedStars.size() != 1 ? "s" : ""));
     }
+}
+
+void ProjectView::onComputeGalacticKinematics()
+{
+    if (!_currentProject) {
+        QMessageBox::warning(this, "No Project", "Please open a project first.");
+        return;
+    }
+
+    auto stars = getSelectedStars();
+    if (stars.empty()) {
+        auto all = _currentProject->getAllStars();
+        if (all.empty()) {
+            QMessageBox::information(this, "Galactic Kinematics",
+                                     "There are no stars in the project.");
+            return;
+        }
+        const auto btn = QMessageBox::question(
+            this, "Galactic Kinematics",
+            QString("No stars selected. Compute UVW/XYZ for all %1 stars in "
+                    "the project?")
+                .arg(all.size()),
+            QMessageBox::Yes | QMessageBox::No);
+        if (btn != QMessageBox::Yes)
+            return;
+        stars = std::move(all);
+    }
+
+    QProgressDialog progress(
+        QString("Computing galactic kinematics for %1 star%2…")
+            .arg(stars.size())
+            .arg(stars.size() != 1 ? "s" : ""),
+        "Cancel", 0, int(stars.size()), this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(400);
+
+    const QString projectId = _currentProject->getId();
+    int done = 0, skipped = 0;
+    for (auto& star : stars) {
+        if (progress.wasCanceled())
+            break;
+        bool changed = false;
+        if (star && GalKin::computeAndStoreUVWXYZ(
+                        *star, GalKin::GalacticPotential::Model::AS, 10000,
+                        &changed)) {
+            if (changed)
+                _controller->databaseManager()->updateStarRow(projectId, star);
+            ++done;
+        } else {
+            ++skipped; // missing astrometry or systemic RV
+        }
+        progress.setValue(progress.value() + 1);
+    }
+    progress.setValue(int(stars.size()));
+
+    _tableModel->refresh();
+    QString msg = QString("Computed UVW/XYZ for %1 star%2.")
+                      .arg(done)
+                      .arg(done != 1 ? "s" : "");
+    if (skipped > 0)
+        msg += QString(" %1 skipped (incomplete astrometry or missing "
+                       "systemic RV).")
+                   .arg(skipped);
+    updateStatusBar(msg);
+    LOG_INFO("Analysis", msg);
 }
 
 void ProjectView::onRemoveStar()

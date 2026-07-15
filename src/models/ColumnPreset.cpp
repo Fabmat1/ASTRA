@@ -132,6 +132,26 @@ void ColumnPresetManager::buildColumnRegistry() {
         {"comp_mass_true", "M₂ [M☉]", "Companion Mass", false},
         {"e_comp_mass_true", "e_M₂", "Companion Mass", false},
 
+        // ── Galactic Kinematics ─────────────────────────────────────────────
+        {"gal_u", "U [km/s]", "Galactic", false},
+        {"gal_e_u", "e_U", "Galactic", false},
+        {"gal_v", "V [km/s]", "Galactic", false},
+        {"gal_e_v", "e_V", "Galactic", false},
+        {"gal_w", "W [km/s]", "Galactic", false},
+        {"gal_e_w", "e_W", "Galactic", false},
+        {"gal_x", "X [kpc]", "Galactic", false},
+        {"gal_e_x", "e_X", "Galactic", false},
+        {"gal_y", "Y [kpc]", "Galactic", false},
+        {"gal_e_y", "e_Y", "Galactic", false},
+        {"gal_z", "Z [kpc]", "Galactic", false},
+        {"gal_e_z", "e_Z", "Galactic", false},
+        {"gal_p_thin", "P(thin disk)", "Galactic", false},
+        {"gal_e_p_thin", "e_P(thin)", "Galactic", false},
+        {"gal_p_thick", "P(thick disk)", "Galactic", false},
+        {"gal_e_p_thick", "e_P(thick)", "Galactic", false},
+        {"gal_p_halo", "P(halo)", "Galactic", false},
+        {"gal_e_p_halo", "e_P(halo)", "Galactic", false},
+
         // ── Photometric LC ──────────────────────────────────────────────────
         {"phot_period", "Phot. Period [d]", "Light Curve", false},
         {"phot_e_period", "e_Phot. Period", "Light Curve", false},
@@ -219,6 +239,13 @@ void ColumnPresetManager::buildBuiltInPresets() {
                    {"phot_period", "phot_e_period", "phot_incl", "phot_e_incl",
                     "phot_q", "phot_e_q", "tess_crowdsap", "has_tess",
                     "has_gaia", "has_ztf", "has_atlas", "has_blackgem"}));
+
+    // 5. Galactic
+    _builtInPresets.push_back(
+        makePreset("preset_galactic", "Galactic",
+                   {"gal_u", "gal_e_u", "gal_v", "gal_e_v", "gal_w", "gal_e_w",
+                    "gal_x", "gal_e_x", "gal_y", "gal_e_y", "gal_z", "gal_e_z",
+                    "gal_p_thin", "gal_p_thick", "gal_p_halo"}));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
