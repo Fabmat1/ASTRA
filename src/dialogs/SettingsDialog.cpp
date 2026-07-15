@@ -1,6 +1,7 @@
 #include "SettingsDialog.h"
 #include "utils/AppSettings.h"
 #include "utils/IsisEnvironment.h"
+#include "utils/SedFitEnvironment.h"
 #include "utils/LcqueryEnvironment.h"
 #include "utils/LightcurveFetcher.h"
 #include "utils/UpdateManager.h"
@@ -312,6 +313,29 @@ QWidget *SettingsDialog::createGeneralPage() {
     });
     form->addRow("ISIS binary:", pathRow);
 
+    // ── sedfit binary (SEDplusplus SED fitting) ───────────────────────────
+    auto *sedRow = new QHBoxLayout;
+    _sedFitEdit  = new QLineEdit(_settings->sedFitBinaryPath());
+    _sedFitEdit->setPlaceholderText(
+        !SedFitEnvironment::resolveBinary().isEmpty()
+            ? "Leave blank to use the bundled sedfit"
+            : "sedfit not found - build ASTRA with the SEDplusplus submodule "
+              "or set explicitly");
+    _sedFitEdit->setToolTip(
+        "Path to a sedfit binary (SEDplusplus). Leave blank to use the copy "
+        "built and bundled with ASTRA, otherwise sedfit is searched for on "
+        "PATH.");
+    auto *sedBrowseBtn = new QPushButton("Browse…");
+    sedRow->addWidget(_sedFitEdit, 1);
+    sedRow->addWidget(sedBrowseBtn);
+    connect(sedBrowseBtn, &QPushButton::clicked, this, [this] {
+        QString f = QFileDialog::getOpenFileName(this, "Locate sedfit binary",
+                                                 _sedFitEdit->text());
+        if (!f.isEmpty())
+            _sedFitEdit->setText(f);
+    });
+    form->addRow("sedfit binary:", sedRow);
+
     // ── ADS API token ─────────────────────────────────────────────────────
     _adsTokenEdit = new QLineEdit(_settings->adsApiToken());
     _adsTokenEdit->setEchoMode(QLineEdit::Password);
@@ -335,8 +359,9 @@ QWidget *SettingsDialog::createGeneralPage() {
 
     outer->addLayout(form);
 
-    auto *hint = new QLabel("<i>Path to the ISIS executable used e.g. for "
-                            "spectral and SED fitting</i>");
+    auto *hint = new QLabel("<i>ISIS is used for spectral fitting; sedfit "
+                            "(SEDplusplus) performs the photometric SED "
+                            "fitting</i>");
     hint->setStyleSheet("color: gray;");
     outer->addWidget(hint);
 
@@ -524,6 +549,7 @@ QWidget* SettingsDialog::createLightcurveFetchPage()
 void SettingsDialog::apply()
 {
     _settings->setIsisBinaryPath(_isisEdit->text().trimmed());
+    _settings->setSedFitBinaryPath(_sedFitEdit->text().trimmed());
     QStringList paths;
     for (int i = 0; i < _gridPathsList->count(); ++i)
         paths << _gridPathsList->item(i)->text();

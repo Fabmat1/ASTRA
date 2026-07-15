@@ -11,6 +11,8 @@
 namespace {
 constexpr const char* kGroup      = "AppSettings";
 constexpr const char* kIsisBinary = "general/isisBinary";
+constexpr const char* kSedFitBinary  = "sedfit/binary";
+constexpr const char* kSedFitRefdata = "sedfit/refdataDir";
 constexpr const char *kADStoken   = "general/adsToken";
 constexpr const char* kRows       = "starDetail/rows";
 constexpr const char* kCols       = "starDetail/cols";
@@ -120,6 +122,8 @@ void AppSettings::load()
     s.beginGroup(kGroup);
 
     _isisBinaryPath = s.value(kIsisBinary, _isisBinaryPath).toString();
+    _sedFitBinaryPath = s.value(kSedFitBinary,  _sedFitBinaryPath).toString();
+    _sedFitRefdataDir = s.value(kSedFitRefdata, _sedFitRefdataDir).toString();
 
     int rows = std::clamp(s.value(kRows, _rows).toInt(), kMinGridDim, kMaxGridDim);
     int cols = std::clamp(s.value(kCols, _cols).toInt(), kMinGridDim, kMaxGridDim);
@@ -156,6 +160,8 @@ void AppSettings::save() const
     QSettings s;
     s.beginGroup(kGroup);
     s.setValue(kIsisBinary, _isisBinaryPath);
+    s.setValue(kSedFitBinary,  _sedFitBinaryPath);
+    s.setValue(kSedFitRefdata, _sedFitRefdataDir);
     s.setValue(kRows, _rows);
     s.setValue(kCols, _cols);
 
@@ -185,6 +191,22 @@ void AppSettings::setIsisBinaryPath(const QString& path)
     _isisBinaryPath = path;
     save();
     emit isisBinaryPathChanged();
+}
+
+void AppSettings::setSedFitBinaryPath(const QString& path)
+{
+    if (_sedFitBinaryPath == path) return;
+    _sedFitBinaryPath = path;
+    save();
+    emit sedFitSettingsChanged();
+}
+
+void AppSettings::setSedFitRefdataDir(const QString& dir)
+{
+    if (_sedFitRefdataDir == dir) return;
+    _sedFitRefdataDir = dir;
+    save();
+    emit sedFitSettingsChanged();
 }
 
 AppSettings::DetailPanel AppSettings::detailCell(int row, int col) const

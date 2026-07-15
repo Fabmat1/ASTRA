@@ -638,7 +638,7 @@ SEDExtractResult ExtractSED::extractFromDirectory(const QString &dirPath) {
     // now that it's just an in-memory lookup:
     if (!has("photometry_fit.txt") && !has("photometry_fit_mag.txt")) {
         result.errorMessage =
-            "Not an ISIS SED fit directory (missing photometry_fit*.txt)";
+            "Not an SED fit directory (missing photometry_fit*.txt)";
         return result;
     }
 

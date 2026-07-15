@@ -40,7 +40,8 @@ private:
     QStackedWidget* _pages    = nullptr;
 
     // General page
-    QLineEdit*     _isisEdit  = nullptr;
+    QLineEdit*     _isisEdit   = nullptr;
+    QLineEdit*     _sedFitEdit = nullptr;
 
     // Star detail page
     DetailGridEditor* _gridEditor = nullptr;

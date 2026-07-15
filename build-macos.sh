@@ -62,7 +62,8 @@ git -C "${SRC_DIR}" submodule update --init --recursive
 # gcc -> gfortran (DIGGA declares `LANGUAGES ... Fortran`, so CMake needs a
 #                  Fortran compiler at configure time even with no .f sources)
 # libomp -> OpenMP for Apple Clang (DIGGA + rv_mcmc require it)
-BREW_PKGS=(cmake pkg-config wget gcc libomp eigen boost fftw nlohmann-json tbb cfitsio openblas python numpy)
+# gsl -> SEDplusplus (sedfit) extinction splines; curl/zlib come from the OS.
+BREW_PKGS=(cmake pkg-config wget gcc libomp eigen boost fftw nlohmann-json tbb cfitsio gsl openblas python numpy)
 # dylibbundler self-contains the non-Qt lcurve helper binaries' dylibs (Boost,
 # libomp, ...) — macdeployqt only handles the main Qt app, not arbitrary execs.
 [[ "${ASTRA_BUNDLE_LCURVE}" == "1" ]] && BREW_PKGS+=(dylibbundler)

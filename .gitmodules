@@ -7,3 +7,6 @@
 [submodule "external/lightcurvequery"]
 	path = external/lightcurvequery
 	url = https://github.com/Fabmat1/lightcurvequery
+[submodule "external/SEDplusplus"]
+	path = external/SEDplusplus
+	url = https://github.com/Fabmat1/SEDplusplus

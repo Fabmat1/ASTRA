@@ -61,7 +61,7 @@ private slots:
     void onDeleteFit();
     void onPhotometryFlagToggled(int row, int column);
     void onRunFit();
-    void onIsisFinished(int exitCode, QProcess::ExitStatus status);
+    void onFitProcessFinished(int exitCode, QProcess::ExitStatus status);
     void onAddParameter();
     void onRemoveParameter();
     void onComp2Toggled(bool enabled);
@@ -100,9 +100,9 @@ private:
     QColor systemColor(int index) const;
     void applyPlotTheme(QCustomPlot* plot);
 
-    bool    isIsisAvailable() const;
-    QString findIsisBinary() const;
-    QString generateScript() const;
+    bool    isSedFitAvailable() const;
+    QString findSedFitBinary() const;
+    QString generateConfigJson() const;
     QString starIdentifierForScript() const;
     void    importFitResults(const QString& workDir);
     void    applyBestFitToStar(std::shared_ptr<SEDModel> model);
@@ -186,9 +186,9 @@ private:
 
     QPushButton*  _runFitBtn      = nullptr;
     QPushButton*  _previewBtn     = nullptr;
-    QTextEdit*    _isisOutput     = nullptr;
-    QProgressBar* _isisProgress   = nullptr;
-    QProcess*     _isisProcess    = nullptr;
+    QTextEdit*    _fitOutput      = nullptr;
+    QProgressBar* _fitProgress    = nullptr;
+    QProcess*     _fitProcess     = nullptr;
     QString       _workDir;
 
     QDoubleSpinBox *_rejectionSpin = nullptr;

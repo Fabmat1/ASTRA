@@ -8,8 +8,8 @@
 #include "plotting/qcustomplot.h"
 #include "utils/AppSettings.h"
 #include "utils/ExtractSED.h"
-#include "utils/IsisEnvironment.h"
 #include "utils/Logger.h"
+#include "utils/SedFitEnvironment.h"
 #include "utils/SystematicErrors.h"
 #include "views/widgets/GridSelectorWidget.h"
 
@@ -27,6 +27,9 @@
 #include <QGroupBox>
 #include <QHBoxLayout>
 #include <QHeaderView>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
@@ -165,9 +168,9 @@ SEDFitDialog::SEDFitDialog(std::shared_ptr<Star> star,
 
 SEDFitDialog::~SEDFitDialog()
 {
-    if (_isisProcess && _isisProcess->state() != QProcess::NotRunning) {
-        _isisProcess->kill();
-        _isisProcess->waitForFinished(2000);
+    if (_fitProcess && _fitProcess->state() != QProcess::NotRunning) {
+        _fitProcess->kill();
+        _fitProcess->waitForFinished(2000);
     }
 }
 
@@ -557,7 +560,7 @@ QWidget* SEDFitDialog::createNewFitPanel()
     _useSavedPhotCb->setToolTip(
         "When enabled, the star's saved photometry points are written to\n"
         "photometry.dat and used for the fit. When disabled, no photometry.dat\n"
-        "is written and ISIS re-queries the photometry from the archives.");
+        "is written and sedfit re-queries the photometry from the archives.");
     oLay->addWidget(_useSavedPhotCb, orow++, 0, 1, 2);
 
     oLay->setColumnStretch(1, 1);
@@ -570,26 +573,26 @@ QWidget* SEDFitDialog::createNewFitPanel()
     // ── Run / preview ────────────────────────────────────────
     auto* runLay = new QHBoxLayout;
     _runFitBtn = new QPushButton("▶ Run Fit");
-    _runFitBtn->setEnabled(isIsisAvailable());
+    _runFitBtn->setEnabled(isSedFitAvailable());
     _runFitBtn->setStyleSheet("font-weight: bold; padding: 6px 20px;");
     runLay->addWidget(_runFitBtn);
 
-    _previewBtn = new QPushButton("Preview Script…");
+    _previewBtn = new QPushButton("Preview Config…");
     runLay->addWidget(_previewBtn);
     runLay->addStretch();
 
-    _isisProgress = new QProgressBar;
-    _isisProgress->setVisible(false);
-    _isisProgress->setRange(0, 0);
-    runLay->addWidget(_isisProgress);
+    _fitProgress = new QProgressBar;
+    _fitProgress->setVisible(false);
+    _fitProgress->setRange(0, 0);
+    runLay->addWidget(_fitProgress);
     nfLay->addLayout(runLay);
 
-    _isisOutput = new QTextEdit;
-    _isisOutput->setReadOnly(true);
-    _isisOutput->setMaximumHeight(150);
-    _isisOutput->setVisible(false);
-    _isisOutput->setFont(QFont("monospace", 8));
-    nfLay->addWidget(_isisOutput);
+    _fitOutput = new QTextEdit;
+    _fitOutput->setReadOnly(true);
+    _fitOutput->setMaximumHeight(150);
+    _fitOutput->setVisible(false);
+    _fitOutput->setFont(QFont("monospace", 8));
+    nfLay->addWidget(_fitOutput);
 
     nfLay->addStretch();
     _newFitScroll->setWidget(scrollContent);
@@ -597,13 +600,13 @@ QWidget* SEDFitDialog::createNewFitPanel()
     connect(_runFitBtn, &QPushButton::clicked, this, &SEDFitDialog::onRunFit);
     connect(_previewBtn, &QPushButton::clicked, this, [this] {
         QDialog dlg(this);
-        dlg.setWindowTitle("Script Preview");
+        dlg.setWindowTitle("Config Preview");
         dlg.resize(700, 500);
         auto* l = new QVBoxLayout(&dlg);
         auto* te = new QTextEdit;
         te->setReadOnly(true);
         te->setFont(QFont("monospace", 9));
-        te->setPlainText(generateScript());
+        te->setPlainText(generateConfigJson());
         l->addWidget(te);
         auto* cb = new QPushButton("Close");
         connect(cb, &QPushButton::clicked, &dlg, &QDialog::accept);
@@ -692,9 +695,13 @@ void SEDFitDialog::writePhotometryDat(const QString& filepath)
            "      angu_dist_arcsec     VizieR_catalog\n";
 
     // ── Data rows ────────────────────────────────────────────
+    // sedfit's reader requires exactly 8 whitespace-separated tokens per
+    // row, so empty fields must be filled with placeholders.
     for (const auto& p : points) {
         if (p.magnitude == 0.0 && p.magnitudeErr == 0.0) continue;
+        if (p.system.isEmpty() || p.passband.isEmpty()) continue;
         QString type = p.type.isEmpty() ? "magnitude" : p.type;
+        QString cat  = p.vizierCatalog.isEmpty() ? "none" : p.vizierCatalog;
 
         out << QString::asprintf("%4d     %-10s%16s%20s%20s   %-13s%21s         %s\n",
                 p.flag,
@@ -704,7 +711,7 @@ void SEDFitDialog::writePhotometryDat(const QString& filepath)
                 qPrintable(QString::number(p.magnitudeErr, 'g', 10)),
                 qPrintable(type),
                 qPrintable(QString::number(p.angularDist, 'g', 16)),
-                qPrintable(p.vizierCatalog));
+                qPrintable(cat));
     }
 }
 
@@ -2335,15 +2342,15 @@ void SEDFitDialog::onPhotometryFlagToggled(int row, int column)
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// ISIS integration
+// sedfit (SEDplusplus) integration
 // ═══════════════════════════════════════════════════════════════════
 
-bool SEDFitDialog::isIsisAvailable() const {
-    return !findIsisBinary().isEmpty();
+bool SEDFitDialog::isSedFitAvailable() const {
+    return !findSedFitBinary().isEmpty();
 }
 
-QString SEDFitDialog::findIsisBinary() const {
-    return IsisEnvironment::resolveBinary();
+QString SEDFitDialog::findSedFitBinary() const {
+    return SedFitEnvironment::resolveBinary();
 }
 
 QString SEDFitDialog::starIdentifierForScript() const
@@ -2365,44 +2372,27 @@ QString SEDFitDialog::starIdentifierForScript() const
     return sid;
 }
 
-QString SEDFitDialog::generateScript() const
+QString SEDFitDialog::generateConfigJson() const
 {
-    QString script;
-    QTextStream s(&script);
+    QJsonObject cfg;
 
-    s << "require(\"stellar_isisscripts.sl\");\n";
-    s << "variable tscript_start = _ftime;\n\n";
-
-    QString starId = starIdentifierForScript();
-    s << "variable basename = \"\";\n";
-    s << "variable star = \"" << starId << "\";\n";
-    s << "variable nargs = length(__argv);\n";
-    s << "if(nargs==2){\n";
-    s << "  star = __argv[1];\n";
-    s << "  basename = strreplace(star, \" \", \"_\") + \"_\";\n";
-    s << "  if(_slang_guess_type(star)==Integer_Type)"
-         " star = \"Gaia DR3 \" + star;\n";
-    s << "}\n";
-    s << "star = strreplace(strtrim(star), \"_\", \" \");\n\n";
+    cfg["star"] = starIdentifierForScript();
 
     if (Star::isSet(_star->getRa()) && Star::isSet(_star->getDec())) {
-        s << "variable coordinates = struct{ra=" << _star->getRa()
-          << ", dec=" << _star->getDec() << "};\n";
-    } else {
-        s << "variable coordinates = struct{ra=NULL, dec=NULL};\n";
+        QJsonObject coords;
+        coords["ra"]  = _star->getRa();
+        coords["dec"] = _star->getDec();
+        cfg["coordinates"] = coords;
     }
 
     if (_fixDistCb->isChecked()) {
-        s << "variable fix_distance = " << _distSpin->value() << ";\n";
-        s << "variable fix_distance_err = " << _distErrSpin->value() << ";\n";
-    } else {
-        s << "variable fix_distance = NULL;\n";
-        s << "variable fix_distance_err = NULL;\n";
+        cfg["fix_distance"]     = _distSpin->value();
+        cfg["fix_distance_err"] = _distErrSpin->value();
     }
 
     // ── Read parameter table into par / par_full ─────────────
-    QStringList parN, parV, parF;
-    QStringList pfN, pfV, pfF, pfMin, pfMax;
+    QJsonArray parN, parV, parF;
+    QJsonArray pfN, pfV, pfF, pfMin, pfMax;
 
     for (int i = 0; i < _paramTableWidget->rowCount(); ++i) {
         QString name = _paramTableWidget->item(i, PP_Name)->text().trimmed();
@@ -2414,143 +2404,135 @@ QString SEDFitDialog::generateScript() const
         if (name.isEmpty()) continue;
 
         if (!mn.isEmpty() && !mx.isEmpty()) {
-            pfN   << "\"" + name + "\"";
-            pfV   << val;
-            pfF   << (frozen ? "1" : "0");
-            pfMin << mn;
-            pfMax << mx;
+            pfN   << name;
+            pfV   << val.toDouble();
+            pfF   << (frozen ? 1 : 0);
+            pfMin << mn.toDouble();
+            pfMax << mx.toDouble();
         } else {
-            parN << "\"" + name + "\"";
-            parV << val;
-            parF << (frozen ? "1" : "0");
+            parN << name;
+            parV << val.toDouble();
+            parF << (frozen ? 1 : 0);
         }
     }
 
     if (!parN.isEmpty()) {
-        s << "variable par = struct{name = [" << parN.join(", ") << "],\n"
-          << "                      value = [" << parV.join(", ") << "],\n"
-          << "                      freeze = [" << parF.join(", ") << "]};\n";
-    } else {
-        s << "variable par = NULL;\n";
+        QJsonObject par;
+        par["name"]   = parN;
+        par["value"]  = parV;
+        par["freeze"] = parF;
+        cfg["par"] = par;
     }
     if (!pfN.isEmpty()) {
-        s << "variable par_full = struct{"
-             "name = [" << pfN.join(", ") << "],\n"
-          << "                           "
-             "value = [" << pfV.join(", ") << "],\n"
-          << "                           "
-             "freeze = [" << pfF.join(", ") << "],\n"
-          << "                           "
-             "min = [" << pfMin.join(", ") << "],\n"
-          << "                           "
-             "max = [" << pfMax.join(", ") << "]};\n";
-    } else {
-        s << "variable par_full = NULL;\n";
+        QJsonObject parFull;
+        parFull["name"]   = pfN;
+        parFull["value"]  = pfV;
+        parFull["freeze"] = pfF;
+        parFull["min"]    = pfMin;
+        parFull["max"]    = pfMax;
+        cfg["par_full"] = parFull;
     }
 
     // ── Grid directories ─────────────────────────────────────
-    QStringList gridDirs;
+    // sedfit resolves griddirectories against bpaths itself (grid.fits probe),
+    // exactly like the old search_grid_fit_photometry.
+    QJsonArray gridDirs;
     QSet<QString> extraBases;
-    
+
     auto collect = [&](GridSelectorWidget* sel) {
         QString rel  = sel->selectedRelativePath();
         QString base = sel->selectedBasePath();
         if (rel.isEmpty()) return;
-        gridDirs << "\"" + rel + "\"";
+        gridDirs << rel;
         if (!base.isEmpty()) extraBases.insert(base);
     };
-    
+
     collect(_gridSelector1);
     if (_enableComp2Cb->isChecked()) collect(_gridSelector2);
-    
-    s << "variable griddirectories, bpaths;\n";
-    if (gridDirs.isEmpty()) {
-        s << "griddirectories = [\"sdB/processed/\"];\n";
-    } else {
-        s << "griddirectories = [" << gridDirs.join(", ") << "];\n";
-    }
-    
+
+    if (gridDirs.isEmpty())
+        gridDirs << "sdB/processed/";
+    cfg["griddirectories"] = gridDirs;
+
     // Merge extra bases from selected grids with configured base paths
-    QStringList quotedPaths;
-    quotedPaths << "\"./\"";
-    for (const auto& bp : extraBases) {
-        QString t = bp;
+    QJsonArray bpaths;
+    QStringList seen;
+    auto addBase = [&](QString t) {
+        t = t.trimmed();
+        if (t.isEmpty()) return;
         if (!t.endsWith('/')) t += '/';
-        quotedPaths << "\"" + t + "\"";
-    }
+        if (seen.contains(t)) return;
+        seen << t;
+        bpaths << t;
+    };
+    addBase("./");
+    for (const auto& bp : extraBases) addBase(bp);
     AppSettings sGrid;
-    for (const auto& p : sGrid.gridBasePaths()) {
-        QString t = p.trimmed();
-        if (t.isEmpty()) continue;
-        if (!t.endsWith('/')) t += '/';
-        QString q = "\"" + t + "\"";
-        if (!quotedPaths.contains(q)) quotedPaths << q;
-    }
-    s << "bpaths = [" << quotedPaths.join(",\n          ") << "];\n";
-    s << "griddirectories = search_grid_fit_photometry("
-         "bpaths, griddirectories, \"grid.fits\");\n\n";
+    for (const auto& p : sGrid.gridBasePaths()) addBase(p);
+    cfg["bpaths"] = bpaths;
 
     // ── Options ──────────────────────────────────────────────
-    s << "variable conf_level = "
-      << _confLevelCombo->currentData().toInt() << ";\n";
-    s << "variable write_model = "
-      << (_writeModelCb->isChecked() ? 1 : 0) << ";\n";
-    s << "variable save_MC = "
-      << (_saveMCCb->isChecked() ? 1 : 0) << ";\n";
-    s << "variable apply_ZPO_corr = " << (_applyZPOCb->isChecked() ? 1 : 0)
-      << ";\n";
-    s << "variable remove_outliers = " << _rejectionSpin->value()
-      << ";\n";
-    s << "variable nMC = nint(" << _nmcSpin->value() << ");\n";
-    s << "variable stilism_distance_simple = "
-      << (_stilDistSimpleCb->isChecked() ? 1 : 0) << ";\n";
-    s << "variable stilism_ebmv_simple = "
-      << (_stilEbmvSimpleCb->isChecked() ? 1 : 0) << ";\n";
-    s << "variable stilism_ebmv_rerun = "
-      << (_stilEbmvRerunCb->isChecked() ? 1 : 0) << ";\n";
+    cfg["conf_level"]      = _confLevelCombo->currentData().toInt();
+    cfg["write_model"]     = _writeModelCb->isChecked() ? 1 : 0;
+    // The .tex table is what carries most fitted parameters into ASTRA.
+    cfg["write_tex"]       = 1;
+    cfg["save_MC"]         = _saveMCCb->isChecked() ? 1 : 0;
+    cfg["write_fits"]      = _saveMCCb->isChecked() ? 1 : 0;
+    cfg["apply_ZPO_corr"]  = _applyZPOCb->isChecked() ? 1 : 0;
+    cfg["remove_outliers"] = _rejectionSpin->value();
+    cfg["nMC"]             = _nmcSpin->value();
+    cfg["stilism_distance_simple"] = _stilDistSimpleCb->isChecked() ? 1 : 0;
+    cfg["stilism_ebmv_simple"]     = _stilEbmvSimpleCb->isChecked() ? 1 : 0;
+    cfg["stilism_ebmv_rerun"]      = _stilEbmvRerunCb->isChecked() ? 1 : 0;
 
-    s << "variable mass_can = " << _massCanSpin->value() << ";\n";
-    s << "variable delta_mass_can = "
-      << _deltaMassCanSpin->value() << ";\n";
-
-    s << "variable derive_logg = "
-      << (_deriveLoggCb->isChecked() ? 1 : 0) << ";\n";
-    s << "variable hb_distance = "
-      << (_hbDistanceCb->isChecked() ? 1 : 0) << ";\n";
-    s << "if(hb_distance) derive_logg = 1;\n";
-
-    s << "variable derive_logg_c2 = "
-      << (_deriveLoggC2Cb->isChecked() ? 1 : 0) << ";\n";
-    s << "variable z_c2 = " << _zC2Spin->value() << ";\n";
-    s << "variable derive_sr = "
-      << (_deriveSRCb->isChecked() ? 1 : 0) << ";\n";
-    s << "variable sdOB_radius = " << _sdOBRadSpin->value() << ";\n";
-    s << "variable R1 = " << _r1Spin->value() << ";\n";
-    s << "variable R1_err = " << _r1ErrSpin->value() << ";\n\n";
-
-    // ── Script body ──────────────────────────────────────────
-    QFile bodyFile(":/scripts/photometry_body.sl");
-    if (bodyFile.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        s << bodyFile.readAll();
-    } else {
-        s << "% ERROR: Script body template not found.\n";
-        s << "% Place the photometry.sl body at"
-             " resources/scripts/photometry_body.sl\n";
-        LOG_WARNING("SED", "photometry_body.sl resource not found");
+    // Niche options; sedfit rejects them when set until they are ported.
+    if (_massCanSpin->value() > 0) {
+        cfg["mass_can"]       = _massCanSpin->value();
+        cfg["delta_mass_can"] = _deltaMassCanSpin->value();
+    }
+    if (_deriveLoggCb->isChecked())   cfg["derive_logg"]   = 1;
+    if (_hbDistanceCb->isChecked())   cfg["hb_distance"]   = 1;
+    if (_deriveLoggC2Cb->isChecked()) {
+        cfg["derive_logg_c2"] = 1;
+        cfg["z_c2"]           = _zC2Spin->value();
+    }
+    if (_deriveSRCb->isChecked()) {
+        cfg["derive_sr"]   = 1;
+        cfg["sdOB_radius"] = _sdOBRadSpin->value();
+    }
+    if (_r1Spin->value() > 0) {
+        cfg["R1"]     = _r1Spin->value();
+        cfg["R1_err"] = _r1ErrSpin->value();
     }
 
-    return script;
+    // ── Environment ──────────────────────────────────────────
+    cfg["refdata"] = SedFitEnvironment::refdataDir();
+    cfg["workdir"] = ".";
+    cfg["outdir"]  = ".";
+
+    return QString::fromUtf8(
+        QJsonDocument(cfg).toJson(QJsonDocument::Indented));
 }
 
 // ── Run fit ──────────────────────────────────────────────────────
 
 void SEDFitDialog::onRunFit()
 {
-    if (!isIsisAvailable()) {
+    if (!isSedFitAvailable()) {
         QMessageBox::warning(
-            this, "ISIS Not Found",
-            "Cannot run fit: ISIS binary not found. "
-            "Configure the path in Settings or install ISIS to your PATH.");
+            this, "sedfit Not Found",
+            "Cannot run fit: sedfit binary not found. "
+            "Build ASTRA with the SEDplusplus submodule, or configure the "
+            "path in Settings / install sedfit to your PATH.");
+        return;
+    }
+    if (SedFitEnvironment::refdataDir().isEmpty()) {
+        QMessageBox::warning(
+            this, "Filter Data Not Found",
+            "Cannot run fit: the filter reference data "
+            "(filter_passbands.fits.gz) was not found. Reinstall ASTRA or "
+            "point the sedfit refdata directory to a stellar_isisscripts "
+            "refdata folder in Settings.");
         return;
     }
 
@@ -2563,72 +2545,73 @@ void SEDFitDialog::onRunFit()
     tmpDir.setAutoRemove(false);
     _workDir = tmpDir.path();
 
-    // Only feed ISIS the saved photometry when the toggle is on; otherwise
-    // leave photometry.dat absent so ISIS re-queries the archives.
+    // Only feed sedfit the saved photometry when the toggle is on; otherwise
+    // leave photometry.dat absent so sedfit re-queries the archives.
     const bool useSaved = !_useSavedPhotCb || _useSavedPhotCb->isChecked();
     if (useSaved)
         writePhotometryDat(_workDir + "/photometry.dat");
 
-    // Write script
-    QString scriptPath = _workDir + "/photometry.sl";
+    // Write config
+    QString configPath = _workDir + "/config.json";
     {
-        QFile f(scriptPath);
+        QFile f(configPath);
         if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
             QMessageBox::warning(this, "Error",
-                                 "Failed to write script file.");
+                                 "Failed to write config file.");
             return;
         }
         QTextStream out(&f);
-        out << generateScript();
+        out << generateConfigJson();
     }
 
     _runFitBtn->setEnabled(false);
-    _isisProgress->setVisible(true);
-    _isisOutput->setVisible(true);
-    _isisOutput->clear();
-    _isisOutput->append("Working directory: " + _workDir);
+    _fitProgress->setVisible(true);
+    _fitOutput->setVisible(true);
+    _fitOutput->clear();
+    _fitOutput->append("Working directory: " + _workDir);
     if (QFile::exists(_workDir + "/photometry.dat"))
-        _isisOutput->append("✓ Wrote photometry.dat with existing photometric data");
+        _fitOutput->append("✓ Wrote photometry.dat with existing photometric data");
     else
-        _isisOutput->append("No photometry.dat written - ISIS will query for data");
-    _isisOutput->append("Starting ISIS...\n");
+        _fitOutput->append("No photometry.dat written - sedfit will query for data");
+    _fitOutput->append("Starting sedfit...\n");
 
-    const QString isisBinary = findIsisBinary();
+    const QString sedFitBinary = findSedFitBinary();
 
-    _isisProcess = new QProcess(this);
-    _isisProcess->setWorkingDirectory(_workDir);
-    _isisProcess->setProcessEnvironment(IsisEnvironment::environmentFor(isisBinary));
+    _fitProcess = new QProcess(this);
+    _fitProcess->setWorkingDirectory(_workDir);
+    _fitProcess->setProcessEnvironment(
+        SedFitEnvironment::environmentFor(sedFitBinary));
 
-    connect(_isisProcess, &QProcess::readyReadStandardOutput, this, [this] {
-        _isisOutput->append(
-            QString::fromLocal8Bit(_isisProcess->readAllStandardOutput()));
+    connect(_fitProcess, &QProcess::readyReadStandardOutput, this, [this] {
+        _fitOutput->append(
+            QString::fromLocal8Bit(_fitProcess->readAllStandardOutput()));
     });
-    connect(_isisProcess, &QProcess::readyReadStandardError, this, [this] {
-        _isisOutput->append(
-            QString::fromLocal8Bit(_isisProcess->readAllStandardError()));
+    connect(_fitProcess, &QProcess::readyReadStandardError, this, [this] {
+        _fitOutput->append(
+            QString::fromLocal8Bit(_fitProcess->readAllStandardError()));
     });
-    connect(_isisProcess,
+    connect(_fitProcess,
             QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished),
-            this, &SEDFitDialog::onIsisFinished);
+            this, &SEDFitDialog::onFitProcessFinished);
 
-    _isisProcess->start(isisBinary, {"photometry.sl"});
+    _fitProcess->start(sedFitBinary, {configPath});
 }
 
-void SEDFitDialog::onIsisFinished(int exitCode, QProcess::ExitStatus status)
+void SEDFitDialog::onFitProcessFinished(int exitCode, QProcess::ExitStatus status)
 {
-    _isisProgress->setVisible(false);
+    _fitProgress->setVisible(false);
     _runFitBtn->setEnabled(true);
 
     if (status != QProcess::NormalExit || exitCode != 0) {
-        _isisOutput->append(QString("\n⚠ ISIS exited with code %1").arg(exitCode));
+        _fitOutput->append(QString("\n⚠ sedfit exited with code %1").arg(exitCode));
         return;
     }
 
-    _isisOutput->append("\n✓ ISIS finished successfully. Importing results...");
+    _fitOutput->append("\n✓ sedfit finished successfully. Importing results...");
     importFitResults(_workDir);
 
-    _isisProcess->deleteLater();
-    _isisProcess = nullptr;
+    _fitProcess->deleteLater();
+    _fitProcess = nullptr;
 }
 
 // ── Import fit results from working directory ────────────────────
@@ -2638,7 +2621,7 @@ void SEDFitDialog::importFitResults(const QString& workDir)
     auto result = ExtractSED::extractFromDirectory(workDir);
     if (!result.success) {
         QMessageBox::warning(this, "Import Failed",
-                             "Could not parse ISIS results:\n" + result.errorMessage);
+                             "Could not parse sedfit results:\n" + result.errorMessage);
         return;
     }
 
@@ -2685,7 +2668,7 @@ void SEDFitDialog::importFitResults(const QString& workDir)
 
     emit fitDataChanged();
 
-    _isisOutput->append("✓ New SED model imported successfully.");
+    _fitOutput->append("✓ New SED model imported successfully.");
     LOG_INFO("SED", QString("Imported new SED fit for %1 from %2")
                         .arg(_star->getSourceId(), workDir));
 }

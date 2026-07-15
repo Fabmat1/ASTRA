@@ -115,6 +115,28 @@ file(RELATIVE_PATH ASTRA_LCURVE_BUNDLE_RELDIR
      "${CMAKE_INSTALL_FULL_BINDIR}"
      "${CMAKE_INSTALL_FULL_LIBEXECDIR}/astra/lcurve")
 
+# ── SEDplusplus photometric SED fitting (bundled submodule) ─────────────────
+# C++ replacement for the former ISIS-based SED fitting. The submodule builds
+# the `sedfit` executable, which is installed under <libexec>/astra/sedfit and
+# resolved at runtime relative to the ASTRA binary (same pattern as lcurve).
+# Its filter reference data ships read-only under <datadir>/astra/sedfit.
+if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/external/SEDplusplus/CMakeLists.txt")
+    set(ASTRA_HAVE_SEDFIT TRUE)
+else()
+    message(WARNING
+        "SEDplusplus submodule missing - SED fitting will only work with a "
+        "user-installed sedfit binary.\n"
+        "  git submodule update --init external/SEDplusplus")
+    set(ASTRA_HAVE_SEDFIT FALSE)
+endif()
+
+file(RELATIVE_PATH ASTRA_SEDFIT_BUNDLE_RELDIR
+     "${CMAKE_INSTALL_FULL_BINDIR}"
+     "${CMAKE_INSTALL_FULL_LIBEXECDIR}/astra/sedfit")
+file(RELATIVE_PATH ASTRA_SEDFIT_REFDATA_RELDIR
+     "${CMAKE_INSTALL_FULL_BINDIR}"
+     "${CMAKE_INSTALL_FULL_DATADIR}/astra/sedfit/refdata")
+
 # Same idea for the bundled lightcurvequery Python sources. They are shipped as
 # read-only data under <prefix>/share/astra/lightcurvequery; at runtime ASTRA
 # unpacks them into a writable per-user dir and builds a venv next to them.
@@ -205,6 +227,13 @@ set(RV_MCMC_BUILD_CLI    OFF CACHE BOOL "" FORCE)
 set(RV_MCMC_BUILD_PYBIND OFF CACHE BOOL "" FORCE)
 add_subdirectory(external/rv_mcmc EXCLUDE_FROM_ALL)
 
+# SEDplusplus submodule – builds the `sedfit` helper executable that ASTRA
+# drives via QProcess for photometric SED fitting. Built by default (not
+# EXCLUDE_FROM_ALL) so `cmake --build` always produces it alongside ASTRA.
+if(ASTRA_HAVE_SEDFIT)
+    add_subdirectory(external/SEDplusplus)
+endif()
+
 
 # ── Belt-and-braces: force the final ABI on every linked target ─────────────
 # Some submodules unconditionally `set(CMAKE_CXX_STANDARD 17)` in their own
@@ -294,6 +323,7 @@ set(SOURCES
     src/utils/PlotPresetStore.cpp
     src/utils/LcqueryEnvironment.cpp
     src/utils/IsisEnvironment.cpp
+    src/utils/SedFitEnvironment.cpp
     src/utils/CheckStateDragger.cpp
     src/utils/ClaretTables.cpp
     src/utils/LCFitPhysics.cpp
@@ -432,6 +462,7 @@ set(HEADERS
     src/utils/PlotPresetStore.h
     src/utils/LcqueryEnvironment.h
     src/utils/IsisEnvironment.h
+    src/utils/SedFitEnvironment.h
     src/utils/CheckStateDragger.h
     src/utils/ClaretTables.h
     src/utils/LCFitPhysics.h
@@ -541,6 +572,10 @@ target_compile_definitions(ASTRA PRIVATE
     ASTRA_LCURVE_SOURCE_DIR="${ASTRA_LCURVE_DIR}"
     ASTRA_ISIS_BUNDLE_RELDIR="${ASTRA_ISIS_BUNDLE_RELDIR}"
     ASTRA_ISIS_SOURCE_DIR="${ASTRA_ISIS_DIR}"
+    ASTRA_SEDFIT_BUNDLE_RELDIR="${ASTRA_SEDFIT_BUNDLE_RELDIR}"
+    ASTRA_SEDFIT_REFDATA_RELDIR="${ASTRA_SEDFIT_REFDATA_RELDIR}"
+    ASTRA_SEDFIT_BUILD_DIR="${CMAKE_BINARY_DIR}/external/SEDplusplus"
+    ASTRA_SEDFIT_REFDATA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/resources/sedfit/refdata"
 )
 
 # Profiling option
@@ -631,6 +666,14 @@ install(TARGETS ASTRA
 if(_lcurve_found_files)
     install(PROGRAMS ${_lcurve_found_files}
         DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/astra/lcurve")
+endif()
+
+# ── Bundle the sedfit SED-fitting helper + its filter reference data ─────────
+if(ASTRA_HAVE_SEDFIT)
+    install(TARGETS sedfit
+        RUNTIME DESTINATION "${CMAKE_INSTALL_LIBEXECDIR}/astra/sedfit")
+    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/resources/sedfit/refdata/"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/astra/sedfit/refdata")
 endif()
 
 # ── Bundle lightcurvequery Python sources (if the submodule is present) ─────

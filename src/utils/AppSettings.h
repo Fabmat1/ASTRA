@@ -29,6 +29,15 @@ public:
     QString isisBinaryPath() const { return _isisBinaryPath; }
     void    setIsisBinaryPath(const QString& path);
 
+    // ── SED fitting (SEDplusplus sedfit binary) ──────────────────────────
+    /// User override for the sedfit executable ("" = use bundled/PATH).
+    QString sedFitBinaryPath() const { return _sedFitBinaryPath; }
+    void    setSedFitBinaryPath(const QString& path);
+
+    /// User override for the filter reference-data directory ("" = bundled).
+    QString sedFitRefdataDir() const { return _sedFitRefdataDir; }
+    void    setSedFitRefdataDir(const QString& dir);
+
     QStringList gridBasePaths() const { return _gridBasePaths; }
     void        setGridBasePaths(const QStringList& paths);    
 
@@ -71,6 +80,7 @@ public:
 
 signals:
     void isisBinaryPathChanged();
+    void sedFitSettingsChanged();
     void detailGridChanged();
     void gridBasePathsChanged();
     void lcquerySettingsChanged();
@@ -84,6 +94,8 @@ signals:
     void applyDefaults();
 
     QString _isisBinaryPath;
+    QString _sedFitBinaryPath;
+    QString _sedFitRefdataDir;
     QStringList _gridBasePaths;
 
     int _rows = 2;
