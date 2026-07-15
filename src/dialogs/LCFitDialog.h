@@ -169,6 +169,8 @@ class LCFitDialog : public QDialog {
     QDoubleSpinBox *_lmMsSpan = nullptr;
     QCheckBox *_sinIPrior = nullptr;
     QCheckBox *_plotEnabled = nullptr;
+    QCheckBox *_cudaEnabled = nullptr;
+    int _cudaDevice = -1;
     QMap<QString, QCheckBox *> _vary;
 
     // - Advanced page -

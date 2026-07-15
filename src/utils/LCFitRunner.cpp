@@ -1,5 +1,89 @@
 #include "LCFitRunner.h"
 
+#include <QLibrary>
+#include <QProcessEnvironment>
+#include <QStringList>
+
+LCFitRunner::CudaStatus LCFitRunner::cudaStatus() {
+#if defined(Q_OS_LINUX) || defined(Q_OS_WIN)
+  QLibrary driver;
+#ifdef Q_OS_WIN
+  driver.setFileName(QStringLiteral("nvcuda"));
+#else
+  driver.setFileNameAndVersion(QStringLiteral("cuda"), 1);
+#endif
+
+  if (!driver.load())
+    return {false, QObject::tr("NVIDIA CUDA driver not available")};
+
+  using CuInit = int (*)(unsigned int);
+  using CuDeviceGetCount = int (*)(int *);
+  using CuDeviceGet = int (*)(int *, int);
+  using CuDeviceComputeCapability = int (*)(int *, int *, int);
+  using CuDeviceGetName = int (*)(char *, int, int);
+
+  const auto cuInit = reinterpret_cast<CuInit>(driver.resolve("cuInit"));
+  const auto cuDeviceGetCount =
+      reinterpret_cast<CuDeviceGetCount>(driver.resolve("cuDeviceGetCount"));
+  const auto cuDeviceGet =
+      reinterpret_cast<CuDeviceGet>(driver.resolve("cuDeviceGet"));
+  const auto cuDeviceComputeCapability =
+      reinterpret_cast<CuDeviceComputeCapability>(
+          driver.resolve("cuDeviceComputeCapability"));
+  const auto cuDeviceGetName =
+      reinterpret_cast<CuDeviceGetName>(driver.resolve("cuDeviceGetName"));
+
+  if (!cuInit || !cuDeviceGetCount || !cuDeviceGet ||
+      !cuDeviceComputeCapability)
+    return {false, QObject::tr("CUDA driver API is incomplete")};
+  if (cuInit(0) != 0)
+    return {false, QObject::tr("CUDA driver could not be initialized")};
+
+  int deviceCount = 0;
+  if (cuDeviceGetCount(&deviceCount) != 0 || deviceCount <= 0)
+    return {false, QObject::tr("No NVIDIA CUDA device detected")};
+
+  QStringList detected;
+  for (int ordinal = 0; ordinal < deviceCount; ++ordinal) {
+    int device = 0;
+    int major = 0;
+    int minor = 0;
+    if (cuDeviceGet(&device, ordinal) != 0 ||
+        cuDeviceComputeCapability(&major, &minor, device) != 0)
+      continue;
+
+    QString name = QObject::tr("CUDA device %1").arg(ordinal);
+    if (cuDeviceGetName) {
+      char buffer[256]{};
+      if (cuDeviceGetName(buffer, int(sizeof(buffer)), device) == 0 &&
+          buffer[0] != '\0')
+        name = QString::fromUtf8(buffer);
+    }
+    detected << QObject::tr("%1 (compute capability %2.%3)")
+                    .arg(name)
+                    .arg(major)
+                    .arg(minor);
+
+    // The default lcurve CUDA build contains native Turing/Ampere kernels
+    // and forward-compatible PTX starting at compute capability 7.5.
+    if (major > 7 || (major == 7 && minor >= 5))
+      return {true,
+              QObject::tr("Compatible GPU detected: %1").arg(detected.back()),
+              ordinal};
+  }
+
+  return {false,
+          detected.isEmpty()
+              ? QObject::tr("CUDA devices could not be queried")
+              : QObject::tr("LCURVE CUDA requires compute capability 7.5 or "
+                            "newer; detected: %1")
+                    .arg(detected.join(QStringLiteral(", ")))};
+#else
+  return {false,
+          QObject::tr("CUDA acceleration is unavailable on this platform")};
+#endif
+}
+
 QString LCFitRunner::methodBinaryName(Method m) {
   switch (m) {
   case Method::LevMarq:
@@ -47,6 +131,15 @@ void LCFitRunner::start(Method, const QString &configFilename) {
     _proc->deleteLater();
   _proc = new QProcess(this);
   _proc->setProcessChannelMode(QProcess::MergedChannels);
+  QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+  // Set both states explicitly so an inherited shell setting cannot override
+  // the switch in the fit dialog.
+  env.insert(QStringLiteral("LCURVE_CUDA"),
+             _cudaEnabled ? QStringLiteral("1") : QStringLiteral("0"));
+  if (_cudaEnabled && _cudaDevice >= 0)
+    env.insert(QStringLiteral("LCURVE_CUDA_DEVICE"),
+               QString::number(_cudaDevice));
+  _proc->setProcessEnvironment(env);
   if (!_workDir.isEmpty())
     _proc->setWorkingDirectory(_workDir);
 
@@ -57,6 +150,11 @@ void LCFitRunner::start(Method, const QString &configFilename) {
   connect(_proc, &QProcess::errorOccurred, this, &LCFitRunner::onErrorOccurred);
 
   emit started();
+  emit rawOutput(
+      QString("[info] CUDA acceleration %1\n")
+          .arg(_cudaEnabled ? QStringLiteral("requested")
+                            : QStringLiteral("disabled"))
+          .toUtf8());
   emit rawOutput(QString("$ %1 %2\n").arg(_binary, configFilename).toUtf8());
   _proc->start(_binary, {configFilename});
 }

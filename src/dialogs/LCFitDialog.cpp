@@ -115,6 +115,15 @@ LCFitDialog::LCFitDialog(Inputs in, QWidget *parent)
 
   setupUi();
 
+  const LCFitRunner::CudaStatus cuda = LCFitRunner::cudaStatus();
+  _cudaEnabled->setChecked(cuda.available);
+  _cudaEnabled->setEnabled(cuda.available);
+  _cudaEnabled->setToolTip(cuda.description);
+  _cudaDevice = cuda.deviceIndex;
+  _cudaEnabled->setText(
+      cuda.available ? tr("Use CUDA acceleration (recommended)")
+                     : tr("Use CUDA acceleration (unavailable)"));
+
   // Resolve binary
   if (_in.settings) {
     for (int i = 0; i < _method->count(); ++i) {
@@ -730,6 +739,11 @@ QWidget *LCFitDialog::buildSolverPage() {
   _method->addItem(LCFitRunner::methodLabel(LCFitRunner::Method::Mcmc),
                    int(LCFitRunner::Method::Mcmc));
   mLay->addRow(tr("Method:"), _method);
+
+  _cudaEnabled = new QCheckBox(tr("Use CUDA acceleration"));
+  _cudaEnabled->setChecked(false);
+  _cudaEnabled->setEnabled(false);
+  mLay->addRow(_cudaEnabled);
 
   _plotEnabled = new QCheckBox(tr("Enable gnuplot plotting during fit"));
 #if defined(Q_OS_MACOS)
@@ -1414,6 +1428,8 @@ void LCFitDialog::onRunClicked() {
   _runner = new LCFitRunner(this);
   _runner->setBinaryPath(bin);
   _runner->setWorkingDir(_tempDir);
+  _runner->setCudaEnabled(_cudaEnabled->isChecked());
+  _runner->setCudaDevice(_cudaDevice);
   connect(_runner, &LCFitRunner::rawOutput, _term,
           [this](const QByteArray &b) { _term->feed(b); });
   connect(_runner, &LCFitRunner::started, this, [this] {
