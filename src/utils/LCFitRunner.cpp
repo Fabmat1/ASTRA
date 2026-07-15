@@ -1,5 +1,7 @@
 #include "LCFitRunner.h"
 
+#include <QJsonDocument>
+#include <QJsonParseError>
 #include <QLibrary>
 #include <QProcessEnvironment>
 #include <QStringList>
@@ -168,9 +170,64 @@ void LCFitRunner::cancel() {
 }
 
 void LCFitRunner::onReadyRead() {
-  emit rawOutput(_proc->readAllStandardOutput());
+  if (!_proc)
+    return;
+  _outputBuffer += _proc->readAllStandardOutput();
+  drainOutput(false);
 }
+
+void LCFitRunner::drainOutput(bool flush) {
+  static const QByteArray marker("@@LCURVE_PLOT@@");
+
+  while (!_outputBuffer.isEmpty()) {
+    const qsizetype markerPos = _outputBuffer.indexOf(marker);
+    if (markerPos < 0) {
+      // Keep enough trailing bytes to recognize a marker split across two
+      // QProcess readyRead notifications.
+      const qsizetype keep = flush ? 0 : marker.size() - 1;
+      const qsizetype count = _outputBuffer.size() - keep;
+      if (count > 0) {
+        emit rawOutput(_outputBuffer.left(count));
+        _outputBuffer.remove(0, count);
+      }
+      return;
+    }
+
+    if (markerPos > 0) {
+      emit rawOutput(_outputBuffer.left(markerPos));
+      _outputBuffer.remove(0, markerPos);
+    }
+
+    const qsizetype newline = _outputBuffer.indexOf('\n', marker.size());
+    if (newline < 0) {
+      if (flush) {
+        emit rawOutput(_outputBuffer);
+        _outputBuffer.clear();
+      }
+      return;
+    }
+
+    const QByteArray completeLine = _outputBuffer.left(newline + 1);
+    const QByteArray payload =
+        _outputBuffer.mid(marker.size(), newline - marker.size()).trimmed();
+    _outputBuffer.remove(0, newline + 1);
+
+    QJsonParseError error;
+    const QJsonDocument doc = QJsonDocument::fromJson(payload, &error);
+    if (error.error == QJsonParseError::NoError && doc.isObject() &&
+        doc.object().value(QStringLiteral("protocol")).toString() ==
+            QStringLiteral("lcurve.plot.v1")) {
+      emit plotFrame(doc.object());
+    } else {
+      // Keep malformed or unknown frames visible in the terminal.
+      emit rawOutput(completeLine);
+    }
+  }
+}
+
 void LCFitRunner::onProcFinished(int code, QProcess::ExitStatus status) {
+  onReadyRead();
+  drainOutput(true);
   emit finished(code, status == QProcess::NormalExit && code == 0);
 }
 void LCFitRunner::onErrorOccurred(QProcess::ProcessError) {

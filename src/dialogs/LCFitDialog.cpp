@@ -9,8 +9,10 @@
 #include "utils/FilterWavelength.h"
 #include "utils/LCFitRunner.h"
 #include "utils/Logger.h"
+#include "plotting/qcustomplot.h"
 #include "views/widgets/AnsiTerminalWidget.h"
 
+#include <QApplication>
 #include <QCheckBox>
 #include <QComboBox>
 #include <QDateTime>
@@ -31,6 +33,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QSplitter>
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QStandardPaths>
@@ -40,6 +43,7 @@
 #include <QUuid>
 #include <QVBoxLayout>
 #include <cmath>
+#include <limits>
 
 #include <algorithm>
 
@@ -745,16 +749,10 @@ QWidget *LCFitDialog::buildSolverPage() {
   _cudaEnabled->setEnabled(false);
   mLay->addRow(_cudaEnabled);
 
-  _plotEnabled = new QCheckBox(tr("Enable gnuplot plotting during fit"));
-#if defined(Q_OS_MACOS)
-  // gnuplot's qt/x11 terminals are unavailable/unreliable on macOS, so
-  // plotting is forced off and the toggle is locked.
-  _plotEnabled->setChecked(false);
-  _plotEnabled->setEnabled(false);
-  _plotEnabled->setToolTip(tr("Plotting is unavailable on macOS"));
-#else
+  _plotEnabled = new QCheckBox(tr("Show live plot in the fit dialog"));
   _plotEnabled->setChecked(true);
-#endif
+  _plotEnabled->setToolTip(
+      tr("Stream model updates from lcurve into the plot beside the terminal."));
   mLay->addRow(_plotEnabled);
   root->addWidget(mBox);
 
@@ -1065,10 +1063,107 @@ QWidget *LCFitDialog::buildRunPage() {
   btnRow->addWidget(_runStat, 1);
   root->addLayout(btnRow);
 
+  auto *streamSplit = new QSplitter(Qt::Vertical);
   _term = new AnsiTerminalWidget;
+  _term->setMinimumHeight(120);
   if (_configOverride)
       _term->feed(QByteArray("[info] using user-edited config override\n"));
-  root->addWidget(_term, 1);
+  streamSplit->addWidget(_term);
+
+  auto *plotPanel = new QWidget;
+  auto *plotLayout = new QVBoxLayout(plotPanel);
+  plotLayout->setContentsMargins(0, 0, 0, 0);
+  _plotStatus = new QLabel(tr("Waiting for live plot data…"));
+  _plotStatus->setStyleSheet("color: gray;");
+  plotLayout->addWidget(_plotStatus);
+
+  _livePlot = new QCustomPlot;
+  _livePlot->setMinimumHeight(260);
+  _livePlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
+  _livePlot->axisRect()->setupFullAxesBox(true);
+  _livePlot->xAxis->setTickLabels(false);
+  _livePlot->yAxis->setLabel(tr("Flux"));
+  _livePlot->legend->setVisible(true);
+  _livePlot->legend->setFont(QFont(font().family(), 8));
+
+  _dataGraph = _livePlot->addGraph(_livePlot->xAxis, _livePlot->yAxis);
+  _dataGraph->setName(tr("Data"));
+  _dataGraph->setLineStyle(QCPGraph::lsNone);
+  _dataErrors = new QCPErrorBars(_livePlot->xAxis, _livePlot->yAxis);
+  _dataErrors->setDataPlottable(_dataGraph);
+  _dataErrors->removeFromLegend();
+
+  _modelGraph = _livePlot->addGraph(_livePlot->xAxis, _livePlot->yAxis);
+  _modelGraph->setName(tr("Current model"));
+  _modelGraph->setPen(QPen(QColor(220, 65, 65), 2));
+
+  _residualRect = new QCPAxisRect(_livePlot);
+  _residualRect->setupFullAxesBox(true);
+  _livePlot->plotLayout()->addElement(1, 0, _residualRect);
+  _livePlot->plotLayout()->setRowStretchFactor(0, 2.0);
+  _livePlot->plotLayout()->setRowStretchFactor(1, 1.0);
+  auto *resX = _residualRect->axis(QCPAxis::atBottom);
+  auto *resY = _residualRect->axis(QCPAxis::atLeft);
+  resX->setLabel(tr("Phase"));
+  resY->setLabel(tr("(data − model) / σ"));
+
+  _residualGraph = _livePlot->addGraph(resX, resY);
+  _residualGraph->setLineStyle(QCPGraph::lsNone);
+  _residualGraph->setScatterStyle(QCPScatterStyle(
+      QCPScatterStyle::ssDisc, QColor(80, 110, 210), QColor(80, 110, 210), 4));
+  _residualGraph->removeFromLegend();
+  _residualErrors = new QCPErrorBars(resX, resY);
+  _residualErrors->setDataPlottable(_residualGraph);
+  _residualErrors->setPen(QPen(QColor(80, 110, 210, 110)));
+  _residualErrors->removeFromLegend();
+  _zeroGraph = _livePlot->addGraph(resX, resY);
+  _zeroGraph->setPen(QPen(QColor(130, 130, 130), 1, Qt::DashLine));
+  _zeroGraph->removeFromLegend();
+
+  auto *marginGroup = new QCPMarginGroup(_livePlot);
+  _livePlot->axisRect()->setMarginGroup(QCP::msLeft | QCP::msRight,
+                                        marginGroup);
+  _residualRect->setMarginGroup(QCP::msLeft | QCP::msRight, marginGroup);
+
+  const QVariant themeBackground = qApp->property("themeBg");
+  const QVariant themeForeground = qApp->property("themeFg");
+  const QColor background = themeBackground.isValid()
+                                ? themeBackground.value<QColor>()
+                                : palette().color(QPalette::Window);
+  const QColor text = themeForeground.isValid()
+                          ? themeForeground.value<QColor>()
+                          : palette().color(QPalette::WindowText);
+  const QColor grid = text.lightness() > 128 ? QColor(80, 80, 80)
+                                             : QColor(205, 205, 205);
+  _dataGraph->setScatterStyle(
+      QCPScatterStyle(QCPScatterStyle::ssDisc, text, text, 4));
+  // Error bars sit behind the points, so they are drawn faint enough not to
+  // swamp the markers when the photometry is dense.
+  QColor errCol = text;
+  errCol.setAlpha(110);
+  _dataErrors->setPen(QPen(errCol));
+  _livePlot->setBackground(background);
+  for (QCPAxisRect *rect : _livePlot->axisRects()) {
+    rect->setBackground(background);
+    for (QCPAxis *axis : rect->axes()) {
+      axis->setBasePen(QPen(text));
+      axis->setTickPen(QPen(text));
+      axis->setSubTickPen(QPen(text));
+      axis->setLabelColor(text);
+      axis->setTickLabelColor(text);
+      axis->grid()->setPen(QPen(grid, 0.5, Qt::DotLine));
+    }
+  }
+  _livePlot->legend->setBrush(background);
+  _livePlot->legend->setTextColor(text);
+  _livePlot->legend->setBorderPen(QPen(grid));
+
+  plotLayout->addWidget(_livePlot, 1);
+  streamSplit->addWidget(plotPanel);
+  streamSplit->setStretchFactor(0, 1);
+  streamSplit->setStretchFactor(1, 2);
+  streamSplit->setSizes({200, 400});
+  root->addWidget(streamSplit, 1);
 
   auto *resBox = new QGroupBox(tr("Results"));
   auto *rl = new QVBoxLayout(resBox);
@@ -1259,14 +1354,15 @@ QJsonObject LCFitDialog::buildFullConfig() const {
     cfg["noise"]            = 0;
     cfg["seed"]             = 42;
     cfg["nfile"]            = 1;
-#if defined(Q_OS_MACOS)
-    // gnuplot does not work reliably on macOS; never enable plotting there.
-    cfg["plot_device"]      = "none";
-#else
     cfg["plot_device"]      = (_plotEnabled && _plotEnabled->isChecked())
-                                  ? QStringLiteral("qt")
+                                  ? QStringLiteral("stream")
                                   : QStringLiteral("none");
-#endif
+    const auto selectedMethod = _method
+        ? static_cast<LCFitRunner::Method>(_method->currentData().toInt())
+        : LCFitRunner::Method::LevMarq;
+    cfg["plot_update_interval"] =
+        selectedMethod == LCFitRunner::Method::Mcmc ? 50 : 1;
+    cfg["error_plot_update_interval"] = 50;
     cfg["residual_offset"]  = 0.0;
     cfg["autoscale"]        = true;
     cfg["sstar1"]           = 1;
@@ -1432,6 +1528,8 @@ void LCFitDialog::onRunClicked() {
   _runner->setCudaDevice(_cudaDevice);
   connect(_runner, &LCFitRunner::rawOutput, _term,
           [this](const QByteArray &b) { _term->feed(b); });
+  connect(_runner, &LCFitRunner::plotFrame, this,
+          &LCFitDialog::onPlotFrame);
   connect(_runner, &LCFitRunner::started, this, [this] {
     _runBtn->setEnabled(false);
     _cancelBtn->setEnabled(true);
@@ -1452,6 +1550,86 @@ void LCFitDialog::onRunClicked() {
   _hasResults = false;
   _saveBtn->setEnabled(false);
   _runner->start(m, QFileInfo(_configPath).fileName());
+}
+
+void LCFitDialog::onPlotFrame(const QJsonObject &frame) {
+  if (!_livePlot)
+    return;
+
+  auto values = [](const QJsonValue &value) {
+    QVector<double> result;
+    const QJsonArray array = value.toArray();
+    result.reserve(array.size());
+    for (const QJsonValue &entry : array)
+      result.push_back(entry.toDouble());
+    return result;
+  };
+
+  const QVector<double> x = values(frame.value(QStringLiteral("x")));
+  const QVector<double> flux = values(frame.value(QStringLiteral("flux")));
+  const QVector<double> error = values(frame.value(QStringLiteral("error")));
+  const QVector<double> model = values(frame.value(QStringLiteral("model")));
+  const QVector<double> residual =
+      values(frame.value(QStringLiteral("residual")));
+  const int n = x.size();
+  if (n == 0 || flux.size() != n || error.size() != n ||
+      model.size() != n || residual.size() != n)
+    return;
+
+  _dataGraph->setData(x, flux);
+  _dataErrors->setData(error);
+  _modelGraph->setData(x, model);
+  _residualGraph->setData(x, residual);
+  _residualErrors->setData(QVector<double>(n, 1.0));
+
+  const auto xBounds = std::minmax_element(x.cbegin(), x.cend());
+  double xLo = *xBounds.first;
+  double xHi = *xBounds.second;
+  if (!(xHi > xLo)) {
+    xLo -= 0.5;
+    xHi += 0.5;
+  }
+  const double xPad = 0.04 * (xHi - xLo);
+  _livePlot->xAxis->setRange(xLo - xPad, xHi + xPad);
+  _residualRect->axis(QCPAxis::atBottom)->setRange(xLo - xPad, xHi + xPad);
+  _zeroGraph->setData(QVector<double>{xLo - xPad, xHi + xPad},
+                      QVector<double>{0.0, 0.0});
+
+  double fluxLo = std::numeric_limits<double>::infinity();
+  double fluxHi = -std::numeric_limits<double>::infinity();
+  double resLo = std::numeric_limits<double>::infinity();
+  double resHi = -std::numeric_limits<double>::infinity();
+  for (int i = 0; i < n; ++i) {
+    fluxLo = std::min({fluxLo, flux[i] - error[i], model[i]});
+    fluxHi = std::max({fluxHi, flux[i] + error[i], model[i]});
+    resLo = std::min(resLo, residual[i] - 1.0);
+    resHi = std::max(resHi, residual[i] + 1.0);
+  }
+  auto paddedRange = [](double lo, double hi) {
+    if (!(hi > lo)) {
+      lo -= 0.5;
+      hi += 0.5;
+    }
+    const double pad = 0.08 * (hi - lo);
+    return QCPRange(lo - pad, hi + pad);
+  };
+  _livePlot->yAxis->setRange(paddedRange(fluxLo, fluxHi));
+  _residualRect->axis(QCPAxis::atLeft)->setRange(
+      paddedRange(resLo, resHi));
+
+  const QJsonObject meta = frame.value(QStringLiteral("meta")).toObject();
+  QString status = meta.value(QStringLiteral("phase")).toString();
+  if (meta.contains(QStringLiteral("step")) &&
+      meta.contains(QStringLiteral("total"))) {
+    status += tr(" — %1 / %2")
+                  .arg(meta.value(QStringLiteral("step")).toInt())
+                  .arg(meta.value(QStringLiteral("total")).toInt());
+  } else if (meta.contains(QStringLiteral("iteration"))) {
+    status += tr(" — iteration %1")
+                  .arg(meta.value(QStringLiteral("iteration")).toInt());
+  }
+  _plotStatus->setText(status.isEmpty() ? tr("Live fit") : status);
+  _livePlot->replot(QCustomPlot::rpQueuedReplot);
 }
 
 void LCFitDialog::onCancelRunClicked() {

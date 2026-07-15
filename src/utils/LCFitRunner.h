@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QObject>
+#include <QJsonObject>
 #include <QProcess>
 #include <QString>
 
@@ -33,6 +34,7 @@ public:
 signals:
   void started();
   void rawOutput(const QByteArray &bytes);
+  void plotFrame(const QJsonObject &frame);
   void finished(int exitCode, bool ok);
   void failed(const QString &reason);
 
@@ -42,7 +44,10 @@ private slots:
   void onErrorOccurred(QProcess::ProcessError err);
 
 private:
+  void drainOutput(bool flush);
+
   QProcess *_proc = nullptr;
+  QByteArray _outputBuffer;
   QString _binary;
   QString _workDir;
   bool _cudaEnabled = false;

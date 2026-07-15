@@ -19,6 +19,10 @@ class QLabel;
 class QTableWidget;
 class QPlainTextEdit;
 class AnsiTerminalWidget;
+class QCustomPlot;
+class QCPAxisRect;
+class QCPGraph;
+class QCPErrorBars;
 
 class Star;
 class DatabaseManager;
@@ -57,6 +61,7 @@ class LCFitDialog : public QDialog {
     void onRunClicked();
     void onCancelRunClicked();
     void onRunFinished(int code, bool ok);
+    void onPlotFrame(const QJsonObject &frame);
     void onSaveBestClicked();
     void onPrevPage();
     void onNextPage();
@@ -202,6 +207,12 @@ class LCFitDialog : public QDialog {
     // Run page
     QPushButton *_runBtn = nullptr, *_cancelBtn = nullptr, *_saveBtn = nullptr;
     AnsiTerminalWidget *_term = nullptr;
+    QCustomPlot *_livePlot = nullptr;
+    QCPAxisRect *_residualRect = nullptr;
+    QCPGraph *_dataGraph = nullptr, *_modelGraph = nullptr;
+    QCPGraph *_residualGraph = nullptr, *_zeroGraph = nullptr;
+    QCPErrorBars *_dataErrors = nullptr, *_residualErrors = nullptr;
+    QLabel *_plotStatus = nullptr;
     QLabel *_runStat = nullptr;
     QTableWidget *_results = nullptr;
     QLabel *_quality = nullptr;
