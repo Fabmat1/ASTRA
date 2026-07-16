@@ -398,6 +398,8 @@ set(SOURCES
     src/kinematics/OrbitIntegrator.cpp
     src/kinematics/KinematicsCalculator.cpp
     src/kinematics/StarKinematics.cpp
+    src/kinematics/PopulationClassifier.cpp
+    src/kinematics/KinematicContours.cpp
 )
 
 # Header files
@@ -547,6 +549,8 @@ set(HEADERS
     src/kinematics/OrbitIntegrator.h
     src/kinematics/KinematicsCalculator.h
     src/kinematics/StarKinematics.h
+    src/kinematics/PopulationClassifier.h
+    src/kinematics/KinematicContours.h
 )
 
 # Create executable
@@ -791,6 +795,26 @@ if(UNIX AND NOT APPLE)
         ")
     endif()
 endif()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Developer tools (not built by default)
+# ═════════════════════════════════════════════════════════════════════════════
+# Regenerates the kinematic reference contour CSVs bundled in resources.qrc:
+#   cmake --build build --target regenerate_kinematic_contours
+add_executable(generate_kinematic_contours EXCLUDE_FROM_ALL
+    tools/generate_kinematic_contours.cpp
+    src/kinematics/PopulationClassifier.cpp
+)
+target_include_directories(generate_kinematic_contours PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+add_custom_target(regenerate_kinematic_contours
+    COMMAND generate_kinematic_contours
+            "${CMAKE_CURRENT_SOURCE_DIR}/resources/data/kinematics"
+    DEPENDS generate_kinematic_contours
+    COMMENT "Regenerating kinematic contour CSVs..."
+)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

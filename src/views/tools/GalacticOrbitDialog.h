@@ -1,6 +1,8 @@
 #pragma once
 
+#include "kinematics/KinematicContours.h"
 #include "kinematics/KinematicsCalculator.h"
+#include "kinematics/PopulationClassifier.h"
 #include "kinematics/StarKinematics.h"
 
 #include <QDialog>
@@ -28,17 +30,24 @@ class QTabWidget;
 // Galactic orbit integration tool: computes UVW/XYZ with Monte-Carlo error
 // propagation, integrates the orbit forwards/backwards in a Milky-Way
 // potential (Irrgang et al. 2013 models), plots any combination of orbit
-// quantities plus the classic ISIS-style 3D "cube" view, and derives the
-// boundness prediction.
+// quantities plus the classic ISIS-style 3D "cube" view, derives the
+// boundness prediction and classifies the star into the Galactic
+// populations (thin/thick disk, halo) relative to a comparison sample
+// shown in the classical kinematic diagrams (Toomre, U–V, W–V, U–W,
+// J_z–e).
 class GalacticOrbitDialog : public QDialog
 {
     Q_OBJECT
 
 public:
-    explicit GalacticOrbitDialog(std::shared_ptr<Star> star,
-                                 DatabaseManager* dbm = nullptr,
-                                 const QString& projectId = QString(),
-                                 QWidget* parent = nullptr);
+    // 'projectStars'/'selectedStars' provide the comparison sample for the
+    // population classification and diagrams (either may be empty).
+    explicit GalacticOrbitDialog(
+        std::shared_ptr<Star> star, DatabaseManager* dbm = nullptr,
+        const QString& projectId = QString(),
+        std::vector<std::shared_ptr<Star>> projectStars = {},
+        std::vector<std::shared_ptr<Star>> selectedStars = {},
+        QWidget* parent = nullptr);
     ~GalacticOrbitDialog() override;
 
 protected:
@@ -55,6 +64,7 @@ private slots:
     void onPlotAxesChanged();
     void onCubeViewChanged();
     void onExportPlot();
+    void onPopulationViewChanged();
 
 private:
     void setupUi();
@@ -67,6 +77,8 @@ private:
     void replot2D();
     void replotCube();
     void replotBoundness();
+    void replotPopulation();
+    void runPopulationFit();
     void applyPlotTheme();
 
     // quantity extraction for the 2D plot axis combos
@@ -77,6 +89,8 @@ private:
     std::shared_ptr<Star> _star;
     DatabaseManager*      _dbm = nullptr;
     QString               _projectId;
+    std::vector<std::shared_ptr<Star>> _projectStars;
+    std::vector<std::shared_ptr<Star>> _selectedStars;
 
     // inputs
     QComboBox*      _modelCombo   = nullptr;
@@ -84,7 +98,9 @@ private:
     QComboBox*      _directionCombo = nullptr; // back / forward
     QSpinBox*       _mcSamplesSpin  = nullptr;
     QSpinBox*       _nOrbitsSpin    = nullptr; // uncertainty orbits in plots
+    QComboBox*      _rvSourceCombo  = nullptr; // systemic RV preference
     QLabel*         _inputSummary   = nullptr;
+    GalKin::RVPreference rvPreference() const;
 
     // actions
     QPushButton*  _computeButton = nullptr;
@@ -109,8 +125,27 @@ private:
     QSlider*     _azimuthSlider   = nullptr;
     QSlider*     _elevationSlider = nullptr;
 
+    // population tab
+    QCustomPlot* _plotPop        = nullptr;
+    QComboBox*   _popDiagramCombo = nullptr;
+    QComboBox*   _popSampleCombo  = nullptr;
+    QCheckBox*   _popErrorBarsCb  = nullptr;
+    QLabel*      _popSummary      = nullptr;
+
+    // error-limit filter for the sample scatter (population tab): stars whose
+    // plotted 1σ errors exceed the limits are hidden. Limits are remembered
+    // in QSettings across sessions.
+    QCheckBox*      _popFilterCb      = nullptr;
+    QDoubleSpinBox* _popFilterVelSpin = nullptr; // [km/s] velocity diagrams
+    QDoubleSpinBox* _popFilterJzSpin  = nullptr; // [kpc km/s] J_z–e diagram
+    QDoubleSpinBox* _popFilterEccSpin = nullptr; // [-] J_z–e diagram
+    void updatePopFilterVisibility();
+    void restoreSettings();
+    void saveSettings() const;
+
     // mouse-drag rotation of the 3D cube
     bool   _cubeDragging = false;
+    bool   _cubeReplotPending = false; // coalesces slider-driven replots
     QPoint _cubeDragLast;
 
     // computed state
@@ -120,6 +155,13 @@ private:
     std::vector<GalKin::Trajectory>  _trajectories; // [0] = nominal
     GalKin::Trajectory               _sunTrajectory;
     bool _haveOrbit = false;
+
+    // population classification over the comparison sample; the current
+    // star is the last entry of _popSample (its stored values are shadowed
+    // by fresh UVW when available).
+    std::vector<std::shared_ptr<Star>> _popSample;
+    GalKin::PopulationFit              _popFit;
+    int _popSelfIndex = -1; // index of the current star in _popSample
 
     // async plumbing
     QFutureWatcher<void>* _watcher = nullptr;

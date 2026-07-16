@@ -16,6 +16,19 @@
         <file>themes/one_dark.qss</file>
         <file>data/default_instruments.json</file>
         <file>data/gaia_cmd.csv</file>
+        <file>data/kinematics/toomre_thin.csv</file>
+        <file>data/kinematics/toomre_thick.csv</file>
+        <file>data/kinematics/toomre_halo.csv</file>
+        <file>data/kinematics/uv_thin.csv</file>
+        <file>data/kinematics/uv_thick.csv</file>
+        <file>data/kinematics/uv_halo.csv</file>
+        <file>data/kinematics/wv_thin.csv</file>
+        <file>data/kinematics/wv_thick.csv</file>
+        <file>data/kinematics/wv_halo.csv</file>
+        <file>data/kinematics/uw_thin.csv</file>
+        <file>data/kinematics/uw_thick.csv</file>
+        <file>data/kinematics/uw_halo.csv</file>
+        <file>data/kinematics/jze_parallelogram.csv</file>
         <file>data/plot_presets/kiel_diagram.json</file>
         <file>data/plot_presets/pk_diagram.json</file>
         <file>data/plot_presets/mass_scatter.json</file>

@@ -151,6 +151,10 @@ void ColumnPresetManager::buildColumnRegistry() {
         {"gal_e_p_thick", "e_P(thick)", "Galactic", false},
         {"gal_p_halo", "P(halo)", "Galactic", false},
         {"gal_e_p_halo", "e_P(halo)", "Galactic", false},
+        {"gal_jz", "J_z [kpc km/s]", "Galactic", false},
+        {"gal_e_jz", "e_J_z", "Galactic", false},
+        {"gal_ecc", "ecc (orbit)", "Galactic", false},
+        {"gal_e_ecc", "e_ecc (orbit)", "Galactic", false},
 
         // ── Photometric LC ──────────────────────────────────────────────────
         {"phot_period", "Phot. Period [d]", "Light Curve", false},
@@ -245,6 +249,7 @@ void ColumnPresetManager::buildBuiltInPresets() {
         makePreset("preset_galactic", "Galactic",
                    {"gal_u", "gal_e_u", "gal_v", "gal_e_v", "gal_w", "gal_e_w",
                     "gal_x", "gal_e_x", "gal_y", "gal_e_y", "gal_z", "gal_e_z",
+                    "gal_jz", "gal_ecc",
                     "gal_p_thin", "gal_p_thick", "gal_p_halo"}));
 }
 

@@ -355,7 +355,14 @@ void StarDetailView::onShowCMD()
 
 void StarDetailView::onCalculateOrbit()
 {
-    auto* dialog = new GalacticOrbitDialog(_star, _dbm, _projectId, this);
+    std::vector<std::shared_ptr<Star>> projectStars;
+    if (_controller) {
+        if (auto proj = _controller->getCurrentProject())
+            projectStars = proj->getAllStars();
+    }
+    auto* dialog = new GalacticOrbitDialog(_star, _dbm, _projectId,
+                                           std::move(projectStars),
+                                           _selectedStars, this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
 
     connect(dialog, &GalacticOrbitDialog::kinematicsSaved, this, [this]() {

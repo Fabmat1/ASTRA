@@ -338,6 +338,25 @@ public:
     double getGalEPHalo() const      { return _galEPHalo; }
     void   setGalEPHalo(double v)    { _galEPHalo = v; }
 
+    // Orbit parameters: z angular momentum J_z [kpc km/s] (positive =
+    // prograde) and orbital eccentricity, from the MC orbit integration.
+    double getGalJz() const        { return _galJz; }
+    void   setGalJz(double v)      { _galJz = v; }
+    double getGalEJz() const       { return _galEJz; }
+    void   setGalEJz(double v)     { _galEJz = v; }
+    double getGalEJzUp() const     { return _galEJzUp; }
+    void   setGalEJzUp(double v)   { _galEJzUp = v; }
+    double getGalEJzDown() const   { return _galEJzDown; }
+    void   setGalEJzDown(double v) { _galEJzDown = v; }
+    double getGalEcc() const        { return _galEcc; }
+    void   setGalEcc(double v)      { _galEcc = v; }
+    double getGalEEcc() const       { return _galEEcc; }
+    void   setGalEEcc(double v)     { _galEEcc = v; }
+    double getGalEEccUp() const     { return _galEEccUp; }
+    void   setGalEEccUp(double v)   { _galEEccUp = v; }
+    double getGalEEccDown() const   { return _galEEccDown; }
+    void   setGalEEccDown(double v) { _galEEccDown = v; }
+
     // ── Dataset availability flags ──────────────────────────────────────────
     bool getHasTess() const          { return _hasTess; }
     void setHasTess(bool v)          { _hasTess = v; }
@@ -627,6 +646,16 @@ private:
     double _galEPThick = std::numeric_limits<double>::quiet_NaN();
     double _galPHalo   = std::numeric_limits<double>::quiet_NaN();
     double _galEPHalo  = std::numeric_limits<double>::quiet_NaN();
+    // Orbit parameters: J_z [kpc km/s] (positive = prograde) and
+    // eccentricity from the MC orbit integration
+    double _galJz  = std::numeric_limits<double>::quiet_NaN();
+    double _galEJz = std::numeric_limits<double>::quiet_NaN();
+    double _galEJzUp   = AsymErr::unset;
+    double _galEJzDown = AsymErr::unset;
+    double _galEcc  = std::numeric_limits<double>::quiet_NaN();
+    double _galEEcc = std::numeric_limits<double>::quiet_NaN();
+    double _galEEccUp   = AsymErr::unset;
+    double _galEEccDown = AsymErr::unset;
 
     // Dataset availability
     bool _hasTess     = false;

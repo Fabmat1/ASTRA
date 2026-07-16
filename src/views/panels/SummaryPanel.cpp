@@ -2268,7 +2268,9 @@ QWidget *SummaryPanel::createGalacticSection() {
     const bool hasPop = Star::isSet(s.getGalPThin()) ||
                         Star::isSet(s.getGalPThick()) ||
                         Star::isSet(s.getGalPHalo());
-    if (!hasUVW && !hasXYZ && !hasPop)
+    const bool hasOrbit = Star::isSet(s.getGalJz()) ||
+                          Star::isSet(s.getGalEcc());
+    if (!hasUVW && !hasXYZ && !hasPop && !hasOrbit)
         return nullptr;
 
     const QColor valCol   = primaryTextColor();
@@ -2296,6 +2298,18 @@ QWidget *SummaryPanel::createGalacticSection() {
         rows.push_back({"X", x.display, x.copy});
         rows.push_back({"Y", y.display, y.copy});
         rows.push_back({"Z", z.display, z.copy});
+    }
+    if (hasOrbit) {
+        if (Star::isSet(s.getGalJz())) {
+            auto jz = fmtValErr(s.getGalJz(), s.getGalEJz(), 0, "kpc km/s",
+                                s.getGalEJzUp(), s.getGalEJzDown());
+            rows.push_back({"J_z", jz.display, jz.copy});
+        }
+        if (Star::isSet(s.getGalEcc())) {
+            auto ecc = fmtValErr(s.getGalEcc(), s.getGalEEcc(), 3, "",
+                                 s.getGalEEccUp(), s.getGalEEccDown());
+            rows.push_back({"ecc", ecc.display, ecc.copy});
+        }
     }
     if (hasPop) {
         auto addP = [&](const char *name, double p, double ep) {

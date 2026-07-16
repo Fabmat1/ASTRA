@@ -4,6 +4,7 @@
 #include <QVector>
 #include <QPointer>
 #include <memory>
+#include <vector>
 
 class Star;
 class DatabaseManager;
@@ -22,6 +23,12 @@ public:
                             const QString& projectId = {},
                             QWidget* parent = nullptr);
     ~StarDetailView() override;
+
+    // Snapshot of the table selection at the time the window was opened;
+    // used as the comparison sample in the galactic orbit dialog.
+    void setSelectedStars(std::vector<std::shared_ptr<Star>> stars) {
+        _selectedStars = std::move(stars);
+    }
 
 protected:
     bool event(QEvent* e) override;
@@ -53,6 +60,7 @@ private:
     DatabaseManager*       _dbm = nullptr;
     ApplicationController* _controller = nullptr;
     QString                _projectId;
+    std::vector<std::shared_ptr<Star>> _selectedStars;
 
     // Grid container
     QWidget*              _gridHost   = nullptr;

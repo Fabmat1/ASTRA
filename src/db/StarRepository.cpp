@@ -53,6 +53,14 @@ static void bindGalacticFields(QSqlQuery& query, const Star& star)
     query.bindValue(":gal_e_p_thick", SqlValue::fromDouble(star.getGalEPThick()));
     query.bindValue(":gal_p_halo", SqlValue::fromDouble(star.getGalPHalo()));
     query.bindValue(":gal_e_p_halo", SqlValue::fromDouble(star.getGalEPHalo()));
+    query.bindValue(":gal_jz", SqlValue::fromDouble(star.getGalJz()));
+    query.bindValue(":gal_e_jz", SqlValue::fromDouble(star.getGalEJz()));
+    query.bindValue(":gal_e_jz_up", SqlValue::fromDouble(star.getGalEJzUp()));
+    query.bindValue(":gal_e_jz_down", SqlValue::fromDouble(star.getGalEJzDown()));
+    query.bindValue(":gal_ecc", SqlValue::fromDouble(star.getGalEcc()));
+    query.bindValue(":gal_e_ecc", SqlValue::fromDouble(star.getGalEEcc()));
+    query.bindValue(":gal_e_ecc_up", SqlValue::fromDouble(star.getGalEEccUp()));
+    query.bindValue(":gal_e_ecc_down", SqlValue::fromDouble(star.getGalEEccDown()));
 }
 
 size_t StarRepository::getStarCountForProject(const QString& projectId)
@@ -165,6 +173,8 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
             gal_z, gal_e_z, gal_e_z_up, gal_e_z_down,
             gal_p_thin, gal_e_p_thin, gal_p_thick, gal_e_p_thick,
             gal_p_halo, gal_e_p_halo,
+            gal_jz, gal_e_jz, gal_e_jz_up, gal_e_jz_down,
+            gal_ecc, gal_e_ecc, gal_e_ecc_up, gal_e_ecc_down,
             bibcodes
         ) VALUES (
             :id, :project_id, :alias, :source_id, :tic, :jname,
@@ -208,6 +218,8 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
             :gal_z, :gal_e_z, :gal_e_z_up, :gal_e_z_down,
             :gal_p_thin, :gal_e_p_thin, :gal_p_thick, :gal_e_p_thick,
             :gal_p_halo, :gal_e_p_halo,
+            :gal_jz, :gal_e_jz, :gal_e_jz_up, :gal_e_jz_down,
+            :gal_ecc, :gal_e_ecc, :gal_e_ecc_up, :gal_e_ecc_down,
             :bibcodes
         )
     )");
@@ -514,6 +526,10 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
             gal_p_thin = :gal_p_thin, gal_e_p_thin = :gal_e_p_thin,
             gal_p_thick = :gal_p_thick, gal_e_p_thick = :gal_e_p_thick,
             gal_p_halo = :gal_p_halo, gal_e_p_halo = :gal_e_p_halo,
+            gal_jz = :gal_jz, gal_e_jz = :gal_e_jz,
+            gal_e_jz_up = :gal_e_jz_up, gal_e_jz_down = :gal_e_jz_down,
+            gal_ecc = :gal_ecc, gal_e_ecc = :gal_e_ecc,
+            gal_e_ecc_up = :gal_e_ecc_up, gal_e_ecc_down = :gal_e_ecc_down,
             has_tess = :has_tess, has_gaia = :has_gaia, has_ztf = :has_ztf,
             has_atlas = :has_atlas, has_blackgem = :has_blackgem,
             bibcodes = :bibcodes

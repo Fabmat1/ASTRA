@@ -248,6 +248,14 @@ const std::unordered_map<QString, Star::FieldGetter>& Star::getFieldMap()
         { "gal_e_p_thick", [](const Star* s) { return dblVar(s->getGalEPThick()); } },
         { "gal_p_halo",    [](const Star* s) { return dblVar(s->getGalPHalo()); } },
         { "gal_e_p_halo",  [](const Star* s) { return dblVar(s->getGalEPHalo()); } },
+        { "gal_jz",         [](const Star* s) { return dblVar(s->getGalJz()); } },
+        { "gal_e_jz",       [](const Star* s) { return dblVar(s->getGalEJz()); } },
+        { "gal_e_jz_up",    [](const Star* s) { return dblVar(s->getGalEJzUp()); } },
+        { "gal_e_jz_down",  [](const Star* s) { return dblVar(s->getGalEJzDown()); } },
+        { "gal_ecc",        [](const Star* s) { return dblVar(s->getGalEcc()); } },
+        { "gal_e_ecc",      [](const Star* s) { return dblVar(s->getGalEEcc()); } },
+        { "gal_e_ecc_up",   [](const Star* s) { return dblVar(s->getGalEEccUp()); } },
+        { "gal_e_ecc_down", [](const Star* s) { return dblVar(s->getGalEEccDown()); } },
 
         // ── TESS crowding ───────────────────────────────────────────────────
         { "tess_crowdsap",  [](const Star* s) { return dblVar(s->getTessCrowdsap()); } },

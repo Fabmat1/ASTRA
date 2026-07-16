@@ -273,6 +273,14 @@ bool DatabaseManager::createTables()
             gal_e_p_thick REAL,
             gal_p_halo REAL,
             gal_e_p_halo REAL,
+            gal_jz REAL,
+            gal_e_jz REAL,
+            gal_e_jz_up REAL,
+            gal_e_jz_down REAL,
+            gal_ecc REAL,
+            gal_e_ecc REAL,
+            gal_e_ecc_up REAL,
+            gal_e_ecc_down REAL,
             FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
         )
     )";
@@ -836,6 +844,17 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE stars ADD COLUMN gal_e_p_thick REAL",
         "ALTER TABLE stars ADD COLUMN gal_p_halo REAL",
         "ALTER TABLE stars ADD COLUMN gal_e_p_halo REAL",
+
+        // Orbit parameters (J_z positive = prograde, eccentricity from the
+        // MC orbit integration)
+        "ALTER TABLE stars ADD COLUMN gal_jz REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_jz REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_jz_up REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_jz_down REAL",
+        "ALTER TABLE stars ADD COLUMN gal_ecc REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_ecc REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_ecc_up REAL",
+        "ALTER TABLE stars ADD COLUMN gal_e_ecc_down REAL",
     };
 
     for (const QString& sql : alterQueries) {
@@ -874,7 +893,9 @@ bool DatabaseManager::runMigrations()
                 "gal_w", "gal_e_w", "gal_e_w_up", "gal_e_w_down",
                 "gal_x", "gal_e_x", "gal_e_x_up", "gal_e_x_down",
                 "gal_y", "gal_e_y", "gal_e_y_up", "gal_e_y_down",
-                "gal_z", "gal_e_z", "gal_e_z_up", "gal_e_z_down"};
+                "gal_z", "gal_e_z", "gal_e_z_up", "gal_e_z_down",
+                "gal_jz", "gal_e_jz", "gal_e_jz_up", "gal_e_jz_down",
+                "gal_ecc", "gal_e_ecc", "gal_e_ecc_up", "gal_e_ecc_down"};
             QStringList setNull;
             for (const char* c : kGalCols)
                 setNull << QString("%1 = NULL").arg(c);
@@ -883,8 +904,9 @@ bool DatabaseManager::runMigrations()
             // COALESCE(...,0) is essential: a bare `NULL > 0` yields NULL, and
             // `NOT (false OR NULL)` is NULL — which matches no rows — so any
             // NULL error column would silently disable the whole cleanup.
-            // gal_p_* population probabilities are import-only (never computed
-            // from RV) and are intentionally left untouched.
+            // gal_p_* population probabilities may come from an import (they
+            // are also computed in-app, but only from valid UVW) and are
+            // intentionally left untouched.
             const QString sql =
                 "UPDATE stars SET " + setNull.join(", ") +
                 " WHERE (gal_u IS NOT NULL OR gal_x IS NOT NULL) "
@@ -1117,6 +1139,14 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
     const int idxGalEPThick = rec.indexOf("gal_e_p_thick");
     const int idxGalPHalo = rec.indexOf("gal_p_halo");
     const int idxGalEPHalo = rec.indexOf("gal_e_p_halo");
+    const int idxGalJz = rec.indexOf("gal_jz");
+    const int idxGalEJz = rec.indexOf("gal_e_jz");
+    const int idxGalEJzUp = rec.indexOf("gal_e_jz_up");
+    const int idxGalEJzDown = rec.indexOf("gal_e_jz_down");
+    const int idxGalEcc = rec.indexOf("gal_ecc");
+    const int idxGalEEcc = rec.indexOf("gal_e_ecc");
+    const int idxGalEEccUp = rec.indexOf("gal_e_ecc_up");
+    const int idxGalEEccDown = rec.indexOf("gal_e_ecc_down");
 
     // Pre-allocate
     const size_t estimatedCount = _stars->getStarCountForProject(projectId);
@@ -1305,6 +1335,14 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
         star->setGalEPThick(SqlValue::toDoubleOrNaN(query, idxGalEPThick));
         star->setGalPHalo(SqlValue::toDoubleOrNaN(query, idxGalPHalo));
         star->setGalEPHalo(SqlValue::toDoubleOrNaN(query, idxGalEPHalo));
+        star->setGalJz(SqlValue::toDoubleOrNaN(query, idxGalJz));
+        star->setGalEJz(SqlValue::toDoubleOrNaN(query, idxGalEJz));
+        star->setGalEJzUp(SqlValue::toDoubleOrNaN(query, idxGalEJzUp));
+        star->setGalEJzDown(SqlValue::toDoubleOrNaN(query, idxGalEJzDown));
+        star->setGalEcc(SqlValue::toDoubleOrNaN(query, idxGalEcc));
+        star->setGalEEcc(SqlValue::toDoubleOrNaN(query, idxGalEEcc));
+        star->setGalEEccUp(SqlValue::toDoubleOrNaN(query, idxGalEEccUp));
+        star->setGalEEccDown(SqlValue::toDoubleOrNaN(query, idxGalEEccDown));
 
         star->setECompMassMinUp(SqlValue::toDoubleOrNaN(query, idxCompEMassMinUp));
         star->setECompMassMinDown(SqlValue::toDoubleOrNaN(query, idxCompEMassMinDown));

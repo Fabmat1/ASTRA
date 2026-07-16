@@ -22,7 +22,9 @@
 
 #include <QAction>
 #include <QApplication>
+#include <QCheckBox>
 #include <QClipboard>
+#include <QDialogButtonBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFile>
@@ -690,8 +692,8 @@ void ProjectView::onComputeGalacticKinematics()
         }
         const auto btn = QMessageBox::question(
             this, "Galactic Kinematics",
-            QString("No stars selected. Compute UVW/XYZ for all %1 stars in "
-                    "the project?")
+            QString("No stars selected. Compute the kinematics for all %1 "
+                    "stars in the project?")
                 .arg(all.size()),
             QMessageBox::Yes | QMessageBox::No);
         if (btn != QMessageBox::Yes)
@@ -699,43 +701,147 @@ void ProjectView::onComputeGalacticKinematics()
         stars = std::move(all);
     }
 
+    // ── what to compute ─────────────────────────────────────────────────────
+    QDialog opts(this);
+    opts.setWindowTitle("Galactic Kinematics");
+    auto* form = new QVBoxLayout(&opts);
+    auto* info = new QLabel(
+        QString("%1 star%2 in the set.")
+            .arg(stars.size())
+            .arg(stars.size() != 1 ? "s" : ""));
+    form->addWidget(info);
+    auto* cbUVW = new QCheckBox("UVW velocities && XYZ positions (MC error "
+                                "propagation)");
+    cbUVW->setChecked(true);
+    auto* cbOrbit = new QCheckBox(
+        "Orbit parameters J_z && eccentricity (MC orbit integration, slow)");
+    cbOrbit->setChecked(true);
+    auto* cbClassify = new QCheckBox(
+        "Population classification: thin/thick disk, halo (EM fit over the "
+        "whole set)");
+    cbClassify->setChecked(true);
+    cbClassify->setToolTip(
+        "Fits the mixing weights of the three-population Gaussian mixture\n"
+        "(Anguiano et al. 2020 velocity distributions) to all stars in the\n"
+        "set via expectation maximization and stores each star's membership\n"
+        "probabilities with Monte-Carlo uncertainties.\n"
+        "Overwrites imported P(thin/thick/halo) values.");
+    form->addWidget(cbUVW);
+    form->addWidget(cbOrbit);
+    form->addWidget(cbClassify);
+    auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok |
+                                    QDialogButtonBox::Cancel);
+    connect(bb, &QDialogButtonBox::accepted, &opts, &QDialog::accept);
+    connect(bb, &QDialogButtonBox::rejected, &opts, &QDialog::reject);
+    form->addWidget(bb);
+    if (opts.exec() != QDialog::Accepted)
+        return;
+    const bool doUVW      = cbUVW->isChecked();
+    const bool doOrbit    = cbOrbit->isChecked();
+    const bool doClassify = cbClassify->isChecked();
+    if (!doUVW && !doOrbit && !doClassify)
+        return;
+
+    // per-star steps count toward the progress; classification is one step
+    const int perStar = (doUVW ? 1 : 0) + (doOrbit ? 1 : 0);
     QProgressDialog progress(
         QString("Computing galactic kinematics for %1 star%2…")
             .arg(stars.size())
             .arg(stars.size() != 1 ? "s" : ""),
-        "Cancel", 0, int(stars.size()), this);
+        "Cancel", 0, int(stars.size()) * std::max(perStar, 1), this);
     progress.setWindowModality(Qt::WindowModal);
     progress.setMinimumDuration(400);
 
     const QString projectId = _currentProject->getId();
-    int done = 0, skipped = 0;
-    for (auto& star : stars) {
-        if (progress.wasCanceled())
-            break;
-        bool changed = false;
-        if (star && GalKin::computeAndStoreUVWXYZ(
-                        *star, GalKin::GalacticPotential::Model::AS, 10000,
-                        &changed)) {
-            if (changed)
-                _controller->databaseManager()->updateStarRow(projectId, star);
-            ++done;
-        } else {
-            ++skipped; // missing astrometry or systemic RV
+    std::vector<bool> dirty(stars.size(), false);
+    int done = 0, skipped = 0, step = 0;
+    std::atomic<bool> cancelFlag{false};
+    if (perStar > 0) {
+        for (size_t i = 0; i < stars.size(); ++i) {
+            if (progress.wasCanceled()) {
+                cancelFlag = true;
+                break;
+            }
+            auto& star = stars[i];
+            bool ok = star != nullptr;
+            if (ok && doUVW) {
+                bool changed = false;
+                ok = GalKin::computeAndStoreUVWXYZ(
+                    *star, GalKin::GalacticPotential::Model::AS, 10000,
+                    &changed);
+                dirty[i] = dirty[i] || changed;
+                progress.setValue(++step);
+            }
+            if (ok && doOrbit) {
+                if (progress.wasCanceled()) {
+                    cancelFlag = true;
+                    break;
+                }
+                bool changed = false;
+                // 1000 MC orbits keep the bulk run at ~a second per star;
+                // the dialog's "MC Orbit Statistics" offers more samples.
+                ok = GalKin::computeAndStoreOrbitParams(
+                    *star, GalKin::GalacticPotential::Model::AS, 1000,
+                    -3500.0, &changed, &cancelFlag);
+                dirty[i] = dirty[i] || changed;
+                progress.setValue(++step);
+            } else if (doOrbit) {
+                progress.setValue(++step);
+            }
+            if (ok)
+                ++done;
+            else
+                ++skipped; // missing astrometry or systemic RV
         }
-        progress.setValue(progress.value() + 1);
     }
-    progress.setValue(int(stars.size()));
+
+    // EM classification over the full set (uses stored UVW, so it also
+    // covers stars whose velocities were computed in an earlier run).
+    GalKin::PopulationFit fit;
+    if (doClassify && !progress.wasCanceled()) {
+        progress.setLabelText("Fitting population membership (EM)…");
+        std::vector<bool> classChanged;
+        fit = GalKin::classifyAndStorePopulations(stars, 1000, &classChanged);
+        for (size_t i = 0; i < stars.size() && i < classChanged.size(); ++i)
+            dirty[i] = dirty[i] || classChanged[i];
+    }
+
+    // persist everything that changed
+    for (size_t i = 0; i < stars.size(); ++i)
+        if (dirty[i] && stars[i])
+            _controller->databaseManager()->updateStarRow(projectId, stars[i]);
+    progress.setValue(progress.maximum());
 
     _tableModel->refresh();
-    QString msg = QString("Computed UVW/XYZ for %1 star%2.")
-                      .arg(done)
-                      .arg(done != 1 ? "s" : "");
-    if (skipped > 0)
-        msg += QString(" %1 skipped (incomplete astrometry or missing "
-                       "systemic RV).")
-                   .arg(skipped);
-    updateStatusBar(msg);
-    LOG_INFO("Analysis", msg);
+    QString msg;
+    if (perStar > 0) {
+        msg = QString("Computed kinematics for %1 star%2.")
+                  .arg(done)
+                  .arg(done != 1 ? "s" : "");
+        if (skipped > 0)
+            msg += QString(" %1 skipped (incomplete astrometry or missing "
+                           "systemic RV).")
+                       .arg(skipped);
+    }
+    if (fit.valid) {
+        msg += QString(" Population fit over %1 stars: "
+                       "π = %2 / %3 / %4 (thin/thick/halo), "
+                       "N = %5±%6 / %7±%8 / %9±%10.")
+                   .arg(fit.starsUsed)
+                   .arg(fit.priorThin, 0, 'f', 3)
+                   .arg(fit.priorThick, 0, 'f', 3)
+                   .arg(fit.priorHalo, 0, 'f', 3)
+                   .arg(fit.nThin, 0, 'f', 0)
+                   .arg(fit.eNThin, 0, 'f', 0)
+                   .arg(fit.nThick, 0, 'f', 0)
+                   .arg(fit.eNThick, 0, 'f', 0)
+                   .arg(fit.nHalo, 0, 'f', 0)
+                   .arg(fit.eNHalo, 0, 'f', 0);
+    } else if (doClassify) {
+        msg += " Population fit skipped (no stars with stored UVW).";
+    }
+    updateStatusBar(msg.trimmed());
+    LOG_INFO("Analysis", msg.trimmed());
 }
 
 void ProjectView::onRemoveStar()
@@ -838,6 +944,7 @@ void ProjectView::onShowDetailWindow()
     // Launch the detail window (WA_DeleteOnClose handles cleanup)
     StarDetailView* detailView = new StarDetailView(
         star, _controller->databaseManager(), _controller, _currentProject->getId());
+    detailView->setSelectedStars(getSelectedStars());
     detailView->show();
     detailView->raise();
     detailView->activateWindow();
