@@ -1591,32 +1591,32 @@ bool SpectralFitImportPage::loadIsisModelData(
 
         double wl, model, cont, flux, sig;
         long   flag;
-        skipWs;
+        skipWs();
         if (!parseDouble(p, end, wl)) {
             nextLine();
             continue;
         }
-        skipWs;
+        skipWs();
         if (!parseDouble(p, end, model)) {
             nextLine();
             continue;
         }
-        skipWs;
+        skipWs();
         if (!parseDouble(p, end, cont)) {
             nextLine();
             continue;
         }
-        skipWs;
+        skipWs();
         if (!parseDouble(p, end, flux)) {
             nextLine();
             continue;
         }
-        skipWs;
+        skipWs();
         if (!parseDouble(p, end, sig)) {
             nextLine();
             continue;
         }
-        skipWs;
+        skipWs();
         if (!parseLong(p, end, flag)) {
             nextLine();
             continue;
