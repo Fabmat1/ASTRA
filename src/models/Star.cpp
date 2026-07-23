@@ -18,6 +18,7 @@ bool nanSafeEqual(double a, double b) {
 std::vector<double> captureSummaryValues(const Star& s) {
     return {
         double(s.getRVNPoints()), s.getRVTimespan(), s.getRVAvg(), s.getRVMed(),
+        s.getERVAvg(), s.getERVMed(),
         s.getLogP(), s.getDeltaRV(),
         s.getRVK(), s.getRVEK(), s.getRVPeriod(), s.getRVEPeriod(),
         s.getRVGamma(), s.getRVEGamma(),
@@ -384,12 +385,29 @@ void Star::recomputeRVMetrics()
     if (!_rvCurve) return;
     _rvCurve->setLogP(_rvCurve->computeLogP());
 
-    _rvNPoints  = static_cast<int>(_rvCurve->getActiveRVPoints().size());
+    const auto activePts = _rvCurve->getActiveRVPoints();
+    _rvNPoints  = static_cast<int>(activePts.size());
     _rvTimespan = _rvCurve->getTimeSpan();
     _rv_avg     = _rvCurve->getMeanRV();
     _rv_med     = _rvCurve->getMedianRV();
     _logp       = _rvCurve->getLogP();
     _deltaRV    = _rvCurve->getRVAmplitude();
+
+    // Uncertainties on the mean/median systemic RV. getStdDevRV() is the sample
+    // scatter of the active points and is 0 for a single epoch, so fall back to
+    // that lone point's own measurement error. Without this the downstream
+    // galactic-orbit code (which requires a *positive* RV uncertainty) rejects
+    // every star that only carries RV curve points, e.g. freshly imported ones.
+    // Kept consistent with updateRVMetricsFromCurve().
+    double rvErr = _rvCurve->getStdDevRV();
+    if (!(std::isfinite(rvErr) && rvErr > 0.0) && activePts.size() == 1) {
+        const double pe = activePts.front() ? activePts.front()->getRVError()
+                                            : std::numeric_limits<double>::quiet_NaN();
+        if (std::isfinite(pe) && pe > 0.0)
+            rvErr = pe;
+    }
+    _e_rv_avg = rvErr;
+    _e_rv_med = rvErr;
 
     // Reset fit fields first
     _rvK = 0; _rvEK = 0;
