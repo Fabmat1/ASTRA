@@ -1016,6 +1016,22 @@ void ProjectView::onCreatePlot()
                                          getSelectedStars(),
                                          this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
+
+    // Clicking a point with "Open star details on click" enabled opens the
+    // same detail window as double-clicking the star's table row.
+    connect(dialog, &ProjectPlotDialog::starActivated, this,
+            [this](std::shared_ptr<Star> star) {
+                if (!star || !_currentProject)
+                    return;
+                auto* detailView = new StarDetailView(
+                    star, _controller->databaseManager(), _controller,
+                    _currentProject->getId());
+                detailView->setSelectedStars(getSelectedStars());
+                detailView->show();
+                detailView->raise();
+                detailView->activateWindow();
+            });
+
     dialog->show();
 }
 

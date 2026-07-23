@@ -26,6 +26,7 @@ class QFormLayout;
 class QGroupBox;
 class QListWidget;
 class QListWidgetItem;
+class QMouseEvent;
 
 // Project-level plotting tool: scatter plots, histograms and all-sky maps of
 // arbitrary numeric star fields, with export to PDF/SVG/PNG.
@@ -37,6 +38,11 @@ public:
                                std::vector<std::shared_ptr<Star>> filteredStars,
                                std::vector<std::shared_ptr<Star>> selectedStars,
                                QWidget* parent = nullptr);
+
+signals:
+    // Emitted when the user clicks a plotted point while "Open star details
+    // on click" is enabled (scatter and sky map only).
+    void starActivated(std::shared_ptr<Star> star);
 
 private slots:
     void updatePlot();
@@ -128,6 +134,11 @@ private:
     void plotScatter();
     void plotHistogram();
     void plotSky();
+
+    // Click-to-open-details: hit test against the plotted points (plot
+    // coordinates, so it survives zoom/pan and works for the sky projection).
+    std::shared_ptr<Star> starAtPixel(const QPointF& pixelPos) const;
+    void handlePlotClick(QMouseEvent* event);
     void applySkyAspect();
     void applyAxisLimits();
     void applyAxisStyling();
@@ -162,6 +173,15 @@ private:
     QStringList _numericFields;   // plottable field keys, in catalogue order
     std::vector<SeriesConfig> _series;
     std::vector<OverlayConfig> _overlays;
+
+    // Star behind each plotted point, in plot coordinates; rebuilt on every
+    // replot by plotScatter/plotSky and hit-tested on click.
+    struct ClickPoint {
+        double x, y;
+        std::shared_ptr<Star> star;
+    };
+    std::vector<ClickPoint> _clickPoints;
+    QPointF _mousePressPos;   // distinguishes a click from a drag
 
     // UI
     QCustomPlot*    _plot          = nullptr;
@@ -200,6 +220,9 @@ private:
 
     // Sky page
     QCheckBox* _skyGridCheck = nullptr;
+
+    // Click-to-open-details toggle (scatter + sky map)
+    QCheckBox* _clickDetailCheck = nullptr;
 
     // Axis limits & filtering (collapsible)
     QWidget*   _limitsGroup      = nullptr;

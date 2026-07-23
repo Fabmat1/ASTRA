@@ -490,6 +490,22 @@ void ProjectPlotDialog::setupUi()
             this, onRangeChanged);
     connect(_plot->yAxis, qOverload<const QCPRange&>(&QCPAxis::rangeChanged),
             this, onRangeChanged);
+
+    // Click-to-open-details. Range drag stays fully functional: a press that
+    // moves more than a few pixels before release is a drag, not a click.
+    connect(_plot, &QCustomPlot::mousePress, this, [this](QMouseEvent* ev) {
+        _mousePressPos = ev->position();
+    });
+    connect(_plot, &QCustomPlot::mouseRelease, this,
+            &ProjectPlotDialog::handlePlotClick);
+    connect(_plot, &QCustomPlot::mouseMove, this, [this](QMouseEvent* ev) {
+        if (!_clickDetailCheck->isChecked() || _clickPoints.empty())
+            return;
+        if (ev->buttons() != Qt::NoButton)   // dragging
+            return;
+        _plot->setCursor(starAtPixel(ev->position()) ? Qt::PointingHandCursor
+                                                     : Qt::ArrowCursor);
+    });
 }
 
 QWidget* ProjectPlotDialog::buildControlPanel()
@@ -524,6 +540,17 @@ QWidget* ProjectPlotDialog::buildControlPanel()
     _typeCombo = new QComboBox(dataGroup);
     _typeCombo->addItems({ tr("Scatter plot"), tr("Histogram"), tr("Sky map") });
     dataForm->addRow(tr("Plot type:"), _typeCombo);
+
+    _clickDetailCheck = new QCheckBox(tr("Open star details on click"), dataGroup);
+    _clickDetailCheck->setToolTip(
+        tr("Click a plotted point to open its star detail window.\n"
+           "Dragging to pan and zooming keep working; only a click\n"
+           "without mouse movement opens a star."));
+    dataForm->addRow(QString(), _clickDetailCheck);
+    connect(_clickDetailCheck, &QCheckBox::toggled, this, [this](bool on) {
+        if (!on && _plot)
+            _plot->setCursor(Qt::ArrowCursor);
+    });
 
     layout->addWidget(dataGroup);
 
@@ -1430,6 +1457,7 @@ void ProjectPlotDialog::onPlotTypeChanged(int index)
     _styleForm->setRowVisible(_markerSizeSpin, markers);
     _limitsGroup->setEnabled(index != SkyMap);
     _overlaysGroup->setEnabled(index != SkyMap);   // projection coords
+    _clickDetailCheck->setEnabled(index != Histogram);   // bars aren't stars
 
     // Cartesian axis styling doesn't apply to the sky map (axes are hidden,
     // the graticule has its own toggle).
@@ -1670,6 +1698,8 @@ void ProjectPlotDialog::resetPlotState()
 {
     _plot->clearPlottables();
     _plot->clearItems();
+    _clickPoints.clear();
+    _plot->setCursor(Qt::ArrowCursor);
 
     if (_colorScale) {
         _plot->plotLayout()->remove(_colorScale);
@@ -1873,6 +1903,7 @@ void ProjectPlotDialog::plotScatter()
 
     for (auto& d : data) {
         starTotal += d.starCount;
+        const auto& seriesStars = starsForSource(d.cfg->sourceId);
 
         std::vector<double> stackedX, stackedY;
         if (_hideStackedCheck->isChecked()) {
@@ -1916,6 +1947,7 @@ void ProjectPlotDialog::plotScatter()
             if (sizeBy)   ps.push_back(ss[i]);
             if (wantXErr) pex.push_back(std::isnan(xe[i]) ? 0.0 : xe[i]);
             if (wantYErr) pey.push_back(std::isnan(ye[i]) ? 0.0 : ye[i]);
+            _clickPoints.push_back({ d.xs[i], d.ys[i], seriesStars[i] });
         }
         plotted += px.size();
 
@@ -2425,6 +2457,7 @@ void ProjectPlotDialog::plotSky()
             hammerProject(raToL(ras[i]), decs[i] * M_PI / 180.0, x, y);
             px.push_back(x);
             py.push_back(y);
+            _clickPoints.push_back({ x, y, stars[i] });
             ++plotted;
         }
         auto* graph = _plot->addGraph();
@@ -2450,6 +2483,45 @@ void ProjectPlotDialog::plotSky()
 void ProjectPlotDialog::applySkyAspect()
 {
     _plot->yAxis->setScaleRatio(_plot->xAxis, 1.0);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Click-to-open-details
+// ─────────────────────────────────────────────────────────────────────────────
+
+std::shared_ptr<Star> ProjectPlotDialog::starAtPixel(const QPointF& pixelPos) const
+{
+    if (_clickPoints.empty())
+        return nullptr;
+    if (!_plot->axisRect()->rect().contains(pixelPos.toPoint()))
+        return nullptr;
+
+    // Tolerance follows the marker size so small markers stay clickable.
+    const double tol = std::max(6.0, _markerSizeSpin->value() * 0.75 + 3.0);
+    double bestDist2 = tol * tol;
+    std::shared_ptr<Star> best;
+    for (const auto& cp : _clickPoints) {
+        const double dx = _plot->xAxis->coordToPixel(cp.x) - pixelPos.x();
+        const double dy = _plot->yAxis->coordToPixel(cp.y) - pixelPos.y();
+        const double d2 = dx * dx + dy * dy;
+        if (d2 < bestDist2) {
+            bestDist2 = d2;
+            best = cp.star;
+        }
+    }
+    return best;
+}
+
+void ProjectPlotDialog::handlePlotClick(QMouseEvent* event)
+{
+    if (!_clickDetailCheck->isChecked() || event->button() != Qt::LeftButton)
+        return;
+    // A press that moved is a pan/zoom gesture, not a click (same threshold
+    // QCustomPlot uses for its own click detection).
+    if ((event->position() - _mousePressPos).manhattanLength() > 3.0)
+        return;
+    if (auto star = starAtPixel(event->position()))
+        emit starActivated(star);
 }
 
 void ProjectPlotDialog::resizeEvent(QResizeEvent* event)
