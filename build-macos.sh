@@ -64,11 +64,16 @@ git -C "${SRC_DIR}" submodule update --init --recursive
 # gcc -> gfortran (DIGGA declares `LANGUAGES ... Fortran`, so CMake needs a
 #                  Fortran compiler at configure time even with no .f sources)
 # libomp -> OpenMP for Apple Clang (DIGGA + rv_mcmc require it)
-# gsl -> SEDplusplus (sedfit) extinction splines; curl/zlib come from the OS.
-BREW_PKGS=(cmake pkg-config wget gcc libomp eigen boost fftw nlohmann-json tbb cfitsio ccfits gsl openblas python numpy)
-# dylibbundler self-contains the non-Qt lcurve helper binaries' dylibs (Boost,
-# libomp, ...) — macdeployqt only handles the main Qt app, not arbitrary execs.
-[[ "${ASTRA_BUNDLE_LCURVE}" == "1" ]] && BREW_PKGS+=(dylibbundler)
+# gsl/curl/zlib -> SEDplusplus (sedfit): its CMake uses pkg_check_modules(...
+#   REQUIRED) for all three, and macOS ships no .pc files for curl/zlib — so
+#   they must come from brew (keg-only; their prefixes are added to
+#   CMAKE_PREFIX_PATH below, which CMake forwards to PKG_CONFIG_PATH).
+# cxxopts -> DIGGA (its brew formula ships the CMake config DIGGA looks for)
+BREW_PKGS=(cmake pkg-config wget gcc libomp eigen boost fftw nlohmann-json tbb cfitsio ccfits gsl curl zlib cxxopts openblas python numpy)
+# dylibbundler self-contains the non-Qt helper binaries' dylibs (sedfit always;
+# lcurve when bundled) — macdeployqt only handles the main Qt app, not
+# arbitrary executables.
+BREW_PKGS+=(dylibbundler)
 [[ "${QT_FROM}" == "brew" ]] && BREW_PKGS+=(qt)
 
 echo ">>> Installing/updating Homebrew packages: ${BREW_PKGS[*]}"
@@ -355,6 +360,16 @@ fi
 
 # ── 8. Configure & build ASTRA ──────────────────────────────────────────────
 PREFIX_PATH="${QT_PREFIX};${BREW_PREFIX};${OPENBLAS_PREFIX};${LIBOMP};${CCFITS_PREFIX};${CFITSIO_PREFIX}"
+# curl/zlib are keg-only in Homebrew: their .pc files are NOT linked under
+# ${BREW_PREFIX}/lib/pkgconfig, and SEDplusplus hard-requires both via
+# pkg_check_modules(... REQUIRED). Adding the keg prefixes to CMAKE_PREFIX_PATH
+# is enough — FindPkgConfig appends <prefix>/lib/pkgconfig to pkg-config's
+# search path (PKG_CONFIG_USE_CMAKE_PREFIX_PATH is ON by default).
+PREFIX_PATH="${PREFIX_PATH};$(brew --prefix curl);$(brew --prefix zlib)"
+# The deps cache dir must be a CMake prefix too: DIGGA locates unordered_dense.h
+# via find_path, which searches <prefix>/include on CMAKE_PREFIX_PATH — the
+# -isystem compile flag below is invisible to find_path.
+PREFIX_PATH="${PREFIX_PATH};${CACHE}"
 
 rm -rf "${BUILD_DIR}"
 # Narrow extra include dirs only (no blanket -L/opt/homebrew/lib — that can put
@@ -531,6 +546,29 @@ if [[ "${ASTRA_BUNDLE_LCURVE}" == "1" ]]; then
     echo "!!! lcurve build/bundle failed — shipping .app WITHOUT bundled lcurve."
     echo "!!! lcurve will be resolved from the Settings dialog / PATH at runtime."
   fi
+fi
+
+# sedfit (SEDplusplus) is built by the main cmake build; the Linux package gets
+# it via `cmake --install`, but this script assembles the .app by hand, so copy
+# it (plus its filter refdata) to the paths SedFitEnvironment.cpp resolves:
+#   Contents/libexec/astra/sedfit/sedfit   (ASTRA_SEDFIT_BUNDLE_RELDIR)
+#   Contents/share/astra/sedfit/refdata    (ASTRA_SEDFIT_REFDATA_RELDIR)
+SEDFIT_BIN="$(find "${BUILD_DIR}/external/SEDplusplus" -name sedfit -type f -perm -u+x 2>/dev/null | head -1)"
+if [[ -n "${SEDFIT_BIN}" ]]; then
+  echo ">>> Bundling sedfit"
+  SEDFIT_DEST="${APP}/Contents/libexec/astra/sedfit"
+  mkdir -p "${SEDFIT_DEST}"
+  cp -f "${SEDFIT_BIN}" "${SEDFIT_DEST}/"
+  dylibbundler -of -b -x "${SEDFIT_DEST}/sedfit" \
+    -d "${SEDFIT_DEST}/libs" -p "@loader_path/libs/" >/dev/null
+  REFDATA_SRC="${SRC_DIR}/resources/sedfit/refdata"
+  if [[ -d "${REFDATA_SRC}" ]]; then
+    REFDATA_DEST="${APP}/Contents/share/astra/sedfit/refdata"
+    rm -rf "${REFDATA_DEST}"; mkdir -p "${REFDATA_DEST}"
+    cp -R "${REFDATA_SRC}/." "${REFDATA_DEST}/"
+  fi
+else
+  echo "!!! sedfit binary not found in build tree — SED fitting will need a user-installed sedfit."
 fi
 
 if [[ "${ASTRA_BUNDLE_LCQUERY}" == "1" ]]; then
