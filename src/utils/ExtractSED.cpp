@@ -9,7 +9,12 @@
 #include <QTextStream>
 #include <charconv>
 #include <cmath>
+#include <cstring>
 #include <limits>
+
+#if !defined(__cpp_lib_to_chars) && defined(__APPLE__)
+#include <xlocale.h>   // strtod_l
+#endif
 
 // ══════════════════════════════════════════════════════════════
 // Internal helpers
@@ -35,8 +40,27 @@ inline int splitWhitespace(const char *b, const char *e, std::string_view *out,
 }
 
 inline bool toDouble(std::string_view sv, double &out) {
+#ifdef __cpp_lib_to_chars
     auto [ptr, ec] = std::from_chars(sv.data(), sv.data() + sv.size(), out);
     return ec == std::errc();
+#else
+    // Apple libc++ has no floating-point std::from_chars (integer-only).
+    // strtod is locale-sensitive and Qt sets the process locale, so use
+    // strtod_l with the C locale (NULL) via a NUL-terminated copy.
+    char buf[128];
+    size_t n = sv.size() < sizeof(buf) - 1 ? sv.size() : sizeof(buf) - 1;
+    std::memcpy(buf, sv.data(), n);
+    buf[n] = '\0';
+    char *endp = nullptr;
+#ifdef __APPLE__
+    const double v = strtod_l(buf, &endp, nullptr);
+#else
+    const double v = std::strtod(buf, &endp);
+#endif
+    if (endp == buf) return false;
+    out = v;
+    return true;
+#endif
 }
 
 inline bool toInt(std::string_view sv, int &out) {

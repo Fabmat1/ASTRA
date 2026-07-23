@@ -38,15 +38,40 @@
 #include <cstdlib>
 #include <cstring>
 
+#if !defined(__cpp_lib_to_chars) && defined(__APPLE__)
+#include <xlocale.h>   // strtod_l
+#endif
+
 namespace {
 
 // Parse a double from [p, end). Advances p. Returns true on success.
 inline bool parseDouble(const char*& p, const char* end, double& out)
 {
+#ifdef __cpp_lib_to_chars
     auto [ptr, ec] = std::from_chars(p, end, out);
     if (ec != std::errc{}) return false;
     p = ptr;
     return true;
+#else
+    // Apple libc++ has no floating-point std::from_chars (integer-only).
+    // strtod is locale-sensitive and Qt sets the process locale, so use
+    // strtod_l with the C locale (NULL) via a NUL-terminated copy.
+    char buf[128];
+    size_t n = static_cast<size_t>(end - p);
+    if (n > sizeof(buf) - 1) n = sizeof(buf) - 1;
+    std::memcpy(buf, p, n);
+    buf[n] = '\0';
+    char* endp = nullptr;
+#ifdef __APPLE__
+    const double v = strtod_l(buf, &endp, nullptr);
+#else
+    const double v = std::strtod(buf, &endp);
+#endif
+    if (endp == buf) return false;
+    out = v;
+    p += endp - buf;
+    return true;
+#endif
 }
 
 inline bool parseLong(const char*& p, const char* end, long& out)
