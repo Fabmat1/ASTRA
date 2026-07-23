@@ -4,19 +4,21 @@
 # Usage:   ./build-macos.sh [VERSION]
 # Env overrides:
 #   QT_FROM        = brew (default) | aqt        # where Qt6 comes from
-#   ASTRA_WITH_CCFITS = 1 (default) | 0          # build CCfits for FITS support
 #   OPENBLAS_VERSION  = 0.3.27 (only for source fallback)
 #   JOBS              = number of parallel build jobs (default: all cores)
 #
+# CCfits is REQUIRED (both ASTRA and DIGGA link it); it comes from the
+# Homebrew bottle, with a one-time source build as fallback. The build
+# aborts if neither works — there is no FITS-less fallback.
+#
 # Unlike the Linux AppImage build there is NO container: macOS apps must be
 # built natively on macOS. Run this on the target Mac (Apple Silicon).
-# First run does a one-time OpenBLAS/CCfits source build (~5-8 min, cached);
+# First run may do a one-time OpenBLAS/CCfits source build (~5-8 min, cached);
 # later runs reuse the cache.
 set -euo pipefail
 
-VERSION="${1:-0.3.3}"
+VERSION="${1:-0.5.1}"
 QT_FROM="${QT_FROM:-brew}"
-ASTRA_WITH_CCFITS="${ASTRA_WITH_CCFITS:-1}"
 OPENBLAS_VERSION="${OPENBLAS_VERSION:-0.3.27}"
 # Bundled helper programs (mirrors what build-appimage.sh ships). ISIS is not
 # bundled on macOS (its S-Lang/PGPLOT stack doesn't build cleanly on Apple Si).
@@ -63,7 +65,7 @@ git -C "${SRC_DIR}" submodule update --init --recursive
 #                  Fortran compiler at configure time even with no .f sources)
 # libomp -> OpenMP for Apple Clang (DIGGA + rv_mcmc require it)
 # gsl -> SEDplusplus (sedfit) extinction splines; curl/zlib come from the OS.
-BREW_PKGS=(cmake pkg-config wget gcc libomp eigen boost fftw nlohmann-json tbb cfitsio gsl openblas python numpy)
+BREW_PKGS=(cmake pkg-config wget gcc libomp eigen boost fftw nlohmann-json tbb cfitsio ccfits gsl openblas python numpy)
 # dylibbundler self-contains the non-Qt lcurve helper binaries' dylibs (Boost,
 # libomp, ...) — macdeployqt only handles the main Qt app, not arbitrary execs.
 [[ "${ASTRA_BUNDLE_LCURVE}" == "1" ]] && BREW_PKGS+=(dylibbundler)
@@ -187,25 +189,45 @@ if(NOT TARGET fftw3)
 endif()
 EOF
 
-# ── 5. CCfits (optional — enables FITS spectra support) ─────────────────────
-# Prefer a system CCfits (Homebrew bottle, built with Apple Clang -> ABI matches
-# our Apple-Clang build). Only fall back to a source build if none is installed.
+# ── 5. CCfits (REQUIRED — ASTRA and DIGGA both link it) ─────────────────────
+# DIGGA does `find_library(CCfits ... REQUIRED)`, so a missing CCfits doesn't
+# degrade gracefully — configure hard-fails. Resolve one CCfits here and feed
+# the exact paths to every consumer.
+#
+# Detection is by files, NOT `pkg-config --exists ccfits`: the Homebrew bottle
+# is an autotools build that ships no ccfits.pc, so pkg-config reports it
+# missing even when it's perfectly usable (that false negative is what pushed
+# fresh machines into the source-build path before).
+CFITSIO_PREFIX="$(brew --prefix cfitsio)"
+find_ccfits_in() {  # sets CCFITS_INCDIR/CCFITS_LIBFILE if $1 holds a usable CCfits
+  local p="$1"
+  [[ -n "${p}" && -f "${p}/include/CCfits/CCfits.h" ]] || return 1
+  local lib
+  lib="$(ls "${p}"/lib/libCCfits*.dylib "${p}"/lib/libCCfits*.a 2>/dev/null | head -1)"
+  [[ -n "${lib}" ]] || return 1
+  CCFITS_INCDIR="${p}/include"
+  CCFITS_LIBFILE="${lib}"
+  return 0
+}
+
 CCFITS_PREFIX=""
-SYS_CCFITS=0
-if [[ "${ASTRA_WITH_CCFITS}" == "1" ]] && pkg-config --exists ccfits 2>/dev/null; then
-  echo ">>> Using system CCfits $(pkg-config --modversion ccfits) — FITS enabled"
-  SYS_CCFITS=1
-elif [[ "${ASTRA_WITH_CCFITS}" == "1" ]]; then
+CCFITS_BREW="$(brew --prefix ccfits 2>/dev/null || true)"
+if find_ccfits_in "${CCFITS_BREW}"; then
+  CCFITS_PREFIX="${CCFITS_BREW}"
+  echo ">>> Using Homebrew CCfits: ${CCFITS_PREFIX}"
+else
+  # Source-build fallback (e.g. no bottle for this macOS version).
   CCFITS_PREFIX="${CACHE}/ccfits/install"
   CCFITS_STAMP="${CACHE}/ccfits/2.6.stamp"
-  CFITSIO_PREFIX="$(brew --prefix cfitsio)"
-  if [[ -f "${CCFITS_STAMP}" ]]; then
-    echo ">>> Using cached CCfits"
+  # Trust the stamp only if the install it points at still exists.
+  if [[ -f "${CCFITS_STAMP}" ]] && find_ccfits_in "${CCFITS_PREFIX}"; then
+    echo ">>> Using cached source-built CCfits: ${CCFITS_PREFIX}"
   else
-    echo ">>> Building CCfits 2.6 from source (one-time; FITS support)"
-    if (
+    rm -f "${CCFITS_STAMP}"
+    echo ">>> Building CCfits 2.6 from source (one-time)"
+    (
       set -e
-      rm -rf "${CACHE}/ccfits/src"
+      rm -rf "${CACHE}/ccfits/src" "${CCFITS_PREFIX}"
       mkdir -p "${CACHE}/ccfits/src"
       wget -q -O "${CACHE}/ccfits/src.tgz" \
         "https://heasarc.gsfc.nasa.gov/fitsio/CCfits/CCfits-2.6.tar.gz"
@@ -215,7 +237,9 @@ elif [[ "${ASTRA_WITH_CCFITS}" == "1" ]]; then
       CMAKELISTS="$(find "${CACHE}/ccfits/src" -maxdepth 3 -name CMakeLists.txt -type f -print -quit)"
       if [[ -n "${CONFIGURE}" ]]; then
         cd "$(dirname "${CONFIGURE}")"
-        ./configure --prefix="${CCFITS_PREFIX}" --with-cfitsio="${CFITSIO_PREFIX}"
+        # Pin the compiler here too — same libc++ mismatch hazard as the main build.
+        CC=/usr/bin/clang CXX=/usr/bin/clang++ \
+          ./configure --prefix="${CCFITS_PREFIX}" --with-cfitsio="${CFITSIO_PREFIX}"
         make -j"${JOBS}"
         make install
       elif [[ -n "${CMAKELISTS}" ]]; then
@@ -223,6 +247,8 @@ elif [[ "${ASTRA_WITH_CCFITS}" == "1" ]]; then
         cmake -S "${SD}" -B "${SD}/_build" \
           -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
           -DCMAKE_BUILD_TYPE=Release \
+          -DCMAKE_C_COMPILER=/usr/bin/clang \
+          -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
           -DCMAKE_INSTALL_PREFIX="${CCFITS_PREFIX}" \
           -DCMAKE_PREFIX_PATH="${CFITSIO_PREFIX}"
         cmake --build "${SD}/_build" -j"${JOBS}"
@@ -230,15 +256,16 @@ elif [[ "${ASTRA_WITH_CCFITS}" == "1" ]]; then
       else
         echo "No configure or CMakeLists.txt found in extracted CCfits source"; exit 1
       fi
-    ); then
-      touch "${CCFITS_STAMP}"
-    else
-      echo "!!! CCfits build failed — continuing WITHOUT FITS support."
-      echo "!!! Re-run with ASTRA_WITH_CCFITS=0 to silence this, or fix and retry."
-      CCFITS_PREFIX=""
-    fi
+    ) && find_ccfits_in "${CCFITS_PREFIX}" && touch "${CCFITS_STAMP}" || {
+      echo "!!! CCfits could not be provisioned (brew bottle absent, source build failed)."
+      echo "!!! CCfits is required — try 'brew install ccfits' manually, then re-run."
+      exit 1
+    }
   fi
 fi
+CFITSIO_LIBFILE="$(ls "${CFITSIO_PREFIX}"/lib/libcfitsio*.dylib 2>/dev/null | head -1)"
+[[ -n "${CFITSIO_LIBFILE}" ]] || { echo "libcfitsio not found under ${CFITSIO_PREFIX}."; exit 1; }
+echo ">>> CCfits: ${CCFITS_LIBFILE}  |  cfitsio: ${CFITSIO_LIBFILE}"
 
 # ── 6. Header-only dep: ankerl/unordered_dense (DIGGA) ──────────────────────
 DEPS_INC="${CACHE}/include"
@@ -279,14 +306,6 @@ DIGGA_RES="${SRC_DIR}/external/DIGGA/src/Resolution.cpp"
 if grep -q 'constexpr double SIGMA_FROM_FWHM' "${DIGGA_RES}"; then
   echo ">>> Patching DIGGA Resolution.cpp: constexpr -> const (SIGMA_FROM_FWHM)"
   perl -i -pe 's/constexpr(\s+double\s+SIGMA_FROM_FWHM\b)/const$1/' "${DIGGA_RES}"
-fi
-# (e) Give CMakeLists a hard switch to force-disable CCfits. Its auto-detection
-#     can latch onto a partial/leftover CCfits (or brew cfitsio) and then ASTRA
-#     links -lCCfits even when no usable CCfits exists. The switch lets the build
-#     deterministically turn FITS off when CCfits isn't available.
-if ! grep -q 'ASTRA_DISABLE_CCFITS' "${CML}"; then
-  echo ">>> Adding ASTRA_DISABLE_CCFITS override to CMakeLists.txt"
-  perl -0pi -e 's/if\(CCFITS_FOUND\)\n(\s*)message\(STATUS "CCfits support enabled"\)/if(ASTRA_DISABLE_CCFITS)\n    set(CCFITS_FOUND FALSE)\nendif()\n\nif(CCFITS_FOUND)\n${1}message(STATUS "CCfits support enabled")/' "${CML}"
 fi
 
 # ── 7b. Ensure Info.plist.in exists (CMakeLists references it for the bundle) ─
@@ -335,36 +354,31 @@ PLIST_EOF
 fi
 
 # ── 8. Configure & build ASTRA ──────────────────────────────────────────────
-PREFIX_PATH="${QT_PREFIX};${BREW_PREFIX};${OPENBLAS_PREFIX};${LIBOMP}"
-[[ -n "${CCFITS_PREFIX}" ]] && PREFIX_PATH="${PREFIX_PATH};${CCFITS_PREFIX};$(brew --prefix cfitsio)"
+PREFIX_PATH="${QT_PREFIX};${BREW_PREFIX};${OPENBLAS_PREFIX};${LIBOMP};${CCFITS_PREFIX};${CFITSIO_PREFIX}"
 
 rm -rf "${BUILD_DIR}"
 # Narrow extra include dirs only (no blanket -L/opt/homebrew/lib — that can put
 # a Homebrew libc++ ahead of the system one and break the final link). fftw and
 # the other deps resolve through proper CMake targets; cfitsio's header is the
 # one thing pulled in by a bare include (via CCfits), so add just that dir.
-EXTRA_INC="-isystem ${DEPS_INC}"
-# When CCfits isn't available, hard-disable it so ASTRA's auto-detection can't
-# latch onto a partial install and force a -lCCfits the linker can't satisfy.
-CCFITS_ARGS=()
-EXTRA_LINK=""
-if [[ "${SYS_CCFITS}" == "1" || -n "${CCFITS_PREFIX}" ]]; then
-  # FITS enabled — make sure cfitsio's header (fitsio.h, pulled in by CCfits) is
-  # on the include path regardless of how CCfits itself was found.
-  EXTRA_INC="${EXTRA_INC} -isystem $(brew --prefix cfitsio)/include"
-  # ASTRA's CMakeLists links a *bare* -lCCfits but never feeds the linker the
-  # library search dir that pkg-config (or the source build) reports. On Linux
-  # libCCfits sits in /usr/lib so the default search finds it; on macOS it's in
-  # a Homebrew keg path the linker doesn't scan. Add the -L explicitly.
-  if [[ "${SYS_CCFITS}" == "1" ]]; then
-    EXTRA_LINK="$(pkg-config --libs-only-L ccfits 2>/dev/null) -L$(brew --prefix cfitsio)/lib"
-  else
-    EXTRA_LINK="-L${CCFITS_PREFIX}/lib -L$(brew --prefix cfitsio)/lib"
-  fi
-else
-  CCFITS_ARGS=(-DASTRA_DISABLE_CCFITS=ON)
-  echo ">>> Building WITHOUT FITS support (CCfits unavailable)"
-fi
+EXTRA_INC="-isystem ${DEPS_INC} -isystem ${CCFITS_INCDIR} -isystem ${CFITSIO_PREFIX}/include"
+# ASTRA's CMakeLists links a *bare* -lCCfits but never feeds the linker the
+# library search dir. On Linux libCCfits sits in /usr/lib so the default search
+# finds it; on macOS it's in a Homebrew keg / cache path the linker doesn't
+# scan. Add the -L explicitly.
+EXTRA_LINK="-L$(dirname "${CCFITS_LIBFILE}") -L${CFITSIO_PREFIX}/lib"
+# Seed every CCfits/cfitsio cache variable the project tree consults, so both
+# ASTRA's manual find_path/find_library fallback (pkg-config never succeeds on
+# macOS — the brew CCfits ships no .pc) and DIGGA's `find_library(CCFITS_LIB
+# CCfits REQUIRED)` resolve to the ONE CCfits provisioned above, on every
+# machine, without depending on search-path luck.
+CCFITS_ARGS=(
+  -DCCFITS_INCLUDE_DIR="${CCFITS_INCDIR}"
+  -DCCFITS_LIBRARY="${CCFITS_LIBFILE}"
+  -DCFITSIO_LIBRARY="${CFITSIO_LIBFILE}"
+  -DCCFITS_LIB="${CCFITS_LIBFILE}"
+  -DCFITSIO_LIB="${CFITSIO_LIBFILE}"
+)
 cmake -S "${SRC_DIR}" -B "${BUILD_DIR}" \
   -DCMAKE_BUILD_TYPE=Release \
   -DCMAKE_C_COMPILER=/usr/bin/clang \
@@ -374,7 +388,7 @@ cmake -S "${SRC_DIR}" -B "${BUILD_DIR}" \
   -DCMAKE_Fortran_COMPILER="${FORTRAN_COMPILER}" \
   -DCMAKE_CXX_FLAGS="${EXTRA_INC}" \
   -DCMAKE_EXE_LINKER_FLAGS="${EXTRA_LINK}" \
-  ${CCFITS_ARGS[@]+"${CCFITS_ARGS[@]}"} \
+  "${CCFITS_ARGS[@]}" \
   -DDIGGA_ENABLE_CUDA=OFF \
   -DBUILD_TESTING=OFF \
   -DOpenMP_ROOT="${LIBOMP}" \

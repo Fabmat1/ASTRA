@@ -23,6 +23,7 @@ ui_*.h
 *.jsc
 Makefile*
 *build-*
+!.github/workflows/build-macos.yml
 *.qm
 *.prl
 
