@@ -18,17 +18,111 @@
 #include <QLabel>
 #include <QFrame>
 #include <QRegularExpression>
+#include <QSet>
+#include <QStandardItemModel>
 #include <QTimer>
 #include <QAbstractTableModel>
 #include <cmath>
+
+namespace {
+
+// Column-combo entries that are not real columns
+const QString kExprKey = QStringLiteral("<expression>");
+const QString kMoreKey = QStringLiteral("<more>");
+
+// Columns holding text rather than numbers (everything else non-boolean is numeric)
+bool isTextColumnKey(const QString& key)
+{
+    static const QSet<QString> textKeys = {
+        "alias", "source_id", "tic", "jname", "spec_class"
+    };
+    if (textKeys.contains(key)) return true;
+    const ColumnDef* def = ColumnPresetManager::instance().columnDef(key);
+    return def && def->category == "Identification";
+}
+
+const char* kExpressionHelp =
+    "Comparison over columns, e.g.:\n"
+    "    plx > 5 * e_plx\n"
+    "    {RV med} - {ΔRV max}/2 > -200\n\n"
+    "Reference columns by internal key (plx, rv_med) or by display name\n"
+    "in braces: {Parallax}, {ΔRV max}.\n"
+    "Arithmetic: + - * / ^ ( )   Functions: abs sqrt cbrt log log10 exp\n"
+    "floor ceil round sin cos tan   Comparison: > >= < <= == !=";
+
+const char* kNumericValueHelp =
+    "Number or arithmetic expression over columns,\n"
+    "e.g.:  5 * e_plx   or   {ΔRV max}/2 - 200";
+
+} // namespace
 
 // =============================================================================
 // FilterCondition
 // =============================================================================
 
-bool FilterCondition::evaluate(const QVariant& cellValue) const
+QString FilterCondition::compile()
+{
+    expr1.reset();
+    expr2.reset();
+    QString err;
+
+    if (op == Expression) {
+        const QString text = value1.toString().trimmed();
+        if (text.isEmpty()) return QString();   // not an error, just incomplete
+        expr1 = FilterExpression::compile(text, &err);
+        if (expr1 && !expr1->hasComparison()) {
+            expr1.reset();
+            err = "Expression must contain a comparison (e.g. plx > 5 * e_plx)";
+        }
+        return err;
+    }
+
+    if (isNumericOperator()) {
+        const QString t1 = value1.toString().trimmed();
+        if (!t1.isEmpty()) {
+            expr1 = FilterExpression::compile(t1, &err);
+            if (expr1 && expr1->hasComparison()) {
+                expr1.reset();
+                err = "Value must not contain a comparison";
+            }
+            if (!err.isEmpty()) return err;
+        }
+        if (op == Between) {
+            const QString t2 = value2.toString().trimmed();
+            if (!t2.isEmpty()) {
+                expr2 = FilterExpression::compile(t2, &err);
+                if (expr2 && expr2->hasComparison()) {
+                    expr2.reset();
+                    err = "Value must not contain a comparison";
+                }
+            }
+        }
+    }
+    return err;
+}
+
+bool FilterCondition::isValid() const
+{
+    if (op == Expression)
+        return expr1 && expr1->hasComparison();
+    if (isNumericOperator()) {
+        if (!expr1) return false;
+        if (op == Between && !expr2) return false;
+    }
+    return true;
+}
+
+bool FilterCondition::evaluate(const QVariant& cellValue,
+                               const FilterExpression::ColumnResolver& resolver) const
 {
     if (!enabled) return true;  // Disabled conditions always pass
+
+    if (op == Expression) {
+        if (!expr1) return true;   // incomplete expression → don't filter
+        bool ok = false;
+        const bool res = expr1->evaluateBool(resolver, &ok);
+        return ok && res;
+    }
 
     // Universal operators
     if (op == IsEmpty) {
@@ -53,7 +147,7 @@ bool FilterCondition::evaluate(const QVariant& cellValue) const
 
     QString cellStr = cellValue.toString();
 
-    // Numeric operators
+    // Numeric operators (thresholds may be expressions over other columns)
     if (isNumericOperator()) {
         bool cellOk = false;
         double cellNum = cellValue.toDouble(&cellOk);
@@ -63,7 +157,8 @@ bool FilterCondition::evaluate(const QVariant& cellValue) const
         if (!cellOk) return false;
 
         bool valOk = false;
-        double threshold = value1.toDouble(&valOk);
+        double threshold = expr1 ? expr1->evaluateNumeric(resolver, &valOk)
+                                 : value1.toDouble(&valOk);
         if (!valOk) return false;
 
         switch (op) {
@@ -73,7 +168,8 @@ bool FilterCondition::evaluate(const QVariant& cellValue) const
             case LessEqual:    return cellNum <= threshold;
             case Between: {
                 bool val2Ok = false;
-                double upper = value2.toDouble(&val2Ok);
+                double upper = expr2 ? expr2->evaluateNumeric(resolver, &val2Ok)
+                                     : value2.toDouble(&val2Ok);
                 if (!val2Ok) return false;
                 double lo = qMin(threshold, upper);
                 double hi = qMax(threshold, upper);
@@ -147,6 +243,7 @@ FilterCondition::Operator FilterCondition::operatorFromName(const QString& name)
     if (name == "is false")        return IsFalse;
     if (name == "is empty")        return IsEmpty;
     if (name == "is not empty")    return IsNotEmpty;
+    if (name == "expression")      return Expression;
     return Contains;
 }
 
@@ -167,6 +264,9 @@ QString FilterCondition::operatorToName(Operator op)
         case Between:       return "between";
         case IsEmpty:       return "is empty";
         case IsNotEmpty:    return "is not empty";
+        case IsTrue:        return "is true";
+        case IsFalse:       return "is false";
+        case Expression:    return "expression";
     }
     return "contains";
 }
@@ -197,6 +297,7 @@ endBatchFilter();
 void StarFilterProxyModel::setFilterConditions(const QVector<FilterCondition>& conditions)
 {
     _conditions = conditions;
+    for (auto& c : _conditions) c.compile();
     beginBatchFilter();
 endBatchFilter();
 }
@@ -204,6 +305,7 @@ endBatchFilter();
 void StarFilterProxyModel::addFilterCondition(const FilterCondition& condition)
 {
     _conditions.append(condition);
+    _conditions.last().compile();
     beginBatchFilter();
 endBatchFilter();
 }
@@ -232,7 +334,7 @@ QVector<FilterCondition> StarFilterProxyModel::getFilterConditions() const
 int StarFilterProxyModel::activeFilterCount() const
 {
     int count = 0;
-    for (const auto& c : _conditions) if (c.enabled) ++count;
+    for (const auto& c : _conditions) if (c.enabled && c.isValid()) ++count;
     if (!_quickSearchText.isEmpty())             ++count;
     if (_obsFilter.enabled && _obsFilter.instrument && _obsNight.valid) ++count;
     return count;
@@ -302,22 +404,41 @@ bool StarFilterProxyModel::matchesQuickSearch(int sourceRow, const QModelIndex& 
 
 bool StarFilterProxyModel::matchesAdvancedFilters(int sourceRow, const QModelIndex& sourceParent) const
 {
+    // Conditions are evaluated against the star's field map so that any
+    // column can be filtered on, not just the ones visible in the table.
+    auto* starModel = qobject_cast<StarTableModel*>(sourceModel());
+    std::shared_ptr<Star> star = starModel ? starModel->getStarAtRow(sourceRow)
+                                           : nullptr;
+
+    FilterExpression::ColumnResolver resolver =
+        [&star](const QString& key) -> QVariant {
+            return star ? star->getFieldValue(key) : QVariant();
+        };
+
     bool hasAnyEnabled = false;
 
     for (const auto& condition : _conditions) {
-        if (!condition.enabled) continue;
+        if (!condition.enabled || !condition.isValid()) continue;
+
+        QVariant cellValue;
+        if (!condition.isExpression()) {
+            if (star) {
+                cellValue = star->getFieldValue(condition.columnKey);
+            } else {
+                // Fallback for non-star source models: match by header text
+                int colIdx = columnIndexForKey(condition.columnKey);
+                if (colIdx < 0) {
+                    if (_logicMode == And) return false;
+                    hasAnyEnabled = true;
+                    continue;
+                }
+                QModelIndex idx = sourceModel()->index(sourceRow, colIdx, sourceParent);
+                cellValue = sourceModel()->data(idx, Qt::DisplayRole);
+            }
+        }
         hasAnyEnabled = true;
 
-        int colIdx = columnIndexForName(condition.columnName);
-        if (colIdx < 0) {
-            // Column not found - treat as not matching in AND, matching in OR
-            if (_logicMode == And) return false;
-            continue;
-        }
-
-        QModelIndex idx = sourceModel()->index(sourceRow, colIdx, sourceParent);
-        QVariant cellValue = sourceModel()->data(idx, Qt::DisplayRole);
-        bool matches = condition.evaluate(cellValue);
+        bool matches = condition.evaluate(cellValue, resolver);
 
         if (_logicMode == And && !matches) return false;
         if (_logicMode == Or && matches) return true;
@@ -329,11 +450,12 @@ bool StarFilterProxyModel::matchesAdvancedFilters(int sourceRow, const QModelInd
     return (_logicMode == And);
 }
 
-int StarFilterProxyModel::columnIndexForName(const QString& columnName) const
+int StarFilterProxyModel::columnIndexForKey(const QString& columnKey) const
 {
     if (!sourceModel()) return -1;
+    const QString display = ColumnPresetManager::instance().displayName(columnKey);
     for (int i = 0; i < sourceModel()->columnCount(); ++i) {
-        if (sourceModel()->headerData(i, Qt::Horizontal, Qt::DisplayRole).toString() == columnName) {
+        if (sourceModel()->headerData(i, Qt::Horizontal, Qt::DisplayRole).toString() == display) {
             return i;
         }
     }
@@ -344,13 +466,10 @@ int StarFilterProxyModel::columnIndexForName(const QString& columnName) const
 // FilterConditionRow
 // =============================================================================
 
-FilterConditionRow::FilterConditionRow(const QStringList& columnNames,
-                                       const QStringList& numericColumns,
-                                       const QStringList& booleanColumns,
+FilterConditionRow::FilterConditionRow(const QStringList& projectColumnKeys,
                                        QWidget* parent)
     : QFrame(parent)
-    , _numericColumns(numericColumns)
-    , _booleanColumns(booleanColumns)
+    , _projectKeys(projectColumnKeys)
 {
     setFrameShape(QFrame::StyledPanel);
     setObjectName("filterConditionRow");
@@ -378,13 +497,24 @@ FilterConditionRow::FilterConditionRow(const QStringList& columnNames,
     });
     layout->addWidget(_enableButton);
 
-    // Column selector
+    // Column selector: project columns first, "More columns…" expands to all
     _columnCombo = new QComboBox(this);
-    _columnCombo->addItems(columnNames);
     _columnCombo->setMinimumWidth(100);
     _columnCombo->setToolTip("Column to filter");
+    populateColumnCombo(false);
+    _currentKey = _columnCombo->currentData().toString();
     connect(_columnCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &FilterConditionRow::onColumnChanged);
+    connect(_columnCombo, QOverload<int>::of(&QComboBox::activated),
+            this, [this](int) {
+        if (_columnCombo->currentData().toString() != kMoreKey)
+            return;
+        populateColumnCombo(true);
+        selectColumnKey(_currentKey);   // restore previous selection
+        QTimer::singleShot(0, _columnCombo, [combo = _columnCombo]() {
+            combo->showPopup();
+        });
+    });
     layout->addWidget(_columnCombo);
 
     // Operator selector
@@ -425,18 +555,91 @@ FilterConditionRow::FilterConditionRow(const QStringList& columnNames,
     populateOperators();
 }
 
+void FilterConditionRow::populateColumnCombo(bool showAllColumns)
+{
+    _showingAllColumns = showAllColumns;
+    auto& mgr = ColumnPresetManager::instance();
+
+    _columnCombo->blockSignals(true);
+    _columnCombo->clear();
+
+    if (!showAllColumns) {
+        for (const QString& key : _projectKeys)
+            _columnCombo->addItem(mgr.displayName(key), key);
+        _columnCombo->insertSeparator(_columnCombo->count());
+        _columnCombo->addItem("ƒ  Expression…", kExprKey);
+        _columnCombo->insertSeparator(_columnCombo->count());
+        _columnCombo->addItem("More columns…", kMoreKey);
+    } else {
+        // Full catalogue, grouped by category like the column configurator
+        auto* model = qobject_cast<QStandardItemModel*>(_columnCombo->model());
+        for (const QString& cat : mgr.categories()) {
+            _columnCombo->addItem(cat, QString());
+            if (model) {
+                QStandardItem* header = model->item(_columnCombo->count() - 1);
+                header->setFlags(header->flags()
+                                 & ~(Qt::ItemIsSelectable | Qt::ItemIsEnabled));
+                QFont f = header->font();
+                f.setBold(true);
+                header->setFont(f);
+            }
+            for (const auto& col : mgr.columnsForCategory(cat))
+                _columnCombo->addItem("   " + col.displayName, col.key);
+        }
+        _columnCombo->insertSeparator(_columnCombo->count());
+        _columnCombo->addItem("ƒ  Expression…", kExprKey);
+    }
+
+    _columnCombo->blockSignals(false);
+}
+
+void FilterConditionRow::selectColumnKey(const QString& key)
+{
+    int idx = _columnCombo->findData(key);
+    if (idx < 0 && !_showingAllColumns) {
+        populateColumnCombo(true);
+        idx = _columnCombo->findData(key);
+    }
+    if (idx < 0) return;
+
+    _columnCombo->blockSignals(true);
+    _columnCombo->setCurrentIndex(idx);
+    _columnCombo->blockSignals(false);
+    _currentKey = key;
+}
+
 void FilterConditionRow::onColumnChanged(int index)
 {
     Q_UNUSED(index);
+    const QString key = _columnCombo->currentData().toString();
+    if (key == kMoreKey || key.isEmpty())
+        return;   // "More columns…" is handled via activated(); headers are inert
+    _currentKey = key;
     populateOperators();
     emit conditionChanged();
 }
 
 void FilterConditionRow::populateOperators()
 {
-    QString col = _columnCombo->currentText();
-    _isCurrentColumnNumeric = _numericColumns.contains(col);
-    _isCurrentColumnBoolean = _booleanColumns.contains(col);
+    const bool exprMode = (_currentKey == kExprKey);
+    _operatorCombo->setVisible(!exprMode);
+
+    if (exprMode) {
+        _isCurrentColumnNumeric = false;
+        _isCurrentColumnBoolean = false;
+        _valueEdit1->setVisible(true);
+        _andLabel->setVisible(false);
+        _valueEdit2->setVisible(false);
+        _valueEdit1->setPlaceholderText("e.g. plx > 5 * e_plx");
+        _valueEdit1->setProperty("helpToolTip", kExpressionHelp);
+        updateValidation();
+        return;
+    }
+
+    auto& mgr = ColumnPresetManager::instance();
+    const ColumnDef* def = mgr.columnDef(_currentKey);
+    _isCurrentColumnBoolean = def && def->isBoolFlag;
+    _isCurrentColumnNumeric = !_isCurrentColumnBoolean && !isTextColumnKey(_currentKey);
 
     _operatorCombo->blockSignals(true);
     _operatorCombo->clear();
@@ -460,6 +663,8 @@ void FilterConditionRow::populateOperators()
 void FilterConditionRow::onOperatorChanged(int index)
 {
     Q_UNUSED(index);
+    if (_currentKey == kExprKey) return;   // no operator combo in expression mode
+
     QString opName = _operatorCombo->currentText();
     FilterCondition::Operator op = FilterCondition::operatorFromName(opName);
 
@@ -472,36 +677,67 @@ void FilterConditionRow::onOperatorChanged(int index)
     _valueEdit2->setVisible(showSecondValue);
 
     if (_isCurrentColumnNumeric && showValue) {
-        _valueEdit1->setPlaceholderText("Number...");
-        _valueEdit2->setPlaceholderText("Number...");
+        _valueEdit1->setPlaceholderText("Number or expression...");
+        _valueEdit2->setPlaceholderText("Number or expression...");
+        _valueEdit1->setProperty("helpToolTip", kNumericValueHelp);
+        _valueEdit2->setProperty("helpToolTip", kNumericValueHelp);
     } else if (showValue) {
         _valueEdit1->setPlaceholderText("Value...");
+        _valueEdit1->setProperty("helpToolTip", QString());
+        _valueEdit2->setProperty("helpToolTip", QString());
     }
 
+    updateValidation();
     emit conditionChanged();
 }
 
 void FilterConditionRow::onValueChanged()
 {
+    updateValidation();
     emit conditionChanged();
+}
+
+void FilterConditionRow::updateValidation()
+{
+    FilterCondition cond = getCondition();
+    const QString err = cond.compile();
+
+    auto mark = [&](QLineEdit* edit) {
+        if (err.isEmpty()) {
+            edit->setStyleSheet(QString());
+            edit->setToolTip(edit->property("helpToolTip").toString());
+        } else {
+            edit->setStyleSheet("QLineEdit { border: 1px solid #cc4444; }");
+            edit->setToolTip(err);
+        }
+    };
+    mark(_valueEdit1);
+    if (_valueEdit2->isVisible())
+        mark(_valueEdit2);
 }
 
 FilterCondition FilterConditionRow::getCondition() const
 {
     FilterCondition cond;
-    cond.columnName = _columnCombo->currentText();
-    cond.op = FilterCondition::operatorFromName(_operatorCombo->currentText());
-    cond.value1 = _valueEdit1->text();
-    cond.value2 = _valueEdit2->text();
+    if (_currentKey == kExprKey) {
+        cond.op = FilterCondition::Expression;
+        cond.value1 = _valueEdit1->text();
+    } else {
+        cond.columnKey = _currentKey;
+        cond.op = FilterCondition::operatorFromName(_operatorCombo->currentText());
+        cond.value1 = _valueEdit1->text();
+        cond.value2 = _valueEdit2->text();
+    }
     cond.enabled = _enabled;
     return cond;
 }
 
 void FilterConditionRow::setCondition(const FilterCondition& condition)
 {
-    _columnCombo->setCurrentText(condition.columnName);
+    selectColumnKey(condition.isExpression() ? kExprKey : condition.columnKey);
     populateOperators();
-    _operatorCombo->setCurrentText(FilterCondition::operatorToName(condition.op));
+    if (!condition.isExpression())
+        _operatorCombo->setCurrentText(FilterCondition::operatorToName(condition.op));
     _valueEdit1->setText(condition.value1.toString());
     _valueEdit2->setText(condition.value2.toString());
     _enabled = condition.enabled;
@@ -703,13 +939,9 @@ void StarFilterWidget::setupUi()
     updateFilterCountLabel();
 }
 
-void StarFilterWidget::setColumns(const QStringList& allColumns,
-                                   const QStringList& numericColumns,
-                                   const QStringList& booleanColumns)
+void StarFilterWidget::setColumns(const QStringList& projectColumnKeys)
 {
-    _allColumns = allColumns;
-    _numericColumns = numericColumns;
-    _booleanColumns = booleanColumns;
+    _projectColumnKeys = projectColumnKeys;
 }
 
 void StarFilterWidget::connectToProxy(StarFilterProxyModel* proxy)
@@ -733,10 +965,7 @@ void StarFilterWidget::onQuickSearchChanged(const QString& text)
 
 void StarFilterWidget::addFilterRow()
 {
-    if (_allColumns.isEmpty()) return;
-
-    auto* row = new FilterConditionRow(_allColumns, _numericColumns,
-                                        _booleanColumns, this);
+    auto* row = new FilterConditionRow(_projectColumnKeys, this);
     _filterRows.append(row);
     _filterRowsLayout->addWidget(row);
 

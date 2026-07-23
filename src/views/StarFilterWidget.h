@@ -11,6 +11,7 @@
 #include <memory>
 #include <QDate>
 #include <vector>
+#include "utils/FilterExpression.h"
 #include "utils/ObservabilityCalculator.h"
 
 QT_BEGIN_NAMESPACE
@@ -44,14 +45,21 @@ struct FilterCondition
         // Universal
         IsEmpty, IsNotEmpty,
         // Boolean operators
-        IsTrue, IsFalse
+        IsTrue, IsFalse,
+        // Free-form comparison over columns, e.g. "plx > 5 * e_plx"
+        Expression
     };
 
-    QString columnName;
+    QString columnKey;   // internal column key (Star field map); empty for Expression
     Operator op = Contains;
-    QVariant value1;
-    QVariant value2;  // Only used for Between
+    QVariant value1;     // literal, arithmetic expression, or (for Expression)
+                         // the full comparison text
+    QVariant value2;     // only used for Between
     bool enabled = true;
+
+    // Compiled expressions; filled by compile()
+    std::shared_ptr<const FilterExpression> expr1;
+    std::shared_ptr<const FilterExpression> expr2;
 
     bool isNumericOperator() const {
         return op == GreaterThan || op == GreaterEqual || op == LessThan
@@ -62,7 +70,18 @@ struct FilterCondition
         return op == IsTrue || op == IsFalse;
     }
 
-    bool evaluate(const QVariant& cellValue) const;
+    bool isExpression() const { return op == Expression; }
+
+    // Parses value1/value2 into expr1/expr2 where the operator requires it.
+    // Returns a human-readable error, or an empty string on success.
+    QString compile();
+
+    // False for conditions that cannot be applied yet (e.g. an expression
+    // still being typed); such conditions are skipped by the proxy.
+    bool isValid() const;
+
+    bool evaluate(const QVariant& cellValue,
+                  const FilterExpression::ColumnResolver& resolver) const;
 
     static QStringList textOperatorNames();
     static QStringList numericOperatorNames();
@@ -121,7 +140,7 @@ private:
     bool matchesQuickSearch(int sourceRow, const QModelIndex& sourceParent) const;
     bool matchesAdvancedFilters(int sourceRow, const QModelIndex& sourceParent) const;
     bool matchesObservability(int sourceRow, const QModelIndex& sourceParent) const;
-    int columnIndexForName(const QString& columnName) const;
+    int columnIndexForKey(const QString& columnKey) const;
 
     void beginBatchFilter();
     void endBatchFilter();
@@ -145,9 +164,10 @@ class FilterConditionRow : public QFrame
     Q_OBJECT
 
 public:
-    explicit FilterConditionRow(const QStringList& columnNames,
-                                const QStringList& numericColumns,
-                                const QStringList& booleanColumns,
+    // projectColumnKeys: internal keys of the columns currently shown in the
+    // project table; these are offered first, "More columns…" expands the
+    // combo to every column the application knows about.
+    explicit FilterConditionRow(const QStringList& projectColumnKeys,
                                 QWidget* parent = nullptr);
 
     FilterCondition getCondition() const;
@@ -163,7 +183,10 @@ private slots:
     void onValueChanged();
 
 private:
+    void populateColumnCombo(bool showAllColumns);
+    void selectColumnKey(const QString& key);
     void populateOperators();
+    void updateValidation();
 
     QComboBox* _columnCombo;
     QComboBox* _operatorCombo;
@@ -173,9 +196,10 @@ private:
     QToolButton* _enableButton;
     QToolButton* _removeButton;
 
-    QStringList _booleanColumns;
+    QStringList _projectKeys;
+    QString _currentKey;               // selected column key or the ƒ-expression marker
+    bool _showingAllColumns = false;
     bool _isCurrentColumnBoolean = false;
-    QStringList _numericColumns;
     bool _isCurrentColumnNumeric = false;
     bool _enabled = true;
 };
@@ -191,9 +215,8 @@ class StarFilterWidget : public QWidget
 public:
     explicit StarFilterWidget(QWidget* parent = nullptr);
 
-    void setColumns(const QStringList& allColumns,
-        const QStringList& numericColumns,
-        const QStringList& booleanColumns);
+    // projectColumnKeys: internal keys of the project's visible columns
+    void setColumns(const QStringList& projectColumnKeys);
     void setInstruments(const std::vector<std::shared_ptr<Instrument>>& instruments);
     void connectToProxy(StarFilterProxyModel* proxy);
     int activeFilterCount() const;
@@ -230,9 +253,7 @@ private:
     QVector<FilterConditionRow*> _filterRows;
     StarFilterProxyModel* _proxy = nullptr;
 
-    QStringList _allColumns;
-    QStringList _numericColumns;
-    QStringList _booleanColumns;
+    QStringList _projectColumnKeys;
 
     QToolButton*    _obsToggleButton  = nullptr;
     QWidget*        _obsBody          = nullptr;

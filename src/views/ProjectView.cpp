@@ -258,39 +258,13 @@ void ProjectView::setupFilterColumns()
 {
     if (!_tableModel || !_filterWidget) return;
 
-    auto& mgr = ColumnPresetManager::instance();
-    QStringList allColumns;
-    QStringList numericColumns;
-    QStringList booleanColumns;
+    // The filter widget classifies columns itself via ColumnPresetManager;
+    // it only needs to know which columns the project currently shows.
+    QStringList keys;
+    for (int i = 0; i < _tableModel->columnCount(); ++i)
+        keys << _tableModel->getColumnName(i);
 
-    for (int i = 0; i < _tableModel->columnCount(); ++i) {
-        QString key = _tableModel->getColumnName(i);          // internal key
-        QString display = mgr.displayName(key);               // header text
-        allColumns << display;
-
-        const ColumnDef* def = mgr.columnDef(key);
-        if (def) {
-            if (def->isBoolFlag)
-                booleanColumns << display;
-            else if (def->category != "Identification")       // simple heuristic
-                numericColumns << display;
-        }
-    }
-
-    // Refine: text columns are identification + spec_class
-    static const QSet<QString> textKeys = {
-        "alias", "source_id", "tic", "jname", "spec_class"
-    };
-    // Remove text columns from numeric list
-    for (int i = 0; i < _tableModel->columnCount(); ++i) {
-        QString key = _tableModel->getColumnName(i);
-        if (textKeys.contains(key)) {
-            QString display = mgr.displayName(key);
-            numericColumns.removeAll(display);
-        }
-    }
-
-    _filterWidget->setColumns(allColumns, numericColumns, booleanColumns);
+    _filterWidget->setColumns(keys);
 }
 
 void ProjectView::keyPressEvent(QKeyEvent* event)

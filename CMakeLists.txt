@@ -329,6 +329,7 @@ set(SOURCES
     src/utils/LCFitPhysics.cpp
     src/utils/LCFitRunner.cpp
     src/utils/FilterWavelength.cpp
+    src/utils/FilterExpression.cpp
     src/utils/SystematicErrors.cpp
     src/utils/ClaretFilter.cpp
     src/utils/matchSpectraToInstrument.cpp
@@ -477,6 +478,7 @@ set(HEADERS
     src/utils/LCFitPhysics.h
     src/utils/LCFitRunner.h
     src/utils/FilterWavelength.h
+    src/utils/FilterExpression.h
     src/utils/SystematicErrors.h
     src/utils/ClaretFilter.h
     src/utils/matchSpectraToInstrument.h
