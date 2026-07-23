@@ -11,6 +11,7 @@
 #include "utils/FilterWavelength.h"
 #include "utils/LcqueryEnvironment.h"
 #include "utils/Logger.h"
+#include "utils/TessSectors.h"
 #include "views/tools/LcquerySetupDialog.h"
 #include "views/panels/DetailPanel.h"
 #include "views/panels/LCPanel.h"
@@ -20,6 +21,7 @@
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QDateTime>
 #include <QDialogButtonBox>
 #include <QDir>
 #include <QDoubleSpinBox>
@@ -51,6 +53,7 @@
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTextCursor>
+#include <QTimeZone>
 #include <QTimer>
 #include <QToolButton>
 #include <QTreeWidget>
@@ -59,6 +62,7 @@
 #include <QVBoxLayout>
 
 #include <cmath>
+#include <limits>
 
 namespace {
 
@@ -222,13 +226,33 @@ QWidget* LightcurveFetchDialog::buildViewerTab()
     root->setContentsMargins(0, 0, 0, 0);
     root->setSpacing(4);
 
-    auto* tb = new QHBoxLayout;
-    tb->setContentsMargins(6, 4, 6, 0);
-    tb->addWidget(new QLabel(tr("Source:")));
+    auto* split = new QSplitter(Qt::Horizontal);
+    split->setChildrenCollapsible(false);
+
+    DetailPanel::Context ctx;
+    ctx.star       = _star;
+    ctx.dbm        = _dbm;
+    ctx.controller = _controller;
+    ctx.projectId  = _projectId;
+    _lcPanel = new LCPanel(ctx);
+    split->addWidget(_lcPanel);
+
+    // ── Right side pane: lightcurve management + meta info ──────────────
+    auto* side = new QWidget;
+    auto* sideLay = new QVBoxLayout(side);
+    sideLay->setContentsMargins(6, 4, 6, 4);
+    sideLay->setSpacing(6);
+
+    auto* manageBox = new QGroupBox(tr("Manage"));
+    auto* manageLay = new QVBoxLayout(manageBox);
+
+    auto* srcRow = new QHBoxLayout;
+    srcRow->addWidget(new QLabel(tr("Source:")));
     _viewerSourceCombo = new QComboBox;
     _viewerSourceCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
-    _viewerSourceCombo->setMinimumWidth(140);
-    tb->addWidget(_viewerSourceCombo);
+    _viewerSourceCombo->setMinimumWidth(100);
+    srcRow->addWidget(_viewerSourceCombo, 1);
+    manageLay->addLayout(srcRow);
 
     _recomputeBjdBtn = new QPushButton(tr("Recompute BJD…"));
     _recomputeBjdBtn->setToolTip(tr(
@@ -239,18 +263,29 @@ QWidget* LightcurveFetchDialog::buildViewerTab()
     _deleteLcBtn = new QPushButton(tr("Delete…"));
     _deleteLcBtn->setToolTip(tr("Delete this lightcurve from the star."));
 
-    tb->addWidget(_recomputeBjdBtn);
-    tb->addWidget(_deleteLcBtn);
-    tb->addStretch();
-    root->addLayout(tb);
+    manageLay->addWidget(_recomputeBjdBtn);
+    manageLay->addWidget(_deleteLcBtn);
+    sideLay->addWidget(manageBox);
 
-    DetailPanel::Context ctx;
-    ctx.star       = _star;
-    ctx.dbm        = _dbm;
-    ctx.controller = _controller;
-    ctx.projectId  = _projectId;
-    _lcPanel = new LCPanel(ctx);
-    root->addWidget(_lcPanel, 1);
+    // Meta info sections (one per lightcurve), scrollable
+    auto* metaHost = new QWidget;
+    _viewerMetaLayout = new QVBoxLayout(metaHost);
+    _viewerMetaLayout->setContentsMargins(0, 0, 0, 0);
+    _viewerMetaLayout->setSpacing(6);
+    _viewerMetaLayout->addStretch();
+
+    auto* metaScroll = new QScrollArea;
+    metaScroll->setWidgetResizable(true);
+    metaScroll->setFrameShape(QFrame::NoFrame);
+    metaScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    metaScroll->setWidget(metaHost);
+    sideLay->addWidget(metaScroll, 1);
+
+    split->addWidget(side);
+    split->setStretchFactor(0, 1);
+    split->setStretchFactor(1, 0);
+    split->setSizes({1080, 320});
+    root->addWidget(split, 1);
 
     connect(_deleteLcBtn,     &QPushButton::clicked,
             this, &LightcurveFetchDialog::onDeleteLightcurveClicked);
@@ -1723,6 +1758,143 @@ void LightcurveFetchDialog::refreshViewerSourceCombo()
     const bool any = _viewerSourceCombo->count() > 0;
     _deleteLcBtn->setEnabled(any);
     _recomputeBjdBtn->setEnabled(any);
+
+    refreshViewerMetaInfo();
+}
+
+namespace {
+
+QString bjdToUtcString(double jd)
+{
+    const qint64 msecs = qint64((jd - 2440587.5) * 86400000.0);
+    const QDateTime dt = QDateTime::fromMSecsSinceEpoch(msecs, QTimeZone::utc());
+    return dt.toString(QStringLiteral("yyyy-MM-dd"));
+}
+
+/// Median spacing (seconds) between consecutive sorted BJD values.
+double medianSpacingSeconds(QVector<double>& bjds)
+{
+    if (bjds.size() < 2) return std::nan("");
+    std::sort(bjds.begin(), bjds.end());
+    QVector<double> dt;
+    dt.reserve(bjds.size() - 1);
+    for (int i = 1; i < bjds.size(); ++i) {
+        const double d = bjds[i] - bjds[i - 1];
+        if (d > 0.0) dt.push_back(d);
+    }
+    if (dt.isEmpty()) return std::nan("");
+    std::nth_element(dt.begin(), dt.begin() + dt.size() / 2, dt.end());
+    return dt[dt.size() / 2] * 86400.0;
+}
+
+} // anon
+
+void LightcurveFetchDialog::refreshViewerMetaInfo()
+{
+    if (!_viewerMetaLayout) return;
+
+    // Clear all sections (keep the trailing stretch item).
+    while (_viewerMetaLayout->count() > 1) {
+        QLayoutItem* it = _viewerMetaLayout->takeAt(0);
+        if (it->widget()) it->widget()->deleteLater();
+        delete it;
+    }
+
+    auto phot = _star ? _star->getPhotometry() : nullptr;
+    if (!phot) return;
+
+    auto sources = phot->getLightcurveSources();
+    std::sort(sources.begin(), sources.end());
+
+    int insertPos = 0;
+    for (const auto& source : sources) {
+        const auto pts = phot->getLightcurve(source);
+
+        auto* box = new QGroupBox(source);
+        auto* lay = new QVBoxLayout(box);
+        lay->setContentsMargins(8, 4, 8, 6);
+        lay->setSpacing(2);
+
+        auto addLine = [&](const QString& html) {
+            auto* l = new QLabel(html);
+            l->setWordWrap(true);
+            l->setTextInteractionFlags(Qt::TextSelectableByMouse);
+            lay->addWidget(l);
+        };
+
+        if (pts.empty()) {
+            addLine(tr("<i>No points loaded.</i>"));
+            _viewerMetaLayout->insertWidget(insertPos++, box);
+            continue;
+        }
+
+        // Point count + filter breakdown
+        QMap<QString, int> filterCounts;
+        for (const auto& pt : pts)
+            ++filterCounts[pt.filter];
+
+        addLine(tr("<b>%L1</b> points").arg(qint64(pts.size())));
+
+        const bool hasFilters =
+            filterCounts.size() > 1 ||
+            (!filterCounts.isEmpty() && !filterCounts.firstKey().isEmpty() &&
+             filterCounts.firstKey() != source);
+        if (hasFilters) {
+            QStringList parts;
+            for (auto it = filterCounts.cbegin(); it != filterCounts.cend(); ++it)
+                parts << tr("%1 (%L2)").arg(it.key().isEmpty()
+                                            ? tr("unspecified") : it.key())
+                                       .arg(it.value());
+            addLine(tr("Filters: %1").arg(parts.join(QStringLiteral(", "))));
+        }
+
+        // Date range (BJD + human readable)
+        double minBjd = std::numeric_limits<double>::infinity();
+        double maxBjd = -std::numeric_limits<double>::infinity();
+        for (const auto& pt : pts) {
+            const auto b = pt.time.bjd();
+            if (!b.has_value() || *b <= 0.0) continue;
+            minBjd = std::min(minBjd, *b);
+            maxBjd = std::max(maxBjd, *b);
+        }
+        if (std::isfinite(minBjd) && std::isfinite(maxBjd)) {
+            addLine(tr("BJD %1 – %2")
+                        .arg(minBjd, 0, 'f', 3).arg(maxBjd, 0, 'f', 3));
+            addLine(tr("%1 – %2 (%3 d)")
+                        .arg(bjdToUtcString(minBjd), bjdToUtcString(maxBjd))
+                        .arg(maxBjd - minBjd, 0, 'f', 1));
+        } else {
+            addLine(tr("<i>No BJD values (recompute?)</i>"));
+        }
+
+        // TESS: sector breakdown with cadence classification
+        if (source.contains(QStringLiteral("TESS"), Qt::CaseInsensitive)) {
+            QMap<int, QVector<double>> bySector;   // sorted by sector number
+            int unmatched = 0;
+            for (const auto& pt : pts) {
+                const auto b = pt.time.bjd();
+                if (!b.has_value() || *b <= 0.0) continue;
+                const int sec = TessSectors::sectorForJd(*b);
+                if (sec > 0) bySector[sec].push_back(*b);
+                else         ++unmatched;
+            }
+            if (!bySector.isEmpty()) {
+                QStringList secLines;
+                for (auto it = bySector.begin(); it != bySector.end(); ++it) {
+                    const double dt = medianSpacingSeconds(it.value());
+                    secLines << tr("S%1: %L2 pts, %3")
+                                    .arg(it.key()).arg(it.value().size())
+                                    .arg(TessSectors::cadenceLabel(dt, it.key()));
+                }
+                addLine(tr("Sectors:<br>&nbsp;&nbsp;%1")
+                            .arg(secLines.join(QStringLiteral("<br>&nbsp;&nbsp;"))));
+            }
+            if (unmatched > 0)
+                addLine(tr("<i>%L1 points outside known sectors</i>").arg(unmatched));
+        }
+
+        _viewerMetaLayout->insertWidget(insertPos++, box);
+    }
 }
 
 void LightcurveFetchDialog::onDeleteLightcurveClicked()
@@ -1861,6 +2033,7 @@ void LightcurveFetchDialog::onRecomputeBjdClicked()
     if (_lcPanel)          _lcPanel->refresh();
     if (_fitLcPanel)       _fitLcPanel->refresh();
     if (_periodogramPanel) pushSeriesIntoPanel();
+    refreshViewerMetaInfo();
 
     QMessageBox::information(this, tr("Recompute BJD"),
         tr("Recomputed BJD for %1 / %2 points of \"%3\".")

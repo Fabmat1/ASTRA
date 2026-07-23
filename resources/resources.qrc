@@ -16,6 +16,7 @@
         <file>themes/one_dark.qss</file>
         <file>data/default_instruments.json</file>
         <file>data/gaia_cmd.csv</file>
+        <file>data/tess_sectors.csv</file>
         <file>data/kinematics/toomre_thin.csv</file>
         <file>data/kinematics/toomre_thick.csv</file>
         <file>data/kinematics/toomre_halo.csv</file>

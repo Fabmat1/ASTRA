@@ -25,6 +25,7 @@ class QDoubleSpinBox;
 class QSpinBox;
 class QLabel;
 class QRadioButton;
+class QVBoxLayout;
 
 class Star;
 class DatabaseManager;
@@ -122,6 +123,7 @@ private slots:
     QWidget* buildPeriodogramControls();
 
     void refreshViewerSourceCombo();
+    void refreshViewerMetaInfo();
 
     void pushSeriesIntoPanel();
     void rebuildPeaksTable();
@@ -163,6 +165,7 @@ private slots:
     QComboBox*   _viewerSourceCombo = nullptr;
     QPushButton* _deleteLcBtn       = nullptr;
     QPushButton* _recomputeBjdBtn   = nullptr;
+    QVBoxLayout* _viewerMetaLayout  = nullptr;   // host for per-lightcurve info sections
 
     // Parameter controls (right column)
     QDoubleSpinBox* _minPSpin    = nullptr;
