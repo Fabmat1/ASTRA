@@ -536,7 +536,7 @@ if [[ "${ASTRA_BUNDLE_LCURVE}" == "1" ]]; then
       cp -f "${found}" "${LCURVE_DEST}/"
       # Copy each binary's non-system dylib deps next to it and rewrite the load
       # paths to @loader_path/libs so the bundle is self-contained & relocatable.
-      dylibbundler -of -b -x "${LCURVE_DEST}/${b}" \
+      dylibbundler -cd -of -b -x "${LCURVE_DEST}/${b}" \
         -d "${LCURVE_DEST}/libs" -p "@loader_path/libs/" >/dev/null
     done
     echo ">>> lcurve bundled at Contents/libexec/astra/lcurve ($(ls "${LCURVE_DEST}" | tr '\n' ' '))"
@@ -559,7 +559,7 @@ if [[ -n "${SEDFIT_BIN}" ]]; then
   SEDFIT_DEST="${APP}/Contents/libexec/astra/sedfit"
   mkdir -p "${SEDFIT_DEST}"
   cp -f "${SEDFIT_BIN}" "${SEDFIT_DEST}/"
-  dylibbundler -of -b -x "${SEDFIT_DEST}/sedfit" \
+  dylibbundler -cd -of -b -x "${SEDFIT_DEST}/sedfit" \
     -d "${SEDFIT_DEST}/libs" -p "@loader_path/libs/" >/dev/null
   REFDATA_SRC="${SRC_DIR}/resources/sedfit/refdata"
   if [[ -d "${REFDATA_SRC}" ]]; then
