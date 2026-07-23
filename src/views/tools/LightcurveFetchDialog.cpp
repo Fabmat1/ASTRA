@@ -3,6 +3,7 @@
 #include "db/DatabaseManager.h"
 #include "dialogs/ImportLightcurve.h"
 #include "dialogs/LCFitDialog.h"
+#include "dialogs/LightcurveCredentialPrompts.h"
 #include "models/Photometry.h"
 #include "models/Star.h"
 #include "utils/AppPaths.h"
@@ -1382,6 +1383,19 @@ void LightcurveFetchDialog::onFetchClicked()
     if (opt.sources.isEmpty()) {
         QMessageBox::information(this, tr("Fetch"),
             tr("Select at least one source."));
+        return;
+    }
+
+    // ZTF needs an IRSA login (~/.ztfquery), ATLAS an API token; prompt for
+    // whichever is missing. Declined sources are dropped and unchecked.
+    const QStringList declined = LightcurveCredentialPrompts::ensureCredentials(
+        this, opt.sources, _controller ? _controller->settings() : nullptr);
+    if (declined.contains(QStringLiteral("ZTF")))   _fetchZtf->setChecked(false);
+    if (declined.contains(QStringLiteral("ATLAS"))) _fetchAtlas->setChecked(false);
+    if (opt.sources.isEmpty()) {
+        QMessageBox::information(this, tr("Fetch"),
+            tr("No sources left to fetch after skipping %1.")
+                .arg(declined.join(", ")));
         return;
     }
 

@@ -280,6 +280,7 @@ set(SOURCES
     src/dialogs/AddStarDialog.cpp
     src/dialogs/ImportLightcurve.cpp
     src/dialogs/LCFitDialog.cpp
+    src/dialogs/LightcurveCredentialPrompts.cpp
     src/dialogs/ReidentifyStarDialog.cpp
 
     # importWizard
@@ -428,6 +429,7 @@ set(HEADERS
     src/dialogs/AddStarDialog.h
     src/dialogs/ImportLightcurve.h
     src/dialogs/LCFitDialog.h
+    src/dialogs/LightcurveCredentialPrompts.h
     src/dialogs/ReidentifyStarDialog.h
     
     # importWizard

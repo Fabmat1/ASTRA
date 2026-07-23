@@ -7,6 +7,7 @@
 #include "db/DatabaseManager.h"
 #include "dialogs/AddStarDialog.h"
 #include "dialogs/ExportTableDialog.h"
+#include "dialogs/LightcurveCredentialPrompts.h"
 #include "io/StarPackage.h"
 #include "io/StarShare.h"
 #include "kinematics/StarKinematics.h"
@@ -1041,10 +1042,22 @@ void ProjectView::onFetchLightcurves()
     if (dlg.exec() != QDialog::Accepted)
         return;
 
+    // ZTF needs an IRSA login (~/.ztfquery), ATLAS an API token; prompt for
+    // whichever is missing. Declined sources are dropped from the batch.
+    LightcurveFetcher::Options opt = dlg.options();
+    const QStringList declined = LightcurveCredentialPrompts::ensureCredentials(
+        this, opt.sources, _controller->settings());
+    if (opt.sources.isEmpty()) {
+        QMessageBox::information(this, tr("Fetch Lightcurves"),
+            tr("No sources left to fetch after skipping %1.")
+                .arg(declined.join(", ")));
+        return;
+    }
+
     auto* service = _controller->lightcurveFetchService();
     const int queued = service->enqueueBatch(eligible,
                                              _currentProject->getId(),
-                                             dlg.options(),
+                                             opt,
                                              dlg.parallelWorkers());
 
     QString msg = tr("Queued %1 lightcurve fetch session(s)").arg(queued);
