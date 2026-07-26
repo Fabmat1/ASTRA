@@ -295,6 +295,25 @@ def load_rv_curve(conn, star_id):
     return curve["id"], data
 
 
+def curve_reference_epoch(conn, curve_id):
+    """Fit reference epoch (JD scale) for `curve_id`: the earliest point's time.
+
+    Mirrors RadialVelocityCurve::computeReferenceEpoch in the C++ model: the
+    epoch that RVFit::phi is measured against is the minimum time over *all*
+    RV points of the curve, *including user-flagged ones*. load_rv_curve drops
+    flagged points, so callers must NOT use rv["t"].min() as the fit reference
+    when a curve's earliest point happens to be flagged -- that shifts the whole
+    phase-folded curve. Use this instead. Returns None if the curve is empty.
+    """
+    rows = conn.execute(
+        "SELECT mjd, bjd FROM rv_points WHERE curve_id = ?",
+        (curve_id,)).fetchall()
+    if not rows:
+        return None
+    t = timeline([r["mjd"] for r in rows], [r["bjd"] for r in rows])
+    return float(np.min(t))
+
+
 def load_best_fit(conn, curve_id):
     """Best RV fit for a curve (is_best_fit, falling back to newest)."""
     row = conn.execute(

@@ -31,6 +31,7 @@ public:
     std::shared_ptr<Instrument> resolveInstrumentString( const QString& input, QString* modeKey = nullptr) const;
     void restoreDefaultInstruments();
     void loadDefaultInstruments();
+    void mergeNewDefaultInstruments();
     void loadInstrumentsFromDatabase();
     bool writeInstrumentToDb(const Instrument& inst);
     bool writeModesToDb(const QString& instrumentId, const QList<InstrumentMode>& modes);

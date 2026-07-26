@@ -2,6 +2,7 @@
 
 #include <QDialog>
 #include <QHash>
+#include <QStringList>
 #include <memory>
 #include <vector>
 
@@ -51,7 +52,8 @@ private:
     bool autodetectInstrument(const std::shared_ptr<Spectrum>& spec,
                               const std::vector<std::shared_ptr<Instrument>>& instruments);
     void redetectSpectrumById(const QString& spectrumId);
-    void defineInstrumentManually(const QString& spectrumId);
+    void redetectSpectra(const QStringList& spectrumIds);
+    void defineInstrumentManually(const QStringList& spectrumIds);
 
     void setupUi();
     void rebuildTree();
@@ -64,6 +66,7 @@ private:
     void syncTreeSelectionTo(const QString& spectrumId, const QString& fitId);
 
     void removeSpectrum(const QString& spectrumId);
+    void removeSpectra(const QStringList& spectrumIds);
     void removeFit(const QString& spectrumId, const QString& fitId);
 
     std::shared_ptr<Star>  _star;

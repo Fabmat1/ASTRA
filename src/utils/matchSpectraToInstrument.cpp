@@ -136,8 +136,6 @@ InstrumentMatch matchSpectrumToInstrument(
             continue;
         const Instrument &inst     = *instPtr;
         const QString     instName = inst.getName();
-        const bool        hintMatches =
-            !hint.isEmpty() && instName.toLower().contains(hint);
 
         // Gather all spectroscopic candidate ranges for this instrument.
         struct Cand {
@@ -149,6 +147,20 @@ InstrumentMatch matchSpectrumToInstrument(
         // segment loop dereferences c.mode). A temporary here would be freed at
         // the end of the range-for, leaving cands holding dangling pointers.
         const QList<InstrumentMode> instModes = inst.modes();
+
+        // The header hint may name the spectrograph rather than the
+        // telescope/observatory the instrument entry is keyed on (e.g. hint
+        // "PMAS" for the CAHA entry), so also accept a match on a mode.
+        bool hintMatches = !hint.isEmpty() && instName.toLower().contains(hint);
+        if (!hintMatches && !hint.isEmpty()) {
+            for (const InstrumentMode &mode : instModes) {
+                if (mode.key().toLower().contains(hint) ||
+                    mode.displayName().toLower().contains(hint)) {
+                    hintMatches = true;
+                    break;
+                }
+            }
+        }
         std::vector<Cand> cands;
         for (const InstrumentMode &mode : instModes) {
             if (!modeIsSpectroscopic(mode))

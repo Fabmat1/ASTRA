@@ -9,6 +9,7 @@
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QFile>
+#include <QSet>
 #include <cmath>
 #include <algorithm>
 #include <QRegularExpression>
@@ -28,6 +29,104 @@ void InstrumentRepository::initializeInstruments()
     loadInstrumentsFromDatabase();
     if (_instrumentsById.isEmpty())
         loadDefaultInstruments();
+    else
+        mergeNewDefaultInstruments();
+}
+
+// Bring existing databases up to date with additions to
+// default_instruments.json: add default instruments/modes that this database
+// has never seen before. Each default is applied at most once (tracked in
+// applied_default_instruments), so instruments or modes the user deletes
+// afterwards stay deleted. User-created instruments are never touched.
+void InstrumentRepository::mergeNewDefaultInstruments()
+{
+    QFile file(QStringLiteral(":/data/default_instruments.json"));
+    if (!file.open(QIODevice::ReadOnly))
+        return;
+
+    QJsonParseError err;
+    QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &err);
+    if (doc.isNull())
+        return;
+
+    QSqlDatabase db = _db.threadConnection();
+
+    QSqlQuery create(db);
+    create.exec(QStringLiteral(R"(
+        CREATE TABLE IF NOT EXISTS applied_default_instruments (
+            instrument_name TEXT NOT NULL,
+            mode_key        TEXT NOT NULL,
+            PRIMARY KEY (instrument_name, mode_key)
+        )
+    )"));
+
+    QSet<QString> applied;
+    QSqlQuery sel(db);
+    sel.exec(QStringLiteral(
+        "SELECT instrument_name, mode_key FROM applied_default_instruments"));
+    while (sel.next())
+        applied.insert(sel.value(0).toString() + '\x1f' +
+                       sel.value(1).toString());
+
+    // Databases created before this bookkeeping existed have an empty table:
+    // treat every default that is currently in the JSON as "new" once. This
+    // one-time pass may restore builtins the user deleted in an old version;
+    // afterwards deletions stick.
+    QSqlQuery ins(db);
+    ins.prepare(QStringLiteral(
+        "INSERT OR IGNORE INTO applied_default_instruments "
+        "(instrument_name, mode_key) VALUES (:name, :key)"));
+    auto markApplied = [&](const QString& name, const QString& key) {
+        ins.bindValue(":name", name);
+        // A null QString binds as SQL NULL, which the NOT NULL PK rejects;
+        // the instrument-level marker uses an empty (non-null) mode key.
+        ins.bindValue(":key", key.isNull() ? QStringLiteral("") : key);
+        ins.exec();
+    };
+    auto isApplied = [&](const QString& name, const QString& key) {
+        return applied.contains(name + '\x1f' + key);
+    };
+
+    db.transaction();
+
+    const QJsonArray instruments = doc.object().value("instruments").toArray();
+    for (const auto& val : instruments) {
+        Instrument defInst = Instrument::fromJson(val.toObject());
+        defInst.setId(instrumentUUID(defInst.getName()));
+        defInst.setBuiltin(true);
+        const QString name = defInst.getName();
+
+        auto existing = getInstrumentByName(name);
+
+        if (!existing) {
+            if (!isApplied(name, QString())) {
+                if (writeInstrumentToDb(defInst) &&
+                    writeModesToDb(defInst.getId(), defInst.modes()))
+                    cacheInstrument(std::make_shared<Instrument>(defInst));
+                existing = getInstrumentByName(name);
+            }
+        } else if (existing->isBuiltin()) {
+            // Add default modes this database has never seen.
+            auto updated = std::make_shared<Instrument>(*existing);
+            bool changed = false;
+            for (const InstrumentMode& defMode : defInst.modes()) {
+                if (!updated->hasMode(defMode.key()) &&
+                    !isApplied(name, defMode.key())) {
+                    updated->addMode(defMode);
+                    changed = true;
+                }
+            }
+            if (changed && writeModesToDb(updated->getId(), updated->modes()))
+                cacheInstrument(updated);
+        }
+
+        // Record every current default so it is never re-applied.
+        markApplied(name, QString());
+        for (const InstrumentMode& defMode : defInst.modes())
+            markApplied(name, defMode.key());
+    }
+
+    db.commit();
 }
 
 void InstrumentRepository::loadDefaultInstruments()
@@ -472,6 +571,8 @@ void InstrumentRepository::restoreDefaultInstruments()
     QSqlQuery q(db);
     q.exec(QStringLiteral("DELETE FROM instrument_modes"));
     q.exec(QStringLiteral("DELETE FROM instruments"));
+    q.exec(QStringLiteral(
+        "DELETE FROM applied_default_instruments"));   // table may not exist yet; harmless
 
     db.commit();
 

@@ -154,7 +154,7 @@ void SpectraFitDialog::setupUi()
     _tree->setRootIsDecorated(true);
     _tree->setAutoScroll(false);
     _tree->setUniformRowHeights(true);
-    _tree->setSelectionMode(QAbstractItemView::SingleSelection);
+    _tree->setSelectionMode(QAbstractItemView::ExtendedSelection);
     _tree->setEditTriggers(QAbstractItemView::NoEditTriggers);
     _tree->setContextMenuPolicy(Qt::CustomContextMenu);
 
@@ -270,12 +270,13 @@ void SpectraFitDialog::rebuildTree()
     _tree->clear();
     _spectra.clear();
 
+    // Sort strictly by observation date (earliest → latest), regardless of
+    // instrument name. Time::sortValue() yields a comparable epoch even when
+    // only an MJD or only a BJD is present, matching the SpectraPanel ordering.
     auto specs = _star->getSpectra();
     std::sort(specs.begin(), specs.end(),
         [](const std::shared_ptr<Spectrum>& a, const std::shared_ptr<Spectrum>& b) {
-            if (a->getInstrument() != b->getInstrument())
-                return a->getInstrument() < b->getInstrument();
-            return a->getMJD() < b->getMJD();
+            return a->time().sortValue() < b->time().sortValue();
         });
     _spectra = specs;
 
@@ -656,11 +657,58 @@ void SpectraFitDialog::onTreeContextMenu(const QPoint& pos)
 {
     QTreeWidgetItem* item = _tree->itemAt(pos);
 
+    // Right-clicking a row that isn't part of the current (multi-)selection
+    // makes it the selection, so the menu acts on what the user pointed at.
+    if (item && !item->isSelected())
+        _tree->setCurrentItem(item);
+
+    // Gather every currently-selected spectrum (top-level) row.
+    QStringList selectedSpecIds;
+    for (QTreeWidgetItem* it : _tree->selectedItems())
+        if (it->data(kColName, kRoleKind).toString() == kKindSpectrum)
+            selectedSpecIds << it->data(kColName, kRoleId).toString();
+
     QMenu menu(this);
 
     QAction* addSpectraAct = menu.addAction(QStringLiteral("Add Spectra…"));
     connect(addSpectraAct, &QAction::triggered,
             this, &SpectraFitDialog::onAddSpectraClicked);
+
+    // ── Multi-spectrum actions (2+ spectra selected) ─────────────────────
+    if (selectedSpecIds.size() > 1) {
+        const int n = selectedSpecIds.size();
+
+        menu.addSeparator();
+        QAction* redetectAct = menu.addAction(
+            QString("Re-detect instrument/mode (%1 spectra)").arg(n));
+        redetectAct->setToolTip(
+            "Automatically re-detect the instrument and mode of every selected "
+            "spectrum from its wavelength coverage.");
+        connect(redetectAct, &QAction::triggered, this, [this, selectedSpecIds]{
+            redetectSpectra(selectedSpecIds);
+        });
+
+        QAction* defineAct = menu.addAction(
+            QString("Set instrument/mode… (%1 spectra)").arg(n));
+        connect(defineAct, &QAction::triggered, this, [this, selectedSpecIds]{
+            defineInstrumentManually(selectedSpecIds);
+        });
+
+        menu.addSeparator();
+        QAction* removeAct = menu.addAction(QString("Remove %1 spectra").arg(n));
+        connect(removeAct, &QAction::triggered, this, [this, selectedSpecIds, n]{
+            if (QMessageBox::question(this, "Remove Spectra",
+                    QString("Remove %1 spectra and all of their fits?\n"
+                            "This cannot be undone.").arg(n))
+                == QMessageBox::Yes)
+            {
+                removeSpectra(selectedSpecIds);
+            }
+        });
+
+        menu.exec(_tree->viewport()->mapToGlobal(pos));
+        return;
+    }
 
     if (item) {
         const QString kind = item->data(kColName, kRoleKind).toString();
@@ -685,7 +733,7 @@ void SpectraFitDialog::onTreeContextMenu(const QPoint& pos)
             QAction* defineAct =
                 menu.addAction(QStringLiteral("Set instrument/mode…"));
             connect(defineAct, &QAction::triggered, this, [this, specId]{
-                defineInstrumentManually(specId);
+                defineInstrumentManually(QStringList{specId});
             });
 
             menu.addSeparator();
@@ -737,6 +785,8 @@ void SpectraFitDialog::onAddSpectraClicked()
     int added = 0;
     QStringList failures;
     auto& registry = SpectrumReaderRegistry::instance();
+    const auto instruments = _dbm ? _dbm->getAllInstruments()
+                                  : std::vector<std::shared_ptr<Instrument>>{};
 
     for (const QString& path : paths) {
         const QString name = QFileInfo(path).fileName();
@@ -761,6 +811,20 @@ void SpectraFitDialog::onAddSpectraClicked()
             spec->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
         if (spec->getFile().isEmpty())
             spec->setFile(path);
+
+        // Match to a configured instrument/mode (same as the import wizard),
+        // using any header-derived instrument string as a hint.
+        const auto wl = spec->getWavelengths();
+        if (!instruments.empty() && wl.size() >= 2) {
+            const auto match = matchSpectrumToInstrument(
+                instruments, spec->getInstrument(), wl);
+            static constexpr double kMinConfidence = 0.25;
+            if (match.instrument && match.confidence >= kMinConfidence) {
+                spec->setInstrument(match.displayString);
+                spec->setInstrumentId(match.instrument->getId());
+                spec->setModeKey(match.modeKey);
+            }
+        }
 
         // Persist to DB (this also writes the spectrum's data file on disk
         // via SpectrumRepository::saveSpectrum).
@@ -885,6 +949,42 @@ void SpectraFitDialog::removeSpectrum(const QString& spectrumId)
     LOG_INFO("Tools", QString("Removed spectrum %1").arg(spectrumId));
 }
 
+void SpectraFitDialog::removeSpectra(const QStringList& spectrumIds)
+{
+    if (!_dbm || spectrumIds.isEmpty()) return;
+
+    QStringList failed;
+    QStringList removed;
+    for (const QString& id : spectrumIds) {
+        if (_dbm->deleteSpectrum(id))
+            removed << id;
+        else
+            failed << id;
+    }
+
+    if (!removed.isEmpty()) {
+        auto specs = _star->getSpectra();
+        specs.erase(std::remove_if(specs.begin(), specs.end(),
+            [&](const std::shared_ptr<Spectrum>& s){
+                return removed.contains(s->getId());
+            }), specs.end());
+        _star->setSpectra(specs);
+        _star->markSummaryDirty();
+
+        rebuildTree();
+        _panel->refresh();
+        emit spectraUpdated();
+
+        LOG_INFO("Tools", QString("Removed %1 spectra").arg(removed.size()));
+    }
+
+    if (!failed.isEmpty())
+        QMessageBox::warning(this, "Remove Spectra",
+            QString("Database removal failed for %1 of %2 spectra. "
+                    "See log for details.")
+                .arg(failed.size()).arg(spectrumIds.size()));
+}
+
 void SpectraFitDialog::removeFit(const QString& spectrumId, const QString& fitId)
 {
     if (!_dbm) return;
@@ -983,6 +1083,35 @@ void SpectraFitDialog::redetectSpectrumById(const QString& spectrumId)
     }
 }
 
+void SpectraFitDialog::redetectSpectra(const QStringList& spectrumIds)
+{
+    if (spectrumIds.isEmpty()) return;
+
+    auto instruments = _dbm ? _dbm->getAllInstruments()
+                            : std::vector<std::shared_ptr<Instrument>>{};
+    if (instruments.empty()) {
+        QMessageBox::information(this, "Re-detect instrument/mode",
+            "No instruments are configured. Add instruments in Settings first.");
+        return;
+    }
+
+    int matched = 0;
+    for (const QString& id : spectrumIds) {
+        std::shared_ptr<Spectrum> spec;
+        for (auto& s : _spectra) if (s->getId() == id) { spec = s; break; }
+        if (spec && autodetectInstrument(spec, instruments)) ++matched;
+    }
+
+    _star->markSummaryDirty();
+    rebuildTree();
+    _panel->refresh();
+    emit spectraUpdated();
+
+    QMessageBox::information(this, "Re-detect instrument/mode",
+        QString("Re-detected %1 of %2 selected spectra.")
+            .arg(matched).arg(spectrumIds.size()));
+}
+
 void SpectraFitDialog::onRedetectAllClicked()
 {
     if (!_star) return;
@@ -1009,11 +1138,14 @@ void SpectraFitDialog::onRedetectAllClicked()
             .arg(matched).arg(static_cast<int>(_spectra.size())));
 }
 
-void SpectraFitDialog::defineInstrumentManually(const QString& spectrumId)
+void SpectraFitDialog::defineInstrumentManually(const QStringList& spectrumIds)
 {
-    std::shared_ptr<Spectrum> spec;
-    for (auto& s : _spectra) if (s->getId() == spectrumId) { spec = s; break; }
-    if (!spec) return;
+    // Resolve the selected spectra (preserving selection order).
+    std::vector<std::shared_ptr<Spectrum>> specs;
+    for (const QString& id : spectrumIds)
+        for (auto& s : _spectra)
+            if (s->getId() == id) { specs.push_back(s); break; }
+    if (specs.empty()) return;
 
     auto instruments = _dbm ? _dbm->getAllInstruments()
                             : std::vector<std::shared_ptr<Instrument>>{};
@@ -1024,7 +1156,9 @@ void SpectraFitDialog::defineInstrumentManually(const QString& spectrumId)
     }
 
     QDialog dlg(this);
-    dlg.setWindowTitle(QStringLiteral("Set instrument / mode"));
+    dlg.setWindowTitle(specs.size() > 1
+        ? QString("Set instrument / mode — %1 spectra").arg(specs.size())
+        : QStringLiteral("Set instrument / mode"));
     auto* form = new QFormLayout(&dlg);
 
     auto* instCombo = new QComboBox(&dlg);
@@ -1048,13 +1182,14 @@ void SpectraFitDialog::defineInstrumentManually(const QString& spectrumId)
     QObject::connect(instCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
                      &dlg, [&](int i){ populateModes(i); });
 
-    // Preselect the spectrum's current instrument/mode, if any.
-    if (!spec->getInstrumentId().isEmpty()) {
-        int i = instCombo->findData(spec->getInstrumentId());
+    // Preselect the (first) spectrum's current instrument/mode, if any.
+    const auto& first = specs.front();
+    if (!first->getInstrumentId().isEmpty()) {
+        int i = instCombo->findData(first->getInstrumentId());
         if (i >= 0) { instCombo->setCurrentIndex(i); populateModes(i); }
     }
-    if (!spec->getModeKey().isEmpty()) {
-        int m = modeCombo->findData(spec->getModeKey());
+    if (!first->getModeKey().isEmpty()) {
+        int m = modeCombo->findData(first->getModeKey());
         if (m >= 0) modeCombo->setCurrentIndex(m);
     }
 
@@ -1076,12 +1211,14 @@ void SpectraFitDialog::defineInstrumentManually(const QString& spectrumId)
     if (!modeKey.isEmpty())
         display += QString(" (%1)").arg(modeName);
 
-    spec->setInstrument(display);
-    spec->setInstrumentId(inst->getId());
-    spec->setModeKey(modeKey);
-    if (_dbm)
-        _dbm->updateSpectrumInstrument(spec->getId(), display,
-                                       inst->getId(), modeKey);
+    for (auto& spec : specs) {
+        spec->setInstrument(display);
+        spec->setInstrumentId(inst->getId());
+        spec->setModeKey(modeKey);
+        if (_dbm)
+            _dbm->updateSpectrumInstrument(spec->getId(), display,
+                                           inst->getId(), modeKey);
+    }
 
     _star->markSummaryDirty();
     rebuildTree();
@@ -1089,6 +1226,6 @@ void SpectraFitDialog::defineInstrumentManually(const QString& spectrumId)
     emit spectraUpdated();
 
     LOG_INFO("Tools",
-        QString("Set spectrum %1 instrument/mode → %2")
-            .arg(spec->getId().left(8), display));
+        QString("Set instrument/mode → %1 for %2 spectrum(s)")
+            .arg(display).arg(specs.size()));
 }

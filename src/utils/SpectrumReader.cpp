@@ -102,6 +102,23 @@ findCoordinateHeader(fitsfile *fptr, const QStringList &keywords, bool isRA) {
         if (raw.isEmpty())
             continue;
 
+        // CRVALn doubles as the wavelength zero-point in spectral WCS headers;
+        // only trust it as a coordinate if the matching CTYPEn agrees (or is
+        // absent, matching historic behaviour for plain imaging headers).
+        if (key.startsWith(QStringLiteral("CRVAL"))) {
+            char ctVal[FLEN_VALUE] = {0};
+            int  ctStatus          = 0;
+            const QByteArray ctypeKey =
+                (QStringLiteral("CTYPE") + key.mid(5)).toUtf8();
+            if (fits_read_key(fptr, TSTRING, ctypeKey.constData(), ctVal,
+                              nullptr, &ctStatus) == 0) {
+                const QString ctype = QString::fromLatin1(ctVal).toUpper();
+                if (isRA ? !ctype.contains(QStringLiteral("RA"))
+                         : !ctype.contains(QStringLiteral("DEC")))
+                    continue;
+            }
+        }
+
         const bool looksSexagesimal =
             raw.contains(':') ||
             raw.contains(QRegularExpression(R"([hHdD])")) ||
@@ -170,22 +187,54 @@ SpectrumMetadata DefaultFitsSpectrumReader::readMetadata(const QString& filepath
         return metadata;
     }
     
-    // Move to primary HDU
-    fits_movabs_hdu(fptr, 1, nullptr, &status);
-    
-    // Read metadata from header
-    metadata.ra  = findCoordinateHeader(fptr, RA_KEYWORDS, /*isRA=*/true);
-    metadata.dec = findCoordinateHeader(fptr, DEC_KEYWORDS, /*isRA=*/false);
-    metadata.mjd = findDoubleHeader(fptr, MJD_KEYWORDS);
-    metadata.bjd = findDoubleHeader(fptr, BJD_KEYWORDS);
-    metadata.exposureTime = findDoubleHeader(fptr, EXPTIME_KEYWORDS);
-    metadata.instrument = findStringHeader(fptr, INSTRUMENT_KEYWORDS);
-    metadata.objectName = findStringHeader(fptr, OBJECT_KEYWORDS);
-    
+    // Scan every HDU, keeping the first value found per field: pipelines like
+    // PMAS/p3d leave the primary header nearly empty and write all metadata
+    // into the IMAGE extensions that hold the actual data.
+    int numHdus = 0;
+    fits_get_num_hdus(fptr, &numHdus, &status);
+    if (numHdus < 1)
+        numHdus = 1;
+
+    std::optional<QString> dateObs;
+    for (int hdu = 1; hdu <= numHdus; ++hdu) {
+        status = 0;
+        if (fits_movabs_hdu(fptr, hdu, nullptr, &status) != 0)
+            break;
+
+        if (!metadata.ra.has_value())
+            metadata.ra = findCoordinateHeader(fptr, RA_KEYWORDS, /*isRA=*/true);
+        if (!metadata.dec.has_value())
+            metadata.dec = findCoordinateHeader(fptr, DEC_KEYWORDS, /*isRA=*/false);
+        if (!metadata.mjd.has_value())
+            metadata.mjd = findDoubleHeader(fptr, MJD_KEYWORDS);
+        if (!metadata.bjd.has_value())
+            metadata.bjd = findDoubleHeader(fptr, BJD_KEYWORDS);
+        if (!metadata.exposureTime.has_value())
+            metadata.exposureTime = findDoubleHeader(fptr, EXPTIME_KEYWORDS);
+        if (!metadata.instrument.has_value())
+            metadata.instrument = findStringHeader(fptr, INSTRUMENT_KEYWORDS);
+        if (!metadata.objectName.has_value())
+            metadata.objectName = findStringHeader(fptr, OBJECT_KEYWORDS);
+        if (!dateObs.has_value())
+            dateObs = findStringHeader(fptr, {"DATE-OBS", "DATE_OBS", "DATEOBS"});
+
+        // PMAS (Calar Alto 3.5m) headers carry no INSTRUME card; the telltale
+        // is the PVERSION card whose comment reads "PMAS fitsheader version".
+        if (!metadata.instrument.has_value()) {
+            int  st                = 0;
+            char val[FLEN_VALUE]   = {0};
+            char com[FLEN_COMMENT] = {0};
+            if (fits_read_key(fptr, TSTRING, "PVERSION", val, com, &st) == 0 &&
+                QString::fromLatin1(com).contains(QStringLiteral("PMAS"),
+                                                  Qt::CaseInsensitive))
+                metadata.instrument = QStringLiteral("PMAS");
+        }
+    }
+    status = 0;
+
     // Try to get MJD from DATE-OBS if MJD not found
-    if (!metadata.mjd.has_value()) {
-        auto dateObs = findStringHeader(fptr, {"DATE-OBS", "DATE_OBS", "DATEOBS"});
-        if (dateObs.has_value()) {
+    {
+        if (dateObs.has_value() && !metadata.mjd.has_value()) {
             // Parse ISO date format and convert to MJD
             QDateTime dt = QDateTime::fromString(dateObs.value(), Qt::ISODate);
             if (dt.isValid()) {
@@ -343,52 +392,134 @@ SpectrumReadResult DefaultFitsSpectrumReader::readSpectrum(const QString& filepa
     }
     
     if (!foundData) {
-        // Try reading as image (1D spectrum)
-        fits_movabs_hdu(fptr, 1, nullptr, &status);
-        
-        int naxis;
-        long naxes[10];
-        fits_get_img_dim(fptr, &naxis, &status);
-        
-        if (status == 0 && naxis >= 1) {
-            fits_get_img_size(fptr, 10, naxes, &status);
-            
-            if (status == 0 && naxes[0] > 0) {
-                long npixels = naxes[0];
-                std::vector<double> fluxes(npixels);
-                std::vector<double> wavelengths(npixels);
-                std::vector<double> errors(npixels, 0.0);
-                
-                long fpixel = 1;
-                int anynul;
-                fits_read_img(fptr, TDOUBLE, fpixel, npixels, nullptr, 
-                             fluxes.data(), &anynul, &status);
-                
-                if (status == 0) {
-                    // Try to get wavelength calibration from header
-                    double crval1 = 0, cdelt1 = 1, crpix1 = 1;
-                    int tmpStatus = 0;
-                    
-                    fits_read_key(fptr, TDOUBLE, "CRVAL1", &crval1, nullptr, &tmpStatus);
-                    tmpStatus = 0;
-                    fits_read_key(fptr, TDOUBLE, "CDELT1", &cdelt1, nullptr, &tmpStatus);
-                    if (tmpStatus != 0) {
-                        tmpStatus = 0;
-                        fits_read_key(fptr, TDOUBLE, "CD1_1", &cdelt1, nullptr, &tmpStatus);
-                    }
-                    tmpStatus = 0;
-                    fits_read_key(fptr, TDOUBLE, "CRPIX1", &crpix1, nullptr, &tmpStatus);
-                    
-                    for (long i = 0; i < npixels; ++i) {
-                        wavelengths[i] = crval1 + (i + 1 - crpix1) * cdelt1;
-                    }
-                    
-                    result.spectrum = std::make_shared<Spectrum>();
-                    result.spectrum->setData(wavelengths, fluxes, errors);
-                    result.spectrum->setFile(filepath);
-                    foundData = true;
-                }
+        // Try reading as image (1D spectrum). The flux array may live in the
+        // primary HDU or in an IMAGE extension (e.g. PMAS/p3d writes it to an
+        // extension named DATA, with the uncertainty in ERROR).
+        auto readImageHdu = [&](int hdu, std::vector<double>& out) -> bool {
+            int st = 0;
+            if (fits_movabs_hdu(fptr, hdu, nullptr, &st) != 0)
+                return false;
+            int  naxis = 0;
+            long naxes[10] = {0};
+            if (fits_get_img_dim(fptr, &naxis, &st) != 0 || naxis < 1)
+                return false;
+            if (fits_get_img_size(fptr, 10, naxes, &st) != 0 || naxes[0] <= 0)
+                return false;
+            // Only accept true 1-D vectors (allow degenerate trailing axes).
+            for (int a = 1; a < naxis; ++a)
+                if (naxes[a] > 1)
+                    return false;
+            out.resize(naxes[0]);
+            int anynul = 0;
+            return fits_read_img(fptr, TDOUBLE, 1, naxes[0], nullptr,
+                                 out.data(), &anynul, &st) == 0;
+        };
+
+        auto hduExtname = [&](int hdu) -> QString {
+            int st = 0;
+            if (fits_movabs_hdu(fptr, hdu, nullptr, &st) != 0)
+                return {};
+            char val[FLEN_VALUE] = {0};
+            if (fits_read_key(fptr, TSTRING, "EXTNAME", val, nullptr, &st) != 0)
+                return {};
+            return QString::fromLatin1(val).trimmed().toUpper();
+        };
+
+        // Pick the flux HDU: prefer well-known extension names, else the first
+        // HDU that holds a plausible 1-D vector. Skip mask/quality vectors.
+        static const QStringList kFluxExtnames  = {"DATA", "FLUX", "SCI",
+                                                   "SPECTRUM", "PRIMARY"};
+        static const QStringList kSkipExtnames  = {"ERROR", "ERR", "SIGMA",
+                                                   "IVAR", "VARIANCE", "MASK",
+                                                   "QUALITY", "DQ", "SEMASK",
+                                                   "WLBINS", "DATA_BG",
+                                                   "ERROR_BG"};
+        int fluxHdu = -1, fallbackHdu = -1;
+        for (int hdu = 1; hdu <= numHdus; ++hdu) {
+            int hduType = ANY_HDU;
+            status = 0;
+            fits_movabs_hdu(fptr, hdu, &hduType, &status);
+            if (status != 0 || hduType != IMAGE_HDU)
+                continue;
+
+            const QString ext = hduExtname(hdu);
+            if (kFluxExtnames.contains(ext)) { fluxHdu = hdu; break; }
+            if (kSkipExtnames.contains(ext))
+                continue;
+            if (fallbackHdu < 0) {
+                std::vector<double> probe;
+                if (readImageHdu(hdu, probe) && probe.size() >= 2)
+                    fallbackHdu = hdu;
             }
+        }
+        if (fluxHdu < 0)
+            fluxHdu = fallbackHdu;
+
+        std::vector<double> fluxes;
+        bool imageRead = fluxHdu > 0 && readImageHdu(fluxHdu, fluxes);
+
+        // Legacy fallback: read the first NAXIS1 pixels of the primary HDU
+        // even if it is multi-dimensional (pre-existing behaviour).
+        if (!imageRead) {
+            int st = 0;
+            fits_movabs_hdu(fptr, 1, nullptr, &st);
+            int  naxis = 0;
+            long naxes[10] = {0};
+            if (st == 0 && fits_get_img_dim(fptr, &naxis, &st) == 0 &&
+                naxis >= 1 && fits_get_img_size(fptr, 10, naxes, &st) == 0 &&
+                naxes[0] > 0) {
+                fluxes.resize(naxes[0]);
+                int anynul = 0;
+                imageRead = fits_read_img(fptr, TDOUBLE, 1, naxes[0], nullptr,
+                                          fluxes.data(), &anynul, &st) == 0;
+                if (imageRead)
+                    fluxHdu = 1;
+            }
+        }
+
+        if (imageRead && fluxes.size() >= 1) {
+            const long npixels = static_cast<long>(fluxes.size());
+            std::vector<double> wavelengths(npixels);
+            std::vector<double> errors(npixels, 0.0);
+
+            // Wavelength calibration from the flux HDU's own header.
+            status = 0;
+            fits_movabs_hdu(fptr, fluxHdu, nullptr, &status);
+            double crval1 = 0, cdelt1 = 1, crpix1 = 1;
+            int tmpStatus = 0;
+
+            fits_read_key(fptr, TDOUBLE, "CRVAL1", &crval1, nullptr, &tmpStatus);
+            tmpStatus = 0;
+            fits_read_key(fptr, TDOUBLE, "CDELT1", &cdelt1, nullptr, &tmpStatus);
+            if (tmpStatus != 0) {
+                tmpStatus = 0;
+                fits_read_key(fptr, TDOUBLE, "CD1_1", &cdelt1, nullptr, &tmpStatus);
+            }
+            tmpStatus = 0;
+            fits_read_key(fptr, TDOUBLE, "CRPIX1", &crpix1, nullptr, &tmpStatus);
+
+            for (long i = 0; i < npixels; ++i) {
+                wavelengths[i] = crval1 + (i + 1 - crpix1) * cdelt1;
+            }
+
+            // Companion uncertainty vector, if present with matching length.
+            static const QStringList kErrorExtnames = {"ERROR", "ERR", "SIGMA",
+                                                       "STDEV", "UNCERT"};
+            for (int hdu = 1; hdu <= numHdus; ++hdu) {
+                if (hdu == fluxHdu || !kErrorExtnames.contains(hduExtname(hdu)))
+                    continue;
+                std::vector<double> errVec;
+                if (readImageHdu(hdu, errVec) &&
+                    errVec.size() == static_cast<size_t>(npixels)) {
+                    errors = std::move(errVec);
+                }
+                break;
+            }
+
+            result.spectrum = std::make_shared<Spectrum>();
+            result.spectrum->setData(wavelengths, fluxes, errors);
+            result.spectrum->setFile(filepath);
+            foundData = true;
         }
     } else {
         // Read from table

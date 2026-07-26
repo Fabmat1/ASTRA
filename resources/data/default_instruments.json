@@ -134,6 +134,31 @@
                         "wavelength_min": 3200.0,
                         "wavelength_max": 11000.0
                     }
+                },
+                {
+                    "key": "PMAS",
+                    "display_name": "PMAS Integral Field Spectrograph (3.5m)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "PMAS",
+                        "resolution_coefficients": [1100.0],
+                        "wavelength_min": 3400.0,
+                        "wavelength_max": 9000.0,
+                        "common_setups": [
+                            {
+                                "label": "V300",
+                                "central_wavelength": 5550.0,
+                                "wavelength_min": 3590.0,
+                                "wavelength_max": 7510.0
+                            },
+                            {
+                                "label": "V600",
+                                "central_wavelength": 5300.0,
+                                "wavelength_min": 4320.0,
+                                "wavelength_max": 6280.0
+                            }
+                        ]
+                    }
                 }
             ]
         },
