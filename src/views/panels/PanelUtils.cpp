@@ -5,6 +5,7 @@
 #include <QLayout>
 #include <QPalette>
 #include <QPen>
+#include <QPushButton>
 #include <QWidget>
 #include <algorithm>
 #include <cmath>
@@ -126,6 +127,25 @@ QLabel* makePlaceholder(const QString& text)
     label->setAlignment(Qt::AlignCenter);
     label->setStyleSheet("color: gray; font-style: italic; font-size: 14px;");
     return label;
+}
+
+void styleFlatTextButton(QPushButton* btn)
+{
+    if (!btn) return;
+
+    const bool dark = isDarkTheme();
+    btn->setFlat(true);
+    btn->setCursor(Qt::PointingHandCursor);
+    btn->setStyleSheet(QString(
+        "QPushButton { color: %1; background: transparent; border: none; "
+        "padding: 3px 8px; }"
+        "QPushButton:hover { color: %2; background: rgba(127,127,127,0.18); "
+        "border-radius: 4px; }"
+        "QPushButton:pressed { background: rgba(127,127,127,0.28); }"
+        "QPushButton:disabled { color: %3; }")
+        .arg(dark ? "#8aa3c8" : "#3a5a90",
+             dark ? "#cfdaee" : "#1d3160",
+             dark ? "#5a6472" : "#a0a6b0"));
 }
 
 void stylePlot(QCustomPlot* plot)

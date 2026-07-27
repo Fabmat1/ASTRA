@@ -6,6 +6,7 @@
 
 class QLayout;
 class QLabel;
+class QPushButton;
 class QCustomPlot;
 
 namespace PanelUtils {
@@ -32,6 +33,12 @@ QColor  themeSurface();
 
 void    clearLayout(QLayout* layout);
 QLabel* makePlaceholder(const QString& text);
+
+// Flat, link-like text button. A bare setFlat(true) leaves the label on the
+// button text colour, which some themes render nearly invisible against the
+// transparent background; this picks explicit foreground colours per theme.
+// Call it again from refreshTheme() so the colours follow a theme switch.
+void    styleFlatTextButton(QPushButton* btn);
 
 void    stylePlot(QCustomPlot* plot);
 

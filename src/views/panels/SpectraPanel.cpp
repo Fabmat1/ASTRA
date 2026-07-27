@@ -32,8 +32,22 @@ SpectraPanel::SpectraPanel(const Context& ctx, QWidget* parent, bool deferPopula
 
 void SpectraPanel::refresh()      { populate(); }
 
+void SpectraPanel::changeEvent(QEvent* ev)
+{
+    DetailPanel::changeEvent(ev);
+
+    // Keep the flat "Reset Zoom" button legible across a theme switch even when
+    // this panel lives in a dialog that gets no refreshTheme() call. The new
+    // isDarkTheme flag is published just after the app stylesheet, so defer.
+    if (ev->type() == QEvent::StyleChange || ev->type() == QEvent::PaletteChange)
+        QTimer::singleShot(0, this, [this] {
+            PanelUtils::styleFlatTextButton(_resetZoomButton);
+        });
+}
+
 void SpectraPanel::refreshTheme()
 {
+    PanelUtils::styleFlatTextButton(_resetZoomButton);
     PanelUtils::stylePlot(_mainPlot);
     PanelUtils::stylePlot(_residualPlot);
     _mainPlot->replot();
@@ -71,8 +85,7 @@ void SpectraPanel::setupUi()
     _resetZoomButton = new QPushButton("⟲ Reset Zoom");
     _resetZoomButton->setToolTip("Reset zoom to show full spectrum");
     _resetZoomButton->setMaximumWidth(140);
-    _resetZoomButton->setFlat(true);
-    _resetZoomButton->setCursor(Qt::PointingHandCursor);
+    PanelUtils::styleFlatTextButton(_resetZoomButton);
     _resetZoomButton->setVisible(false);
     connect(_resetZoomButton, &QPushButton::clicked, this, [this]() {
         _hasCustomZoom = false;
@@ -347,7 +360,8 @@ void SpectraPanel::displaySpectrum(int index)
     else if (firstValidIdx >= 0)
         selectIdx = firstValidIdx;
 
-    bool hasFits = (_fitCombo->count() > 1);
+    // While the co-add is on screen the fit selector applies to nothing.
+    bool hasFits = (_fitCombo->count() > 1) && !_coaddActive;
     _modelLabel->setVisible(hasFits);
     _fitCombo->setVisible(hasFits);
     _displayMode->setVisible(hasFits);
@@ -375,8 +389,170 @@ void SpectraPanel::displaySpectrum(int index)
     emit selectionChanged(currentSpectrumId(), currentFitId());
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Co-add overlay
+// ─────────────────────────────────────────────────────────────────────────────
+
+void SpectraPanel::showCoadd(const CoaddDisplay& coadd)
+{
+    // Entering co-add mode drops a zoom left over from the per-epoch view,
+    // which would rarely land anywhere useful on the stacked range. A zoom set
+    // *within* co-add mode survives the restacks that follow.
+    if (!_coaddActive) _hasCustomZoom = false;
+
+    _coadd       = coadd;
+    _coaddActive = true;
+
+    _tabBar->setVisible(false);
+    _modelLabel->setVisible(false);
+    _fitCombo->setVisible(false);
+    _displayMode->setVisible(false);
+    _residualPlot->setVisible(false);
+    if (_fitOverlay) _fitOverlay->clearConfig();  // no per-spectrum overlay here
+
+    updateCoaddDisplay();
+}
+
+void SpectraPanel::clearCoadd()
+{
+    if (!_coaddActive) return;
+
+    _coaddActive = false;
+    _coadd = CoaddDisplay{};
+
+    _tabBar->setVisible(true);
+    // The fit widgets' visibility is owned by displaySpectrum(); re-running it
+    // restores both them and the per-spectrum plot.
+    if (_currentSpectrumIndex >= 0)
+        displaySpectrum(_currentSpectrumIndex);
+    else
+        updateSpectrumDisplay();
+}
+
+void SpectraPanel::updateCoaddDisplay()
+{
+    _axisSyncTimer->stop();
+    disconnect(_axisSyncConn1);
+    disconnect(_axisSyncConn2);
+
+    // Restacking replaces every plottable, so a zoom the user set on the
+    // co-add has to be captured here and put back at the end — both axes.
+    // Otherwise changing the selection or the normalization would throw away
+    // the region they were looking at.
+    const bool restoreZoom = _hasCustomZoom && _mainPlot->graphCount() > 0;
+    const QCPRange savedXRange = _mainPlot->xAxis->range();
+    const QCPRange savedYRange = _mainPlot->yAxis->range();
+
+    _mainPlot->clearPlottables();
+    _mainPlot->legend->setVisible(false);
+    _residualPlot->setVisible(false);
+
+    const auto& wl = _coadd.wavelengths;
+    const auto& fl = _coadd.fluxes;
+
+    _mainPlot->xAxis->setTickLabels(true);
+    _mainPlot->xAxis->setLabel("Wavelength [Å]");
+    _mainPlot->yAxis->setLabel("Normalized Flux");
+
+    if (wl.empty() || fl.size() != wl.size()) {
+        _infoLabel->setText(_coadd.caption);
+        _mainPlot->replot();
+        return;
+    }
+
+    QVector<double> wlVec = PanelUtils::toQVec(wl);
+    QVector<double> flVec = PanelUtils::toQVec(fl);
+
+    // ── Error band ──
+    const bool hasErrors = (_coadd.sigmas.size() == wl.size());
+    if (hasErrors) {
+        QVector<double> upper(wlVec.size()), lower(wlVec.size());
+        for (int i = 0; i < wlVec.size(); ++i) {
+            const double e = std::isfinite(_coadd.sigmas[i])
+                             ? _coadd.sigmas[i] : 0.0;
+            upper[i] = fl[i] + e;
+            lower[i] = fl[i] - e;
+        }
+
+        QCPGraph* up = _mainPlot->addGraph();
+        up->setData(wlVec, upper);
+        up->setPen(Qt::NoPen);
+        up->removeFromLegend();
+
+        QCPGraph* lo = _mainPlot->addGraph();
+        lo->setData(wlVec, lower);
+        lo->setPen(Qt::NoPen);
+        lo->removeFromLegend();
+
+        up->setBrush(QBrush(QColor(180, 180, 180, 50)));
+        up->setChannelFillGraph(lo);
+    }
+
+    // ── Regions carried by a single spectrum are drawn dimmed, so the parts of
+    //    the stack that gained no depth from co-adding are obvious. ──
+    const bool hasCounts = (_coadd.counts.size() == wl.size());
+    int maxCount = 0;
+    if (hasCounts)
+        maxCount = *std::max_element(_coadd.counts.begin(), _coadd.counts.end());
+
+    QColor dataColor = PanelUtils::dataLineColor();
+
+    if (hasCounts && maxCount > 1) {
+        QColor shallowColor = dataColor;
+        shallowColor.setAlpha(110);
+
+        QVector<double> deepFl(wlVec.size()), shallowFl(wlVec.size());
+        for (int i = 0; i < wlVec.size(); ++i) {
+            const bool deep = _coadd.counts[i] >= maxCount;
+            deepFl[i]    = deep ? fl[i] : qQNaN();
+            shallowFl[i] = deep ? qQNaN() : fl[i];
+        }
+
+        QCPGraph* shallow = _mainPlot->addGraph();
+        shallow->setData(wlVec, shallowFl);
+        shallow->setPen(QPen(shallowColor, 1.0));
+        shallow->removeFromLegend();
+
+        QCPGraph* deep = _mainPlot->addGraph();
+        deep->setData(wlVec, deepFl);
+        deep->setPen(QPen(dataColor, 1.2));
+        deep->removeFromLegend();
+    } else {
+        QCPGraph* g = _mainPlot->addGraph();
+        g->setData(wlVec, flVec);
+        g->setPen(QPen(dataColor, 1.2));
+        g->removeFromLegend();
+    }
+
+    // ── Ranges ──
+    if (restoreZoom) {
+        _mainPlot->xAxis->setRange(savedXRange);
+        _mainPlot->yAxis->setRange(savedYRange);
+    } else {
+        std::vector<double> finiteFlux;
+        finiteFlux.reserve(fl.size());
+        for (double v : fl) if (std::isfinite(v)) finiteFlux.push_back(v);
+
+        double xSpan = wl.back() - wl.front();
+        if (xSpan <= 0) xSpan = 100;
+
+        auto [yLo, yHi] = PanelUtils::robustRange(finiteFlux, 0.98, 0.15);
+        _mainPlot->yAxis->setRange(yLo, yHi);
+        _mainPlot->xAxis->setRange(wl.front() - xSpan * 0.01,
+                                   wl.back()  + xSpan * 0.01);
+    }
+
+    _infoLabel->setText(_coadd.caption);
+    _mainPlot->replot();
+
+    if (_resetZoomButton)
+        _resetZoomButton->setVisible(_hasCustomZoom);
+}
+
 void SpectraPanel::updateSpectrumDisplay()
 {
+    if (_coaddActive) { updateCoaddDisplay(); return; }
+
     if (_currentSpectrumIndex < 0 ||
         _currentSpectrumIndex >= static_cast<int>(_sortedSpectra.size()))
         return;

@@ -25,6 +25,21 @@ public:
     void setFitPreview(const FitPreviewConfig& cfg);
     void clearFitPreview();
 
+    // ── Co-add overlay ──────────────────────────────────────────────────────
+    // While a co-add is set the panel shows the stacked spectrum instead of the
+    // per-epoch view; the spectrum tabs and fit selector are hidden, since
+    // neither applies to it.
+    struct CoaddDisplay {
+        std::vector<double> wavelengths;
+        std::vector<double> fluxes;
+        std::vector<double> sigmas;
+        std::vector<int>    counts;    ///< contributing spectra per pixel
+        QString             caption;   ///< rich text for the info strip
+    };
+    void showCoadd(const CoaddDisplay& coadd);
+    void clearCoadd();
+    bool showingCoadd() const { return _coaddActive; }
+
     enum DisplayMode {
         DisplayNormalized = 0,
         DisplayRebinned   = 1,
@@ -41,6 +56,11 @@ public:
     void resetCustomZoom() { _hasCustomZoom = false; }
 
     void onSummaryChanged() override { /* curves unchanged by summary metrics */ }
+
+protected:
+    void changeEvent(QEvent* ev) override;
+
+public:
     
     // State
     QString currentSpectrumId() const;
@@ -56,6 +76,7 @@ private:
     void populate() override;
     void displaySpectrum(int index);
     void updateSpectrumDisplay();
+    void updateCoaddDisplay();
 
     QString formatTabLabel(const std::shared_ptr<Spectrum>& s, int i) const;
     QString formatInfo(const std::shared_ptr<Spectrum>& s) const;
@@ -79,6 +100,9 @@ private:
 
     int  _currentSpectrumIndex = -1;
     std::vector<std::shared_ptr<Spectrum>> _sortedSpectra;
+
+    bool         _coaddActive = false;
+    CoaddDisplay _coadd;
     QMetaObject::Connection _tabConnection;
     QMetaObject::Connection _axisSyncConn1, _axisSyncConn2;
 

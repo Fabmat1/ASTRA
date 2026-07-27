@@ -335,6 +335,7 @@ set(SOURCES
     src/utils/TessSectors.cpp
     src/utils/ClaretFilter.cpp
     src/utils/matchSpectraToInstrument.cpp
+    src/utils/SpectrumCoadder.cpp
 
     # views
     src/views/ColumnConfigDialog.cpp
@@ -356,6 +357,7 @@ set(SOURCES
     src/views/tools/SEDFitDialog.cpp
     src/views/tools/SpectraFitDialog.cpp
     src/views/tools/FitSetupWidget.cpp
+    src/views/tools/CoAddWidget.cpp
     src/views/tools/FitProgressDialog.cpp
     src/views/tools/InteractiveIsisDialog.cpp
     src/views/tools/RVAddFitDialog.cpp
@@ -486,6 +488,7 @@ set(HEADERS
     src/utils/TessSectors.h
     src/utils/ClaretFilter.h
     src/utils/matchSpectraToInstrument.h
+    src/utils/SpectrumCoadder.h
 
     # views
     src/views/BooleanColumnDelegate.h
@@ -508,6 +511,7 @@ set(HEADERS
     src/views/tools/SEDFitDialog.h
     src/views/tools/SpectraFitDialog.h
     src/views/tools/FitSetupWidget.h
+    src/views/tools/CoAddWidget.h
     src/views/tools/FitProgressDialog.h
     src/views/tools/InteractiveIsisDialog.h
     src/views/tools/RVAddFitDialog.h

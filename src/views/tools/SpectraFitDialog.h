@@ -18,6 +18,7 @@ class QTreeWidget;
 class QTreeWidgetItem;
 class QSplitter;
 class FitSetupWidget;
+class CoAddWidget;
 class QTabWidget;
 class QPushButton;
 class CheckStateDragger;
@@ -80,6 +81,7 @@ private:
     QTreeWidget*  _tree     = nullptr;
     QTabWidget*    _rightTabs  = nullptr;
     FitSetupWidget* _setup     = nullptr;
+    CoAddWidget*    _coadd     = nullptr;
 
     QPushButton*  _addSpectraBtn = nullptr;
     QPushButton*  _addFitBtn     = nullptr;

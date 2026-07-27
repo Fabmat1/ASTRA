@@ -9,6 +9,7 @@
 #include "utils/matchSpectraToInstrument.h"
 #include "views/panels/SpectraPanel.h"
 #include "FitSetupWidget.h"
+#include "CoAddWidget.h"
 #include "utils/CheckStateDragger.h"
 #include "utils/SpectrumReader.h"
 
@@ -222,10 +223,24 @@ void SpectraFitDialog::setupUi()
     _setup = new FitSetupWidget(setupCtx);
     _rightTabs->addTab(_setup, "Fit Setup");
 
+    // ── Co-Add tab ──
+    CoAddWidget::Context coaddCtx;
+    coaddCtx.star      = _star;
+    coaddCtx.dbm       = _dbm;
+    coaddCtx.projectId = _projectId;
+    coaddCtx.panel     = _panel;
+
+    _coadd = new CoAddWidget(coaddCtx);
+    _rightTabs->addTab(_coadd, "Co-Add");
+
+    // Both the fit preview and the co-add draw into the one shared plot, so
+    // each only takes it over while its own tab is the visible one.
     connect(_rightTabs, &QTabWidget::currentChanged, this, [this](int){
         _setup->setPreviewActive(_rightTabs->currentWidget() == _setup);
+        _coadd->setActive(_rightTabs->currentWidget() == _coadd);
     });
     _setup->setPreviewActive(_rightTabs->currentWidget() == _setup);
+    _coadd->setActive(_rightTabs->currentWidget() == _coadd);
 
     connect(_setup, &FitSetupWidget::fitCompleted, this, [this]{
         // Reload fits from DB for our star, then refresh everything
@@ -240,6 +255,7 @@ void SpectraFitDialog::setupUi()
         _star->ensureRVCurveSynced();
         _star->markSummaryDirty();
         _setup->refreshSpectraList();   // drop stale spectrum pointers
+        _coadd->refreshSpectraList();
         rebuildTree();
         _panel->refresh();
         emit spectraUpdated();
