@@ -45,6 +45,23 @@ chmod +x astra-0.2.2-x86_64.AppImage
 
 ASTRA is a CMake project requiring **Qt ≥ 6.10**, a Fortran compiler, and several scientific libraries.
 
+#### Automated installer (Ubuntu / Debian / Arch)
+
+`install-linux.sh` does everything in this section for you: it detects your distribution,
+installs the packages, downloads Qt via `aqtinstall` when your distro is too old, fetches the
+git submodules, builds the optional `lcurve` fitting binaries, and finally builds and installs
+ASTRA.
+
+```bash
+git clone https://github.com/Fabmat1/ASTRA.git
+cd ASTRA
+./install-linux.sh
+```
+
+Useful options: `--prefix ~/.local` (per-user install, no root needed), `--build-only`,
+`--no-lcurve`, `--skip-deps`, `--no-cuda`, `-j N`, `-v`. Run `./install-linux.sh --help` for
+the full list. If you would rather do it by hand, follow the steps below.
+
 #### 1. Install Build Dependencies
 
 **Ubuntu 22.04+ / Debian 12+:**
