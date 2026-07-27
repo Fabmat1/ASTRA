@@ -38,7 +38,12 @@ ASSUME_YES=0
 SKIP_DEPS=0
 DO_INSTALL=1
 WITH_LCURVE=1
-CUDA_MODE="auto"                    # auto | on | off
+LATEST_SUBMODULES=1                 # track upstream HEAD instead of the pins
+# DIGGA's CUDA back-end is off by default: at the pinned submodule commit
+# Resolution.hpp only declares degrade_resolution_cuda() under SPECFIT_USE_CUDA
+# while the build defines DIGGA_USE_CUDA, so -DDIGGA_ENABLE_CUDA=ON does not
+# compile. The AppImage build disables it for the same reason.
+CUDA_MODE="off"                     # on | off
 FORCE_QT_DOWNLOAD=0
 
 # ───────────────────────────── pretty output ────────────────────────────────
@@ -84,10 +89,20 @@ die() {
     printf '\n'
     say "${C_RED}${C_BOLD}✘ $*${C_RESET}"
     if [[ -s "${LOG_FILE}" ]]; then
+        # Compiler failures are usually buried under a pile of warnings, so
+        # show the error lines when there are any and fall back to the tail.
+        local excerpt caption="last 20 log lines"
+        excerpt="$(grep -nE 'error:|Error [0-9]|^FAILED|CMake Error|fatal error|No such file or directory' \
+                    "${LOG_FILE}" | tail -n 15 || true)"
+        if [[ -n "${excerpt}" ]]; then
+            caption="errors found in the log"
+        else
+            excerpt="$(tail -n 20 "${LOG_FILE}")"
+        fi
         printf '\n'
-        say "${C_DIM}── last 25 log lines (${LOG_FILE}) ─────────────────────${C_RESET}"
-        tail -n 25 "${LOG_FILE}" | sed "s/^/${C_DIM}│${C_RESET} /"
-        say "${C_DIM}────────────────────────────────────────────────────────${C_RESET}"
+        say "${C_DIM}── ${caption} (${LOG_FILE}) ──${C_RESET}"
+        printf '%s\n' "${excerpt}" | cut -c1-300 | sed "s/^/${C_DIM}│${C_RESET} /"
+        say "${C_DIM}──────────────────────────────────────────────────────${C_RESET}"
     fi
     exit 1
 }
@@ -187,8 +202,15 @@ ${C_BOLD}Options${C_RESET}
       --qt-version V    Qt version to download when the distro is too old
                         (default: ${QT_DOWNLOAD_VERSION}, needs >= ${QT_MIN})
       --download-qt     always download Qt, even if the system Qt is new enough
-      --cuda / --no-cuda  force the DIGGA CUDA back-end on/off (default: auto)
+      --cuda            build DIGGA's CUDA back-end (default: off — it does
+                        not compile at the pinned DIGGA commit)
+      --no-cuda         explicitly disable it (this is the default)
       --no-lcurve       skip building the bundled lcurve fitting binaries
+      --pinned-submodules
+                        check out the commits recorded in the superproject
+                        instead of the latest upstream state (the default is
+                        to update DIGGA, rv_mcmc, lightcurvequery, SEDplusplus
+                        and lcurve to their current upstream HEAD)
       --skip-deps       don't touch system packages (assume they are present)
       --build-only      configure and build, but do not install
   -y, --yes             don't ask for confirmation
@@ -213,6 +235,7 @@ while [[ $# -gt 0 ]]; do
         --cuda)          CUDA_MODE="on"; shift ;;
         --no-cuda)       CUDA_MODE="off"; shift ;;
         --no-lcurve)     WITH_LCURVE=0; shift ;;
+        --pinned-submodules) LATEST_SUBMODULES=0; shift ;;
         --skip-deps)     SKIP_DEPS=1; shift ;;
         --build-only)    DO_INSTALL=0; shift ;;
         -y|--yes)        ASSUME_YES=1; shift ;;
@@ -360,10 +383,12 @@ if [[ "${QT_SOURCE}" == "download" ]]; then
 fi
 
 # CUDA
-if [[ "${CUDA_MODE}" == "auto" ]]; then
-    if have nvcc; then CUDA_MODE="on"; else CUDA_MODE="off"; fi
+if [[ "${CUDA_MODE}" == "on" ]]; then
+    have nvcc || warn "--cuda was given but nvcc is not on PATH."
+    warn "DIGGA's CUDA back-end does not compile at the pinned submodule commit; the build may fail."
+elif have nvcc; then
+    info "A CUDA toolkit is installed, but DIGGA's CUDA back-end is disabled (pass --cuda to try it)."
 fi
-[[ "${CUDA_MODE}" == "on" ]] && info "CUDA toolkit found — DIGGA's CUDA back-end will be built."
 
 # ════════════════════════ the plan ══════════════════════════════════════════
 printf '\n'
@@ -374,7 +399,8 @@ say "    install prefix  ${PREFIX}$( [[ ${DO_INSTALL} -eq 0 ]] && printf ' (buil
 say "    build type      ${BUILD_TYPE}, ${JOBS} parallel jobs"
 say "    Qt              ${QT_SOURCE}$( [[ -n "${QT_PREFIX}" ]] && printf ' (%s)' "${QT_DOWNLOAD_VERSION}" )"
 say "    CUDA            ${CUDA_MODE}"
-say "    lcurve binaries $( [[ ${WITH_LCURVE} -eq 1 ]] && echo 'build and bundle' || echo 'skip' )"
+say "    submodules      $( [[ ${LATEST_SUBMODULES} -eq 1 ]] && echo 'latest upstream HEAD' || echo 'commits pinned by this repo' )"
+say "    lcurve binaries $( [[ ${WITH_LCURVE} -eq 1 ]] && echo 'build and bundle (latest upstream)' || echo 'skip' )"
 say "    system packages $( [[ ${SKIP_DEPS} -eq 1 ]] && echo 'skipped (--skip-deps)' || echo "installed with ${PKG_MGR}" )"
 if [[ ${SKIP_DEPS} -eq 0 || ( ${DO_INSTALL} -eq 1 && ${NEED_ROOT_INSTALL} -eq 1 ) ]]; then
     say "    ${C_DIM}root access is needed for package installation and/or ${PREFIX}${C_RESET}"
@@ -668,15 +694,27 @@ if [[ -d "${REPO_DIR}/.git" ]]; then
     # rv_mcmc is registered with an SSH URL; rewrite it to HTTPS on the fly so
     # the checkout works without a GitHub SSH key. The .gitmodules file itself
     # is left untouched.
+    SUBMODULE_ARGS=(submodule update --init --recursive)
+    if [[ ${LATEST_SUBMODULES} -eq 1 ]]; then
+        # --remote follows each submodule's upstream default branch instead of
+        # the SHA recorded here, so a fresh install always gets the current
+        # DIGGA / rv_mcmc / lightcurvequery / SEDplusplus.
+        SUBMODULE_ARGS+=(--remote)
+        info "Tracking the latest upstream commit of every submodule."
+    else
+        info "Using the commits pinned by this repository (--pinned-submodules)."
+    fi
     run_step "Updating submodules (DIGGA, rv_mcmc, lightcurvequery, SEDplusplus)" \
         git -C "${REPO_DIR}" \
             -c "url.https://github.com/.insteadOf=git@github.com:" \
             -c "url.https://github.com/.insteadOf=ssh://git@github.com/" \
-            submodule update --init --recursive \
+            "${SUBMODULE_ARGS[@]}" \
         || die "Submodule checkout failed. Check your network connection and the log."
     for sm in DIGGA rv_mcmc lightcurvequery SEDplusplus; do
-        if [[ -n "$(ls -A "${REPO_DIR}/external/${sm}" 2>/dev/null)" ]]; then
-            info "external/${sm} ✔"
+        sm_dir="${REPO_DIR}/external/${sm}"
+        if [[ -n "$(ls -A "${sm_dir}" 2>/dev/null)" ]]; then
+            sm_rev="$(git -C "${sm_dir}" log -1 --format='%h %cs %s' 2>/dev/null | cut -c1-60)"
+            info "external/${sm} ✔ ${sm_rev}"
         else
             warn "external/${sm} is empty — the matching feature will be unavailable."
         fi
