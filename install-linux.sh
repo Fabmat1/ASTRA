@@ -690,11 +690,31 @@ fi
 # ════════════════════════ 6. submodules ═════════════════════════════════════
 step "Fetching git submodules"
 
+# A file that must exist once a submodule is properly checked out. A submodule
+# directory can hold valid git metadata (so `git log` works and `ls -A` is
+# non-empty) while its working tree is empty — that used to slip through and
+# surface much later as a confusing CMake error.
+submodule_marker() {
+    case "$1" in
+        lightcurvequery) printf 'lightcurvequery.py\n' ;;
+        *)               printf 'CMakeLists.txt\n' ;;
+    esac
+}
+submodule_ok() { [[ -f "${REPO_DIR}/external/$1/$(submodule_marker "$1")" ]]; }
+
+# rv_mcmc is registered with an SSH URL; rewrite it to HTTPS on the fly so the
+# checkout works without a GitHub SSH key. The .gitmodules file is untouched.
+git_sm() {
+    git -C "${REPO_DIR}" \
+        -c "url.https://github.com/.insteadOf=git@github.com:" \
+        -c "url.https://github.com/.insteadOf=ssh://git@github.com/" "$@"
+}
+
 if [[ -d "${REPO_DIR}/.git" ]]; then
-    # rv_mcmc is registered with an SSH URL; rewrite it to HTTPS on the fly so
-    # the checkout works without a GitHub SSH key. The .gitmodules file itself
-    # is left untouched.
-    SUBMODULE_ARGS=(submodule update --init --recursive)
+    # --force makes git run the checkout even when the recorded commit already
+    # matches the submodule's HEAD, which is what repopulates a submodule whose
+    # working tree was emptied (an interrupted clone, a partial copy, ...).
+    SUBMODULE_ARGS=(submodule update --init --recursive --force)
     if [[ ${LATEST_SUBMODULES} -eq 1 ]]; then
         # --remote follows each submodule's upstream default branch instead of
         # the SHA recorded here, so a fresh install always gets the current
@@ -705,22 +725,42 @@ if [[ -d "${REPO_DIR}/.git" ]]; then
         info "Using the commits pinned by this repository (--pinned-submodules)."
     fi
     run_step "Updating submodules (DIGGA, rv_mcmc, lightcurvequery, SEDplusplus)" \
-        git -C "${REPO_DIR}" \
-            -c "url.https://github.com/.insteadOf=git@github.com:" \
-            -c "url.https://github.com/.insteadOf=ssh://git@github.com/" \
-            "${SUBMODULE_ARGS[@]}" \
+        git_sm "${SUBMODULE_ARGS[@]}" \
         || die "Submodule checkout failed. Check your network connection and the log."
+
     for sm in DIGGA rv_mcmc lightcurvequery SEDplusplus; do
         sm_dir="${REPO_DIR}/external/${sm}"
-        if [[ -n "$(ls -A "${sm_dir}" 2>/dev/null)" ]]; then
+
+        # Repair pass: restore the working tree from HEAD, and if even that
+        # fails, discard the directory and let git clone it again.
+        if ! submodule_ok "${sm}"; then
+            info "external/${sm} has no files — repairing."
+            if [[ -e "${sm_dir}/.git" ]]; then
+                git -C "${sm_dir}" checkout -f HEAD -- . >>"${LOG_FILE}" 2>&1 || true
+            fi
+            if ! submodule_ok "${sm}"; then
+                rm -rf "${sm_dir}"
+                git_sm "${SUBMODULE_ARGS[@]}" -- "external/${sm}" >>"${LOG_FILE}" 2>&1 || true
+            fi
+        fi
+
+        if submodule_ok "${sm}"; then
             sm_rev="$(git -C "${sm_dir}" log -1 --format='%h %cs %s' 2>/dev/null | cut -c1-60)"
             info "external/${sm} ✔ ${sm_rev}"
+        elif [[ "${sm}" == "DIGGA" || "${sm}" == "rv_mcmc" ]]; then
+            die "external/${sm} could not be checked out, and ASTRA cannot build without it.
+    Try:  git -C '${REPO_DIR}' submodule update --init --recursive --force"
         else
-            warn "external/${sm} is empty — the matching feature will be unavailable."
+            warn "external/${sm} could not be checked out — the matching feature will be unavailable."
         fi
     done
 else
     warn "Not a git checkout — assuming external/ is already populated."
+    for sm in DIGGA rv_mcmc; do
+        submodule_ok "${sm}" \
+            || die "external/${sm} is missing and this is not a git checkout, so it cannot be fetched.
+    Clone the repository instead:  git clone https://github.com/Fabmat1/ASTRA.git"
+    done
 fi
 
 # ════════════════════════ 7. lcurve (optional) ══════════════════════════════
