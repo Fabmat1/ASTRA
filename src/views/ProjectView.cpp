@@ -25,6 +25,7 @@
 #include <QApplication>
 #include <QCheckBox>
 #include <QClipboard>
+#include <QComboBox>
 #include <QDialogButtonBox>
 #include <QDragEnterEvent>
 #include <QDropEvent>
@@ -38,10 +39,12 @@
 #include <QMessageBox>
 #include <QProgressDialog>
 #include <QMimeData>
+#include <QPointer>
 #include <QPushButton>
 #include <QScrollBar>
 #include <QSet>
 #include <QSettings>
+#include <QStandardItemModel>
 #include <QStatusBar>
 #include <QTableView>
 #include <QTextStream>
@@ -411,18 +414,66 @@ std::vector<std::shared_ptr<Star>> ProjectView::getSelectedStars() const
     return selectedStars;
 }
 
+std::vector<std::shared_ptr<Star>> ProjectView::getFilteredStars() const
+{
+    std::vector<std::shared_ptr<Star>> filteredStars;
+
+    if (!_proxyModel || !_tableModel)
+        return filteredStars;
+
+    filteredStars.reserve(_proxyModel->rowCount());
+    for (int r = 0; r < _proxyModel->rowCount(); ++r) {
+        QModelIndex src = _proxyModel->mapToSource(_proxyModel->index(r, 0));
+        if (auto star = _tableModel->getStarAtRow(src.row()))
+            filteredStars.push_back(star);
+    }
+
+    return filteredStars;
+}
+
+void ProjectView::installSampleProviders(StarDetailView* detailView)
+{
+    if (!detailView)
+        return;
+    QPointer<const ProjectView> self(this);
+    detailView->setSampleProviders(
+        [self]() {
+            return self ? self->getSelectedStars()
+                        : std::vector<std::shared_ptr<Star>>{};
+        },
+        [self]() {
+            return self ? self->getFilteredStars()
+                        : std::vector<std::shared_ptr<Star>>{};
+        });
+}
+
 void ProjectView::onStarDoubleClicked(const QModelIndex& index)
 {
-    if (index.isValid()) {
-        // For double-click, clear the right-click index so we use the
-        // selection-based path (the double-clicked row IS the selection)
-        _rightClickedIndex = QModelIndex();
-        
-        // Ensure the double-clicked row is selected
-        _starTable->selectRow(index.row());
-        
-        onShowDetailWindow();
+    if (!index.isValid())
+        return;
+
+    // Open exactly the double-clicked star, and restore the highlight the
+    // press collapsed: tools launched from the detail window use the table
+    // selection as their comparison sample, so letting the double-click
+    // reduce it to a single row would silently shrink that sample.
+    _rightClickedIndex = index;
+
+    if (_starTable->selectionModel() && !_selectionBeforePress.isEmpty()) {
+        bool doubleClickedInside = false;
+        for (const auto& range : _selectionBeforePress) {
+            if (range.contains(index)) {
+                doubleClickedInside = true;
+                break;
+            }
+        }
+        // Only restore when the star was part of that selection — clicking a
+        // row outside it is a deliberate move to a new single-row selection.
+        if (doubleClickedInside)
+            _starTable->selectionModel()->select(
+                _selectionBeforePress, QItemSelectionModel::ClearAndSelect);
     }
+
+    onShowDetailWindow();
 }
 
 void ProjectView::onAddStar()
@@ -657,34 +708,48 @@ void ProjectView::onComputeGalacticKinematics()
         return;
     }
 
-    auto stars = getSelectedStars();
-    if (stars.empty()) {
-        auto all = _currentProject->getAllStars();
-        if (all.empty()) {
-            QMessageBox::information(this, "Galactic Kinematics",
-                                     "There are no stars in the project.");
-            return;
-        }
-        const auto btn = QMessageBox::question(
-            this, "Galactic Kinematics",
-            QString("No stars selected. Compute the kinematics for all %1 "
-                    "stars in the project?")
-                .arg(all.size()),
-            QMessageBox::Yes | QMessageBox::No);
-        if (btn != QMessageBox::Yes)
-            return;
-        stars = std::move(all);
+    // ── which stars, and what to compute ────────────────────────────────────
+    // Everything below — including the EM population fit — runs on exactly
+    // the chosen sample.
+    auto allStars      = _currentProject->getAllStars();
+    auto filteredStars = getFilteredStars();
+    auto selectedStars = getSelectedStars();
+    if (allStars.empty()) {
+        QMessageBox::information(this, "Galactic Kinematics",
+                                 "There are no stars in the project.");
+        return;
     }
 
-    // ── what to compute ─────────────────────────────────────────────────────
     QDialog opts(this);
     opts.setWindowTitle("Galactic Kinematics");
     auto* form = new QVBoxLayout(&opts);
-    auto* info = new QLabel(
-        QString("%1 star%2 in the set.")
-            .arg(stars.size())
-            .arg(stars.size() != 1 ? "s" : ""));
-    form->addWidget(info);
+
+    auto* sampleRow = new QHBoxLayout;
+    auto* sampleCombo = new QComboBox(&opts);
+    sampleCombo->addItem(
+        QString("All project stars (%1)").arg(allStars.size()), 0);
+    sampleCombo->addItem(
+        QString("Filtered stars (%1)").arg(filteredStars.size()), 1);
+    sampleCombo->addItem(
+        QString("Selected stars (%1)").arg(selectedStars.size()), 2);
+    if (auto* comboModel =
+            qobject_cast<QStandardItemModel*>(sampleCombo->model())) {
+        if (filteredStars.empty())
+            comboModel->item(1)->setEnabled(false);
+        if (selectedStars.empty())
+            comboModel->item(2)->setEnabled(false);
+    }
+    // default to the current filter result; fall back when it is empty
+    sampleCombo->setCurrentIndex(!filteredStars.empty() ? 1
+                                 : !selectedStars.empty() ? 2
+                                                          : 0);
+    sampleCombo->setToolTip(
+        "The set that UVW/orbit parameters are computed for, and the set the\n"
+        "population mixture (EM) is fitted over.");
+    sampleRow->addWidget(new QLabel("Sample:", &opts));
+    sampleRow->addWidget(sampleCombo, 1);
+    form->addLayout(sampleRow);
+
     auto* cbUVW = new QCheckBox("UVW velocities && XYZ positions (MC error "
                                 "propagation)");
     cbUVW->setChecked(true);
@@ -693,13 +758,13 @@ void ProjectView::onComputeGalacticKinematics()
     cbOrbit->setChecked(true);
     auto* cbClassify = new QCheckBox(
         "Population classification: thin/thick disk, halo (EM fit over the "
-        "whole set)");
+        "selected sample)");
     cbClassify->setChecked(true);
     cbClassify->setToolTip(
         "Fits the mixing weights of the three-population Gaussian mixture\n"
-        "(Anguiano et al. 2020 velocity distributions) to all stars in the\n"
-        "set via expectation maximization and stores each star's membership\n"
-        "probabilities with Monte-Carlo uncertainties.\n"
+        "(Anguiano et al. 2020 velocity distributions) to the stars of the\n"
+        "chosen sample only, via expectation maximization, and stores each\n"
+        "star's membership probabilities with Monte-Carlo uncertainties.\n"
         "Overwrites imported P(thin/thick/halo) values.");
     form->addWidget(cbUVW);
     form->addWidget(cbOrbit);
@@ -715,6 +780,15 @@ void ProjectView::onComputeGalacticKinematics()
     const bool doOrbit    = cbOrbit->isChecked();
     const bool doClassify = cbClassify->isChecked();
     if (!doUVW && !doOrbit && !doClassify)
+        return;
+
+    std::vector<std::shared_ptr<Star>> stars;
+    switch (sampleCombo->currentData().toInt()) {
+    case 1:  stars = std::move(filteredStars); break;
+    case 2:  stars = std::move(selectedStars); break;
+    default: stars = std::move(allStars);      break;
+    }
+    if (stars.empty())
         return;
 
     // per-star steps count toward the progress; classification is one step
@@ -770,8 +844,10 @@ void ProjectView::onComputeGalacticKinematics()
         }
     }
 
-    // EM classification over the full set (uses stored UVW, so it also
-    // covers stars whose velocities were computed in an earlier run).
+    // EM classification over the chosen sample only — the mixing weights are
+    // fitted to exactly these stars, so the memberships are relative to the
+    // sample rather than to the whole project. Uses stored UVW, so it also
+    // covers stars whose velocities were computed in an earlier run.
     GalKin::PopulationFit fit;
     if (doClassify && !progress.wasCanceled()) {
         progress.setLabelText("Fitting population membership (EM)…");
@@ -919,7 +995,7 @@ void ProjectView::onShowDetailWindow()
     // Launch the detail window (WA_DeleteOnClose handles cleanup)
     StarDetailView* detailView = new StarDetailView(
         star, _controller->databaseManager(), _controller, _currentProject->getId());
-    detailView->setSelectedStars(getSelectedStars());
+    installSampleProviders(detailView);
     detailView->show();
     detailView->raise();
     detailView->activateWindow();
@@ -975,19 +1051,8 @@ void ProjectView::onCreatePlot()
 
     std::vector<std::shared_ptr<Star>> allStars = _currentProject->getAllStars();
 
-    // Stars currently visible through the filter proxy
-    std::vector<std::shared_ptr<Star>> filteredStars;
-    if (_proxyModel && _tableModel) {
-        filteredStars.reserve(_proxyModel->rowCount());
-        for (int r = 0; r < _proxyModel->rowCount(); ++r) {
-            QModelIndex src = _proxyModel->mapToSource(_proxyModel->index(r, 0));
-            if (auto star = _tableModel->getStarAtRow(src.row()))
-                filteredStars.push_back(star);
-        }
-    }
-
     auto* dialog = new ProjectPlotDialog(std::move(allStars),
-                                         std::move(filteredStars),
+                                         getFilteredStars(),
                                          getSelectedStars(),
                                          this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
@@ -1001,7 +1066,7 @@ void ProjectView::onCreatePlot()
                 auto* detailView = new StarDetailView(
                     star, _controller->databaseManager(), _controller,
                     _currentProject->getId());
-                detailView->setSelectedStars(getSelectedStars());
+                installSampleProviders(detailView);
                 detailView->show();
                 detailView->raise();
                 detailView->activateWindow();
@@ -1362,7 +1427,16 @@ bool ProjectView::eventFilter(QObject* obj, QEvent* event)
             return true; // Consume the event so it doesn't scroll vertically
         }
     }
-    
+
+    // Remember the selection as it stood before the press. Qt clears a
+    // multi-row highlight on the first click of a double-click, so
+    // onStarDoubleClicked() restores this snapshot to keep the sample intact.
+    if (obj == _starTable->viewport() &&
+        event->type() == QEvent::MouseButtonPress &&
+        _starTable->selectionModel()) {
+        _selectionBeforePress = _starTable->selectionModel()->selection();
+    }
+
     // Pass all other events to the base class for normal processing
     return QWidget::eventFilter(obj, event);
 }

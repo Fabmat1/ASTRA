@@ -64,12 +64,14 @@ QString fmtDist(const ValueDist& d, int prec, const QString& unit)
 GalacticOrbitDialog::GalacticOrbitDialog(
     std::shared_ptr<Star> star, DatabaseManager* dbm, const QString& projectId,
     std::vector<std::shared_ptr<Star>> projectStars,
+    std::vector<std::shared_ptr<Star>> filteredStars,
     std::vector<std::shared_ptr<Star>> selectedStars, QWidget* parent)
     : QDialog(parent)
     , _star(star)
     , _dbm(dbm)
     , _projectId(projectId)
     , _projectStars(std::move(projectStars))
+    , _filteredStars(std::move(filteredStars))
     , _selectedStars(std::move(selectedStars))
 {
     setupUi();
@@ -296,19 +298,28 @@ void GalacticOrbitDialog::setupUi()
     _popDiagramCombo->addItem("J_z – e", int(GalKin::Diagram::JzE));
     _popSampleCombo = new QComboBox;
     _popSampleCombo->addItem(
-        QString("All project stars (%1)").arg(_projectStars.size()));
+        QString("All project stars (%1)").arg(_projectStars.size()),
+        int(Sample::AllProject));
     _popSampleCombo->addItem(
-        QString("Selected stars (%1)").arg(_selectedStars.size()));
-    if (_selectedStars.empty()) {
-        auto* model =
-            qobject_cast<QStandardItemModel*>(_popSampleCombo->model());
-        if (model)
+        QString("Filtered stars (%1)").arg(_filteredStars.size()),
+        int(Sample::Filtered));
+    _popSampleCombo->addItem(
+        QString("Selected stars (%1)").arg(_selectedStars.size()),
+        int(Sample::Selected));
+    // empty samples stay visible but unselectable, so the counts still tell
+    // the user why an option is unavailable
+    if (auto* model =
+            qobject_cast<QStandardItemModel*>(_popSampleCombo->model())) {
+        if (_filteredStars.empty())
             model->item(1)->setEnabled(false);
+        if (_selectedStars.empty())
+            model->item(2)->setEnabled(false);
     }
     _popSampleCombo->setToolTip(
         "Comparison sample: the population mixture (EM) is fitted to these\n"
         "stars together with the current star, and they are shown in the\n"
-        "diagrams.");
+        "diagrams. \"Filtered\" and \"Selected\" are the project table's\n"
+        "current filter result and row selection.");
     _popErrorBarsCb = new QCheckBox("Error bars");
     _popErrorBarsCb->setChecked(true);
     popRow->addWidget(new QLabel("Diagram:"));
@@ -1423,14 +1434,34 @@ DiagPoint velocityDiagPoint(GalKin::Diagram dia, double U, double eU,
 
 } // namespace
 
+const std::vector<std::shared_ptr<Star>>&
+GalacticOrbitDialog::currentSampleBase() const
+{
+    const Sample s =
+        _popSampleCombo
+            ? Sample(_popSampleCombo->currentData().toInt())
+            : Sample::AllProject;
+    switch (s) {
+    case Sample::Filtered:
+        if (!_filteredStars.empty())
+            return _filteredStars;
+        break;
+    case Sample::Selected:
+        if (!_selectedStars.empty())
+            return _selectedStars;
+        break;
+    case Sample::AllProject:
+        break;
+    }
+    return _projectStars;
+}
+
 void GalacticOrbitDialog::runPopulationFit()
 {
     // assemble the comparison sample; the current star always participates
-    // in the EM fit and sits at the end of the list
-    const bool useSelected =
-        _popSampleCombo && _popSampleCombo->currentIndex() == 1 &&
-        !_selectedStars.empty();
-    const auto& base = useSelected ? _selectedStars : _projectStars;
+    // in the EM fit and sits at the end of the list, even when the chosen
+    // sample does not contain it
+    const auto& base = currentSampleBase();
 
     _popSample.clear();
     _popSample.reserve(base.size() + 1);

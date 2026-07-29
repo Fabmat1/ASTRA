@@ -3,6 +3,7 @@
 #include <QWidget>
 #include <QVector>
 #include <QPointer>
+#include <functional>
 #include <memory>
 #include <vector>
 
@@ -24,10 +25,16 @@ public:
                             QWidget* parent = nullptr);
     ~StarDetailView() override;
 
-    // Snapshot of the table selection at the time the window was opened;
-    // used as the comparison sample in the galactic orbit dialog.
-    void setSelectedStars(std::vector<std::shared_ptr<Star>> stars) {
-        _selectedStars = std::move(stars);
+    using StarSampleProvider = std::function<std::vector<std::shared_ptr<Star>>()>;
+
+    // Providers for the project table's current selection / filter result.
+    // They are invoked lazily each time a tool needs the sample (rather than
+    // snapshotted here), so changing the table selection or filter while this
+    // window stays open is picked up by the galactic orbit dialog.
+    void setSampleProviders(StarSampleProvider selected,
+                            StarSampleProvider filtered) {
+        _selectedProvider = std::move(selected);
+        _filteredProvider = std::move(filtered);
     }
 
 protected:
@@ -60,7 +67,8 @@ private:
     DatabaseManager*       _dbm = nullptr;
     ApplicationController* _controller = nullptr;
     QString                _projectId;
-    std::vector<std::shared_ptr<Star>> _selectedStars;
+    StarSampleProvider     _selectedProvider;
+    StarSampleProvider     _filteredProvider;
 
     // Grid container
     QWidget*              _gridHost   = nullptr;

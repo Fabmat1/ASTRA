@@ -40,12 +40,14 @@ class GalacticOrbitDialog : public QDialog
     Q_OBJECT
 
 public:
-    // 'projectStars'/'selectedStars' provide the comparison sample for the
-    // population classification and diagrams (either may be empty).
+    // 'projectStars'/'filteredStars'/'selectedStars' are the samples offered
+    // in the population tab's Sample dropdown; the EM fit and the diagrams
+    // use whichever is chosen (any of them may be empty).
     explicit GalacticOrbitDialog(
         std::shared_ptr<Star> star, DatabaseManager* dbm = nullptr,
         const QString& projectId = QString(),
         std::vector<std::shared_ptr<Star>> projectStars = {},
+        std::vector<std::shared_ptr<Star>> filteredStars = {},
         std::vector<std::shared_ptr<Star>> selectedStars = {},
         QWidget* parent = nullptr);
     ~GalacticOrbitDialog() override;
@@ -81,6 +83,11 @@ private:
     void runPopulationFit();
     void applyPlotTheme();
 
+    // comparison sample offered in the population tab; the combo carries
+    // these as item data
+    enum class Sample { AllProject = 0, Filtered = 1, Selected = 2 };
+    const std::vector<std::shared_ptr<Star>>& currentSampleBase() const;
+
     // quantity extraction for the 2D plot axis combos
     enum class Quantity { T, X, Y, Z, Rho, R, VX, VY, VZ, VTot, Energy, Lz };
     static QVector<double> extract(const GalKin::Trajectory& tr, Quantity q);
@@ -90,6 +97,7 @@ private:
     DatabaseManager*      _dbm = nullptr;
     QString               _projectId;
     std::vector<std::shared_ptr<Star>> _projectStars;
+    std::vector<std::shared_ptr<Star>> _filteredStars;
     std::vector<std::shared_ptr<Star>> _selectedStars;
 
     // inputs

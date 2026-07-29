@@ -360,9 +360,18 @@ void StarDetailView::onCalculateOrbit()
         if (auto proj = _controller->getCurrentProject())
             projectStars = proj->getAllStars();
     }
+    // Re-read the table samples now, so the dialog offers what is currently
+    // highlighted / filtered rather than the state at window-open time.
+    std::vector<std::shared_ptr<Star>> filteredStars, selectedStars;
+    if (_filteredProvider)
+        filteredStars = _filteredProvider();
+    if (_selectedProvider)
+        selectedStars = _selectedProvider();
+
     auto* dialog = new GalacticOrbitDialog(_star, _dbm, _projectId,
                                            std::move(projectStars),
-                                           _selectedStars, this);
+                                           std::move(filteredStars),
+                                           std::move(selectedStars), this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
 
     connect(dialog, &GalacticOrbitDialog::kinematicsSaved, this, [this]() {

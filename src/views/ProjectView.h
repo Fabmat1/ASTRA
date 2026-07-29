@@ -3,6 +3,7 @@
 
 #include <QWidget>
 #include <QAbstractTableModel>
+#include <QItemSelection>
 #include <QTimer>
 #include <QPainter>
 #include <memory>
@@ -23,6 +24,7 @@ class StarTableModel;
 class StarFilterProxyModel;
 class StarFilterWidget;
 class Star;
+class StarDetailView;
 class BooleanColumnDelegate;
 class QDragEnterEvent;
 class QDropEvent;
@@ -173,6 +175,13 @@ public:
     void populateCopyToProjectMenu(QMenu* menu);
     void populateMoveToProjectMenu(QMenu* menu);
 
+    // Live star samples of the table. Queried whenever a tool needs to offer
+    // "all / filtered / selected" as a comparison sample, so the lists always
+    // reflect the table's current state rather than a stale snapshot.
+    std::vector<std::shared_ptr<Star>> getSelectedStars() const;
+    // Stars currently visible through the filter proxy, in view order.
+    std::vector<std::shared_ptr<Star>> getFilteredStars() const;
+
   public slots:
     void onAddStar();
     void onImportStars();
@@ -203,8 +212,12 @@ protected:
 private:
     void setupUi();
     void setupContextMenus();
-    std::vector<std::shared_ptr<Star>> getSelectedStars() const;
     QModelIndex mapToSource(const QModelIndex& proxyIndex) const;
+
+    // Hands the detail window lazy accessors to this table's selection and
+    // filter result. The detail window can outlive the project view, so the
+    // callbacks guard themselves against a destroyed ProjectView.
+    void installSampleProviders(StarDetailView* detailView);
 
     void populateTargetProjectMenu(QMenu* menu, bool move);
     void copySelectedToProject(std::shared_ptr<Project> target);
@@ -236,6 +249,12 @@ private:
 
     QModelIndex _rightClickedIndex;
     BooleanColumnDelegate* _boolDelegate = nullptr;
+
+    // Selection as it stood just before the last mouse press on the table.
+    // Qt collapses a multi-row highlight on press, i.e. before doubleClicked()
+    // fires, so opening a star by double-click would otherwise destroy the
+    // selection that tools use as their comparison sample.
+    QItemSelection _selectionBeforePress;
 
     void applyColumns(const std::vector<QString>& columns);
     void updateBoolDelegate();
