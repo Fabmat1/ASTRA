@@ -263,14 +263,13 @@ bool PeriodogramPanel::suggestAutoBounds(double& minP, double& maxP) const
         if (!isSeriesEnabled(makeKey(s.source, s.filter))) continue;
         tBySrc[s.source] += s.t;
     }
-    static constexpr double kMinAllowedPeriod = 0.01;   // TODO: make this changeable via settings
-
     minP = 0.0; maxP = 0.0;
     bool any = false;
     for (auto it = tBySrc.constBegin(); it != tBySrc.constEnd(); ++it) {
         double mn = 0, mx = 0;
+        // Both bounds are auto here, so resolveAutoBounds() already applies
+        // Periodogram::kAutoMinPeriodFloor to what it derives.
         if (!Periodogram::resolveAutoBounds(it.value(), mn, mx)) continue;
-        mn = std::max(mn, kMinAllowedPeriod);           // floor per source
         if (mx <= mn) continue;
         if (!any) { minP = mn; maxP = mx; any = true; }
         else      { minP = std::min(minP, mn);
@@ -317,27 +316,37 @@ Periodogram::Grid PeriodogramPanel::currentGrid() const
     for (const auto& s : _series)
         if (isOn(s)) tBySrc[s.source] += s.t;
 
-    static constexpr double kMinAllowedPeriod = 0.01;   // TODO: make this changeable via settings
-
     double autoMinP = 0.0, autoMaxP = 0.0;
     bool any = false;
     for (auto it = tBySrc.constBegin(); it != tBySrc.constEnd(); ++it) {
         double mn = 0, mx = 0;
+        // resolveAutoBounds() floors what it derives at kAutoMinPeriodFloor.
         if (!Periodogram::resolveAutoBounds(it.value(), mn, mx)) continue;
-        mn = std::max(mn, kMinAllowedPeriod);
         if (mx <= mn) continue;
         if (!any) { autoMinP = mn; autoMaxP = mx; any = true; }
         else      { autoMinP = std::min(autoMinP, mn);
                     autoMaxP = std::max(autoMaxP, mx); }
     }
-    if (!any || autoMinP <= 0 || autoMaxP <= autoMinP) {
+
+    // Explicit bounds are taken verbatim - a deliberately short-period search
+    // (say 0.005-0.01 d) is legitimate and must not be clamped to the auto
+    // floor. Auto bounds are only needed for the fields left on "auto", so a
+    // fully-specified range works even when the data can't suggest one.
+    const bool needAuto = (_minPeriod <= 0) || (_maxPeriod <= 0);
+    if (needAuto && (!any || autoMinP <= 0 || autoMaxP <= autoMinP)) {
         LOG_WARNING("Periodogram", "Auto bounds failed (check selection / min pts)");
         return {};
     }
-    // Honor user override but clamp it too.
-    const double useMinP = std::max(kMinAllowedPeriod,
-                                    (_minPeriod > 0) ? _minPeriod : autoMinP);
+
+    const double useMinP = (_minPeriod > 0) ? _minPeriod : autoMinP;
     const double useMaxP = (_maxPeriod > 0) ? _maxPeriod : autoMaxP;
+    if (!(useMaxP > useMinP) || !(useMinP > 0.0)) {
+        LOG_WARNING("Periodogram",
+            QString("Period range invalid: Min P = %1 d, Max P = %2 d "
+                    "(need 0 < Min P < Max P)")
+                .arg(useMinP, 0, 'g', 6).arg(useMaxP, 0, 'g', 6));
+        return {};
+    }
 
     // If the user didn't pin N, pick the highest N across sources so the
     // shortest-cadence dataset drives resolution.

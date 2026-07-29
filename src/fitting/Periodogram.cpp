@@ -1,4 +1,5 @@
 #include "Periodogram.h"
+#include "utils/Logger.h"
 
 #include <algorithm>
 #include <cmath>
@@ -665,7 +666,6 @@ Grid generateOptimalGrid(const QVector<double>& t,
     Grid g;
     if (oversampling <= 0) oversampling = 5.0;
     if (!resolveAutoBounds(t, minPeriod, maxPeriod)) return g;
-    minPeriod = std::max(minPeriod, 0.01);
 
     QVector<double> ts = t;
     std::sort(ts.begin(), ts.end());
@@ -686,8 +686,18 @@ Grid generateOptimalGrid(const QVector<double>& t,
         constexpr double kMaxN = 5.0e7;   // 50M bins ≈ ~400 MB for power+freq doubles
         Nsamp = static_cast<int>(std::min(nReq, kMaxN));
         if (nReq > kMaxN) {
-            // Caller will see Nf=kMaxN; log so it's not silent.
-            // (Logger include needed if not present)
+            // The grid is then coarser than the requested oversampling, so
+            // narrow peaks can be stepped over - say so rather than silently
+            // returning an under-sampled grid.
+            LOG_WARNING("Periodogram",
+                QString("Optimal grid needs %1 bins for P=%2..%3 d at "
+                        "oversample %4; capped at %5. Effective oversampling "
+                        "is ~%6 - narrow it, or lower Oversample.")
+                    .arg(nReq, 0, 'g', 4)
+                    .arg(minPeriod, 0, 'g', 4).arg(maxPeriod, 0, 'g', 4)
+                    .arg(oversampling, 0, 'g', 3)
+                    .arg(kMaxN, 0, 'g', 3)
+                    .arg(oversampling * kMaxN / nReq, 0, 'g', 3));
         }
     }
     if (Nsamp < 2) return g;
@@ -911,9 +921,10 @@ bool resolveAutoBounds(const QVector<double>& t,
             if (d > 0.0 && d < minDiff) minDiff = d;
         }
         if (!std::isfinite(minDiff) || minDiff <= 0) return false;
-        minPeriod = 2.0 * minDiff;
+        // Only a derived bound gets floored; an explicit one is the user's call.
+        minPeriod = std::max(2.0 * minDiff, kAutoMinPeriodFloor);
     }
-    minPeriod = std::max(minPeriod, 0.01);
+    if (!(minPeriod > 0.0) || !std::isfinite(minPeriod)) return false;
     if (maxPeriod <= 0) maxPeriod = 0.5 * span;
     return maxPeriod > minPeriod;
 }

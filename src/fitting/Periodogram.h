@@ -40,6 +40,12 @@ enum class Backend {
 /// ~10 for general waveforms and ~20 for narrow eclipses.
 inline constexpr int kFPWDefaultBins = 10;
 
+/// Floor for a minimum period that had to be *derived from the data* (the
+/// caller passed 0 = "auto"). It exists only so that near-duplicate timestamps
+/// cannot produce an absurdly fine grid. A minimum period the user typed in is
+/// never clamped - asking for a 0.005 d search is legitimate.
+inline constexpr double kAutoMinPeriodFloor = 0.01;
+
 struct Result {
     QVector<double> frequency;   ///< 1/day if t is in days
     QVector<double> power;       ///< same length as frequency

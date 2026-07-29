@@ -1172,14 +1172,26 @@ void LightcurveFetchDialog::onOptimalClicked()
                                          _maxPSpin->value(),
                                          _nSampSpin->value(),
                                          _osSpin->value());
+    // Only the fields left on "auto" need a data-derived suggestion; if the
+    // user pinned both bounds (e.g. a deliberate 0.005-0.01 d search) we go
+    // straight to suggesting N for that range.
+    const bool needAuto = (_minPSpin->value() <= 0) || (_maxPSpin->value() <= 0);
     double mn = 0, mx = 0;
-    if (!_periodogramPanel->suggestAutoBounds(mn, mx)) {
+    if (needAuto && !_periodogramPanel->suggestAutoBounds(mn, mx)) {
         QMessageBox::warning(this, "Optimal",
             "Could not auto-resolve period bounds - check selection / min pts.");
         return;
     }
     if (_minPSpin->value() <= 0) _minPSpin->setValue(mn);
     if (_maxPSpin->value() <= 0) _maxPSpin->setValue(mx);
+
+    if (!(_maxPSpin->value() > _minPSpin->value())) {
+        QMessageBox::warning(this, "Optimal",
+            QString("Max P (%1 d) must be greater than Min P (%2 d).")
+                .arg(_maxPSpin->value(), 0, 'g', 6)
+                .arg(_minPSpin->value(), 0, 'g', 6));
+        return;
+    }
     _periodogramPanel->setGridParameters(_minPSpin->value(),
                                          _maxPSpin->value(),
                                          _nSampSpin->value(),
