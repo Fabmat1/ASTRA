@@ -26,6 +26,7 @@ class QSpinBox;
 class QLabel;
 class QRadioButton;
 class QVBoxLayout;
+class QFormLayout;
 
 class Star;
 class DatabaseManager;
@@ -76,6 +77,9 @@ private slots:
     void onNoneClicked();
     void onOptimalClicked();
     void onComputeClicked();
+    /// Push the algorithm dropdown / phase-bin count into the panel and show or
+    /// hide the FPW-only rows.
+    void onBackendChanged();
     void onPanelComputeFinished(bool cancelled);
 
     // Peaks
@@ -168,6 +172,9 @@ private slots:
     QVBoxLayout* _viewerMetaLayout  = nullptr;   // host for per-lightcurve info sections
 
     // Parameter controls (right column)
+    QFormLayout*    _pgParamForm  = nullptr;   // owns the FPW-only rows
+    QComboBox*      _backendCombo = nullptr;
+    QSpinBox*       _fpwBinsSpin  = nullptr;
     QDoubleSpinBox* _minPSpin    = nullptr;
     QDoubleSpinBox* _maxPSpin    = nullptr;
     QSpinBox*       _nSampSpin   = nullptr;

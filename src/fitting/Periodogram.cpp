@@ -20,6 +20,12 @@
 // Serialize all calls to it across worker threads.
 static QMutex& glsMutex() { static QMutex m; return m; }
 
+// fpw_fast IS reentrant, but the panel launches one QtConcurrent job per series
+// and each job opens an OpenMP team of its own. Letting several of those run at
+// once oversubscribes the machine badly; serializing instead gives every series
+// the full core count in turn, which is strictly faster in wall-clock terms.
+static QMutex& fpwMutex() { static QMutex m; return m; }
+
 namespace {
 
 using std::vector;
@@ -522,6 +528,128 @@ void gls_fast(const vector<double>& t_in,
     }
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Core FPW computation - Finkbeiner, Prince & Whitebook (2025),
+// arXiv:2502.00243.
+//
+//   S_FPW(f) = Σ_m ( Σ_{j∈m} w_j x_j )² / ( Σ_{j∈m} w_j )
+//
+// with w = 1/σ², x the weighted-mean-subtracted data and m running over the M
+// phase bins of the fold at frequency f. That is the Δχ² between a
+// piecewise-constant-in-phase source and a constant one (the α→∞ limit of the
+// paper's GP prior, as in the authors' reference code); the caller halves it to
+// land on the same scale as the GLS branch.
+//
+// `t` must already be shifted so min(t) == 0 - at raw BJD values t·f loses the
+// bits that carry the phase.
+// ──────────────────────────────────────────────────────────────────────
+
+// Phase is carried as a 0.64 fixed-point fraction in a uint64: advancing it is
+// a plain integer add whose overflow *is* the mod-1 wrap, so the inner loop
+// needs no floating-point compare and no branch.
+inline std::uint64_t phaseToFixed(double frac01)
+{
+    // Scaling by 2^63 rather than 2^64 keeps the conversion inside the range
+    // where double→uint64 is well defined. A double carries 53 mantissa bits,
+    // so the discarded low bit costs nothing.
+    return static_cast<std::uint64_t>(frac01 * 9223372036854775808.0) << 1;
+}
+
+// bin = floor(phase · M), evaluated as the high half of a widening multiply so
+// all 64 bits of the phase take part. That is one `mulx` on x86-64 - no more
+// expensive than truncating to 32 bits first, but it keeps the binning exact to
+// well beyond double precision, so a point never lands in a different bin than
+// the phase value says it should. The quotient is always in [0, M), so no
+// clamping is needed either (unlike a floating-point `(int)(phi*M)`).
+inline int fixedToBin(std::uint64_t ph, std::uint64_t M)
+{
+#if defined(__SIZEOF_INT128__)
+    return static_cast<int>(
+        (static_cast<unsigned __int128>(ph) * M) >> 64);
+#else
+    // Portable fallback: 32×32 partial products, same result.
+    const std::uint64_t hi = ph >> 32, lo = ph & 0xffffffffULL;
+    return static_cast<int>((((lo * M) >> 32) + hi * M) >> 32);
+#endif
+}
+
+void fpw_fast(const vector<double>& t,
+              const vector<double>& wy,   // w · (y - weighted mean)
+              const vector<double>& w,    // 1/σ²
+              double f0, double df, int Nf, int M,
+              double* output, Periodogram::Progress* progress)
+{
+    const int N = static_cast<int>(t.size());
+    const std::uint64_t Mu = static_cast<std::uint64_t>(M);
+
+    // Phase advance per frequency step. frac() is additive mod 1 and the grid
+    // is uniform, so this is the same at every step and is computed once.
+    vector<std::uint64_t> dph(N);
+    for (int j = 0; j < N; ++j) {
+        const double d = t[j] * df;
+        dph[j] = phaseToFixed(d - std::floor(d));
+    }
+
+    // The loop nest is blocked over frequency with the *point* loop outermost
+    // inside a block. That inverts the naive order and is what makes this
+    // usable at N ≳ 10^5: each point's t/wy/w/dph is read once per block rather
+    // than once per frequency, cutting streamed memory traffic by a factor B,
+    // and the B×M bin accumulators stay resident in L1 instead of the point
+    // arrays thrashing L2. B is sized so those accumulators fit in ~16 kB.
+    const int B = std::clamp(1024 / M, 8, 512);
+    const int nBlocks = (Nf + B - 1) / B;
+    const size_t stride = static_cast<size_t>(2 * M);
+
+    #pragma omp parallel
+    {
+        // [k][2m] = Σ w·x, [k][2m+1] = Σ w for block-relative frequency k.
+        // Interleaving the pair puts both halves of a bin update on one cache
+        // line.
+        vector<double> A(static_cast<size_t>(B) * stride);
+
+        #pragma omp for schedule(static)
+        for (int b = 0; b < nBlocks; ++b) {
+            if (progress && progress->cancelled()) continue;
+
+            const int i0 = b * B;
+            const int nk = std::min(B, Nf - i0);
+            std::fill_n(A.data(), static_cast<size_t>(nk) * stride, 0.0);
+
+            // Re-deriving the phase exactly at each block start also caps the
+            // drift of the running integer sum at ~B ulps of 2^-64.
+            const double fStart = f0 + i0 * df;
+            for (int j = 0; j < N; ++j) {
+                const double p = t[j] * fStart;
+                std::uint64_t ph = phaseToFixed(p - std::floor(p));
+                const std::uint64_t dp  = dph[j];
+                const double        wyj = wy[j];
+                const double        wj  = w[j];
+
+                double* a = A.data();
+                for (int k = 0; k < nk; ++k, a += stride) {
+                    const int m = fixedToBin(ph, Mu);
+                    a[2 * m]     += wyj;
+                    a[2 * m + 1] += wj;
+                    ph += dp;
+                }
+            }
+
+            for (int k = 0; k < nk; ++k) {
+                const double* a = A.data() + static_cast<size_t>(k) * stride;
+                // Empty bins contribute nothing; the reference implementation
+                // divides by zero here and yields NaN for sparse folds.
+                double dchi2 = 0.0;
+                for (int m = 0; m < M; ++m)
+                    if (a[2 * m + 1] > 0.0)
+                        dchi2 += a[2 * m] * a[2 * m] / a[2 * m + 1];
+                output[i0 + k] = 0.5 * dchi2;
+            }
+
+            if (progress) progress->advance(static_cast<quint64>(nk));
+        }
+    }
+}
+
 } // anonymous namespace
 
 // ══════════════════════════════════════════════════════════════════════
@@ -610,6 +738,88 @@ Result computeGLS(const QVector<double>& t,
 
     std::copy(out.begin(), out.end(), r.power.begin());
     return r;
+}
+
+Result computeFPW(const QVector<double>& t,
+                   const QVector<double>& y,
+                   const QVector<double>& dy,
+                   const Grid& grid,
+                   int nBins,
+                   Progress* progress)
+{
+    Result r;
+    if (!grid.isValid() || t.size() < 4 || t.size() != y.size()) return r;
+    if (progress && progress->cancelled()) return r;
+
+    const int n = t.size();
+    const int M = std::max(2, nBins);
+
+    // Inverse-variance weights; a missing or non-positive error is treated as
+    // σ=1, matching computeGLS().
+    std::vector<double> w(n, 1.0);
+    if (dy.size() == n) {
+        for (int i = 0; i < n; ++i) {
+            const double e = (dy[i] > 0.0) ? dy[i] : 1.0;
+            w[i] = 1.0 / (e * e);
+        }
+    }
+
+    double ws = 0.0, wys = 0.0;
+    for (int i = 0; i < n; ++i) { ws += w[i]; wys += w[i] * y[i]; }
+    if (!(ws > 0.0) || !std::isfinite(ws)) return r;
+    const double mean = wys / ws;
+
+    // Shifting to t0 keeps t·f small enough that its fractional part - the only
+    // thing FPW looks at - retains full double precision at BJD timestamps.
+    const double t0 = *std::min_element(t.constBegin(), t.constEnd());
+
+    std::vector<double> ts(n), wy(n);
+    for (int i = 0; i < n; ++i) {
+        ts[i] = t[i] - t0;
+        wy[i] = w[i] * (y[i] - mean);
+    }
+
+    r.grid    = grid;
+    r.nPoints = n;
+    r.frequency.resize(grid.Nf);
+    r.power.resize(grid.Nf);
+    for (int i = 0; i < grid.Nf; ++i)
+        r.frequency[i] = grid.f0 + i * grid.df;
+
+    std::vector<double> out(grid.Nf, 0.0);
+    {
+        QMutexLocker lock(&fpwMutex());
+        fpw_fast(ts, wy, w, grid.f0, grid.df, grid.Nf, M, out.data(), progress);
+    }
+
+    // A cancelled run leaves the tail of `out` unwritten - report nothing
+    // rather than a half-filled periodogram.
+    if (progress && progress->cancelled()) return Result{};
+
+    std::copy(out.begin(), out.end(), r.power.begin());
+    return r;
+}
+
+Result compute(Backend backend,
+                const QVector<double>& t,
+                const QVector<double>& y,
+                const QVector<double>& dy,
+                const Grid& grid,
+                int nBins,
+                Progress* progress)
+{
+    if (progress && progress->cancelled()) return Result{};
+    switch (backend) {
+        case Backend::FPW: return computeFPW(t, y, dy, grid, nBins, progress);
+        case Backend::LombScargle: break;
+    }
+    return computeGLS(t, y, dy, grid);
+}
+
+quint64 progressUnits(Backend backend, const Grid& grid)
+{
+    return (backend == Backend::FPW && grid.isValid())
+               ? static_cast<quint64>(grid.Nf) : 0;
 }
 
 Result weightedSum(const QList<Result>& parts, const QString& label)
@@ -729,9 +939,17 @@ quint64 hashData(const QVector<double>& t,
     return h;
 }
 
-quint64 hashGrid(const Grid& g)
+quint64 hashGrid(const Grid& g, Backend backend, int nBins)
 {
-    const double buf[3] = { g.f0, g.df, static_cast<double>(g.Nf) };
+    // GLS keeps the original 3-double layout so periodograms cached before the
+    // backend became selectable are not spuriously invalidated.
+    if (backend == Backend::LombScargle) {
+        const double buf[3] = { g.f0, g.df, static_cast<double>(g.Nf) };
+        return fnv1a64(buf, sizeof(buf));
+    }
+    const double buf[5] = { g.f0, g.df, static_cast<double>(g.Nf),
+                            static_cast<double>(static_cast<int>(backend)),
+                            static_cast<double>(nBins) };
     return fnv1a64(buf, sizeof(buf));
 }
 

@@ -247,6 +247,12 @@ void PeriodogramPanel::setGridParameters(double minP, double maxP, int nS, doubl
     _oversample = (os > 0.0) ? os : _oversample;
 }
 
+void PeriodogramPanel::setBackend(Periodogram::Backend b, int fpwBins)
+{
+    _backend = b;
+    _fpwBins = std::max(2, fpwBins);
+}
+
 bool PeriodogramPanel::suggestAutoBounds(double& minP, double& maxP) const
 {
     // Resolve bounds per source (aggregating its filters), then take the most
@@ -384,7 +390,7 @@ void PeriodogramPanel::computeAll(bool force)
         LOG_WARNING("Periodogram", "Grid invalid; aborting compute");
         return;
     }
-    const quint64 gh = Periodogram::hashGrid(grid);
+    const quint64 gh = Periodogram::hashGrid(grid, _backend, _fpwBins);
 
     if (force) {
         _perSeries.clear();
@@ -416,13 +422,38 @@ void PeriodogramPanel::computeAll(bool force)
 
     _cancelRequested = false;
     _jobsRemaining   = todo.size();
-    _progress->setRange(0, todo.size());
+
+    // A backend that reports per-frequency-block progress lets the bar move
+    // during a single long series instead of jumping once per series. The bar
+    // is then driven in permille by pollProgress() rather than by job count.
+    _progressCh = std::make_shared<Periodogram::Progress>();
+    const quint64 perSeriesUnits = Periodogram::progressUnits(_backend, grid);
+    _progressCh->total.store(perSeriesUnits * static_cast<quint64>(todo.size()));
+    _fineProgress = (perSeriesUnits > 0);
+
+    _progress->setRange(0, _fineProgress ? 1000 : todo.size());
     _progress->setValue(0);
     _progress->setVisible(true);
     _cancelBtn->setVisible(true);
     setShimmerVisible(true);
 
-    const QString msg = QString("Computing %1 series…").arg(todo.size());
+    if (_fineProgress) {
+        if (!_progressPoll) {
+            _progressPoll = new QTimer(this);
+            _progressPoll->setInterval(100);
+            connect(_progressPoll, &QTimer::timeout,
+                    this, &PeriodogramPanel::pollProgress);
+        }
+        _progressPoll->start();
+    } else if (_progressPoll) {
+        _progressPoll->stop();
+    }
+
+    const QString msg = QString("Computing %1 series (%2)…")
+                            .arg(todo.size())
+                            .arg(_backend == Periodogram::Backend::FPW
+                                     ? QString("FPW, %1 bins").arg(_fpwBins)
+                                     : QStringLiteral("Lomb-Scargle"));
     _statusLabel->setText(msg);
     emit statusMessage(msg);
     emit computeStarted(todo.size());
@@ -447,9 +478,13 @@ void PeriodogramPanel::computeAll(bool force)
         const quint64 dh = Periodogram::hashData(t, y, e);
         _cachedTags.insert(key, { dh, gh });
 
+        const auto backend  = _backend;
+        const int  bins     = _fpwBins;
+        const auto progress = _progressCh;   // keeps the channel alive
         job.watcher->setFuture(QtConcurrent::run(
-            [t, y, e, grid, key]() {
-                auto r = Periodogram::computeGLS(t, y, e, grid);
+            [t, y, e, grid, key, backend, bins, progress]() {
+                auto r = Periodogram::compute(backend, t, y, e, grid, bins,
+                                              progress.get());
                 r.label = key;
                 return r;
             }));
@@ -467,12 +502,22 @@ void PeriodogramPanel::onSeriesComputed(int finishedIndex)
             job.watcher = nullptr;
         }
         --_jobsRemaining;
-        _progress->setValue(_progress->maximum() - _jobsRemaining);
-        emit computeProgress(_progress->maximum() - _jobsRemaining, _progress->maximum());
+        // With fine progress the timer owns the bar; stepping it per series
+        // here would make it jump backwards between polls.
+        if (_fineProgress) {
+            pollProgress();
+        } else {
+            _progress->setValue(_progress->maximum() - _jobsRemaining);
+            emit computeProgress(_progress->maximum() - _jobsRemaining,
+                                 _progress->maximum());
+        }
         if (_jobsRemaining > 0) return;
     }
 
     _jobs.clear();
+    if (_progressPoll) _progressPoll->stop();
+    _fineProgress = false;
+    _progressCh.reset();
     _progress->setVisible(false);
     _cancelBtn->setVisible(false);
 
@@ -491,10 +536,27 @@ void PeriodogramPanel::onSeriesComputed(int finishedIndex)
     rebuildAndReplotAsync(/*persistAfter=*/true);
 }
 
+void PeriodogramPanel::pollProgress()
+{
+    if (!_progressCh || !_fineProgress) return;
+    const quint64 total = _progressCh->total.load(std::memory_order_relaxed);
+    if (total == 0) return;
+    const quint64 done = std::min(
+        _progressCh->done.load(std::memory_order_relaxed), total);
+
+    const int permille = static_cast<int>((done * 1000) / total);
+    if (permille == _progress->value()) return;
+    _progress->setValue(permille);
+    emit computeProgress(permille, 1000);
+}
+
 void PeriodogramPanel::cancelCompute()
 {
     if (_jobsRemaining <= 0) return;
     _cancelRequested = true;
+    // QtConcurrent::run() futures ignore cancel(), so the cooperative flag is
+    // what actually stops a running computation rather than just discarding it.
+    if (_progressCh) _progressCh->requestCancel();
     for (auto& job : _jobs)
         if (job.watcher) job.watcher->cancel();
 }
@@ -1176,7 +1238,7 @@ void PeriodogramPanel::persistToCache()
         r->filter     = s.filter;
         r->result     = *it;
         r->dataHash   = Periodogram::hashData(s.t, s.y, s.e);
-        r->gridHash   = Periodogram::hashGrid(it->grid);
+        r->gridHash   = Periodogram::hashGrid(it->grid, _backend, _fpwBins);
         r->computedAt = QDateTime::currentDateTime();
         recs.push_back(r);
         _cachedTags.insert(k, { r->dataHash, r->gridHash });
@@ -1195,6 +1257,8 @@ void PeriodogramPanel::persistToCacheAsync()
     const QString                            starId    = _starId;
     const QList<Series>                      series    = _series;
     const QHash<QString,Periodogram::Result> perSeries = _perSeries;
+    const Periodogram::Backend               backend   = _backend;
+    const int                                bins      = _fpwBins;
 
     // Refresh the in-memory cache tags synchronously so a subsequent compute can
     // tell its results are already cached without waiting for the disk write.
@@ -1203,10 +1267,10 @@ void PeriodogramPanel::persistToCacheAsync()
         auto it = _perSeries.constFind(k);
         if (it == _perSeries.constEnd() || !it->isValid()) continue;
         _cachedTags.insert(k, { Periodogram::hashData(s.t, s.y, s.e),
-                                Periodogram::hashGrid(it->grid) });
+                                Periodogram::hashGrid(it->grid, backend, bins) });
     }
 
-    auto future = QtConcurrent::run([dbm, starId, series, perSeries]() {
+    auto future = QtConcurrent::run([dbm, starId, series, perSeries, backend, bins]() {
         std::vector<std::shared_ptr<PeriodogramRecord>> recs;
         recs.reserve(perSeries.size());
         for (const auto& s : series) {
@@ -1218,7 +1282,7 @@ void PeriodogramPanel::persistToCacheAsync()
             r->filter     = s.filter;
             r->result     = *it;
             r->dataHash   = Periodogram::hashData(s.t, s.y, s.e);
-            r->gridHash   = Periodogram::hashGrid(it->grid);
+            r->gridHash   = Periodogram::hashGrid(it->grid, backend, bins);
             r->computedAt = QDateTime::currentDateTime();
             recs.push_back(r);
         }

@@ -5,6 +5,7 @@
 #include <QList>
 #include <QStringList>
 #include <QFutureWatcher>
+#include <memory>
 #include "fitting/Periodogram.h"
 
 class QPushButton;
@@ -15,6 +16,7 @@ class QVBoxLayout;
 class QScrollArea;
 class QCustomPlot;
 class QProgressBar;
+class QTimer;
 class DatabaseManager;
 class ShimmerWidget;
 
@@ -83,6 +85,13 @@ public:
     int    nSamples()   const { return _nSamples;  }
     double oversample() const { return _oversample; }
 
+    // ── Algorithm selection ──────────────────────────────────────────
+    /// `fpwBins` is only consulted by the FPW backend.
+    void setBackend(Periodogram::Backend b,
+                    int fpwBins = Periodogram::kFPWDefaultBins);
+    Periodogram::Backend backend() const { return _backend; }
+    int                  fpwBins() const { return _fpwBins; }
+
     /// Resolve auto bounds for the currently-enabled / eligible series.
     /// Returns false if it can't make a sane suggestion.
     bool   suggestAutoBounds(double& minP, double& maxP) const;
@@ -136,6 +145,9 @@ signals:
     void statusMessage(const QString& msg);
 
     void computeStarted(int totalJobs);
+    /// Progress in opaque units - only the done/total ratio is meaningful. It
+    /// counts finished series for backends that report on completion only, and
+    /// finished frequency blocks for those that report continuously (FPW).
     void computeProgress(int done, int total);
     void computeFinished(bool cancelled);
 
@@ -146,6 +158,9 @@ private slots:
     void onResetZoom();
     void onXAxisChanged(int idx);
     void onSeriesComputed(int finishedIndex);
+    /// Samples the shared Progress channel for backends that report sub-series
+    /// progress, so the bar moves during a single long computation.
+    void pollProgress();
 
 protected:
     void resizeEvent(QResizeEvent* e) override;
@@ -245,6 +260,9 @@ private:
     int    _nSamples   = 0;
     double _oversample = 20.0;
 
+    Periodogram::Backend _backend = Periodogram::Backend::LombScargle;
+    int                  _fpwBins = Periodogram::kFPWDefaultBins;
+
     struct Job {
         QString key, source, filter;
         QFutureWatcher<Periodogram::Result>* watcher = nullptr;
@@ -252,6 +270,13 @@ private:
     QList<Job> _jobs;
     int        _jobsRemaining   = 0;
     bool       _cancelRequested = false;
+
+    // Shared with the worker threads of the current batch: they bump `done` and
+    // poll `cancel`, a timer on this thread samples it. A fresh channel is made
+    // per batch so workers outliving a cancelled batch cannot touch the new one.
+    std::shared_ptr<Periodogram::Progress> _progressCh;
+    QTimer* _progressPoll  = nullptr;
+    bool    _fineProgress  = false;   ///< backend reports sub-series progress
 
     int _minPts = 50;
     QHash<QString, bool> _userEnabled;

@@ -840,6 +840,40 @@ QWidget* LightcurveFetchDialog::buildPeriodogramControls()
     auto* paramBox  = new QGroupBox("Periodogram parameters");
     auto* paramForm = new QFormLayout(paramBox);
     paramForm->setLabelAlignment(Qt::AlignRight);
+    _pgParamForm = paramForm;
+
+    _backendCombo = new QComboBox;
+    _backendCombo->addItem("Lomb-Scargle (GLS)",
+                           static_cast<int>(Periodogram::Backend::LombScargle));
+    _backendCombo->addItem("FPW (phase-binned)",
+                           static_cast<int>(Periodogram::Backend::FPW));
+    _backendCombo->setToolTip(
+        "Lomb-Scargle fits a sinusoid at every trial frequency - best for smooth,\n"
+        "near-sinusoidal variability.\n\n"
+        "FPW (Finkbeiner, Prince & Whitebook 2025, arXiv:2502.00243) folds the\n"
+        "data into phase bins and scores the Δχ² of a piecewise-constant model.\n"
+        "It makes no assumption about the folded waveform, so eclipses and other\n"
+        "sharp features are recovered much better.\n\n"
+        "Cost is O(N_freq·N_data) with no FFT shortcut: faster than Lomb-Scargle\n"
+        "for sparse series (≲2000 points) but noticeably slower for dense ones\n"
+        "such as full TESS 2-min cadence.");
+    paramForm->addRow("Method:", _backendCombo);
+
+    _fpwBinsSpin = new QSpinBox;
+    _fpwBinsSpin->setRange(2, 1000);
+    _fpwBinsSpin->setValue(Periodogram::kFPWDefaultBins);
+    _fpwBinsSpin->setToolTip(
+        "Number of phase bins FPW folds into.\n"
+        "≈4-5 for sinusoids, ≈10 for general waveforms, ≈20 for narrow eclipses\n"
+        "(a duty cycle down to ~1/M of the period is resolvable).\n\n"
+        "More bins resolve finer structure but also demand a finer frequency\n"
+        "grid - raise Oversample alongside it.");
+    paramForm->addRow("Phase bins:", _fpwBinsSpin);
+
+    connect(_backendCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &LightcurveFetchDialog::onBackendChanged);
+    connect(_fpwBinsSpin, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &LightcurveFetchDialog::onBackendChanged);
 
     _minPSpin = new PreciseDoubleSpinBox; // 15-sig-fig, paste-friendly
     _minPSpin->setRange(0.0, 1e9);
@@ -875,6 +909,8 @@ QWidget* LightcurveFetchDialog::buildPeriodogramControls()
     connect(_computeBtn, &QPushButton::clicked, this, &LightcurveFetchDialog::onComputeClicked);
     paramBtnRow->addWidget(_computeBtn);
     paramForm->addRow(paramBtnRow);
+
+    onBackendChanged();   // hides the FPW rows for the default GLS backend
 
     vlay->addWidget(paramBox);
 
@@ -1152,9 +1188,26 @@ void LightcurveFetchDialog::onOptimalClicked()
     if (nf > 0) _nSampSpin->setValue(nf);
 }
 
+void LightcurveFetchDialog::onBackendChanged()
+{
+    if (!_backendCombo) return;
+    const auto backend = static_cast<Periodogram::Backend>(
+        _backendCombo->currentData().toInt());
+    const bool isFpw = (backend == Periodogram::Backend::FPW);
+
+    if (_pgParamForm && _fpwBinsSpin)
+        _pgParamForm->setRowVisible(_fpwBinsSpin, isFpw);
+
+    if (_periodogramPanel)
+        _periodogramPanel->setBackend(backend,
+                                      _fpwBinsSpin ? _fpwBinsSpin->value()
+                                                   : Periodogram::kFPWDefaultBins);
+}
+
 void LightcurveFetchDialog::onComputeClicked()
 {
     if (!_periodogramPanel) return;
+    onBackendChanged();
     _periodogramPanel->setGridParameters(_minPSpin->value(),
                                          _maxPSpin->value(),
                                          _nSampSpin->value(),
