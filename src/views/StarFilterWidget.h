@@ -7,6 +7,7 @@
 #include <QVariant>
 #include <QString>
 #include <QSortFilterProxyModel>
+#include <QRegularExpression>
 #include <functional>
 #include <memory>
 #include <QDate>
@@ -50,7 +51,11 @@ struct FilterCondition
         Expression
     };
 
-    QString columnKey;   // internal column key (Star field map); empty for Expression
+    // Pseudo-column key selecting the star's bibcode list instead of a field.
+    static const QString kReferencesKey;
+
+    QString columnKey;   // internal column key (Star field map); empty for
+                         // Expression, kReferencesKey for the bibcode list
     Operator op = Contains;
     QVariant value1;     // literal, arithmetic expression, or (for Expression)
                          // the full comparison text
@@ -60,6 +65,12 @@ struct FilterCondition
     // Compiled expressions; filled by compile()
     std::shared_ptr<const FilterExpression> expr1;
     std::shared_ptr<const FilterExpression> expr2;
+
+    // Precomputed by compile() so per-row evaluation allocates nothing:
+    // the trimmed literal and, for MatchesRegex, the compiled pattern.
+    QString             literal;
+    QRegularExpression  regex;
+    bool                regexValid = true;
 
     bool isNumericOperator() const {
         return op == GreaterThan || op == GreaterEqual || op == LessThan
@@ -72,7 +83,11 @@ struct FilterCondition
 
     bool isExpression() const { return op == Expression; }
 
-    // Parses value1/value2 into expr1/expr2 where the operator requires it.
+    // True for conditions matching against the star's reference list.
+    bool isReference() const { return columnKey == kReferencesKey; }
+
+    // Parses value1/value2 into expr1/expr2 where the operator requires it,
+    // and precomputes the literal / regex used by evaluate().
     // Returns a human-readable error, or an empty string on success.
     QString compile();
 
@@ -83,12 +98,21 @@ struct FilterCondition
     bool evaluate(const QVariant& cellValue,
                   const FilterExpression::ColumnResolver& resolver) const;
 
+    // Reference (bibcode) matching. Set semantics: the positive operators
+    // accept when any bibcode matches, the negated ones when none does.
+    bool evaluateReferences(const std::vector<QString>& bibcodes) const;
+
     static QStringList textOperatorNames();
     static QStringList numericOperatorNames();
     static QStringList booleanOperatorNames();
     static QStringList universalOperatorNames();
+    static QStringList referenceOperatorNames();
+    static QStringList referenceUniversalOperatorNames();
     static Operator operatorFromName(const QString& name);
     static QString operatorToName(Operator op);
+    // Reference operators share the Operator enum but have their own labels.
+    static Operator referenceOperatorFromName(const QString& name);
+    static QString referenceOperatorToName(Operator op);
 };
 
 struct ObservabilityFilterSpec

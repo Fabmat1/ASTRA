@@ -381,7 +381,7 @@ public:
     void    setPhotPeaksJson(const QString& j) { _photPeaksJson = j; }
 
     // Metadata
-    std::vector<QString> getBibcodes() const { return _bibcodes; }
+    const std::vector<QString>& getBibcodes() const { return _bibcodes; }
     void setBibcodes(const std::vector<QString>& bibcodes) { _bibcodes = bibcodes; }
     void addBibcode(const QString& bibcode) { _bibcodes.push_back(bibcode); }
 

@@ -54,7 +54,17 @@ const char* kNumericValueHelp =
     "Number or arithmetic expression over columns,\n"
     "e.g.:  5 * e_plx   or   {ΔRV max}/2 - 200";
 
+const char* kReferenceHelp =
+    "Match against the star's reference list (ADS bibcodes), e.g.:\n"
+    "    2021A&A...650A..67G\n\n"
+    "has / has not          exact bibcode (case-insensitive)\n"
+    "any / none containing  substring, e.g. 2021A&A to catch a journal-year\n"
+    "any matching regex     e.g. ^20(19|2[0-9])  for 2019 and later\n"
+    "has no references      stars without any reference at all";
+
 } // namespace
+
+const QString FilterCondition::kReferencesKey = QStringLiteral("<references>");
 
 // =============================================================================
 // FilterCondition
@@ -65,6 +75,25 @@ QString FilterCondition::compile()
     expr1.reset();
     expr2.reset();
     QString err;
+
+    // Literal / pattern used by the text and reference operators. Precomputing
+    // them here keeps filterAcceptsRow() free of per-row string work.
+    literal = value1.toString().trimmed();
+    regexValid = true;
+    if (op == MatchesRegex) {
+        regex.setPattern(literal);
+        regex.setPatternOptions(QRegularExpression::CaseInsensitiveOption);
+        regexValid = regex.isValid();
+        if (!regexValid)
+            return QStringLiteral("Invalid regular expression: %1")
+                       .arg(regex.errorString());
+        regex.optimize();
+    } else {
+        regex = QRegularExpression();
+    }
+
+    if (isReference())
+        return QString();   // reference operators need no further compilation
 
     if (op == Expression) {
         const QString text = value1.toString().trimmed();
@@ -103,8 +132,14 @@ QString FilterCondition::compile()
 
 bool FilterCondition::isValid() const
 {
+    if (op == MatchesRegex && !regexValid)
+        return false;   // still being typed → don't filter everything away
     if (op == Expression)
         return expr1 && expr1->hasComparison();
+    if (isReference()) {
+        if (op == IsEmpty || op == IsNotEmpty) return true;
+        return !literal.isEmpty();
+    }
     if (isNumericOperator()) {
         if (!expr1) return false;
         if (op == Between && !expr2) return false;
@@ -194,14 +229,71 @@ bool FilterCondition::evaluate(const QVariant& cellValue,
             return cellStr.startsWith(value1.toString(), Qt::CaseInsensitive);
         case EndsWith:
             return cellStr.endsWith(value1.toString(), Qt::CaseInsensitive);
-        case MatchesRegex: {
-            QRegularExpression re(value1.toString(),
-                QRegularExpression::CaseInsensitiveOption);
-            return re.isValid() && re.match(cellStr).hasMatch();
-        }
+        case MatchesRegex:
+            return regexValid && regex.match(cellStr).hasMatch();
         default: break;
     }
     return true;
+}
+
+bool FilterCondition::evaluateReferences(const std::vector<QString>& bibcodes) const
+{
+    if (!enabled) return true;
+
+    if (op == IsEmpty)    return bibcodes.empty();
+    if (op == IsNotEmpty) return !bibcodes.empty();
+
+    if (literal.isEmpty()) return true;   // incomplete → don't filter
+
+    // Scan once and stop at the first hit; the negated operators are simply
+    // the complement ("no reference matches").
+    bool any = false;
+    switch (op) {
+        case Equals:
+        case NotEquals: {
+            const qsizetype len = literal.size();
+            for (const QString& b : bibcodes) {
+                // Bibcodes are fixed-width, so the length test rejects most
+                // non-matches before the case-insensitive compare.
+                if (b.size() == len
+                    && b.compare(literal, Qt::CaseInsensitive) == 0) {
+                    any = true;
+                    break;
+                }
+            }
+            break;
+        }
+        case Contains:
+        case NotContains: {
+            for (const QString& b : bibcodes) {
+                if (b.contains(literal, Qt::CaseInsensitive)) { any = true; break; }
+            }
+            break;
+        }
+        case StartsWith: {
+            for (const QString& b : bibcodes) {
+                if (b.startsWith(literal, Qt::CaseInsensitive)) { any = true; break; }
+            }
+            break;
+        }
+        case EndsWith: {
+            for (const QString& b : bibcodes) {
+                if (b.endsWith(literal, Qt::CaseInsensitive)) { any = true; break; }
+            }
+            break;
+        }
+        case MatchesRegex: {
+            if (!regexValid) return true;
+            for (const QString& b : bibcodes) {
+                if (regex.match(b).hasMatch()) { any = true; break; }
+            }
+            break;
+        }
+        default:
+            return true;
+    }
+
+    return (op == NotEquals || op == NotContains) ? !any : any;
 }
 
 QStringList FilterCondition::textOperatorNames()
@@ -223,6 +315,46 @@ QStringList FilterCondition::booleanOperatorNames()
 QStringList FilterCondition::universalOperatorNames()
 {
     return {"is empty", "is not empty"};
+}
+
+QStringList FilterCondition::referenceOperatorNames()
+{
+    return {"has", "has not",
+            "has any containing", "has none containing",
+            "has any starting with", "has any matching regex"};
+}
+
+QStringList FilterCondition::referenceUniversalOperatorNames()
+{
+    return {"has no references", "has any reference"};
+}
+
+FilterCondition::Operator FilterCondition::referenceOperatorFromName(const QString& name)
+{
+    if (name == "has")                    return Equals;
+    if (name == "has not")                return NotEquals;
+    if (name == "has any containing")     return Contains;
+    if (name == "has none containing")    return NotContains;
+    if (name == "has any starting with")  return StartsWith;
+    if (name == "has any matching regex") return MatchesRegex;
+    if (name == "has no references")      return IsEmpty;
+    if (name == "has any reference")      return IsNotEmpty;
+    return Equals;
+}
+
+QString FilterCondition::referenceOperatorToName(Operator op)
+{
+    switch (op) {
+        case Equals:       return "has";
+        case NotEquals:    return "has not";
+        case Contains:     return "has any containing";
+        case NotContains:  return "has none containing";
+        case StartsWith:   return "has any starting with";
+        case MatchesRegex: return "has any matching regex";
+        case IsEmpty:      return "has no references";
+        case IsNotEmpty:   return "has any reference";
+        default:           return "has";
+    }
 }
 
 FilterCondition::Operator FilterCondition::operatorFromName(const QString& name)
@@ -415,10 +547,23 @@ bool StarFilterProxyModel::matchesAdvancedFilters(int sourceRow, const QModelInd
             return star ? star->getFieldValue(key) : QVariant();
         };
 
+    static const std::vector<QString> kNoBibcodes;
+
     bool hasAnyEnabled = false;
 
     for (const auto& condition : _conditions) {
         if (!condition.enabled || !condition.isValid()) continue;
+
+        // Reference (bibcode) conditions read the star's list directly; there
+        // is no table column backing them.
+        if (condition.isReference()) {
+            hasAnyEnabled = true;
+            const bool matches = condition.evaluateReferences(
+                star ? star->getBibcodes() : kNoBibcodes);
+            if (_logicMode == And && !matches) return false;
+            if (_logicMode == Or && matches) return true;
+            continue;
+        }
 
         QVariant cellValue;
         if (!condition.isExpression()) {
@@ -567,6 +712,7 @@ void FilterConditionRow::populateColumnCombo(bool showAllColumns)
         for (const QString& key : _projectKeys)
             _columnCombo->addItem(mgr.displayName(key), key);
         _columnCombo->insertSeparator(_columnCombo->count());
+        _columnCombo->addItem("❝  References…", FilterCondition::kReferencesKey);
         _columnCombo->addItem("ƒ  Expression…", kExprKey);
         _columnCombo->insertSeparator(_columnCombo->count());
         _columnCombo->addItem("More columns…", kMoreKey);
@@ -587,6 +733,7 @@ void FilterConditionRow::populateColumnCombo(bool showAllColumns)
                 _columnCombo->addItem("   " + col.displayName, col.key);
         }
         _columnCombo->insertSeparator(_columnCombo->count());
+        _columnCombo->addItem("❝  References…", FilterCondition::kReferencesKey);
         _columnCombo->addItem("ƒ  Expression…", kExprKey);
     }
 
@@ -636,6 +783,21 @@ void FilterConditionRow::populateOperators()
         return;
     }
 
+    if (_currentKey == FilterCondition::kReferencesKey) {
+        _isCurrentColumnNumeric = false;
+        _isCurrentColumnBoolean = false;
+
+        _operatorCombo->blockSignals(true);
+        _operatorCombo->clear();
+        _operatorCombo->addItems(FilterCondition::referenceOperatorNames());
+        _operatorCombo->insertSeparator(_operatorCombo->count());
+        _operatorCombo->addItems(FilterCondition::referenceUniversalOperatorNames());
+        _operatorCombo->blockSignals(false);
+
+        onOperatorChanged(_operatorCombo->currentIndex());
+        return;
+    }
+
     auto& mgr = ColumnPresetManager::instance();
     const ColumnDef* def = mgr.columnDef(_currentKey);
     _isCurrentColumnBoolean = def && def->isBoolFlag;
@@ -665,8 +827,11 @@ void FilterConditionRow::onOperatorChanged(int index)
     Q_UNUSED(index);
     if (_currentKey == kExprKey) return;   // no operator combo in expression mode
 
+    const bool refMode = (_currentKey == FilterCondition::kReferencesKey);
     QString opName = _operatorCombo->currentText();
-    FilterCondition::Operator op = FilterCondition::operatorFromName(opName);
+    FilterCondition::Operator op = refMode
+        ? FilterCondition::referenceOperatorFromName(opName)
+        : FilterCondition::operatorFromName(opName);
 
     bool showValue = (op != FilterCondition::IsEmpty && op != FilterCondition::IsNotEmpty
                       && op != FilterCondition::IsTrue && op != FilterCondition::IsFalse);
@@ -675,6 +840,16 @@ void FilterConditionRow::onOperatorChanged(int index)
     _valueEdit1->setVisible(showValue);
     _andLabel->setVisible(showSecondValue);
     _valueEdit2->setVisible(showSecondValue);
+
+    if (refMode) {
+        if (showValue) {
+            _valueEdit1->setPlaceholderText("Bibcode, e.g. 2021A&A...650A..67G");
+            _valueEdit1->setProperty("helpToolTip", kReferenceHelp);
+        }
+        updateValidation();
+        emit conditionChanged();
+        return;
+    }
 
     if (_isCurrentColumnNumeric && showValue) {
         _valueEdit1->setPlaceholderText("Number or expression...");
@@ -722,6 +897,10 @@ FilterCondition FilterConditionRow::getCondition() const
     if (_currentKey == kExprKey) {
         cond.op = FilterCondition::Expression;
         cond.value1 = _valueEdit1->text();
+    } else if (_currentKey == FilterCondition::kReferencesKey) {
+        cond.columnKey = FilterCondition::kReferencesKey;
+        cond.op = FilterCondition::referenceOperatorFromName(_operatorCombo->currentText());
+        cond.value1 = _valueEdit1->text();
     } else {
         cond.columnKey = _currentKey;
         cond.op = FilterCondition::operatorFromName(_operatorCombo->currentText());
@@ -736,7 +915,10 @@ void FilterConditionRow::setCondition(const FilterCondition& condition)
 {
     selectColumnKey(condition.isExpression() ? kExprKey : condition.columnKey);
     populateOperators();
-    if (!condition.isExpression())
+    if (condition.isReference())
+        _operatorCombo->setCurrentText(
+            FilterCondition::referenceOperatorToName(condition.op));
+    else if (!condition.isExpression())
         _operatorCombo->setCurrentText(FilterCondition::operatorToName(condition.op));
     _valueEdit1->setText(condition.value1.toString());
     _valueEdit2->setText(condition.value2.toString());
