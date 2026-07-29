@@ -65,4 +65,10 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes 2>/dev/null || true
+          # The AppImage job may be creating the same release right now; wait for
+          # whichever attempt won before uploading into it.
+          for _ in $(seq 1 12); do
+            gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 && break
+            sleep 5
+          done
           gh release upload "${GITHUB_REF_NAME}" astra-*.dmg astra-*.dmg.sha256 --clobber

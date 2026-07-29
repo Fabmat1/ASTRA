@@ -23,7 +23,10 @@ ui_*.h
 *.jsc
 Makefile*
 *build-*
+# Release build scripts and their workflows — caught by *build-* above.
 !.github/workflows/build-macos.yml
+!.github/workflows/build-appimage.yml
+!build-appimage.sh
 *.qm
 *.prl
 

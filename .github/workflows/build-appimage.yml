@@ -1,0 +1,117 @@
+name: Linux AppImage (x86_64)
+
+on:
+  # Manual trigger from the Actions tab — pick any version string.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version for the .AppImage name (e.g. 0.5.1)"
+        required: false
+        default: "0.5.1"
+  # Automatic on version tags: pushing v0.5.2 builds astra-0.5.2-x86_64.AppImage
+  # and attaches it to the GitHub release for that tag.
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write   # needed only for the release-upload step on tag builds
+  packages: read    # pull the builder image from GHCR
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    steps:
+      - name: Check out sources (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      # The builder image is multi-GB (Qt + ISIS) and the AppImage itself is
+      # ~250 MB on top of the build tree.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+                      /usr/local/share/powershell /usr/local/share/chromium \
+                      /usr/local/lib/node_modules
+          df -h /
+
+      # Compiler cache for ASTRA + lcurve, shared with the builder script's
+      # host-side mount point.
+      - name: Cache ccache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/astra-build/ccache
+          key: astra-appimage-ccache-${{ github.sha }}
+          restore-keys: astra-appimage-ccache-
+
+      - name: Resolve version
+        id: ver
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ github.event.inputs.version || '0.5.1' }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Same content hash build-appimage.sh derives locally. If this image is
+      # missing, run the "AppImage builder image" workflow first — the pull
+      # below is what fails, and the message says so.
+      - name: Resolve builder image
+        id: img
+        run: |
+          hash="$(docker/builder-image-tag.sh)"
+          ref="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}/astra-appimage-builder:${hash}"
+          echo "ref=${ref}" >> "$GITHUB_OUTPUT"
+          if ! docker manifest inspect "${ref}" >/dev/null 2>&1; then
+            echo "::error::Builder image ${ref} is not published. Run the" \
+                 "'AppImage builder image' workflow (it rebuilds whenever" \
+                 "docker/appimage-builder.Dockerfile changes), then re-run this job."
+            exit 1
+          fi
+
+      - name: Build .AppImage
+        env:
+          ASTRA_BUILDER_IMAGE: ${{ steps.img.outputs.ref }}
+          ASTRA_SKIP_SUBMODULE_UPDATE: "1"
+        run: ./build-appimage.sh "${{ steps.ver.outputs.version }}"
+
+      # The container runs as root, so the outputs and the ccache tree land
+      # root-owned; hand them back before upload-artifact/cache touch them.
+      - name: Reclaim build outputs
+        if: always()
+        run: |
+          sudo chown -R "$(id -u):$(id -g)" ~/.cache/astra-build astra-*.AppImage* 2>/dev/null || true
+
+      - name: Upload .AppImage artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: astra-${{ steps.ver.outputs.version }}-x86_64
+          path: |
+            astra-*.AppImage
+            astra-*.AppImage.sha256
+          if-no-files-found: error
+
+      # Only on tag pushes: attach the .AppImage to the release for that tag
+      # (creates the release if it doesn't exist yet).
+      - name: Attach to GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" --verify-tag --generate-notes 2>/dev/null || true
+          # The macOS job may be creating the same release right now; wait for
+          # whichever attempt won before uploading into it.
+          for _ in $(seq 1 12); do
+            gh release view "${GITHUB_REF_NAME}" >/dev/null 2>&1 && break
+            sleep 5
+          done
+          gh release upload "${GITHUB_REF_NAME}" \
+            astra-*.AppImage astra-*.AppImage.sha256 --clobber
