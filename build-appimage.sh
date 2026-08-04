@@ -12,7 +12,8 @@
 #                                                         # (refreshes git HEADs
 #                                                         # baked into the image)
 # Env overrides: QT_VERSION, OPENBLAS_VERSION, ASTRA_BUNDLE_ISIS,
-#                LCURVE_REPO, LCURVE_REF,
+#                LCURVE_REPO, LCURVE_REF, LCURVE_ARCH (-march for the bundled
+#                  lcurve solvers; default x86-64-v3, same baseline as ASTRA),
 #                ASTRA_BUILDER_IMAGE (use a prebuilt/published image, e.g. from
 #                  GHCR, instead of building one locally — see
 #                  .github/workflows/appimage-builder-image.yml),
@@ -81,6 +82,7 @@ docker run --rm -i \
   -e ASTRA_BUNDLE_ISIS="${ASTRA_BUNDLE_ISIS}" \
   -e LCURVE_REPO="${LCURVE_REPO:-}" \
   -e LCURVE_REF="${LCURVE_REF:-}" \
+  -e LCURVE_ARCH="${LCURVE_ARCH:-}" \
   "${IMAGE}" bash <<'DOCKER_EOF'
 set -euo pipefail
 export DEBIAN_FRONTEND=noninteractive
@@ -139,6 +141,15 @@ cd /tmp/lcurve_re
 # CUDA is disabled and Boost resolves fine here, so dropping them is a no-op.
 sed -i 's/VERSION 3\.22\.3/VERSION 3.22.1/' CMakeLists.txt
 sed -i '/cmake_policy(SET CMP0146 NEW)/d; /cmake_policy(SET CMP0167 NEW)/d' CMakeLists.txt
+# lcurve_re's Release flags hardcode -march=native, which tunes the binaries to
+# whatever CPU the release runner happened to use (GitHub's Ice Lake Xeons emit
+# AVX-512). On a user machine without those instructions the solver dies with
+# SIGILL the moment it enters a vectorized kernel. Pin the same baseline ASTRA
+# itself is compiled against (CMakeLists.txt: -march=x86-64-v3, AVX2/FMA).
+LCURVE_ARCH="${LCURVE_ARCH:-x86-64-v3}"
+sed -i "s/-march=native/-march=${LCURVE_ARCH}/" CMakeLists.txt
+grep -q -- "-march=native" CMakeLists.txt \
+  && { echo "lcurve_re still requests -march=native; refusing to ship a host-tuned build"; exit 1; }
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLCURVE_ENABLE_CUDA=OFF \
   -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
 cmake --build build --target lcurve_levmarq lcurve_mcmc lcurve_simplex -j"$(nproc)"
