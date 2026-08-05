@@ -644,10 +644,19 @@ void MainWindow::onUpdateAvailable(const UpdateInfo& info)
     QMessageBox box(this);
     box.setIcon(QMessageBox::Information);
     box.setWindowTitle("Update available");
-    box.setText(QString("A new version of ASTRA is available: <b>%1</b><br>"
-                        "(you have %2)")
-                    .arg(info.version.toHtmlEscaped(),
-                         UpdateManager::currentVersion().toHtmlEscaped()));
+    if (UpdateManager::isReleaseBuild()) {
+        box.setText(QString("A new version of ASTRA is available: <b>%1</b><br>"
+                            "(you have %2)")
+                        .arg(info.version.toHtmlEscaped(),
+                             UpdateManager::currentVersion().toHtmlEscaped()));
+    } else {
+        // Development build: we can't tell whether it predates the release, so
+        // offer the switch rather than claiming it is newer.
+        box.setText(QString("You are running development build <b>%1</b>.<br>"
+                            "The latest ASTRA release is <b>%2</b>.")
+                        .arg(UpdateManager::currentVersion().toHtmlEscaped(),
+                             info.version.toHtmlEscaped()));
+    }
     if (!info.releaseNotes.trimmed().isEmpty()) {
         QString notes = info.releaseNotes.trimmed();
         if (notes.size() > 1500)
@@ -655,11 +664,14 @@ void MainWindow::onUpdateAvailable(const UpdateInfo& info)
         box.setDetailedText(notes);
     }
 
-    const bool canInstall = UpdateManager::isAppImage() && info.hasAppImage();
+    const bool canInstall = UpdateManager::canSelfInstall() && info.hasPackage();
 
     QPushButton* installBtn = nullptr;
     if (canInstall)
-        installBtn = box.addButton("Download && Install", QMessageBox::AcceptRole);
+        installBtn = box.addButton(
+            UpdateManager::isReleaseBuild() ? "Download && Install"
+                                            : "Install Release",
+            QMessageBox::AcceptRole);
     QPushButton* notesBtn = box.addButton("Release Notes", QMessageBox::ActionRole);
     QPushButton* skipBtn  = box.addButton("Skip This Version", QMessageBox::DestructiveRole);
     QPushButton* laterBtn = box.addButton("Later", QMessageBox::RejectRole);
@@ -702,11 +714,31 @@ void MainWindow::promptInstallUpdate(const UpdateInfo& info)
     connect(progress, &QProgressDialog::canceled, _updater,
             &UpdateManager::cancelDownload);
 
+    // Once the install starts the download can no longer be cancelled — the
+    // package is being unpacked over the running installation.
+    connect(_updater, &UpdateManager::installStarted, progress,
+            [progress, info] {
+        progress->setCancelButton(nullptr);
+        progress->setLabelText(QString("Installing ASTRA %1…").arg(info.version));
+        progress->setMaximum(0);   // indeterminate
+    });
+
     connect(_updater, &UpdateManager::installFailed, progress,
             [this, progress](const QString& err) {
         progress->close();
         progress->deleteLater();
         QMessageBox::warning(this, "Update failed", err);
+    });
+    connect(_updater, &UpdateManager::manualInstallRequired, progress,
+            [this, progress, info](const QString& path, const QString& reason) {
+        progress->close();
+        progress->deleteLater();
+        QMessageBox::information(this, "Finish the update manually",
+            QString("ASTRA %1 was downloaded and verified, but it could not be "
+                    "installed automatically:\n%2\n\n"
+                    "The disk image has been opened — drag ASTRA to your "
+                    "Applications folder to finish, then restart ASTRA.\n\n%3")
+                .arg(info.version, reason, path));
     });
     connect(_updater, &UpdateManager::installFinished, progress,
             [this, progress, info](const QString&) {

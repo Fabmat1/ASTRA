@@ -587,7 +587,7 @@ LCFitConfig LCFitConfig::defaults()
         "stsp21_long":     "0 0 0 0 0", "stsp21_lat": "0 0 0 0 0",
         "stsp21_fwhm":     "0 0 0 0 0", "stsp21_tcen": "0 0 0 0 0",
         "delta_phase":     "1e-7",
-        "nlat1f": "50", "nlat2f": "150", "nlat1c": "50", "nlat2c": "150",
+        "nlat1f": "250", "nlat2f": "250", "nlat1c": "250", "nlat2c": "250",
         "npole": "1", "nlatfill": "2", "nlngfill": "2",
         "lfudge": "0", "llo": "90", "lhi": "-90",
         "phase1": "0.1", "phase2": "0.4",

@@ -419,10 +419,10 @@ QMap<QString, QString> buildModelParameters(const ModelInputs &in) {
   // Scalar grid / control parameters
   const QMap<QString, QString> scalars = {
       {"delta_phase", "1e-07"},
-      {"nlat1f", "50"},
-      {"nlat2f", "150"},
-      {"nlat1c", "50"},
-      {"nlat2c", "150"},
+      {"nlat1f", "250"},
+      {"nlat2f", "250"},
+      {"nlat1c", "250"},
+      {"nlat2c", "250"},
       {"npole", "1"},
       {"nlatfill", "2"},
       {"nlngfill", "2"},

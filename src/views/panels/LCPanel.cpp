@@ -129,6 +129,7 @@ void LCPanel::setFoldPeriod(double period, double t0)
     _foldExternal = period > 0.0;
     if (_toggleFoldBtn) _toggleFoldBtn->setEnabled(period > 0.0);
     if (_folded) replotAll();
+    notifyFoldState();
 }
 
 void LCPanel::setFolded(bool folded)
@@ -141,6 +142,7 @@ void LCPanel::setFolded(bool folded)
         _toggleFoldBtn->setText(folded ? "Show Timeline" : "Show Folded");
     }
     replotAll();
+    notifyFoldState();
 }
 
 void LCPanel::setViewMode(ViewMode mode)
@@ -263,9 +265,21 @@ void LCPanel::setupUi()
     layout->addWidget(_content, 1);
 }
 
+void LCPanel::notifyFoldState()
+{
+    const int foldedNow = _folded ? 1 : 0;
+    if (_foldPeriod == _lastNotifiedPeriod && _foldT0 == _lastNotifiedT0 &&
+        foldedNow == _lastNotifiedFolded)
+        return;
+    _lastNotifiedPeriod = _foldPeriod;
+    _lastNotifiedT0     = _foldT0;
+    _lastNotifiedFolded = foldedNow;
+    emit foldStateChanged(_foldPeriod, _foldT0, _folded);
+}
+
 void LCPanel::resolveAutoFoldParams()
 {
-    if (_foldExternal) return;
+    if (_foldExternal) { notifyFoldState(); return; }
 
     double foldP = 0.0, foldT0 = 0.0;
 
@@ -310,6 +324,7 @@ void LCPanel::resolveAutoFoldParams()
 
     _foldPeriod = foldP;
     _foldT0     = foldT0;
+    notifyFoldState();
 }
 
 void LCPanel::setT0Source(T0Source s)
@@ -386,6 +401,7 @@ void LCPanel::populate()
         _toggleFoldBtn->setChecked(false);
         _toggleFoldBtn->setText("Show Folded");
     }
+    notifyFoldState();
 
     // Defaults
     for (const auto &s : _series) {
@@ -984,6 +1000,7 @@ void LCPanel::onToggleFolded()
     if (_folded && _flagMode) _flagBtn->setChecked(false);
     saveStarSettings();
     replotAll();
+    notifyFoldState();
 }
 
 void LCPanel::onViewModeChanged(int idx)
@@ -1001,6 +1018,7 @@ void LCPanel::onFlagModeToggled(bool on)
         _toggleFoldBtn->setChecked(false);
         _folded = false;
         _toggleFoldBtn->setText("Show Folded");
+        notifyFoldState();
     }
     for (auto* p : _plots) applyFlagModeInteractions(p);
     // No replot needed - only interaction state changed.

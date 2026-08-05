@@ -1,8 +1,10 @@
 #pragma once
 
 #include <QDialog>
+#include <QHash>
 #include <QJsonObject>
 #include <QMap>
+#include <QVector>
 #include <memory>
 
 #include "models/Photometry.h"
@@ -92,6 +94,24 @@ class LCFitDialog : public QDialog {
 
     void populateFromStar();
     void updateNavButtons();
+
+    // ── Session memory for hand-entered setup values ────────────────────
+    // Quantities ASTRA does not hold for a star (companion mass/radius, K₂,
+    // …) have to be typed in by hand. Whatever the user entered is kept for
+    // the lifetime of the process, keyed by star, so reopening the dialog
+    // does not mean filling the same numbers in again. Values that come from
+    // the star record are never stored: those are re-derived every time and
+    // must stay authoritative.
+    QVector<QPair<QString, QWidget *>> memorisedFields() const;
+    /// Record what auto-population left in each field; anything differing
+    /// from this later on is a manual entry.
+    void snapshotAutoFilled();
+    void restoreManualEntries();
+    void rememberManualEntries();
+
+    QMap<QString, QString> _autoFilled;
+    static QHash<QString, QMap<QString, QString>> s_manualEntries;
+    QString manualEntryKey() const;
 
     LCFitPhysics::Observables collectObservables() const;
     LCFitPhysics::PriorInputs collectPriors() const;

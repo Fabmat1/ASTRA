@@ -35,6 +35,8 @@ public:
     void setViewMode(ViewMode mode);
     ViewMode viewMode() const { return _viewMode; }
     bool     isFolded() const { return _folded; }
+    double   foldPeriod() const { return _foldPeriod; }
+    double   foldT0() const { return _foldT0; }
 
     void onSummaryChanged() override { /* light curves unchanged by summary metrics */ }
 
@@ -54,6 +56,11 @@ public:
     void     setPreviewFit(const QString &source, const QString &filter,
                            std::shared_ptr<LCFit> fit);
     void     clearPreviewFit();
+
+signals:
+    /// Emitted whenever the period/epoch the panel folds on - or whether it
+    /// folds at all - changes, so hosts can report what is on screen.
+    void foldStateChanged(double period, double t0, bool folded);
 
 protected:
     bool eventFilter(QObject* obj, QEvent* ev) override;
@@ -100,6 +107,8 @@ private:
     void persistFlagsForSource(const QString& source);
     void buildSettingsMenu();
     void resolveAutoFoldParams();
+    /// Emit foldStateChanged() when the fold configuration actually moved.
+    void notifyFoldState();
 
     bool binEnabled(const QString& k) const {
         return _folded ? _binEnabledFolded.value(k, true)
@@ -134,6 +143,9 @@ private:
     bool     _foldExternal  = false;
     bool     _syncingXAxis  = false;
     QHash<QCustomPlot*, double> _xOffsets;
+    double _lastNotifiedPeriod = -1.0;  // last state handed to foldStateChanged
+    double _lastNotifiedT0     = 0.0;
+    int    _lastNotifiedFolded = -1;
     bool _foldDefaultApplied = false; // ensures "folded by default" runs once
     bool _settingsRestored   = false; // per-star settings loaded into state once
     bool _foldRestored       = false; // user had an explicit folded choice saved

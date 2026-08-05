@@ -21,10 +21,16 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS        OFF)   # use -std=c++20 (NOT gnu++20) everywhere
 
 # Pick a baseline ISA that covers desktop + laptop. Avoid -march=native.
-add_compile_options(
-    -mtune=generic
-    -march=x86-64-v3        # AVX2/FMA. Use x86-64-v2 if you support older CPUs.
-)
+# x86 only: these tokens are rejected outright by Apple Clang on arm64, so the
+# guard keeps the macOS build from having to patch (and thereby dirty) the
+# working tree — a dirty tree makes GitVersion.cmake stamp "git-<hash>-dirty"
+# instead of the release tag, which in turn disables the updater.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|i[3-6]86)$")
+    add_compile_options(
+        -mtune=generic
+        -march=x86-64-v3    # AVX2/FMA. Use x86-64-v2 if you support older CPUs.
+    )
+endif()
 
 # Pin Eigen ABI so allocations made in one TU can be safely freed in another.
 add_compile_definitions(
@@ -575,6 +581,10 @@ qt_add_executable(ASTRA
 )
 
 # ── Git-derived version header (regenerated every build) ──────────────────────
+# ASTRA_VERSION_OVERRIDE stamps a fixed version string (release pipelines only);
+# leave it empty and the version is resolved from git on every build.
+set(ASTRA_VERSION_OVERRIDE "" CACHE STRING
+    "Stamp this exact version string instead of resolving it from git")
 set(ASTRA_VERSION_HEADER ${CMAKE_CURRENT_BINARY_DIR}/generated/astra_version.h)
 add_custom_target(astra_version ALL
     BYPRODUCTS ${ASTRA_VERSION_HEADER}
@@ -582,6 +592,7 @@ add_custom_target(astra_version ALL
             -DSRC_DIR=${CMAKE_CURRENT_SOURCE_DIR}
             -DOUT=${ASTRA_VERSION_HEADER}
             -DFALLBACK_VERSION=${PROJECT_VERSION}
+            -DVERSION_OVERRIDE=${ASTRA_VERSION_OVERRIDE}
             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/GitVersion.cmake
     COMMENT "Resolving ASTRA version from git"
     VERBATIM)

@@ -75,7 +75,38 @@ QString tempBaseDir() {
       .absoluteFilePath("astra_lcfit");
 }
 
+// The memorised setup fields are a mix of widget types; they are handled
+// uniformly by round-tripping their contents through a string.
+QString widgetValue(QWidget *w) {
+  if (auto *e = qobject_cast<QLineEdit *>(w))
+    return e->text();
+  if (auto *c = qobject_cast<QComboBox *>(w))
+    return c->currentText();
+  if (auto *c = qobject_cast<QCheckBox *>(w))
+    return c->isChecked() ? "1" : "0";
+  if (auto *s = qobject_cast<QDoubleSpinBox *>(w))
+    return QString::number(s->value(), 'g', 12);
+  return QString();
+}
+
+void setWidgetValue(QWidget *w, const QString &v) {
+  if (auto *e = qobject_cast<QLineEdit *>(w)) {
+    e->setText(v);
+  } else if (auto *c = qobject_cast<QComboBox *>(w)) {
+    c->setCurrentText(v);
+  } else if (auto *c = qobject_cast<QCheckBox *>(w)) {
+    c->setChecked(v == "1");
+  } else if (auto *s = qobject_cast<QDoubleSpinBox *>(w)) {
+    bool ok = false;
+    const double d = v.toDouble(&ok);
+    if (ok)
+      s->setValue(d);
+  }
+}
+
 } // namespace
+
+QHash<QString, QMap<QString, QString>> LCFitDialog::s_manualEntries;
 
 // ── meas helpers ───────────────────────────────────────────────────
 
@@ -148,6 +179,7 @@ LCFitDialog::LCFitDialog(Inputs in, QWidget *parent)
 }
 
 LCFitDialog::~LCFitDialog() {
+  rememberManualEntries();
   if (_runner && _runner->isRunning())
     _runner->cancel();
 }
@@ -310,6 +342,69 @@ void LCFitDialog::refreshPreview() {
     _preview->requestModel(effectiveConfig());
 }
 
+// ── Session memory for hand-entered setup values ───────────────────────────
+
+QString LCFitDialog::manualEntryKey() const {
+    if (!_in.star)
+        return QString();
+    const QString id = _in.star->getId();
+    return id.isEmpty() ? _in.star->getSourceId() : id;
+}
+
+QVector<QPair<QString, QWidget *>> LCFitDialog::memorisedFields() const {
+    return {
+        {"type1", _type1},   {"type2", _type2},
+        {"T1", _T1},         {"T2", _T2},
+        {"logg1", _logg1},   {"logg2", _logg2},
+        {"M1", _M1},         {"M2", _M2},
+        {"R1", _R1},         {"R2", _R2},
+        {"K1", _K1},         {"K2", _K2},
+        {"q", _qObs},        {"M2min", _M2min},
+        {"Mtot", _Mtot},     {"iLock", _iLock},
+        {"iOverride", _iOverride}, {"t0", _t0},
+    };
+}
+
+void LCFitDialog::snapshotAutoFilled() {
+    for (const auto &[key, w] : memorisedFields())
+        if (w)
+            _autoFilled[key] = widgetValue(w);
+}
+
+void LCFitDialog::restoreManualEntries() {
+    const QString key = manualEntryKey();
+    if (key.isEmpty())
+        return;
+    const auto saved = s_manualEntries.value(key);
+    if (saved.isEmpty())
+        return;
+    for (const auto &[field, w] : memorisedFields())
+        if (w && saved.contains(field))
+            setWidgetValue(w, saved.value(field));
+}
+
+void LCFitDialog::rememberManualEntries() {
+    const QString key = manualEntryKey();
+    if (key.isEmpty() || _autoFilled.isEmpty())
+        return;
+
+    QMap<QString, QString> manual;
+    for (const auto &[field, w] : memorisedFields()) {
+        if (!w)
+            continue;
+        const QString cur = widgetValue(w);
+        // Only what the user changed away from the auto-filled state is
+        // remembered - a field the star record fills stays owned by the record.
+        if (cur != _autoFilled.value(field))
+            manual.insert(field, cur);
+    }
+
+    if (manual.isEmpty())
+        s_manualEntries.remove(key);
+    else
+        s_manualEntries.insert(key, manual);
+}
+
 // ── Auto-populate from Star ────────────────────────────────────────────────
 
 void LCFitDialog::populateFromStar() {
@@ -347,6 +442,13 @@ void LCFitDialog::populateFromStar() {
     if (_t0 && Star::isSet(s.getRVT0()) && _t0->value() == _t0->minimum())
         _t0->setValue(s.getRVT0());
 
+    recomputeMtot();
+    recomputeM2Min();
+
+    // Everything above came from the star record; anything that deviates from
+    // here on was entered by hand and is what gets remembered on close.
+    snapshotAutoFilled();
+    restoreManualEntries();
     recomputeMtot();
     recomputeM2Min();
 }
@@ -977,10 +1079,10 @@ QWidget *LCFitDialog::buildAdvancedPage() {
     // ── Grid resolution / integration ─────────────────────────────────
     auto *gridBox = new QGroupBox(tr("Grid resolution & integration"));
     auto *gg      = new QGridLayout(gridBox);
-    addInt(gg, 0, 0, tr("nlat1 fine:"), _nlat1f, 5, 4000, 50);
-    addInt(gg, 0, 2, tr("nlat2 fine:"), _nlat2f, 5, 4000, 150);
-    addInt(gg, 1, 0, tr("nlat1 coarse:"), _nlat1c, 5, 4000, 50);
-    addInt(gg, 1, 2, tr("nlat2 coarse:"), _nlat2c, 5, 4000, 150);
+    addInt(gg, 0, 0, tr("nlat1 fine:"), _nlat1f, 5, 4000, 250);
+    addInt(gg, 0, 2, tr("nlat2 fine:"), _nlat2f, 5, 4000, 250);
+    addInt(gg, 1, 0, tr("nlat1 coarse:"), _nlat1c, 5, 4000, 250);
+    addInt(gg, 1, 2, tr("nlat2 coarse:"), _nlat2c, 5, 4000, 250);
     addInt(gg, 2, 0, tr("npole:"), _npole, 0, 10, 1);
     addInt(gg, 2, 2, tr("nlatfill:"), _nlatfill, 0, 50, 2);
     addInt(gg, 3, 0, tr("nlngfill:"), _nlngfill, 0, 50, 2);
@@ -2462,6 +2564,9 @@ void LCFitDialog::recomputeMtot() {
     t.errLo = std::sqrt(m1->errLo * m1->errLo + m2->errLo * m2->errLo);
     t.errHi = std::sqrt(m1->errHi * m1->errHi + m2->errHi * m2->errHi);
     setMeas(_Mtot, t);
+    // Derived, not typed: keep it out of the manual-entry memory.
+    if (_autoFilled.contains("Mtot"))
+        _autoFilled["Mtot"] = _Mtot->text();
 }
 
 
@@ -2523,6 +2628,9 @@ void LCFitDialog::recomputeM2Min() {
     out.errLo = sig;
     out.errHi = sig;
     setMeas(_M2min, out);
+    // Derived, not typed: keep it out of the manual-entry memory.
+    if (_autoFilled.contains("M2min"))
+        _autoFilled["M2min"] = _M2min->text();
 }
 
 QString LCFitDialog::claretFilterKey() const {

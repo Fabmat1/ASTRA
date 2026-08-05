@@ -41,11 +41,18 @@ jobs:
         run: |
           if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
             echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            # Stamp the tag into the binary. Without this the app self-reports
+            # whatever git describes at build time, and the in-app updater
+            # treats it as a development build.
+            echo "stamp=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           else
             echo "version=${{ github.event.inputs.version || '0.5.1' }}" >> "$GITHUB_OUTPUT"
+            echo "stamp=" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build .app and .dmg
+        env:
+          ASTRA_VERSION_OVERRIDE: ${{ steps.ver.outputs.stamp }}
         run: ./build-macos.sh "${{ steps.ver.outputs.version }}"
 
       - name: Upload .dmg artifact

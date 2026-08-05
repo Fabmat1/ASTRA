@@ -6,6 +6,12 @@
 #   QT_FROM        = brew (default) | aqt        # where Qt6 comes from
 #   OPENBLAS_VERSION  = 0.3.27 (only for source fallback)
 #   JOBS              = number of parallel build jobs (default: all cores)
+#   ASTRA_VERSION_OVERRIDE = stamp this exact version into the binary instead of
+#                     resolving it from git. Release pipelines only (the tag
+#                     build in .github/workflows/build-macos.yml sets it): a
+#                     build that self-reports a release version it isn't will
+#                     also refuse to auto-update to that release. VERSION alone
+#                     only names the .dmg — it does not stamp the binary.
 #
 # CCfits is REQUIRED (both ASTRA and DIGGA link it); it comes from the
 # Homebrew bottle, with a one-time source build as fallback. The build
@@ -297,12 +303,17 @@ SFIP="${SRC_DIR}/src/importWizard/SpectralFitImportPage.cpp"
 grep -q '#include <charconv>' "${SFIP}" || \
   perl -0pi -e 's/(#include )/#include <charconv>\n$1/' "${SFIP}" || true
 # (c) Strip the x86-only baseline-ISA flags from the top-level CMakeLists —
-#     Apple Clang on arm64 rejects `-march=x86-64-v3`. These tokens appear only
-#     in that one add_compile_options() block (DIGGA uses `-march=native`, which
-#     this does not touch). No-op once removed / on an already-guarded tree.
+#     Apple Clang on arm64 rejects `-march=x86-64-v3`. Current trees guard those
+#     flags with a CMAKE_SYSTEM_PROCESSOR check, so this is a no-op there; it
+#     stays only for older checkouts. Patching them out would modify a *tracked*
+#     file, which makes GitVersion.cmake stamp the build "git-<hash>-dirty" and
+#     silently disables the updater — hence the guard is the preferred fix.
 CML="${SRC_DIR}/CMakeLists.txt"
-if grep -qE -- '-march=x86-64-v3' "${CML}"; then
+if grep -qE -- '^\s*-march=x86-64-v3' "${CML}" \
+   && ! grep -q 'CMAKE_SYSTEM_PROCESSOR MATCHES' "${CML}"; then
   echo ">>> Removing x86-only -march/-mtune flags from CMakeLists.txt (ARM host)"
+  echo "!!! This dirties the working tree; the build will self-report as a"
+  echo "!!! development version unless ASTRA_VERSION_OVERRIDE is set."
   perl -i -ne 'print unless /^\s*-mtune=generic\s*$/ || /^\s*-march=x86-64-v3\b/' "${CML}"
 fi
 # (d) DIGGA: std::sqrt/std::log are constexpr only as a libstdc++ (GCC) extension;
@@ -396,6 +407,7 @@ CCFITS_ARGS=(
 )
 cmake -S "${SRC_DIR}" -B "${BUILD_DIR}" \
   -DCMAKE_BUILD_TYPE=Release \
+  -DASTRA_VERSION_OVERRIDE="${ASTRA_VERSION_OVERRIDE:-}" \
   -DCMAKE_C_COMPILER=/usr/bin/clang \
   -DCMAKE_CXX_COMPILER=/usr/bin/clang++ \
   -DCMAKE_PREFIX_PATH="${PREFIX_PATH}" \
@@ -603,7 +615,10 @@ ln -s /Applications "${STAGE}/Applications"     # drag-to-install affordance
 echo ">>> Creating ${OUT_DMG##*/}"
 hdiutil create -volname "ASTRA ${VERSION}" -srcfolder "${STAGE}" \
   -ov -format UDZO "${OUT_DMG}" >/dev/null
-shasum -a 256 "${OUT_DMG}" > "${OUT_DMG}.sha256"
+# Bare file name in the checksum file (not the build machine's absolute path),
+# so `shasum -c` works next to a downloaded .dmg.
+(cd "$(dirname "${OUT_DMG}")" && shasum -a 256 "$(basename "${OUT_DMG}")") \
+  > "${OUT_DMG}.sha256"
 
 echo
 echo "=== Build complete ==="

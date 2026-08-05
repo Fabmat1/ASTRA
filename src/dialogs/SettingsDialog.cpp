@@ -685,16 +685,19 @@ QWidget* SettingsDialog::createUpdatesPage()
 
     auto* intro = new QLabel(
         "ASTRA can check GitHub for new releases. When you run the official "
-        "<code>.AppImage</code>, available updates can be downloaded and "
-        "installed in place.");
+        "Linux <code>.AppImage</code> or the macOS app from the "
+        "<code>.dmg</code>, available updates can be downloaded and installed "
+        "in place.");
     intro->setWordWrap(true);
     outer->addWidget(intro);
 
     // Current version / channel.
+    const QString packaging = UpdateManager::packagingName();
     auto* verLbl = new QLabel(
         QString("Current version: <b>%1</b>%2")
             .arg(UpdateManager::currentVersion().toHtmlEscaped(),
-                 UpdateManager::isAppImage() ? "  (AppImage)" : ""));
+                 packaging.isEmpty() ? QString()
+                                     : QString("  (%1)").arg(packaging)));
     verLbl->setTextFormat(Qt::RichText);
     outer->addWidget(verLbl);
 
@@ -704,8 +707,9 @@ QWidget* SettingsDialog::createUpdatesPage()
 
     if (!UpdateManager::isReleaseBuild()) {
         auto* devHint = new QLabel(
-            "<i>This is a development build; automatic update prompts are "
-            "disabled, but you can still check what the latest release is.</i>");
+            "<i>This is a development build; it is never prompted for updates "
+            "on startup. Check now to see the latest release and install it "
+            "from here.</i>");
         devHint->setWordWrap(true);
         devHint->setStyleSheet("color: gray;");
         outer->addWidget(devHint);
@@ -760,11 +764,24 @@ QWidget* SettingsDialog::createUpdatesPage()
             [this](const UpdateInfo& info) {
         _updateCheckBtn->setEnabled(true);
         _updateStatus->setStyleSheet("color: #dca84d;");
-        _updateStatus->setText(
-            QString("A new version <b>%1</b> is available "
-                    "(<a href=\"%2\">release notes</a>).")
-                .arg(info.version.toHtmlEscaped(), info.htmlUrl.toHtmlEscaped()));
-        if (UpdateManager::isAppImage() && info.hasAppImage()) {
+        if (UpdateManager::isReleaseBuild()) {
+            _updateStatus->setText(
+                QString("A new version <b>%1</b> is available "
+                        "(<a href=\"%2\">release notes</a>).")
+                    .arg(info.version.toHtmlEscaped(), info.htmlUrl.toHtmlEscaped()));
+        } else {
+            // Development build: offer the release without claiming it is newer
+            // — a git-<hash> build can't be compared against a version number.
+            _updateStatus->setText(
+                QString("You are on development build <b>%1</b>. The latest "
+                        "release is <b>%2</b> (<a href=\"%3\">release notes</a>).")
+                    .arg(UpdateManager::currentVersion().toHtmlEscaped(),
+                         info.version.toHtmlEscaped(), info.htmlUrl.toHtmlEscaped()));
+        }
+        if (UpdateManager::canSelfInstall() && info.hasPackage()) {
+            _updateInstallBtn->setText(UpdateManager::isReleaseBuild()
+                                           ? "Download && Install"
+                                           : "Install Release");
             _updateInstallBtn->setVisible(true);
             _updateInstallBtn->setEnabled(true);
             disconnect(_updateInstallBtn, &QPushButton::clicked, nullptr, nullptr);
@@ -807,11 +824,33 @@ void SettingsDialog::startUpdateInstall(const UpdateInfo& info)
     connect(progress, &QProgressDialog::canceled, _updater,
             &UpdateManager::cancelDownload);
 
+    // Past this point the package is being written over the running install —
+    // cancelling would leave it half-replaced.
+    connect(_updater, &UpdateManager::installStarted, progress,
+            [progress, info] {
+        progress->setCancelButton(nullptr);
+        progress->setLabelText(QString("Installing ASTRA %1…").arg(info.version));
+        progress->setMaximum(0);   // indeterminate
+    });
+
     connect(_updater, &UpdateManager::installFailed, progress,
             [this, progress](const QString& err) {
         progress->close();
         progress->deleteLater();
+        _updateInstallBtn->setEnabled(true);
         QMessageBox::warning(this, "Update failed", err);
+    });
+    connect(_updater, &UpdateManager::manualInstallRequired, progress,
+            [this, progress, info](const QString& path, const QString& reason) {
+        progress->close();
+        progress->deleteLater();
+        _updateInstallBtn->setEnabled(true);
+        QMessageBox::information(this, "Finish the update manually",
+            QString("ASTRA %1 was downloaded and verified, but it could not be "
+                    "installed automatically:\n%2\n\n"
+                    "The disk image has been opened — drag ASTRA to your "
+                    "Applications folder to finish, then restart ASTRA.\n\n%3")
+                .arg(info.version, reason, path));
     });
     connect(_updater, &UpdateManager::installFinished, progress,
             [this, progress, info](const QString&) {

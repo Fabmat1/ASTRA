@@ -267,6 +267,29 @@ QWidget* LightcurveFetchDialog::buildViewerTab()
     manageLay->addWidget(_deleteLcBtn);
     sideLay->addWidget(manageBox);
 
+    // ── Folding: what is on screen, and one click to adopt it ───────────
+    auto* foldBox = new QGroupBox(tr("Folding"));
+    auto* foldLay = new QVBoxLayout(foldBox);
+
+    _viewerFoldLabel = new QLabel;
+    _viewerFoldLabel->setWordWrap(true);
+    _viewerFoldLabel->setTextFormat(Qt::RichText);
+    foldLay->addWidget(_viewerFoldLabel);
+
+    _viewerSetBestBtn = new QPushButton(tr("Set as Best Period"));
+    _viewerSetBestBtn->setToolTip(tr(
+        "Store the period the plot is currently folded to as the star's "
+        "best photometric period."));
+    _viewerSetBestBtn->setEnabled(false);
+    foldLay->addWidget(_viewerSetBestBtn);
+
+    _viewerBestLabel = new QLabel;
+    _viewerBestLabel->setStyleSheet("color: gray;");
+    _viewerBestLabel->setWordWrap(true);
+    foldLay->addWidget(_viewerBestLabel);
+
+    sideLay->addWidget(foldBox);
+
     // Meta info sections (one per lightcurve), scrollable
     auto* metaHost = new QWidget;
     _viewerMetaLayout = new QVBoxLayout(metaHost);
@@ -291,9 +314,53 @@ QWidget* LightcurveFetchDialog::buildViewerTab()
             this, &LightcurveFetchDialog::onDeleteLightcurveClicked);
     connect(_recomputeBjdBtn, &QPushButton::clicked,
             this, &LightcurveFetchDialog::onRecomputeBjdClicked);
+    connect(_viewerSetBestBtn, &QPushButton::clicked,
+            this, &LightcurveFetchDialog::onViewerSetAsBestClicked);
+    connect(_lcPanel, &LCPanel::foldStateChanged,
+            this, &LightcurveFetchDialog::onViewerFoldStateChanged);
 
     refreshViewerSourceCombo();
+    onViewerFoldStateChanged(_lcPanel->foldPeriod(), _lcPanel->foldT0(),
+                             _lcPanel->isFolded());
     return page;
+}
+
+void LightcurveFetchDialog::onViewerFoldStateChanged(double period, double t0,
+                                                     bool folded)
+{
+    Q_UNUSED(t0);
+    if (!_viewerFoldLabel) return;
+
+    if (period > 0.0) {
+        _viewerFoldLabel->setText(
+            folded ? tr("Folded to <b>P = %1 d</b>").arg(period, 0, 'g', 8)
+                   : tr("Not folded - fold period would be "
+                        "<b>P = %1 d</b>").arg(period, 0, 'g', 8));
+    } else {
+        _viewerFoldLabel->setText(tr("No fold period available."));
+    }
+    if (_viewerSetBestBtn) _viewerSetBestBtn->setEnabled(period > 0.0);
+
+    if (!_viewerBestLabel) return;
+    if (_star && Star::isSet(_star->getPhotPeriod())) {
+        _viewerBestLabel->setText(
+            tr("Current best-fit P = %1 ± %2 d")
+                .arg(_star->getPhotPeriod(), 0, 'g', 6)
+                .arg(Star::isSet(_star->getPhotEPeriod())
+                         ? _star->getPhotEPeriod() : 0.0, 0, 'g', 2));
+    } else {
+        _viewerBestLabel->setText(tr("No best-fit period stored yet."));
+    }
+}
+
+void LightcurveFetchDialog::onViewerSetAsBestClicked()
+{
+    if (!_lcPanel) return;
+    const double p = _lcPanel->foldPeriod();
+    if (p <= 0.0) return;
+    // The fold period usually comes from a marked peak; reuse that peak's
+    // uncertainty when it does, rather than dropping it.
+    applyBestPeriod(p, peakErrorFor(p));
 }
 
 QWidget* LightcurveFetchDialog::buildFetchTab()
@@ -1447,22 +1514,38 @@ void LightcurveFetchDialog::onSetAsBestFitClicked()
     const int row = _peaksTable->currentRow();
     if (row < 0 || row >= _peaks.size() || !_star) return;
     const auto& pk = _peaks[row];
+    applyBestPeriod(pk.period, pk.periodError);
+}
 
-    _star->setPhotPeriod(pk.period);
-    _star->setPhotEPeriod(pk.periodError);
+double LightcurveFetchDialog::peakErrorFor(double period) const
+{
+    for (const auto& pk : _peaks)
+        if (pk.period > 0.0 && std::abs(pk.period - period) <= 1e-9 * period)
+            return pk.periodError;
+    return 0.0;
+}
+
+void LightcurveFetchDialog::applyBestPeriod(double period, double periodError)
+{
+    if (!_star || period <= 0.0) return;
+
+    _star->setPhotPeriod(period);
+    _star->setPhotEPeriod(periodError);
     _star->markSummaryDirty();                       // notify in-app listeners
     if (_dbm) _dbm->updateStar(_projectId, _star);   // persist to DB
 
-    _bestFitLabel->setText(
-        QString("Current best-fit P = %1 ± %2 d  (set just now)")
-            .arg(pk.period,      0, 'g', 6)
-            .arg(pk.periodError, 0, 'g', 2));
-    
+    const QString msg = QString("Current best-fit P = %1 ± %2 d  (set just now)")
+                            .arg(period,      0, 'g', 6)
+                            .arg(periodError, 0, 'g', 2);
+    if (_bestFitLabel)    _bestFitLabel->setText(msg);
+    if (_viewerBestLabel) _viewerBestLabel->setText(msg);
+    if (_addPhotPeriodBtn) _addPhotPeriodBtn->setEnabled(true);
+
     refreshFitPeriodList();
 
     LOG_INFO("Periodogram",
         QString("Saved best-fit photometric period for %1: P=%2 ±%3")
-            .arg(_star->getId()).arg(pk.period).arg(pk.periodError));
+            .arg(_star->getId()).arg(period).arg(periodError));
 }
 
 // ──────────────────────────────────────────────────────────────────

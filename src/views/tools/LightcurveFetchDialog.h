@@ -90,6 +90,11 @@ private slots:
     void onClearPeaksClicked();
     void onFoldInViewerClicked();
     void onSetAsBestFitClicked();
+
+    // Viewer tab
+    void onViewerFoldStateChanged(double period, double t0, bool folded);
+    void onViewerSetAsBestClicked();
+
     void onPeakSelectionChanged();
     void onPeakDoubleClicked();
 
@@ -128,6 +133,11 @@ private slots:
 
     void refreshViewerSourceCombo();
     void refreshViewerMetaInfo();
+    /// Store `period` (± `periodError`) as the star's best photometric period
+    /// and refresh every label/list that shows it.
+    void applyBestPeriod(double period, double periodError);
+    /// Uncertainty of a marked peak that sits at `period`, 0 if there is none.
+    double peakErrorFor(double period) const;
 
     void pushSeriesIntoPanel();
     void rebuildPeaksTable();
@@ -169,6 +179,9 @@ private slots:
     QComboBox*   _viewerSourceCombo = nullptr;
     QPushButton* _deleteLcBtn       = nullptr;
     QPushButton* _recomputeBjdBtn   = nullptr;
+    QLabel*      _viewerFoldLabel   = nullptr;   // period the panel is folded to
+    QLabel*      _viewerBestLabel   = nullptr;   // best photometric period on file
+    QPushButton* _viewerSetBestBtn  = nullptr;
     QVBoxLayout* _viewerMetaLayout  = nullptr;   // host for per-lightcurve info sections
 
     // Parameter controls (right column)
