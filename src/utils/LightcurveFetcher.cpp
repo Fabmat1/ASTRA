@@ -272,8 +272,13 @@ LightcurveFetcher::expectedOutputFiles(const QString& gaiaId) const
 //   TESS     : time(BJD-2457000), flux, flux_err                     (3 cols)
 //   ZTF      : mjd, flux, flux_err, filter                           (4 cols)
 //   ATLAS    : mjd, flux, flux_err, filter                           (4 cols)
-//   Gaia     : MJD, flux, flux_err, filter (G/BP/RP)                 (4 cols)
+//   Gaia     : time(BJD-2455197.5, TCB), flux, flux_err, filter (G/BP/RP) (4 cols)
 //   BlackGEM : MJD_OBS, FNU_OPT, FNUERRTOT_OPT, FILTER               (4 cols)
+//
+// The Gaia column is labelled "MJD" in the Python pipeline, but it is really
+// the epoch-photometry TimeG/TimeBP/TimeRP of Vizier I/355/epphot, i.e. a
+// barycentric JD in TCB minus 2 455 197.5 - so it is already barycentric and
+// must not be run through the observatory-based MJD->BJD conversion.
 //
 // Files that the Python pipeline failed to populate contain the literal
 // "NaN, NaN, NaN, NaN, NaN, NaN, NaN" - we treat those as empty.
@@ -288,9 +293,12 @@ LightcurveFetcher::parseOutputFile(const QString& path,
     if (!f.exists() || !f.open(QIODevice::ReadOnly | QIODevice::Text))
         return out;
 
-    const bool      isTess = source.compare("TESS", Qt::CaseInsensitive) == 0;
-    const TimeScale scale  = isTess ? TimeScale::BTJD : TimeScale::MJD;
-    if (outScale) *outScale = scale;
+    const bool isTess = source.compare("TESS", Qt::CaseInsensitive) == 0;
+    const bool isGaia = source.compare("Gaia", Qt::CaseInsensitive) == 0;
+
+    TimeScale scale = isTess ? TimeScale::BTJD
+                    : isGaia ? TimeScale::GaiaTCB
+                    :          TimeScale::MJD;
 
     QTextStream in(&f);
     int lineNo = 0;
@@ -311,6 +319,16 @@ LightcurveFetcher::parseOutputFile(const QString& path,
         if (!tOk || !yOk || !eOk)           continue;
         if (!std::isfinite(t) || !std::isfinite(y)) continue;
 
+        // Safety net: should a future pipeline version write real MJDs into
+        // the Gaia file, the offset epoch would be wildly wrong. Gaia TCB
+        // days are ~1000-4000 for DR3+, MJD is > 50 000.
+        if (isGaia && out.empty() && t > 20000.0) {
+            scale = TimeScale::MJD;
+            LOG_INFO("LCQuery",
+                     QString("Gaia file %1 holds times > 20000 - treating "
+                             "them as MJD, not Gaia TCB").arg(path));
+        }
+
         LightcurvePoint pt;
         pt.time      = Time(t, scale);
         pt.flux      = y;
@@ -322,8 +340,12 @@ LightcurveFetcher::parseOutputFile(const QString& path,
         out.push_back(std::move(pt));
     }
 
+    if (outScale) *outScale = scale;
+
     LOG_INFO("LCQuery",
-             QString("Parsed %1: %2 points from %3").arg(source).arg(out.size()).arg(path));
+             QString("Parsed %1: %2 points from %3 (%4)")
+                 .arg(source).arg(out.size()).arg(path,
+                      Time::scaleToString(scale)));
     return out;
 }
 

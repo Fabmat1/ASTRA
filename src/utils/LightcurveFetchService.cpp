@@ -547,7 +547,11 @@ QString LightcurveFetchService::importResults(Session* s)
              ts == TimeScale::BKJD ||
              ts == TimeScale::GaiaTCB);
 
-        if (!nativeIsBjd && haveCoords && dbm) {
+        if (nativeIsBjd) {
+            appendNote(s, tr("[%1] native scale %2 is already barycentric - "
+                             "BJD taken directly")
+                              .arg(source, Time::scaleToString(ts)));
+        } else if (haveCoords && dbm) {
             auto inst = dbm->resolveInstrumentString(source);
             if (!inst) {
                 appendNote(s, tr("[%1] no instrument record found - BJD not computed")
