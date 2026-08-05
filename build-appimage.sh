@@ -129,7 +129,8 @@ rm -rf AppDir/usr/libexec/astra/sedfit
 
 # ---------- 3b. Build lcurve fitting binaries (bundled into the AppImage) ----
 # ASTRA shells out to lcurve_levmarq / lcurve_mcmc / lcurve_simplex for light-
-# curve fitting. Built here (not baked into the image) so each release picks up
+# curve fitting, and to lcurve_re (forward model) for the model preview in the
+# fit dialog. Built here (not baked into the image) so each release picks up
 # the current lcurve_re HEAD; the compile is small and ccache-accelerated.
 LCURVE_REPO="${LCURVE_REPO:-https://github.com/Fabmat1/lcurve_re.git}"
 LCURVE_REF="${LCURVE_REF:-main}"
@@ -152,9 +153,10 @@ grep -q -- "-march=native" CMakeLists.txt \
   && { echo "lcurve_re still requests -march=native; refusing to ship a host-tuned build"; exit 1; }
 cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DLCURVE_ENABLE_CUDA=OFF \
   -DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-cmake --build build --target lcurve_levmarq lcurve_mcmc lcurve_simplex -j"$(nproc)"
+cmake --build build --target lcurve_levmarq lcurve_mcmc lcurve_simplex \
+  lcurve_re -j"$(nproc)"
 LCURVE_BUILD=/tmp/lcurve_re/build
-for b in lcurve_levmarq lcurve_mcmc lcurve_simplex; do
+for b in lcurve_levmarq lcurve_mcmc lcurve_simplex lcurve_re; do
   [[ -x "${LCURVE_BUILD}/${b}" ]] || { echo "lcurve build missing ${b}"; exit 1; }
 done
 cd /src
@@ -298,6 +300,7 @@ linuxdeploy \
   -e "${LCURVE_BUILD}/lcurve_levmarq" \
   -e "${LCURVE_BUILD}/lcurve_mcmc" \
   -e "${LCURVE_BUILD}/lcurve_simplex" \
+  -e "${LCURVE_BUILD}/lcurve_re" \
   -e "${SEDFIT_BIN}" \
   "${ISIS_DEPLOY_ARGS[@]}" \
   -d AppDir/usr/share/applications/astra.desktop \

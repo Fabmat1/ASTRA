@@ -18,7 +18,13 @@ class QCheckBox;
 class QLabel;
 class QTableWidget;
 class QPlainTextEdit;
+class QGroupBox;
+class QSplitter;
+class QVBoxLayout;
+class QTimer;
+class QToolButton;
 class AnsiTerminalWidget;
+class LCModelPreview;
 class QCustomPlot;
 class QCPAxisRect;
 class QCPGraph;
@@ -72,10 +78,15 @@ class LCFitDialog : public QDialog {
   private:
     void setupUi();
     QWidget *buildHeader();
-    QWidget *buildStarsPage();
-    QWidget *buildConstraintsPage();
-    QWidget *buildDarkeningPage();
-    QWidget *buildBeamingPage();
+    // The setup page gathers every quantity that defines the initial model:
+    // both stars, the RV/mass constraints, limb & gravity darkening, beaming
+    // and the ephemeris.
+    QWidget   *buildSetupPage();
+    QGroupBox *buildStarBox(int index);
+    QGroupBox *buildConstraintsBox();
+    QGroupBox *buildStartBox();
+    QGroupBox *buildDarkeningBox();
+    QGroupBox *buildBeamingBox();
     QWidget *buildSolverPage();
     QWidget *buildRunPage();
 
@@ -84,6 +95,15 @@ class LCFitDialog : public QDialog {
 
     LCFitPhysics::Observables collectObservables() const;
     LCFitPhysics::PriorInputs collectPriors() const;
+
+    // A group of priors that over-determine each other, together with the
+    // fields that make it up (they get the warning outline).
+    struct PriorClash {
+        QString              html;
+        QVector<QLineEdit *> fields;
+    };
+    QVector<PriorClash> priorClashes() const;
+    QVector<QLineEdit *> priorEdits() const;
     QStringList redundantPriorCombos() const;
     void updatePriorConflictWarning();
     LCFitPhysics::ModelInputs collectModelInputs() const;
@@ -133,18 +153,17 @@ class LCFitDialog : public QDialog {
     QPushButton *_closeBtn = nullptr;
     QStringList _pageTitles;
 
-    // Live warning shown while the user types conflicting priors (one label
-    // per page that hosts prior inputs).
-    QLabel *_priorWarnStars = nullptr, *_priorWarnConstraints = nullptr;
+    // Live warning shown while the user types conflicting priors.
+    QLabel *_priorWarn = nullptr;
 
-    // Stars page
+    // Setup page - stars
     QComboBox *_type1 = nullptr, *_type2 = nullptr;
     QLineEdit *_T1 = nullptr, *_T2 = nullptr;
     QLineEdit *_logg1 = nullptr, *_logg2 = nullptr;
     QLineEdit *_M1 = nullptr, *_M2 = nullptr;
     QLineEdit *_R1 = nullptr, *_R2 = nullptr;
 
-    // Constraints page
+    // Setup page - constraints
     QLineEdit *_K1 = nullptr, *_K2 = nullptr;
     QLineEdit *_M2min = nullptr, *_qObs = nullptr, *_Mtot = nullptr;
     QDoubleSpinBox *_iOverride = nullptr;
@@ -152,13 +171,13 @@ class LCFitDialog : public QDialog {
     QLabel *_spStart = nullptr;
     QLabel *_spImpl = nullptr;
 
-    // Darkening page
+    // Setup page - limb & gravity darkening
     QDoubleSpinBox *_ldc1[4]{};
     QDoubleSpinBox *_ldc2[4]{};
     QDoubleSpinBox *_gd1 = nullptr, *_gd2 = nullptr;
     QLabel *_claretDiag = nullptr;
 
-    // Beaming page
+    // Setup page - beaming & ephemeris
     QDoubleSpinBox *_bf1 = nullptr, *_bf2 = nullptr, *_t0 = nullptr;
 
     // Solver page
@@ -204,9 +223,25 @@ class LCFitDialog : public QDialog {
     std::optional<QJsonObject> _configOverride;
 
 
+    // Model preview shown beside every page except the run page.
+    LCModelPreview *_preview = nullptr;
+    QWidget        *_previewPanel = nullptr;
+    QSplitter      *_mainSplit = nullptr;
+    QTimer         *_previewTimer = nullptr;
+    void            schedulePreviewUpdate();
+    void            refreshPreview();
+    void            connectPreviewTriggers();
+
     // Run page
     QPushButton *_runBtn = nullptr, *_cancelBtn = nullptr, *_saveBtn = nullptr;
     AnsiTerminalWidget *_term = nullptr;
+
+    // Run page accordion: the live plot and the results table share the space
+    // below the terminal, one expanded at a time.
+    QToolButton *_plotToggle = nullptr, *_resultsToggle = nullptr;
+    QWidget     *_plotBody = nullptr, *_resultsBody = nullptr;
+    QVBoxLayout *_runAccordion = nullptr;
+    void         showRunSection(bool plot);
     QCustomPlot *_livePlot = nullptr;
     QCPAxisRect *_residualRect = nullptr;
     QCPGraph *_dataGraph = nullptr, *_modelGraph = nullptr;

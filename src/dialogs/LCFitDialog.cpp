@@ -11,6 +11,7 @@
 #include "utils/Logger.h"
 #include "plotting/qcustomplot.h"
 #include "views/widgets/AnsiTerminalWidget.h"
+#include "views/widgets/LCModelPreview.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -37,9 +38,12 @@
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QStandardPaths>
+#include <QStyle>
 #include <QTabWidget>
 #include <QTableWidget>
 #include <QTextStream>
+#include <QTimer>
+#include <QToolButton>
 #include <QUuid>
 #include <QVBoxLayout>
 #include <cmath>
@@ -152,7 +156,11 @@ LCFitDialog::~LCFitDialog() {
 
 void LCFitDialog::setupUi() {
     setWindowTitle(tr("Light-Curve Fit"));
-    resize(1100, 780);
+    resize(1500, 860);
+    // Prior groups that over-determine each other outline their members; the
+    // rule lives on the dialog so only flagged fields deviate from the theme.
+    setStyleSheet("QLineEdit[priorConflict=\"true\"] {"
+                  " border: 2px solid #dca84d; border-radius: 3px; }");
 
     auto *root = new QVBoxLayout(this);
     root->setContentsMargins(8, 8, 8, 8);
@@ -161,19 +169,42 @@ void LCFitDialog::setupUi() {
     root->addWidget(buildHeader());
 
     _pages = new QStackedWidget;
-    _pageTitles = {
-        tr("Stars"),   tr("Constraints"), tr("Limb/Gravity Darkening"),
-        tr("Beaming"), tr("Solver"),      tr("Advanced"),
-        tr("Review"),  tr("Run")};
-    _pages->addWidget(buildStarsPage());
-    _pages->addWidget(buildConstraintsPage());
-    _pages->addWidget(buildDarkeningPage());
-    _pages->addWidget(buildBeamingPage());
+    _pageTitles = {tr("Setup"), tr("Solver"), tr("Advanced"), tr("Review"),
+                   tr("Run")};
+    _pages->addWidget(buildSetupPage());
     _pages->addWidget(buildSolverPage());
     _pages->addWidget(buildAdvancedPage());
     _pages->addWidget(buildReviewPage());
     _pages->addWidget(buildRunPage());
-    root->addWidget(_pages, 1);
+
+    // ── Model preview beside the pages ──────────────────────────────────
+    _previewPanel   = new QWidget;
+    auto *previewLay = new QVBoxLayout(_previewPanel);
+    previewLay->setContentsMargins(0, 0, 0, 0);
+    auto *previewTitle = new QLabel(tr("<b>Model preview</b>"));
+    previewTitle->setTextFormat(Qt::RichText);
+    previewLay->addWidget(previewTitle);
+    _preview = new LCModelPreview;
+    previewLay->addWidget(_preview, 1);
+
+    _mainSplit = new QSplitter(Qt::Horizontal);
+    _mainSplit->addWidget(_pages);
+    _mainSplit->addWidget(_previewPanel);
+    _mainSplit->setStretchFactor(0, 3);
+    _mainSplit->setStretchFactor(1, 2);
+    _mainSplit->setSizes({880, 600});
+    root->addWidget(_mainSplit, 1);
+
+    const QString previewBin =
+        _in.settings ? _in.settings->lcurveBinary(QStringLiteral("lcurve_re"))
+                     : QString();
+    _preview->setEngine(previewBin, _tempDir);
+    _preview->setObservedData(_in.binnedPoints);
+
+    _previewTimer = new QTimer(this);
+    _previewTimer->setSingleShot(true);
+    _previewTimer->setInterval(400);
+    connect(_previewTimer, &QTimer::timeout, this, &LCFitDialog::refreshPreview);
 
     // ── Navigation strip ────────────────────────────────────────────────
     auto *nav = new QHBoxLayout;
@@ -201,14 +232,82 @@ void LCFitDialog::setupUi() {
     updateNavButtons();
 
     // Live conflict check across every field that becomes a prior.
-    for (QLineEdit *e : {_logg1, _logg2, _M1, _M2, _R1, _R2, _K1, _K2, _M2min,
-                         _qObs, _Mtot})
-        if (e)
-            connect(e, &QLineEdit::textChanged, this,
-                    &LCFitDialog::updatePriorConflictWarning);
+    for (QLineEdit *e : priorEdits())
+        connect(e, &QLineEdit::textChanged, this,
+                &LCFitDialog::updatePriorConflictWarning);
 
     populateFromStar();
     updatePriorConflictWarning();
+    connectPreviewTriggers();
+    schedulePreviewUpdate();
+}
+
+// Any input that feeds the LCURVE model must invalidate the preview. Rather
+// than enumerate several dozen widgets by hand (and silently miss the next one
+// added), every value editor outside the run page is wired up generically.
+void LCFitDialog::connectPreviewTriggers() {
+    QWidget *runPage = _pages->widget(_pages->count() - 1);
+    auto     onRunPage = [runPage](QWidget *w) {
+        return runPage && (w == runPage || runPage->isAncestorOf(w));
+    };
+
+    for (QLineEdit *w : findChildren<QLineEdit *>())
+        if (!onRunPage(w))
+            connect(w, &QLineEdit::textChanged, this,
+                    &LCFitDialog::schedulePreviewUpdate);
+    for (QDoubleSpinBox *w : findChildren<QDoubleSpinBox *>())
+        if (!onRunPage(w))
+            connect(w, &QDoubleSpinBox::valueChanged, this,
+                    &LCFitDialog::schedulePreviewUpdate);
+    for (QSpinBox *w : findChildren<QSpinBox *>())
+        if (!onRunPage(w))
+            connect(w, &QSpinBox::valueChanged, this,
+                    &LCFitDialog::schedulePreviewUpdate);
+    for (QComboBox *w : findChildren<QComboBox *>())
+        if (!onRunPage(w))
+            connect(w, &QComboBox::currentIndexChanged, this,
+                    &LCFitDialog::schedulePreviewUpdate);
+    for (QCheckBox *w : findChildren<QCheckBox *>())
+        if (!onRunPage(w))
+            connect(w, &QCheckBox::toggled, this,
+                    &LCFitDialog::schedulePreviewUpdate);
+}
+
+void LCFitDialog::schedulePreviewUpdate() {
+    if (!_previewTimer || !_preview)
+        return;
+    if (_runner && _runner->isRunning())
+        return; // the live plot owns the screen while a fit runs
+    _previewTimer->start();
+}
+
+void LCFitDialog::refreshPreview() {
+    if (!_preview)
+        return;
+    if (_in.binnedPoints.empty()) {
+        _preview->showNotice(tr("No binned data points to model."));
+        return;
+    }
+
+    // Keep the Claret/beaming tables in step with the current T_eff / log g
+    // before the model is built, exactly as visiting those pages used to do.
+    if (const QString key = claretInputKey(); key != _lastClaretKey) {
+        _lastClaretKey = key;
+        onQueryClaretClicked();
+    }
+    if (const QString key = beamingInputKey(); key != _lastBeamingKey) {
+        _lastBeamingKey = key;
+        onComputeBeamingClicked();
+    }
+
+    // The preview shows the model for the current starting point, so the
+    // starting point is derived on the fly instead of waiting for the button.
+    onComputeStartingClicked();
+
+    // Values written above re-armed the timer; the config below already
+    // contains them, so drop that redundant round.
+    _previewTimer->stop();
+    _preview->requestModel(effectiveConfig());
 }
 
 // ── Auto-populate from Star ────────────────────────────────────────────────
@@ -303,72 +402,101 @@ QWidget *LCFitDialog::buildHeader() {
   }
 
 
-// ── Stars tab ──────────────────────────────────────────────────────
+// ── Setup page ─────────────────────────────────────────────────────
+// Everything that defines the initial model lives here: both stars, the
+// RV/mass constraints, the starting point, limb & gravity darkening, beaming
+// and the ephemeris. The preview beside it reacts to every one of them.
 
-  QWidget *LCFitDialog::buildStarsPage() {
-      auto *page  = new QWidget;
-      auto *outer = new QVBoxLayout(page);
-      auto *root  = new QHBoxLayout;
-      outer->addLayout(root, 1);
+QWidget *LCFitDialog::buildSetupPage() {
+    auto *scroll = new QScrollArea;
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
 
-      auto makeStarBox = [&](const QString &title, QComboBox *&type,
-                             QLineEdit *&T, QLineEdit *&logg, QLineEdit *&M,
-                             QLineEdit *&R) -> QGroupBox * {
-          auto *b = new QGroupBox(title);
-          auto *f = new QFormLayout(b);
-          type    = new QComboBox;
-          type->addItems({"ms", "sd", "wd"});
-          T    = mkMeasEdit(tr("e.g. 28100 500"));
-          logg = mkMeasEdit(tr("e.g. 5.4 0.2"));
-          M    = mkMeasEdit();
-          R    = mkMeasEdit();
-          f->addRow(tr("Type:"), type);
-          f->addRow(tr("T_eff [K]:"), T);
-          f->addRow(tr("log g [cgs]:"), logg);
-          f->addRow(tr("Mass [M☉]:"), M);
-          f->addRow(tr("Radius [R☉]:"), R);
-          return b;
-      };
+    auto *page = new QWidget;
+    auto *g    = new QGridLayout(page);
+    g->setContentsMargins(0, 0, 4, 0);
 
-      root->addWidget(makeStarBox(tr("Star 1 (primary / hotter)"), _type1, _T1,
-                                  _logg1, _M1, _R1));
-      root->addWidget(makeStarBox(tr("Star 2 (secondary / cooler)"), _type2,
-                                  _T2, _logg2, _M2, _R2));
+    g->addWidget(buildStarBox(1), 0, 0);
+    g->addWidget(buildStarBox(2), 0, 1);
 
-      // Subdwarf primary is the canonical case for this tool.
-      _type1->setCurrentText("sd");
-      _type2->setCurrentText("ms");
+    // Subdwarf primary is the canonical case for this tool.
+    _type1->setCurrentText("sd");
+    _type2->setCurrentText("ms");
+    connect(_M1, &QLineEdit::textChanged, this, &LCFitDialog::onM1M2Changed);
+    connect(_M2, &QLineEdit::textChanged, this, &LCFitDialog::onM1M2Changed);
 
-      auto *side = new QVBoxLayout;
-      side->addStretch();
-      auto *msBtn = new QPushButton(tr("Guess MS companion"));
-      msBtn->setToolTip(tr("Fill Star 2 atmospheric defaults for a "
-                           "low-mass main-sequence companion. "
-                           "Mass and radius are left blank on purpose."));
-      auto *wdBtn = new QPushButton(tr("Guess WD companion"));
-      wdBtn->setToolTip(tr("Fill Star 2 atmospheric defaults for a "
-                           "white-dwarf companion. "
-                           "Mass and radius are left blank on purpose."));
-      connect(msBtn, &QPushButton::clicked, this,
-              &LCFitDialog::onGuessMSClicked);
-      connect(wdBtn, &QPushButton::clicked, this,
-              &LCFitDialog::onGuessWDClicked);
-      connect(_M1, &QLineEdit::textChanged, this, &LCFitDialog::onM1M2Changed);
-      connect(_M2, &QLineEdit::textChanged, this, &LCFitDialog::onM1M2Changed);
-      side->addWidget(msBtn);
-      side->addWidget(wdBtn);
-      side->addStretch();
-      root->addLayout(side);
+    g->addWidget(buildConstraintsBox(), 1, 0);
+    g->addWidget(buildStartBox(), 1, 1);
+    g->addWidget(buildDarkeningBox(), 2, 0);
+    g->addWidget(buildBeamingBox(), 2, 1);
 
-      _priorWarnStars = new QLabel;
-      _priorWarnStars->setWordWrap(true);
-      _priorWarnStars->setTextFormat(Qt::RichText);
-      _priorWarnStars->setStyleSheet("color: #dca84d;");
-      _priorWarnStars->hide();
-      outer->addWidget(_priorWarnStars);
+    g->setColumnStretch(0, 1);
+    g->setColumnStretch(1, 1);
+    g->setRowStretch(3, 1);
 
-      return page;
-  }
+    scroll->setWidget(page);
+
+    // The conflict warning sits outside the scroll area: it must stay visible
+    // no matter how far down the form the user has scrolled.
+    _priorWarn = new QLabel;
+    _priorWarn->setWordWrap(true);
+    _priorWarn->setTextFormat(Qt::RichText);
+    _priorWarn->setStyleSheet("color: #dca84d;");
+    _priorWarn->hide();
+
+    auto *wrapper = new QWidget;
+    auto *wl      = new QVBoxLayout(wrapper);
+    wl->setContentsMargins(0, 0, 0, 0);
+    wl->addWidget(scroll, 1);
+    wl->addWidget(_priorWarn);
+    return wrapper;
+}
+
+QGroupBox *LCFitDialog::buildStarBox(int index) {
+    const bool second = index == 2;
+    auto      *b      = new QGroupBox(second ? tr("Star 2 (secondary / cooler)")
+                                             : tr("Star 1 (primary / hotter)"));
+    auto      *f      = new QFormLayout(b);
+
+    QComboBox *&type = second ? _type2 : _type1;
+    QLineEdit *&T    = second ? _T2 : _T1;
+    QLineEdit *&logg = second ? _logg2 : _logg1;
+    QLineEdit *&M    = second ? _M2 : _M1;
+    QLineEdit *&R    = second ? _R2 : _R1;
+
+    type = new QComboBox;
+    type->addItems({"ms", "sd", "wd"});
+    T    = mkMeasEdit(tr("e.g. 28100 500"));
+    logg = mkMeasEdit(tr("e.g. 5.4 0.2"));
+    M    = mkMeasEdit();
+    R    = mkMeasEdit();
+    f->addRow(tr("Type:"), type);
+    f->addRow(tr("T_eff [K]:"), T);
+    f->addRow(tr("log g [cgs]:"), logg);
+    f->addRow(tr("Mass [M☉]:"), M);
+    f->addRow(tr("Radius [R☉]:"), R);
+
+    // The companion guesses only ever touch star 2, so they belong in its box.
+    if (second) {
+        auto *guessRow = new QHBoxLayout;
+        auto *msBtn    = new QPushButton(tr("Guess MS"));
+        msBtn->setToolTip(tr("Fill Star 2 atmospheric defaults for a "
+                             "low-mass main-sequence companion. "
+                             "Mass and radius are left blank on purpose."));
+        auto *wdBtn = new QPushButton(tr("Guess WD"));
+        wdBtn->setToolTip(tr("Fill Star 2 atmospheric defaults for a "
+                             "white-dwarf companion. "
+                             "Mass and radius are left blank on purpose."));
+        connect(msBtn, &QPushButton::clicked, this,
+                &LCFitDialog::onGuessMSClicked);
+        connect(wdBtn, &QPushButton::clicked, this,
+                &LCFitDialog::onGuessWDClicked);
+        guessRow->addWidget(msBtn);
+        guessRow->addWidget(wdBtn);
+        f->addRow(guessRow);
+    }
+    return b;
+}
 
   void LCFitDialog::onGuessMSClicked() {
       _type2->setCurrentText("ms");
@@ -388,15 +516,12 @@ QWidget *LCFitDialog::buildHeader() {
       recomputeM2Min();
   }
 
-// ── Constraints tab ────────────────────────────────────────────────
+// ── Constraints & starting point ───────────────────────────────────
 
-QWidget *LCFitDialog::buildConstraintsPage() {
-  auto *page = new QWidget;
-  auto *root = new QVBoxLayout(page);
-
+QGroupBox *LCFitDialog::buildConstraintsBox() {
   auto *rvBox =
-      new QGroupBox(tr("Radial velocities & mass constraints "
-                       "(all optional; format: <i>value [errLo [errHi]]</i>)"));
+      new QGroupBox(tr("Radial velocities and mass constraints "
+                       "(all optional; format: value [errLo [errHi]])"));
   auto *g = new QGridLayout(rvBox);
   int r = 0;
   auto addRow = [&](const QString &lbl, QLineEdit *&e) {
@@ -410,6 +535,7 @@ QWidget *LCFitDialog::buildConstraintsPage() {
   addRow(tr("M₂_min [M☉]:"), _M2min);
   addRow(tr("q = M₂/M₁:"), _qObs);
   addRow(tr("M_total [M☉]:"), _Mtot);
+  g->setColumnStretch(1, 1);
 
   // Auto-fill K1 from stored RV best fit when available
   if (_in.star) {
@@ -422,14 +548,22 @@ QWidget *LCFitDialog::buildConstraintsPage() {
       }
     }
   }
+  return rvBox;
+}
 
-  root->addWidget(rvBox);
-
+QGroupBox *LCFitDialog::buildStartBox() {
   auto *startBox = new QGroupBox(tr("Starting parameters"));
   auto *sl = new QFormLayout(startBox);
-  _iLock = new QCheckBox(tr("Fix inclination to:"));
+  // This value seeds the starting point only - whether the fit itself keeps
+  // the inclination frozen is decided by the "iangle" box on the solver page.
+  _iLock = new QCheckBox(tr("Initial inclination guess:"));
+  _iLock->setToolTip(
+      tr("Derive the starting parameters at this inclination instead of "
+         "letting the start solver choose one. The fit still varies the "
+         "inclination unless <i>iangle</i> is unchecked on the solver page."));
   _iOverride = mkSpin(5.0, 89.99, 2, 0.5, 80.0);
   _iOverride->setEnabled(false);
+  _iOverride->setSuffix(tr(" °"));
   connect(_iLock, &QCheckBox::toggled, _iOverride, &QWidget::setEnabled);
 
   auto *iRow = new QHBoxLayout;
@@ -439,8 +573,8 @@ QWidget *LCFitDialog::buildConstraintsPage() {
   sl->addRow(iRow);
 
   _spStart =
-      new QLabel(tr("Press <b>Compute starting parameters</b> to derive "
-                    "(i, q, v_scale, r₁, r₂) from the constraints above."));
+      new QLabel(tr("Starting parameters (i, q, v_scale, r₁, r₂) are derived "
+                    "from the constraints as you type."));
   _spStart->setWordWrap(true);
   _spImpl = new QLabel;
   _spImpl->setWordWrap(true);
@@ -449,22 +583,11 @@ QWidget *LCFitDialog::buildConstraintsPage() {
   sl->addRow(_spStart);
   sl->addRow(_spImpl);
 
-  auto *btn = new QPushButton(tr("Compute starting parameters"));
+  auto *btn = new QPushButton(tr("Recompute starting parameters"));
   connect(btn, &QPushButton::clicked, this,
           &LCFitDialog::onComputeStartingClicked);
   sl->addRow(btn);
-
-  root->addWidget(startBox);
-
-  _priorWarnConstraints = new QLabel;
-  _priorWarnConstraints->setWordWrap(true);
-  _priorWarnConstraints->setTextFormat(Qt::RichText);
-  _priorWarnConstraints->setStyleSheet("color: #dca84d;");
-  _priorWarnConstraints->hide();
-  root->addWidget(_priorWarnConstraints);
-
-  root->addStretch();
-  return page;
+  return startBox;
 }
 
 void LCFitDialog::onComputeStartingClicked() {
@@ -597,14 +720,16 @@ void LCFitDialog::onComputeStartingClicked() {
     _hasStart = true;
 }
 
-// ── Darkening tab ──────────────────────────────────────────────────
+// ── Limb & gravity darkening ───────────────────────────────────────
 
-QWidget *LCFitDialog::buildDarkeningPage() {
-  auto *page = new QWidget;
-  auto *root = new QVBoxLayout(page);
+QGroupBox *LCFitDialog::buildDarkeningBox() {
+  auto *box = new QGroupBox(tr("Limb and gravity darkening "
+                               "(Claret 4-parameter LDC, GDC)"));
+  auto *root = new QVBoxLayout(box);
 
-  auto *box = new QGroupBox(tr("Claret 4-parameter LDC and GDC"));
-  auto *g = new QGridLayout(box);
+  auto *inner = new QWidget;
+  auto *g = new QGridLayout(inner);
+  g->setContentsMargins(0, 0, 0, 0);
   g->addWidget(new QLabel(tr("Coefficient")), 0, 0);
   g->addWidget(new QLabel(tr("Star 1")), 0, 1);
   g->addWidget(new QLabel(tr("Star 2")), 0, 2);
@@ -621,8 +746,9 @@ QWidget *LCFitDialog::buildDarkeningPage() {
   _gd2 = mkSpin(0.0, 1.0, 4, 0.01, 0.08);
   g->addWidget(_gd1, 5, 1);
   g->addWidget(_gd2, 5, 2);
+  g->setColumnStretch(3, 1);
 
-  root->addWidget(box);
+  root->addWidget(inner);
 
   auto *btn = new QPushButton(
       tr("Query Claret tables for current T_eff / log g / band"));
@@ -634,8 +760,7 @@ QWidget *LCFitDialog::buildDarkeningPage() {
   _claretDiag->setWordWrap(true);
   _claretDiag->setTextFormat(Qt::RichText);
   root->addWidget(_claretDiag);
-  root->addStretch();
-  return page;
+  return box;
 }
 
 void LCFitDialog::onQueryClaretClicked() {
@@ -690,11 +815,11 @@ void LCFitDialog::onQueryClaretClicked() {
     _claretDiag->setText(lines.join("<br>"));
 }
 
-// ── Beaming tab ────────────────────────────────────────────────────
+// ── Beaming & ephemeris ────────────────────────────────────────────
 
-QWidget *LCFitDialog::buildBeamingPage() {
-    auto *page = new QWidget;
-    auto *f = new QFormLayout(page);
+QGroupBox *LCFitDialog::buildBeamingBox() {
+    auto *box = new QGroupBox(tr("Beaming and ephemeris"));
+    auto *f = new QFormLayout(box);
     _bf1 = mkSpin(0.0, 10.0, 4, 0.01, 1.0);
     _bf2 = mkSpin(0.0, 10.0, 4, 0.01, 1.0);
     _t0 = mkSpin(-1e6, 1e6, 6, 0.001, 0.0);
@@ -706,7 +831,7 @@ QWidget *LCFitDialog::buildBeamingPage() {
     f->addRow(tr("Beaming B₂:"), _bf2);
     f->addRow(tr("t₀ (BJD, eclipse phase 0):"), _t0);
     f->addRow(btn);
-    return page;
+    return box;
 }
 
 void LCFitDialog::onComputeBeamingClicked() {
@@ -1018,12 +1143,14 @@ void LCFitDialog::onApplyReviewClicked() {
     _reviewStatus->setStyleSheet("color: #7dbd5e;");
     _reviewStatus->setText(
         tr("Override active - next run uses the edited JSON verbatim."));
+    schedulePreviewUpdate();
 }
 
 void LCFitDialog::onDiscardOverrideClicked() {
     _configOverride.reset();
     _reviewStatus->setStyleSheet("color: gray;");
     _reviewStatus->setText(tr("Override discarded; using form values."));
+    schedulePreviewUpdate();
 }
 
 // ── Run tab ────────────────────────────────────────────────────────
@@ -1071,6 +1198,7 @@ QWidget *LCFitDialog::buildRunPage() {
   streamSplit->addWidget(_term);
 
   auto *plotPanel = new QWidget;
+  _plotBody = plotPanel;
   auto *plotLayout = new QVBoxLayout(plotPanel);
   plotLayout->setContentsMargins(0, 0, 0, 0);
   _plotStatus = new QLabel(tr("Waiting for live plot data…"));
@@ -1159,13 +1287,9 @@ QWidget *LCFitDialog::buildRunPage() {
   _livePlot->legend->setBorderPen(QPen(grid));
 
   plotLayout->addWidget(_livePlot, 1);
-  streamSplit->addWidget(plotPanel);
-  streamSplit->setStretchFactor(0, 1);
-  streamSplit->setStretchFactor(1, 2);
-  streamSplit->setSizes({200, 400});
-  root->addWidget(streamSplit, 1);
 
   auto *resBox = new QGroupBox(tr("Results"));
+  _resultsBody = resBox;
   auto *rl = new QVBoxLayout(resBox);
   _quality = new QLabel(tr("(no fit run yet)"));
   _quality->setStyleSheet("color: gray;");
@@ -1183,8 +1307,59 @@ QWidget *LCFitDialog::buildRunPage() {
   _results->setMinimumHeight(220);
   rl->addWidget(_results);
 
-  root->addWidget(resBox);
+  // ── Accordion: plot and results take turns owning the space ─────────
+  auto mkHeader = [](const QString &title) {
+    auto *b = new QToolButton;
+    b->setText(title);
+    b->setCheckable(true);
+    b->setAutoRaise(true);
+    b->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    b->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    QFont f = b->font();
+    f.setBold(true);
+    b->setFont(f);
+    return b;
+  };
+  _plotToggle    = mkHeader(tr("Live plot"));
+  _resultsToggle = mkHeader(tr("Results"));
+
+  auto *accordion = new QWidget;
+  _runAccordion   = new QVBoxLayout(accordion);
+  _runAccordion->setContentsMargins(0, 0, 0, 0);
+  _runAccordion->setSpacing(2);
+  _runAccordion->addWidget(_plotToggle);    // 0
+  _runAccordion->addWidget(plotPanel, 1);   // 1
+  _runAccordion->addWidget(_resultsToggle); // 2
+  _runAccordion->addWidget(resBox, 0);      // 3
+
+  connect(_plotToggle, &QToolButton::clicked, this,
+          [this] { showRunSection(true); });
+  connect(_resultsToggle, &QToolButton::clicked, this,
+          [this] { showRunSection(false); });
+
+  streamSplit->addWidget(accordion);
+  streamSplit->setStretchFactor(0, 1);
+  streamSplit->setStretchFactor(1, 3);
+  streamSplit->setSizes({160, 620});
+  root->addWidget(streamSplit, 1);
+
+  showRunSection(true);
   return page;
+}
+
+// Expanding one section collapses the other, so whichever is open gets the
+// full height of the panel.
+void LCFitDialog::showRunSection(bool plot) {
+  if (!_runAccordion)
+    return;
+  _plotBody->setVisible(plot);
+  _resultsBody->setVisible(!plot);
+  _plotToggle->setChecked(plot);
+  _resultsToggle->setChecked(!plot);
+  _plotToggle->setArrowType(plot ? Qt::DownArrow : Qt::RightArrow);
+  _resultsToggle->setArrowType(plot ? Qt::RightArrow : Qt::DownArrow);
+  _runAccordion->setStretch(1, plot ? 1 : 0);
+  _runAccordion->setStretch(3, plot ? 0 : 1);
 }
 
 // ── Collectors ─────────────────────────────────────────────────────
@@ -1220,58 +1395,96 @@ LCFitPhysics::PriorInputs LCFitDialog::collectPriors() const {
   return p;
 }
 
+QVector<QLineEdit *> LCFitDialog::priorEdits() const {
+  QVector<QLineEdit *> out;
+  for (QLineEdit *e : {_logg1, _logg2, _M1, _M2, _R1, _R2, _K1, _K2, _M2min,
+                       _qObs, _Mtot, _T1, _T2})
+    if (e)
+      out << e;
+  return out;
+}
+
 // Groups of priors that over-determine each other through exact physical
 // relations. Feeding all members of a group to the solver makes the priors
 // fight (each pulls the shared quantity toward a slightly different value),
 // so the user is warned before the run starts.
-QStringList LCFitDialog::redundantPriorCombos() const {
-  const auto p = collectPriors();
-  auto on = [](const std::optional<LCFitPhysics::AsymMeasurement> &m) {
+QVector<LCFitDialog::PriorClash> LCFitDialog::priorClashes() const {
+  auto on = [this](QLineEdit *e) {
+    const auto m = meas(e);
     return m && m->isValid();
   };
-  QStringList out;
-  auto flag = [&](std::initializer_list<bool> members, const QString &names,
-                  const QString &relation) {
-    for (bool b : members)
-      if (!b)
+  QVector<PriorClash> out;
+  auto flag = [&](std::initializer_list<QLineEdit *> members,
+                  const QString &names, const QString &relation) {
+    for (QLineEdit *e : members)
+      if (!e || !on(e))
         return;
-    out << QString("<b>%1</b> (%2)").arg(names, relation);
+    out.push_back({QString("<b>%1</b> (%2)").arg(names, relation),
+                   QVector<QLineEdit *>(members)});
   };
-  flag({on(p.logg1), on(p.M1), on(p.R1)}, tr("log g₁ + M₁ + R₁"),
+  flag({_logg1, _M1, _R1}, tr("log g₁ + M₁ + R₁"),
        tr("log g follows from M and R"));
-  flag({on(p.logg2), on(p.M2), on(p.R2)}, tr("log g₂ + M₂ + R₂"),
+  flag({_logg2, _M2, _R2}, tr("log g₂ + M₂ + R₂"),
        tr("log g follows from M and R"));
-  flag({on(p.q), on(p.M1), on(p.M2)}, tr("q + M₁ + M₂"), tr("q = M₂/M₁"));
-  flag({on(p.Mtotal), on(p.M1), on(p.M2)}, tr("M_total + M₁ + M₂"),
-       tr("M_total = M₁ + M₂"));
-  if (!on(p.M2))
-    flag({on(p.Mtotal), on(p.q), on(p.M1)}, tr("M_total + q + M₁"),
+  flag({_qObs, _M1, _M2}, tr("q + M₁ + M₂"), tr("q = M₂/M₁"));
+  flag({_Mtot, _M1, _M2}, tr("M_total + M₁ + M₂"), tr("M_total = M₁ + M₂"));
+  if (!on(_M2))
+    flag({_Mtot, _qObs, _M1}, tr("M_total + q + M₁"),
          tr("any two fix the third"));
-  if (!on(p.M1))
-    flag({on(p.Mtotal), on(p.q), on(p.M2)}, tr("M_total + q + M₂"),
+  if (!on(_M1))
+    flag({_Mtot, _qObs, _M2}, tr("M_total + q + M₂"),
          tr("any two fix the third"));
-  flag({on(p.K1), on(p.K2), on(p.q)}, tr("K₁ + K₂ + q"), tr("q = K₁/K₂"));
-  if (!on(p.q))
-    flag({on(p.K1), on(p.K2), on(p.M1), on(p.M2)}, tr("K₁ + K₂ + M₁ + M₂"),
+  flag({_K1, _K2, _qObs}, tr("K₁ + K₂ + q"), tr("q = K₁/K₂"));
+  if (!on(_qObs))
+    flag({_K1, _K2, _M1, _M2}, tr("K₁ + K₂ + M₁ + M₂"),
          tr("both pairs fix q"));
-  flag({on(p.K1), on(p.M1), on(p.M2min)}, tr("K₁ + M₁ + M₂_min"),
+  flag({_K1, _M1, _M2min}, tr("K₁ + M₁ + M₂_min"),
        tr("M₂_min follows from K₁, P and M₁"));
   return out;
 }
 
+QStringList LCFitDialog::redundantPriorCombos() const {
+  QStringList out;
+  for (const PriorClash &c : priorClashes())
+    out << c.html;
+  return out;
+}
+
 void LCFitDialog::updatePriorConflictWarning() {
-  const QStringList clashes = redundantPriorCombos();
-  const QString     text =
-      clashes.isEmpty()
-              ? QString()
-              : tr("⚠ Conflicting priors — each group over-determines "
-                   "itself, drop one member: %1")
-                    .arg(clashes.join(tr("; ")));
-  for (QLabel *l : {_priorWarnStars, _priorWarnConstraints}) {
-    if (!l)
+  const QVector<PriorClash> clashes = priorClashes();
+
+  QStringList          names;
+  QSet<QLineEdit *>    flagged;
+  for (const PriorClash &c : clashes) {
+    names << c.html;
+    for (QLineEdit *e : c.fields)
+      flagged.insert(e);
+  }
+
+  const QString text =
+      names.isEmpty()
+          ? QString()
+          : tr("⚠ Conflicting priors — each group over-determines "
+               "itself, drop one member: %1")
+                .arg(names.join(tr("; ")));
+  if (_priorWarn) {
+    _priorWarn->setText(text);
+    _priorWarn->setVisible(!text.isEmpty());
+  }
+
+  // The warning at the bottom names the groups; the outline says which boxes
+  // they are.
+  for (QLineEdit *e : priorEdits()) {
+    const bool conflicting = flagged.contains(e);
+    if (e->property("priorConflict").toBool() == conflicting)
       continue;
-    l->setText(text);
-    l->setVisible(!text.isEmpty());
+    e->setProperty("priorConflict", conflicting);
+    e->setToolTip(conflicting
+                      ? tr("Part of an over-determined prior group — this "
+                           "value is already implied by the others.")
+                      : QString());
+    e->style()->unpolish(e);
+    e->style()->polish(e);
   }
 }
 
@@ -1534,6 +1747,7 @@ void LCFitDialog::onRunClicked() {
     _runBtn->setEnabled(false);
     _cancelBtn->setEnabled(true);
     _saveBtn->setEnabled(false);
+    showRunSection(true);
     _runStat->setStyleSheet("color: #dca84d;");
     _runStat->setText(tr("Running…"));
     _term->feed(QString("Working directory: %1\n").arg(_tempDir).toUtf8());
@@ -1661,6 +1875,8 @@ void LCFitDialog::onRunFinished(int code, bool ok) {
   _saveBtn->setEnabled(true);
   _saveFitBtn->setEnabled(true);
   _hasResults = true;
+  // The numbers are what matters once the curve has stopped moving.
+  showRunSection(false);
 }
 
 // ── Augmented config parsing ──────────────────────────────────────
@@ -2183,22 +2399,14 @@ void LCFitDialog::onSaveFitClicked() {
 void LCFitDialog::onPageChanged(int index) {
     updateNavButtons();
     const QString title = _pageTitles.value(index);
-    if (title == tr("Limb/Gravity Darkening")) {
-        const QString key = claretInputKey();
-        if (key != _lastClaretKey) {
-            onQueryClaretClicked();
-            _lastClaretKey = key;
-        }
-    } else if (title == tr("Beaming")) {
-        const QString key = beamingInputKey();
-        if (key != _lastBeamingKey) {
-            onComputeBeamingClicked();
-            _lastBeamingKey = key;
-        }
-    } else if (title == tr("Review")) {
+    if (title == tr("Review")) {
         if (!_configOverride)
             onRefreshReviewClicked();
     }
+    // The run page has its own live plot; the preview would only compete
+    // with it for space (and for the solver's attention).
+    if (_previewPanel)
+        _previewPanel->setVisible(title != tr("Run"));
 }
 
 QString LCFitDialog::claretInputKey() const {

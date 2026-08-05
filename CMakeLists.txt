@@ -92,7 +92,9 @@ set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 set(ASTRA_LCURVE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/lcurve" CACHE PATH
     "Directory containing prebuilt lcurve_* binaries to bundle (optional)")
 
-set(_lcurve_binaries lcurve_levmarq lcurve_mcmc lcurve_simplex)
+# lcurve_re is the forward-model binary; the fit dialog runs it to preview
+# the model for the current initial guess.
+set(_lcurve_binaries lcurve_levmarq lcurve_mcmc lcurve_simplex lcurve_re)
 set(_lcurve_found_files "")
 foreach(_b IN LISTS _lcurve_binaries)
     if(EXISTS "${ASTRA_LCURVE_DIR}/${_b}")
@@ -382,6 +384,7 @@ set(SOURCES
     src/views/widgets/ShimmerWidget.cpp
     src/views/widgets/TerminalView.cpp
     src/views/widgets/AnsiTerminalWidget.cpp
+    src/views/widgets/LCModelPreview.cpp
     src/views/widgets/IsisMacroPanel.cpp
 
     # fitting
@@ -535,6 +538,7 @@ set(HEADERS
     src/views/widgets/ShimmerWidget.h
     src/views/widgets/TerminalView.h
     src/views/widgets/AnsiTerminalWidget.h
+    src/views/widgets/LCModelPreview.h
     src/views/widgets/IsisMacroPanel.h
     src/views/widgets/PreciseDoubleSpinBox.h
 

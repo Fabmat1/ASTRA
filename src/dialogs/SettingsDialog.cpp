@@ -575,7 +575,8 @@ QWidget *SettingsDialog::createLightcurveFitPage() {
 
   auto *intro = new QLabel(
       "Path to the directory containing the <code>lcurve_levmarq</code>, "
-      "<code>lcurve_mcmc</code> and <code>lcurve_simplex</code> binaries. "
+      "<code>lcurve_mcmc</code> and <code>lcurve_simplex</code> binaries, "
+      "plus <code>lcurve_re</code> for the model preview in the fit dialog. "
       "Leave blank to search <code>PATH</code> automatically.");
   intro->setWordWrap(true);
   outer->addWidget(intro);
@@ -629,7 +630,7 @@ QWidget *SettingsDialog::createLightcurveFitPage() {
     AppSettings probe;
     probe.setLcurveDir(dir); // does not touch persisted settings of _settings
     const QStringList bins = {"lcurve_levmarq", "lcurve_mcmc",
-                              "lcurve_simplex"};
+                              "lcurve_simplex", "lcurve_re"};
     QStringList rows;
     int found = 0;
     for (const QString &b : bins) {
