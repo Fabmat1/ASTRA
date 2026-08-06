@@ -190,15 +190,19 @@ class LCFitDialog : public QDialog {
     QCheckBox *_iLock = nullptr;
     QLabel *_spStart = nullptr;
     QLabel *_spImpl = nullptr;
+    QDoubleSpinBox *_t0 = nullptr;
 
     // Setup page - limb & gravity darkening
     QDoubleSpinBox *_ldc1[4]{};
     QDoubleSpinBox *_ldc2[4]{};
     QDoubleSpinBox *_gd1 = nullptr, *_gd2 = nullptr;
     QLabel *_claretDiag = nullptr;
+    QComboBox *_ldBand = nullptr;
 
-    // Setup page - beaming & ephemeris
-    QDoubleSpinBox *_bf1 = nullptr, *_bf2 = nullptr, *_t0 = nullptr;
+    // Setup page - beaming
+    QDoubleSpinBox *_bf1 = nullptr, *_bf2 = nullptr;
+    QLabel *_beamDiag = nullptr;
+    QComboBox *_beamBand = nullptr;
 
     // Solver page
     QComboBox *_method = nullptr;
@@ -282,7 +286,23 @@ class LCFitDialog : public QDialog {
     void    recomputeMtot();
     void    recomputeM2Min();
     void    clampStartingParamsToInputs(LCFitPhysics::StartParams &sp) const;
-    QString claretFilterKey() const;
+    QString autoClaretBand() const;
+
+    // ── Claret band selection ───────────────────────────────────────────
+    // Several lightcurve filters (Gaia, ATLAS, ZTF, …) have no Claret table
+    // of their own. autoClaretBand() picks a default substitute; these
+    // combos let the user override it per quantity, ranked by how close each
+    // tabulated band sits to the lightcurve's effective wavelength.
+    enum class BandUse { Darkening, Beaming };
+    QComboBox *makeBandCombo(BandUse use);
+    void       refreshBandCombo(QComboBox *cb, BandUse use);
+    QString    bandCoverageNote(const QString &band, BandUse use) const;
+    double     referenceWavelengthNm() const;
+    static QString bandOf(const QComboBox *cb, const QString &fallback);
+    QString    darkeningBand() const;
+    QString    beamingBand() const;
+
+    void       syncClaretValues();
     // Cache keys so we don't re-query Claret/beaming tables on every
     // page visit when the relevant inputs haven't changed.
     QString _lastClaretKey;

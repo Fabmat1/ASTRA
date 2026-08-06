@@ -301,6 +301,45 @@ QStringList availableBands() {
           "Johnson-B", "Johnson-V", "Johnson-R", "Johnson-I"};
 }
 
+QString nearestBand(double wavelengthNm) {
+  QString best;
+  double bestD = std::numeric_limits<double>::infinity();
+  for (const QString &b : availableBands()) {
+    const double d = std::abs(bandWavelengthNm(b) - wavelengthNm);
+    if (d < bestD || (d == bestD && b < best)) {
+      bestD = d;
+      best = b;
+    }
+  }
+  return best;
+}
+
+BandCoverage ldcCoverage(StarType type, const QString &band) {
+  // ldcSpec() has no substitution path: either a table covers the band or
+  // queryLdc() hands back the generic temperature-binned defaults.
+  return ldcSpec(type, band) ? BandCoverage{Coverage::Exact, {}}
+                             : BandCoverage{Coverage::None, {}};
+}
+
+BandCoverage gdcCoverage(StarType type, const QString &band) {
+  if (type == StarType::MS) {
+    if (!filter2011(band).isEmpty())
+      return {Coverage::Exact, {}};
+    const QString fb = gdcBandFallback(band);
+    if (!fb.isEmpty() && !filter2011(fb).isEmpty())
+      return {Coverage::Substituted, fb};
+    return {Coverage::None, {}};
+  }
+  return filter2020sd(band).isEmpty() ? BandCoverage{Coverage::None, {}}
+                                      : BandCoverage{Coverage::Exact, {}};
+}
+
+BandCoverage beamingCoverage(const QString &band) {
+  // Without a tabulated row queryBeaming() switches to the analytic estimate.
+  return beamingSpec(band) ? BandCoverage{Coverage::Exact, {}}
+                           : BandCoverage{Coverage::None, {}};
+}
+
 LdcResult queryLdc(double T, std::optional<double> logg, StarType type,
                    const QString &band) {
   LdcResult out;

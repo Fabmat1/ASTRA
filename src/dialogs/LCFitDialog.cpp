@@ -81,7 +81,10 @@ QString widgetValue(QWidget *w) {
   if (auto *e = qobject_cast<QLineEdit *>(w))
     return e->text();
   if (auto *c = qobject_cast<QComboBox *>(w))
-    return c->currentText();
+    // Combos that carry item data (the Claret band pickers) are keyed by that
+    // data: their visible labels move with the reference wavelength.
+    return c->currentData().isValid() ? c->currentData().toString()
+                                      : c->currentText();
   if (auto *c = qobject_cast<QCheckBox *>(w))
     return c->isChecked() ? "1" : "0";
   if (auto *s = qobject_cast<QDoubleSpinBox *>(w))
@@ -93,7 +96,10 @@ void setWidgetValue(QWidget *w, const QString &v) {
   if (auto *e = qobject_cast<QLineEdit *>(w)) {
     e->setText(v);
   } else if (auto *c = qobject_cast<QComboBox *>(w)) {
-    c->setCurrentText(v);
+    if (const int i = c->findData(v); i >= 0)
+      c->setCurrentIndex(i);
+    else
+      c->setCurrentText(v);
   } else if (auto *c = qobject_cast<QCheckBox *>(w)) {
     c->setChecked(v == "1");
   } else if (auto *s = qobject_cast<QDoubleSpinBox *>(w)) {
@@ -305,6 +311,20 @@ void LCFitDialog::connectPreviewTriggers() {
                     &LCFitDialog::schedulePreviewUpdate);
 }
 
+// Keep the darkening/beaming coefficients in step with the current T_eff,
+// log g and selected Claret band. Both queries are cached on their input
+// signature, so calling this on every preview round and before a run is cheap.
+void LCFitDialog::syncClaretValues() {
+    if (const QString key = claretInputKey(); key != _lastClaretKey) {
+        _lastClaretKey = key;
+        onQueryClaretClicked();
+    }
+    if (const QString key = beamingInputKey(); key != _lastBeamingKey) {
+        _lastBeamingKey = key;
+        onComputeBeamingClicked();
+    }
+}
+
 void LCFitDialog::schedulePreviewUpdate() {
     if (!_previewTimer || !_preview)
         return;
@@ -321,16 +341,7 @@ void LCFitDialog::refreshPreview() {
         return;
     }
 
-    // Keep the Claret/beaming tables in step with the current T_eff / log g
-    // before the model is built, exactly as visiting those pages used to do.
-    if (const QString key = claretInputKey(); key != _lastClaretKey) {
-        _lastClaretKey = key;
-        onQueryClaretClicked();
-    }
-    if (const QString key = beamingInputKey(); key != _lastBeamingKey) {
-        _lastBeamingKey = key;
-        onComputeBeamingClicked();
-    }
+    syncClaretValues();
 
     // The preview shows the model for the current starting point, so the
     // starting point is derived on the fly instead of waiting for the button.
@@ -362,6 +373,7 @@ QVector<QPair<QString, QWidget *>> LCFitDialog::memorisedFields() const {
         {"q", _qObs},        {"M2min", _M2min},
         {"Mtot", _Mtot},     {"iLock", _iLock},
         {"iOverride", _iOverride}, {"t0", _t0},
+        {"ldBand", _ldBand}, {"beamBand", _beamBand},
     };
 }
 
@@ -656,6 +668,14 @@ QGroupBox *LCFitDialog::buildConstraintsBox() {
 QGroupBox *LCFitDialog::buildStartBox() {
   auto *startBox = new QGroupBox(tr("Starting parameters"));
   auto *sl = new QFormLayout(startBox);
+
+  // The ephemeris zero point anchors the phase folding of the starting model,
+  // so it belongs with the other starting values rather than with beaming.
+  _t0 = mkSpin(-1e6, 1e6, 6, 0.001, 0.0);
+  _t0->setToolTip(tr("Time of mid-eclipse defining phase 0, in the same time "
+                     "system as the lightcurve."));
+  sl->addRow(tr("t₀ (BJD, eclipse phase 0):"), _t0);
+
   // This value seeds the starting point only - whether the fit itself keeps
   // the inclination frozen is decided by the "iangle" box on the solver page.
   _iLock = new QCheckBox(tr("Initial inclination guess:"));
@@ -829,6 +849,12 @@ QGroupBox *LCFitDialog::buildDarkeningBox() {
                                "(Claret 4-parameter LDC, GDC)"));
   auto *root = new QVBoxLayout(box);
 
+  _ldBand = makeBandCombo(BandUse::Darkening);
+  auto *bandRow = new QHBoxLayout;
+  bandRow->addWidget(new QLabel(tr("Claret band:")));
+  bandRow->addWidget(_ldBand, 1);
+  root->addLayout(bandRow);
+
   auto *inner = new QWidget;
   auto *g = new QGridLayout(inner);
   g->setContentsMargins(0, 0, 0, 0);
@@ -866,7 +892,8 @@ QGroupBox *LCFitDialog::buildDarkeningBox() {
 }
 
 void LCFitDialog::onQueryClaretClicked() {
-    const QString band       = claretFilterKey();
+    const QString band       = darkeningBand();
+    const QString autoBand   = autoClaretBand();
     const QString mappedFrom = _in.filter;
     QStringList   lines;
 
@@ -875,6 +902,14 @@ void LCFitDialog::onQueryClaretClicked() {
                      "<span style='color:#dca84d;'>⚠ Filter '%1' has no "
                      "Claret table mapping - falling back to <b>%2</b>.</span>")
                      .arg(mappedFrom.toHtmlEscaped(), band);
+    }
+    if (band != autoBand) {
+        lines << QString("<span style='color:#dca84d;'>Band overridden: "
+                         "reading <b>%1</b> (λ %2 nm) instead of the "
+                         "auto-mapped <b>%3</b>.</span>")
+                     .arg(band)
+                     .arg(ClaretTables::bandWavelengthNm(band), 0, 'f', 1)
+                     .arg(autoBand);
     }
 
     auto doStar = [&](const QString &tag, QComboBox *typeCb, QLineEdit *Tedit,
@@ -917,41 +952,71 @@ void LCFitDialog::onQueryClaretClicked() {
     _claretDiag->setText(lines.join("<br>"));
 }
 
-// ── Beaming & ephemeris ────────────────────────────────────────────
+// ── Beaming ────────────────────────────────────────────────────────
 
 QGroupBox *LCFitDialog::buildBeamingBox() {
-    auto *box = new QGroupBox(tr("Beaming and ephemeris"));
+    auto *box = new QGroupBox(tr("Beaming"));
     auto *f = new QFormLayout(box);
+    _beamBand = makeBandCombo(BandUse::Beaming);
     _bf1 = mkSpin(0.0, 10.0, 4, 0.01, 1.0);
     _bf2 = mkSpin(0.0, 10.0, 4, 0.01, 1.0);
-    _t0 = mkSpin(-1e6, 1e6, 6, 0.001, 0.0);
     auto *btn = new QPushButton(tr("Compute B₁, B₂ from T_eff and band"));
     connect(btn, &QPushButton::clicked, this,
             &LCFitDialog::onComputeBeamingClicked);
 
+    f->addRow(tr("Claret band:"), _beamBand);
     f->addRow(tr("Beaming B₁:"), _bf1);
     f->addRow(tr("Beaming B₂:"), _bf2);
-    f->addRow(tr("t₀ (BJD, eclipse phase 0):"), _t0);
     f->addRow(btn);
+
+    _beamDiag = new QLabel;
+    _beamDiag->setStyleSheet("color: gray;");
+    _beamDiag->setWordWrap(true);
+    _beamDiag->setTextFormat(Qt::RichText);
+    f->addRow(_beamDiag);
     return box;
 }
 
 void LCFitDialog::onComputeBeamingClicked() {
-    const QString band = claretFilterKey();
-    if (auto t = meas(_T1)) {
-        auto lm = meas(_logg1);
-        auto r  = ClaretTables::queryBeaming(
+    const QString band     = beamingBand();
+    const QString autoBand = autoClaretBand();
+    QStringList   lines;
+
+    if (band != autoBand) {
+        lines << QString("<span style='color:#dca84d;'>Band overridden: "
+                         "reading <b>%1</b> (λ %2 nm) instead of the "
+                         "auto-mapped <b>%3</b>.</span>")
+                     .arg(band)
+                     .arg(ClaretTables::bandWavelengthNm(band), 0, 'f', 1)
+                     .arg(autoBand);
+    }
+
+    auto doStar = [&](const QString &tag, QLineEdit *Tedit, QLineEdit *loggEdit,
+                      QDoubleSpinBox *spin) {
+        const auto t = meas(Tedit);
+        if (!t) {
+            lines << QString("<b>%1:</b> no T_eff set, leaving B unchanged")
+                         .arg(tag);
+            return;
+        }
+        const auto lm = meas(loggEdit);
+        const auto r  = ClaretTables::queryBeaming(
             t->value, lm ? std::optional<double>(lm->value) : std::nullopt,
             band);
-        _bf1->setValue(r.value);
-    }
-    if (auto t = meas(_T2)) {
-        auto lm = meas(_logg2);
-        auto r  = ClaretTables::queryBeaming(
-            t->value, lm ? std::optional<double>(lm->value) : std::nullopt,
-            band);
-        _bf2->setValue(r.value);
-    }
+        spin->setValue(r.value);
+        const QString mark =
+            r.usedFallback ? "<span style='color:#dca84d;'>⚠ fallback</span>"
+                           : "<span style='color:#7dbd5e;'>✓</span>";
+        lines << QString("<b>%1 B:</b> %2  %3 - %4")
+                     .arg(tag)
+                     .arg(r.value, 0, 'f', 4)
+                     .arg(mark, r.diagnostic);
+    };
+
+    doStar("Star 1", _T1, _logg1, _bf1);
+    doStar("Star 2", _T2, _logg2, _bf2);
+    if (_beamDiag)
+        _beamDiag->setText(lines.join("<br>"));
 }
 
 // ── Solver tab ─────────────────────────────────────────────────────
@@ -989,10 +1054,10 @@ QWidget *LCFitDialog::buildSolverPage() {
   _lmMaxIter->setRange(10, 100000);
   _lmMaxIter->setValue(200);
   _lmCont = new QCheckBox(tr("Prior continuation (ramp priors 0→1)"));
-  _lmCont->setChecked(true);
+  _lmCont->setChecked(false);
   _lmMultistart = new QSpinBox;
   _lmMultistart->setRange(0, 64);
-  _lmMultistart->setValue(8);
+  _lmMultistart->setValue(0);
   _lmMultistart->setToolTip(
       tr("Extra LM starts swept across the parameter space (inclination "
          "stratified over its full range). Distinct χ² modes are clustered "
@@ -1401,7 +1466,12 @@ QWidget *LCFitDialog::buildRunPage() {
 
   _results = new QTableWidget(0, 5);
   _results->setHorizontalHeaderLabels({tr("Parameter"), tr("Best fit"), tr("σ"),
-                                       tr("Initial"), tr("Δ / σ vs. stored")});
+                                       tr("Initial"),
+                                       tr("Δ / σ vs. prior or stored")});
+  _results->horizontalHeaderItem(4)->setToolTip(
+      tr("Deviation from the prior used in the fit, or from the value stored "
+         "on the star when the parameter carries no prior. Hover a cell for "
+         "the reference value."));
   _results->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
   _results->verticalHeader()->setVisible(false);
   _results->setEditTriggers(QAbstractItemView::NoEditTriggers);
@@ -1785,6 +1855,8 @@ bool LCFitDialog::writeConfigFile(const QString &path, QString *err) const {
 // ── Run ────────────────────────────────────────────────────────────
 
 void LCFitDialog::onRunClicked() {
+  // A band change may still be sitting behind the preview's debounce timer.
+  syncClaretValues();
   if (!_hasStart)
     onComputeStartingClicked();
   if (_in.binnedPoints.empty()) {
@@ -2124,13 +2196,68 @@ void LCFitDialog::populateResultsView() {
         return QStringLiteral("-");
     };
 
-    auto setDeltaCell = [&](int row, double best, double sig, double storedVal,
-                            double storedSig, bool haveStored) {
+    // ── Reference values the fit can be held against ──────────────────
+    //  The priors actually fed to the solver come first — they are the
+    //  constraints the fit was asked to respect, so their tension is what
+    //  tells you whether the result is believable.  Values stored on the
+    //  star are the fallback for rows that carry no prior.  Without this
+    //  the Δ column only ever had the handful of star-level quantities to
+    //  compare against and read "-" for nearly every row.
+    struct Ref {
+        double  val = 0, errLo = 0, errHi = 0;
+        bool    have = false;
+        QString source;
+    };
+    const QJsonObject priorObj = _augmented.value("priors").toObject();
+    const bool usePriors = _augmented.value("use_priors").toBool(false);
+
+    auto priorRef = [&](const QString &key) -> Ref {
+        Ref r;
+        if (!usePriors || !priorObj.contains(key))
+            return r;
+        double v = 0, lo = 0, hi = 0;
+        if (!LCFitConfig::parseParamLine(priorObj.value(key).toString(), v, lo,
+                                         hi))
+            return r;
+        lo = std::abs(lo);
+        hi = std::abs(hi);
+        if (lo <= 0)
+            lo = hi;
+        if (hi <= 0)
+            hi = lo;
+        if (lo <= 0 && hi <= 0)
+            return r;
+        r = {v, lo, hi, true, tr("prior")};
+        return r;
+    };
+
+    // Prior first, star-level stored value second.
+    auto refFor = [&](const QString &priorKey, const QString &starKey) -> Ref {
+        Ref r = priorRef(priorKey);
+        if (r.have)
+            return r;
+        if (!starKey.isEmpty() && starHas(starKey)) {
+            double sv = 0, ss = 0;
+            starVal(starKey, sv, ss);
+            if (ss > 0)
+                r = {sv, ss, ss, true, tr("stored")};
+        }
+        return r;
+    };
+
+    // Asymmetric pull: the deviation is closed by the *downward* error on
+    // the fit and the *upward* error on the reference when the fit sits
+    // high, and vice versa.
+    auto setDeltaCell = [&](int row, double best, double sigUp, double sigDown,
+                            const Ref &ref) {
         QString delta = "-";
-        if (haveStored && (storedSig > 0 || (std::isfinite(sig) && sig > 0))) {
-            const double d = best - storedVal;
-            const double s =
-                std::hypot(std::isfinite(sig) ? sig : 0.0, storedSig);
+        QString tip;
+        if (ref.have) {
+            const double d  = best - ref.val;
+            const double sf = d >= 0 ? (std::isfinite(sigDown) ? sigDown : 0.0)
+                                     : (std::isfinite(sigUp) ? sigUp : 0.0);
+            const double sr = d >= 0 ? ref.errHi : ref.errLo;
+            const double s  = std::hypot(sf, sr);
             if (s > 0) {
                 const double  n      = d / s;
                 const QString colour = std::abs(n) > 3.0   ? "#c46060"
@@ -2140,24 +2267,33 @@ void LCFitDialog::populateResultsView() {
                             .arg(colour)
                             .arg(d, 0, 'g', 3)
                             .arg(n, 0, 'f', 2);
+                tip = tr("%1: %2 −%3/+%4")
+                          .arg(ref.source)
+                          .arg(QString::number(ref.val, 'g', 6),
+                               QString::number(ref.errLo, 'g', 3),
+                               QString::number(ref.errHi, 'g', 3));
             }
         }
         _results->setItem(row, 4, new QTableWidgetItem);
         auto *lbl = new QLabel(delta);
         lbl->setTextFormat(Qt::RichText);
+        if (!tip.isEmpty())
+            lbl->setToolTip(tip);
         _results->setCellWidget(row, 4, lbl);
     };
 
     auto addRow = [&](const QString &name, const QString &displayName,
-                      double initial, double storedVal = 0,
-                      double storedSig = 0, bool haveStored = false,
-                      double scale = 1.0, const QString &units = {}) {
+                      double initial, const Ref &ref = {}, double scale = 1.0,
+                      const QString &units = {}) {
         if (!bestPars.contains(name))
             return;
         const double best = bestPars.value(name).toDouble();
-        double       sig  = std::nan("");
-        if (sigmas.contains(name))
-            sig = sigmas.value(name).toDouble();
+        auto         side = [&](const QJsonObject &o) {
+            return o.contains(name) ? o.value(name).toDouble() * scale
+                                            : (sigmas.contains(name)
+                                           ? sigmas.value(name).toDouble() * scale
+                                           : std::nan(""));
+        };
 
         const int row = _results->rowCount();
         _results->insertRow(row);
@@ -2174,123 +2310,171 @@ void LCFitDialog::populateResultsView() {
             new QTableWidgetItem(std::isfinite(initial)
                                      ? QString::number(initial * scale, 'g', 6)
                                      : "-"));
-        setDeltaCell(row, best * scale,
-                     std::isnan(sig) ? std::nan("") : sig * scale, storedVal,
-                     storedSig, haveStored);
+        setDeltaCell(row, best * scale, side(sigmasUp), side(sigmasDown), ref);
     };
 
     auto initOf = [&](const QString &n) {
         return firstFloat(mp.value(n).toString());
     };
 
-    auto addStoredRow = [&](const QString &key, const QString &display,
-                            double initial, double scale = 1.0,
-                            const QString &units = {}) {
-        double sv = 0, ssv = 0;
-        bool   have = starHas(key);
-        if (have)
-            starVal(key, sv, ssv);
-        addRow(key, display, initial, sv, ssv, have, scale, units);
-    };
-
-    addStoredRow("q", "q", initOf("q"));
-    addStoredRow("iangle", "iangle", initOf("iangle"), 1.0, "°");
+    // The radii and velocity scale carry no prior of their own — the priors
+    // live on the physical R₁/R₂ and on M₁, which are the derived rows
+    // added further down.
+    addRow("q", "q", initOf("q"), refFor("q", "q"));
+    addRow("iangle", "iangle", initOf("iangle"), refFor("iangle", "iangle"),
+           1.0, "°");
     addRow("r1", "r1 (= R₁/a)", initOf("r1"));
     addRow("r2", "r2 (= R₂/a)", initOf("r2"));
-    addRow("velocity_scale", "velocity_scale", initOf("velocity_scale"), 0, 0,
-           false, 1.0, "km/s");
-    addStoredRow("t1", "T₁", initOf("t1"), 1.0, "K");
-    addRow("t2", "T₂", initOf("t2"), 0, 0, false, 1.0, "K");
+    addRow("velocity_scale", "velocity_scale", initOf("velocity_scale"), {},
+           1.0, "km/s");
+    addRow("t1", "T₁", initOf("t1"), refFor("T1", "T1"), 1.0, "K");
+    addRow("t2", "T₂", initOf("t2"), refFor("T2", {}), 1.0, "K");
     addRow("t0", "t₀", initOf("t0"));
-    addStoredRow("period", "period", initOf("period"), 1.0, "d");
+    addRow("period", "period", initOf("period"), refFor("period", "period"),
+           1.0, "d");
 
-    // ── Derived R₁ in R☉ with proper σ, initial and Δ vs stored ───────
-    if (bestPars.contains("r1") && bestPars.contains("velocity_scale")) {
-        const double r1 = bestPars.value("r1").toDouble();
-        const double vs = bestPars.value("velocity_scale").toDouble();
-        const double aKm =
-            vs * _in.period * LCFitPhysics::kDay2Sec / (2.0 * M_PI);
-        double R1 = r1 * aKm / LCFitPhysics::kRsunKm;
+    // ── t₀ in BJD ─────────────────────────────────────────────────────
+    if (bestPars.contains("t0")) {
+        const double t0_ph = bestPars.value("t0").toDouble();
+        const double t0_ph_sig =
+            sigmas.contains("t0") ? sigmas.value("t0").toDouble() : 0.0;
+        const double t0_bjd = t0_ph * _in.period;
+        const double t0_bjd_sig =
+            std::hypot(t0_ph_sig * _in.period, t0_ph * _in.periodError);
+        const double init_t0_ph = firstFloat(mp.value("t0").toString());
+        const double init_t0_bjd =
+            std::isfinite(init_t0_ph) ? init_t0_ph * _in.period : std::nan("");
+        const int row = _results->rowCount();
+        _results->insertRow(row);
+        _results->setItem(row, 0, new QTableWidgetItem("t₀ [BJD] (derived)"));
+        _results->setItem(row, 1,
+                          new QTableWidgetItem(QString::number(t0_bjd, 'g', 10)));
+        _results->setItem(row, 2,
+                          new QTableWidgetItem(
+                              t0_bjd_sig > 0
+                                  ? QString::number(t0_bjd_sig, 'g', 3)
+                                  : "-"));
+        _results->setItem(row, 3,
+                          new QTableWidgetItem(
+                              std::isfinite(init_t0_bjd)
+                                  ? QString::number(init_t0_bjd, 'g', 10)
+                                  : "-"));
+        setDeltaCell(row, t0_bjd, std::nan(""), std::nan(""), {});
+    }
 
-        const double sR =
-            sigmas.contains("r1") ? sigmas.value("r1").toDouble() : 0.0;
-        const double sV  = sigmas.contains("velocity_scale")
-                               ? sigmas.value("velocity_scale").toDouble()
-                               : 0.0;
-        const double sP  = std::max(_in.periodError, 0.0);
-        double       sR1 = 0.0;
-        if (R1 > 0) {
-            const double rel = std::sqrt(
-                (r1 > 0 ? (sR / r1) * (sR / r1) : 0.0) +
-                (vs > 0 ? (sV / vs) * (sV / vs) : 0.0) +
-                (_in.period > 0 ? (sP / _in.period) * (sP / _in.period) : 0.0));
-            sR1 = R1 * rel;
+    // ── Derived physical quantities ───────────────────────────────────
+    //  The priors are stated in physical units (R☉, M☉, K), so this is
+    //  where their tension is actually meaningful — the fractional radii
+    //  above carry no prior of their own.  Values come from the solver's
+    //  own propagation when it published one (it keeps the r–v_scale
+    //  correlation and the asymmetry); otherwise they are recomputed here.
+    const QJsonObject implied =
+        fitRes.contains("implied")
+            ? fitRes.value("implied").toObject()
+            : _augmented.value("lm_results").toObject().value("implied").toObject();
+
+    auto addDerived = [&](const QString &label, const QString &impliedKey,
+                          double fallbackVal, double fallbackSig,
+                          double initial, const Ref &ref, int prec = 4) {
+        double  v = fallbackVal, sig = fallbackSig;
+        QString sigTxt;
+        double  sigUp = fallbackSig, sigDown = fallbackSig;
+
+        const QJsonObject imp = implied.value(impliedKey).toObject();
+        if (!imp.isEmpty()) {
+            v = imp.value("value").toDouble(v);
+            if (imp.contains("sigma_up") && imp.contains("sigma_down")) {
+                sigUp   = imp.value("sigma_up").toDouble();
+                sigDown = imp.value("sigma_down").toDouble();
+                sig     = 0.5 * (sigUp + sigDown);
+                if (!AsymErr::nearlySymmetric(sigUp, sigDown))
+                    sigTxt = QString("+%1 / −%2")
+                                 .arg(QString::number(sigUp, 'g', 3),
+                                      QString::number(sigDown, 'g', 3));
+            } else if (imp.contains("sigma")) {
+                sig = sigUp = sigDown = imp.value("sigma").toDouble();
+            }
         }
-
-        // Prefer the solver's per-sample propagation (keeps the r1–vs
-        // correlation and asymmetry) over the relative-error estimate.
-        QString sR1Txt;
-        const QJsonObject impR1 =
-            fitRes.value("implied").toObject().value("R1_Rsun").toObject();
-        if (!impR1.isEmpty()) {
-            R1 = impR1.value("value").toDouble(R1);
-            double u = impR1.value("sigma_up").toDouble();
-            double d = impR1.value("sigma_down").toDouble();
-            sR1 = 0.5 * (u + d);
-            if (!AsymErr::nearlySymmetric(u, d))
-                sR1Txt = QString("+%1 / −%2")
-                             .arg(QString::number(u, 'g', 3),
-                                  QString::number(d, 'g', 3));
-        }
-        if (sR1Txt.isEmpty())
-            sR1Txt = sR1 > 0 ? QString::number(sR1, 'g', 3)
-                             : QStringLiteral("-");
-
-        const double initR1c = firstFloat(mp.value("r1").toString());
-        const double initVs = firstFloat(mp.value("velocity_scale").toString());
-        double       initR1 = std::nan("");
-        if (std::isfinite(initR1c) && std::isfinite(initVs)) {
-            const double initA =
-                initVs * _in.period * LCFitPhysics::kDay2Sec / (2.0 * M_PI);
-            initR1 = initR1c * initA / LCFitPhysics::kRsunKm;
-        }
-
-        double storedR1 = 0, storedR1s = 0;
-        bool   haveR1 = starHas("R1");
-        if (haveR1)
-            starVal("R1", storedR1, storedR1s);
+        if (!std::isfinite(v) || v == 0.0)
+            return;
+        if (sigTxt.isEmpty())
+            sigTxt = sig > 0 ? QString::number(sig, 'g', 3) : QStringLiteral("-");
 
         const int row = _results->rowCount();
         _results->insertRow(row);
-        _results->setItem(row, 0, new QTableWidgetItem("R₁ [R☉] (derived)"));
-
-        if (bestPars.contains("t0")) {
-            const double t0_ph      = bestPars.value("t0").toDouble();
-            const double t0_ph_sig  = sigmas.contains("t0") ? sigmas.value("t0").toDouble() : 0.0;
-            const double t0_bjd     = t0_ph * _in.period;
-            const double t0_bjd_sig = std::hypot(t0_ph_sig * _in.period,
-                                                t0_ph * _in.periodError);
-            const double init_t0_ph  = firstFloat(mp.value("t0").toString());
-            const double init_t0_bjd = std::isfinite(init_t0_ph) ? init_t0_ph * _in.period
-                                                                : std::nan("");
-            const int row = _results->rowCount();
-            _results->insertRow(row);
-            _results->setItem(row, 0, new QTableWidgetItem("t₀ [BJD] (derived)"));
-            _results->setItem(row, 1, new QTableWidgetItem(QString::number(t0_bjd, 'g', 10)));
-            _results->setItem(row, 2, new QTableWidgetItem(t0_bjd_sig > 0
-                ? QString::number(t0_bjd_sig, 'g', 3) : "-"));
-            _results->setItem(row, 3, new QTableWidgetItem(
-                std::isfinite(init_t0_bjd) ? QString::number(init_t0_bjd, 'g', 10) : "-"));
-            _results->setItem(row, 4, new QTableWidgetItem("-"));
-        }
+        _results->setItem(row, 0, new QTableWidgetItem(label));
         _results->setItem(row, 1,
-                          new QTableWidgetItem(QString::number(R1, 'g', 4)));
-        _results->setItem(row, 2, new QTableWidgetItem(sR1Txt));
-        _results->setItem(
-            row, 3,
-            new QTableWidgetItem(
-                std::isfinite(initR1) ? QString::number(initR1, 'g', 4) : "-"));
-        setDeltaCell(row, R1, sR1, storedR1, storedR1s, haveR1);
+                          new QTableWidgetItem(QString::number(v, 'g', prec)));
+        _results->setItem(row, 2, new QTableWidgetItem(sigTxt));
+        _results->setItem(row, 3,
+                          new QTableWidgetItem(
+                              std::isfinite(initial)
+                                  ? QString::number(initial, 'g', prec)
+                                  : "-"));
+        setDeltaCell(row, v, sigUp, sigDown, ref);
+    };
+
+    // A parameter held fixed never appears in best_pars, so fall back to the
+    // starting value — the derived rows are just as meaningful then.
+    auto bestOrInit = [&](const QString &n) {
+        return bestPars.contains(n) ? bestPars.value(n).toDouble() : initOf(n);
+    };
+    if (std::isfinite(bestOrInit("velocity_scale")) && _in.period > 0) {
+        const double vs = bestOrInit("velocity_scale");
+        const double q  = bestOrInit("q");
+        const double ia = bestOrInit("iangle");
+        const double aRsun = vs * _in.period * LCFitPhysics::kDay2Sec /
+                             (2.0 * M_PI) / LCFitPhysics::kRsunKm;
+
+        const double sV = sigmas.contains("velocity_scale")
+                              ? sigmas.value("velocity_scale").toDouble()
+                              : 0.0;
+        const double sP = std::max(_in.periodError, 0.0);
+        // Relative errors add in quadrature through the products below.
+        const double relA = std::hypot(vs > 0 ? sV / vs : 0.0,
+                                       _in.period > 0 ? sP / _in.period : 0.0);
+
+        const double initVs = firstFloat(mp.value("velocity_scale").toString());
+        const double initA =
+            std::isfinite(initVs) ? initVs * _in.period * LCFitPhysics::kDay2Sec /
+                                        (2.0 * M_PI) / LCFitPhysics::kRsunKm
+                                  : std::nan("");
+
+        auto addRadius = [&](const QString &par, const QString &label,
+                             const QString &impliedKey, const QString &priorKey,
+                             const QString &starKey) {
+            const double rf = bestOrInit(par);
+            if (!std::isfinite(rf) || rf <= 0)
+                return;
+            const double sr =
+                sigmas.contains(par) ? sigmas.value(par).toDouble() : 0.0;
+            const double R = rf * aRsun;
+            const double s =
+                R * std::hypot(rf > 0 ? sr / rf : 0.0, relA);
+            const double initRf = firstFloat(mp.value(par).toString());
+            const double initR = (std::isfinite(initRf) && std::isfinite(initA))
+                                     ? initRf * initA
+                                     : std::nan("");
+            addDerived(label, impliedKey, R, s, initR,
+                       refFor(priorKey, starKey));
+        };
+
+        addDerived("a [R☉] (derived)", "a_Rsun", aRsun, aRsun * relA, initA, {});
+        addRadius("r1", "R₁ [R☉] (derived)", "R1_Rsun", "R1", "R1");
+        addRadius("r2", "R₂ [R☉] (derived)", "R2_Rsun", "R2", {});
+
+        // Masses follow from a, the period and q; only worth a row when the
+        // solver published them or a prior exists to compare against.
+        const double r2b = bestOrInit("r2");
+        const auto   imp = LCFitPhysics::impliedFromParams(
+            ia, q, vs, bestOrInit("r1"), _in.period,
+            std::isfinite(r2b) ? std::optional<double>(r2b) : std::nullopt);
+        addDerived("M₁ [M☉] (derived)", "M1_Msun", imp.M1, 0.0, std::nan(""),
+                   refFor("M1", {}));
+        addDerived("M₂ [M☉] (derived)", "M2_Msun", imp.M2, 0.0, std::nan(""),
+                   refFor("M2", {}));
+        addDerived("K₁ [km/s] (derived)", "K1_km_s", imp.K1, 0.0, std::nan(""),
+                   refFor("K1", {}));
     }
 }
 
@@ -2514,13 +2698,13 @@ void LCFitDialog::onPageChanged(int index) {
 QString LCFitDialog::claretInputKey() const {
     return QStringLiteral("%1|%2|%3|%4|%5|%6|%7")
         .arg(_type1->currentText(), _type2->currentText(), _T1->text(),
-             _T2->text(), _logg1->text(), _logg2->text(), claretFilterKey());
+             _T2->text(), _logg1->text(), _logg2->text(), darkeningBand());
 }
 
 QString LCFitDialog::beamingInputKey() const {
     return QStringLiteral("%1|%2|%3|%4|%5")
         .arg(_T1->text(), _T2->text(), _logg1->text(), _logg2->text(),
-             claretFilterKey());
+             beamingBand());
 }
 
 void LCFitDialog::onPrevPage() {
@@ -2633,12 +2817,162 @@ void LCFitDialog::recomputeM2Min() {
         _autoFilled["M2min"] = _M2min->text();
 }
 
-QString LCFitDialog::claretFilterKey() const {
-    QString k = ClaretFilter::canonical(_in.filter);
-    if (!k.isEmpty())
-        return k;
+// The band pre-selected in both pickers.
+//
+// A filter that *is* one of the tabulated bands must read its own table, so
+// the curated mapping wins there - wavelength proximity is only a proxy for
+// filter similarity, and a crude one: it would send SDSS-r to Kepler. For
+// filters that have no Claret table of their own (Gaia, ATLAS) the mapping is
+// itself just a guess, and the closest tabulated band is the better default.
+QString LCFitDialog::autoClaretBand() const {
+    const QString curated = ClaretFilter::canonical(_in.filter);
+    if (!curated.isEmpty() && ClaretFilter::isNative(_in.filter))
+        return curated;
+
+    const QString nearest = ClaretTables::nearestBand(referenceWavelengthNm());
+    if (!nearest.isEmpty())
+        return nearest;
+    if (!curated.isEmpty())
+        return curated;
     // Final fallback so a query is still attempted.
     return QStringLiteral("TESS");
+}
+
+// ── Claret band selection ──────────────────────────────────────────────────
+
+double LCFitDialog::referenceWavelengthNm() const {
+    if (_wlSpin)
+        return _wlSpin->value();
+    if (_in.wavelengthNm > 0.0)
+        return _in.wavelengthNm;
+    const double wl = FilterWavelength::lookupNm(_in.filter);
+    return wl > 0.0 ? wl : 600.0;
+}
+
+QString LCFitDialog::bandOf(const QComboBox *cb, const QString &fallback) {
+    if (!cb)
+        return fallback;
+    const QString b = cb->currentData().toString();
+    return b.isEmpty() ? fallback : b;
+}
+
+QString LCFitDialog::darkeningBand() const {
+    return bandOf(_ldBand, autoClaretBand());
+}
+QString LCFitDialog::beamingBand() const {
+    return bandOf(_beamBand, autoClaretBand());
+}
+
+// What the shipped tables actually hold for this band. The darkening tables
+// are indexed by star type, so both stars' types decide the verdict there.
+QString LCFitDialog::bandCoverageNote(const QString &band, BandUse use) const {
+    namespace CT = ClaretTables;
+    if (use == BandUse::Beaming) {
+        return CT::beamingCoverage(band).kind == CT::Coverage::Exact
+                   ? tr("✓ table")
+                   : tr("⚠ analytic");
+    }
+
+    QStringList types;
+    for (const QComboBox *cb : {_type1, _type2})
+        if (cb && !types.contains(cb->currentText()))
+            types << cb->currentText();
+    if (types.isEmpty())
+        types << QStringLiteral("ms");
+
+    QStringList issues;
+    for (const QString &t : std::as_const(types)) {
+        const auto st = CT::parseStarType(t);
+        // Only tag the star type when the two stars disagree; otherwise the
+        // note is about the pair as a whole.
+        const QString sfx = types.size() > 1 ? QString(" %1").arg(t) : QString();
+        const auto ldc = CT::ldcCoverage(st, band);
+        const auto gdc = CT::gdcCoverage(st, band);
+        if (ldc.kind == CT::Coverage::None)
+            issues << tr("no LDC%1").arg(sfx);
+        if (gdc.kind == CT::Coverage::None)
+            issues << tr("no GDC%1").arg(sfx);
+        else if (gdc.kind == CT::Coverage::Substituted)
+            issues << tr("GDC%1→%2").arg(sfx, gdc.substitute);
+    }
+    issues.removeDuplicates();
+    return issues.isEmpty() ? tr("✓ table")
+                            : tr("⚠ %1").arg(issues.join(", "));
+}
+
+void LCFitDialog::refreshBandCombo(QComboBox *cb, BandUse use) {
+    if (!cb)
+        return;
+    const QString autoBand = autoClaretBand();
+    // For a substituted filter the default itself tracks the reference
+    // wavelength, so a combo the user has not touched follows it. Once they
+    // pick something else that choice sticks through any relabelling.
+    const QString prevSel  = cb->currentData().toString();
+    const QString prevAuto = cb->property("autoBand").toString();
+    const QString keep =
+        (prevSel.isEmpty() || prevSel == prevAuto) ? autoBand : prevSel;
+    cb->setProperty("autoBand", autoBand);
+    const double ref = referenceWavelengthNm();
+
+    QStringList bands = ClaretTables::availableBands();
+    std::sort(bands.begin(), bands.end(),
+              [ref](const QString &a, const QString &b) {
+                  const double da =
+                      std::abs(ClaretTables::bandWavelengthNm(a) - ref);
+                  const double db =
+                      std::abs(ClaretTables::bandWavelengthNm(b) - ref);
+                  return da != db ? da < db : a < b;
+              });
+
+    const QSignalBlocker block(cb);
+    cb->clear();
+    for (const QString &band : std::as_const(bands)) {
+        const double wl = ClaretTables::bandWavelengthNm(band);
+        const double d  = wl - ref;
+        QString      label = tr("%1 - %2 nm  (Δ %3%4 nm)  %5")
+                            .arg(band)
+                            .arg(wl, 0, 'f', 1)
+                            .arg(d < 0 ? QStringLiteral("−")
+                                       : QStringLiteral("+"))
+                            .arg(std::abs(d), 0, 'f', 1)
+                            .arg(bandCoverageNote(band, use));
+        if (band == autoBand)
+            label += tr("  [auto]");
+        cb->addItem(label, band);
+    }
+
+    int idx = cb->findData(keep);
+    if (idx < 0)
+        idx = cb->findData(autoBand);
+    cb->setCurrentIndex(std::max(0, idx));
+
+    const bool nativeFilter = ClaretFilter::isNative(_in.filter);
+    cb->setToolTip(
+        tr("Claret table to read for this quantity.\n"
+           "Δ is measured against the effective wavelength in the header "
+           "(%1 nm, filter \"%2\"); the closest band is listed first.\n"
+           "Default: %3 - %4")
+            .arg(ref, 0, 'f', 1)
+            .arg(_in.filter.isEmpty() ? tr("(none)") : _in.filter, autoBand,
+                 nativeFilter
+                     ? tr("this filter's own table.")
+                     : tr("this filter has no Claret table, so the "
+                          "closest tabulated band is used.")));
+}
+
+QComboBox *LCFitDialog::makeBandCombo(BandUse use) {
+    auto *cb = new QComboBox;
+    refreshBandCombo(cb, use);
+    if (_wlSpin)
+        connect(_wlSpin, &QDoubleSpinBox::valueChanged, this,
+                [this, cb, use] { refreshBandCombo(cb, use); });
+    // Coverage of the darkening tables depends on the star types.
+    if (use == BandUse::Darkening)
+        for (QComboBox *t : {_type1, _type2})
+            if (t)
+                connect(t, &QComboBox::currentIndexChanged, this,
+                        [this, cb, use] { refreshBandCombo(cb, use); });
+    return cb;
 }
 
 void LCFitDialog::applyAdvancedOverrides(QJsonObject &mp) const {

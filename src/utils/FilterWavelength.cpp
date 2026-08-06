@@ -11,9 +11,11 @@ double FilterWavelength::lookupNm(const QString &filter) {
         {"T", 786.5},
         {"TESS", 786.5},
         // ZTF / PS1 / SDSS
+        // SVO λ_eff for the SDSS system - r and i are distinctly bluer than
+        // the Johnson/Cousins R and I below, which they were once given.
         {"g", 464.0},
-        {"r", 658.0},
-        {"i", 806.0},
+        {"r", 617.0},
+        {"i", 752.0},
         {"z", 900.0},
         {"y", 962.0},
         {"zg", 464.0},

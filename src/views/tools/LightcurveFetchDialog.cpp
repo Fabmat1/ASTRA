@@ -9,6 +9,7 @@
 #include "utils/AppPaths.h"
 #include "utils/AppSettings.h"
 #include "utils/FilterWavelength.h"
+#include "utils/LCFitPhysics.h"
 #include "utils/LcqueryEnvironment.h"
 #include "utils/Logger.h"
 #include "utils/TessSectors.h"
@@ -2668,6 +2669,54 @@ void LightcurveFetchDialog::updateSelectedFitDetails() {
         fit->r2ErrorDown);
     row(tr("v_scale [km/s]"), fit->velocityScale, fit->velocityScaleError,
         fit->velocityScaleErrorUp, fit->velocityScaleErrorDown);
+
+    // ── Physical scale ────────────────────────────────────────────────
+    //  r₁ and r₂ are fractions of the orbital separation, so on their own
+    //  they say nothing about how big the stars actually are.  a follows
+    //  from v_scale and the period for every fit, so R = r·a is always
+    //  available — show it rather than making the reader do the algebra.
+    if (fit->velocityScale > 0 && fit->period > 0) {
+        const double aRsun = fit->velocityScale * fit->period *
+                             LCFitPhysics::kDay2Sec / (2.0 * M_PI) /
+                             LCFitPhysics::kRsunKm;
+        // Products of independent quantities: relative errors in quadrature,
+        // each side of an asymmetric interval propagated on its own.
+        auto rel = [](double v, double e) {
+            return (v > 0 && e > 0 && std::isfinite(e)) ? e / v : 0.0;
+        };
+        auto sideErr = [&](double R, double frac, double fracErr,
+                           double vsErr, double pErr) {
+            return R * std::sqrt(std::pow(rel(frac, fracErr), 2) +
+                                 std::pow(rel(fit->velocityScale, vsErr), 2) +
+                                 std::pow(rel(fit->period, pErr), 2));
+        };
+        const double vsUp = AsymErr::upOr(fit->velocityScaleErrorUp,
+                                          fit->velocityScaleError);
+        const double vsDn = AsymErr::downOr(fit->velocityScaleErrorDown,
+                                            fit->velocityScaleError);
+        const double pUp = AsymErr::upOr(fit->periodErrorUp, fit->periodError);
+        const double pDn =
+            AsymErr::downOr(fit->periodErrorDown, fit->periodError);
+
+        auto derivedRow = [&](const QString &label, double frac, double fracErr,
+                              double fracUp, double fracDown) {
+            if (!(frac > 0))
+                return;
+            const double v = frac * aRsun;
+            const double u =
+                sideErr(v, frac, AsymErr::upOr(fracUp, fracErr), vsUp, pUp);
+            const double d =
+                sideErr(v, frac, AsymErr::downOr(fracDown, fracErr), vsDn, pDn);
+            row(label, v, 0.5 * (u + d), u, d, 4);
+        };
+        // a itself is the frac = 1 case: no fractional-radius term.
+        derivedRow(tr("a [R☉]"), 1.0, 0.0, AsymErr::unset, AsymErr::unset);
+        derivedRow(tr("R₁ [R☉]"), fit->r1, fit->r1Error, fit->r1ErrorUp,
+                   fit->r1ErrorDown);
+        derivedRow(tr("R₂ [R☉]"), fit->r2, fit->r2Error, fit->r2ErrorUp,
+                   fit->r2ErrorDown);
+    }
+
     row(tr("T₁ [K]"), fit->t1, fit->t1Error, fit->t1ErrorUp, fit->t1ErrorDown);
     row(tr("T₂ [K]"), fit->t2, fit->t2Error, fit->t2ErrorUp, fit->t2ErrorDown);
     row(tr("P [d]"), fit->period, fit->periodError, fit->periodErrorUp,
