@@ -212,9 +212,25 @@ class LCFitDialog : public QDialog {
     QCheckBox *_anneal = nullptr;
     QDoubleSpinBox *_annealT0 = nullptr;
     QSpinBox *_lmMaxIter = nullptr;
+    QSpinBox *_lmMaxFev = nullptr;
+    QLineEdit *_lmFtol = nullptr;
+    QLineEdit *_lmXtol = nullptr;
+    QLineEdit *_lmGtol = nullptr;
+    QSpinBox *_lmMaxRecoveries = nullptr;
     QCheckBox *_lmCont = nullptr;
     QSpinBox *_lmMultistart = nullptr;
     QDoubleSpinBox *_lmMsSpan = nullptr;
+    // Post-LM error-refinement MCMC
+    QGroupBox *_emcBox = nullptr;
+    QSpinBox *_emcSteps = nullptr;
+    QSpinBox *_emcMinSteps = nullptr;
+    QDoubleSpinBox *_emcModeMinW = nullptr;
+    QDoubleSpinBox *_emcPriorWeight = nullptr;
+    QSpinBox *_emcRounds = nullptr;
+    // Prior balancing
+    QDoubleSpinBox *_priorWeight = nullptr;
+    QCheckBox *_priorAutoBalance = nullptr;
+    QDoubleSpinBox *_priorBalanceTarget = nullptr;
     QCheckBox *_sinIPrior = nullptr;
     QCheckBox *_plotEnabled = nullptr;
     QCheckBox *_cudaEnabled = nullptr;

@@ -29,7 +29,9 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QLabel>
+#include <QDoubleValidator>
 #include <QLineEdit>
+#include <QLocale>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -68,6 +70,26 @@ QLineEdit *mkMeasEdit(const QString &placeholder = "value [errLo [errHi]]") {
   auto *e = new QLineEdit;
   e->setPlaceholderText(placeholder);
   return e;
+}
+
+// Line edit for a solver tolerance, which lives around 1e-8 and so reads far
+// better as scientific text than as a spin box with twelve decimals.
+QLineEdit *mkTolEdit(const QString &value) {
+  auto *e = new QLineEdit(value);
+  auto *v = new QDoubleValidator(0.0, 1.0, 15, e);
+  v->setNotation(QDoubleValidator::ScientificNotation);
+  v->setLocale(QLocale::c());
+  e->setValidator(v);
+  return e;
+}
+
+// Tolerance field value, or `fallback` when the field is blank or unparseable.
+double tolValue(const QLineEdit *e, double fallback) {
+  if (!e)
+    return fallback;
+  bool ok = false;
+  const double v = QLocale::c().toDouble(e->text().trimmed(), &ok);
+  return (ok && v >= 0.0) ? v : fallback;
 }
 
 QString tempBaseDir() {
@@ -1053,6 +1075,39 @@ QWidget *LCFitDialog::buildSolverPage() {
   _lmMaxIter = new QSpinBox;
   _lmMaxIter->setRange(10, 100000);
   _lmMaxIter->setValue(200);
+  // lcurve's own default is 200·(nvary+1) function evaluations. With
+  // central-difference Jacobians that is roughly 100 iterations for six free
+  // parameters, so it always tripped before "Max iterations" did and the LM
+  // stopped short of the minimum. Leaving the budget generous lets the
+  // iteration limit and the convergence tests do the deciding.
+  _lmMaxFev = new QSpinBox;
+  _lmMaxFev->setRange(0, 100000000);
+  _lmMaxFev->setValue(0);
+  _lmMaxFev->setSpecialValueText(tr("auto (from max iterations)"));
+  _lmMaxFev->setToolTip(
+      tr("Hard cap on model evaluations per LM descent. <b>auto</b> derives it "
+         "from the iteration limit and the number of free parameters, so the "
+         "iteration limit is what actually binds.<br><br>Stopping on the "
+         "evaluation budget leaves the solution off the minimum, which biases "
+         "every error bar to one side."));
+  // Tolerances live around 1e-8, so a spin box is unreadable — take them as
+  // free text in scientific notation and fall back to the lcurve default
+  // when the field cannot be parsed.
+  _lmFtol = mkTolEdit(QStringLiteral("1.49e-8"));
+  _lmFtol->setToolTip(tr("Relative ‖r‖² reduction below which LM declares "
+                         "convergence. 0 disables the test."));
+  _lmXtol = mkTolEdit(QStringLiteral("1.49e-8"));
+  _lmXtol->setToolTip(tr("Relative parameter-step size below which LM "
+                         "declares convergence. 0 disables the test."));
+  _lmGtol = mkTolEdit(QStringLiteral("0"));
+  _lmGtol->setToolTip(tr("Gradient-orthogonality tolerance. 0 disables the "
+                         "test (lcurve's default)."));
+  _lmMaxRecoveries = new QSpinBox;
+  _lmMaxRecoveries->setRange(0, 100);
+  _lmMaxRecoveries->setValue(3);
+  _lmMaxRecoveries->setToolTip(
+      tr("How often LM may restart from a shrunken trust region after it "
+         "stalls on the finite-difference noise floor."));
   _lmCont = new QCheckBox(tr("Prior continuation (ramp priors 0→1)"));
   _lmCont->setChecked(false);
   _lmMultistart = new QSpinBox;
@@ -1067,10 +1122,97 @@ QWidget *LCFitDialog::buildSolverPage() {
       tr("Half-width of the start sampling box for the other free "
          "parameters, in units of each parameter's range."));
   lmLay->addRow(tr("Max iterations:"), _lmMaxIter);
+  lmLay->addRow(tr("Max function evals:"), _lmMaxFev);
+  lmLay->addRow(tr("ftol:"), _lmFtol);
+  lmLay->addRow(tr("xtol:"), _lmXtol);
+  lmLay->addRow(tr("gtol:"), _lmGtol);
+  lmLay->addRow(tr("Noise-floor recoveries:"), _lmMaxRecoveries);
   lmLay->addRow(_lmCont);
   lmLay->addRow(tr("Multi-starts:"), _lmMultistart);
   lmLay->addRow(tr("Start span (× range):"), _lmMsSpan);
   root->addWidget(lmBox);
+
+  // ── Post-LM error refinement ────────────────────────────────────
+  _emcBox = new QGroupBox(tr("Error refinement (post-LM MCMC)"));
+  _emcBox->setCheckable(true);
+  _emcBox->setChecked(true);
+  _emcBox->setToolTip(
+      tr("Short random-walk chains around the LM optimum that replace the "
+         "symmetric (JᵀJ)⁻¹ errors with 15.9/84.1-percentile intervals. "
+         "Unchecked, the fit reports the linearised covariance errors "
+         "instead."));
+  auto *emcLay = new QFormLayout(_emcBox);
+  _emcSteps = new QSpinBox;
+  _emcSteps->setRange(200, 10000000);
+  _emcSteps->setValue(8000);
+  _emcSteps->setSingleStep(1000);
+  _emcSteps->setToolTip(
+      tr("Total post-burn-in samples, split across surviving modes in "
+         "proportion to their posterior mass."));
+  _emcMinSteps = new QSpinBox;
+  _emcMinSteps->setRange(50, 1000000);
+  _emcMinSteps->setValue(500);
+  _emcMinSteps->setToolTip(
+      tr("Floor on the samples any single sampled mode receives, so a "
+         "low-mass mode still gets its local shape resolved."));
+  _emcModeMinW = mkSpin(0.0, 1.0, 4, 0.005, 0.005);
+  _emcModeMinW->setToolTip(
+      tr("Modes holding less posterior mass than this are reported but not "
+         "sampled."));
+  _emcRounds = new QSpinBox;
+  _emcRounds->setRange(0, 10);
+  _emcRounds->setValue(2);
+  _emcRounds->setToolTip(
+      tr("A chain launched from a point that is not the optimum spends the "
+         "whole run descending, and its percentiles then describe that "
+         "trajectory rather than the posterior — collapsing one side of "
+         "every interval.<br><br>When a round finds a materially better "
+         "state, the solver adopts it and samples again from there. This is "
+         "the maximum number of extra rounds; 0 keeps the LM point no matter "
+         "what."));
+  _emcPriorWeight = mkSpin(0.0, 10000.0, 4, 0.1, 0.0);
+  _emcPriorWeight->setSpecialValueText(tr("auto (match LM cost)"));
+  _emcPriorWeight->setToolTip(
+      tr("Weight the physical priors carry in the sampled posterior. "
+         "<b>auto</b> reuses the effective weight the final LM cost applied "
+         "(prior weight × balance factor), which is what makes the sampled "
+         "posterior peak at the LM optimum.<br><br>Any other value samples a "
+         "different distribution from the one LM minimised, so the optimum "
+         "no longer sits at its peak."));
+  emcLay->addRow(tr("Samples:"), _emcSteps);
+  emcLay->addRow(tr("Min samples per mode:"), _emcMinSteps);
+  emcLay->addRow(tr("Min mode mass:"), _emcModeMinW);
+  emcLay->addRow(tr("Max re-anchor rounds:"), _emcRounds);
+  emcLay->addRow(tr("Prior weight:"), _emcPriorWeight);
+  root->addWidget(_emcBox);
+
+  // ── Prior balancing ─────────────────────────────────────────────
+  auto *pbBox = new QGroupBox(tr("Prior balancing"));
+  auto *pbLay = new QFormLayout(pbBox);
+  _priorWeight = mkSpin(0.0, 100000.0, 3, 1.0, 0.0);
+  _priorWeight->setSpecialValueText(tr("auto (points ÷ priors)"));
+  _priorWeight->setToolTip(
+      tr("Multiplier on every physical-prior residual. <b>auto</b> uses the "
+         "number of binned points divided by the number of priors, clamped "
+         "to 1–500."));
+  _priorAutoBalance = new QCheckBox(tr("Auto-balance priors against χ²(LC)"));
+  _priorAutoBalance->setChecked(true);
+  _priorAutoBalance->setToolTip(
+      tr("Rescale the prior block each stage so that, at 1σ tension on every "
+         "prior, the total prior penalty is the target fraction of the "
+         "light-curve χ². Without it a large prior weight can swamp a "
+         "well-fitting light curve."));
+  _priorBalanceTarget = mkSpin(0.01, 100.0, 3, 0.1, 1.0);
+  _priorBalanceTarget->setToolTip(
+      tr("Prior penalty at 1σ tension, as a fraction of χ²(LC). Below 1 the "
+         "light curve dominates, above 1 the priors do."));
+  pbLay->addRow(tr("Prior weight:"), _priorWeight);
+  pbLay->addRow(_priorAutoBalance);
+  pbLay->addRow(tr("Balance target (× χ²(LC)):"), _priorBalanceTarget);
+  root->addWidget(pbBox);
+
+  connect(_priorAutoBalance, &QCheckBox::toggled, _priorBalanceTarget,
+          &QWidget::setEnabled);
 
   auto *mcBox = new QGroupBox(tr("MCMC"));
   auto *mcLay = new QFormLayout(mcBox);
@@ -1116,7 +1258,17 @@ QWidget *LCFitDialog::buildSolverPage() {
   }
   root->addWidget(vBox);
   root->addStretch();
-  return page;
+
+  auto *scroll = new QScrollArea;
+  scroll->setWidgetResizable(true);
+  scroll->setFrameShape(QFrame::NoFrame);
+  scroll->setWidget(page);
+
+  auto *outer = new QWidget;
+  auto *ol    = new QVBoxLayout(outer);
+  ol->setContentsMargins(0, 0, 0, 0);
+  ol->addWidget(scroll);
+  return outer;
 }
 
 QWidget *LCFitDialog::buildAdvancedPage() {
@@ -1719,6 +1871,8 @@ QJsonObject LCFitDialog::buildFullConfig() const {
     double priorWeight = 1.0;
     if (nPrior > 0 && nData > 0)
         priorWeight = std::clamp(double(nData) / double(nPrior), 1.0, 500.0);
+    if (_priorWeight && _priorWeight->value() > 0.0)
+        priorWeight = _priorWeight->value();
 
     auto toJsonMap = [](const QMap<QString, QString> &m) {
         QJsonObject o;
@@ -1788,14 +1942,27 @@ QJsonObject LCFitDialog::buildFullConfig() const {
 
     // LM
     cfg["lm_max_iter"]             = _lmMaxIter->value();
-    cfg["lm_gtol"]                 = 0.0;
+    // lcurve caps a descent at lm_max_fev model evaluations, defaulting to
+    // 200·(nvary+1). With central differences that is ~100 iterations, so the
+    // budget — not lm_max_iter, and not the convergence tests — decided when
+    // every fit stopped, leaving the solution off the minimum. Derive the cap
+    // from the iteration limit instead: one central-difference Jacobian costs
+    // 2·nvary evaluations plus the trial steps.
+    const int nVary = std::max(1, int(mi.varied.size()));
+    cfg["lm_max_fev"] = _lmMaxFev->value() > 0
+                            ? _lmMaxFev->value()
+                            : _lmMaxIter->value() * (2 * nVary + 4);
+    cfg["lm_ftol"]                 = tolValue(_lmFtol, 1.49e-8);
+    cfg["lm_xtol"]                 = tolValue(_lmXtol, 1.49e-8);
+    cfg["lm_gtol"]                 = tolValue(_lmGtol, 0.0);
+    cfg["lm_max_recoveries"]       = _lmMaxRecoveries->value();
     cfg["lm_tau"]                  = 1e-3;
     cfg["lm_factor"]               = 100.0;
     cfg["lm_fd_step_min"]          = 1e-10;
     cfg["lm_continuation"]         = _lmCont->isChecked();
     cfg["lm_continuation_stages"]  = 6;
-    cfg["lm_auto_balance_priors"]  = true;
-    cfg["lm_prior_balance_target"] = 1.0;
+    cfg["lm_auto_balance_priors"]  = _priorAutoBalance->isChecked();
+    cfg["lm_prior_balance_target"] = _priorBalanceTarget->value();
     cfg["lm_log_path"] = QDir(_tempDir).absoluteFilePath("lm_iter_log.txt");
     cfg["lm_verbose"]  = true;
     // Multi-start: extra LM descents swept across the parameter space so
@@ -1810,11 +1977,19 @@ QJsonObject LCFitDialog::buildFullConfig() const {
     // Steps are split across surviving modes in proportion to their mass
     // (modes below lm_mode_min_weight are excluded), so multimodality is
     // reflected in the percentile errors.
-    cfg["lm_error_mcmc"]              = true;
-    cfg["lm_error_mcmc_steps"]        = 8000;
-    cfg["lm_error_mcmc_prior_weight"] = 1.0;
-    cfg["lm_error_mcmc_min_steps"]    = 500;
-    cfg["lm_mode_min_weight"]         = 0.005;
+    cfg["lm_error_mcmc"]           = _emcBox->isChecked();
+    cfg["lm_error_mcmc_steps"]     = _emcSteps->value();
+    cfg["lm_error_mcmc_min_steps"] = _emcMinSteps->value();
+    cfg["lm_mode_min_weight"]      = _emcModeMinW->value();
+    cfg["lm_reanchor_rounds"]      = _emcRounds->value();
+    // Only send a prior weight when the user asked for a specific one.
+    // lcurve's default is the effective weight the final LM cost applied
+    // (prior_weight × balance factor), which is what makes the sampled
+    // posterior peak at the LM optimum; overriding it with a flat 1.0
+    // samples a different distribution from the one LM minimised, so the
+    // optimum lands off-peak and one side of every interval collapses.
+    if (_emcPriorWeight->value() > 0.0)
+        cfg["lm_error_mcmc_prior_weight"] = _emcPriorWeight->value();
 
     cfg["prior_weight"] = priorWeight;
     cfg["priors"]       = toJsonMap(priors);
