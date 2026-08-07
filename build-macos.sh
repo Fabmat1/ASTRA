@@ -26,10 +26,15 @@ set -euo pipefail
 VERSION="${1:-0.5.1}"
 QT_FROM="${QT_FROM:-brew}"
 OPENBLAS_VERSION="${OPENBLAS_VERSION:-0.3.27}"
-# Bundled helper programs (mirrors what build-appimage.sh ships). ISIS is not
-# bundled on macOS (its S-Lang/PGPLOT stack doesn't build cleanly on Apple Si).
+# Bundled helper programs (mirrors what build-appimage.sh ships).
 ASTRA_BUNDLE_LCURVE="${ASTRA_BUNDLE_LCURVE:-1}"   # lcurve_re fitting binaries
 ASTRA_BUNDLE_LCQUERY="${ASTRA_BUNDLE_LCQUERY:-1}" # lightcurvequery Python sources
+# ISIS/S-Lang. Provisioned by build-macos-isis.sh (kept separate so its very
+# slow, very stable source build caches independently of this script) and
+# staged into the .app below. Unlike the AppImage's PGPLOT this one has no X11
+# drivers — see the header of build-macos-isis.sh for why. Failure to build it
+# is non-fatal: the .dmg still ships, just without the bundled ISIS.
+ASTRA_BUNDLE_ISIS="${ASTRA_BUNDLE_ISIS:-1}"
 LCURVE_REPO="${LCURVE_REPO:-https://github.com/Fabmat1/lcurve_re.git}"
 LCURVE_REF="${LCURVE_REF:-main}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
@@ -503,7 +508,9 @@ if [[ "${ASTRA_BUNDLE_LCURVE}" == "1" ]]; then
   # time. Re-run with ASTRA_BUNDLE_LCURVE=0 to skip it outright.
   if (
     set -e
-    LCURVE_BINS=(lcurve_levmarq lcurve_mcmc lcurve_simplex)
+    # lcurve_re is the forward model behind the fit dialog's model preview;
+    # the solvers alone leave that preview broken (build-appimage.sh ships all four).
+    LCURVE_BINS=(lcurve_levmarq lcurve_mcmc lcurve_simplex lcurve_re)
     LCURVE_SRC="${CACHE}/lcurve_re"
     LCURVE_BUILD="${LCURVE_SRC}/build"
     echo ">>> Building lcurve fitting binaries (${LCURVE_REF})"
@@ -598,6 +605,89 @@ if [[ "${ASTRA_BUNDLE_LCQUERY}" == "1" ]]; then
       "${LCQ_SRC}/" "${LCQ_DEST}/"
   else
     echo "!!! lightcurvequery submodule missing — skipping (run: git submodule update --init)"
+  fi
+fi
+
+# ── 11c. Stage ISIS into the bundle ─────────────────────────────────────────
+# Mirrors step 3c of build-appimage.sh. The ISIS core comes from the cached
+# prefix build-macos-isis.sh maintains; the script libraries (isisscripts,
+# stellar_isisscripts) change often, so they are cloned at HEAD and built on
+# every run, exactly as the AppImage does.
+#
+# ISIS only *reads* its tree at runtime, so it ships as data under
+# Contents/share/astra/isis and runs in place. ASTRA points it there via
+# ISIS_SRCDIR / SLSH_PATH / SLANG_MODULE_PATH / PGPLOT_DIR and a private
+# .isisrc (src/utils/IsisEnvironment.cpp) — the reldir CMake bakes in resolves
+# to Contents/share/astra/isis from Contents/MacOS, and the isis binary is
+# found via IsisEnvironment's <root>/bin/isis fallback.
+if [[ "${ASTRA_BUNDLE_ISIS}" == "1" ]]; then
+  if (
+    set -e
+    ISIS_PREFIX="${HOME}/.cache/astra-build-macos-isis/prefix"
+    [[ -x "${SRC_DIR}/build-macos-isis.sh" ]] \
+      || { echo "build-macos-isis.sh missing or not executable"; exit 1; }
+    "${SRC_DIR}/build-macos-isis.sh" "${ISIS_PREFIX}"
+
+    # --- Script libraries: always latest HEAD, built fresh each run ---
+    ISIS_SCRIPTS_SRC="${BUILD_DIR}/isis_scripts"
+    rm -rf "${ISIS_SCRIPTS_SRC}"; mkdir -p "${ISIS_SCRIPTS_SRC}"
+    export PATH="${ISIS_PREFIX}/bin:${PATH}"
+
+    # isisscripts (Remeis) is served over plain-HTTP gitweb (dumb transport):
+    # no --depth, since shallow clone is unsupported on that protocol.
+    ( cd "${ISIS_SCRIPTS_SRC}"
+      git clone http://www.sternwarte.uni-erlangen.de/git.public/isisscripts isisscripts
+      ( cd isisscripts && make )
+      git clone --depth 1 \
+        http://www.sternwarte.uni-erlangen.de/gitlab/irrgang/stellar.git stellar_isisscripts
+      ( cd stellar_isisscripts && make )
+      if [[ -f stellar_isisscripts/slirp/c_functions.h ]]; then
+        ( cd stellar_isisscripts/slirp
+          "${ISIS_PREFIX}/bin/slirp" -make -lm -lgsl -lgslcblas -lpthread \
+            c_functions.h c_functions.o
+          [[ -f Makefile ]] && make ) || echo "WARN: stellar c_functions build failed (continuing)"
+      fi )
+
+    ISIS_STAGE="${APP}/Contents/share/astra/isis"
+    rm -rf "${ISIS_STAGE}"
+    mkdir -p "${ISIS_STAGE}/srcdir" "${ISIS_STAGE}/bin"
+    cp -a "${ISIS_PREFIX}"/isis/*/. "${ISIS_STAGE}/srcdir/"  # ISIS_SRCDIR
+    cp -a "${ISIS_PREFIX}/lib"      "${ISIS_STAGE}/"         # libslang + slang modules
+    cp -a "${ISIS_PREFIX}/share"    "${ISIS_STAGE}/"         # share/slsh
+    cp -a "${ISIS_PREFIX}/pgplot"   "${ISIS_STAGE}/"         # grfont.dat, rgb.txt
+    cp -a "${ISIS_PREFIX}/bin/isis" "${ISIS_STAGE}/bin/"
+    mkdir -p "${ISIS_STAGE}/share/slsh/local-packages"
+    for s in isisscripts stellar_isisscripts; do
+      cp -a "${ISIS_SCRIPTS_SRC}/${s}" "${ISIS_STAGE}/${s}"
+      rm -rf "${ISIS_STAGE}/${s}/.git"
+    done
+    # Build leftovers: object files, and the static PGPLOT archives that were
+    # only ever needed to link the pgplot module.
+    find "${ISIS_STAGE}" \( -name '*.o' -o -name '*.a' \) -delete 2>/dev/null || true
+
+    # --- Self-contain the Mach-O files ---------------------------------------
+    # The AppImage gets this free from linuxdeploy; macOS has no equivalent
+    # that walks a directory tree, so run dylibbundler over every binary and
+    # dlopened module. They sit at different depths, so each one needs its own
+    # @loader_path prefix pointing back at the single shared libs/ dir.
+    ISIS_LIBS="${ISIS_STAGE}/libs"
+    mkdir -p "${ISIS_LIBS}"
+    while IFS= read -r f; do
+      # Skip anything that isn't actually Mach-O (scripts, data, .sl files).
+      file -b "${f}" | grep -q 'Mach-O' || continue
+      rel="$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1], os.path.dirname(sys.argv[2])))' \
+             "${ISIS_LIBS}" "${f}")"
+      dylibbundler -cd -of -b -x "${f}" -d "${ISIS_LIBS}" -p "@loader_path/${rel}/" >/dev/null
+    done < <(find "${ISIS_STAGE}" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) \
+                  -not -path "${ISIS_LIBS}/*")
+
+    echo ">>> ISIS staged at Contents/share/astra/isis ($(du -sh "${ISIS_STAGE}" | cut -f1))"
+  ); then
+    :
+  else
+    echo "!!! ISIS build/bundle failed — shipping .app WITHOUT bundled ISIS."
+    echo "!!! ISIS-backed fitting will fall back to a user-installed isis on PATH."
+    rm -rf "${APP}/Contents/share/astra/isis"
   fi
 fi
 
