@@ -70,8 +70,9 @@ rm -rf "${PREFIX}" "${WORK}"
 mkdir -p "${PREFIX}" "${WORK}"
 
 # gcc supplies gfortran (PGPLOT is Fortran); gsl is needed by slgsl and by the
-# stellar_isisscripts slirp module build-macos.sh compiles later.
-brew install gcc gsl wget gawk >/dev/null 2>&1 || true
+# stellar_isisscripts slirp module build-macos.sh compiles later; cfitsio is a
+# hard requirement of ISIS's configure (see --with-cfitsio below).
+brew install gcc gsl cfitsio wget gawk >/dev/null 2>&1 || true
 FC_BIN="$(ls "${BREW_PREFIX}/bin/gfortran"* 2>/dev/null | sort -V | tail -1 || true)"
 [[ -n "${FC_BIN}" ]] || { echo "gfortran not found (brew install gcc)."; exit 1; }
 
@@ -233,10 +234,20 @@ patch_isis_no_x11() {
     || { echo "ISIS still references -lX11 after patching — layout changed upstream."; return 1; }
 }
 
+# cfitsio is mandatory for ISIS and its configure only searches the usual system
+# prefixes, which on Apple Silicon Homebrew (/opt/homebrew) it never finds — the
+# build then dies with "unable to find the cfitsio library and header file
+# fitsio.h". Point it at the keg explicitly (Linux gets this free from
+# libcfitsio-dev in /usr).
+CFITSIO_PREFIX="$(brew --prefix cfitsio)"
+[[ -f "${CFITSIO_PREFIX}/include/fitsio.h" ]] \
+  || { echo "cfitsio headers not found under ${CFITSIO_PREFIX} (brew install cfitsio)."; exit 1; }
+
 ( cd "${WORK}/isis"
   patch_isis_no_x11
   ./configure --prefix="${PREFIX}" --without-x \
     --with-slang="${PREFIX}" \
+    --with-cfitsio="${CFITSIO_PREFIX}" \
     --with-pgplotinc="${PREFIX}/include" \
     --with-pgplotlib="${PREFIX}/lib"
   make -j"${JOBS}"

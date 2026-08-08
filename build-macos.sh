@@ -33,8 +33,11 @@ ASTRA_BUNDLE_LCQUERY="${ASTRA_BUNDLE_LCQUERY:-1}" # lightcurvequery Python sourc
 # slow, very stable source build caches independently of this script) and
 # staged into the .app below. Unlike the AppImage's PGPLOT this one has no X11
 # drivers — see the header of build-macos-isis.sh for why. Failure to build it
-# is non-fatal: the .dmg still ships, just without the bundled ISIS.
+# is non-fatal by default: the .dmg still ships, just without the bundled ISIS.
+# Set ASTRA_REQUIRE_ISIS=1 (the release workflow does) to make it fatal instead,
+# so a tagged .dmg can never quietly go out without ISIS.
 ASTRA_BUNDLE_ISIS="${ASTRA_BUNDLE_ISIS:-1}"
+ASTRA_REQUIRE_ISIS="${ASTRA_REQUIRE_ISIS:-0}"
 LCURVE_REPO="${LCURVE_REPO:-https://github.com/Fabmat1/lcurve_re.git}"
 LCURVE_REF="${LCURVE_REF:-main}"
 JOBS="${JOBS:-$(sysctl -n hw.ncpu)}"
@@ -85,6 +88,9 @@ BREW_PKGS=(cmake pkg-config wget gcc libomp eigen boost fftw nlohmann-json tbb c
 # lcurve when bundled) — macdeployqt only handles the main Qt app, not
 # arbitrary executables.
 BREW_PKGS+=(dylibbundler)
+# cpanminus installs the Perl File::Slurp that stellar_isisscripts' makestatic
+# needs; only used when ISIS is bundled, but it is a tiny, harmless formula.
+[[ "${ASTRA_BUNDLE_ISIS}" == "1" ]] && BREW_PKGS+=(cpanminus)
 [[ "${QT_FROM}" == "brew" ]] && BREW_PKGS+=(qt)
 
 echo ">>> Installing/updating Homebrew packages: ${BREW_PKGS[*]}"
@@ -621,7 +627,14 @@ fi
 # to Contents/share/astra/isis from Contents/MacOS, and the isis binary is
 # found via IsisEnvironment's <root>/bin/isis fallback.
 if [[ "${ASTRA_BUNDLE_ISIS}" == "1" ]]; then
-  if (
+  # The subshell below must be a *standalone* command with errexit disabled
+  # around it. Bash propagates "errexit is ignored here" into a subshell used as
+  # an `if` condition or as an operand of &&/||, so the older
+  # `if ( set -e; ... ); then` form silently ran on past every failure and took
+  # its exit status from the last echo — that is how a .dmg with no isis binary,
+  # no isisscripts and no stellar_isisscripts shipped as a green build.
+  set +e
+  (
     set -e
     ISIS_PREFIX="${HOME}/.cache/astra-build-macos-isis/prefix"
     [[ -x "${SRC_DIR}/build-macos-isis.sh" ]] \
@@ -633,11 +646,16 @@ if [[ "${ASTRA_BUNDLE_ISIS}" == "1" ]]; then
     rm -rf "${ISIS_SCRIPTS_SRC}"; mkdir -p "${ISIS_SCRIPTS_SRC}"
     export PATH="${ISIS_PREFIX}/bin:${PATH}"
 
-    # isisscripts (Remeis) is served over plain-HTTP gitweb (dumb transport):
-    # no --depth, since shallow clone is unsupported on that protocol.
+    # isisscripts (Remeis) moved off the old /git.public gitweb (dumb HTTP, now
+    # 404) to the Remeis GitLab, which speaks smart HTTP — so --depth 1 works.
     ( cd "${ISIS_SCRIPTS_SRC}"
-      git clone http://www.sternwarte.uni-erlangen.de/git.public/isisscripts isisscripts
+      git clone --depth 1 \
+        https://www.sternwarte.uni-erlangen.de/gitlab/remeis/isisscripts.git isisscripts
       ( cd isisscripts && make )
+      # stellar's `make` runs bin/makestatic, which needs Perl's File::Slurp.
+      # It is not core, and macOS runners don't ship it — without it the make
+      # dies at share/stellar_isisscripts.sl.
+      perl -MFile::Slurp -e1 >/dev/null 2>&1 || cpanm --notest File::Slurp
       git clone --depth 1 \
         http://www.sternwarte.uni-erlangen.de/gitlab/irrgang/stellar.git stellar_isisscripts
       ( cd stellar_isisscripts && make )
@@ -682,12 +700,19 @@ if [[ "${ASTRA_BUNDLE_ISIS}" == "1" ]]; then
                   -not -path "${ISIS_LIBS}/*")
 
     echo ">>> ISIS staged at Contents/share/astra/isis ($(du -sh "${ISIS_STAGE}" | cut -f1))"
-  ); then
-    :
-  else
-    echo "!!! ISIS build/bundle failed — shipping .app WITHOUT bundled ISIS."
-    echo "!!! ISIS-backed fitting will fall back to a user-installed isis on PATH."
+  )
+  ISIS_STATUS=$?
+  set -e
+  if (( ISIS_STATUS != 0 )); then
+    echo "!!! ISIS build/bundle failed (exit ${ISIS_STATUS}) — the .app has NO bundled ISIS."
+    echo "!!! ISIS-backed fitting would fall back to a user-installed isis on PATH."
     rm -rf "${APP}/Contents/share/astra/isis"
+    # Release builds must not ship a .dmg that quietly lacks ISIS; local builds
+    # keep the soft fallback (ASTRA_REQUIRE_ISIS=0).
+    if [[ "${ASTRA_REQUIRE_ISIS}" == "1" ]]; then
+      echo "!!! ASTRA_REQUIRE_ISIS=1 — refusing to package a .dmg without ISIS."
+      exit 1
+    fi
   fi
 fi
 

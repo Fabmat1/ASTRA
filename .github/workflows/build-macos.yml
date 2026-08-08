@@ -68,6 +68,9 @@ jobs:
       - name: Build .app and .dmg
         env:
           ASTRA_VERSION_OVERRIDE: ${{ steps.ver.outputs.stamp }}
+          # Fail the job if ISIS doesn't build/stage instead of quietly shipping
+          # a .dmg without it — how v0.5.5's first .dmg went out green but empty.
+          ASTRA_REQUIRE_ISIS: "1"
         run: ./build-macos.sh "${{ steps.ver.outputs.version }}"
 
       - name: Upload .dmg artifact
