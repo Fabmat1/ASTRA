@@ -335,6 +335,7 @@ set(SOURCES
     src/utils/SedFitEnvironment.cpp
     src/utils/CheckStateDragger.cpp
     src/utils/ClaretTables.cpp
+    src/utils/LCBinning.cpp
     src/utils/LCFitPhysics.cpp
     src/utils/LCFitRunner.cpp
     src/utils/FilterWavelength.cpp
