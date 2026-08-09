@@ -1,6 +1,6 @@
-#include "DiggaBackend.h"
+#include "GaelBackend.h"
 
-#include <specfit/DiggaAPI.hpp>
+#include <specfit/GaelAPI.hpp>
 
 #include <QDebug>
 #include <QString>
@@ -13,7 +13,7 @@ namespace astra::fitting {
 
 static std::string toStd(const QString& s) { return s.toStdString(); }
 
-static specfit::api::StellarComponentInit toDigga(const StellarComponent& c)
+static specfit::api::StellarComponentInit toGael(const StellarComponent& c)
 {
     specfit::api::StellarComponentInit d;
     d.grid_relative_path = toStd(c.gridPath);
@@ -27,7 +27,7 @@ static specfit::api::StellarComponentInit toDigga(const StellarComponent& c)
     return d;
 }
 
-static specfit::api::SpectrumFileInput toDigga(const SpectrumFile& f)
+static specfit::api::SpectrumFileInput toGael(const SpectrumFile& f)
 {
     specfit::api::SpectrumFileInput d;
     d.filename  = toStd(f.filename);
@@ -50,7 +50,7 @@ static specfit::api::SpectrumFileInput toDigga(const SpectrumFile& f)
     return d;
 }
 
-static specfit::api::ObservationInput toDigga(const Observation& o)
+static specfit::api::ObservationInput toGael(const Observation& o)
 {
     specfit::api::ObservationInput d;
     d.waveCut = { o.waveCut.first, o.waveCut.second };
@@ -59,11 +59,11 @@ static specfit::api::ObservationInput toDigga(const Observation& o)
     for (const auto& a : o.anchors)
         d.cspline_anchorpoints.push_back({ a.wlLow, a.wlHigh, a.spacing });
     for (const auto& f : o.files)
-        d.files.push_back(toDigga(f));
+        d.files.push_back(toGael(f));
     return d;
 }
 
-static FittedParameter fromDigga(const specfit::api::StellarParamResult& p)
+static FittedParameter fromGael(const specfit::api::StellarParamResult& p)
 {
     FittedParameter out;
     out.value      = p.value;
@@ -74,17 +74,17 @@ static FittedParameter fromDigga(const specfit::api::StellarParamResult& p)
 }
 
 template <class V>
-static QVector<FittedParameter> fromDiggaVec(const V& v)
+static QVector<FittedParameter> fromGaelVec(const V& v)
 {
     QVector<FittedParameter> out;
     out.reserve(static_cast<int>(v.size()));
-    for (const auto& x : v) out.append(fromDigga(x));
+    for (const auto& x : v) out.append(fromGael(x));
     return out;
 }
 
 // ─── main entry point ────────────────────────────────────────────────
 
-SpectralFitResult DiggaBackend::run(const SpectralFitJob& job,
+SpectralFitResult GaelBackend::run(const SpectralFitJob& job,
                                      LogFn      onLog,
                                      ProgressFn onProgress,
                                      AbortFn    shouldAbort)
@@ -92,7 +92,7 @@ SpectralFitResult DiggaBackend::run(const SpectralFitJob& job,
     SpectralFitResult out;
 
     try {
-        // 1. Build DIGGA global settings
+        // 1. Build GAEL global settings
         specfit::api::GlobalSettings gs;
         for (const auto& p : job.basePaths) gs.base_paths.push_back(toStd(p));
         gs.filter_snr       = job.filterSnr;
@@ -104,14 +104,14 @@ SpectralFitResult DiggaBackend::run(const SpectralFitJob& job,
         for (const auto& p : job.untiedParams)
             gs.untie_params.push_back(toStd(p));
 
-        // 2. Build DIGGA fit input
+        // 2. Build GAEL fit input
         specfit::api::FitInput fi;
         fi.output_path = toStd(job.outputPath);
-        for (const auto& c : job.components)   fi.components.push_back(toDigga(c));
-        for (const auto& o : job.observations) fi.observations.push_back(toDigga(o));
+        for (const auto& c : job.components)   fi.components.push_back(toGael(c));
+        for (const auto& o : job.observations) fi.observations.push_back(toGael(o));
 
         // 3. Run
-        specfit::api::DiggaSession session;
+        specfit::api::GaelSession session;
         session.set_global_settings(gs);
         session.set_fit_input(fi);
         session.set_num_threads(0);
@@ -127,7 +127,7 @@ SpectralFitResult DiggaBackend::run(const SpectralFitJob& job,
                     onProgress(QString::fromStdString(stage), pct);
                 });
         }
-        // TODO: DIGGA doesn't currently expose an abort hook; once it does,
+        // TODO: GAEL doesn't currently expose an abort hook; once it does,
         // plumb `shouldAbort` through session.set_abort_callback(...).
         (void)shouldAbort;
 
@@ -143,19 +143,19 @@ SpectralFitResult DiggaBackend::run(const SpectralFitJob& job,
 
         for (const auto& c : r.components) {
             FittedComponent fc;
-            fc.teff  = fromDiggaVec(c.teff);
-            fc.logg  = fromDiggaVec(c.logg);
-            fc.vsini = fromDiggaVec(c.vsini);
-            fc.he    = fromDiggaVec(c.he);
-            fc.zeta  = fromDiggaVec(c.zeta);
-            fc.xi    = fromDiggaVec(c.xi);
-            fc.z     = fromDiggaVec(c.z);
-            fc.vrad  = fromDiggaVec(c.vrad);
+            fc.teff  = fromGaelVec(c.teff);
+            fc.logg  = fromGaelVec(c.logg);
+            fc.vsini = fromGaelVec(c.vsini);
+            fc.he    = fromGaelVec(c.he);
+            fc.zeta  = fromGaelVec(c.zeta);
+            fc.xi    = fromGaelVec(c.xi);
+            fc.z     = fromGaelVec(c.z);
+            fc.vrad  = fromGaelVec(c.vrad);
             out.components.append(fc);
         }
 
         // Map result spectra back to our spectrum IDs.
-        // DIGGA returns spectra in the order they were submitted across
+        // GAEL returns spectra in the order they were submitted across
         // all observations → flatten the job in the same order.
         QVector<QString> submittedIds;
         for (const auto& o : job.observations)
@@ -183,10 +183,10 @@ SpectralFitResult DiggaBackend::run(const SpectralFitJob& job,
     } catch (const std::exception& e) {
         out.success       = false;
         out.errorMessage  = QString::fromUtf8(e.what());
-        if (onLog) onLog(QStringLiteral("DIGGA error: %1").arg(out.errorMessage));
+        if (onLog) onLog(QStringLiteral("GAEL error: %1").arg(out.errorMessage));
     } catch (...) {
         out.success       = false;
-        out.errorMessage  = "Unknown error in DIGGA backend";
+        out.errorMessage  = "Unknown error in GAEL backend";
     }
 
     return out;

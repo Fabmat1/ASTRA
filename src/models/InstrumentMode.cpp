@@ -98,7 +98,7 @@ SpectralProperties SpectralProperties::fromJson(const QJsonObject& obj)
         sp.systematicRVError = obj["systematic_rv_error_kms"].toDouble();
 
     if (obj.contains("fitDefaults"))
-        sp.fitDefaults = DiggaFitDefaults::fromJson(obj["fitDefaults"].toObject());
+        sp.fitDefaults = GaelFitDefaults::fromJson(obj["fitDefaults"].toObject());
 
     for (const auto& v : obj["common_setups"].toArray())
         sp.commonSetups.append(WavelengthSetup::fromJson(v.toObject()));
@@ -250,7 +250,7 @@ AnchorRange AnchorRange::fromJson(const QJsonObject& o)
 { return { o["wlLow"].toDouble(), o["wlHigh"].toDouble(),
            o["spacing"].toDouble(50.0) }; }
 
-QJsonObject DiggaFitDefaults::toJson() const
+QJsonObject GaelFitDefaults::toJson() const
 {
     QJsonObject o;
     if (wlMin)     o["wlMin"]     = *wlMin;
@@ -271,9 +271,9 @@ QJsonObject DiggaFitDefaults::toJson() const
     return o;
 }
 
-DiggaFitDefaults DiggaFitDefaults::fromJson(const QJsonObject& o)
+GaelFitDefaults GaelFitDefaults::fromJson(const QJsonObject& o)
 {
-    DiggaFitDefaults d;
+    GaelFitDefaults d;
     if (o.contains("wlMin"))     d.wlMin     = o["wlMin"].toDouble();
     if (o.contains("wlMax"))     d.wlMax     = o["wlMax"].toDouble();
     if (o.contains("resOffset")) d.resOffset = o["resOffset"].toDouble();

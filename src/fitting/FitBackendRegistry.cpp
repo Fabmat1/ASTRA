@@ -1,5 +1,5 @@
 #include "FitBackendRegistry.h"
-#include "DiggaBackend.h"
+#include "GaelBackend.h"
 #include "IsisBackend.h"
 
 namespace astra::fitting {
@@ -14,12 +14,12 @@ FitBackendRegistry& FitBackendRegistry::instance()
 
 QStringList FitBackendRegistry::availableBackends() const
 {
-    return { "DIGGA", "ISIS", "ISIS (interactive)" };
+    return { "GAEL", "ISIS", "ISIS (interactive)" };
 }
 
 std::unique_ptr<IFitBackend> FitBackendRegistry::create(const QString& name) const
 {
-    if (name == "DIGGA") return std::make_unique<DiggaBackend>();
+    if (name == "GAEL") return std::make_unique<GaelBackend>();
     if (name == "ISIS")  return std::make_unique<IsisBackend>();
     if (name == "ISIS (interactive)")  return std::make_unique<IsisBackend>();
     return nullptr;

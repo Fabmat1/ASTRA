@@ -4,9 +4,9 @@
 
 namespace astra::fitting {
 
-class DiggaBackend : public IFitBackend {
+class GaelBackend : public IFitBackend {
 public:
-    QString name() const override { return "DIGGA"; }
+    QString name() const override { return "GAEL"; }
 
     Capabilities capabilities() const override {
         Capabilities c;

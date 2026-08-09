@@ -57,7 +57,7 @@ struct AnchorRange {
     static AnchorRange fromJson(const QJsonObject& o);
 };
 
-struct DiggaFitDefaults {
+struct GaelFitDefaults {
     std::optional<double>   wlMin;
     std::optional<double>   wlMax;
     QVector<IgnoreRange>    ignore;
@@ -70,7 +70,7 @@ struct DiggaFitDefaults {
             && !resOffset && !resSlope;
     }
     QJsonObject toJson() const;
-    static DiggaFitDefaults fromJson(const QJsonObject& o);
+    static GaelFitDefaults fromJson(const QJsonObject& o);
 };
 
 // ── NEW: range of periods to whiten in periodograms ────────────────────────
@@ -90,7 +90,7 @@ struct SpectralProperties {
     double                      wavelengthMin = 0.0;
     double                      wavelengthMax = 0.0;
     QVector<WavelengthSetup>    commonSetups;
-    DiggaFitDefaults            fitDefaults;
+    GaelFitDefaults            fitDefaults;
 
     // Optional explicit systematic RV error (km/s).  When not set,
     // a default is inferred from the resolution (see helpers below).

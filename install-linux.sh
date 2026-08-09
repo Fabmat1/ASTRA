@@ -8,7 +8,7 @@
 #   3. fill in the dependencies the distro packages don't provide
 #      (unordered_dense header, FFTW3/OpenBLAS CMake configs, ...)
 #   4. install Qt >= 6.10 via aqtinstall when the distro is too old
-#   5. fetch the git submodules (DIGGA, rv_mcmc, lightcurvequery, SEDplusplus)
+#   5. fetch the git submodules (GAEL, rv_mcmc, lightcurvequery, SEDplusplus)
 #   6. build the lcurve light-curve fitting binaries (optional, bundled)
 #   7. configure, build and install ASTRA
 #
@@ -39,9 +39,9 @@ SKIP_DEPS=0
 DO_INSTALL=1
 WITH_LCURVE=1
 LATEST_SUBMODULES=1                 # track upstream HEAD instead of the pins
-# DIGGA's CUDA back-end is off by default: at the pinned submodule commit
+# GAEL's CUDA back-end is off by default: at the pinned submodule commit
 # Resolution.hpp only declares degrade_resolution_cuda() under SPECFIT_USE_CUDA
-# while the build defines DIGGA_USE_CUDA, so -DDIGGA_ENABLE_CUDA=ON does not
+# while the build defines GAEL_USE_CUDA, so -DGAEL_ENABLE_CUDA=ON does not
 # compile. The AppImage build disables it for the same reason.
 CUDA_MODE="off"                     # on | off
 FORCE_QT_DOWNLOAD=0
@@ -202,14 +202,14 @@ ${C_BOLD}Options${C_RESET}
       --qt-version V    Qt version to download when the distro is too old
                         (default: ${QT_DOWNLOAD_VERSION}, needs >= ${QT_MIN})
       --download-qt     always download Qt, even if the system Qt is new enough
-      --cuda            build DIGGA's CUDA back-end (default: off — it does
-                        not compile at the pinned DIGGA commit)
+      --cuda            build GAEL's CUDA back-end (default: off — it does
+                        not compile at the pinned GAEL commit)
       --no-cuda         explicitly disable it (this is the default)
       --no-lcurve       skip building the bundled lcurve fitting binaries
       --pinned-submodules
                         check out the commits recorded in the superproject
                         instead of the latest upstream state (the default is
-                        to update DIGGA, rv_mcmc, lightcurvequery, SEDplusplus
+                        to update GAEL, rv_mcmc, lightcurvequery, SEDplusplus
                         and lcurve to their current upstream HEAD)
       --skip-deps       don't touch system packages (assume they are present)
       --build-only      configure and build, but do not install
@@ -385,9 +385,9 @@ fi
 # CUDA
 if [[ "${CUDA_MODE}" == "on" ]]; then
     have nvcc || warn "--cuda was given but nvcc is not on PATH."
-    warn "DIGGA's CUDA back-end does not compile at the pinned submodule commit; the build may fail."
+    warn "GAEL's CUDA back-end does not compile at the pinned submodule commit; the build may fail."
 elif have nvcc; then
-    info "A CUDA toolkit is installed, but DIGGA's CUDA back-end is disabled (pass --cuda to try it)."
+    info "A CUDA toolkit is installed, but GAEL's CUDA back-end is disabled (pass --cuda to try it)."
 fi
 
 # ════════════════════════ the plan ══════════════════════════════════════════
@@ -464,7 +464,7 @@ elif [[ "${PKG_MGR}" == "apt" ]]; then
         # toolchain
         build-essential cmake ninja-build git curl wget ca-certificates
         pkg-config gfortran ccache patchelf
-        # python (DIGGA links against it; lightcurvequery needs a venv)
+        # python (GAEL links against it; lightcurvequery needs a venv)
         python3 python3-dev python3-pip python3-venv python3-numpy
         # maths / science
         libeigen3-dev libopenblas-dev liblapacke-dev
@@ -530,7 +530,7 @@ step "Filling in dependencies the distribution doesn't package"
 
 LIBDIR_GLOBS=(/usr/lib /usr/lib64 /usr/local/lib /usr/lib/*-linux-gnu)
 
-# 4a. ankerl/unordered_dense — DIGGA includes <ankerl/unordered_dense.h> but its
+# 4a. ankerl/unordered_dense — GAEL includes <ankerl/unordered_dense.h> but its
 #     fallback path looks for a bare unordered_dense.h on the include path.
 ensure_unordered_dense() {
     if find_first /usr/lib/cmake/unordered_dense /usr/lib64/cmake/unordered_dense \
@@ -597,7 +597,7 @@ EOF
     ok "FFTW3: CMake package written to /usr/local/lib/cmake/fftw3."
 }
 
-# 4d. OpenBLASConfig.cmake — DIGGA links the OpenBLAS::OpenBLAS target.
+# 4d. OpenBLASConfig.cmake — GAEL links the OpenBLAS::OpenBLAS target.
 ensure_openblas_config() {
     local d f
     for d in "${LIBDIR_GLOBS[@]}"; do
@@ -609,7 +609,7 @@ ensure_openblas_config() {
     local lib inc
     lib="$(find_first /usr/lib/x86_64-linux-gnu/libopenblas.so /usr/lib/libopenblas.so \
                       /usr/lib64/libopenblas.so /usr/local/lib/libopenblas.so)" \
-        || { warn "OpenBLAS: libopenblas.so not found — DIGGA will fail to configure."; return 0; }
+        || { warn "OpenBLAS: libopenblas.so not found — GAEL will fail to configure."; return 0; }
     inc="$(find_first /usr/include/openblas /usr/include/x86_64-linux-gnu/openblas-pthread \
                       /usr/include/x86_64-linux-gnu/openblas-openmp /usr/include)" || inc=/usr/include
     local tmp; tmp="$(mktemp)"
@@ -718,17 +718,17 @@ if [[ -d "${REPO_DIR}/.git" ]]; then
     if [[ ${LATEST_SUBMODULES} -eq 1 ]]; then
         # --remote follows each submodule's upstream default branch instead of
         # the SHA recorded here, so a fresh install always gets the current
-        # DIGGA / rv_mcmc / lightcurvequery / SEDplusplus.
+        # GAEL / rv_mcmc / lightcurvequery / SEDplusplus.
         SUBMODULE_ARGS+=(--remote)
         info "Tracking the latest upstream commit of every submodule."
     else
         info "Using the commits pinned by this repository (--pinned-submodules)."
     fi
-    run_step "Updating submodules (DIGGA, rv_mcmc, lightcurvequery, SEDplusplus)" \
+    run_step "Updating submodules (GAEL, rv_mcmc, lightcurvequery, SEDplusplus)" \
         git_sm "${SUBMODULE_ARGS[@]}" \
         || die "Submodule checkout failed. Check your network connection and the log."
 
-    for sm in DIGGA rv_mcmc lightcurvequery SEDplusplus; do
+    for sm in GAEL rv_mcmc lightcurvequery SEDplusplus; do
         sm_dir="${REPO_DIR}/external/${sm}"
 
         # Repair pass: restore the working tree from HEAD, and if even that
@@ -747,7 +747,7 @@ if [[ -d "${REPO_DIR}/.git" ]]; then
         if submodule_ok "${sm}"; then
             sm_rev="$(git -C "${sm_dir}" log -1 --format='%h %cs %s' 2>/dev/null | cut -c1-60)"
             info "external/${sm} ✔ ${sm_rev}"
-        elif [[ "${sm}" == "DIGGA" || "${sm}" == "rv_mcmc" ]]; then
+        elif [[ "${sm}" == "GAEL" || "${sm}" == "rv_mcmc" ]]; then
             die "external/${sm} could not be checked out, and ASTRA cannot build without it.
     Try:  git -C '${REPO_DIR}' submodule update --init --recursive --force"
         else
@@ -756,7 +756,7 @@ if [[ -d "${REPO_DIR}/.git" ]]; then
     done
 else
     warn "Not a git checkout — assuming external/ is already populated."
-    for sm in DIGGA rv_mcmc; do
+    for sm in GAEL rv_mcmc; do
         submodule_ok "${sm}" \
             || die "external/${sm} is missing and this is not a git checkout, so it cannot be fetched.
     Clone the repository instead:  git clone https://github.com/Fabmat1/ASTRA.git"
@@ -833,7 +833,7 @@ CMAKE_ARGS=(
     -S "${REPO_DIR}" -B "${BUILD_DIR}"
     -DCMAKE_BUILD_TYPE="${BUILD_TYPE}"
     -DCMAKE_INSTALL_PREFIX="${PREFIX}"
-    -DDIGGA_ENABLE_CUDA="$( [[ "${CUDA_MODE}" == "on" ]] && echo ON || echo OFF )"
+    -DGAEL_ENABLE_CUDA="$( [[ "${CUDA_MODE}" == "on" ]] && echo ON || echo OFF )"
 )
 # Only pick a generator for a fresh build tree — CMake refuses to switch
 # generators in an existing one.

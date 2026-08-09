@@ -278,10 +278,10 @@ private:
 
 
 // ============================================================================
-// DiggaFitImportTask - Background task for importing DIGGA spectral fits
+// GaelFitImportTask - Background task for importing GAEL spectral fits
 // ============================================================================
 
-struct DiggaFitImportEntry {
+struct GaelFitImportEntry {
     QString starId;
     QString spectrumId;
     std::shared_ptr<Spectrum> spectrum;
@@ -289,16 +289,16 @@ struct DiggaFitImportEntry {
     QString plotdataPath;
 };
 
-class DiggaFitImportTask : public BackgroundTask
+class GaelFitImportTask : public BackgroundTask
 {
     Q_OBJECT
 
 public:
-    DiggaFitImportTask(std::vector<DiggaFitImportEntry> entries,
+    GaelFitImportTask(std::vector<GaelFitImportEntry> entries,
                        ApplicationController* controller,
                        QObject* parent = nullptr);
 
-    QString taskName() const override { return "DIGGA Fit Import"; }
+    QString taskName() const override { return "GAEL Fit Import"; }
 
 public slots:
     void execute() override;
@@ -307,7 +307,7 @@ signals:
     void importComplete(int imported, int failed);
 
 private:
-    std::vector<DiggaFitImportEntry> _entries;
+    std::vector<GaelFitImportEntry> _entries;
     ApplicationController* _controller;
 };
 

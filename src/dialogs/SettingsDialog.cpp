@@ -222,7 +222,7 @@ QWidget* SettingsDialog::createGridPathsPage()
 
     auto* intro = new QLabel(
         "Base directories searched recursively for stellar model grids. "
-        "Both the SED fit (ISIS) and spectral fit (DIGGA) tools scan these "
+        "Both the SED fit (ISIS) and spectral fit (GAEL) tools scan these "
         "paths for <code>grid.fits</code> markers.");
     intro->setWordWrap(true);
     outer->addWidget(intro);

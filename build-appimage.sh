@@ -103,7 +103,7 @@ cmake -S . -B build \
   -DCMAKE_PREFIX_PATH="${QTROOT};/usr/local" \
   -DCMAKE_C_COMPILER_LAUNCHER=ccache \
   -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-  -DDIGGA_ENABLE_CUDA=OFF
+  -DGAEL_ENABLE_CUDA=OFF
 cmake --build build -j"$(nproc)"
 
 # ---------- 3. Install into AppDir ----------

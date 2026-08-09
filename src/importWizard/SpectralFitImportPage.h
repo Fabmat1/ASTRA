@@ -22,7 +22,7 @@ class QLabel;
 class QCheckBox;
 
 // ── Transient: raw filesystem scan result from background thread ─────
-struct DiggaScanResult {
+struct GaelScanResult {
     QString dirPath;
     QString gridName;
     QString parentDirName;
@@ -36,8 +36,8 @@ struct DiggaScanResult {
     QString error;
 };
 
-// ── Persistent: parsed DIGGA directory with matching results ─────────
-struct DiggaFitDirectory {
+// ── Persistent: parsed GAEL directory with matching results ─────────
+struct GaelFitDirectory {
     QString dirPath;
     QString gridName;
     QString parentDirName;
@@ -68,7 +68,7 @@ struct DiggaFitDirectory {
     // Per-spectrum matching results
     struct SpecMatch {
         int specIndex = 0;
-        QString diggaFilename;
+        QString gaelFilename;
         QString plotdataFile;
         std::shared_ptr<Star> matchedStar;
         std::shared_ptr<Spectrum> matchedSpectrum;
@@ -166,14 +166,14 @@ public:
 
   private slots:
     void onImportModeChanged();
-    void onBrowseDiggaFolder();
-    void onScanDigga();
+    void onBrowseGaelFolder();
+    void onScanGael();
     void onBrowseIsisFolder();
     void onScanIsis();
 
 private:
     void setupUi();
-    void setupDiggaPage();
+    void setupGaelPage();
     void setupIsisPage();
     void setupMappingPage();
 
@@ -187,22 +187,22 @@ private:
 
     SpectrumIndex buildSpectrumLookupIndex();
 
-    // DIGGA parsing (pure - safe for background thread)
-    static DiggaFitDirectory parseDiggaDirectory(const DiggaScanResult& scan);
-    static QMap<int, QString> parseDiggaFitReport(const QByteArray& content);
-    static void parseDiggaFitParameters(const QByteArray& content, DiggaFitDirectory& dir);
+    // GAEL parsing (pure - safe for background thread)
+    static GaelFitDirectory parseGaelDirectory(const GaelScanResult& scan);
+    static QMap<int, QString> parseGaelFitReport(const QByteArray& content);
+    static void parseGaelFitParameters(const QByteArray& content, GaelFitDirectory& dir);
 
-    // DIGGA matching (uses index - safe for background thread)
-    static void matchDiggaDirectories(std::vector<DiggaFitDirectory>& dirs,
+    // GAEL matching (uses index - safe for background thread)
+    static void matchGaelDirectories(std::vector<GaelFitDirectory>& dirs,
                                       const SpectrumIndex& index);
 
 
 
     // Preview - only builds limited summary, no widget ops
-    void updateDiggaPreviewTable();
+    void updateGaelPreviewTable();
 
     // Import
-    void importDiggaFits();
+    void importGaelFits();
 
     // Check spectra import task
     bool isSpectraImportRunning() const;
@@ -215,16 +215,16 @@ private:
     void        importIsisFits();
 
     // ── UI: Mode selection ───────────────────────────────────────
-    QRadioButton* _diggaRadio;
+    QRadioButton* _gaelRadio;
     QRadioButton* _isisRadio;
     QRadioButton* _mappingRadio;
     QStackedWidget* _modeStack;
 
-    // ── UI: DIGGA mode ──────────────────────────────────────────
-    QWidget* _diggaPage;
-    QLineEdit* _diggaFolderEdit;
-    QPushButton* _diggaScanButton;
-    QProgressBar* _diggaProgress;
+    // ── UI: GAEL mode ──────────────────────────────────────────
+    QWidget* _gaelPage;
+    QLineEdit* _gaelFolderEdit;
+    QPushButton* _gaelScanButton;
+    QProgressBar* _gaelProgress;
 
     // ── UI: ISIS mode ───────────────────────────────────────────
     QWidget                      *_isisPage;
@@ -244,8 +244,8 @@ private:
 
     // ── Data ────────────────────────────────────────────────────
     std::vector<std::shared_ptr<Star>> _importedStars;
-    std::vector<DiggaFitDirectory> _diggaDirs;
-    QString _diggaRootFolder;   // for relative-path display
+    std::vector<GaelFitDirectory> _gaelDirs;
+    QString _gaelRootFolder;   // for relative-path display
     QProgressBar *_indexBar  = nullptr; 
     bool          _asyncBusy = false;
 

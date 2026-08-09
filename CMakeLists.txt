@@ -15,7 +15,7 @@ endif()
 set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS ${_allowed_build_types})
 
 # ── Single, project-wide ABI for every target (host + submodules) ───────────
-# DIGGA requires C++20, so the whole project is C++20.
+# GAEL requires C++20, so the whole project is C++20.
 set(CMAKE_CXX_STANDARD          20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS        OFF)   # use -std=c++20 (NOT gnu++20) everywhere
@@ -227,8 +227,8 @@ target_include_directories(qcustomplot PUBLIC
 set_target_properties(qcustomplot PROPERTIES AUTOMOC ON)
 
 # In ASTRA's top-level CMakeLists.txt
-set(DIGGA_BUILD_REPORT OFF CACHE BOOL "" FORCE)   # no matplotlib/Python dep
-add_subdirectory(external/DIGGA EXCLUDE_FROM_ALL)
+set(GAEL_BUILD_REPORT OFF CACHE BOOL "" FORCE)   # no matplotlib/Python dep
+add_subdirectory(external/GAEL EXCLUDE_FROM_ALL)
 
 # RV_MCMC submodule – build only the static library, not the CLI
 set(RV_MCMC_BUILD_CLI    OFF CACHE BOOL "" FORCE)
@@ -246,7 +246,7 @@ endif()
 # ── Belt-and-braces: force the final ABI on every linked target ─────────────
 # Some submodules unconditionally `set(CMAKE_CXX_STANDARD 17)` in their own
 # CMakeLists.txt, which silently overrides our directory-scope setting.
-foreach(_t IN ITEMS DIGGAcore rv_mcmc qcustomplot)
+foreach(_t IN ITEMS GAELcore rv_mcmc qcustomplot)
     if(TARGET ${_t})
         set_target_properties(${_t} PROPERTIES
             CXX_STANDARD 20
@@ -395,7 +395,7 @@ set(SOURCES
 
     # fitting
     src/fitting/FitBackendRegistry.cpp
-    src/fitting/DiggaBackend.cpp
+    src/fitting/GaelBackend.cpp
     src/fitting/IsisBackend.cpp
     src/fitting/FitWorker.cpp
     src/fitting/StdStreamRedirector.cpp
@@ -548,11 +548,11 @@ set(HEADERS
     src/views/widgets/IsisMacroPanel.h
     src/views/widgets/PreciseDoubleSpinBox.h
 
-    #DIGGA fitting
+    #GAEL fitting
     src/fitting/FitTypes.h
     src/fitting/IFitBackend.h
     src/fitting/FitBackendRegistry.h
-    src/fitting/DiggaBackend.h
+    src/fitting/GaelBackend.h
     src/fitting/IsisBackend.h
     src/fitting/FitWorker.h
     src/fitting/StdStreamRedirector.h
@@ -600,7 +600,7 @@ add_dependencies(ASTRA astra_version)
 target_include_directories(ASTRA PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
 target_include_directories(ASTRA PRIVATE
-    ${CMAKE_SOURCE_DIR}/external/DIGGA/include
+    ${CMAKE_SOURCE_DIR}/external/GAEL/include
 )
 
 # Pass to source as a preprocessor define
@@ -651,7 +651,7 @@ target_link_libraries(ASTRA PRIVATE
     Qt6::PrintSupport
     Qt6::Svg
     qcustomplot
-    DIGGA::core
+    GAEL::core
     rv_mcmc
 )
 

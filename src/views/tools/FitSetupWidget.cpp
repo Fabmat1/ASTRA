@@ -870,7 +870,7 @@ FitSetupWidget::PerSpec FitSetupWidget::makeDefaultConfig(
     const auto& spec = mode->spectral();
 
     // Derive the actual resolution from the instrument mode's R(λ) model.
-    // DIGGA expresses resolution as the linear form res_offset + res_slope·λ,
+    // GAEL expresses resolution as the linear form res_offset + res_slope·λ,
     // which is exactly the constant/linear ResolutionModel coefficients.
     const auto& resModel = spec.resolution;
     if (resModel.isValid()) {
@@ -943,7 +943,7 @@ void FitSetupWidget::onSaveAsModeDefault()
         target->setSpectralProperties(SpectralProperties{});
 
     SpectralProperties sp2 = target->spectral();
-    DiggaFitDefaults& d = sp2.fitDefaults;
+    GaelFitDefaults& d = sp2.fitDefaults;
 
     const auto& cfg = _configs[_currentId];
     d.wlMin     = cfg.wlMin;
@@ -1027,7 +1027,7 @@ void FitSetupWidget::inferFromBestFit(PerSpec& cfg,
 }
 
 // =====================================================================
-// Build DIGGA job / run / persist
+// Build GAEL job / run / persist
 // =====================================================================
 
 fit::SpectralFitJob FitSetupWidget::buildJob(QStringList& tempFilesOut) const
@@ -1368,7 +1368,7 @@ void FitSetupWidget::onPreviewScript()
     } else if (job.backend == "ISIS (interactive)") {
         body = InteractiveIsisDialog::generateScript(job, job.outputPath);
     } else {
-        body = "# DIGGA runs as a library, not a script.\n"
+        body = "# GAEL runs as a library, not a script.\n"
                "# Job summary:\n";
         body += QString("#   backend     : %1\n").arg(job.backend);
         body += QString("#   components  : %1\n").arg(job.components.size());

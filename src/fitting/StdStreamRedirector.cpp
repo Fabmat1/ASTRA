@@ -42,7 +42,7 @@ void StdStreamRedirector::start()
     ::dup2(fds[1], fileno(stderr));
     ::close(fds[1]);
 
-    // Force line buffering on the now-non-tty FDs so DIGGA's printf/cout
+    // Force line buffering on the now-non-tty FDs so GAEL's printf/cout
     // output shows up promptly instead of being held by full buffering.
     std::setvbuf(stdout, nullptr, _IOLBF, 0);
     std::setvbuf(stderr, nullptr, _IOLBF, 0);

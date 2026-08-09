@@ -435,34 +435,34 @@ void SpectralFitImportPage::setupUi()
     QGroupBox* modeGroup = new QGroupBox("Import Method");
     QHBoxLayout* modeLayout = new QHBoxLayout;
 
-    _diggaRadio   = new QRadioButton("Import DIGGA fits (folder scan)");
+    _gaelRadio   = new QRadioButton("Import GAEL fits (folder scan)");
     _isisRadio    = new QRadioButton("Import ISIS fits");
     _mappingRadio = new QRadioButton("Import raw parameters (table)");
-    _diggaRadio->setChecked(true);
+    _gaelRadio->setChecked(true);
 
     QButtonGroup* modeButtonGroup = new QButtonGroup(this);
-    modeButtonGroup->addButton(_diggaRadio);
+    modeButtonGroup->addButton(_gaelRadio);
     modeButtonGroup->addButton(_isisRadio);
     modeButtonGroup->addButton(_mappingRadio);
 
-    modeLayout->addWidget(_diggaRadio);
+    modeLayout->addWidget(_gaelRadio);
     modeLayout->addWidget(_isisRadio);
     modeLayout->addWidget(_mappingRadio);
     modeLayout->addStretch();
     modeGroup->setLayout(modeLayout);
     mainLayout->addWidget(modeGroup);
 
-    connect(_diggaRadio,   &QRadioButton::toggled,
+    connect(_gaelRadio,   &QRadioButton::toggled,
             this, &SpectralFitImportPage::onImportModeChanged);
     connect(_isisRadio,    &QRadioButton::toggled,
             this, &SpectralFitImportPage::onImportModeChanged);
 
     // ── Mode stack ──────────────────────────────────────────────
     _modeStack = new QStackedWidget;
-    setupDiggaPage();
+    setupGaelPage();
     setupIsisPage();
     setupMappingPage();
-    _modeStack->addWidget(_diggaPage);    // index 0
+    _modeStack->addWidget(_gaelPage);    // index 0
     _modeStack->addWidget(_isisPage);     // index 1
     _modeStack->addWidget(_mappingPage);  // index 2
     mainLayout->addWidget(_modeStack);
@@ -491,7 +491,7 @@ void SpectralFitImportPage::setupUi()
     previewLayout->addWidget(_previewTree);
 
     _statusLabel = new QLabel(
-        "Select a root folder and scan for DIGGA output directories.");
+        "Select a root folder and scan for GAEL output directories.");
     _statusLabel->setWordWrap(true);
     previewLayout->addWidget(_statusLabel);
 
@@ -499,23 +499,23 @@ void SpectralFitImportPage::setupUi()
     mainLayout->addWidget(previewGroup);
 }
 
-void SpectralFitImportPage::setupDiggaPage()
+void SpectralFitImportPage::setupGaelPage()
 {
-    _diggaPage = new QWidget;
-    QVBoxLayout* layout = new QVBoxLayout(_diggaPage);
+    _gaelPage = new QWidget;
+    QVBoxLayout* layout = new QVBoxLayout(_gaelPage);
 
-    QGroupBox* folderGroup = new QGroupBox("DIGGA Output Root Folder");
+    QGroupBox* folderGroup = new QGroupBox("GAEL Output Root Folder");
     QVBoxLayout* folderLayout = new QVBoxLayout;
 
     QHBoxLayout* pathLayout = new QHBoxLayout;
-    _diggaFolderEdit = new QLineEdit;
-    _diggaFolderEdit->setPlaceholderText(
-        "Select root folder containing DIGGA output directories...");
-    pathLayout->addWidget(_diggaFolderEdit);
+    _gaelFolderEdit = new QLineEdit;
+    _gaelFolderEdit->setPlaceholderText(
+        "Select root folder containing GAEL output directories...");
+    pathLayout->addWidget(_gaelFolderEdit);
 
     QPushButton* browseBtn = new QPushButton("Browse...");
     connect(browseBtn, &QPushButton::clicked,
-            this, &SpectralFitImportPage::onBrowseDiggaFolder);
+            this, &SpectralFitImportPage::onBrowseGaelFolder);
     pathLayout->addWidget(browseBtn);
     folderLayout->addLayout(pathLayout);
 
@@ -526,15 +526,15 @@ void SpectralFitImportPage::setupDiggaPage()
     folderLayout->addWidget(helpLabel);
 
     QHBoxLayout* scanLayout = new QHBoxLayout;
-    _diggaScanButton = new QPushButton("Scan for DIGGA Outputs");
-    _diggaScanButton->setEnabled(false);
-    connect(_diggaScanButton, &QPushButton::clicked,
-            this, &SpectralFitImportPage::onScanDigga);
-    scanLayout->addWidget(_diggaScanButton);
+    _gaelScanButton = new QPushButton("Scan for GAEL Outputs");
+    _gaelScanButton->setEnabled(false);
+    connect(_gaelScanButton, &QPushButton::clicked,
+            this, &SpectralFitImportPage::onScanGael);
+    scanLayout->addWidget(_gaelScanButton);
 
-    _diggaProgress = new QProgressBar;
-    _diggaProgress->setVisible(false);
-    scanLayout->addWidget(_diggaProgress);
+    _gaelProgress = new QProgressBar;
+    _gaelProgress->setVisible(false);
+    scanLayout->addWidget(_gaelProgress);
     scanLayout->addStretch();
     folderLayout->addLayout(scanLayout);
 
@@ -925,12 +925,12 @@ void SpectralFitImportPage::initializePage()
 
     _asyncBusy  = false;
     _indexBuilt = false;
-    _diggaDirs.clear();
+    _gaelDirs.clear();
     _previewTree->clear();
 
     // If spectra import is still running, tell the user to wait
     if (isSpectraImportRunning()) {
-        _diggaScanButton->setEnabled(false);
+        _gaelScanButton->setEnabled(false);
         _statusLabel->setText(
             "⏳ Spectra import is still running in the background. "
             "Please wait for it to finish before scanning for fits.");
@@ -943,7 +943,7 @@ void SpectralFitImportPage::initializePage()
                 pollTimer->deleteLater();
                 _specIndex = buildSpectrumLookupIndex();
                 _indexBuilt = true;
-                _diggaScanButton->setEnabled(!_diggaFolderEdit->text().trimmed().isEmpty());
+                _gaelScanButton->setEnabled(!_gaelFolderEdit->text().trimmed().isEmpty());
                 _isisScanButton->setEnabled(!_isisFolderEdit->text().trimmed().isEmpty());
                 _statusLabel->setText(
                     QString("Ready - %1 stars, %2 spectra indexed.")
@@ -1099,7 +1099,7 @@ SpectralFitImportPage::buildSpectrumLookupIndex() {
 // ════════════════════════════════════════════════════════════════
 
 void SpectralFitImportPage::onImportModeChanged() {
-    if (_diggaRadio->isChecked())
+    if (_gaelRadio->isChecked())
         _modeStack->setCurrentIndex(0);
     else if (_isisRadio->isChecked())
         _modeStack->setCurrentIndex(1);
@@ -1107,32 +1107,32 @@ void SpectralFitImportPage::onImportModeChanged() {
         _modeStack->setCurrentIndex(2);
 
     _previewTree->clear();
-    _diggaDirs.clear();
+    _gaelDirs.clear();
     _isisDirs.clear();
 }
 
 // ════════════════════════════════════════════════════════════════
-// DIGGA: folder selection
+// GAEL: folder selection
 // ════════════════════════════════════════════════════════════════
 
-void SpectralFitImportPage::onBrowseDiggaFolder()
+void SpectralFitImportPage::onBrowseGaelFolder()
 {
     QString folder = QFileDialog::getExistingDirectory(
-        this, "Select DIGGA Output Root Folder", _diggaFolderEdit->text());
+        this, "Select GAEL Output Root Folder", _gaelFolderEdit->text());
     if (folder.isEmpty()) return;
 
-    _diggaFolderEdit->setText(folder);
-    _diggaScanButton->setEnabled(true);
-    _diggaDirs.clear();
+    _gaelFolderEdit->setText(folder);
+    _gaelScanButton->setEnabled(true);
+    _gaelDirs.clear();
     _previewTree->clear();
-    _statusLabel->setText("Click 'Scan for DIGGA Outputs' to search.");
+    _statusLabel->setText("Click 'Scan for GAEL Outputs' to search.");
 }
 
 // ════════════════════════════════════════════════════════════════
-// DIGGA: async scan - ALL heavy work in background thread
+// GAEL: async scan - ALL heavy work in background thread
 // ════════════════════════════════════════════════════════════════
 
-void SpectralFitImportPage::onScanDigga()
+void SpectralFitImportPage::onScanGael()
 {
     if (_asyncBusy) return;
 
@@ -1142,15 +1142,15 @@ void SpectralFitImportPage::onScanDigga()
         return;
     }
 
-    QString rootFolder = _diggaFolderEdit->text().trimmed();
+    QString rootFolder = _gaelFolderEdit->text().trimmed();
     if (rootFolder.isEmpty()) return;
 
     _asyncBusy = true;
-    _diggaScanButton->setEnabled(false);
-    _diggaProgress->setVisible(true);
-    _diggaProgress->setRange(0, 0);
-    _diggaRootFolder = rootFolder;
-    _statusLabel->setText("Scanning for DIGGA output directories...");
+    _gaelScanButton->setEnabled(false);
+    _gaelProgress->setVisible(true);
+    _gaelProgress->setRange(0, 0);
+    _gaelRootFolder = rootFolder;
+    _statusLabel->setText("Scanning for GAEL output directories...");
 
     // Capture the index for the background thread (it's a value type with
     // shared_ptrs inside, so this is a cheap refcount bump).
@@ -1158,11 +1158,11 @@ void SpectralFitImportPage::onScanDigga()
 
     auto future = QtConcurrent::run(
         [rootFolder, indexSnapshot]() mutable
-            -> QPair<std::vector<DiggaFitDirectory>, int>
+            -> QPair<std::vector<GaelFitDirectory>, int>
     {
         // ── Phase 1: Filesystem scan ────────────────────────────
         // Collect candidate dirs in one pass
-        std::vector<DiggaScanResult> scanResults;
+        std::vector<GaelScanResult> scanResults;
 
         QDirIterator it(rootFolder,
                         QDir::Dirs | QDir::NoDotAndDotDot,
@@ -1174,7 +1174,7 @@ void SpectralFitImportPage::onScanDigga()
             if (rootDir.exists("fit_parameters.csv") &&
                 rootDir.exists("fit_report.tex"))
             {
-                DiggaScanResult scan;
+                GaelScanResult scan;
                 scan.dirPath = rootFolder;
                 scan.gridName = rootDir.dirName();
                 QDir parent(rootFolder); parent.cdUp();
@@ -1190,7 +1190,7 @@ void SpectralFitImportPage::onScanDigga()
                 !dir.exists("fit_report.tex"))
                 continue;
 
-            DiggaScanResult scan;
+            GaelScanResult scan;
             scan.dirPath   = dirPath;
             scan.gridName  = dir.dirName();
             QDir parent(dirPath); parent.cdUp();
@@ -1231,61 +1231,61 @@ void SpectralFitImportPage::onScanDigga()
         int scanCount = static_cast<int>(scanResults.size());
 
         // ── Phase 2: Parse all dirs in parallel ────────────────
-        std::vector<DiggaFitDirectory> dirs =
-            QtConcurrent::blockingMapped<std::vector<DiggaFitDirectory>>(
+        std::vector<GaelFitDirectory> dirs =
+            QtConcurrent::blockingMapped<std::vector<GaelFitDirectory>>(
                 scanResults,
-                [](const DiggaScanResult& s) -> DiggaFitDirectory {
-                    return parseDiggaDirectory(s);
+                [](const GaelScanResult& s) -> GaelFitDirectory {
+                    return parseGaelDirectory(s);
                 });
 
         // ── Phase 3: Match against index ────────────────────────
-        matchDiggaDirectories(dirs, indexSnapshot);
+        matchGaelDirectories(dirs, indexSnapshot);
 
         return qMakePair(std::move(dirs), scanCount);
     });
 
     auto* watcher = new QFutureWatcher<
-        QPair<std::vector<DiggaFitDirectory>, int>>(this);
+        QPair<std::vector<GaelFitDirectory>, int>>(this);
 
     connect(watcher,
-            &QFutureWatcher<QPair<std::vector<DiggaFitDirectory>, int>>::finished,
+            &QFutureWatcher<QPair<std::vector<GaelFitDirectory>, int>>::finished,
             this, [this, watcher]()
     {
         auto result = watcher->result();
         watcher->deleteLater();
 
-        _diggaDirs = std::move(result.first);
+        _gaelDirs = std::move(result.first);
         int scanCount = result.second;
 
         _asyncBusy = false;
-        _diggaScanButton->setEnabled(true);
-        _diggaProgress->setVisible(false);
+        _gaelScanButton->setEnabled(true);
+        _gaelProgress->setVisible(false);
 
         LOG_INFO("FitImport",
-                 QString("Scan complete: %1 DIGGA directories found")
+                 QString("Scan complete: %1 GAEL directories found")
                  .arg(scanCount));
 
-        if (_diggaDirs.empty()) {
+        if (_gaelDirs.empty()) {
             _statusLabel->setText(
-                "No DIGGA output directories found. Each directory must "
+                "No GAEL output directories found. Each directory must "
                 "contain both fit_parameters.csv and fit_report.tex.");
             return;
         }
 
-        updateDiggaPreviewTable();
+        updateGaelPreviewTable();
     });
 
     watcher->setFuture(future);
 }
 
 // ════════════════════════════════════════════════════════════════
-// DIGGA: parsing
+// GAEL: parsing
 // ════════════════════════════════════════════════════════════════
 
-DiggaFitDirectory SpectralFitImportPage::parseDiggaDirectory(
-    const DiggaScanResult& scan)
+GaelFitDirectory SpectralFitImportPage::parseGaelDirectory(
+    const GaelScanResult& scan)
 {
-    DiggaFitDirectory dir;
+    GaelFitDirectory dir;
     dir.dirPath       = scan.dirPath;
     dir.gridName      = scan.gridName;
     dir.parentDirName = scan.parentDirName;
@@ -1297,19 +1297,19 @@ DiggaFitDirectory SpectralFitImportPage::parseDiggaDirectory(
         return dir;
     }
 
-    dir.specIndexToFilename = parseDiggaFitReport(scan.fitReportContent);
+    dir.specIndexToFilename = parseGaelFitReport(scan.fitReportContent);
     if (dir.specIndexToFilename.isEmpty()) {
         dir.parseOk    = false;
         dir.parseError = "No spectrum identifiers found in fit_report.tex";
         return dir;
     }
 
-    parseDiggaFitParameters(scan.fitParametersContent, dir);
+    parseGaelFitParameters(scan.fitParametersContent, dir);
     dir.totalSpectra = dir.specIndexToFilename.size();
     return dir;
 }
 
-QMap<int, QString> SpectralFitImportPage::parseDiggaFitReport(
+QMap<int, QString> SpectralFitImportPage::parseGaelFitReport(
     const QByteArray& contentBytes)
 {
     QMap<int, QString> result;
@@ -1358,8 +1358,8 @@ QMap<int, QString> SpectralFitImportPage::parseDiggaFitReport(
     return result;
 }
 
-void SpectralFitImportPage::parseDiggaFitParameters(
-    const QByteArray& content, DiggaFitDirectory& dir)
+void SpectralFitImportPage::parseGaelFitParameters(
+    const QByteArray& content, GaelFitDirectory& dir)
 {
     const char* p   = content.constData();
     const char* end = p + content.size();
@@ -1435,11 +1435,11 @@ void SpectralFitImportPage::parseDiggaFitParameters(
 }
 
 // ════════════════════════════════════════════════════════════════
-// DIGGA: matching - static, no per-item logging
+// GAEL: matching - static, no per-item logging
 // ════════════════════════════════════════════════════════════════
 
-void SpectralFitImportPage::matchDiggaDirectories(
-    std::vector<DiggaFitDirectory>& dirs,
+void SpectralFitImportPage::matchGaelDirectories(
+    std::vector<GaelFitDirectory>& dirs,
     const SpectrumIndex& index)
 {
     LOG_INFO("FitImport", QString("Matching %1 directories against index "
@@ -1501,9 +1501,9 @@ void SpectralFitImportPage::matchDiggaDirectories(
             int specIdx      = it.key();
             QString filename = it.value();
 
-            DiggaFitDirectory::SpecMatch sm;
+            GaelFitDirectory::SpecMatch sm;
             sm.specIndex     = specIdx;
-            sm.diggaFilename = filename;
+            sm.gaelFilename = filename;
 
             // Radial velocity
             if (dir.vradTied) {
@@ -1711,7 +1711,7 @@ void SpectralFitImportPage::importIsisFits() {
         return;
     }
 
-    // Auto-best per spectrum (lowest reduced χ²) - identical policy to DIGGA
+    // Auto-best per spectrum (lowest reduced χ²) - identical policy to GAEL
     if (autoBest) {
         QHash<QString, std::vector<int>> specGroups;
         for (int i = 0; i < (int)entries.size(); ++i)
@@ -1838,7 +1838,7 @@ bool SpectralFitImportPage::loadPlotdata(
 // Preview table - LIMITED rows, no expandAll on large datasets
 // ════════════════════════════════════════════════════════════════
 
-void SpectralFitImportPage::updateDiggaPreviewTable()
+void SpectralFitImportPage::updateGaelPreviewTable()
 {
     _previewTree->clear();
     _previewTree->setUpdatesEnabled(false);
@@ -1846,7 +1846,7 @@ void SpectralFitImportPage::updateDiggaPreviewTable()
     static constexpr int MAX_PREVIEW_DIRS     = 200;
     static constexpr int MAX_CHILDREN_PER_DIR = 10;
 
-    int totalDirs      = static_cast<int>(_diggaDirs.size());
+    int totalDirs      = static_cast<int>(_gaelDirs.size());
     int fullyMatched   = 0;
     int partialMatched = 0;
     int unmatched      = 0;
@@ -1854,7 +1854,7 @@ void SpectralFitImportPage::updateDiggaPreviewTable()
     int totalSpecAll   = 0;
 
     // First pass: compute totals (cheap, no widget work)
-    for (const auto& dir : _diggaDirs) {
+    for (const auto& dir : _gaelDirs) {
         totalSpecAll += dir.totalSpectra;
         totalSpecMatch += dir.matchedSpectra;
 
@@ -1868,7 +1868,7 @@ void SpectralFitImportPage::updateDiggaPreviewTable()
 
     // Second pass: build limited preview items
     int dirsShown = 0;
-    for (const auto& dir : _diggaDirs) {
+    for (const auto& dir : _gaelDirs) {
         if (dirsShown >= MAX_PREVIEW_DIRS) break;
         dirsShown++;
 
@@ -1876,9 +1876,9 @@ void SpectralFitImportPage::updateDiggaPreviewTable()
 
         // Column 0: relative path
         QString relPath = dir.dirPath;
-        if (!_diggaRootFolder.isEmpty() &&
-            relPath.startsWith(_diggaRootFolder)) {
-            relPath = relPath.mid(_diggaRootFolder.length());
+        if (!_gaelRootFolder.isEmpty() &&
+            relPath.startsWith(_gaelRootFolder)) {
+            relPath = relPath.mid(_gaelRootFolder.length());
             if (relPath.startsWith('/') || relPath.startsWith('\\'))
                 relPath = relPath.mid(1);
         }
@@ -1951,7 +1951,7 @@ void SpectralFitImportPage::updateDiggaPreviewTable()
 
             QTreeWidgetItem* specItem = new QTreeWidgetItem;
             specItem->setText(0, QString("spec %1: %2")
-                                 .arg(sm.specIndex).arg(sm.diggaFilename));
+                                 .arg(sm.specIndex).arg(sm.gaelFilename));
 
             if (sm.matched && sm.matchedSpectrum) {
                 QString specName = QFileInfo(sm.matchedSpectrum->getFile()).fileName();
@@ -1990,7 +1990,7 @@ void SpectralFitImportPage::updateDiggaPreviewTable()
 
     // Status with full accurate counts (not limited by preview)
     QString statusText = QString(
-        "Found %1 DIGGA directories - %2 fully matched, "
+        "Found %1 GAEL directories - %2 fully matched, "
         "%3 partial, %4 unmatched (%5/%6 spectra matched)")
         .arg(totalDirs).arg(fullyMatched).arg(partialMatched)
         .arg(unmatched).arg(totalSpecMatch).arg(totalSpecAll);
@@ -2005,7 +2005,7 @@ void SpectralFitImportPage::updateDiggaPreviewTable()
 // Import
 // ════════════════════════════════════════════════════════════════
 
-void SpectralFitImportPage::importDiggaFits()
+void SpectralFitImportPage::importGaelFits()
 {
     StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
     if (!importWizard || !importWizard->controller()) return;
@@ -2014,9 +2014,9 @@ void SpectralFitImportPage::importDiggaFits()
     bool autoBest = _markBestFitCheck->isChecked();
 
     // Build import entries (don't mark best fit yet)
-    std::vector<DiggaFitImportEntry> entries;
+    std::vector<GaelFitImportEntry> entries;
 
-    for (const auto& dir : _diggaDirs) {
+    for (const auto& dir : _gaelDirs) {
         if (!dir.parseOk) continue;
 
         for (const auto& sm : dir.specMatches) {
@@ -2043,7 +2043,7 @@ void SpectralFitImportPage::importDiggaFits()
             fit->radialVelocityError  = sm.vradError;
             fit->modelId              = dir.gridName;
 
-            DiggaFitImportEntry entry;
+            GaelFitImportEntry entry;
             entry.starId       = sm.matchedStar->getId();
             entry.spectrumId   = sm.matchedSpectrum->getId();
             entry.spectrum     = sm.matchedSpectrum;
@@ -2104,7 +2104,7 @@ void SpectralFitImportPage::importDiggaFits()
     LOG_INFO("FitImport",
              QString("Queuing %1 fits for background import").arg(count));
 
-    auto* task = new DiggaFitImportTask(std::move(entries), controller);
+    auto* task = new GaelFitImportTask(std::move(entries), controller);
     task->setStagingArea(importWizard->stagingArea());
     controller->backgroundTaskManager()->queueTask(task);
 }
@@ -2153,10 +2153,10 @@ bool SpectralFitImportPage::validatePage() {
         return true;
     }
 
-    if (!_diggaRadio->isChecked())
+    if (!_gaelRadio->isChecked())
         return true;
 
-    if (_diggaDirs.empty()) {
+    if (_gaelDirs.empty()) {
         auto reply = QMessageBox::question(this, "No Fits Scanned",
             "No spectral fit directories have been scanned.\n\n"
             "Do you want to skip this step and continue?",
@@ -2165,7 +2165,7 @@ bool SpectralFitImportPage::validatePage() {
     }
 
     int totalMatched = 0, totalUnmatched = 0, totalSpectra = 0;
-    for (const auto& dir : _diggaDirs) {
+    for (const auto& dir : _gaelDirs) {
         for (const auto& sm : dir.specMatches) {
             totalSpectra++;
             if (sm.matched) totalMatched++;
@@ -2174,18 +2174,18 @@ bool SpectralFitImportPage::validatePage() {
     }
 
     QString msg = QString(
-        "%1 DIGGA directories scanned, %2 total spectra.\n\n"
+        "%1 GAEL directories scanned, %2 total spectra.\n\n"
         "• %3 spectra matched (will receive fit data)\n"
         "• %4 spectra unmatched (will be skipped)\n\n"
         "Import will run in the background. Continue?")
-        .arg(_diggaDirs.size()).arg(totalSpectra)
+        .arg(_gaelDirs.size()).arg(totalSpectra)
         .arg(totalMatched).arg(totalUnmatched);
 
     if (QMessageBox::question(this, "Confirm Import", msg,
             QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
         return false;
 
-    importDiggaFits();
+    importGaelFits();
     return true;
 }
 

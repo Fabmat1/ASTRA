@@ -1290,11 +1290,11 @@ void SpectraImportTask::execute()
 
 
 // ════════════════════════════════════════════════════════════════
-// DiggaFitImportTask
+// GaelFitImportTask
 // ════════════════════════════════════════════════════════════════
 
-DiggaFitImportTask::DiggaFitImportTask(
-    std::vector<DiggaFitImportEntry> entries,
+GaelFitImportTask::GaelFitImportTask(
+    std::vector<GaelFitImportEntry> entries,
     ApplicationController* controller,
     QObject* parent)
     : BackgroundTask(parent)
@@ -1302,14 +1302,14 @@ DiggaFitImportTask::DiggaFitImportTask(
     , _controller(controller)
 {}
 
-void DiggaFitImportTask::execute()
+void GaelFitImportTask::execute()
 {
-    LOG_SET_THREAD_NAME("DiggaFitImport");
+    LOG_SET_THREAD_NAME("GaelFitImport");
 
     const int total = static_cast<int>(_entries.size());
     if (total == 0) {
         emit importComplete(0, 0);
-        emit finished(true, "DIGGA Fit Import: nothing to do");
+        emit finished(true, "GAEL Fit Import: nothing to do");
         return;
     }
 
@@ -1317,7 +1317,7 @@ void DiggaFitImportTask::execute()
 
     // ── Phase 1: PARALLEL plotdata loading ──────────────────────
     // Each entry has its own unique `fit` shared_ptr (created in
-    // SpectralFitImportPage::importDiggaFits), so writing into
+    // SpectralFitImportPage::importGaelFits), so writing into
     // entry.fit->modelWavelengths etc. from different threads is
     // race-free as long as no two entries share a fit.
     //
@@ -1327,7 +1327,7 @@ void DiggaFitImportTask::execute()
     std::atomic<int> loadedCount{0};
     std::atomic<int> loadFailed{0};
 
-    auto loadFn = [&loadedCount, &loadFailed](DiggaFitImportEntry& entry) {
+    auto loadFn = [&loadedCount, &loadFailed](GaelFitImportEntry& entry) {
         if (!entry.plotdataPath.isEmpty()) {
             std::vector<double>  wl, mf, rbf, rbs, spl;
             std::vector<uint8_t> ign;
@@ -1385,7 +1385,7 @@ void DiggaFitImportTask::execute()
             // iterates).
             auto star = _stagingArea->getStar(entry.starId);
             if (!star) {
-                LOG_WARNING("DiggaFitImport",
+                LOG_WARNING("GaelFitImport",
                             QString("Star %1 not in working set; skipping fit")
                                 .arg(entry.starId));
                 failed++;
@@ -1420,7 +1420,7 @@ void DiggaFitImportTask::execute()
             }
             if (!target) {
                 LOG_WARNING(
-                    "DiggaFitImport",
+                    "GaelFitImport",
                     QString("Spectrum %1 not found on star %2; skipping fit")
                         .arg(entry.spectrumId, entry.starId));
                 failed++;

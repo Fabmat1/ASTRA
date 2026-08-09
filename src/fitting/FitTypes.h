@@ -96,8 +96,8 @@ struct SpectralFitJob {
 
     // ASTRA-side
     QString outputPath;                  // temp dir for intermediate files
-    QStringList basePaths;               // grid search paths (DIGGA gs.base_paths)
-    QString backend = "DIGGA";           // which IFitBackend to use
+    QStringList basePaths;               // grid search paths (GAEL gs.base_paths)
+    QString backend = "GAEL";           // which IFitBackend to use
     IsisOptions            isis;
     IsisInteractiveOptions isisInteractive;   // used only by ISIS (interactive)
 };

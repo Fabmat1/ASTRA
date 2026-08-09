@@ -117,7 +117,7 @@ cd ASTRA
 
 cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=Release \
-  -DDIGGA_ENABLE_CUDA=OFF   # set ON if you have CUDA installed
+  -DGAEL_ENABLE_CUDA=OFF   # set ON if you have CUDA installed
 
 cmake --build build -j$(nproc)
 ```
