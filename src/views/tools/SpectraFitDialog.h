@@ -2,6 +2,7 @@
 
 #include <QDialog>
 #include <QHash>
+#include <QSet>
 #include <QStringList>
 #include <memory>
 #include <vector>
@@ -69,6 +70,11 @@ private:
     void removeSpectrum(const QString& spectrumId);
     void removeSpectra(const QStringList& spectrumIds);
     void removeFit(const QString& spectrumId, const QString& fitId);
+
+    /// Delete the RV points derived from the given (already deleted) spectra,
+    /// in memory and in the DB. Call only after the spectra have been dropped
+    /// from the star.
+    void purgeRVPointsFor(const QSet<QString>& spectrumIds);
 
     std::shared_ptr<Star>  _star;
     DatabaseManager*       _dbm = nullptr;

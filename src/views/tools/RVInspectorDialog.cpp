@@ -30,6 +30,7 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QMenu>
+#include <QMessageBox>
 #include <QPushButton>
 #include <QSplitter>
 #include <QStyledItemDelegate>
@@ -38,6 +39,7 @@
 #include <QUuid>
 #include <QVBoxLayout>
 
+#include <algorithm>
 #include <cmath>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -416,9 +418,9 @@ bool RVPointsTableModel::canResetToFit(int row) const
     return sp->getBestFit() != nullptr;
 }
 
-void RVPointsTableModel::resetToFit(int row)
+bool RVPointsTableModel::applyFitToRow(int row)
 {
-    if (!canResetToFit(row)) return;
+    if (!canResetToFit(row)) return false;
     auto& p = _points[row];
     auto sp = linkedSpectrum(p);
     std::shared_ptr<SpectralFit> fit;
@@ -427,13 +429,19 @@ void RVPointsTableModel::resetToFit(int row)
             if (f && f->getId() == p->getSpectralFitId()) { fit = f; break; }
     }
     if (!fit) fit = sp->getBestFit();
-    if (!fit) return;
+    if (!fit) return false;
 
     p->setRVSource(RadialVelocityPoint::RVSource::FromFit);
     p->applyFromFit(*fit);
     if (_curve) _curve->persistPoint(p);
-    if (_star)  _star->markSummaryDirty();
     emit dataChanged(index(row, 0), index(row, ColCount - 1));
+    return true;
+}
+
+void RVPointsTableModel::resetToFit(int row)
+{
+    if (!applyFitToRow(row)) return;
+    if (_star) _star->markSummaryDirty();
     emit pointEdited(index(row, 0));
 }
 
@@ -994,6 +1002,9 @@ void RVInspectorDialog::setupUi()
     _pointsTable->setModel(_pointsModel);
     _pointsTable->setAlternatingRowColors(true);
     _pointsTable->setSelectionBehavior(QAbstractItemView::SelectRows);
+    // Explicit: the action button below operates on the whole selection, so
+    // ctrl/shift-picking several rows has to be possible.
+    _pointsTable->setSelectionMode(QAbstractItemView::ExtendedSelection);
     _pointsTable->setEditTriggers(QAbstractItemView::DoubleClicked
                                 | QAbstractItemView::SelectedClicked
                                 | QAbstractItemView::EditKeyPressed);
@@ -1095,25 +1106,86 @@ void RVInspectorDialog::onTableContextMenu(const QPoint& pos)
 {
     QModelIndex idx = _pointsTable->indexAt(pos);
     if (!idx.isValid()) return;
-    int row = idx.row();
+
+    // Operate on the whole selection when the clicked row is part of it, so the
+    // menu matches what the action button below the table does.
+    QList<int> rows = selectedRows();
+    if (!rows.contains(idx.row())) rows = { idx.row() };
+
+    const Selection sel = classify(rows);
+    const int n = rows.size();
 
     QMenu menu(this);
-    QAction* resetAct = menu.addAction("Reset RV to fit value");
-    resetAct->setEnabled(_pointsModel->canResetToFit(row));
+    QAction* resetAct = menu.addAction(
+        n > 1 ? QString("Reset RV to fit value (%1)").arg(sel.resettable.size())
+              : QString("Reset RV to fit value"));
+    resetAct->setEnabled(!sel.resettable.isEmpty());
 
-    const bool orphaned = _pointsModel->isOrphaned(row);
     QAction* removeAct = menu.addAction(
-        orphaned ? "Remove orphaned point" : "Remove point");
-    removeAct->setEnabled(_pointsModel->canRemove(row));
+        n > 1 ? QString("%1 (%2)").arg(sel.allOrphaned ? "Remove orphaned points"
+                                                       : "Remove points")
+                                  .arg(sel.removable.size())
+              : QString(sel.allOrphaned ? "Remove orphaned point"
+                                        : "Remove point"));
+    removeAct->setEnabled(!sel.removable.isEmpty());
 
     QAction* chosen = menu.exec(_pointsTable->viewport()->mapToGlobal(pos));
     if (chosen == resetAct) {
-        _pointsModel->resetToFit(row);
+        _pointsModel->resetRowsToFit(sel.resettable);
+        if (_plotPanel) _plotPanel->refresh();
+        onPointSelectionChanged();
     } else if (chosen == removeAct) {
-        _pointsModel->removePoint(row);
+        if (!confirmRemoval(sel.removable.size(), 0)) return;
+        _pointsModel->removePoints(sel.removable);
         if (_plotPanel) _plotPanel->refresh();
         onPointSelectionChanged();
     }
+}
+
+QList<int> RVInspectorDialog::selectedRows() const
+{
+    QList<int> rows;
+    if (!_pointsTable || !_pointsTable->selectionModel()) return rows;
+    for (const QModelIndex& idx : _pointsTable->selectionModel()->selectedRows())
+        rows << idx.row();
+    std::sort(rows.begin(), rows.end());
+    return rows;
+}
+
+RVInspectorDialog::Selection
+RVInspectorDialog::classify(const QList<int>& rows) const
+{
+    Selection sel;
+    if (!_pointsModel) return sel;
+
+    for (int row : rows) {
+        // Same precedence as the single-row behaviour: a point that can be
+        // removed is removed, even when it could also be reset (an orphan whose
+        // spectrum happens to still carry another best fit).
+        if (_pointsModel->canRemove(row)) {
+            sel.removable << row;
+            if (!_pointsModel->isOrphaned(row)) sel.allOrphaned = false;
+        } else if (_pointsModel->canResetToFit(row)) {
+            sel.resettable << row;
+        }
+    }
+    if (sel.removable.isEmpty()) sel.allOrphaned = false;
+    return sel;
+}
+
+bool RVInspectorDialog::confirmRemoval(int nRemove, int nReset)
+{
+    // Removal is irreversible, so make a batch of them an explicit choice.
+    // A single point keeps the old one-click behaviour.
+    if (nRemove < 2) return true;
+
+    QString what = QString("Permanently remove %1 RV point(s)").arg(nRemove);
+    if (nReset > 0)
+        what += QString(" and reset %1 point(s) to their fit value").arg(nReset);
+    what += "?\nThis cannot be undone.";
+
+    return QMessageBox::question(this, "Remove RV Points", what)
+           == QMessageBox::Yes;
 }
 
 bool RVPointsTableModel::canRemove(int row) const
@@ -1148,7 +1220,10 @@ bool RVPointsTableModel::isOrphaned(int row) const
                 return false;   // the referenced fit still exists
         return true;            // spectrum present but its fit was deleted
     }
-    return false;
+    // The fit link was cleared (its fit was deleted and nothing took over).
+    // Such a point can no longer be reset, so it is orphaned and removable
+    // unless the spectrum still offers a best fit to fall back on.
+    return sp->getBestFit() == nullptr;
 }
 
 std::shared_ptr<RadialVelocityPoint> RVPointsTableModel::pointAt(int row) const
@@ -1159,14 +1234,54 @@ std::shared_ptr<RadialVelocityPoint> RVPointsTableModel::pointAt(int row) const
 
 void RVPointsTableModel::removePoint(int row)
 {
-    if (!canRemove(row) || !_curve) return;
-    auto p = _points[row];
-    const QString id = p->getId();
+    removePoints({row});
+}
 
-    if (_dbm) _dbm->deleteRadialVelocityPoint(id);
-    _curve->removeRVPoint(id);
+int RVPointsTableModel::removePoints(const QList<int>& rows)
+{
+    if (!_curve) return 0;
+
+    // Resolve every row to an id up front: removeRVPoint() shifts the
+    // remaining rows, so indices captured from the selection go stale after
+    // the first removal.
+    QStringList ids;
+    for (int row : rows) {
+        if (!canRemove(row)) continue;
+        if (auto p = _points[row]) ids << p->getId();
+    }
+    if (ids.isEmpty()) return 0;
+
+    // One transaction for the batch - per-row commits fsync individually - and
+    // one change notification, since each one rebuilds every listening RV plot.
+    const bool useTx = _dbm && _dbm->beginTransaction();
+    _curve->beginBatchUpdate();
+    for (const QString& id : ids) {
+        if (_dbm) _dbm->deleteRadialVelocityPoint(id);
+        _curve->removeRVPoint(id);
+    }
+    _curve->endBatchUpdate();
+    if (useTx) _dbm->commitTransaction();
+
     if (_star) _star->markSummaryDirty();
     reload();
+    return ids.size();
+}
+
+int RVPointsTableModel::resetRowsToFit(const QList<int>& rows)
+{
+    int n = 0, firstRow = -1;
+    for (int row : rows) {
+        if (!applyFitToRow(row)) continue;
+        if (firstRow < 0) firstRow = row;
+        ++n;
+    }
+    if (n == 0) return 0;
+
+    // One summary recompute and one pointEdited for the whole batch: each of
+    // those rebuilds the RV plot, which is far too expensive per row.
+    if (_star) _star->markSummaryDirty();
+    emit pointEdited(index(firstRow, 0));
+    return n;
 }
 
 void RVPointsTableModel::appendPoint(std::shared_ptr<RadialVelocityPoint> p)
@@ -1227,51 +1342,75 @@ void RVInspectorDialog::onImportPointsFromCsv()
 
 void RVInspectorDialog::onPointSelectionChanged()
 {
-    const auto rows = _pointsTable->selectionModel()->selectedRows();
-    if (rows.size() != 1) {
-        _actionBtn->setText("Remove selected");
-        _actionBtn->setEnabled(false);
-        if (_plotPanel) _plotPanel->highlightRVPoint({}, 0.0, false);
-        return;
-    }
-    const int row = rows.first().row();
+    const QList<int> rows = selectedRows();
 
-    // Emphasise the selected point in the plot.
+    // Emphasise the selected point in the plot - only meaningful for a single
+    // row, so a multi-row selection clears the highlight.
     if (_plotPanel) {
-        if (auto p = _pointsModel->pointAt(row)) {
-            const Time& t = p->time();
-            _plotPanel->highlightRVPoint(p->getSpectrumId(),
+        std::shared_ptr<RadialVelocityPoint> single;
+        if (rows.size() == 1) single = _pointsModel->pointAt(rows.first());
+        if (single) {
+            const Time& t = single->time();
+            _plotPanel->highlightRVPoint(single->getSpectrumId(),
                                          t.sortValue(), t.isValid());
         } else {
             _plotPanel->highlightRVPoint({}, 0.0, false);
         }
     }
 
-    if (_pointsModel->canRemove(row)) {
-        _actionBtn->setText(_pointsModel->isOrphaned(row)
-                                ? "Remove orphaned point"
-                                : "Remove selected");
-        _actionBtn->setEnabled(true);
-    } else if (_pointsModel->canResetToFit(row)) {
-        _actionBtn->setText("Reset to fit value");
-        _actionBtn->setEnabled(true);
+    const Selection sel = classify(rows);
+    const int nRemove = sel.removable.size();
+    const int nReset  = sel.resettable.size();
+
+    _actionBtn->setEnabled(nRemove > 0 || nReset > 0);
+
+    // Counts are only shown once the selection spans more than one row; a
+    // single row keeps the plain wording it has always had.
+    const bool many = rows.size() > 1;
+    auto suffix = [&](int n) { return many ? QString(" (%1)").arg(n) : QString(); };
+
+    if (nRemove > 0 && nReset > 0) {
+        _actionBtn->setText(QString("Remove %1 / reset %2").arg(nRemove).arg(nReset));
+        _actionBtn->setToolTip(
+            QString("Remove %1 orphaned point(s) and reset %2 point(s) to their "
+                    "spectral fit value.").arg(nRemove).arg(nReset));
+    } else if (nRemove > 0) {
+        const QString what = sel.allOrphaned
+            ? (many ? QStringLiteral("Remove orphaned points")
+                    : QStringLiteral("Remove orphaned point"))
+            : QStringLiteral("Remove selected");
+        _actionBtn->setText(what + suffix(nRemove));
+        _actionBtn->setToolTip(
+            QString("Permanently remove %1 RV point(s).").arg(nRemove));
+    } else if (nReset > 0) {
+        _actionBtn->setText(
+            (many ? QStringLiteral("Reset to fit values")
+                  : QStringLiteral("Reset to fit value")) + suffix(nReset));
+        _actionBtn->setToolTip(
+            QString("Restore %1 point(s) to the RV of their spectral fit.")
+                .arg(nReset));
     } else {
         _actionBtn->setText("Remove selected");
-        _actionBtn->setEnabled(false);
+        _actionBtn->setToolTip(
+            rows.isEmpty()
+                ? QString("Select one or more rows in the table.")
+                : QString("The selected point(s) are backed by a spectral fit "
+                          "and are neither orphaned nor edited."));
     }
 }
 
 void RVInspectorDialog::onPointActionClicked()
 {
-    const auto rows = _pointsTable->selectionModel()->selectedRows();
-    if (rows.size() != 1) return;
-    const int row = rows.first().row();
+    const Selection sel = classify(selectedRows());
+    if (sel.removable.isEmpty() && sel.resettable.isEmpty()) return;
 
-    if (_pointsModel->canRemove(row)) {
-        _pointsModel->removePoint(row);
-    } else if (_pointsModel->canResetToFit(row)) {
-        _pointsModel->resetToFit(row);
-    }
+    if (!confirmRemoval(sel.removable.size(), sel.resettable.size())) return;
+
+    // Reset first: resetRowsToFit() only edits rows in place, so the row
+    // indices captured above stay valid for the removal that follows.
+    _pointsModel->resetRowsToFit(sel.resettable);
+    _pointsModel->removePoints(sel.removable);
+
     if (_plotPanel) _plotPanel->refresh();
     onPointSelectionChanged();
 }

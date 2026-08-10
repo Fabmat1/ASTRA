@@ -27,6 +27,8 @@ Makefile*
 !.github/workflows/build-macos.yml
 !.github/workflows/build-appimage.yml
 !build-appimage.sh
+!build-macos.sh
+!build-macos-isis.sh
 *.qm
 *.prl
 

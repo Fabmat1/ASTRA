@@ -4,6 +4,7 @@
 #include <QWidget>
 #include <QAbstractTableModel>
 #include <QHash>
+#include <QList>
 #include <memory>
 #include <vector>
 
@@ -58,6 +59,8 @@ public:
 
     bool canResetToFit(int row) const;
     void resetToFit(int row);
+    /// Reset every row of `rows` that can be reset; returns how many were.
+    int  resetRowsToFit(const QList<int>& rows);
 
     bool canRemove(int row) const;
     /// True when the point was derived from a spectral fit that has since been
@@ -65,6 +68,9 @@ public:
     /// RV point that can no longer be reset - so it may be removed instead.
     bool isOrphaned(int row) const;
     void removePoint(int row);
+    /// Remove every row of `rows` that can be removed, in one DB transaction
+    /// and one model reset; returns how many were removed.
+    int  removePoints(const QList<int>& rows);
 
     std::shared_ptr<RadialVelocityPoint> pointAt(int row) const;
     void appendPoint(std::shared_ptr<RadialVelocityPoint> p);
@@ -74,6 +80,11 @@ signals:
     void pointEdited(const QModelIndex& row);
 
 private:
+    /// Shared body of resetToFit()/resetRowsToFit(): re-applies the linked
+    /// spectral fit to one row and persists it, without the summary recompute
+    /// or the pointEdited signal, which the callers batch.
+    bool applyFitToRow(int row);
+
     void computeMissingBJDs();
     QString resolveInstrumentName(const std::shared_ptr<RadialVelocityPoint>& p) const;
     std::shared_ptr<class Instrument> resolveInstrumentObject(
@@ -189,6 +200,22 @@ private slots:
 private:
     void setupUi();
     void onTableContextMenu(const QPoint& pos);
+
+    /// Rows currently selected in the points table, ascending.
+    QList<int> selectedRows() const;
+
+    /// What the action button / context menu can do with a set of rows.
+    /// A row lands in exactly one bucket (or neither): removal wins over reset,
+    /// matching the long-standing single-row behaviour.
+    struct Selection {
+        QList<int> removable;
+        QList<int> resettable;
+        bool       allOrphaned = true;   // every removable row is an orphan
+    };
+    Selection classify(const QList<int>& rows) const;
+
+    /// Ask before removing a batch; a single point removes without a prompt.
+    bool confirmRemoval(int nRemove, int nReset);
 
     std::shared_ptr<Star>  _star;
     DatabaseManager*       _dbm        = nullptr;

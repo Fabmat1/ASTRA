@@ -1,6 +1,7 @@
 #include "SpectraFitDialog.h"
 
 #include "models/Star.h"
+#include "models/RadialVelocity.h"
 #include "models/Spectrum.h"
 #include "models/Instrument.h"
 #include "models/InstrumentMode.h"
@@ -941,6 +942,33 @@ void SpectraFitDialog::onAddFitClicked()
                  spec->getId().left(8)));
 }
 
+void SpectraFitDialog::purgeRVPointsFor(const QSet<QString>& spectrumIds)
+{
+    // Must run *after* the spectra have been dropped from the star: the purge
+    // notifies the RV listeners, and a listener that re-syncs the curve would
+    // recreate the very points we just deleted while the spectrum objects are
+    // still reachable.
+    if (!_star || spectrumIds.isEmpty()) return;
+
+    _star->ensureRVCurveSynced();
+    auto curve = _star->getRVCurve();
+    if (!curve) return;
+
+    const QStringList gone = curve->removePointsForSpectra(spectrumIds);
+    if (gone.isEmpty()) return;
+
+    if (_dbm) {
+        const bool useTx = _dbm->beginTransaction();
+        for (const QString& pointId : gone)
+            _dbm->deleteRadialVelocityPoint(pointId);
+        if (useTx) _dbm->commitTransaction();
+    }
+
+    LOG_INFO("Tools", QString("Removed %1 RV point(s) belonging to %2 deleted "
+                              "spectrum(a)").arg(gone.size())
+                                            .arg(spectrumIds.size()));
+}
+
 void SpectraFitDialog::removeSpectrum(const QString& spectrumId)
 {
     if (!_dbm) return;
@@ -956,8 +984,14 @@ void SpectraFitDialog::removeSpectrum(const QString& spectrumId)
             return s->getId() == spectrumId;
         }), specs.end());
     _star->setSpectra(specs);
+    purgeRVPointsFor({spectrumId});
     _star->markSummaryDirty();
 
+    // Drop the deleted spectrum from the other tabs too: they hold their own
+    // shared_ptrs, and a stale one still carries the RV curve's best-fit
+    // callback - enough to resurrect the point we just deleted.
+    _setup->refreshSpectraList();
+    _coadd->refreshSpectraList();
     rebuildTree();
     _panel->refresh();
     emit spectraUpdated();
@@ -985,8 +1019,13 @@ void SpectraFitDialog::removeSpectra(const QStringList& spectrumIds)
                 return removed.contains(s->getId());
             }), specs.end());
         _star->setSpectra(specs);
+        purgeRVPointsFor(QSet<QString>(removed.begin(), removed.end()));
         _star->markSummaryDirty();
 
+        // See removeSpectrum(): stale spectrum pointers in the other tabs can
+        // resurrect the RV points we just deleted.
+        _setup->refreshSpectraList();
+        _coadd->refreshSpectraList();
         rebuildTree();
         _panel->refresh();
         emit spectraUpdated();
@@ -1010,9 +1049,17 @@ void SpectraFitDialog::removeFit(const QString& spectrumId, const QString& fitId
         return;
     }
 
+    // Make sure the curve is listening before the removal fires its best-fit
+    // notification, so the RV point re-links (or unlinks) in the same step.
+    if (_star) _star->ensureRVCurveSynced();
+
     for (auto& s : _star->getSpectra()) {
         if (s->getId() == spectrumId) {
             s->removeSpectralFit(fitId);
+            // Removing the best fit promotes the next remaining one; persist
+            // that so the re-linked RV point survives a reload.
+            if (auto best = s->getBestFit())
+                _dbm->updateBestFit(spectrumId, best->getId());
             break;
         }
     }

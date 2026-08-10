@@ -20,7 +20,9 @@ jobs:
   build:
     # macos-14/15 runners are genuine Apple Silicon (arm64) machines.
     runs-on: macos-15
-    timeout-minutes: 90
+    # A cold run now also builds PGPLOT + S-Lang + ISIS from source (~20-25 min
+    # on top of ASTRA itself). Cached runs are back to the old duration.
+    timeout-minutes: 150
     steps:
       - name: Check out sources (with submodules)
         uses: actions/checkout@v4
@@ -35,6 +37,19 @@ jobs:
           path: ~/.cache/astra-build-macos
           key: astra-macos-deps-${{ runner.arch }}-${{ hashFiles('build-macos.sh') }}
           restore-keys: astra-macos-deps-${{ runner.arch }}-
+
+      # The ISIS/S-Lang/PGPLOT stack is a ~20 min source build that almost never
+      # changes, so it gets its own cache keyed on build-macos-isis.sh alone.
+      # Keeping it off build-macos.sh's key is the whole point of the split: an
+      # edit to the main build script must not throw this away.
+      # No restore-keys — a partial-match restore would hand back a prefix built
+      # by a different recipe, and the in-tree stamp would then rebuild it
+      # anyway. An exact hit or a clean build, nothing in between.
+      - name: Cache ISIS stack
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/astra-build-macos-isis
+          key: astra-macos-isis-${{ runner.arch }}-${{ hashFiles('build-macos-isis.sh') }}
 
       - name: Resolve version
         id: ver
@@ -53,6 +68,9 @@ jobs:
       - name: Build .app and .dmg
         env:
           ASTRA_VERSION_OVERRIDE: ${{ steps.ver.outputs.stamp }}
+          # Fail the job if ISIS doesn't build/stage instead of quietly shipping
+          # a .dmg without it — how v0.5.5's first .dmg went out green but empty.
+          ASTRA_REQUIRE_ISIS: "1"
         run: ./build-macos.sh "${{ steps.ver.outputs.version }}"
 
       - name: Upload .dmg artifact

@@ -81,6 +81,15 @@ void Spectrum::removeSpectralFit(const QString& fitId)
             }),
         _spectralFits.end());
 
+    // Deleting the best fit would otherwise leave a spectrum that still has
+    // fits but no best one. The RV curve cannot represent that: its point stays
+    // linked to a fit that no longer exists, so it can neither be reset (no
+    // best fit to reset to) nor removed (the spectrum is still there). Hand the
+    // role to the next remaining fit so the RV point re-links to it. Callers
+    // that own a DB connection are expected to persist the new flag.
+    if (removedBest && !_spectralFits.empty() && !getBestFit())
+        _spectralFits.front()->isBestFit = true;
+
     if (removedBest) notifyBestFitChanged();
 }
 

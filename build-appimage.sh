@@ -187,9 +187,10 @@ if [[ "${ASTRA_BUNDLE_ISIS:-1}" == "1" ]]; then
   cd "${ISIS_SCRIPTS_SRC}"
 
   # isisscripts (Remeis) — `make` builds share/ in the clone (not installed).
-  # Served over plain-HTTP gitweb (dumb transport): use http:// and no --depth
-  # (shallow clone is unsupported on the dumb-HTTP protocol).
-  git clone http://www.sternwarte.uni-erlangen.de/git.public/isisscripts isisscripts
+  # Moved off the old /git.public gitweb (dumb HTTP, now 404) to the Remeis
+  # GitLab, which speaks smart HTTP — so --depth 1 works here.
+  git clone --depth 1 \
+    https://www.sternwarte.uni-erlangen.de/gitlab/remeis/isisscripts.git isisscripts
   ( cd isisscripts && make )
 
   # stellar_isisscripts (Irrgang) + its slirp C-function module

@@ -2,6 +2,8 @@
 #define RADIALVELOCITY_H
 
 #include <QString>
+#include <QStringList>
+#include <QSet>
 #include <QDateTime>
 #include <vector>
 #include <memory>
@@ -468,6 +470,14 @@ public:
 
     void reconcileWithSpectra(
         const std::vector<std::shared_ptr<Spectrum>>& spectra);
+
+    /// Drop every point that was derived from one of `spectrumIds`, which the
+    /// caller is deleting. Returns the ids of the removed points so the caller
+    /// can delete their DB rows; without this the points survive the spectrum
+    /// and linger in the curve as orphans. Notifies listeners once, and only
+    /// if something was actually removed.
+    QStringList removePointsForSpectra(const QSet<QString>& spectrumIds);
+
     bool computeReferenceEpoch(double &bjdOut, double &mjdOut) const;
 
     // Announce that points/fits were modified directly (e.g. flags edited on

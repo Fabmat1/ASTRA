@@ -628,6 +628,28 @@ QWidget *LightcurveFetchDialog::buildFitTab() {
     connect(_fitBinsSpin, QOverload<int>::of(&QSpinBox::valueChanged), this,
             &LightcurveFetchDialog::onFitBinsChanged);
     bLay->addRow(tr("N bins:"), _fitBinsSpin);
+
+    _fitCombinerCombo = new QComboBox;
+    _fitCombinerCombo->addItem(
+        LCBinning::combinerLabel(LCBinning::Combiner::WeightedMean),
+        int(LCBinning::Combiner::WeightedMean));
+    _fitCombinerCombo->addItem(
+        LCBinning::combinerLabel(LCBinning::Combiner::MedianScatter),
+        int(LCBinning::Combiner::MedianScatter));
+    _fitCombinerCombo->setToolTip(
+        tr("How the samples in a bin become one point.<br><br>"
+           "<b>Weighted mean</b> propagates the catalogue errors, which is "
+           "only honest when those errors are. Surveys that quote them too "
+           "small (ATLAS is a repeat offender) hand the fit error bars that "
+           "are too small by the same factor, and a single wild sample with a "
+           "tiny quoted error takes over the mean of its bin.<br><br>"
+           "<b>Median · error from scatter</b> ignores the quoted errors and "
+           "measures what the samples actually do: the bin value is their "
+           "median, the error their observed scatter. Needs a decent number "
+           "of samples per bin."));
+    connect(_fitCombinerCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, [this](int) { onFitBinsChanged(); });
+    bLay->addRow(tr("Combine by:"), _fitCombinerCombo);
     sv->addWidget(bBox);
 
     _fitInfoLabel = new QLabel;
@@ -2304,14 +2326,17 @@ void LightcurveFetchDialog::onFitBinsChanged()
     onFitPeriodSelectionChanged();
 }
 
-QVector<LightcurveFetchDialog::BinnedFitPoint>
-LightcurveFetchDialog::computeBinnedFitLightcurve() const {
-    QVector<BinnedFitPoint> out;
-    const double            P = selectedFitPeriod();
-    if (P <= 0 || !_fitLcPanel)
-        return out;
-    const int nBins = _fitBinsSpin ? _fitBinsSpin->value() : 0;
-    if (nBins <= 0)
+LCBinning::Combiner LightcurveFetchDialog::fitBinCombiner() const {
+    if (!_fitCombinerCombo)
+        return LCBinning::Combiner::WeightedMean;
+    return static_cast<LCBinning::Combiner>(
+        _fitCombinerCombo->currentData().toInt());
+}
+
+std::vector<LCBinning::RawPoint>
+LightcurveFetchDialog::collectRawFitPoints() const {
+    std::vector<LCBinning::RawPoint> out;
+    if (!_fitLcPanel)
         return out;
 
     const QString wantSource =
@@ -2319,22 +2344,14 @@ LightcurveFetchDialog::computeBinnedFitLightcurve() const {
     const QString wantFilter =
         _fitFilterCombo ? _fitFilterCombo->currentData().toString() : QString();
 
-    struct Acc {
-        double sumW = 0, sumWY = 0, sumY = 0, sumY2 = 0;
-        int    n = 0;
-    };
-    QVector<Acc> bins(nBins);
-
-    const auto series  = _fitLcPanel->seriesData(false);
-    bool       anyData = false;
-
-    for (const auto &s : series) {
+    for (const auto &s : _fitLcPanel->seriesData(false)) {
         if (!wantSource.isEmpty() && s.source != wantSource)
             continue;
         if (!wantFilter.isEmpty() && s.filter != wantFilter)
             continue;
 
-        // (rest of normalisation/binning unchanged)
+        // Every series is put on a common scale by dividing through its own
+        // median, so series from different reductions can share a fit.
         QVector<double> sample;
         sample.reserve(s.y.size());
         for (double v : s.y)
@@ -2349,57 +2366,39 @@ LightcurveFetchDialog::computeBinnedFitLightcurve() const {
         }
 
         for (int i = 0; i < s.t.size(); ++i) {
-            const double t = s.t[i];
-            if (!std::isfinite(t) || !std::isfinite(s.y[i]))
+            if (!std::isfinite(s.t[i]) || !std::isfinite(s.y[i]))
                 continue;
-            const double y  = s.y[i] / med;
-            const double e  = (std::isfinite(s.e[i]) && s.e[i] > 0.0)
-                                  ? s.e[i] / std::abs(med)
-                                  : 0.0;
-            double       ph = std::fmod(t / P, 1.0);
-            if (ph < 0.0)
-                ph += 1.0;
-            int b = static_cast<int>(ph * nBins);
-            if (b < 0)
-                b = 0;
-            if (b >= nBins)
-                b = nBins - 1;
-            bins[b].sumY += y;
-            bins[b].sumY2 += y * y;
-            bins[b].n++;
-            if (e > 0.0) {
-                const double w = 1.0 / (e * e);
-                bins[b].sumW += w;
-                bins[b].sumWY += w * y;
-            }
-            anyData = true;
+            LCBinning::RawPoint p;
+            p.time      = s.t[i];
+            p.flux      = s.y[i] / med;
+            p.fluxError = (std::isfinite(s.e[i]) && s.e[i] > 0.0)
+                              ? s.e[i] / std::abs(med)
+                              : 0.0;
+            out.push_back(p);
         }
     }
-    if (!anyData)
+    return out;
+}
+
+QVector<LightcurveFetchDialog::BinnedFitPoint>
+LightcurveFetchDialog::computeBinnedFitLightcurve() const {
+    QVector<BinnedFitPoint> out;
+    const double            P = selectedFitPeriod();
+    const int nBins = _fitBinsSpin ? _fitBinsSpin->value() : 0;
+    if (P <= 0 || nBins <= 0)
         return out;
 
-    const double dphase = 1.0 / nBins;
-    for (int b = 0; b < nBins; ++b) {
-        const auto &a = bins[b];
-        if (a.n == 0)
-            continue;
-        double yMean, yErr;
-        if (a.sumW > 0.0) {
-            yMean = a.sumWY / a.sumW;
-            yErr  = 1.0 / std::sqrt(a.sumW);
-        } else {
-            yMean = a.sumY / a.n;
-            yErr =
-                (a.n > 1)
-                    ? std::sqrt(std::max((a.sumY2 / a.n) - yMean * yMean, 0.0) /
-                                a.n)
-                    : 0.0;
-        }
+    const auto binned = LCBinning::fold(collectRawFitPoints(), P, nBins,
+                                        fitBinCombiner());
+    out.reserve(int(binned.points.size()));
+    for (const auto &b : binned.points) {
         BinnedFitPoint p;
-        p.phase      = (b + 0.5) * dphase;
-        p.deltaPhase = dphase;
-        p.flux       = yMean;
-        p.fluxError  = yErr;
+        p.phase      = b.phase;
+        p.deltaPhase = b.dPhase;
+        p.flux       = b.flux;
+        p.fluxError  = b.fluxError;
+        p.weight     = b.weight;
+        p.factor     = b.factor;
         out.append(p);
     }
     return out;
@@ -2461,6 +2460,11 @@ void LightcurveFetchDialog::onFitRunClicked() {
     in.wavelengthNm     = FilterWavelength::lookupNm(filter);
     in.period           = P;
     in.periodError      = pErr;
+    // The raw samples travel with the binned ones so the fit dialog can clip
+    // outliers where they actually live and re-bin what survives.
+    in.rawPoints   = collectRawFitPoints();
+    in.nBins       = _fitBinsSpin ? _fitBinsSpin->value() : 0;
+    in.binCombiner = fitBinCombiner();
     in.binnedPoints.reserve(pts.size());
     for (const auto &bp : pts) {
         LCFitDataPoint d;

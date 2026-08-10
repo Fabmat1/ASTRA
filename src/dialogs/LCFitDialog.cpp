@@ -7,6 +7,7 @@
 #include "utils/ClaretFilter.h"
 #include "utils/ClaretTables.h"
 #include "utils/FilterWavelength.h"
+#include "utils/LCBinning.h"
 #include "utils/LCFitRunner.h"
 #include "utils/Logger.h"
 #include "plotting/qcustomplot.h"
@@ -46,6 +47,8 @@
 #include <QTextStream>
 #include <QTimer>
 #include <QToolButton>
+#include <QProcessEnvironment>
+#include <QRegularExpression>
 #include <QUuid>
 #include <QVBoxLayout>
 #include <cmath>
@@ -56,6 +59,109 @@
 namespace {
 
 QString fmt(double v, int prec = 6) { return QString::number(v, 'g', prec); }
+
+// First whitespace-separated number of an lcurve parameter string
+// ("value range step vary defined").
+double firstFloat(const QString &s) {
+  static const QRegularExpression re(R"(\s+)");
+  const auto p = s.split(re, Qt::SkipEmptyParts);
+  if (p.isEmpty())
+    return std::nan("");
+  bool ok = false;
+  double v = p[0].toDouble(&ok);
+  return ok ? v : std::nan("");
+}
+
+// The phase intervals in which the two stars overlap on the sky.
+//
+// A model that gets the eclipse slightly wrong is wrong for a whole run of
+// consecutive points, all in the same direction, and every one of them looks
+// like an outlier. Clipping them removes exactly the data that constrains the
+// eclipse, and the next fit gets the eclipse wronger still.
+//
+// With the binary in the orbital plane and the Earth vector at phase φ equal
+// to (sin i·cos 2πφ, −sin i·sin 2πφ, cos i) — Roche::set_earth — the sky-plane
+// separation of the two centres is √(1 − sin²i·cos²2πφ). The discs overlap
+// while that is below r₁+r₂, which bounds |cos 2πφ| from below and so gives a
+// half-width around each conjunction.
+struct EclipseWindow {
+    bool   valid  = false; // the geometry eclipses at all
+    double centre = 0.0;   // mid-eclipse phase; the second one sits at +0.5
+    double half   = 0.0;   // half-width in phase
+};
+
+EclipseWindow eclipseWindow(const QJsonObject &mp, double widen) {
+    EclipseWindow w;
+    auto num = [&mp](const char *key) {
+        return firstFloat(mp.value(QLatin1String(key)).toString());
+    };
+    auto flag = [&num](const char *key) {
+        const double v = num(key);
+        return std::isfinite(v) && v != 0.0;
+    };
+
+    // A model computing no eclipses cannot produce an eclipse to protect.
+    if (!flag("eclipse1") && !flag("eclipse2"))
+        return w;
+
+    const double iangle = num("iangle");
+    if (!std::isfinite(iangle))
+        return w;
+    const double sini = std::sin(iangle * M_PI / 180.0);
+    if (!(sini > 0.0))
+        return w;
+
+    // Mirrors Lcurve::Model::get_r1r2: without use_radii the radii are given
+    // as contact phases instead, and the same relation recovers them.
+    double r1 = 0.0, r2 = 0.0;
+    if (flag("use_radii")) {
+        r1 = num("r1");
+        r2 = num("r2");
+    } else {
+        const double c4 = num("cphi4"), c3 = num("cphi3");
+        if (!std::isfinite(c4) || !std::isfinite(c3))
+            return w;
+        const double sum = std::sqrt(
+            std::max(0.0, 1.0 - std::pow(sini * std::cos(2.0 * M_PI * c4), 2)));
+        const double dif = std::sqrt(
+            std::max(0.0, 1.0 - std::pow(sini * std::cos(2.0 * M_PI * c3), 2)));
+        r1 = (sum - dif) / 2.0;
+        r2 = (sum + dif) / 2.0;
+    }
+    const double sum = r1 + r2;
+    if (!std::isfinite(sum) || sum <= 0.0 || sum >= 1.0)
+        return w;
+
+    const double ratio = (1.0 - sum * sum) / (sini * sini);
+    if (!(ratio < 1.0)) // the discs never meet
+        return w;
+
+    const double half =
+        std::acos(std::sqrt(std::max(0.0, ratio))) / (2.0 * M_PI);
+    if (!std::isfinite(half) || half <= 0.0)
+        return w;
+
+    w.valid  = true;
+    w.centre = std::isfinite(num("t0")) ? num("t0") : 0.0;
+    // Two windows half a cycle apart: beyond 0.25 they meet and there is no
+    // out-of-eclipse curve left.
+    w.half = std::min(0.25, half * widen);
+    return w;
+}
+
+bool inEclipse(double phase, const EclipseWindow &w) {
+    if (!w.valid)
+        return false;
+    auto toCentre = [](double d) {
+        d = std::fmod(d, 1.0);
+        if (d < 0.0)
+            d += 1.0;
+        return std::min(d, 1.0 - d);
+    };
+    return toCentre(phase - w.centre) < w.half ||
+           toCentre(phase - w.centre - 0.5) < w.half;
+}
+
 
 QDoubleSpinBox *mkSpin(double lo, double hi, int dec, double step, double val) {
   auto *s = new QDoubleSpinBox;
@@ -494,15 +600,8 @@ QWidget *LCFitDialog::buildHeader() {
 
     _hdr = new QLabel;
     _hdr->setStyleSheet("font-weight: bold; font-size: 14px;");
-    const QString name =
-        _in.star ? (_in.star->getAlias().isEmpty() ? _in.star->getSourceId()
-                                                    : _in.star->getAlias())
-                : tr("(no star)");
-    _hdr->setText(tr("LC fit - %1   |   P = %2 ± %3 d  ·  %4 binned points")
-                    .arg(name)
-                    .arg(_in.period, 0, 'g', 8)
-                    .arg(_in.periodError, 0, 'g', 2)
-                    .arg(int(_in.binnedPoints.size())));
+    // Refinement drops bins, so the count is refreshed rather than fixed here.
+    updatePointCountLabel();
 
     _sourceLabel = new QLabel(
         tr("Source: <b>%1</b>").arg(_in.lightcurveSource.toHtmlEscaped()));
@@ -1185,6 +1284,120 @@ QWidget *LCFitDialog::buildSolverPage() {
   emcLay->addRow(tr("Max re-anchor rounds:"), _emcRounds);
   emcLay->addRow(tr("Prior weight:"), _emcPriorWeight);
   root->addWidget(_emcBox);
+
+  // ── Post-fit refinement ─────────────────────────────────────────
+  _refineBox = new QGroupBox(tr("Post-fit refinement (clip && rescale)"));
+  _refineBox->setCheckable(true);
+  _refineBox->setChecked(true);
+  _refineBox->setToolTip(
+      tr("Once an optimum exists, judge the data against it: throw out the "
+         "samples the model cannot account for, scale the error bars to the "
+         "scatter that is actually left, and fit again from the parameters "
+         "just found. Repeats until nothing changes.<br><br>Both steps act on "
+         "the <b>raw</b> photometry, before binning — a single bad sample "
+         "with a small quoted error otherwise takes over the mean of its bin, "
+         "and no amount of clipping at the binned level can undo that."));
+  auto *refLay = new QFormLayout(_refineBox);
+
+  _refClip = new QCheckBox(tr("Reject outliers beyond"));
+  _refClip->setChecked(true);
+  _refSigma = mkSpin(1.0, 20.0, 1, 0.5, 5.0);
+  _refSigma->setSuffix(tr(" × robust scatter"));
+  _refSigma->setToolTip(
+      tr("The cut is measured against 1.4826·MAD of the residuals, not "
+         "against the quoted error bars.<br><br>That distinction is the whole "
+         "point: when a survey underestimates its errors by an order of "
+         "magnitude, <i>every</i> point is several quoted σ from the model, "
+         "and a cut on quoted σ would delete the light curve instead of its "
+         "outliers."));
+  auto *clipRow = new QHBoxLayout;
+  clipRow->setContentsMargins(0, 0, 0, 0);
+  clipRow->addWidget(_refClip);
+  clipRow->addWidget(_refSigma);
+  clipRow->addStretch();
+  refLay->addRow(clipRow);
+
+  _refProtectEclipse = new QCheckBox(tr("…except inside eclipses, widened by"));
+  _refProtectEclipse->setChecked(true);
+  _refEclipseWiden = mkSpin(1.0, 3.0, 2, 0.05, 1.2);
+  _refEclipseWiden->setSuffix(tr(" ×"));
+  const QString eclipseHelp =
+      tr("An eclipse the model gets slightly wrong is wrong for a whole run "
+         "of consecutive points, all in the same direction — and every one of "
+         "them reads as an outlier. Clipping them deletes precisely the data "
+         "that pins the eclipse down, and the next fit gets it wronger.<br><br>"
+         "The protected phases are computed from the fit itself: the two "
+         "stars overlap on the sky while √(1 − sin²i·cos²2πφ) &lt; r₁+r₂, "
+         "which gives a window around each conjunction. They are recomputed "
+         "every pass, follow the fitted t₀, and vanish when the geometry "
+         "stops eclipsing.<br><br>The multiplier widens both windows, for "
+         "ingress and egress the model smears beyond first and last contact.");
+  _refProtectEclipse->setToolTip(eclipseHelp);
+  _refEclipseWiden->setToolTip(eclipseHelp);
+  auto *eclRow = new QHBoxLayout;
+  eclRow->setContentsMargins(0, 0, 0, 0);
+  eclRow->addWidget(_refProtectEclipse);
+  eclRow->addWidget(_refEclipseWiden);
+  eclRow->addStretch();
+  refLay->addRow(eclRow);
+
+  _refRescale = new QCheckBox(tr("Rescale errors so reduced χ² = 1"));
+  _refRescale->setChecked(true);
+  _refRescale->setToolTip(
+      tr("Multiply every bin error by √χ²_red measured after the rejection, "
+         "so the error bars describe the scatter that is really there.<br><br>"
+         "This changes the balance between the light curve and the physical "
+         "priors, and it makes χ² across fits of different data no longer "
+         "comparable. It also folds any shortcoming of the <i>model</i> into "
+         "the error bars, so a model that misses a real feature is rewarded "
+         "with looser errors rather than flagged."));
+  refLay->addRow(_refRescale);
+
+  _refPasses = new QSpinBox;
+  _refPasses->setRange(1, 10);
+  _refPasses->setValue(3);
+  _refPasses->setToolTip(
+      tr("A pass costs one extra fit. Passes stop early once a pass rejects "
+         "nothing and leaves the error scale within 2% of 1.<br><br>Only the "
+         "closing fit runs the post-LM error refinement — the intermediate "
+         "ones exist to move the parameters, and sampling a posterior for "
+         "data that is about to change again would be wasted time."));
+  refLay->addRow(tr("Max passes:"), _refPasses);
+
+  _refNote = new QLabel;
+  _refNote->setWordWrap(true);
+  _refNote->setStyleSheet("color: gray;");
+  refLay->addRow(_refNote);
+  root->addWidget(_refineBox);
+
+  auto refEnable = [this] {
+    const bool clip = _refClip->isChecked();
+    _refSigma->setEnabled(clip);
+    _refProtectEclipse->setEnabled(clip);
+    _refEclipseWiden->setEnabled(clip && _refProtectEclipse->isChecked());
+    // With neither step selected there is nothing for a pass to do.
+    if (!clip && !_refRescale->isChecked())
+      _refPasses->setEnabled(false);
+    else
+      _refPasses->setEnabled(true);
+  };
+  connect(_refClip, &QCheckBox::toggled, this, refEnable);
+  connect(_refRescale, &QCheckBox::toggled, this, refEnable);
+  connect(_refProtectEclipse, &QCheckBox::toggled, this, refEnable);
+  refEnable();
+
+  if (!refinementAvailable()) {
+    _refineBox->setChecked(false);
+    _refineBox->setEnabled(false);
+    _refNote->setText(
+        tr("Unavailable: this dialog was opened without the raw photometry "
+           "the binned points came from, so there is nothing to re-bin."));
+  } else {
+    _refNote->setText(tr("%1 raw samples · %2 bins · %3")
+                          .arg(int(_in.rawPoints.size()))
+                          .arg(_in.nBins)
+                          .arg(LCBinning::combinerLabel(_in.binCombiner)));
+  }
 
   // ── Prior balancing ─────────────────────────────────────────────
   auto *pbBox = new QGroupBox(tr("Prior balancing"));
@@ -2016,14 +2229,30 @@ bool LCFitDialog::writeInputDataFile(const QString &path) const {
   return true;
 }
 
-bool LCFitDialog::writeConfigFile(const QString &path, QString *err) const {
+bool LCFitDialog::writeConfigFile(const QString &path, QString *err) {
     QFile f(path);
     if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) {
         if (err)
             *err = f.errorString();
         return false;
     }
-    f.write(QJsonDocument(effectiveConfig()).toJson(QJsonDocument::Indented));
+    QJsonObject cfg = effectiveConfig();
+    // A refinement pass has already found an optimum for data that has barely
+    // moved; restarting from the user's initial guess would throw that away.
+    if (_restartModelParameters)
+        cfg["model_parameters"] = *_restartModelParameters;
+    // Percentile errors are only worth paying for once the data has stopped
+    // moving. Intermediate fits fall back to the (JᵀJ)⁻¹ σ, which comes free
+    // with the descent.
+    const auto method = _method
+        ? static_cast<LCFitRunner::Method>(_method->currentData().toInt())
+        : LCFitRunner::Method::LevMarq;
+    if (!_finalRun && method == LCFitRunner::Method::LevMarq &&
+        cfg.value("lm_error_mcmc").toBool(false)) {
+        cfg["lm_error_mcmc"] = false;
+        _skippedErrorMcmc    = true;
+    }
+    f.write(QJsonDocument(cfg).toJson(QJsonDocument::Indented));
     return true;
 }
 
@@ -2051,20 +2280,48 @@ void LCFitDialog::onRunClicked() {
       return;
   }
 
-  QString err;
-  if (!writeInputDataFile(_dataPath)) {
-    QMessageBox::critical(this, tr("Run fit"),
-                          tr("Could not write %1").arg(_dataPath));
-    return;
-  }
-  if (!writeConfigFile(_configPath, &err)) {
-    QMessageBox::critical(this, tr("Run fit"),
-                          tr("Could not write %1: %2").arg(_configPath, err));
-    return;
+  // A user-initiated run starts the refinement bookkeeping over: the raw
+  // photometry goes back to untouched and the error bars to face value.
+  _raw          = _in.rawPoints;
+  _errScale     = 1.0;
+  _refPass      = 0;
+  _refRejected  = 0;
+  _refLog.clear();
+  _restartModelParameters.reset();
+  _skippedErrorMcmc = false;
+  // Only the fit that closes the loop reports errors; the ones feeding it run
+  // without the post-LM sampling.
+  _finalRun = !refinementEnabled();
+  // Unconditionally, so a run that follows a refined one starts from the
+  // photometry as handed in rather than from what the last run clipped.
+  if (refinementAvailable()) {
+    _in.binnedPoints =
+        LCBinning::fold(_raw, _in.period, _in.nBins, _in.binCombiner).points;
+    if (_preview)
+      _preview->setObservedData(_in.binnedPoints);
+    updatePointCountLabel();
   }
 
   _initialModelParameters =
       effectiveConfig().value("model_parameters").toObject();
+
+  startSolver();
+}
+
+// Everything a run needs once the user-facing checks are out of the way. Also
+// the entry point for each refinement pass, which must not re-ask anything.
+bool LCFitDialog::startSolver() {
+  QString err;
+  if (!writeInputDataFile(_dataPath)) {
+    QMessageBox::critical(this, tr("Run fit"),
+                          tr("Could not write %1").arg(_dataPath));
+    return false;
+  }
+  if (!writeConfigFile(_configPath, &err)) {
+    QMessageBox::critical(this, tr("Run fit"),
+                          tr("Could not write %1: %2").arg(_configPath, err));
+    return false;
+  }
 
   const auto m =
       static_cast<LCFitRunner::Method>(_method->currentData().toInt());
@@ -2078,7 +2335,7 @@ void LCFitDialog::onRunClicked() {
         tr("Could not locate <b>%1</b>. Set the lcurve install directory in "
            "Settings → Lightcurve Fitting.")
             .arg(LCFitRunner::methodBinaryName(m)));
-    return;
+    return false;
   }
 
   if (_runner)
@@ -2113,6 +2370,7 @@ void LCFitDialog::onRunClicked() {
   _hasResults = false;
   _saveBtn->setEnabled(false);
   _runner->start(m, QFileInfo(_configPath).fileName());
+  return true;
 }
 
 void LCFitDialog::onPlotFrame(const QJsonObject &frame) {
@@ -2198,6 +2456,13 @@ void LCFitDialog::onPlotFrame(const QJsonObject &frame) {
 void LCFitDialog::onCancelRunClicked() {
   if (_runner)
     _runner->cancel();
+  // A pass may be sitting in its forward-model evaluation rather than in the
+  // solver; cancelling has to reach that too, and end the refinement loop.
+  if (_refProc && _refProc->state() != QProcess::NotRunning) {
+    _refAborting = true;
+    _refProc->kill();
+    _refProc->waitForFinished(2000);
+  }
 }
 
 void LCFitDialog::onRunFinished(int code, bool ok) {
@@ -2218,8 +2483,64 @@ void LCFitDialog::onRunFinished(int code, bool ok) {
     return;
   }
 
+  // With an optimum in hand the data can be judged against it. A pass that
+  // starts keeps the run alive and comes back through here after its refit.
+  if (refinementEnabled() && !_finalRun && _refPass < _refPasses->value() &&
+      startRefinementPass())
+    return;
+
+  concludeRun();
+}
+
+void LCFitDialog::concludeRun() {
+  // Every fit so far skipped the error refinement to keep the loop cheap, so
+  // the errors about to be reported are the linearised ones. Spend the fit.
+  if (_skippedErrorMcmc && !_finalRun) {
+    _finalRun               = true;
+    _restartModelParameters = _augmented.value("model_parameters").toObject();
+    _term->feed(tr("[refine] data settled - final fit with error refinement "
+                   "enabled…\n")
+                    .toUtf8());
+    _runStat->setStyleSheet("color: #dca84d;");
+    _runStat->setText(tr("Final fit (error refinement)…"));
+    if (startSolver())
+      return;
+  }
+  finishRun();
+}
+
+void LCFitDialog::finishRun() {
+  _runBtn->setEnabled(true);
+  _cancelBtn->setEnabled(false);
   _runStat->setStyleSheet("color: #7dbd5e;");
-  _runStat->setText(tr("Solver finished - results parsed."));
+  _runStat->setText(_refLog.isEmpty()
+                        ? tr("Solver finished - results parsed.")
+                        : tr("Solver finished after %1 refinement pass(es) - "
+                             "results parsed.")
+                              .arg(_refPass));
+  if (!_refLog.isEmpty()) {
+    // Whoever reads the fit later needs to know the data was not the data
+    // they handed in, so the record travels with the saved config.
+    QJsonObject ref;
+    ref["passes"]             = _refPass;
+    ref["rejected_raw"]       = _refRejected;
+    ref["raw_total"]          = int(_raw.size());
+    ref["error_scale"]        = _errScale;
+    ref["clip_sigma"]         = _refClip->isChecked() ? _refSigma->value() : 0.0;
+    ref["rescaled"]           = _refRescale->isChecked();
+    ref["eclipse_protected"]  = _refClip->isChecked() &&
+                               _refProtectEclipse->isChecked();
+    if (const auto ecl = eclipseWindow(
+            _augmented.value("model_parameters").toObject(),
+            _refEclipseWiden->value());
+        ecl.valid) {
+        ref["eclipse_half_phase"] = ecl.half;
+        ref["eclipse_centre"]     = ecl.centre;
+    }
+    ref["binned_points"]      = int(_in.binnedPoints.size());
+    ref["bin_combiner"]       = int(_in.binCombiner);
+    _augmented["astra_refinement"] = ref;
+  }
   populateResultsView();
   _saveBtn->setEnabled(true);
   _saveFitBtn->setEnabled(true);
@@ -2228,21 +2549,338 @@ void LCFitDialog::onRunFinished(int code, bool ok) {
   showRunSection(false);
 }
 
-// ── Augmented config parsing ──────────────────────────────────────
+// ── Post-fit refinement ───────────────────────────────────────────
 
-namespace {
-
-double firstFloat(const QString &s) {
-  static const QRegularExpression re(R"(\s+)");
-  const auto p = s.split(re, Qt::SkipEmptyParts);
-  if (p.isEmpty())
-    return std::nan("");
-  bool ok = false;
-  double v = p[0].toDouble(&ok);
-  return ok ? v : std::nan("");
+bool LCFitDialog::refinementAvailable() const {
+  return !_in.rawPoints.empty() && _in.nBins > 0 && _in.period > 0.0;
 }
 
-} // namespace
+bool LCFitDialog::refinementEnabled() const {
+  return _refineBox && _refineBox->isChecked() && refinementAvailable() &&
+         (_refClip->isChecked() || _refRescale->isChecked());
+}
+
+bool LCFitDialog::startRefinementPass() {
+  const QString bin =
+      _in.settings ? _in.settings->lcurveBinary(QStringLiteral("lcurve_re"))
+                   : QString();
+  if (bin.isEmpty()) {
+    _term->feed(tr("[refine] lcurve_re not found - skipping refinement.\n")
+                    .toUtf8());
+    return false;
+  }
+
+  if (_refDataPath.isEmpty()) {
+    _refDataPath   = QDir(_tempDir).absoluteFilePath("refine_input.dat");
+    _refConfigPath = QDir(_tempDir).absoluteFilePath("refine_config.json");
+    _refOutPath    = QDir(_tempDir).absoluteFilePath("refine_model.txt");
+  }
+
+  // Every surviving raw sample, at its own phase. dPhase is 0 and the divisor
+  // 1, so the model is evaluated at the instant rather than smeared over a
+  // bin — these are individual exposures, not bins.
+  QFile df(_refDataPath);
+  if (!df.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    _term->feed(tr("[refine] could not write %1 - skipping refinement.\n")
+                    .arg(_refDataPath)
+                    .toUtf8());
+    return false;
+  }
+  {
+    QTextStream s(&df);
+    s.setRealNumberNotation(QTextStream::SmartNotation);
+    s.setRealNumberPrecision(17);
+    int n = 0;
+    for (const auto &p : _raw) {
+      if (p.rejected || !std::isfinite(p.time) || !std::isfinite(p.flux))
+        continue;
+      double ph = std::fmod(p.time / _in.period, 1.0);
+      if (ph < 0.0)
+        ph += 1.0;
+      const double e = (p.fluxError > 0.0 && std::isfinite(p.fluxError))
+                           ? p.fluxError
+                           : 1.0;
+      s << ph << " 0 " << p.flux << ' ' << e << " 1 1\n";
+      ++n;
+    }
+    if (n == 0) {
+      _term->feed(tr("[refine] no samples left - stopping.\n").toUtf8());
+      return false;
+    }
+  }
+  df.close();
+
+  QJsonObject cfg = effectiveConfig();
+  cfg["model_parameters"] = _augmented.value("model_parameters").toObject();
+  cfg["data_file_path"]   = _refDataPath;
+  cfg["output_file_path"] = _refOutPath;
+  cfg["plot_device"]      = QStringLiteral("none");
+  cfg["noise"]            = 0;
+  QFile cf(_refConfigPath);
+  if (!cf.open(QIODevice::WriteOnly | QIODevice::Text)) {
+    _term->feed(tr("[refine] could not write %1 - skipping refinement.\n")
+                    .arg(_refConfigPath)
+                    .toUtf8());
+    return false;
+  }
+  cf.write(QJsonDocument(cfg).toJson(QJsonDocument::Indented));
+  cf.close();
+
+  if (!_refProc) {
+    _refProc = new QProcess(this);
+    _refProc->setProcessChannelMode(QProcess::MergedChannels);
+    connect(_refProc,
+            QOverload<int, QProcess::ExitStatus>::of(&QProcess::finished), this,
+            &LCFitDialog::onRefineModelFinished);
+  }
+  // One forward model gains nothing from the GPU and would only contend with
+  // whatever else is using it.
+  QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+  env.insert(QStringLiteral("LCURVE_CUDA"), QStringLiteral("0"));
+  _refProc->setProcessEnvironment(env);
+  _refProc->setWorkingDirectory(_tempDir);
+
+  _cancelBtn->setEnabled(true);
+  _runBtn->setEnabled(false);
+  _runStat->setStyleSheet("color: #dca84d;");
+  _runStat->setText(tr("Refinement pass %1: evaluating the model at every "
+                       "sample…")
+                        .arg(_refPass + 1));
+  _term->feed(tr("[refine] pass %1: evaluating best-fit model at %2 raw "
+                 "samples…\n")
+                  .arg(_refPass + 1)
+                  .arg(int(_raw.size()) - _refRejected)
+                  .toUtf8());
+  _refProc->start(bin, {_refConfigPath});
+  return true;
+}
+
+void LCFitDialog::onRefineModelFinished(int code, QProcess::ExitStatus status) {
+  const QByteArray out = _refProc->readAll();
+  if (_refAborting) {
+    _refAborting = false;
+    _term->feed(tr("[refine] cancelled.\n").toUtf8());
+    _runBtn->setEnabled(true);
+    _cancelBtn->setEnabled(false);
+    _runStat->setStyleSheet("color: #c46060;");
+    _runStat->setText(tr("Cancelled during refinement."));
+    return;
+  }
+  if (status != QProcess::NormalExit || code != 0) {
+    _term->feed(tr("[refine] forward model failed (exit %1) - keeping the "
+                   "unrefined fit.\n")
+                    .arg(code)
+                    .toUtf8());
+    if (!out.isEmpty())
+      _term->feed(out);
+    concludeRun();
+    return;
+  }
+
+  QFile f(_refOutPath);
+  if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+    _term->feed(tr("[refine] no model written - keeping the unrefined fit.\n")
+                    .toUtf8());
+    concludeRun();
+    return;
+  }
+  QVector<double>                 model;
+  QTextStream                     s(&f);
+  static const QRegularExpression sp(R"(\s+)");
+  while (!s.atEnd()) {
+    const QString line = s.readLine().trimmed();
+    if (line.isEmpty() || line.startsWith('#') || line.startsWith('!'))
+      continue;
+    const auto parts = line.split(sp, Qt::SkipEmptyParts);
+    if (parts.size() < 3)
+      continue;
+    model.push_back(parts[2].toDouble());
+  }
+
+  if (!applyRefinement(model))
+    concludeRun();
+}
+
+bool LCFitDialog::applyRefinement(const QVector<double> &model) {
+  // The model file is written in the order the samples were handed over, so
+  // walking the surviving samples again re-pairs them.
+  QVector<LCBinning::RawPoint *> live;
+  live.reserve(int(_raw.size()));
+  for (auto &p : _raw)
+    if (!p.rejected && std::isfinite(p.time) && std::isfinite(p.flux))
+      live.push_back(&p);
+
+  if (model.size() != live.size()) {
+    _term->feed(tr("[refine] model has %1 values for %2 samples - keeping the "
+                   "unrefined fit.\n")
+                    .arg(model.size())
+                    .arg(live.size())
+                    .toUtf8());
+    return false;
+  }
+
+  QVector<double> resid;
+  resid.reserve(live.size());
+  for (int i = 0; i < live.size(); ++i) {
+    live[i]->model = model[i];
+    resid.push_back(live[i]->flux - model[i]);
+  }
+
+  auto medianOf = [](QVector<double> v) {
+    if (v.isEmpty())
+      return std::numeric_limits<double>::quiet_NaN();
+    std::sort(v.begin(), v.end());
+    return v.size() % 2 ? v[v.size() / 2]
+                        : 0.5 * (v[v.size() / 2 - 1] + v[v.size() / 2]);
+  };
+
+  int          rejectedNow = 0, protectedNow = 0;
+  double       sigmaRob = 0.0;
+  EclipseWindow ecl;
+  if (_refClip->isChecked()) {
+    if (_refProtectEclipse->isChecked())
+      ecl = eclipseWindow(_augmented.value("model_parameters").toObject(),
+                          _refEclipseWiden->value());
+
+    QVector<bool> guarded(live.size(), false);
+    if (ecl.valid)
+      for (int i = 0; i < live.size(); ++i) {
+        double ph = std::fmod(live[i]->time / _in.period, 1.0);
+        if (ph < 0.0)
+          ph += 1.0;
+        guarded[i] = inEclipse(ph, ecl);
+        if (guarded[i])
+          ++protectedNow;
+      }
+
+    // The scatter the cut is measured against describes the part of the curve
+    // the model is actually asked to reproduce point-for-point. Eclipse
+    // residuals would only widen it and let genuine outliers through — unless
+    // protecting them leaves too little curve to measure anything on.
+    QVector<double> open;
+    open.reserve(live.size());
+    for (int i = 0; i < live.size(); ++i)
+      if (!guarded[i])
+        open.push_back(resid[i]);
+    const bool useOpen = open.size() >= 20;
+    const QVector<double> &basis = useOpen ? open : resid;
+
+    const double centre = medianOf(basis);
+    QVector<double> dev;
+    dev.reserve(basis.size());
+    for (double r : basis)
+      dev.push_back(std::abs(r - centre));
+    sigmaRob = 1.4826 * medianOf(dev);
+    if (sigmaRob > 0.0) {
+      const double cut = _refSigma->value() * sigmaRob;
+      for (int i = 0; i < live.size(); ++i)
+        if (!guarded[i] && std::abs(resid[i] - centre) > cut) {
+          live[i]->rejected = true;
+          ++rejectedNow;
+        }
+    }
+  }
+  _refRejected += rejectedNow;
+
+  // Re-bin what is left, carrying the model through the same combination so a
+  // binned model exists without a second forward-model run.
+  auto binned = LCBinning::fold(_raw, _in.period, _in.nBins, _in.binCombiner,
+                                _errScale);
+  if (binned.points.empty()) {
+    _term->feed(
+        tr("[refine] rejection emptied the light curve - stopping.\n").toUtf8());
+    return false;
+  }
+
+  double scaleNow = 1.0, redChi2 = std::numeric_limits<double>::quiet_NaN();
+  if (_refRescale->isChecked()) {
+    double chi2 = 0.0;
+    int    n    = 0;
+    for (size_t i = 0; i < binned.points.size(); ++i) {
+      const auto  &pt = binned.points[i];
+      const double m  = binned.model[i];
+      if (!(pt.fluxError > 0.0) || !std::isfinite(m))
+        continue;
+      const double z = (pt.flux - m) / pt.fluxError;
+      chi2 += z * z;
+      ++n;
+    }
+    const int dof = n - int(collectVaried().size());
+    if (dof > 0 && chi2 > 0.0) {
+      redChi2  = chi2 / dof;
+      scaleNow = std::sqrt(redChi2);
+      _errScale *= scaleNow;
+      binned = LCBinning::fold(_raw, _in.period, _in.nBins, _in.binCombiner,
+                               _errScale);
+    }
+  }
+
+  _in.binnedPoints = binned.points;
+  if (_preview)
+    _preview->setObservedData(_in.binnedPoints);
+  updatePointCountLabel();
+
+  ++_refPass;
+  QString line = tr("[refine] pass %1: ").arg(_refPass);
+  if (_refClip->isChecked()) {
+    line += tr("rejected %1 of %2 raw samples beyond %3 × %4 (σ_rob = %5); ")
+                .arg(rejectedNow)
+                .arg(live.size())
+                .arg(_refSigma->value(), 0, 'g', 3)
+                .arg(tr("robust scatter"))
+                .arg(sigmaRob, 0, 'g', 3);
+    if (_refProtectEclipse->isChecked())
+      line += ecl.valid
+                  ? tr("eclipses ±%1 around φ = %2 / %3 spared %4 samples; ")
+                        .arg(ecl.half, 0, 'g', 3)
+                        .arg(std::fmod(ecl.centre + 1.0, 1.0), 0, 'f', 4)
+                        .arg(std::fmod(ecl.centre + 1.5, 1.0), 0, 'f', 4)
+                        .arg(protectedNow)
+                  : tr("no eclipse in this geometry, nothing spared; ");
+  }
+  if (std::isfinite(redChi2))
+    line += tr("χ²_red = %1 → errors × %2 (cumulative × %3); ")
+                .arg(redChi2, 0, 'g', 4)
+                .arg(scaleNow, 0, 'g', 4)
+                .arg(_errScale, 0, 'g', 4);
+  line += tr("%1 bins.").arg(int(_in.binnedPoints.size()));
+  _refLog << line;
+  _term->feed((line + '\n').toUtf8());
+  if (_refNote)
+    _refNote->setText(_refLog.join(QStringLiteral("<br>")));
+
+  // Nothing moved: the fit already in hand is the refined one. Returning here
+  // still lets concludeRun() buy the error refinement it was denied.
+  if (rejectedNow == 0 && std::abs(scaleNow - 1.0) < 0.02) {
+    _term->feed(tr("[refine] converged.\n").toUtf8());
+    return false;
+  }
+  if (_refPass >= _refPasses->value()) {
+    _term->feed(tr("[refine] pass limit reached - this is the final refit.\n")
+                    .toUtf8());
+    _finalRun = true;
+  }
+
+  // Carry the optimum forward: the data changed, but not by much.
+  _restartModelParameters = _augmented.value("model_parameters").toObject();
+  return startSolver();
+}
+
+void LCFitDialog::updatePointCountLabel() {
+  if (!_hdr)
+    return;
+  const QString name =
+      _in.star ? (_in.star->getAlias().isEmpty() ? _in.star->getSourceId()
+                                                 : _in.star->getAlias())
+               : tr("(no star)");
+  _hdr->setText(tr("LC fit - %1   |   P = %2 ± %3 d  ·  %4 binned points")
+                    .arg(name)
+                    .arg(_in.period, 0, 'g', 8)
+                    .arg(_in.periodError, 0, 'g', 2)
+                    .arg(int(_in.binnedPoints.size())));
+}
+
+// ── Augmented config parsing ──────────────────────────────────────
 
 bool LCFitDialog::parseAugmentedConfig(const QString &path, QString *err) {
   QFile f(path);
@@ -2298,6 +2936,18 @@ void LCFitDialog::populateResultsView() {
         q += tr(
             "<br><span style='color:#dca84d;'>⚠ Covariance inversion failed - "
             "no parameter σ available.</span>");
+    if (!_refLog.isEmpty()) {
+        // A reduced χ² of 1 is a construction here, not a verdict — say so
+        // next to it, and say what the data cost to get there.
+        q += tr("<br><span style='color:#dca84d;'>Refined over %1 pass(es): "
+                "%2 of %3 raw samples rejected, bin errors × %4. Reduced χ² is "
+                "1 by construction and no longer comparable to other fits."
+                "</span>")
+                 .arg(_refPass)
+                 .arg(_refRejected)
+                 .arg(int(_raw.size()))
+                 .arg(_errScale, 0, 'g', 4);
+    }
     _quality->setText(q);
 
     auto starHas = [&](const QString &key) -> bool {

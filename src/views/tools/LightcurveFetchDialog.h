@@ -8,6 +8,7 @@
 #include "views/panels/PeriodogramPanel.h"
 #include "views/widgets/AnsiTerminalWidget.h"
 #include "db/DatabaseManager.h"
+#include "utils/LCBinning.h"
 #include "utils/LightcurveFetchService.h"
 
 class QCheckBox;
@@ -63,6 +64,11 @@ protected:
     };
 
     double                       selectedFitPeriod() const;
+    /// Raw samples feeding the fit, normalised to their series median and
+    /// filtered to the selected source/filter. The fit dialog needs these to
+    /// re-bin after rejecting outliers.
+    std::vector<LCBinning::RawPoint> collectRawFitPoints() const;
+    LCBinning::Combiner              fitBinCombiner() const;
     QVector<BinnedFitPoint>      computeBinnedFitLightcurve() const;
     bool                         writeBinnedFitLightcurve(const QString& path) const;
     LCPanel*                     fitLcPanel() const { return _fitLcPanel; }
@@ -263,6 +269,7 @@ private slots:
     QComboBox*   _fitSourceCombo    = nullptr;
     QComboBox*   _fitFilterCombo    = nullptr;
     QSpinBox*    _fitBinsSpin       = nullptr;
+    QComboBox*   _fitCombinerCombo  = nullptr;
     QPushButton* _fitRunBtn         = nullptr;
     QLabel*      _fitInfoLabel      = nullptr;
 

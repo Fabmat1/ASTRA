@@ -4,10 +4,13 @@
 #include <QHash>
 #include <QJsonObject>
 #include <QMap>
+#include <QProcess>
 #include <QVector>
 #include <memory>
+#include <optional>
 
 #include "models/Photometry.h"
+#include "utils/LCBinning.h"
 #include "utils/LCFitPhysics.h"
 
 class QStackedWidget;
@@ -53,6 +56,12 @@ class LCFitDialog : public QDialog {
         double period = 1.0;
         double periodError = 0.0;
         std::vector<LCFitDataPoint> binnedPoints;
+        // The photometry `binnedPoints` was folded from, plus the recipe that
+        // produced it. Present only when the caller could supply it; without
+        // it the post-fit refinement has nothing to clip and stays disabled.
+        std::vector<LCBinning::RawPoint> rawPoints;
+        int                              nBins = 0;
+        LCBinning::Combiner binCombiner = LCBinning::Combiner::WeightedMean;
     };
 
     explicit LCFitDialog(Inputs in, QWidget *parent = nullptr);
@@ -76,6 +85,7 @@ class LCFitDialog : public QDialog {
     void onM1M2Changed();
     void onK1OrM1Changed();
     void onSaveFitClicked();
+    void onRefineModelFinished(int code, QProcess::ExitStatus status);
 
   private:
     void setupUi();
@@ -130,8 +140,27 @@ class LCFitDialog : public QDialog {
     QSet<QString> collectVaried() const;
     QJsonObject buildFullConfig() const;
 
+    // ── Post-fit refinement pipeline ────────────────────────────────────
+    // A pass is: evaluate the best-fit model at every surviving raw sample,
+    // reject the ones that sit far outside the robust residual scatter,
+    // re-bin, rescale the bin errors so reduced χ² is 1, and fit again from
+    // the parameters just found. Passes repeat until nothing changes.
+    bool refinementAvailable() const;
+    bool refinementEnabled() const;
+    /// End the run — or, when the reported numbers would otherwise come from a
+    /// fit whose error refinement was suppressed, spend one more fit on them.
+    void concludeRun();
+    /// Launch the forward-model evaluation the pass is built on. Returns false
+    /// when it could not be started; the run then finishes unrefined.
+    bool startRefinementPass();
+    /// Apply clipping + rescaling from the model just evaluated, then either
+    /// start another fit or finish. Returns true when another fit was started.
+    bool applyRefinement(const QVector<double> &model);
+    void finishRun();
+    void updatePointCountLabel();
+
     bool writeInputDataFile(const QString &path) const;
-    bool writeConfigFile(const QString &path, QString *err = nullptr) const;
+    bool writeConfigFile(const QString &path, QString *err = nullptr);
     bool parseAugmentedConfig(const QString &path, QString *err = nullptr);
 
     void populateResultsView();
@@ -158,6 +187,31 @@ class LCFitDialog : public QDialog {
     QString _dataPath, _configPath, _outputPath, _augmentedPath;
     QJsonObject _augmented;
     bool _hasResults = false;
+
+    // Refinement state. `_raw` is the working copy of the input photometry and
+    // carries the rejection flags; `_errScale` is the cumulative factor the bin
+    // errors have been multiplied by so far.
+    std::vector<LCBinning::RawPoint> _raw;
+    double                           _errScale = 1.0;
+    int                              _refPass = 0;
+    int                              _refRejected = 0;
+    QStringList                      _refLog;
+    QProcess                        *_refProc = nullptr;
+    bool                             _refAborting = false;
+    /// False while fits are still feeding the refinement loop. Those fits run
+    /// with the post-LM error MCMC suppressed: they exist to move the
+    /// parameters, and the data underneath them is about to change again.
+    bool                             _finalRun = true;
+    /// Set once a fit has actually had its error refinement suppressed, so the
+    /// loop knows it still owes a closing fit that does it.
+    bool                             _skippedErrorMcmc = false;
+    QString  _refDataPath, _refConfigPath, _refOutPath;
+    /// Set between refinement passes so the next fit starts where the last one
+    /// stopped instead of back at the user's initial guess.
+    std::optional<QJsonObject> _restartModelParameters;
+    /// Launch the solver with the current data and config, skipping the
+    /// user-facing checks onRunClicked does.
+    bool startSolver();
 
     // Header
     QLabel *_hdr = nullptr;
@@ -234,6 +288,16 @@ class LCFitDialog : public QDialog {
     QCheckBox *_sinIPrior = nullptr;
     QCheckBox *_plotEnabled = nullptr;
     QCheckBox *_cudaEnabled = nullptr;
+
+    // ── Post-fit refinement ─────────────────────────────────────────────
+    // Sigma-clipping and error rescaling applied *after* an optimum exists,
+    // then fed back into another fit. See startRefinementPass().
+    QGroupBox      *_refineBox = nullptr;
+    QCheckBox      *_refClip = nullptr, *_refRescale = nullptr;
+    QCheckBox      *_refProtectEclipse = nullptr;
+    QDoubleSpinBox *_refSigma = nullptr, *_refEclipseWiden = nullptr;
+    QSpinBox       *_refPasses = nullptr;
+    QLabel         *_refNote = nullptr;
     int _cudaDevice = -1;
     QMap<QString, QCheckBox *> _vary;
 
