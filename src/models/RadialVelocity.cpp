@@ -989,6 +989,29 @@ void RadialVelocityCurve::reconcileWithSpectra(
     if (changed) notifyChanged();
 }
 
+QStringList RadialVelocityCurve::removePointsForSpectra(
+    const QSet<QString>& spectrumIds)
+{
+    if (spectrumIds.isEmpty()) return {};
+
+    QStringList removed;
+    auto it = std::remove_if(_rvPoints.begin(), _rvPoints.end(),
+        [&](const std::shared_ptr<RadialVelocityPoint>& p) {
+            if (!p || p->getSpectrumId().isEmpty()) return false;
+            if (!spectrumIds.contains(p->getSpectrumId())) return false;
+            removed << p->getId();
+            return true;
+        });
+    if (it == _rvPoints.end()) return {};
+
+    _rvPoints.erase(it, _rvPoints.end());
+    // The earliest point may have just been deleted, so the fits' reference
+    // epoch (and hence every phase) has to be recomputed.
+    updateFitReferences();
+    notifyChanged();
+    return removed;
+}
+
 RadialVelocityCurve::ListenerToken
 RadialVelocityCurve::addChangeListener(ChangeCallback cb)
 {

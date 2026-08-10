@@ -112,6 +112,10 @@ public:
 private:
     void propagateOffsets();
 
+    /// Claim `scale` as the native scale when none is known yet, so that a Time
+    /// filled in through the setters reports isValid() == true.
+    void adoptNativeScale(TimeScale scale, double v);
+
     TimeScale _nativeScale  = TimeScale::Unknown;
     double    _nativeValue  = 0.0;
 

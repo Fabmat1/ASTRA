@@ -80,6 +80,20 @@ void Time::propagateOffsets()
 // Setters
 // ═════════════════════════════════════════════════════════════════════════════
 
+void Time::adoptNativeScale(TimeScale scale, double v)
+{
+    // A default-constructed Time carries no native scale, so isValid() is
+    // false and consumers (e.g. RVPanel) drop it even once a value has been
+    // filled in. Setting a real value is exactly the point at which the scale
+    // becomes known, so claim it here - matching fromMjdBjd(), which is the
+    // path the DB loader uses. Only Unknown is upgraded: a Time that already
+    // knows it is BTJD/BKJD/… keeps its own scale and value.
+    if (_nativeScale != TimeScale::Unknown) return;
+    if (v == 0.0 || std::isnan(v)) return;
+    _nativeScale = scale;
+    _nativeValue = v;
+}
+
 void Time::setMJD(double v)
 {
     _mjd = v;
@@ -88,16 +102,19 @@ void Time::setMJD(double v)
     // lazily‑computed BJD is stale.  Explicit setBJD() values are also
     // overridden; the caller should re‑set BJD if they know it.
     _bjd.reset();
+    adoptNativeScale(TimeScale::MJD, v);
 }
 
 void Time::setBJD(double v)
 {
     _bjd = v;
+    adoptNativeScale(TimeScale::BJD, v);
 }
 
 void Time::setHJD(double v)
 {
     _hjd = v;
+    adoptNativeScale(TimeScale::HJD, v);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -149,6 +166,7 @@ void Time::computeBJD(const Instrument& inst, double raDeg, double decDeg)
         return;
     }
     _bjd = inst.mjdToBjd(*_mjd, raDeg, decDeg);
+    adoptNativeScale(TimeScale::BJD, *_bjd);
 }
 
 void Time::computeHJD(const Instrument& inst, double raDeg, double decDeg)
