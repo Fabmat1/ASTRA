@@ -5,6 +5,7 @@
 #include "models/Spectrum.h"
 #include "utils/Logger.h"
 #include "plotting/qcustomplot.h"
+#include "views/widgets/PlotKeyNavigator.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -83,15 +84,13 @@ void SpectraPanel::setupUi()
     tbLayout->setContentsMargins(0, 2, 0, 2);
     tbLayout->setSpacing(8);
     _resetZoomButton = new QPushButton("⟲ Reset Zoom");
-    _resetZoomButton->setToolTip("Reset zoom to show full spectrum");
+    _resetZoomButton->setToolTip(
+        "Reset zoom to show full spectrum (or press R over the plot)");
     _resetZoomButton->setMaximumWidth(140);
     PanelUtils::styleFlatTextButton(_resetZoomButton);
     _resetZoomButton->setVisible(false);
-    connect(_resetZoomButton, &QPushButton::clicked, this, [this]() {
-        _hasCustomZoom = false;
-        _resetZoomButton->setVisible(false);
-        updateSpectrumDisplay();
-    });
+    connect(_resetZoomButton, &QPushButton::clicked,
+            this, [this]() { resetZoomView(); });
     tbLayout->addWidget(_resetZoomButton);
 
     tbLayout->addStretch();
@@ -138,26 +137,33 @@ void SpectraPanel::setupUi()
     layout->addWidget(_residualPlot, 2);
 
     // ── Detect user zoom interactions ──
-    connect(_mainPlot, &QCustomPlot::mouseWheel, this, [this]() {
-        _hasCustomZoom = true;
-        if (_resetZoomButton) _resetZoomButton->setVisible(true);
-    });
+    connect(_mainPlot, &QCustomPlot::mouseWheel, this,
+            [this]() { markCustomZoom(); });
     connect(_mainPlot, &QCustomPlot::mouseMove, this, [this](QMouseEvent* ev) {
-        if (ev->buttons() & Qt::LeftButton) {
-            _hasCustomZoom = true;
-            if (_resetZoomButton) _resetZoomButton->setVisible(true);
-        }
+        if (ev->buttons() & Qt::LeftButton) markCustomZoom();
     });
-    connect(_residualPlot, &QCustomPlot::mouseWheel, this, [this]() {
-        _hasCustomZoom = true;
-        if (_resetZoomButton) _resetZoomButton->setVisible(true);
-    });
+    connect(_residualPlot, &QCustomPlot::mouseWheel, this,
+            [this]() { markCustomZoom(); });
     connect(_residualPlot, &QCustomPlot::mouseMove, this, [this](QMouseEvent* ev) {
-        if (ev->buttons() & Qt::LeftButton) {
-            _hasCustomZoom = true;
-            if (_resetZoomButton) _resetZoomButton->setVisible(true);
-        }
+        if (ev->buttons() & Qt::LeftButton) markCustomZoom();
     });
+
+    // ── Keyboard navigation while the mouse hovers a plot ──
+    _keyNav = new PlotKeyNavigator(this);
+    _keyNav->addPlot(_mainPlot);
+    _keyNav->addPlot(_residualPlot);
+    _keyNav->setResetHandler([this]() { resetZoomView(); });
+    connect(_keyNav, &PlotKeyNavigator::viewChanged, this,
+            [this](QCustomPlot*) { markCustomZoom(); });
+
+    const QString navHint =
+        "Keyboard (mouse over the plot):\n"
+        "A/D or \xe2\x86\x90/\xe2\x86\x92  pan in wavelength\n"
+        "W/S or \xe2\x86\x91/\xe2\x86\x93  zoom the wavelength axis\n"
+        "Shift+W/S  zoom both axes\n"
+        "R  reset the view";
+    _mainPlot->setToolTip(navHint);
+    _residualPlot->setToolTip(navHint);
 
     // Debounce timer for axis synchronization
     _axisSyncTimer = new QTimer(this);
@@ -197,6 +203,19 @@ void SpectraPanel::setupUi()
     });
     connect(_displayMode, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { updateSpectrumDisplay(); });
+}
+
+void SpectraPanel::resetZoomView()
+{
+    _hasCustomZoom = false;
+    if (_resetZoomButton) _resetZoomButton->setVisible(false);
+    updateSpectrumDisplay();   // routes to the co-add view when one is shown
+}
+
+void SpectraPanel::markCustomZoom()
+{
+    _hasCustomZoom = true;
+    if (_resetZoomButton) _resetZoomButton->setVisible(true);
 }
 
 void SpectraPanel::populate()

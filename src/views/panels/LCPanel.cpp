@@ -7,6 +7,7 @@
 #include "utils/Logger.h"
 #include "db/DatabaseManager.h"
 #include "plotting/qcustomplot.h"
+#include "views/widgets/PlotKeyNavigator.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -241,7 +242,8 @@ void LCPanel::setupUi()
 
     _resetZoomBtn = new QToolButton;
     _resetZoomBtn->setText("Reset Zoom");
-    _resetZoomBtn->setToolTip("Restore default zoom on all plots");
+    _resetZoomBtn->setToolTip(
+        "Restore default zoom on all plots (or press R over a plot)");
     connect(_resetZoomBtn, &QToolButton::clicked, this, &LCPanel::onResetZoom);
     tb->addWidget(_resetZoomBtn);
 
@@ -263,6 +265,13 @@ void LCPanel::setupUi()
     _contentLayout = new QVBoxLayout(_content);
     _contentLayout->setContentsMargins(0, 0, 0, 0);
     layout->addWidget(_content, 1);
+
+    // ── Keyboard navigation while the mouse hovers a plot ──
+    // Stacked views keep a shared y scale, so the y half of a Shift zoom
+    // applies to every plot; the x part rides the existing x-axis sync.
+    _keyNav = new PlotKeyNavigator(this);
+    _keyNav->setYZoomAllPlots(true);
+    _keyNav->setResetHandler([this]() { onResetZoom(); });
 }
 
 void LCPanel::notifyFoldState()
@@ -368,6 +377,7 @@ void LCPanel::populate()
         _settingsBtn->setEnabled(false);
         PanelUtils::clearLayout(_contentLayout);
         _plots.clear(); _plotSeries.clear(); _defaultRanges.clear();
+        _keyNav->clearPlots();
         _contentLayout->addWidget(PanelUtils::makePlaceholder("No light curve data available yet."));
         LOG_DEBUG(CAT, "no series after collection");
         return;
@@ -467,6 +477,7 @@ void LCPanel::rebuildPlots()
     _plots.clear();
     _plotSeries.clear();
     _defaultRanges.clear();
+    _keyNav->clearPlots();
     _scrollArea = nullptr;
     _stackedHost = nullptr;
     _stackedLayout = nullptr;
@@ -483,7 +494,14 @@ void LCPanel::rebuildPlots()
         p->setPlottingHints(QCP::phFastPolylines | QCP::phCacheLabels);
         // Error bars must render behind scatter markers
         p->addLayer("errbars", p->layer("main"), QCustomPlot::limBelow);
+        p->setToolTip(
+            "Keyboard (mouse over the plot):\n"
+            "A/D or \xe2\x86\x90/\xe2\x86\x92  pan along x\n"
+            "W/S or \xe2\x86\x91/\xe2\x86\x93  zoom the x axis\n"
+            "Shift+W/S  zoom both axes\n"
+            "R  reset the view");
         wirePlotInteractions(p);
+        _keyNav->addPlot(p);
         _plots.append(p);
         return p;
     };

@@ -17,6 +17,7 @@ class QCustomPlot;
 class QCPGraph;
 class QCPRange;
 class LCFit;
+class PlotKeyNavigator;
 
 class LCPanel : public DetailPanel
 {
@@ -126,6 +127,9 @@ private:
     QToolButton* _resetZoomBtn   = nullptr;
     QToolButton* _settingsBtn    = nullptr;
     QMenu*       _settingsMenu   = nullptr;
+
+    /// Hover-activated WASD / arrow-key pan & zoom over the plots.
+    PlotKeyNavigator* _keyNav    = nullptr;
 
     // Content
     QWidget*     _content        = nullptr;

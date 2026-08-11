@@ -12,6 +12,7 @@ class QCustomPlot;
 class QLabel;
 class QPushButton;
 class QTimer;
+class PlotKeyNavigator;
 
 class SpectraPanel : public DetailPanel
 {
@@ -74,6 +75,10 @@ private:
 
     void setupUi();
     void populate() override;
+    /// Drop the user's zoom and redraw at the auto-fitted ranges.
+    void resetZoomView();
+    /// Remember that the user zoomed/panned and reveal the reset button.
+    void markCustomZoom();
     void displaySpectrum(int index);
     void updateSpectrumDisplay();
     void updateCoaddDisplay();
@@ -97,6 +102,7 @@ private:
     QPushButton* _resetZoomButton = nullptr;
     QTimer*      _axisSyncTimer   = nullptr;
     FitPreviewOverlay* _fitOverlay = nullptr;
+    PlotKeyNavigator*  _keyNav     = nullptr;
 
     int  _currentSpectrumIndex = -1;
     std::vector<std::shared_ptr<Spectrum>> _sortedSpectra;

@@ -393,6 +393,7 @@ set(SOURCES
     src/views/widgets/AnsiTerminalWidget.cpp
     src/views/widgets/LCModelPreview.cpp
     src/views/widgets/IsisMacroPanel.cpp
+    src/views/widgets/PlotKeyNavigator.cpp
 
     # fitting
     src/fitting/FitBackendRegistry.cpp
@@ -547,6 +548,7 @@ set(HEADERS
     src/views/widgets/AnsiTerminalWidget.h
     src/views/widgets/LCModelPreview.h
     src/views/widgets/IsisMacroPanel.h
+    src/views/widgets/PlotKeyNavigator.h
     src/views/widgets/PreciseDoubleSpinBox.h
 
     #GAEL fitting
