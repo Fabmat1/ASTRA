@@ -717,16 +717,20 @@ if [[ "${ASTRA_BUNDLE_ISIS}" == "1" ]]; then
     rm -rf "${ISIS_SCRIPTS_SRC}"; mkdir -p "${ISIS_SCRIPTS_SRC}"
     export PATH="${ISIS_PREFIX}/bin:${PATH}"
 
+    # BOTH makes below run bin/makestatic, which needs Perl's File::Slurp. It is
+    # not core and macOS runners don't ship it, so install it up front: this used
+    # to sit between the two makes, on the assumption only stellar needed it, and
+    # isisscripts' own make then died at share/isisscripts.sl. (Nothing caught it
+    # until now because the ISIS stack had never once built far enough to reach
+    # this code on a runner.)
+    perl -MFile::Slurp -e1 >/dev/null 2>&1 || cpanm --notest File::Slurp
+
     # isisscripts (Remeis) moved off the old /git.public gitweb (dumb HTTP, now
     # 404) to the Remeis GitLab, which speaks smart HTTP — so --depth 1 works.
     ( cd "${ISIS_SCRIPTS_SRC}"
       git clone --depth 1 \
         https://www.sternwarte.uni-erlangen.de/gitlab/remeis/isisscripts.git isisscripts
       ( cd isisscripts && make )
-      # stellar's `make` runs bin/makestatic, which needs Perl's File::Slurp.
-      # It is not core, and macOS runners don't ship it — without it the make
-      # dies at share/stellar_isisscripts.sl.
-      perl -MFile::Slurp -e1 >/dev/null 2>&1 || cpanm --notest File::Slurp
       git clone --depth 1 \
         http://www.sternwarte.uni-erlangen.de/gitlab/irrgang/stellar.git stellar_isisscripts
       ( cd stellar_isisscripts && make )
