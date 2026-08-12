@@ -136,6 +136,11 @@ struct SpectralFitJob {
     // scatter into the reported errors; 0 disables (faster).
     int    contJitterK     = 6;
 
+    // Worker threads the backend may use; 0 = one per logical core. Drives
+    // GAEL's internal parallelism and how many jitter refits run at once, so
+    // it is also the knob that bounds a fit's peak memory.
+    int    workerThreads   = 0;
+
     // ASTRA-side
     QString outputPath;                  // temp dir for intermediate files
     QStringList basePaths;               // grid search paths (GAEL gs.base_paths)

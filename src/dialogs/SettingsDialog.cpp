@@ -357,6 +357,23 @@ QWidget *SettingsDialog::createGeneralPage() {
         form->addRow("ADS API token:", row);
     }
 
+    // ── Fit worker threads ────────────────────────────────────────────────
+    {
+        const int cores = AppSettings::resolveWorkerThreads(0);
+        _fitWorkersSpin = new QSpinBox;
+        _fitWorkersSpin->setRange(0, 256);
+        _fitWorkersSpin->setValue(_settings->fitWorkerThreads());
+        _fitWorkersSpin->setSpecialValueText(
+            QString("Auto (%1)").arg(cores));
+        _fitWorkersSpin->setToolTip(
+            "How many threads a spectral fit may use.\n\n"
+            "0 means one per logical core. Lowering it leaves the machine "
+            "usable during a long fit, and also lowers peak memory: the "
+            "continuum-jitter refits run several at a time, and each one "
+            "holds its own Jacobian.");
+        form->addRow("Fit worker threads:", _fitWorkersSpin);
+    }
+
     outer->addLayout(form);
 
     auto *hint = new QLabel("<i>ISIS is used for spectral fitting; sedfit "
@@ -563,6 +580,9 @@ void SettingsDialog::apply()
     _settings->setAtlasToken    (_atlasTokenEdit->text().trimmed());
     _settings->setBlackgemScript(_blackgemEdit->text().trimmed());
     _settings->setLcurveDir(_lcurveDirEdit->text().trimmed());
+
+    if (_fitWorkersSpin)
+        _settings->setFitWorkerThreads(_fitWorkersSpin->value());
 
     if (_updateOnStartup)
         _settings->setCheckUpdatesOnStartup(_updateOnStartup->isChecked());

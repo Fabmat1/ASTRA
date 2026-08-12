@@ -234,6 +234,38 @@ patch_isis_no_x11() {
     || { echo "ISIS still references -lX11 after patching — layout changed upstream."; return 1; }
 }
 
+# ISIS's configure builds the RPATH flag from an ELF template even inside its
+# own *darwin* arm (configure's `case "$host_os"`, ~8 copies): it emits
+# `-Wl,--disable-new-dtags,-rpath,` and then colon-joins each library dir onto
+# it. Both halves are Linux-isms Apple's ld rejects:
+#
+#   * `--disable-new-dtags` is an unknown option, and it dies on the very first
+#     link of the build (src/objs/chkslang) — this is what broke every tagged
+#     macOS build from v0.5.5's re-run onward.
+#   * macOS takes exactly ONE directory per -rpath, so even after dropping the
+#     dtags flag a colon list would quietly install a single nonexistent search
+#     path instead of three real ones.
+#
+# @RPATH@ is substituted into exactly five generated Makefiles (src + the four
+# modules) and reaches the linker only via the make variable, so rewriting the
+# assignment post-configure covers every use. Run AFTER ./configure.
+patch_isis_rpath_darwin() {
+  local mk
+  while IFS= read -r mk; do
+    grep -q -- '--disable-new-dtags' "${mk}" || continue
+    perl -i -pe 's{^(RPATH\s*=\s*)(.*--disable-new-dtags.*)$}{
+                    my ($l, $r) = ($1, $2);
+                    $r =~ s/-Wl,--disable-new-dtags,-rpath,//g;
+                    $l . join(" ", map { "-Wl,-rpath,$_" }
+                                   grep { length } split(/:/, $r))
+                  }e' "${mk}"
+    echo "      $(grep -m1 '^RPATH[[:space:]]*=' "${mk}") (${mk#./})"
+  done < <(find . -name Makefile)
+  # Belt and braces: a stray copy would fail the same link the same way.
+  ! grep -rq -- '--disable-new-dtags' --include=Makefile . \
+    || { echo "ISIS Makefiles still carry --disable-new-dtags after patching."; return 1; }
+}
+
 # cfitsio is mandatory for ISIS and its configure only searches the usual system
 # prefixes, which on Apple Silicon Homebrew (/opt/homebrew) it never finds — the
 # build then dies with "unable to find the cfitsio library and header file
@@ -250,6 +282,8 @@ CFITSIO_PREFIX="$(brew --prefix cfitsio)"
     --with-cfitsio="${CFITSIO_PREFIX}" \
     --with-pgplotinc="${PREFIX}/include" \
     --with-pgplotlib="${PREFIX}/lib"
+  echo ">>> Rewriting ISIS RPATH flags for Apple ld:"
+  patch_isis_rpath_darwin
   make -j"${JOBS}"
   make install )
 

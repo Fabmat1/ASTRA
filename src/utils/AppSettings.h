@@ -39,7 +39,18 @@ public:
     void    setSedFitRefdataDir(const QString& dir);
 
     QStringList gridBasePaths() const { return _gridBasePaths; }
-    void        setGridBasePaths(const QStringList& paths);    
+    void        setGridBasePaths(const QStringList& paths);
+
+    // ── Fitting concurrency ──────────────────────────────────────────────
+    /// Worker threads a fit may use. 0 = one per logical core (the default).
+    /// Drives GAEL's internal parallelism *and* how many continuum-jitter
+    /// refits it runs at once, so lowering it also lowers peak memory.
+    int  fitWorkerThreads() const { return _fitWorkerThreads; }
+    void setFitWorkerThreads(int n);
+
+    /// The thread count a fit will actually use, with 0 resolved to the
+    /// machine's core count. Never returns less than 1.
+    static int resolveWorkerThreads(int setting);
 
     // ── Star Detail View grid ────────────────────────────────────────────
     int rows() const { return _rows; }
@@ -87,6 +98,7 @@ signals:
     void lcurveSettingsChanged();
     void adsApiTokenChanged();
     void updateSettingsChanged();
+    void fitWorkerThreadsChanged();
 
   private:
     void load();
@@ -97,6 +109,7 @@ signals:
     QString _sedFitBinaryPath;
     QString _sedFitRefdataDir;
     QStringList _gridBasePaths;
+    int         _fitWorkerThreads = 0;   // 0 = one per logical core
 
     int _rows = 2;
     int _cols = 2;

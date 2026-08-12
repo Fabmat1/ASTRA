@@ -7,6 +7,7 @@
 #include <QFileInfo>
 #include <QCoreApplication>
 #include <algorithm>
+#include <thread>
 
 namespace {
 constexpr const char* kGroup      = "AppSettings";
@@ -18,6 +19,7 @@ constexpr const char* kRows       = "starDetail/rows";
 constexpr const char* kCols       = "starDetail/cols";
 constexpr const char* kGrid       = "starDetail/grid";
 constexpr const char* kGridPaths  = "gridPaths/all";
+constexpr const char* kFitWorkers = "fitting/workerThreads";
 constexpr const char* kLcqPython     = "lcquery/python";
 constexpr const char* kLcqScript     = "lcquery/script";
 constexpr const char* kAtlasToken    = "lcquery/atlasToken";
@@ -130,6 +132,7 @@ void AppSettings::load()
 
     QString flat = s.value(kGrid).toString();
     _gridBasePaths = s.value(kGridPaths, _gridBasePaths).toStringList();
+    _fitWorkerThreads = std::max(0, s.value(kFitWorkers, _fitWorkerThreads).toInt());
 
     _lcqueryPython   = s.value(kLcqPython,    _lcqueryPython  ).toString();
     _lcqueryScript   = s.value(kLcqScript,    _lcqueryScript  ).toString();
@@ -171,6 +174,7 @@ void AppSettings::save() const
             flat << QString::number(static_cast<int>(_grid[r][c]));
     s.setValue(kGrid, flat.join(','));
     s.setValue(kGridPaths, _gridBasePaths);
+    s.setValue(kFitWorkers, _fitWorkerThreads);
 
     s.setValue(kLcqPython,    _lcqueryPython);
     s.setValue(kLcqScript,    _lcqueryScript);
@@ -234,6 +238,22 @@ void AppSettings::setGridBasePaths(const QStringList& paths)
     _gridBasePaths = paths;
     save();
     emit gridBasePathsChanged();
+}
+
+void AppSettings::setFitWorkerThreads(int n)
+{
+    n = std::max(0, n);
+    if (_fitWorkerThreads == n) return;
+    _fitWorkerThreads = n;
+    save();
+    emit fitWorkerThreadsChanged();
+}
+
+int AppSettings::resolveWorkerThreads(int setting)
+{
+    if (setting > 0) return setting;
+    const unsigned hw = std::thread::hardware_concurrency();
+    return static_cast<int>(hw ? hw : 1u);
 }
 
 void AppSettings::setLcqueryPython(const QString& p) {

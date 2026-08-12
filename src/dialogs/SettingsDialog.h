@@ -14,6 +14,7 @@ class QPlainTextEdit;
 class QLabel;
 class QCheckBox;
 class QPushButton;
+class QSpinBox;
 
 class SettingsDialog : public QDialog
 {
@@ -52,6 +53,7 @@ private:
     QLineEdit*       _lcqScriptEdit    = nullptr;
     QLineEdit*       _atlasTokenEdit   = nullptr;
     QLineEdit*       _adsTokenEdit     = nullptr;
+    QSpinBox*        _fitWorkersSpin   = nullptr;
     QLineEdit*       _blackgemEdit     = nullptr;
     QLabel*          _lcqTestResult    = nullptr;
 

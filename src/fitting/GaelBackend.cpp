@@ -139,7 +139,10 @@ SpectralFitResult GaelBackend::run(const SpectralFitJob& job,
         specfit::api::GaelSession session;
         session.set_global_settings(gs);
         session.set_fit_input(fi);
-        session.set_num_threads(0);
+        // 0 keeps GAEL's own "one per logical core" default; the setting exists
+        // so a fit can be told to leave the machine usable, and because the
+        // jitter ensemble's concurrency (and hence peak memory) follows it.
+        session.set_num_threads(job.workerThreads);
 
         if (onLog) {
             session.set_log_callback([onLog](const std::string& line) {

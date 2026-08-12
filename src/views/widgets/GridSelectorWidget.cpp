@@ -23,6 +23,7 @@
 #include <dirent.h>
 #include <functional>
 #include <sys/stat.h>
+#include <utility>
 
 namespace {
 
@@ -96,6 +97,67 @@ DirListing listDir(const QString &path) {
     return out;
 }
 
+QString stripSlashes(QString s) {
+    while (s.endsWith('/'))
+        s.chop(1);
+    while (s.startsWith('/'))
+        s.remove(0, 1);
+    return s;
+}
+
+// A plain endsWith() would let ".../my_sdB/processed" match the "sdB/processed"
+// preset, so the match has to land on a path-component boundary.
+bool pathEndsWith(const QString &canon, const QString &rawSuffix) {
+    const QString suffix = stripSlashes(rawSuffix);
+    if (suffix.isEmpty() || !canon.endsWith(suffix))
+        return false;
+    const int at = canon.size() - suffix.size();
+    return at == 0 || canon.at(at - 1) == '/';
+}
+
+// Leaf directory name -> preset, for the leaf names that identify exactly one
+// preset. A bare "processed" belongs to a dozen of them and would misclassify
+// anything it touched, so ambiguous names are dropped.
+QHash<QString, int> uniqueLeafIndex(const QVector<GridPreset> &presets) {
+    QHash<QString, int> leaves;
+    for (int pi = 0; pi < presets.size(); ++pi) {
+        QStringList paths{presets[pi].path};
+        paths += presets[pi].aliases;
+        for (const QString &p : std::as_const(paths)) {
+            const QString leaf = stripSlashes(p).section('/', -1);
+            if (leaf.isEmpty())
+                continue;
+            auto it = leaves.find(leaf);
+            if (it == leaves.end())
+                leaves.insert(leaf, pi);
+            else if (it.value() != pi)
+                it.value() = -1; // claimed by more than one preset
+        }
+    }
+    for (auto it = leaves.begin(); it != leaves.end();) {
+        if (it.value() < 0)
+            it = leaves.erase(it);
+        else
+            ++it;
+    }
+    return leaves;
+}
+
+// Preset for a discovered grid directory, or -1. Grids get re-rooted (a base
+// path pointing straight at .../sdB drops the "sdB/" the presets carry) as
+// often as they get renamed, so the full suffix is only the first attempt.
+int matchPreset(const QString &canon, const QVector<GridPreset> &presets,
+                const QHash<QString, int> &leaves) {
+    for (int pi = 0; pi < presets.size(); ++pi) {
+        if (pathEndsWith(canon, presets[pi].path))
+            return pi;
+        for (const QString &alt : presets[pi].aliases)
+            if (pathEndsWith(canon, alt))
+                return pi;
+    }
+    return leaves.value(canon.section('/', -1), -1);
+}
+
 } // namespace
 
 const QVector<GridPreset>& GridSelectorWidget::defaultPresets()
@@ -103,7 +165,8 @@ const QVector<GridPreset>& GridSelectorWidget::defaultPresets()
     static const QVector<GridPreset> p = {
         {"sdB","sdB standard","sdB/processed/",15000,55000,4.6,6.6,-5.05,-0.041,-1.0,1.0},
         {"sdB","sdB extended","sdB/processed_sdB24/",15000,55000,4.6,7.0,-5.05,-0.041,-1.0,1.0},
-        {"sdB","ELM / BHB","sdB/processed_ELM_BHB/",9000,20000,2.8,7.0,-5.05,-0.300,-1.0,1.0},
+        {"sdB","ELM / BHB","sdB/processed_ELM_BHB/",9000,20000,2.8,7.0,-5.05,-0.300,-1.0,1.0,
+         {"sdB/processed_ELM/"}},
         {"sdB","BLAPS","sdB/processed_blaps/",15000,31000,3.6,7.0,-4.05,-0.300,-2.0,1.0},
         {"sdB","Hot sdO","sdB/processed_hot_sdO/",51000,75000,5.2,6.6,-5.05,-0.041,-1.0,1.0},
         {"sdB","He-sdO","sdB/processed_He_sdO/",25000,55000,5.0,6.6,-1.05,-0.001,-1.0,1.0},
@@ -132,7 +195,8 @@ const QVector<GridPreset>& GridSelectorWidget::defaultPresets()
         {"Cool stars","Synthe α+0.3","synthe_alpha+0.3/processed/",4000,8000,2.0,5.2,-1.0,-1.0,-2.0,0.5},
         {"Cool stars","Synthe α+0.4","synthe_alpha+0.4/processed/",4000,8000,2.0,5.2,-1.0,-1.0,-2.0,0.5},
         {"Cool stars","Phoenix","Phoenix_late_type_stars_photometry_v2.0/processed/",2300,15000,2.0,5.0,-1.05,-1.05,-2.0,0.0},
-        {"WD","DAO (Nicole)","WD/Nicole/DAO/processed/",40000,180000,6.0,9.0,-5.0,0.0,0.0,0.0},
+        {"WD","DAO (Nicole)","WD/Nicole/DAO/processed/",40000,180000,6.0,9.0,-5.0,0.0,0.0,0.0,
+         {"DAO/processed/"}},
         {"WD","DO (Nicole)","WD/Nicole/DO/processed/",40000,180000,6.0,9.0,99.0,99.0,0.0,0.0},
         {"WD","DA (Nicole)","WD/Nicole/DA/processed/",20000,180000,6.0,9.0,-99.0,-99.0,0.0,0.0},
         {"WD","OH (Nicole)","WD/Nicole/OH/processed/",40000,140000,5.5,6.5,-1.553,-0.423,0.0,0.0},
@@ -363,6 +427,8 @@ QVector<DiscoveredGrid> GridSelectorWidget::performScan(
         return false;
     };
 
+    const QHash<QString, int> leaves = uniqueLeafIndex(presets);
+
     for (const QString &raw : basePaths) {
         QString base = raw.trimmed();
         if (base.isEmpty())
@@ -381,50 +447,61 @@ QVector<DiscoveredGrid> GridSelectorWidget::performScan(
         baseTimer.start();
         const int before = discovered.size();
 
+        auto addGrid = [&](const QString &canon) {
+            if (seen.contains(canon))
+                return;
+            seen.insert(canon);
+
+            DiscoveredGrid dg;
+            dg.fullPath     = canon;
+            dg.basePath     = baseCan;
+            dg.relativePath = QDir(baseCan).relativeFilePath(canon);
+            if (!dg.relativePath.endsWith('/'))
+                dg.relativePath += '/';
+
+            const int pi = matchPreset(canon, presets, leaves);
+            if (pi >= 0) {
+                dg.presetIndex = pi;
+                dg.category    = presets[pi].category;
+                dg.displayName = presets[pi].name;
+                dg.teffMin     = presets[pi].teffMin;
+                dg.teffMax     = presets[pi].teffMax;
+                dg.loggMin     = presets[pi].loggMin;
+                dg.loggMax     = presets[pi].loggMax;
+                dg.heMin       = presets[pi].heMin;
+                dg.heMax       = presets[pi].heMax;
+                dg.zMin        = presets[pi].zMin;
+                dg.zMax        = presets[pi].zMax;
+            } else {
+                dg.category = "Discovered";
+                // "./" (the base path is the grid) names nothing the user can
+                // recognise in a combo box, so fall back to the folder name.
+                dg.displayName = (dg.relativePath == "./")
+                                     ? QFileInfo(canon).fileName()
+                                     : dg.relativePath;
+            }
+            LOG_DEBUG("GridScan", QString("  + grid: %1 [%2]")
+                                      .arg(dg.relativePath, dg.displayName));
+            discovered.append(std::move(dg));
+        };
+
+        // A marker in the base directory itself is nearly always a leftover
+        // sitting on top of a whole collection of real grids, and pruning there
+        // would hide every one of them. So the root is scanned through and only
+        // offered as a grid if nothing turns up beneath it.
+        QString rootCandidate;
+
         std::function<void(const QString &, int)> scan = [&](const QString &dir,
                                                              int depth) {
             ++dirsVisited;
 
             if (dirHasMarker(dir, markers)) {
-                ++dirsPruned;
-                const QString canon = QDir::cleanPath(dir);
-                if (!seen.contains(canon)) {
-                    seen.insert(canon);
-                    DiscoveredGrid dg;
-                    dg.fullPath     = canon;
-                    dg.basePath     = baseCan;
-                    dg.relativePath = QDir(baseCan).relativeFilePath(canon);
-                    if (!dg.relativePath.endsWith('/'))
-                        dg.relativePath += '/';
-
-                    for (int pi = 0; pi < presets.size(); ++pi) {
-                        QString suf = presets[pi].path;
-                        while (suf.endsWith('/'))
-                            suf.chop(1);
-                        if (canon.endsWith(suf)) {
-                            dg.presetIndex = pi;
-                            dg.category    = presets[pi].category;
-                            dg.displayName = presets[pi].name;
-                            dg.teffMin     = presets[pi].teffMin;
-                            dg.teffMax     = presets[pi].teffMax;
-                            dg.loggMin     = presets[pi].loggMin;
-                            dg.loggMax     = presets[pi].loggMax;
-                            dg.heMin       = presets[pi].heMin;
-                            dg.heMax       = presets[pi].heMax;
-                            dg.zMin        = presets[pi].zMin;
-                            dg.zMax        = presets[pi].zMax;
-                            break;
-                        }
-                    }
-                    if (dg.presetIndex < 0) {
-                        dg.category    = "Discovered";
-                        dg.displayName = dg.relativePath;
-                    }
-                    LOG_DEBUG("GridScan",
-                              QString("  + grid: %1").arg(dg.relativePath));
-                    discovered.append(std::move(dg));
+                if (depth > 0) {
+                    ++dirsPruned;
+                    addGrid(QDir::cleanPath(dir));
+                    return;
                 }
-                return;
+                rootCandidate = QDir::cleanPath(dir);
             }
 
             if (depth >= 5)
@@ -453,6 +530,24 @@ QVector<DiscoveredGrid> GridSelectorWidget::performScan(
         };
 
         scan(baseCan, 0);
+        if (!rootCandidate.isEmpty()) {
+            // Counted over everything discovered, not just this base's own
+            // additions, so a grid already claimed by an earlier base path still
+            // disqualifies the root.
+            bool anyBelow = false;
+            for (const QString &s : std::as_const(seen))
+                if (s.size() > baseCan.size() && s.startsWith(baseCan + '/')) {
+                    anyBelow = true;
+                    break;
+                }
+            if (!anyBelow)
+                addGrid(rootCandidate);
+            else
+                LOG_DEBUG("GridScan",
+                          QString("  - ignoring marker at base root %1 "
+                                  "(real grids found below it)")
+                              .arg(rootCandidate));
+        }
         LOG_DEBUG("GridScan", QString("Base %1 -> %2 grids in %3 ms")
                                   .arg(base)
                                   .arg(discovered.size() - before)

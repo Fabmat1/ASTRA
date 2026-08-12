@@ -14,7 +14,9 @@
 #include "views/widgets/GridSelectorWidget.h"
 #include "dialogs/SettingsDialog.h"
 #include "InteractiveIsisDialog.h"
+#include "utils/CheckBoxDragger.h"
 #include "utils/CheckStateDragger.h"
+#include "utils/WheelGuard.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -66,6 +68,7 @@ QDoubleSpinBox* makeDoubleSpin(double min, double max, int decimals,
     if (!suffix.isEmpty()) s->setSuffix(" " + suffix);
     s->setKeyboardTracking(false);
     s->setMaximumWidth(110);
+    astra::blockWheelScrolling(s);
     return s;
 }
 
@@ -75,6 +78,7 @@ QSpinBox* makeIntSpin(int min, int max, int val, int step = 1)
     s->setRange(min, max);
     s->setSingleStep(step);
     s->setValue(val);
+    astra::blockWheelScrolling(s);
     return s;
 }
 
@@ -180,6 +184,9 @@ void FitSetupWidget::setupUi()
         connect(_ctx.panel, &SpectraPanel::selectionChanged,
                 this, &FitSetupWidget::onPanelSelectionChanged);
     }
+    // This page is a tall scrolling form, so no field on it may react to the
+    // wheel (rows rebuilt later guard their own widgets as they are created).
+    astra::blockWheelScrollingRecursive(this);
     updateBackendSpecificUi();
 }
 
@@ -251,6 +258,7 @@ void FitSetupWidget::rebuildComponentRows()
         });
 
         _componentSelectors.append(selector);
+        astra::blockWheelScrollingRecursive(selector);   // its grid combos
         form->addRow("Grid:", selector);
 
         struct P { const char* label; double* val; bool* freeze;
@@ -418,16 +426,27 @@ QWidget* FitSetupWidget::buildAbundanceSection(int componentIndex)
     }
     bodyLayout->addLayout(grid);
 
+    // Two dozen elements are tedious to tick one at a time, so a press can be
+    // dragged down/across the column to sweep a run of them.
+    new CheckBoxDragger(fitBoxes, body);
+
     auto* clearRow = new QHBoxLayout;
+    auto* selectAllBtn = new QPushButton("Select all");
+    selectAllBtn->setToolTip("Fit every element (leaves the starting values "
+                              "untouched).");
     auto* clearBtn = new QPushButton("Clear all");
     clearBtn->setToolTip("Drop every seed and fit flag for this component.");
     // Driving the widgets rather than the maps lets their own signals do the
     // clearing, so no row is rebuilt from underneath the button.
+    connect(selectAllBtn, &QPushButton::clicked, this, [fitBoxes]{
+        for (auto* b : fitBoxes) b->setChecked(true);
+    });
     connect(clearBtn, &QPushButton::clicked, this, [fitBoxes, valueSpins]{
         for (auto* b : fitBoxes)   b->setChecked(false);
         for (auto* s : valueSpins) s->setValue(kAbundanceUnset);
     });
     clearRow->addStretch();
+    clearRow->addWidget(selectAllBtn);
     clearRow->addWidget(clearBtn);
     bodyLayout->addLayout(clearRow);
 
@@ -1284,6 +1303,7 @@ fit::SpectralFitJob FitSetupWidget::buildJob(QStringList& tempFilesOut) const
     AppSettings settings;
     for (const auto& p : settings.gridBasePaths())
         job.basePaths.append(p);
+    job.workerThreads = settings.fitWorkerThreads();
 
     QStringList ut;
     for (const auto& p : _untiedEdit->text().split(',', Qt::SkipEmptyParts))

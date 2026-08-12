@@ -22,6 +22,10 @@ struct GridPreset
     double loggMin = 0, loggMax = 0;
     double heMin   = 0, heMax   = 0;
     double zMin    = 0, zMax    = 0;
+    /// Further path suffixes naming the same grid. Installations predate (or
+    /// postdate) the packaged directory names, so the same physical grid shows
+    /// up under different spellings on different machines.
+    QStringList aliases;
 };
 
 struct DiscoveredGrid

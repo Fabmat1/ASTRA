@@ -334,6 +334,7 @@ set(SOURCES
     src/utils/LcqueryEnvironment.cpp
     src/utils/IsisEnvironment.cpp
     src/utils/SedFitEnvironment.cpp
+    src/utils/CheckBoxDragger.cpp
     src/utils/CheckStateDragger.cpp
     src/utils/ClaretTables.cpp
     src/utils/LCBinning.cpp
@@ -346,6 +347,7 @@ set(SOURCES
     src/utils/ClaretFilter.cpp
     src/utils/matchSpectraToInstrument.cpp
     src/utils/SpectrumCoadder.cpp
+    src/utils/WheelGuard.cpp
 
     # views
     src/views/ColumnConfigDialog.cpp
@@ -366,6 +368,7 @@ set(SOURCES
     src/views/tools/RVInspectorDialog.cpp
     src/views/tools/SEDFitDialog.cpp
     src/views/tools/SpectraFitDialog.cpp
+    src/views/tools/AddSpectraDialog.cpp
     src/views/tools/FitSetupWidget.cpp
     src/views/tools/CoAddWidget.cpp
     src/views/tools/FitProgressDialog.cpp
@@ -491,6 +494,7 @@ set(HEADERS
     src/utils/LcqueryEnvironment.h
     src/utils/IsisEnvironment.h
     src/utils/SedFitEnvironment.h
+    src/utils/CheckBoxDragger.h
     src/utils/CheckStateDragger.h
     src/utils/ClaretTables.h
     src/utils/LCFitPhysics.h
@@ -502,6 +506,7 @@ set(HEADERS
     src/utils/ClaretFilter.h
     src/utils/matchSpectraToInstrument.h
     src/utils/SpectrumCoadder.h
+    src/utils/WheelGuard.h
 
     # views
     src/views/BooleanColumnDelegate.h
@@ -523,6 +528,7 @@ set(HEADERS
     src/views/tools/RVInspectorDialog.h
     src/views/tools/SEDFitDialog.h
     src/views/tools/SpectraFitDialog.h
+    src/views/tools/AddSpectraDialog.h
     src/views/tools/FitSetupWidget.h
     src/views/tools/CoAddWidget.h
     src/views/tools/FitProgressDialog.h

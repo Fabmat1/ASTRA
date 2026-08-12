@@ -9,6 +9,7 @@
 #include "utils/Logger.h"
 #include "utils/matchSpectraToInstrument.h"
 #include "views/panels/SpectraPanel.h"
+#include "AddSpectraDialog.h"
 #include "FitSetupWidget.h"
 #include "CoAddWidget.h"
 #include "utils/CheckStateDragger.h"
@@ -824,6 +825,11 @@ void SpectraFitDialog::onAddSpectraClicked()
     const auto instruments = _dbm ? _dbm->getAllInstruments()
                                   : std::vector<std::shared_ptr<Instrument>>{};
 
+    // Read everything first, then let the user confirm instrument and
+    // observation time per file before any of it is written.
+    std::vector<AddSpectraDialog::Entry> pending;
+    pending.reserve(paths.size());
+
     for (const QString& path : paths) {
         const QString name = QFileInfo(path).fileName();
 
@@ -849,7 +855,8 @@ void SpectraFitDialog::onAddSpectraClicked()
             spec->setFile(path);
 
         // Match to a configured instrument/mode (same as the import wizard),
-        // using any header-derived instrument string as a hint.
+        // using any header-derived instrument string as a hint. The dialog
+        // below shows the result and lets the user correct it.
         const auto wl = spec->getWavelengths();
         if (!instruments.empty() && wl.size() >= 2) {
             const auto match = matchSpectrumToInstrument(
@@ -861,6 +868,19 @@ void SpectraFitDialog::onAddSpectraClicked()
                 spec->setModeKey(match.modeKey);
             }
         }
+
+        pending.push_back({ path, spec });
+    }
+
+    if (!pending.empty()) {
+        AddSpectraDialog dlg(pending, instruments, this);
+        if (dlg.exec() != QDialog::Accepted) return;
+        pending = dlg.entries();
+    }
+
+    for (auto& entry : pending) {
+        const QString name = QFileInfo(entry.path).fileName();
+        auto& spec = entry.spectrum;
 
         // Persist to DB (this also writes the spectrum's data file on disk
         // via SpectrumRepository::saveSpectrum).
