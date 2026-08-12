@@ -25,7 +25,7 @@ public:
     virtual Capabilities capabilities() const { return {}; }
 
     using LogFn      = std::function<void(const QString&)>;
-    using ProgressFn = std::function<void(const QString& stage, double pct)>;
+    using ProgressFn = std::function<void(const FitProgressInfo&)>;
     using AbortFn    = std::function<bool()>;      // return true to request stop
 
     virtual SpectralFitResult run(const SpectralFitJob& job,

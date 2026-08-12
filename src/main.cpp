@@ -49,6 +49,7 @@ int main(int argc, char *argv[])
     
     qRegisterMetaType<astra::fitting::SpectralFitResult>();
     qRegisterMetaType<astra::fitting::SpectralFitJob>();
+    qRegisterMetaType<astra::fitting::FitProgressInfo>();
 
     ApplicationController controller;
     MainWindow            window(&controller);

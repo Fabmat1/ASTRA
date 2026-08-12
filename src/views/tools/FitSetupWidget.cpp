@@ -1416,6 +1416,13 @@ void FitSetupWidget::onRunFit()
         _worker = nullptr;
         _runButton->setEnabled(true);
     });
+    // An honoured Abort is not a failure: nothing is persisted, and the
+    // dialog says so rather than showing an error banner.
+    connect(worker, &fit::FitWorker::aborted, this, [this, dlg] {
+        dlg->setAborted();
+        _worker = nullptr;
+        _runButton->setEnabled(true);
+    });
     connect(worker, &fit::FitWorker::finished, this,
             [this, dlg, job](const fit::SpectralFitResult& r) {
         persistResult(r, job);

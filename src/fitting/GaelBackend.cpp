@@ -146,17 +146,33 @@ SpectralFitResult GaelBackend::run(const SpectralFitJob& job,
                 onLog(QString::fromStdString(line));
             });
         }
-        if (onProgress) {
+        // GAEL reports several times a second - once per LM iteration inside
+        // every stage, once per spectrum while reading, and at every phase
+        // boundary - and the same callback carries the abort request back:
+        // returning false stops the fit at the next iteration boundary.
+        if (onProgress || shouldAbort) {
             session.set_progress_callback(
-                [onProgress](const std::string& stage, double pct) {
-                    onProgress(QString::fromStdString(stage), pct);
+                [onProgress, shouldAbort](const specfit::ProgressReport& r) {
+                    if (onProgress) {
+                        FitProgressInfo p;
+                        p.stage      = QString::fromStdString(r.phase);
+                        p.detail     = QString::fromStdString(r.detail);
+                        p.fraction   = r.fraction;
+                        p.etaSeconds = r.eta_seconds;
+                        onProgress(p);
+                    }
+                    return !(shouldAbort && shouldAbort());
                 });
         }
-        // TODO: GAEL doesn't currently expose an abort hook; once it does,
-        // plumb `shouldAbort` through session.set_abort_callback(...).
-        (void)shouldAbort;
 
         specfit::api::FitResult r = session.run();
+
+        if (r.status == specfit::api::Status::Aborted) {
+            out.success      = false;
+            out.aborted      = true;
+            out.errorMessage = QStringLiteral("Fit aborted.");
+            return out;
+        }
 
         // 4. Translate result
         out.success         = true;

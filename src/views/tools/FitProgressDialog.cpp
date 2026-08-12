@@ -6,22 +6,58 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QLabel>
+#include <QTimer>
+
+#include <algorithm>
+
+namespace {
+
+QString formatDuration(double seconds)
+{
+    if (!(seconds >= 0.0)) return QStringLiteral("--");
+    const qint64 s = static_cast<qint64>(seconds + 0.5);
+    if (s >= 3600)
+        return QStringLiteral("%1:%2:%3")
+            .arg(s / 3600)
+            .arg((s % 3600) / 60, 2, 10, QLatin1Char('0'))
+            .arg(s % 60,          2, 10, QLatin1Char('0'));
+    return QStringLiteral("%1:%2")
+        .arg(s / 60)
+        .arg(s % 60, 2, 10, QLatin1Char('0'));
+}
+
+} // namespace
 
 FitProgressDialog::FitProgressDialog(QWidget* parent) : QDialog(parent)
 {
     setWindowTitle("Running spectral fit");
-    resize(700, 500);
+    resize(700, 520);
     setModal(false);
 
     auto* v = new QVBoxLayout(this);
 
     _status = new QLabel("Starting fit…");
+    QFont statusFont = _status->font();
+    statusFont.setBold(true);
+    _status->setFont(statusFont);
     v->addWidget(_status);
 
     _bar = new QProgressBar;
     _bar->setRange(0, 1000);
     _bar->setValue(0);
     v->addWidget(_bar);
+
+    // Sub-stage line: which LM iteration, how many free parameters, the chi2
+    // the solver is sitting on. Dimmed, because it changes several times a
+    // second and must not compete with the stage name above.
+    _detail = new QLabel;
+    _detail->setTextFormat(Qt::PlainText);
+    _detail->setStyleSheet("color: palette(mid);");
+    v->addWidget(_detail);
+
+    _timing = new QLabel;
+    _timing->setStyleSheet("color: palette(mid);");
+    v->addWidget(_timing);
 
     _log = new QPlainTextEdit;
     _log->setReadOnly(true);
@@ -35,6 +71,7 @@ FitProgressDialog::FitProgressDialog(QWidget* parent) : QDialog(parent)
     connect(_abortBtn, &QPushButton::clicked, this, [this]{
         _abortBtn->setEnabled(false);
         _status->setText("Aborting…");
+        _detail->setText("waiting for the solver to reach a safe stopping point");
         emit abortRequested();
     });
     connect(_closeBtn, &QPushButton::clicked, this, &QDialog::accept);
@@ -42,6 +79,14 @@ FitProgressDialog::FitProgressDialog(QWidget* parent) : QDialog(parent)
     row->addWidget(_abortBtn);
     row->addWidget(_closeBtn);
     v->addLayout(row);
+
+    // The elapsed clock has to tick on its own: a fit can spend a long time
+    // inside one LM iteration, and a frozen timer reads as a hung dialog.
+    _clock.start();
+    _ticker = new QTimer(this);
+    connect(_ticker, &QTimer::timeout, this, &FitProgressDialog::refreshTiming);
+    _ticker->start(500);
+    refreshTiming();
 }
 
 void FitProgressDialog::appendLog(const QString& line)
@@ -49,25 +94,48 @@ void FitProgressDialog::appendLog(const QString& line)
     _log->appendPlainText(line);
 }
 
-void FitProgressDialog::setProgress(const QString& stage, double frac)
+void FitProgressDialog::refreshTiming()
 {
-    if (!stage.isEmpty()) _status->setText(stage);
+    if (!_running) return;
+    const double elapsed = _clock.elapsed() / 1000.0;
+    QString t = QStringLiteral("elapsed %1").arg(formatDuration(elapsed));
+    if (_eta >= 0.0)
+        t += QStringLiteral("  ·  ~%1 remaining").arg(formatDuration(_eta));
+    _timing->setText(t);
+}
 
-    if (frac < 0.0) {
+void FitProgressDialog::setProgress(const astra::fitting::FitProgressInfo& info)
+{
+    if (!info.stage.isEmpty()) _status->setText(info.stage);
+    _detail->setText(info.detail);
+
+    if (info.fraction < 0.0) {
         // Indeterminate: Qt shows a marquee animation when min == max == 0.
         if (_bar->maximum() != 0) _bar->setRange(0, 0);
     } else {
         if (_bar->maximum() == 0) _bar->setRange(0, 1000);
-        _bar->setValue(std::clamp(int(frac * 1000.0), 0, 1000));
+        _bar->setValue(std::clamp(int(info.fraction * 1000.0), 0, 1000));
     }
+
+    _eta = info.etaSeconds;
+    refreshTiming();
+}
+
+void FitProgressDialog::stopRunning()
+{
+    _running = false;
+    _ticker->stop();
+    _abortBtn->setEnabled(false);
+    _closeBtn->setEnabled(true);
+    _bar->setRange(0, 1000);
 }
 
 void FitProgressDialog::setFinished(const astra::fitting::SpectralFitResult& r)
 {
-    _abortBtn->setEnabled(false);
-    _closeBtn->setEnabled(true);
-    _bar->setRange(0, 1000);
+    const double elapsed = _clock.elapsed() / 1000.0;
+    stopRunning();
     _bar->setValue(1000);
+
     QString summary = QString(
         "✔ Finished - χ² = %1, iter = %2, free = %3, points = %4, converged = %5")
         .arg(r.finalChi2, 0, 'f', 3)
@@ -76,6 +144,8 @@ void FitProgressDialog::setFinished(const astra::fitting::SpectralFitResult& r)
         .arg(r.nDataPoints)
         .arg(r.converged ? "yes" : "no");
     _status->setText(summary);
+    _detail->clear();
+    _timing->setText(QStringLiteral("took %1").arg(formatDuration(elapsed)));
     appendLog("\n" + summary);
     if (!r.rejectedFiles.isEmpty())
         appendLog("Rejected: " + r.rejectedFiles.join(", "));
@@ -83,10 +153,19 @@ void FitProgressDialog::setFinished(const astra::fitting::SpectralFitResult& r)
 
 void FitProgressDialog::setError(const QString& msg)
 {
-    _abortBtn->setEnabled(false);
-    _closeBtn->setEnabled(true);
-    _bar->setRange(0, 1000);
+    stopRunning();
     _bar->setValue(0);
     _status->setText("✘ Failed: " + msg);
+    _detail->clear();
     appendLog("ERROR: " + msg);
+}
+
+void FitProgressDialog::setAborted()
+{
+    const double elapsed = _clock.elapsed() / 1000.0;
+    stopRunning();
+    _status->setText("Aborted - no fit was saved.");
+    _detail->clear();
+    _timing->setText(QStringLiteral("stopped after %1").arg(formatDuration(elapsed)));
+    appendLog("\nAborted on request; nothing was saved.");
 }

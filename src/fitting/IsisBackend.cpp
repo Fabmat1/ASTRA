@@ -660,7 +660,18 @@ SpectralFitResult IsisBackend::run(const SpectralFitJob& job,
                     "GAEL only.")
                         .arg(job.surRatioThres).arg(job.c2DetectionThres));
         }
-        if (onProgress) onProgress(QStringLiteral("Starting ISIS..."), -1.0);
+        // ISIS's progress is scraped from its stdout (kIsisStages), so there
+        // is no sub-stage detail and no estimate of what is left; those
+        // fields stay at their "unknown" defaults.
+        auto report = [&](const QString& label, double frac) {
+            if (!onProgress) return;
+            FitProgressInfo p;
+            p.stage    = label;
+            p.fraction = frac;
+            onProgress(p);
+        };
+
+        report(QStringLiteral("Starting ISIS..."), -1.0);
 
         QProcess proc;
         proc.setWorkingDirectory(workDir);
@@ -683,8 +694,8 @@ SpectralFitResult IsisBackend::run(const SpectralFitJob& job,
                         if (q.contains(QLatin1String(st.needle))) {
                             if (st.fraction > lastFrac) {
                                 lastFrac = st.fraction;
-                                onProgress(QString::fromLatin1(st.label),
-                                            st.fraction);
+                                report(QString::fromLatin1(st.label),
+                                       st.fraction);
                             }
                             break;
                         }
@@ -695,7 +706,7 @@ SpectralFitResult IsisBackend::run(const SpectralFitJob& job,
         proc.start(binary, { QStringLiteral("fit.sl") });
         if (!proc.waitForStarted(10000))
             throw std::runtime_error("Failed to start ISIS process.");
-        if (onProgress) onProgress(QStringLiteral("ISIS running..."), -1.0);
+        report(QStringLiteral("ISIS running..."), -1.0);
 
         bool aborted = false;
         while (proc.state() != QProcess::NotRunning) {
@@ -719,6 +730,7 @@ SpectralFitResult IsisBackend::run(const SpectralFitJob& job,
 
         if (aborted) {
             out.success = false;
+            out.aborted = true;
             out.errorMessage = "Aborted by user.";
             return out;
         }

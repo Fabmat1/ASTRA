@@ -207,8 +207,22 @@ struct FittedSpectrum {
     bool                hasTelluric = false;
 };
 
+// One progress update from a backend. `fraction` < 0 means "indeterminate":
+// the backend cannot say how far along it is and the bar should go busy.
+// `etaSeconds` < 0 means the backend has no estimate; elapsed time is the
+// dialog's own business, so it is deliberately not carried here.
+struct FitProgressInfo {
+    QString stage;        // "Stage 4 · first full fit"
+    QString detail;       // "LM iteration 37/200  |  29 free parameters  |  …"
+    double  fraction   = -1.0;
+    double  etaSeconds = -1.0;
+};
+
 struct SpectralFitResult {
     bool   success          = false;
+    // Distinguishes "the user pressed Abort" from a genuine failure: both
+    // leave success == false, but only one deserves an error banner.
+    bool   aborted          = false;
     QString errorMessage;
 
     double finalChi2        = 0.0;
@@ -226,3 +240,4 @@ struct SpectralFitResult {
 
 Q_DECLARE_METATYPE(astra::fitting::SpectralFitResult)
 Q_DECLARE_METATYPE(astra::fitting::SpectralFitJob)
+Q_DECLARE_METATYPE(astra::fitting::FitProgressInfo)

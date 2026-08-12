@@ -23,9 +23,11 @@ public:
 
 signals:
     void logMessage(const QString& line);
-    void progress(const QString& stage, double pct);
+    void progress(const astra::fitting::FitProgressInfo& info);
     void finished(const astra::fitting::SpectralFitResult& result);
     void failed(const QString& errorMessage);
+    // Emitted instead of failed() when the user's Abort was honoured.
+    void aborted();
 
 private:
     void runOnThread();

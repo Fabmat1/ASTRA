@@ -41,15 +41,17 @@ void FitWorker::runOnThread()
     }
 
     auto logFn = [this](const QString& s) { emit logMessage(s); };
-    auto progFn = [this](const QString& stage, double p) {
-        emit progress(stage, p);
-    };
+    auto progFn = [this](const FitProgressInfo& info) { emit progress(info); };
     auto abortFn = [this]() { return _abortReq.load(); };
 
-    // Convention: pct < 0 → indeterminate. The dialog flips the progress
-    // bar to busy mode until a backend reports a real percentage (or until
-    // we send the final 100% pulse below).
-    emit progress(QStringLiteral("Starting %1…").arg(_job.backend), -1.0);
+    // Convention: fraction < 0 → indeterminate. The dialog flips the progress
+    // bar to busy mode until a backend reports a real fraction (or until we
+    // send the final 100% pulse below).
+    {
+        FitProgressInfo start;
+        start.stage = QStringLiteral("Starting %1…").arg(_job.backend);
+        emit progress(start);
+    }
 
     StdStreamRedirector redirector(logFn);
     redirector.start();
@@ -68,7 +70,18 @@ void FitWorker::runOnThread()
 
     redirector.stop();   // flush any tail output before we emit anything
 
-    emit progress(QStringLiteral("Finished"), 1.0);
+    if (gotResult && result.aborted) {
+        emit aborted();
+        return;
+    }
+
+    {
+        FitProgressInfo done;
+        done.stage      = QStringLiteral("Finished");
+        done.fraction   = 1.0;
+        done.etaSeconds = 0.0;
+        emit progress(done);
+    }
 
     if (!gotResult)             emit failed(errMsg);
     else if (!result.success)   emit failed(result.errorMessage);
