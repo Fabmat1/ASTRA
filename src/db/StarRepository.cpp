@@ -1,6 +1,7 @@
 #include "StarRepository.h"
 #include "DBAccess.h"
 #include "SqlValue.h"
+#include "models/ElementAbundances.h"
 #include "models/Star.h"
 #include "models/Project.h"
 #include <QSqlQuery>
@@ -61,6 +62,65 @@ static void bindGalacticFields(QSqlQuery& query, const Star& star)
     query.bindValue(":gal_e_ecc", SqlValue::fromDouble(star.getGalEEcc()));
     query.bindValue(":gal_e_ecc_up", SqlValue::fromDouble(star.getGalEEccUp()));
     query.bindValue(":gal_e_ecc_down", SqlValue::fromDouble(star.getGalEEccDown()));
+}
+
+// The 24 elements contribute three columns each, so the SQL for them is
+// generated from the element table rather than written out; the fragments are
+// spliced into the statements below and cached because they never change.
+static const QString& abundanceColumnList()
+{
+    static const QString s = [] {
+        QStringList cols;
+        for (const auto& el : astra::elements::all())
+            cols << QString("abund_%1, e_abund_%1, abund_%1_limit").arg(el.dbSuffix);
+        return cols.join(", ") + ", ";
+    }();
+    return s;
+}
+
+static const QString& abundancePlaceholderList()
+{
+    static const QString s = [] {
+        QStringList ph;
+        for (const auto& el : astra::elements::all())
+            ph << QString(":abund_%1, :e_abund_%1, :abund_%1_limit").arg(el.dbSuffix);
+        return ph.join(", ") + ", ";
+    }();
+    return s;
+}
+
+static const QString& abundanceAssignmentList()
+{
+    static const QString s = [] {
+        QStringList assign;
+        for (const auto& el : astra::elements::all())
+            assign << QString("abund_%1 = :abund_%1, e_abund_%1 = :e_abund_%1, "
+                              "abund_%1_limit = :abund_%1_limit").arg(el.dbSuffix);
+        return assign.join(", ") + ", ";
+    }();
+    return s;
+}
+
+// Element abundance bindings shared by saveStar() and updateStarRow(); NaN
+// stores as NULL like every other optional double.
+static void bindAbundanceFields(QSqlQuery& query, const Star& star)
+{
+    // Going through the getters would allocate the star's lazy per-element
+    // storage for every star saved, so a star without abundances just binds
+    // the empty row directly.
+    const bool any = star.hasAbundances();
+    const auto& elements = astra::elements::all();
+    for (int i = 0; i < elements.size(); ++i) {
+        const QString& suffix = elements[i].dbSuffix;
+        query.bindValue(":abund_" + suffix,
+                        any ? SqlValue::fromDouble(star.getAbundance(i))
+                            : QVariant());
+        query.bindValue(":e_abund_" + suffix,
+                        any ? SqlValue::fromDouble(star.getEAbundance(i))
+                            : QVariant());
+        query.bindValue(":abund_" + suffix + "_limit",
+                        any ? star.getAbundanceLimit(i) : 0);
+    }
 }
 
 size_t StarRepository::getStarCountForProject(const QString& projectId)
@@ -130,7 +190,8 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
     }
 
     QSqlQuery query(_db.threadConnection());
-    query.prepare(R"(
+    // %1 / %2 are the generated element abundance columns and placeholders.
+    query.prepare(QString(R"(
         INSERT OR REPLACE INTO stars (
             id, project_id, alias, source_id, tic, jname,
             ra, dec, pmra, pmdec, e_pmra, e_pmdec, plx, e_plx,
@@ -175,6 +236,7 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
             gal_p_halo, gal_e_p_halo,
             gal_jz, gal_e_jz, gal_e_jz_up, gal_e_jz_down,
             gal_ecc, gal_e_ecc, gal_e_ecc_up, gal_e_ecc_down,
+            %1
             bibcodes
         ) VALUES (
             :id, :project_id, :alias, :source_id, :tic, :jname,
@@ -220,9 +282,10 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
             :gal_p_halo, :gal_e_p_halo,
             :gal_jz, :gal_e_jz, :gal_e_jz_up, :gal_e_jz_down,
             :gal_ecc, :gal_e_ecc, :gal_e_ecc_up, :gal_e_ecc_down,
+            %2
             :bibcodes
         )
-    )");
+    )").arg(abundanceColumnList(), abundancePlaceholderList()));
 
     query.bindValue(":id", star->getId());
     query.bindValue(":project_id", projectId);
@@ -355,6 +418,7 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
     query.bindValue(":comp_e_mass_true_down", SqlValue::fromDouble(star->getECompMassTrueDown()));
 
     bindGalacticFields(query, *star);
+    bindAbundanceFields(query, *star);
 
     // Convert bibcodes to JSON array
     QJsonArray bibcodesArray;
@@ -461,7 +525,8 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
     if (!star || star->getId().isEmpty()) return false;
 
     QSqlQuery query(_db.threadConnection());
-    query.prepare(R"(
+    // %1 is the generated element abundance assignment list.
+    query.prepare(QString(R"(
         UPDATE stars SET
             alias = :alias, source_id = :source_id, tic = :tic, jname = :jname,
             ra = :ra, dec = :dec, pmra = :pmra, pmdec = :pmdec,
@@ -532,9 +597,10 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
             gal_e_ecc_up = :gal_e_ecc_up, gal_e_ecc_down = :gal_e_ecc_down,
             has_tess = :has_tess, has_gaia = :has_gaia, has_ztf = :has_ztf,
             has_atlas = :has_atlas, has_blackgem = :has_blackgem,
+            %1
             bibcodes = :bibcodes
         WHERE id = :id AND project_id = :project_id
-    )");
+    )").arg(abundanceAssignmentList()));
 
     query.bindValue(":id", star->getId());
     query.bindValue(":project_id", projectId);
@@ -656,6 +722,7 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
     query.bindValue(":comp_e_mass_true_down", SqlValue::fromDouble(star->getECompMassTrueDown()));
 
     bindGalacticFields(query, *star);
+    bindAbundanceFields(query, *star);
 
     query.bindValue(":has_tess", star->getHasTess() ? 1 : 0);
     query.bindValue(":has_gaia", star->getHasGaia() ? 1 : 0);

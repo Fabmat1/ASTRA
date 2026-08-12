@@ -36,6 +36,16 @@ struct GaelScanResult {
     QString error;
 };
 
+// ── Fitted telluric component of one spectrum ───────────────────────
+// GAEL names these "<file stem>_airmass" / "_pwv" / "_barycorr" in
+// fit_parameters.csv; ISIS reports them as per-spectrum columns.
+struct FitTelluricParams {
+    bool   present      = false;
+    double airmass      = 0.0, airmassError = 0.0;
+    double pwv          = 0.0, pwvError     = 0.0;
+    double barycorr     = 0.0;
+};
+
 // ── Persistent: parsed GAEL directory with matching results ─────────
 struct GaelFitDirectory {
     QString dirPath;
@@ -62,6 +72,35 @@ struct GaelFitDirectory {
     bool vradTied = false;
     double tiedVrad = 0.0, tiedVradError = 0.0;
 
+    // ── Second stellar component ────────────────────────────────────
+    // Filled only when fit_parameters.csv actually carried c2_* rows; GAEL
+    // drops a component it decided not to fit, so their presence is what
+    // makes this a two-component fit.
+    bool   hasComp2 = false;
+    double teff2 = 0.0, teff2Error = 0.0;
+    double logg2 = 0.0, logg2Error = 0.0;
+    double he2 = 0.0, he2Error = 0.0;
+    double vsini2 = 0.0, vsini2Error = 0.0;
+    double zeta2 = 0.0, zeta2Error = 0.0;
+    double xi2 = 0.0, xi2Error = 0.0;
+    double z2 = 0.0, z2Error = 0.0;
+
+    QMap<int, QPair<double, double>> vrad2PerSpectrum;
+    bool vrad2Tied = false;
+    double tiedVrad2 = 0.0, tiedVrad2Error = 0.0;
+
+    // c2_sur_ratio; component 1's is pinned to 1 by GAEL and carries no
+    // information, which is the same convention SpectralFit::surRatio uses.
+    double surRatio = 0.0, surRatioError = 0.0;
+
+    // Element abundances keyed by the grid's species name ("FE", "SI", …) →
+    // (value, error). Free/frozen and grid-boundary state are not in the CSV.
+    QMap<QString, QPair<double, double>> abundances, abundances2;
+
+    // Fitted telluric parameters, keyed by the lower-cased file stem GAEL
+    // prefixes them with.
+    QHash<QString, FitTelluricParams> telluricByStem;
+
     // Plotdata file paths: basename (lowercase) → full path
     QMap<QString, QString> plotdataFiles;
 
@@ -73,6 +112,8 @@ struct GaelFitDirectory {
         std::shared_ptr<Star> matchedStar;
         std::shared_ptr<Spectrum> matchedSpectrum;
         double vrad = 0.0, vradError = 0.0;
+        double vrad2 = 0.0, vrad2Error = 0.0;
+        FitTelluricParams telluric;
         bool matched = false;
     };
     std::vector<SpecMatch> specMatches;
@@ -121,6 +162,24 @@ struct IsisFitDirectory {
         double xi = 0, xiError = 0;     // microturbulence
         double z = 0, zError = 0;       // metallicity
         double vrad = 0, vradError = 0;
+
+        // Second component; only the per-spectrum table distinguishes the
+        // components, so this is set from its c2_* columns.
+        bool   hasComp2 = false;
+        double teff2 = 0, teff2Error = 0;
+        double logg2 = 0, logg2Error = 0;
+        double he2 = 0, he2Error = 0;
+        double vsini2 = 0, vsini2Error = 0;
+        double zeta2 = 0, zeta2Error = 0;
+        double xi2 = 0, xi2Error = 0;
+        double z2 = 0, z2Error = 0;
+        double vrad2 = 0, vrad2Error = 0;
+        double surRatio = 0, surRatioError = 0;
+
+        // Element abundances ("FE" → value, error), per component.
+        QMap<QString, QPair<double, double>> abundances, abundances2;
+
+        FitTelluricParams telluric;
 
         std::shared_ptr<Star>     matchedStar;
         std::shared_ptr<Spectrum> matchedSpectrum;

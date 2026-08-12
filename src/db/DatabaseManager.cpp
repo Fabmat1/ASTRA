@@ -9,6 +9,7 @@
 #include "PeriodogramRepository.h"
 #include "SqlValue.h"
 
+#include "models/ElementAbundances.h"
 #include "models/Project.h"
 #include "models/Star.h"
 #include "models/Photometry.h"
@@ -281,6 +282,34 @@ bool DatabaseManager::createTables()
             gal_e_ecc REAL,
             gal_e_ecc_up REAL,
             gal_e_ecc_down REAL,
+            -- Element abundances of the best fit's component 1: log10 of the
+            -- fractional particle number, its error, and 0/-1/+1 for
+            -- measurement / upper limit / lower limit. Ordered by atomic
+            -- number, like models/ElementAbundances.h; keep the two in step.
+            abund_c REAL, e_abund_c REAL, abund_c_limit INTEGER DEFAULT 0,
+            abund_n REAL, e_abund_n REAL, abund_n_limit INTEGER DEFAULT 0,
+            abund_o REAL, e_abund_o REAL, abund_o_limit INTEGER DEFAULT 0,
+            abund_ne REAL, e_abund_ne REAL, abund_ne_limit INTEGER DEFAULT 0,
+            abund_na REAL, e_abund_na REAL, abund_na_limit INTEGER DEFAULT 0,
+            abund_mg REAL, e_abund_mg REAL, abund_mg_limit INTEGER DEFAULT 0,
+            abund_al REAL, e_abund_al REAL, abund_al_limit INTEGER DEFAULT 0,
+            abund_si REAL, e_abund_si REAL, abund_si_limit INTEGER DEFAULT 0,
+            abund_p REAL, e_abund_p REAL, abund_p_limit INTEGER DEFAULT 0,
+            abund_s REAL, e_abund_s REAL, abund_s_limit INTEGER DEFAULT 0,
+            abund_ar REAL, e_abund_ar REAL, abund_ar_limit INTEGER DEFAULT 0,
+            abund_ca REAL, e_abund_ca REAL, abund_ca_limit INTEGER DEFAULT 0,
+            abund_ti REAL, e_abund_ti REAL, abund_ti_limit INTEGER DEFAULT 0,
+            abund_v REAL, e_abund_v REAL, abund_v_limit INTEGER DEFAULT 0,
+            abund_cr REAL, e_abund_cr REAL, abund_cr_limit INTEGER DEFAULT 0,
+            abund_mn REAL, e_abund_mn REAL, abund_mn_limit INTEGER DEFAULT 0,
+            abund_fe REAL, e_abund_fe REAL, abund_fe_limit INTEGER DEFAULT 0,
+            abund_co REAL, e_abund_co REAL, abund_co_limit INTEGER DEFAULT 0,
+            abund_ni REAL, e_abund_ni REAL, abund_ni_limit INTEGER DEFAULT 0,
+            abund_ge REAL, e_abund_ge REAL, abund_ge_limit INTEGER DEFAULT 0,
+            abund_sr REAL, e_abund_sr REAL, abund_sr_limit INTEGER DEFAULT 0,
+            abund_y REAL, e_abund_y REAL, abund_y_limit INTEGER DEFAULT 0,
+            abund_zr REAL, e_abund_zr REAL, abund_zr_limit INTEGER DEFAULT 0,
+            abund_sn REAL, e_abund_sn REAL, abund_sn_limit INTEGER DEFAULT 0,
             FOREIGN KEY(project_id) REFERENCES projects(id) ON DELETE CASCADE
         )
     )";
@@ -451,6 +480,39 @@ bool DatabaseManager::createTables()
             macroturbulence_error_down REAL,
             microturbulence_error_up REAL,
             microturbulence_error_down REAL,
+            -- Second stellar component. The flat columns above stay component
+            -- 1 (what the star reports); these are only meaningful when
+            -- n_components is 2. sur_ratio is component 2's effective surface
+            -- area relative to component 1's.
+            n_components INTEGER DEFAULT 1,
+            teff2 REAL,
+            teff2_error REAL,
+            logg2 REAL,
+            logg2_error REAL,
+            he2 REAL,
+            he2_error REAL,
+            vsini2 REAL,
+            vsini2_error REAL,
+            radial_velocity2 REAL,
+            radial_velocity2_error REAL,
+            metallicity2 REAL,
+            metallicity2_error REAL,
+            macroturbulence2 REAL,
+            macroturbulence2_error REAL,
+            microturbulence2 REAL,
+            microturbulence2_error REAL,
+            sur_ratio REAL,
+            sur_ratio_error REAL,
+            -- Both components' element abundances as JSON; a column per
+            -- element per component would be 144 of them.
+            abundances_json TEXT,
+            -- Fitted telluric component of this spectrum
+            has_telluric INTEGER DEFAULT 0,
+            telluric_airmass REAL,
+            telluric_airmass_error REAL,
+            telluric_pwv REAL,
+            telluric_pwv_error REAL,
+            telluric_barycorr REAL,
             model_data_file TEXT,
             FOREIGN KEY(spectrum_id) REFERENCES spectra(id) ON DELETE CASCADE
         )
@@ -855,7 +917,53 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE stars ADD COLUMN gal_e_ecc REAL",
         "ALTER TABLE stars ADD COLUMN gal_e_ecc_up REAL",
         "ALTER TABLE stars ADD COLUMN gal_e_ecc_down REAL",
+
+        // Two-component (binary) spectral fits: component 2's parameters plus
+        // its surface-area ratio to component 1.
+        "ALTER TABLE spectral_fits ADD COLUMN n_components INTEGER DEFAULT 1",
+        "ALTER TABLE spectral_fits ADD COLUMN teff2 REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN teff2_error REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN logg2 REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN logg2_error REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN he2 REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN he2_error REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN vsini2 REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN vsini2_error REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN radial_velocity2 REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN radial_velocity2_error REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN metallicity2 REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN metallicity2_error REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN macroturbulence2 REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN macroturbulence2_error REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN microturbulence2 REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN microturbulence2_error REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN sur_ratio REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN sur_ratio_error REAL",
+
+        // Per-element abundances of both components, as JSON (see
+        // SpectrumRepository) — 144 real columns would be absurd.
+        "ALTER TABLE spectral_fits ADD COLUMN abundances_json TEXT",
+
+        // Fitted telluric component
+        "ALTER TABLE spectral_fits ADD COLUMN has_telluric INTEGER DEFAULT 0",
+        "ALTER TABLE spectral_fits ADD COLUMN telluric_airmass REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN telluric_airmass_error REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN telluric_pwv REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN telluric_pwv_error REAL",
+        "ALTER TABLE spectral_fits ADD COLUMN telluric_barycorr REAL",
     };
+
+    // Per-element abundance columns on the star, generated from the element
+    // table so that adding an element there is the only edit needed. The loop
+    // below ignores the "duplicate column name" error every one of these
+    // raises on a database that already has them.
+    for (const auto& el : astra::elements::all()) {
+        alterQueries
+            << QString("ALTER TABLE stars ADD COLUMN abund_%1 REAL").arg(el.dbSuffix)
+            << QString("ALTER TABLE stars ADD COLUMN e_abund_%1 REAL").arg(el.dbSuffix)
+            << QString("ALTER TABLE stars ADD COLUMN abund_%1_limit INTEGER DEFAULT 0")
+                   .arg(el.dbSuffix);
+    }
 
     for (const QString& sql : alterQueries) {
         QSqlQuery q(_db->threadConnection());            
@@ -1148,6 +1256,16 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
     const int idxGalEEccUp = rec.indexOf("gal_e_ecc_up");
     const int idxGalEEccDown = rec.indexOf("gal_e_ecc_down");
 
+    // Element abundances: three columns each, in the order of the element
+    // table (which is also the order of the star's abundance arrays).
+    struct AbundanceCols { int value; int error; int limit; };
+    std::vector<AbundanceCols> abundCols;
+    abundCols.reserve(astra::elements::count());
+    for (const auto& el : astra::elements::all())
+        abundCols.push_back({rec.indexOf("abund_" + el.dbSuffix),
+                             rec.indexOf("e_abund_" + el.dbSuffix),
+                             rec.indexOf("abund_" + el.dbSuffix + "_limit")});
+
     // Pre-allocate
     const size_t estimatedCount = _stars->getStarCountForProject(projectId);
     stars.reserve(estimatedCount);
@@ -1194,7 +1312,19 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
         star->setELoggDown(SqlValue::toDoubleOrNaN(query, idxELoggDown));
         star->setEHeUp(SqlValue::toDoubleOrNaN(query, idxEHeUp));
         star->setEHeDown(SqlValue::toDoubleOrNaN(query, idxEHeDown));
-        
+
+        // Only touch an element the row actually has a value for: the setters
+        // allocate the star's per-element storage, and most stars have none.
+        for (int i = 0; i < static_cast<int>(abundCols.size()); ++i) {
+            const auto& c = abundCols[static_cast<size_t>(i)];
+            const double v = SqlValue::toDoubleOrNaN(query, c.value);
+            if (std::isnan(v)) continue;
+            star->setAbundance(i, v);
+            star->setEAbundance(i, SqlValue::toDoubleOrNaN(query, c.error));
+            if (c.limit >= 0)
+                star->setAbundanceLimit(i, query.value(c.limit).toInt());
+        }
+
         star->setLogP(query.value(idxLogp).toDouble());
         star->setDeltaRV(query.value(idxDeltaRV).toDouble());
         star->setEDeltaRV(query.value(idxEDeltaRV).toDouble());

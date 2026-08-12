@@ -5,6 +5,7 @@
 #include "models/Project.h"
 #include "models/Star.h"
 #include "models/Spectrum.h"
+#include "models/ElementAbundances.h"
 #include "../utils/Logger.h"
 #include "../db/DatabaseManager.h"
 #include "../utils/BackgroundTaskManager.h"
@@ -82,6 +83,38 @@ inline bool parseLong(const char*& p, const char* end, long& out)
     return true;
 }
 
+// Element abundances as they came out of a fit report → the fit's map.
+// Neither GAEL's fit_parameters.csv nor ISIS's spectrum_properties.txt records
+// whether a parameter was frozen or which side of its grid axis it is pinned
+// against, so `frozen` stays false and `limitSide` stays 0: an imported
+// abundance is shown as a measurement rather than as an invented limit.
+void copyImportedAbundances(const QMap<QString, QPair<double, double>>& src,
+                            QMap<QString, FittedAbundance>&             dst)
+{
+    for (auto it = src.cbegin(); it != src.cend(); ++it) {
+        // An element switched out of the model (value ≥ 10) is not a
+        // measurement - same rule the live fitting backends apply.
+        if (astra::elements::isSwitchedOff(it.value().first))
+            continue;
+        FittedAbundance a;
+        a.value = it.value().first;
+        a.error = it.value().second;
+        dst.insert(it.key(), a);
+    }
+}
+
+void applyImportedTelluric(const FitTelluricParams& t, SpectralFit& fit)
+{
+    if (!t.present)
+        return;
+    fit.hasTelluric          = true;
+    fit.telluricAirmass      = t.airmass;
+    fit.telluricAirmassError = t.airmassError;
+    fit.telluricPwv          = t.pwv;
+    fit.telluricPwvError     = t.pwvError;
+    fit.telluricBarycorr     = t.barycorr;
+}
+
 // ── .tex value parser (mirrors IsisBackend) ─────────────────────────
 QPair<double, double> parseTexValue(const QString &raw) {
     QString s = raw;
@@ -112,19 +145,24 @@ struct IsisTexResults {
     double  chi2 = 0.0;
     QHash<QString, QPair<double, double>>
         tied; // teff, logg, vsini, zeta, xi, z, he
+    /// Second occurrence of the same row markers: a two-component fit prints
+    /// one row per component under identical captions, in component order.
+    QHash<QString, QPair<double, double>> tied2;
 };
 
 void parseIsisTex(const QByteArray &bytes, IsisTexResults &out) {
     const QString     content = QString::fromUtf8(bytes);
     const QStringList lines   = content.split('\n');
 
-    auto rowExpr = [&](const QString &contains) -> std::optional<QString> {
+    auto rowExpr = [&](const QString &contains,
+                       int            nth = 1) -> std::optional<QString> {
+        int seen = 0;
         for (const QString &ln : lines) {
             if (!ln.contains(contains))
                 continue;
             const int amp = ln.indexOf('&');
             const int end = ln.lastIndexOf("\\\\");
-            if (amp > 0 && end > amp)
+            if (amp > 0 && end > amp && ++seen == nth)
                 return ln.mid(amp + 1, end - amp - 1).trimmed();
         }
         return std::nullopt;
@@ -151,9 +189,12 @@ void parseIsisTex(const QByteArray &bytes, IsisTexResults &out) {
         {"Metallicity", "z"},
         {"He abundance", "he"},
     };
-    for (const auto &r : rows)
+    for (const auto &r : rows) {
         if (auto e = rowExpr(QString::fromLatin1(r.marker)))
             out.tied[QString::fromLatin1(r.key)] = parseTexValue(*e);
+        if (auto e = rowExpr(QString::fromLatin1(r.marker), 2))
+            out.tied2[QString::fromLatin1(r.key)] = parseTexValue(*e);
+    }
 }
 
 // ── spectrum_properties.txt parser (lowercased headers) ─────────────
@@ -249,6 +290,9 @@ SpectralFitImportPage::parseIsisDirectory(const IsisScanResult &scan) {
     auto tiedOf = [&](const char *key) -> QPair<double, double> {
         return tex.tied.value(QString::fromLatin1(key), {0.0, 0.0});
     };
+    auto tiedOf2 = [&](const char *key) -> QPair<double, double> {
+        return tex.tied2.value(QString::fromLatin1(key), {0.0, 0.0});
+    };
 
     auto fill = [](const IsisPropRow &r, const QString &name, double tiedV,
                    double tiedE, double &ov, double &oe) {
@@ -265,6 +309,29 @@ SpectralFitImportPage::parseIsisDirectory(const IsisScanResult &scan) {
                 oe      = (mn && mx) ? 0.5 * (*mx - *mn) : tiedE;
                 return;
             }
+        }
+        ov = tiedV;
+        oe = tiedE;
+    };
+
+    // Component 2 is only visible in the per-spectrum table: ISIS's .tex
+    // prints every parameter under the same caption whatever component it
+    // belongs to, so its rows can be used as a fall-through for tied c2
+    // parameters but never as the evidence that a second component exists.
+    auto fill2 = [](const IsisPropRow &r, const QString &name, double tiedV,
+                    double tiedE, double &ov, double &oe) {
+        auto get = [&](const QString &k) -> std::optional<double> {
+            auto it = r.values.find(k);
+            return it != r.values.end() ? std::optional<double>(it.value())
+                                        : std::nullopt;
+        };
+        const QString col = "c2_" + name;
+        if (auto v = get(col)) {
+            ov      = *v;
+            auto mn = get(col + "_min");
+            auto mx = get(col + "_max");
+            oe      = (mn && mx) ? 0.5 * (*mx - *mn) : tiedE;
+            return;
         }
         ov = tiedV;
         oe = tiedE;
@@ -291,6 +358,92 @@ SpectralFitImportPage::parseIsisDirectory(const IsisScanResult &scan) {
              sm.xiError);
         fill(r, "z", tiedOf("z").first, tiedOf("z").second, sm.z, sm.zError);
         fill(r, "vrad", 0.0, 0.0, sm.vrad, sm.vradError);
+
+        // ── Second component ────────────────────────────────────
+        bool prefixed = false;   // c1_-style naming (multi-component ISIS run)
+        for (auto it = r.values.cbegin();
+             it != r.values.cend() && !(sm.hasComp2 && prefixed); ++it) {
+            if (it.key().startsWith("c2_"))
+                sm.hasComp2 = true;
+            else if (it.key().startsWith("c1_"))
+                prefixed = true;
+        }
+
+        if (sm.hasComp2) {
+            fill2(r, "teff", tiedOf2("teff").first, tiedOf2("teff").second,
+                  sm.teff2, sm.teff2Error);
+            fill2(r, "logg", tiedOf2("logg").first, tiedOf2("logg").second,
+                  sm.logg2, sm.logg2Error);
+            fill2(r, "vsini", tiedOf2("vsini").first, tiedOf2("vsini").second,
+                  sm.vsini2, sm.vsini2Error);
+            fill2(r, "he", tiedOf2("he").first, tiedOf2("he").second, sm.he2,
+                  sm.he2Error);
+            fill2(r, "zeta", tiedOf2("zeta").first, tiedOf2("zeta").second,
+                  sm.zeta2, sm.zeta2Error);
+            fill2(r, "xi", tiedOf2("xi").first, tiedOf2("xi").second, sm.xi2,
+                  sm.xi2Error);
+            fill2(r, "z", tiedOf2("z").first, tiedOf2("z").second, sm.z2,
+                  sm.z2Error);
+            fill2(r, "vrad", 0.0, 0.0, sm.vrad2, sm.vrad2Error);
+            fill2(r, "sur_ratio", 0.0, 0.0, sm.surRatio, sm.surRatioError);
+        }
+
+        // ── Element abundances ──────────────────────────────────
+        // Probing the supported species is safer than scanning the header:
+        // the parser lower-cases column names, so a bare one-letter species
+        // ("c", "s") is indistinguishable from any other column, and an
+        // unprefixed name is only ISIS's single-component spelling anyway.
+        auto readAbundance = [&](const QString &col,
+                                 QMap<QString, QPair<double, double>> &dst,
+                                 const QString &symbol, bool requireBounds) {
+            auto it = r.values.find(col);
+            if (it == r.values.end())
+                return;
+            auto       mn     = r.values.find(col + "_min");
+            auto       mx     = r.values.find(col + "_max");
+            const bool bounds = mn != r.values.end() && mx != r.values.end();
+            if (requireBounds && !bounds)
+                return;
+            dst.insert(symbol, { it.value(),
+                                 bounds ? 0.5 * (mx.value() - mn.value())
+                                        : 0.0 });
+        };
+        for (const auto &ei : astra::elements::all()) {
+            const QString lower = ei.symbol.toLower();
+            readAbundance("c1_" + lower, sm.abundances, ei.symbol, false);
+            // An unprefixed name is only a species if the fit actually varied
+            // it: without the _min/_max pair, "n" or "s" is far more likely to
+            // be some other column of the table.
+            if (!prefixed)
+                readAbundance(lower, sm.abundances, ei.symbol, true);
+            if (sm.hasComp2)
+                readAbundance("c2_" + lower, sm.abundances2, ei.symbol, false);
+        }
+
+        // ── Telluric component ──────────────────────────────────
+        // Only a column with the _min/_max pair a *fitted* parameter carries
+        // is taken; a bare `airmass` column would be the observation's.
+        auto readTelluric = [&](const QString &col, double &ov, double &oe) {
+            auto it = r.values.find(col);
+            auto mn = r.values.find(col + "_min");
+            auto mx = r.values.find(col + "_max");
+            if (it == r.values.end() || mn == r.values.end() ||
+                mx == r.values.end())
+                return false;
+            ov = it.value();
+            oe = 0.5 * (mx.value() - mn.value());
+            return true;
+        };
+        const bool tellA =
+            readTelluric("airmass", sm.telluric.airmass,
+                         sm.telluric.airmassError);
+        const bool tellP =
+            readTelluric("pwv", sm.telluric.pwv, sm.telluric.pwvError);
+        if (tellA || tellP) {
+            sm.telluric.present = true;
+            double dummy        = 0.0;
+            readTelluric("barycorr", sm.telluric.barycorr, dummy);
+        }
 
         dir.specMatches.push_back(std::move(sm));
     }
@@ -741,10 +894,18 @@ void SpectralFitImportPage::updateIsisPreviewTable() {
     int totalDirs    = static_cast<int>(_isisDirs.size());
     int fullyMatched = 0, partialMatched = 0, unmatched = 0;
     int totalSpecMatch = 0, totalSpecAll = 0;
+    int twoComponent = 0, withElements = 0;
 
     for (const auto &dir : _isisDirs) {
         totalSpecAll += dir.totalSpectra;
         totalSpecMatch += dir.matchedSpectra;
+        if (!dir.specMatches.empty()) {
+            const auto &s = dir.specMatches.front();
+            if (s.hasComp2)
+                ++twoComponent;
+            if (!s.abundances.isEmpty() || !s.abundances2.isEmpty())
+                ++withElements;
+        }
         if (!dir.parseOk || dir.matchedSpectra == 0)
             unmatched++;
         else if (dir.matchedSpectra == dir.totalSpectra)
@@ -798,6 +959,19 @@ void SpectralFitImportPage::updateIsisPreviewTable() {
                 params << QString("logg=%1").arg(s.logg, 0, 'f', 2);
             if (s.he != 0)
                 params << QString("He=%1").arg(s.he, 0, 'f', 2);
+            if (s.hasComp2) {
+                params << "2 comp";
+                if (s.teff2 > 0)
+                    params << QString("Teff₂=%1").arg(s.teff2, 0, 'f', 0);
+                if (s.logg2 > 0)
+                    params << QString("logg₂=%1").arg(s.logg2, 0, 'f', 2);
+                if (s.surRatio > 0)
+                    params << QString("sur=%1").arg(s.surRatio, 0, 'f', 3);
+            }
+            if (!s.abundances.isEmpty())
+                params << QString("%1 elem").arg(s.abundances.size());
+            if (!s.abundances2.isEmpty())
+                params << QString("%1 elem₂").arg(s.abundances2.size());
             if (dir.chi2 > 0)
                 params << QString("χ²=%1").arg(dir.chi2, 0, 'f', 2);
             dirItem->setText(3, params.join(", "));
@@ -847,9 +1021,18 @@ void SpectralFitImportPage::updateIsisPreviewTable() {
                 specItem->setText(2, "(no match)");
                 specItem->setForeground(2, QBrush(Qt::red));
             }
-            specItem->setText(3, QString("vrad=%1±%2")
+            QString specParams = QString("vrad=%1±%2")
                                      .arg(sm.vrad, 0, 'f', 1)
-                                     .arg(sm.vradError, 0, 'f', 1));
+                                     .arg(sm.vradError, 0, 'f', 1);
+            if (sm.hasComp2)
+                specParams += QString(", vrad₂=%1±%2")
+                                  .arg(sm.vrad2, 0, 'f', 1)
+                                  .arg(sm.vrad2Error, 0, 'f', 1);
+            if (sm.telluric.present)
+                specParams += QString(", airmass=%1, pwv=%2")
+                                  .arg(sm.telluric.airmass, 0, 'f', 2)
+                                  .arg(sm.telluric.pwv, 0, 'f', 2);
+            specItem->setText(3, specParams);
             QString status = sm.matched ? "✓" : "✗";
             status += sm.modelDataFile.isEmpty() ? " model ✗" : " model ✓";
             specItem->setText(4, status);
@@ -873,6 +1056,10 @@ void SpectralFitImportPage::updateIsisPreviewTable() {
                              .arg(unmatched)
                              .arg(totalSpecMatch)
                              .arg(totalSpecAll);
+    if (twoComponent > 0 || withElements > 0)
+        statusText += QString(" - %1 two-component, %2 with element abundances")
+                          .arg(twoComponent)
+                          .arg(withElements);
     if (totalDirs > MAX_PREVIEW_DIRS)
         statusText +=
             QString(" - showing first %1 directories").arg(MAX_PREVIEW_DIRS);
@@ -1410,25 +1597,112 @@ void SpectralFitImportPage::parseGaelFitParameters(
             return pLen == litLen && std::memcmp(paramStart, lit, litLen) == 0;
         };
 
-        if      (eq("final_chi2", 10)) { dir.chi2 = value; }
-        else if (eq("c1_teff",  7))    { dir.teff  = value; dir.teffError  = error; }
-        else if (eq("c1_logg",  7))    { dir.logg  = value; dir.loggError  = error; }
-        else if (eq("c1_he",    5))    { dir.he    = value; dir.heError    = error; }
-        else if (eq("c1_vsini", 8))    { dir.vsini = value; dir.vsiniError = error; }
-        else if (eq("c1_zeta",  7))    { dir.zeta  = value; dir.zetaError  = error; }
-        else if (eq("c1_xi",    5))    { dir.xi    = value; dir.xiError    = error; }
-        else if (eq("c1_z",     4))    { dir.z     = value; dir.zError     = error; }
-        else if (eq("c1_vrad",  7)) {
-            dir.vradTied      = true;
-            dir.tiedVrad      = value;
-            dir.tiedVradError = error;
+        if (eq("final_chi2", 10)) { dir.chi2 = value; continue; }
+
+        // "c<N>_<tag>": stripping the component prefix once lets both
+        // components share one dispatch, and lets every row that is not a
+        // stellar parameter - the continuum anchors, which outnumber them by
+        // orders of magnitude - fall through after three character tests.
+        if (pLen > 3 && paramStart[0] == 'c' && paramStart[2] == '_' &&
+            (paramStart[1] == '1' || paramStart[1] == '2'))
+        {
+            const bool   c2   = (paramStart[1] == '2');
+            const char*  tag  = paramStart + 3;
+            const size_t tLen = pLen - 3;
+
+            auto teq = [&](const char* lit, size_t litLen) {
+                return tLen == litLen && std::memcmp(tag, lit, litLen) == 0;
+            };
+            // Any recognised c2_ row is what makes this a two-component fit:
+            // GAEL writes none at all for a component it dropped.
+            auto set = [&](double& v1, double& e1, double& v2, double& e2) {
+                if (c2) { v2 = value; e2 = error; dir.hasComp2 = true; }
+                else    { v1 = value; e1 = error; }
+            };
+
+            if      (teq("teff",  4)) set(dir.teff,  dir.teffError,  dir.teff2,  dir.teff2Error);
+            else if (teq("logg",  4)) set(dir.logg,  dir.loggError,  dir.logg2,  dir.logg2Error);
+            else if (teq("he",    2)) set(dir.he,    dir.heError,    dir.he2,    dir.he2Error);
+            else if (teq("vsini", 5)) set(dir.vsini, dir.vsiniError, dir.vsini2, dir.vsini2Error);
+            else if (teq("zeta",  4)) set(dir.zeta,  dir.zetaError,  dir.zeta2,  dir.zeta2Error);
+            else if (teq("xi",    2)) set(dir.xi,    dir.xiError,    dir.xi2,    dir.xi2Error);
+            else if (teq("z",     1)) set(dir.z,     dir.zError,     dir.z2,     dir.z2Error);
+            else if (teq("vrad",  4)) {
+                if (c2) {
+                    dir.vrad2Tied      = true;
+                    dir.tiedVrad2      = value;
+                    dir.tiedVrad2Error = error;
+                    dir.hasComp2       = true;
+                } else {
+                    dir.vradTied      = true;
+                    dir.tiedVrad      = value;
+                    dir.tiedVradError = error;
+                }
+            }
+            else if (tLen > 6 && std::memcmp(tag, "vrad_d", 6) == 0) {
+                long specIdx;
+                const char* sp = tag + 6;
+                if (parseLong(sp, paramEnd, specIdx) && sp == paramEnd) {
+                    if (c2) {
+                        dir.vrad2PerSpectrum[static_cast<int>(specIdx)] = { value, error };
+                        dir.hasComp2 = true;
+                    } else {
+                        dir.vradPerSpectrum[static_cast<int>(specIdx)] = { value, error };
+                    }
+                }
+            }
+            else if (teq("sur_ratio", 9)) {
+                // c1_sur_ratio is pinned to 1 by GAEL, so only the second
+                // component's ratio says anything.
+                if (c2) {
+                    dir.surRatio      = value;
+                    dir.surRatioError = error;
+                    dir.hasComp2      = true;
+                }
+            }
+            else if (tLen <= 2 && tag[0] >= 'A' && tag[0] <= 'Z') {
+                // Whatever is left and looks like a grid species name ("FE")
+                // is an element abundance - the grid decides which exist, so
+                // the element table is the only filter. The upper-case gate
+                // keeps the QString out of every other row.
+                const QString sym =
+                    QString::fromLatin1(tag, static_cast<int>(tLen));
+                if (astra::elements::indexOfSymbol(sym) >= 0) {
+                    if (c2) {
+                        dir.abundances2.insert(sym, { value, error });
+                        dir.hasComp2 = true;
+                    } else {
+                        dir.abundances.insert(sym, { value, error });
+                    }
+                }
+            }
         }
-        else if (pLen > 9 &&
-                 std::memcmp(paramStart, "c1_vrad_d", 9) == 0) {
-            long specIdx;
-            const char* sp = paramStart + 9;
-            if (parseLong(sp, paramEnd, specIdx) && sp == paramEnd) {
-                dir.vradPerSpectrum[static_cast<int>(specIdx)] = { value, error };
+        // Telluric parameters carry the spectrum's file stem as a prefix
+        // ("<stem>_airmass"), so they can only be matched by suffix. The
+        // continuum anchors share that prefix but always end in a digit,
+        // which is what keeps them out of the comparisons below.
+        else if (pLen > 4 && (paramEnd[-1] < '0' || paramEnd[-1] > '9')) {
+            auto tail = [&](const char* lit, size_t litLen) {
+                return pLen > litLen &&
+                       std::memcmp(paramEnd - litLen, lit, litLen) == 0;
+            };
+
+            int    which   = -1;
+            size_t tailLen = 0;
+            if      (tail("_airmass",  8)) { which = 0; tailLen = 8; }
+            else if (tail("_pwv",      4)) { which = 1; tailLen = 4; }
+            else if (tail("_barycorr", 9)) { which = 2; tailLen = 9; }
+
+            if (which >= 0) {
+                const QString stem =
+                    QString::fromLatin1(paramStart,
+                                        static_cast<int>(pLen - tailLen))
+                        .toLower();
+                FitTelluricParams& t = dir.telluricByStem[stem];
+                t.present = true;
+                if (which == 0)      { t.airmass = value; t.airmassError = error; }
+                else if (which == 1) { t.pwv     = value; t.pwvError     = error; }
+                else                 { t.barycorr = value; }
             }
         }
     }
@@ -1513,12 +1787,26 @@ void SpectralFitImportPage::matchGaelDirectories(
                 sm.vrad      = dir.vradPerSpectrum[specIdx].first;
                 sm.vradError = dir.vradPerSpectrum[specIdx].second;
             }
+            if (dir.vrad2Tied) {
+                sm.vrad2      = dir.tiedVrad2;
+                sm.vrad2Error = dir.tiedVrad2Error;
+            } else if (dir.vrad2PerSpectrum.contains(specIdx)) {
+                sm.vrad2      = dir.vrad2PerSpectrum[specIdx].first;
+                sm.vrad2Error = dir.vrad2PerSpectrum[specIdx].second;
+            }
 
             // Plotdata file lookup
             QFileInfo fi(filename);
             QString completeBase = fi.completeBaseName().toLower();
             QString base         = fi.baseName().toLower();
             QString fullName     = fi.fileName().toLower();
+
+            // Telluric parameters are keyed by the same stem GAEL derives
+            // from the spectrum's filename.
+            if (dir.telluricByStem.contains(completeBase))
+                sm.telluric = dir.telluricByStem.value(completeBase);
+            else if (dir.telluricByStem.contains(base))
+                sm.telluric = dir.telluricByStem.value(base);
 
             if (dir.plotdataFiles.contains(completeBase))
                 sm.plotdataFile = dir.plotdataFiles[completeBase];
@@ -1696,6 +1984,38 @@ void SpectralFitImportPage::importIsisFits() {
             fit->chi2                 = dir.chi2;
             fit->modelId              = modelId;
 
+            if (sm.hasComp2) {
+                fit->nComponents           = 2;
+                // See importGaelFits(): an absent c2 temperature stays unset
+                // rather than becoming a 0 K component.
+                if (sm.teff2 > 0.0) {
+                    fit->teff2      = sm.teff2;
+                    fit->teff2Error = sm.teff2Error;
+                }
+                fit->logg2                 = sm.logg2;
+                fit->logg2Error            = sm.logg2Error;
+                fit->he2                   = sm.he2;
+                fit->he2Error              = sm.he2Error;
+                fit->vsini2                = sm.vsini2;
+                fit->vsini2Error           = sm.vsini2Error;
+                fit->macroturbulence2      = sm.zeta2;
+                fit->macroturbulence2Error = sm.zeta2Error;
+                fit->microturbulence2      = sm.xi2;
+                fit->microturbulence2Error = sm.xi2Error;
+                fit->metallicity2          = sm.z2;
+                fit->metallicity2Error     = sm.z2Error;
+                fit->radialVelocity2       = sm.vrad2;
+                fit->radialVelocity2Error  = sm.vrad2Error;
+                if (sm.surRatio > 0.0) {
+                    fit->surRatio      = sm.surRatio;
+                    fit->surRatioError = sm.surRatioError;
+                }
+            }
+
+            copyImportedAbundances(sm.abundances, fit->abundances);
+            copyImportedAbundances(sm.abundances2, fit->abundances2);
+            applyImportedTelluric(sm.telluric, *fit);
+
             IsisFitImportEntry e;
             e.starId        = sm.matchedStar->getId();
             e.spectrumId    = sm.matchedSpectrum->getId();
@@ -1852,11 +2172,16 @@ void SpectralFitImportPage::updateGaelPreviewTable()
     int unmatched      = 0;
     int totalSpecMatch = 0;
     int totalSpecAll   = 0;
+    int twoComponent   = 0;
+    int withElements   = 0;
 
     // First pass: compute totals (cheap, no widget work)
     for (const auto& dir : _gaelDirs) {
         totalSpecAll += dir.totalSpectra;
         totalSpecMatch += dir.matchedSpectra;
+        if (dir.hasComp2) twoComponent++;
+        if (!dir.abundances.isEmpty() || !dir.abundances2.isEmpty())
+            withElements++;
 
         if (!dir.parseOk || dir.matchedSpectra == 0)
             unmatched++;
@@ -1913,6 +2238,19 @@ void SpectralFitImportPage::updateGaelPreviewTable()
                 params << QString("logg=%1").arg(dir.logg, 0, 'f', 2);
             if (dir.he != 0)
                 params << QString("He=%1").arg(dir.he, 0, 'f', 2);
+            if (dir.hasComp2) {
+                params << "2 comp";
+                if (dir.teff2 > 0)
+                    params << QString("Teff₂=%1").arg(dir.teff2, 0, 'f', 0);
+                if (dir.logg2 > 0)
+                    params << QString("logg₂=%1").arg(dir.logg2, 0, 'f', 2);
+                if (dir.surRatio > 0)
+                    params << QString("sur=%1").arg(dir.surRatio, 0, 'f', 3);
+            }
+            if (!dir.abundances.isEmpty())
+                params << QString("%1 elem").arg(dir.abundances.size());
+            if (!dir.abundances2.isEmpty())
+                params << QString("%1 elem₂").arg(dir.abundances2.size());
             dirItem->setText(3, params.join(", "));
         }
 
@@ -1962,9 +2300,18 @@ void SpectralFitImportPage::updateGaelPreviewTable()
                 specItem->setForeground(2, QBrush(Qt::red));
             }
 
-            specItem->setText(3, QString("vrad=%1±%2")
-                                 .arg(sm.vrad, 0, 'f', 1)
-                                 .arg(sm.vradError, 0, 'f', 1));
+            QString specParams = QString("vrad=%1±%2")
+                                     .arg(sm.vrad, 0, 'f', 1)
+                                     .arg(sm.vradError, 0, 'f', 1);
+            if (dir.hasComp2)
+                specParams += QString(", vrad₂=%1±%2")
+                                  .arg(sm.vrad2, 0, 'f', 1)
+                                  .arg(sm.vrad2Error, 0, 'f', 1);
+            if (sm.telluric.present)
+                specParams += QString(", airmass=%1, pwv=%2")
+                                  .arg(sm.telluric.airmass, 0, 'f', 2)
+                                  .arg(sm.telluric.pwv, 0, 'f', 2);
+            specItem->setText(3, specParams);
 
             QString status = sm.matched ? "✓" : "✗";
             status += sm.plotdataFile.isEmpty() ? " plotdata ✗" : " plotdata ✓";
@@ -1994,6 +2341,10 @@ void SpectralFitImportPage::updateGaelPreviewTable()
         "%3 partial, %4 unmatched (%5/%6 spectra matched)")
         .arg(totalDirs).arg(fullyMatched).arg(partialMatched)
         .arg(unmatched).arg(totalSpecMatch).arg(totalSpecAll);
+
+    if (twoComponent > 0 || withElements > 0)
+        statusText += QString(" - %1 two-component, %2 with element abundances")
+                      .arg(twoComponent).arg(withElements);
 
     if (totalDirs > MAX_PREVIEW_DIRS)
         statusText += QString(" - showing first %1 directories").arg(MAX_PREVIEW_DIRS);
@@ -2042,6 +2393,39 @@ void SpectralFitImportPage::importGaelFits()
             fit->radialVelocity       = sm.vrad;
             fit->radialVelocityError  = sm.vradError;
             fit->modelId              = dir.gridName;
+
+            if (dir.hasComp2) {
+                fit->nComponents           = 2;
+                // Leaving teff2 at its unset default when the report carried
+                // no c2 temperature keeps SpectralFit::hasSecondComponent()
+                // from advertising a 0 K star.
+                if (dir.teff2 > 0.0) {
+                    fit->teff2      = dir.teff2;
+                    fit->teff2Error = dir.teff2Error;
+                }
+                fit->logg2                 = dir.logg2;
+                fit->logg2Error            = dir.logg2Error;
+                fit->he2                   = dir.he2;
+                fit->he2Error              = dir.he2Error;
+                fit->vsini2                = dir.vsini2;
+                fit->vsini2Error           = dir.vsini2Error;
+                fit->macroturbulence2      = dir.zeta2;
+                fit->macroturbulence2Error = dir.zeta2Error;
+                fit->microturbulence2      = dir.xi2;
+                fit->microturbulence2Error = dir.xi2Error;
+                fit->metallicity2          = dir.z2;
+                fit->metallicity2Error     = dir.z2Error;
+                fit->radialVelocity2       = sm.vrad2;
+                fit->radialVelocity2Error  = sm.vrad2Error;
+                if (dir.surRatio > 0.0) {
+                    fit->surRatio      = dir.surRatio;
+                    fit->surRatioError = dir.surRatioError;
+                }
+            }
+
+            copyImportedAbundances(dir.abundances,  fit->abundances);
+            copyImportedAbundances(dir.abundances2, fit->abundances2);
+            applyImportedTelluric(sm.telluric, *fit);
 
             GaelFitImportEntry entry;
             entry.starId       = sm.matchedStar->getId();

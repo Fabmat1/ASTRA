@@ -1,4 +1,5 @@
 #include "ColumnPreset.h"
+#include "ElementAbundances.h"
 #include <QSettings>
 #include <QJsonDocument>
 #include <QUuid>
@@ -170,6 +171,16 @@ void ColumnPresetManager::buildColumnRegistry() {
         {"has_atlas", "ATLAS", "Dataset Availability", true},
         {"has_blackgem", "BlackGEM", "Dataset Availability", true},
     };
+
+    // ── Abundances ──────────────────────────────────────────────────────────
+    // One value + error column per element, generated from the element table.
+    // They are in no built-in preset: 48 columns would drown any of them, so a
+    // user picks the handful they care about.
+    for (const auto& el : astra::elements::all()) {
+        _allColumns.emplace_back("abund_" + el.dbSuffix, el.display, "Abundances");
+        _allColumns.emplace_back("e_abund_" + el.dbSuffix, "e_" + el.display,
+                                 "Abundances");
+    }
 
     _columnIndex.clear();
     for (const auto &c : _allColumns)

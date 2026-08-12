@@ -304,6 +304,7 @@ set(SOURCES
     # models
     src/models/BarycentricCorrection.cpp
     src/models/ColumnPreset.cpp
+    src/models/ElementAbundances.cpp
     src/models/Instrument.cpp
     src/models/InstrumentMode.cpp
     src/models/Photometry.cpp
@@ -459,6 +460,7 @@ set(HEADERS
     # models
     src/models/BarycentricCorrection.h
     src/models/ColumnPreset.h
+    src/models/ElementAbundances.h
     src/models/Instrument.h
     src/models/InstrumentMode.h
     src/models/Photometry.h

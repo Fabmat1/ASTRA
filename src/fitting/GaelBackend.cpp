@@ -24,6 +24,20 @@ static specfit::api::StellarComponentInit toGael(const StellarComponent& c)
     d.zeta  = c.zeta;   d.freeze_zeta  = c.freezeZeta;
     d.xi    = c.xi;     d.freeze_xi    = c.freezeXi;
     d.z     = c.z;      d.freeze_z     = c.freezeZ;
+
+    // Component 1's ratio is forced to 1/frozen inside GAEL, so passing ours
+    // through unconditionally keeps the mapping literal.
+    d.sur_ratio        = c.surRatio;
+    d.freeze_sur_ratio = c.freezeSurRatio;
+
+    // Only the elements the user actually touched travel: one absent from
+    // `abundances` is still modelled, at the middle of its grid axis, and one
+    // absent from `freeze_abundances` stays frozen - GAEL makes fitting opt-in.
+    for (auto it = c.abundances.cbegin(); it != c.abundances.cend(); ++it)
+        d.abundances.emplace(toStd(it.key()), it.value());
+    for (auto it = c.freezeAbundances.cbegin();
+         it != c.freezeAbundances.cend(); ++it)
+        d.freeze_abundances.emplace(toStd(it.key()), it.value());
     return d;
 }
 
@@ -34,6 +48,11 @@ static specfit::api::SpectrumFileInput toGael(const SpectrumFile& f)
     d.spectype  = toStd(f.spectype);
     d.resOffset = f.resOffset;
     d.resSlope  = f.resSlope;
+
+    d.airmass      = f.airmass;
+    d.pwv          = f.pwv;
+    d.barycorr     = f.barycorr;
+    d.fit_telluric = f.fitTelluric;
 
     if (f.waveCut) d.waveCut = { f.waveCut->first, f.waveCut->second };
     if (f.ignore) {
@@ -66,10 +85,11 @@ static specfit::api::ObservationInput toGael(const Observation& o)
 static FittedParameter fromGael(const specfit::api::StellarParamResult& p)
 {
     FittedParameter out;
-    out.value      = p.value;
-    out.error      = p.error;
-    out.frozen     = p.frozen;
-    out.atBoundary = p.at_boundary;
+    out.value        = p.value;
+    out.error        = p.error;
+    out.frozen       = p.frozen;
+    out.atBoundary   = p.at_boundary;
+    out.boundarySide = p.boundary_side;
     return out;
 }
 
@@ -101,6 +121,11 @@ SpectralFitResult GaelBackend::run(const SpectralFitJob& job,
         gs.outlier_sigma_lo = job.outlierSigmaLo;
         gs.outlier_sigma_hi = job.outlierSigmaHi;
         gs.verbose          = job.verbose;
+        gs.add_telluric_model    = job.addTelluricModel;
+        gs.auto_freeze_sur_ratio = job.autoFreezeSurRatio;
+        gs.sur_ratio_thres       = job.surRatioThres;
+        gs.c2_detection_thres    = job.c2DetectionThres;
+        gs.cont_jitter_K         = job.contJitterK;
         for (const auto& p : job.untiedParams)
             gs.untie_params.push_back(toStd(p));
 
@@ -151,6 +176,10 @@ SpectralFitResult GaelBackend::run(const SpectralFitJob& job,
             fc.xi    = fromGaelVec(c.xi);
             fc.z     = fromGaelVec(c.z);
             fc.vrad  = fromGaelVec(c.vrad);
+            fc.surRatio = fromGaelVec(c.sur_ratio);
+            for (const auto& [name, vals] : c.abundances)
+                fc.abundances.insert(QString::fromStdString(name),
+                                     fromGaelVec(vals));
             out.components.append(fc);
         }
 
@@ -174,6 +203,19 @@ SpectralFitResult GaelBackend::run(const SpectralFitJob& job,
             fs.ignoreFlag = QVector<uint8_t>(sp.ignoreflag.begin(), sp.ignoreflag.end());
             fs.contX      = QVector<double>(sp.cont_x.begin(),    sp.cont_x.end());
             fs.contY      = QVector<double>(sp.cont_y.begin(),    sp.cont_y.end());
+
+            for (const auto& cm : sp.component_models)
+                fs.componentModels.append(QVector<double>(cm.begin(), cm.end()));
+
+            fs.telluric    = QVector<double>(sp.telluric.begin(), sp.telluric.end());
+            fs.hasTelluric = !fs.telluric.isEmpty();
+            // airmass, pwv, barycorr in that order - empty when no telluric
+            // component was fitted, and short if GAEL ever trims it.
+            const auto& tp = sp.telluric_params;
+            if (tp.size() > 0) fs.tellAirmass  = fromGael(tp[0]);
+            if (tp.size() > 1) fs.tellPwv      = fromGael(tp[1]);
+            if (tp.size() > 2) fs.tellBarycorr = fromGael(tp[2]);
+
             out.spectra.append(fs);
         }
 

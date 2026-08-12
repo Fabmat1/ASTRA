@@ -3,6 +3,7 @@
 
 #include "models/Star.h"
 #include "models/Spectrum.h"
+#include "models/ElementAbundances.h"
 #include "db/DatabaseManager.h"
 #include "views/panels/SpectraPanel.h"
 #include "fitting/FitWorker.h"
@@ -18,6 +19,8 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
+#include <QGridLayout>
+#include <QToolButton>
 #include <QGroupBox>
 #include <QScrollArea>
 #include <QListWidget>
@@ -84,6 +87,15 @@ void clearLayout(QLayout* l)
         delete it;
     }
 }
+
+// An abundance spin box parked at its minimum reads "grid default" and means
+// "untouched": the element stays out of the job's map, so the backend models it
+// at the middle of its grid axis instead of at a value we invented.
+constexpr double kAbundanceUnset = -30.0;
+// Nothing between the sentinel and here is a physical abundance, so a value
+// that lands in the gap (stepping up out of "grid default") is snapped to the
+// element's solar value instead of being taken literally.
+constexpr double kAbundanceFloor = -20.0;
 
 QString spectrumLabel(const std::shared_ptr<Spectrum>& s, int idx)
 {
@@ -270,6 +282,31 @@ void FitSetupWidget::rebuildComponentRows()
                     [fPtr](bool b){ *fPtr = b; });
         }
 
+        // Component 1's surface ratio is 1 and frozen by definition, so only
+        // the later components get an editable one.
+        if (i > 0) {
+            auto* srSpin = makeDoubleSpin(0.0, 1e6, 4, c.surRatio, 0.01);
+            srSpin->setToolTip(
+                "Effective surface area of this component relative to "
+                "component 1's.");
+            auto* srFreeze = new QCheckBox("freeze");
+            srFreeze->setChecked(c.freezeSurRatio);
+            auto* srRow = new QHBoxLayout;
+            srRow->addWidget(srSpin, 1);
+            srRow->addWidget(srFreeze);
+            form->addRow("Surface ratio", srRow);
+
+            connect(srSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                    this, [this, i](double v){
+                if (i < _components.size()) _components[i].surRatio = v;
+            });
+            connect(srFreeze, &QCheckBox::toggled, this, [this, i](bool b){
+                if (i < _components.size()) _components[i].freezeSurRatio = b;
+            });
+        }
+
+        form->addRow(buildAbundanceSection(i));
+
         if (_components.size() > 1) {
             auto* rm = new QPushButton("Remove component");
             connect(rm, &QPushButton::clicked, this, [this, i]{
@@ -281,6 +318,122 @@ void FitSetupWidget::rebuildComponentRows()
 
         _componentsLayout->addWidget(frame);
     }
+}
+
+QWidget* FitSetupWidget::buildAbundanceSection(int componentIndex)
+{
+    const int ci = componentIndex;
+
+    auto* host = new QWidget;
+    auto* v    = new QVBoxLayout(host);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(2);
+
+    // Two dozen elements would dwarf the seven stellar parameters above them,
+    // so the list lives behind a header button and starts closed.
+    auto* header = new QToolButton;
+    header->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    header->setArrowType(Qt::RightArrow);
+    header->setCheckable(true);
+    header->setAutoRaise(true);
+    header->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+
+    auto* body = new QWidget;
+    body->setVisible(false);
+    connect(header, &QToolButton::toggled, body, [header, body](bool on){
+        body->setVisible(on);
+        header->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
+    });
+
+    auto summarise = [this, ci, header]{
+        if (ci >= _components.size()) return;
+        const auto& c = _components[ci];
+        int fitted = 0;
+        for (auto it = c.freezeAbundances.cbegin();
+             it != c.freezeAbundances.cend(); ++it)
+            if (!it.value()) ++fitted;
+        header->setText(QString("Element abundances  (%1 fitted, %2 seeded)")
+                            .arg(fitted).arg(c.abundances.size()));
+    };
+    summarise();
+
+    auto* bodyLayout = new QVBoxLayout(body);
+    bodyLayout->setContentsMargins(12, 2, 0, 2);
+    bodyLayout->setSpacing(2);
+
+    auto* grid = new QGridLayout;
+    grid->setHorizontalSpacing(8);
+    grid->setVerticalSpacing(2);
+
+    QVector<QCheckBox*>      fitBoxes;
+    QVector<QDoubleSpinBox*> valueSpins;
+
+    const auto& els  = astra::elements::all();
+    const auto& comp = _components[ci];
+    for (int e = 0; e < els.size(); ++e) {
+        const QString sym = els[e].symbol;
+
+        auto* fitBox = new QCheckBox(els[e].display);
+        fitBox->setMinimumWidth(48);
+        fitBox->setToolTip("Fit this element; unchecked it is still modelled, "
+                            "just held fixed.");
+        fitBox->setChecked(!comp.freezeAbundances.value(sym, true));
+
+        auto* spin = makeDoubleSpin(kAbundanceUnset, 12.0, 3,
+                                     comp.abundances.value(sym, kAbundanceUnset),
+                                     0.05);
+        spin->setSpecialValueText("grid default");
+        spin->setMaximumWidth(130);          // room for the special-value text
+        spin->setToolTip(
+            QString("Starting log10 n(%1)/n_total (solar: %2). "
+                     "10 or more removes the element from the model.")
+                .arg(els[e].display).arg(els[e].solarLogN, 0, 'f', 2));
+
+        connect(fitBox, &QCheckBox::toggled, this,
+                [this, ci, sym, summarise](bool on){
+            if (ci >= _components.size()) return;
+            // Absent means frozen, so unticking removes the entry rather than
+            // writing the default back.
+            if (on) _components[ci].freezeAbundances[sym] = false;
+            else    _components[ci].freezeAbundances.remove(sym);
+            summarise();
+        });
+        const double solar = els[e].solarLogN;
+        connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+                [this, ci, sym, solar, spin, summarise](double val){
+            if (ci >= _components.size()) return;
+            if (val > kAbundanceUnset && val < kAbundanceFloor) {
+                spin->setValue(solar);   // re-enters and stores the solar seed
+                return;
+            }
+            if (val <= kAbundanceUnset) _components[ci].abundances.remove(sym);
+            else                        _components[ci].abundances[sym] = val;
+            summarise();
+        });
+
+        grid->addWidget(fitBox, e / 2, (e % 2) * 2);
+        grid->addWidget(spin,   e / 2, (e % 2) * 2 + 1);
+        fitBoxes.append(fitBox);
+        valueSpins.append(spin);
+    }
+    bodyLayout->addLayout(grid);
+
+    auto* clearRow = new QHBoxLayout;
+    auto* clearBtn = new QPushButton("Clear all");
+    clearBtn->setToolTip("Drop every seed and fit flag for this component.");
+    // Driving the widgets rather than the maps lets their own signals do the
+    // clearing, so no row is rebuilt from underneath the button.
+    connect(clearBtn, &QPushButton::clicked, this, [fitBoxes, valueSpins]{
+        for (auto* b : fitBoxes)   b->setChecked(false);
+        for (auto* s : valueSpins) s->setValue(kAbundanceUnset);
+    });
+    clearRow->addStretch();
+    clearRow->addWidget(clearBtn);
+    bodyLayout->addLayout(clearRow);
+
+    v->addWidget(header);
+    v->addWidget(body);
+    return host;
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -356,6 +509,25 @@ QGroupBox* FitSetupWidget::buildPerSpectrumSection()
     resRow->addWidget(_resSlopeSpin);
     form->addRow("Resolution:", resRow);
 
+    // Telluric seeds. ASTRA does not record the airmass a spectrum was taken
+    // at, so these are user-supplied; airmass 0 takes the telluric component
+    // out for this spectrum (e.g. its tellurics were already divided out).
+    auto* tellRow = new QHBoxLayout;
+    tellRow->setContentsMargins(0, 0, 0, 0);
+    _airmassSpin = makeDoubleSpin(0.0, 10.0, 3, 1.0, 0.05);
+    _airmassSpin->setToolTip("Airmass of the observation; 0 = no telluric "
+                              "component for this spectrum.");
+    _pwvSpin = makeDoubleSpin(0.0, 100.0, 3, 1.0, 0.1, "mm");
+    _pwvSpin->setToolTip("Precipitable water vapour seed.");
+    tellRow->addWidget(new QLabel("airmass"));
+    tellRow->addWidget(_airmassSpin);
+    tellRow->addWidget(new QLabel("pwv"));
+    tellRow->addWidget(_pwvSpin);
+    _telluricSeedRow = new QWidget;
+    _telluricSeedRow->setLayout(tellRow);
+    _telluricSeedRow->setEnabled(false);   // until the job asks for tellurics
+    form->addRow("Telluric seeds:", _telluricSeedRow);
+
     v->addLayout(form);
 
     // Infer from fits
@@ -428,6 +600,8 @@ QGroupBox* FitSetupWidget::buildPerSpectrumSection()
     connect(_wlMaxSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
     connect(_resOffsetSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
     connect(_resSlopeSpin,  QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
+    connect(_airmassSpin,   QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
+    connect(_pwvSpin,       QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
     connect(_inferCheck, &QCheckBox::toggled, this, [this](bool on){
         if (_currentId.isEmpty()) return;
         auto& cfg = _configs[_currentId];
@@ -487,6 +661,44 @@ QGroupBox* FitSetupWidget::buildGlobalSection()
     oRow->addWidget(_outlierHiSpin);
     form->addRow("Outlier clip:", oRow);
 
+    _contJitterKSpin = makeIntSpin(0, 50, 6);
+    _contJitterKSpin->setToolTip(
+        "Refit this many times with jittered continuum anchors and fold the "
+        "scatter into the errors (0 = off, and faster).");
+    form->addRow("Continuum jitter:", _contJitterKSpin);
+
+    _telluricCheck = new QCheckBox("Fit telluric transmission");
+    _telluricCheck->setToolTip(
+        "Model the Earth's atmosphere as a multiplicative component. Needs the "
+        "ESO transmission library and does nothing blueward of ~5700 Å.");
+    form->addRow("", _telluricCheck);
+    // The per-spectrum airmass/pwv seeds only mean anything with this on.
+    if (_telluricSeedRow) {
+        connect(_telluricCheck, &QCheckBox::toggled,
+                _telluricSeedRow, &QWidget::setEnabled);
+    }
+
+    _autoFreezeSurCheck = new QCheckBox("Auto-freeze undetectable 2nd component");
+    _autoFreezeSurCheck->setToolTip(
+        "Drop a second component whose surface ratio the converged fit cannot "
+        "detect (ISIS's auto_freeze_sur_ratio).");
+    form->addRow("", _autoFreezeSurCheck);
+
+    _surRatioThresSpin = makeDoubleSpin(0.0, 1e4, 2, 5.0, 0.5);
+    _c2DetectThresSpin = makeDoubleSpin(0.0, 1.0, 3, 0.05, 0.01);
+    auto* srRow = new QHBoxLayout;
+    srRow->addWidget(new QLabel("sur ratio"));
+    srRow->addWidget(_surRatioThresSpin);
+    srRow->addWidget(new QLabel("c2 detect"));
+    srRow->addWidget(_c2DetectThresSpin);
+    auto* srHost = new QWidget;
+    srHost->setLayout(srRow);
+    srRow->setContentsMargins(0, 0, 0, 0);
+    srHost->setEnabled(false);
+    connect(_autoFreezeSurCheck, &QCheckBox::toggled,
+            srHost, &QWidget::setEnabled);
+    form->addRow("Freeze thresholds:", srHost);
+
     _verboseCheck = new QCheckBox("Verbose log output");
     _verboseCheck->setChecked(true);
     form->addRow("", _verboseCheck);
@@ -540,9 +752,7 @@ QGroupBox* FitSetupWidget::buildIsisOptionsSection()
     _isisAutoVsiniCb->setChecked(_isisOptions.autoFreezeVsini);
     form->addRow(_isisAutoVsiniCb);
 
-    _isisTelluricCb  = new QCheckBox("Include telluric transmission model");
-    _isisTelluricCb->setChecked(_isisOptions.addTelluricModel);
-    form->addRow(_isisTelluricCb);
+    // The telluric switch is backend-neutral and lives in Global options.
 
     _isisMaskCb      = new QCheckBox("Apply spectral mask (create_ignore_list)");
     _isisMaskCb->setChecked(_isisOptions.applyMask);
@@ -687,6 +897,8 @@ void FitSetupWidget::commitEditorToState()
     c.resOffset  = _resOffsetSpin->value();
     c.resSlope   = _resSlopeSpin->value();
     c.inferFromFits = _inferCheck->isChecked();
+    c.airmass    = _airmassSpin->value();
+    c.pwv        = _pwvSpin->value();
 }
 
 void FitSetupWidget::loadStateToEditor()
@@ -695,12 +907,15 @@ void FitSetupWidget::loadStateToEditor()
     auto& c = _configs[_currentId];
 
     QSignalBlocker b1(_wlMinSpin), b2(_wlMaxSpin),
-                   b3(_resOffsetSpin), b4(_resSlopeSpin), b5(_inferCheck);
+                   b3(_resOffsetSpin), b4(_resSlopeSpin), b5(_inferCheck),
+                   b6(_airmassSpin), b7(_pwvSpin);
     _wlMinSpin->setValue(c.wlMin);
     _wlMaxSpin->setValue(c.wlMax);
     _resOffsetSpin->setValue(c.resOffset);
     _resSlopeSpin->setValue(c.resSlope);
     _inferCheck->setChecked(c.inferFromFits);
+    _airmassSpin->setValue(c.airmass);
+    _pwvSpin->setValue(c.pwv);
 }
 
 void FitSetupWidget::rebuildIgnoreRows()
@@ -1041,16 +1256,21 @@ fit::SpectralFitJob FitSetupWidget::buildJob(QStringList& tempFilesOut) const
     job.outlierSigmaLo = _outlierLoSpin->value();
     job.outlierSigmaHi = _outlierHiSpin->value();
     job.verbose        = _verboseCheck->isChecked();
+    job.addTelluricModel   = _telluricCheck->isChecked();
+    job.contJitterK        = _contJitterKSpin->value();
+    job.autoFreezeSurRatio = _autoFreezeSurCheck->isChecked();
+    job.surRatioThres      = _surRatioThresSpin->value();
+    job.c2DetectionThres   = _c2DetectThresSpin->value();
 
     astra::fitting::IsisOptions isis;
     if (_isisXrangeSpin) {
         isis.xrange           = _isisXrangeSpin->value();
         isis.errorEstimation  = _isisErrorEstCb->isChecked();
         isis.autoFreezeVsini  = _isisAutoVsiniCb->isChecked();
-        isis.addTelluricModel = _isisTelluricCb->isChecked();
         isis.applyMask        = _isisMaskCb->isChecked();
         isis.xfigIgnore       = _isisXfigIgnoreSpin->value();
     }
+    isis.addTelluricModel = job.addTelluricModel;   // one switch, both backends
     job.isis = isis;
 
     astra::fitting::IsisInteractiveOptions inter;
@@ -1106,7 +1326,13 @@ fit::SpectralFitJob FitSetupWidget::buildJob(QStringList& tempFilesOut) const
         f.spectype   = "ASCII_with_2_columns";
         f.resOffset  = cfg.resOffset;
         f.resSlope   = cfg.resSlope;
-        f.spectrumId = s->getId();
+        f.airmass    = cfg.airmass;
+        f.pwv        = cfg.pwv;
+        // ASTRA records *whether* a spectrum was barycentrically corrected but
+        // not by how much, so the telluric shift starts at 0 and is fitted.
+        f.barycorr    = 0.0;
+        f.fitTelluric = job.addTelluricModel;
+        f.spectrumId  = s->getId();
         obs.files.append(f);
 
         job.observations.append(obs);
@@ -1217,9 +1443,16 @@ void FitSetupWidget::persistResult(const fit::SpectralFitResult& result,
     // drift is repaired before notifyBestFitChanged() fires below.
     if (_ctx.star) _ctx.star->ensureRVCurveSynced();
 
-    // For now, only persist component[0]. Multi-component fits will write
-    // a SpectralFit per component once SpectralFit carries component info.
-    const auto& comp = result.components.first();
+    // Component 1 goes into the flat fields - that is the star's reported
+    // solution and what the rest of ASTRA reads. Component 2, when there is
+    // one, rides along in the *2 fields of the same SpectralFit.
+    // A retired second component can come back with empty parameter vectors;
+    // writing its zeros would make hasSecondComponent() lie, so treat it as
+    // absent.
+    const auto& comp  = result.components.first();
+    const fit::FittedComponent* comp2 =
+        (result.components.size() > 1 && !result.components[1].teff.isEmpty())
+            ? &result.components[1] : nullptr;
 
     // Map result spectra back to our Spectrum objects
     for (int i = 0; i < result.spectra.size(); ++i) {
@@ -1268,6 +1501,51 @@ void FitSetupWidget::persistResult(const fit::SpectralFitResult& result,
         fit->microturbulenceError = P(comp.xi).error;
         fit->chi2             = result.finalChi2;
 
+        // SpectralFit carries at most two components; a job with more would
+        // have to grow the model first, so clamp rather than write past it.
+        fit->nComponents = std::min<int>(result.components.size(), 2);
+
+        if (comp2) {
+            fit->teff2                 = P(comp2->teff).value;
+            fit->teff2Error            = P(comp2->teff).error;
+            fit->logg2                 = P(comp2->logg).value;
+            fit->logg2Error            = P(comp2->logg).error;
+            fit->he2                   = P(comp2->he).value;
+            fit->he2Error              = P(comp2->he).error;
+            fit->vsini2                = P(comp2->vsini).value;
+            fit->vsini2Error           = P(comp2->vsini).error;
+            fit->radialVelocity2       = P(comp2->vrad).value;
+            fit->radialVelocity2Error  = P(comp2->vrad).error;
+            fit->metallicity2          = P(comp2->z).value;
+            fit->metallicity2Error     = P(comp2->z).error;
+            fit->macroturbulence2      = P(comp2->zeta).value;
+            fit->macroturbulence2Error = P(comp2->zeta).error;
+            fit->microturbulence2      = P(comp2->xi).value;
+            fit->microturbulence2Error = P(comp2->xi).error;
+            if (!comp2->surRatio.isEmpty()) {
+                fit->surRatio      = P(comp2->surRatio).value;
+                fit->surRatioError = P(comp2->surRatio).error;
+            }
+        }
+
+        // An element switched out of the model (value ≥ 10) is not a
+        // measurement, so it never reaches the star.
+        auto copyAbundances = [&](const fit::FittedComponent& c,
+                                   QMap<QString, FittedAbundance>& dst) {
+            for (auto it = c.abundances.cbegin(); it != c.abundances.cend(); ++it) {
+                const fit::FittedParameter p = pick(it.value(), i);
+                if (astra::elements::isSwitchedOff(p.value)) continue;
+                FittedAbundance a;
+                a.value     = p.value;
+                a.error     = p.error;
+                a.frozen    = p.frozen;
+                a.limitSide = p.boundarySide;
+                dst.insert(it.key(), a);
+            }
+        };
+        copyAbundances(comp, fit->abundances);
+        if (comp2) copyAbundances(*comp2, fit->abundances2);
+
         // Plottable arrays
         fit->modelWavelengths.assign(fs.lambda.begin(),    fs.lambda.end());
         fit->modelFluxes.assign     (fs.model.begin(),     fs.model.end());
@@ -1275,6 +1553,25 @@ void FitSetupWidget::persistResult(const fit::SpectralFitResult& result,
         fit->rebinnedSigmas.assign  (fs.sigma.begin(),     fs.sigma.end());
         fit->modelSplines.assign    (fs.continuum.begin(), fs.continuum.end());
         fit->modelIgnore.assign     (fs.ignoreFlag.begin(),fs.ignoreFlag.end());
+
+        if (fs.componentModels.size() > 0) {
+            const auto& m1 = fs.componentModels[0];
+            fit->modelFluxesComp1.assign(m1.begin(), m1.end());
+        }
+        if (fs.componentModels.size() > 1) {
+            const auto& m2 = fs.componentModels[1];
+            fit->modelFluxesComp2.assign(m2.begin(), m2.end());
+        }
+        fit->telluricTransmission.assign(fs.telluric.begin(), fs.telluric.end());
+
+        fit->hasTelluric = fs.hasTelluric;
+        if (fs.hasTelluric) {
+            fit->telluricAirmass      = fs.tellAirmass.value;
+            fit->telluricAirmassError = fs.tellAirmass.error;
+            fit->telluricPwv          = fs.tellPwv.value;
+            fit->telluricPwvError     = fs.tellPwv.error;
+            fit->telluricBarycorr     = fs.tellBarycorr.value;
+        }
 
         // Auto-mark best only if the spectrum has no best fit yet
         if (!target->getBestFit())
@@ -1374,8 +1671,31 @@ void FitSetupWidget::onPreviewScript()
         body += QString("#   components  : %1\n").arg(job.components.size());
         body += QString("#   observations: %1\n").arg(job.observations.size());
         body += QString("#   untied      : %1\n").arg(job.untiedParams.join(", "));
-        for (const auto& c : job.components)
+        body += QString("#   telluric    : %1\n")
+                    .arg(job.addTelluricModel ? "on" : "off");
+        body += QString("#   cont jitter : %1\n").arg(job.contJitterK);
+        if (job.components.size() > 1)
+            body += QString("#   auto-freeze : %1 (sur %2, c2 %3)\n")
+                        .arg(job.autoFreezeSurRatio ? "on" : "off")
+                        .arg(job.surRatioThres).arg(job.c2DetectionThres);
+        for (int ci = 0; ci < job.components.size(); ++ci) {
+            const auto& c = job.components[ci];
             body += QString("#   grid        : %1\n").arg(c.gridPath);
+            if (ci > 0)
+                body += QString("#     sur ratio : %1%2\n")
+                            .arg(c.surRatio)
+                            .arg(c.freezeSurRatio ? " (frozen)" : "");
+            QStringList fitted, seeded;
+            for (auto it = c.freezeAbundances.cbegin();
+                 it != c.freezeAbundances.cend(); ++it)
+                if (!it.value()) fitted << it.key();
+            for (auto it = c.abundances.cbegin(); it != c.abundances.cend(); ++it)
+                seeded << QString("%1=%2").arg(it.key()).arg(it.value());
+            if (!fitted.isEmpty())
+                body += QString("#     fit elem. : %1\n").arg(fitted.join(", "));
+            if (!seeded.isEmpty())
+                body += QString("#     seeds     : %1\n").arg(seeded.join(", "));
+        }
     }
 
     QDialog dlg(this);

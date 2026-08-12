@@ -7,9 +7,63 @@
 #include <QSqlError>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <limits>
 #include "utils/DataStore.h"
 
 SpectrumRepository::SpectrumRepository(DBAccess& db) : _db(db) {}
+
+// ── Fitted abundances ⇄ abundances_json ─────────────────────────────────────
+// Both components share one column; a column per element per component would
+// be 144 of them. Shape:
+//   {"c1":{"FE":{"v":-4.77,"e":0.18,"b":0,"f":false}, …},"c2":{…}}
+// "b" is the limit side (see FittedAbundance), "f" whether the parameter was
+// frozen. "c2" is absent for a one-component fit, and an element without a
+// value is left out rather than written as null.
+static QJsonObject abundancesToJson(const QMap<QString, FittedAbundance>& abundances)
+{
+    QJsonObject out;
+    for (auto it = abundances.constBegin(); it != abundances.constEnd(); ++it) {
+        if (!it->isSet()) continue;
+        QJsonObject entry;
+        entry["v"] = it->value;
+        entry["e"] = it->error;
+        entry["b"] = it->limitSide;
+        entry["f"] = it->frozen;
+        out.insert(it.key(), entry);
+    }
+    return out;
+}
+
+static QMap<QString, FittedAbundance> abundancesFromJson(const QJsonObject& obj)
+{
+    QMap<QString, FittedAbundance> abundances;
+    for (auto it = obj.constBegin(); it != obj.constEnd(); ++it) {
+        const QJsonObject entry = it->toObject();
+        FittedAbundance a;
+        a.value     = entry.value("v").toDouble(
+                          std::numeric_limits<double>::quiet_NaN());
+        a.error     = entry.value("e").toDouble(0.0);
+        a.limitSide = entry.value("b").toInt(0);
+        a.frozen    = entry.value("f").toBool(false);
+        abundances.insert(it.key(), a);
+    }
+    return abundances;
+}
+
+static QString abundancesColumnValue(const SpectralFit& fit)
+{
+    QJsonObject root;
+    const QJsonObject c1 = abundancesToJson(fit.abundances);
+    if (!c1.isEmpty()) root.insert("c1", c1);
+    if (fit.nComponents >= 2) {
+        const QJsonObject c2 = abundancesToJson(fit.abundances2);
+        if (!c2.isEmpty()) root.insert("c2", c2);
+    }
+    if (root.isEmpty()) return QString();
+    return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact));
+}
 
 bool SpectrumRepository::saveSpectrum(const QString            &starId,
                                     std::shared_ptr<Spectrum> spectrum,
@@ -128,6 +182,16 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
             metallicity_error_up, metallicity_error_down,
             macroturbulence_error_up, macroturbulence_error_down,
             microturbulence_error_up, microturbulence_error_down,
+            n_components,
+            teff2, teff2_error, logg2, logg2_error, he2, he2_error,
+            vsini2, vsini2_error, radial_velocity2, radial_velocity2_error,
+            metallicity2, metallicity2_error,
+            macroturbulence2, macroturbulence2_error,
+            microturbulence2, microturbulence2_error,
+            sur_ratio, sur_ratio_error,
+            abundances_json,
+            has_telluric, telluric_airmass, telluric_airmass_error,
+            telluric_pwv, telluric_pwv_error, telluric_barycorr,
             model_data_file
         ) VALUES (
             :id, :spectrum_id, :creation_date, :model_id, :is_best_fit, :is_flagged,
@@ -144,6 +208,16 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
             :metallicity_error_up, :metallicity_error_down,
             :macroturbulence_error_up, :macroturbulence_error_down,
             :microturbulence_error_up, :microturbulence_error_down,
+            :n_components,
+            :teff2, :teff2_error, :logg2, :logg2_error, :he2, :he2_error,
+            :vsini2, :vsini2_error, :radial_velocity2, :radial_velocity2_error,
+            :metallicity2, :metallicity2_error,
+            :macroturbulence2, :macroturbulence2_error,
+            :microturbulence2, :microturbulence2_error,
+            :sur_ratio, :sur_ratio_error,
+            :abundances_json,
+            :has_telluric, :telluric_airmass, :telluric_airmass_error,
+            :telluric_pwv, :telluric_pwv_error, :telluric_barycorr,
             :model_data_file
         )
     )");
@@ -187,6 +261,40 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
     query.bindValue(":macroturbulence_error_down", SqlValue::fromDouble(fit->macroturbulenceErrorDown));
     query.bindValue(":microturbulence_error_up", SqlValue::fromDouble(fit->microturbulenceErrorUp));
     query.bindValue(":microturbulence_error_down", SqlValue::fromDouble(fit->microturbulenceErrorDown));
+
+    // Component 2 and the telluric parameters follow the NaN→NULL convention:
+    // an unset value must not read back as a measured zero.
+    query.bindValue(":n_components", fit->nComponents);
+    query.bindValue(":teff2", SqlValue::fromDouble(fit->teff2));
+    query.bindValue(":teff2_error", SqlValue::fromDouble(fit->teff2Error));
+    query.bindValue(":logg2", SqlValue::fromDouble(fit->logg2));
+    query.bindValue(":logg2_error", SqlValue::fromDouble(fit->logg2Error));
+    query.bindValue(":he2", SqlValue::fromDouble(fit->he2));
+    query.bindValue(":he2_error", SqlValue::fromDouble(fit->he2Error));
+    query.bindValue(":vsini2", SqlValue::fromDouble(fit->vsini2));
+    query.bindValue(":vsini2_error", SqlValue::fromDouble(fit->vsini2Error));
+    query.bindValue(":radial_velocity2", SqlValue::fromDouble(fit->radialVelocity2));
+    query.bindValue(":radial_velocity2_error", SqlValue::fromDouble(fit->radialVelocity2Error));
+    query.bindValue(":metallicity2", SqlValue::fromDouble(fit->metallicity2));
+    query.bindValue(":metallicity2_error", SqlValue::fromDouble(fit->metallicity2Error));
+    query.bindValue(":macroturbulence2", SqlValue::fromDouble(fit->macroturbulence2));
+    query.bindValue(":macroturbulence2_error", SqlValue::fromDouble(fit->macroturbulence2Error));
+    query.bindValue(":microturbulence2", SqlValue::fromDouble(fit->microturbulence2));
+    query.bindValue(":microturbulence2_error", SqlValue::fromDouble(fit->microturbulence2Error));
+    query.bindValue(":sur_ratio", SqlValue::fromDouble(fit->surRatio));
+    query.bindValue(":sur_ratio_error", SqlValue::fromDouble(fit->surRatioError));
+
+    const QString abundancesJson = abundancesColumnValue(*fit);
+    query.bindValue(":abundances_json",
+                    abundancesJson.isEmpty() ? QVariant() : QVariant(abundancesJson));
+
+    query.bindValue(":has_telluric", fit->hasTelluric ? 1 : 0);
+    query.bindValue(":telluric_airmass", SqlValue::fromDouble(fit->telluricAirmass));
+    query.bindValue(":telluric_airmass_error", SqlValue::fromDouble(fit->telluricAirmassError));
+    query.bindValue(":telluric_pwv", SqlValue::fromDouble(fit->telluricPwv));
+    query.bindValue(":telluric_pwv_error", SqlValue::fromDouble(fit->telluricPwvError));
+    query.bindValue(":telluric_barycorr", SqlValue::fromDouble(fit->telluricBarycorr));
+
     query.bindValue(":model_data_file", modelFile);
 
     return query.exec();
@@ -321,6 +429,46 @@ std::vector<std::shared_ptr<SpectralFit>> SpectrumRepository::loadSpectralFits(c
         fit->macroturbulenceErrorDown = SqlValue::toDoubleOrNaN(query, "macroturbulence_error_down");
         fit->microturbulenceErrorUp = SqlValue::toDoubleOrNaN(query, "microturbulence_error_up");
         fit->microturbulenceErrorDown = SqlValue::toDoubleOrNaN(query, "microturbulence_error_down");
+
+        // Component 2: a fit written before these columns existed reads back
+        // as a one-component fit, which is what it was.
+        const QVariant nComponents = query.value("n_components");
+        fit->nComponents = nComponents.isNull() || nComponents.toInt() < 1
+                               ? 1 : nComponents.toInt();
+        fit->teff2                 = SqlValue::toDoubleOrNaN(query, "teff2");
+        fit->teff2Error            = query.value("teff2_error").toDouble();
+        fit->logg2                 = SqlValue::toDoubleOrNaN(query, "logg2");
+        fit->logg2Error            = query.value("logg2_error").toDouble();
+        fit->he2                   = SqlValue::toDoubleOrNaN(query, "he2");
+        fit->he2Error              = query.value("he2_error").toDouble();
+        fit->vsini2                = SqlValue::toDoubleOrNaN(query, "vsini2");
+        fit->vsini2Error           = query.value("vsini2_error").toDouble();
+        fit->radialVelocity2       = SqlValue::toDoubleOrNaN(query, "radial_velocity2");
+        fit->radialVelocity2Error  = query.value("radial_velocity2_error").toDouble();
+        fit->metallicity2          = SqlValue::toDoubleOrNaN(query, "metallicity2");
+        fit->metallicity2Error     = query.value("metallicity2_error").toDouble();
+        fit->macroturbulence2      = SqlValue::toDoubleOrNaN(query, "macroturbulence2");
+        fit->macroturbulence2Error = query.value("macroturbulence2_error").toDouble();
+        fit->microturbulence2      = SqlValue::toDoubleOrNaN(query, "microturbulence2");
+        fit->microturbulence2Error = query.value("microturbulence2_error").toDouble();
+        fit->surRatio              = SqlValue::toDoubleOrNaN(query, "sur_ratio");
+        fit->surRatioError         = query.value("sur_ratio_error").toDouble();
+
+        const QString abundancesJson = query.value("abundances_json").toString();
+        if (!abundancesJson.isEmpty()) {
+            const QJsonObject root =
+                QJsonDocument::fromJson(abundancesJson.toUtf8()).object();
+            fit->abundances  = abundancesFromJson(root.value("c1").toObject());
+            fit->abundances2 = abundancesFromJson(root.value("c2").toObject());
+        }
+
+        fit->hasTelluric          = query.value("has_telluric").toInt() == 1;
+        fit->telluricAirmass      = SqlValue::toDoubleOrNaN(query, "telluric_airmass");
+        fit->telluricAirmassError = query.value("telluric_airmass_error").toDouble();
+        fit->telluricPwv          = SqlValue::toDoubleOrNaN(query, "telluric_pwv");
+        fit->telluricPwvError     = query.value("telluric_pwv_error").toDouble();
+        fit->telluricBarycorr     = SqlValue::toDoubleOrNaN(query, "telluric_barycorr");
+
         fit->setModelDataFile(query.value("model_data_file").toString());
 
         fits.push_back(fit);

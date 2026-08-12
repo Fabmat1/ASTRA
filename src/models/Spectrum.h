@@ -3,6 +3,7 @@
 
 #include <QString>
 #include <QVector>
+#include <QMap>
 #include <QDateTime>
 #include <vector>
 #include <memory>
@@ -12,7 +13,31 @@
 #include "AsymmetricErrors.h"
 
 // ─────────────────────────────────────────────────────────────────────────────
+// One element's fitted abundance, as log10 of the fractional particle number
+// (GAEL's convention; see models/ElementAbundances.h).
+// ─────────────────────────────────────────────────────────────────────────────
+struct FittedAbundance
+{
+    double value = AsymErr::unset;
+    double error = 0.0;
+    bool   frozen = false;
+    /// -1 = pinned at the low edge of its grid axis → the lines are not
+    /// detected and the value is an *upper limit*; +1 = pinned at the high
+    /// edge → a *lower limit*; 0 = a measurement.
+    int    limitSide = 0;
+
+    bool isSet() const { return !std::isnan(value); }
+    bool isUpperLimit() const { return limitSide < 0; }
+    bool isLowerLimit() const { return limitSide > 0; }
+};
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Spectral model fit
+//
+// A fit may have one or two stellar components. The flat parameter fields
+// (teff, logg, …) always describe *component 1*, which is what the rest of
+// ASTRA reports for the star; component 2's live in the `*2` fields and are
+// only meaningful when nComponents == 2.
 // ─────────────────────────────────────────────────────────────────────────────
 class SpectralFit
 {
@@ -34,7 +59,9 @@ public:
     bool hasData() const {
         return !modelWavelengths.empty() || !modelFluxes.empty() ||
                !rebinnedFluxes.empty() || !rebinnedSigmas.empty() ||
-               !modelSplines.empty() || !modelIgnore.empty();
+               !modelSplines.empty() || !modelIgnore.empty() ||
+               !modelFluxesComp1.empty() || !modelFluxesComp2.empty() ||
+               !telluricTransmission.empty();
     }
 
     QDateTime creationDate;
@@ -44,13 +71,25 @@ public:
 
     // Model data - not loaded by default
     std::vector<double> modelWavelengths;
-    std::vector<double> modelFluxes;
+    std::vector<double> modelFluxes;          ///< combined model of all components
     std::vector<double> rebinnedFluxes;
     std::vector<double> rebinnedSigmas;
     std::vector<double> modelSplines;
     std::vector<uint8_t> modelIgnore;
 
-    // Fitted parameters
+    // Per-component models on the same wavelength grid: what the spectrum
+    // would look like if that component were the only star in it (lines at
+    // full depth, undiluted by the other component's light). Empty for fits
+    // that predate this, and comp2 is empty for a one-component fit; for a
+    // one-component fit comp1 is the same curve as modelFluxes.
+    std::vector<double> modelFluxesComp1;
+    std::vector<double> modelFluxesComp2;
+
+    // Fitted telluric transmission on the same grid; empty when the fit had no
+    // telluric component. modelFluxes already includes it.
+    std::vector<double> telluricTransmission;
+
+    // Fitted parameters (component 1)
     double teff;
     double teffError;
     double logg;
@@ -88,6 +127,53 @@ public:
     double macroturbulenceErrorDown = AsymErr::unset;
     double microturbulenceErrorUp   = AsymErr::unset;
     double microturbulenceErrorDown = AsymErr::unset;
+
+    // ── Second stellar component ────────────────────────────────────────────
+    // Only meaningful when nComponents == 2. Kept in its own fields rather
+    // than replacing the flat ones so that everything reading a fit today
+    // keeps seeing component 1, which is the star's reported solution.
+    int    nComponents = 1;
+
+    double teff2                = AsymErr::unset;
+    double teff2Error           = 0.0;
+    double logg2                = AsymErr::unset;
+    double logg2Error           = 0.0;
+    double he2                  = AsymErr::unset;
+    double he2Error             = 0.0;
+    double vsini2               = AsymErr::unset;
+    double vsini2Error          = 0.0;
+    double radialVelocity2      = AsymErr::unset;
+    double radialVelocity2Error = 0.0;
+    double metallicity2         = AsymErr::unset;
+    double metallicity2Error    = 0.0;
+    double macroturbulence2     = AsymErr::unset;
+    double macroturbulence2Error = 0.0;
+    double microturbulence2     = AsymErr::unset;
+    double microturbulence2Error = 0.0;
+
+    /// Component 2's effective surface area relative to component 1's
+    /// (component 1's is 1 by definition). NaN for a one-component fit.
+    double surRatio      = AsymErr::unset;
+    double surRatioError = 0.0;
+
+    // ── Element abundances, keyed by grid species name ("FE", "SI", …) ──────
+    // Present for every element the component's grid resolves, frozen ones
+    // included; empty for a fit on a grid without element axes.
+    QMap<QString, FittedAbundance> abundances;    ///< component 1
+    QMap<QString, FittedAbundance> abundances2;   ///< component 2
+
+    // ── Fitted telluric component (per spectrum) ────────────────────────────
+    bool   hasTelluric        = false;
+    double telluricAirmass    = AsymErr::unset;
+    double telluricAirmassError = 0.0;
+    double telluricPwv        = AsymErr::unset;   ///< [mm]
+    double telluricPwvError   = 0.0;
+    double telluricBarycorr   = AsymErr::unset;   ///< [km/s]
+
+    /// True when this fit has a second stellar component worth reporting.
+    bool hasSecondComponent() const {
+        return nComponents >= 2 && !std::isnan(teff2);
+    }
 
 private:
     QString _id;

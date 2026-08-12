@@ -72,6 +72,11 @@ private:
         double resOffset = 0.0;
         double resSlope  = 0.37037;
         bool   inferFromFits = false;
+
+        // Telluric seeds; only used when the job fits a telluric component.
+        // Genuinely per-observation, so the "copy to …" buttons leave them be.
+        double airmass = 1.0;    // 0 = no tellurics in this spectrum
+        double pwv     = 1.0;    // [mm]
     };
 
     void setupUi();
@@ -81,6 +86,8 @@ private:
     QGroupBox* buildGlobalSection();
 
     void rebuildComponentRows();
+    /// Collapsed "Element abundances" editor for _components[componentIndex].
+    QWidget* buildAbundanceSection(int componentIndex);
     void rebuildIgnoreRows();
     void rebuildAnchorRows();
 
@@ -130,6 +137,9 @@ private:
     QPushButton*    _addAnchorBtn        = nullptr;
     QDoubleSpinBox* _resOffsetSpin       = nullptr;
     QDoubleSpinBox* _resSlopeSpin        = nullptr;
+    QWidget*        _telluricSeedRow     = nullptr;   // enabled with the job flag
+    QDoubleSpinBox* _airmassSpin         = nullptr;
+    QDoubleSpinBox* _pwvSpin             = nullptr;
     QPushButton*    _copyToAllBtn        = nullptr;
     QPushButton*    _copyToInstrumentBtn = nullptr;
     QPushButton* _saveAsModeDefaultBtn   = nullptr;
@@ -144,6 +154,11 @@ private:
     QDoubleSpinBox* _outlierLoSpin      = nullptr;
     QDoubleSpinBox* _outlierHiSpin      = nullptr;
     QCheckBox*      _verboseCheck       = nullptr;
+    QCheckBox*      _telluricCheck      = nullptr;   // backend-neutral
+    QSpinBox*       _contJitterKSpin    = nullptr;
+    QCheckBox*      _autoFreezeSurCheck = nullptr;
+    QDoubleSpinBox* _surRatioThresSpin  = nullptr;
+    QDoubleSpinBox* _c2DetectThresSpin  = nullptr;
 
     // ── ISIS-only options ───────────────────────────────────────
     mutable astra::fitting::IsisOptions _isisOptions;
@@ -152,7 +167,6 @@ private:
     QDoubleSpinBox* _isisXrangeSpin     = nullptr;
     QCheckBox*      _isisErrorEstCb     = nullptr;
     QCheckBox*      _isisAutoVsiniCb    = nullptr;
-    QCheckBox*      _isisTelluricCb     = nullptr;
     QCheckBox*      _isisMaskCb         = nullptr;
     QSpinBox*       _isisXfigIgnoreSpin = nullptr;
     QPushButton*      _previewScriptBtn = nullptr;

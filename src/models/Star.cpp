@@ -1,4 +1,5 @@
 #include "Star.h"
+#include "ElementAbundances.h"
 #include "Photometry.h"
 #include "Spectrum.h"
 #include "RadialVelocity.h"
@@ -16,7 +17,7 @@ bool nanSafeEqual(double a, double b) {
 }
 
 std::vector<double> captureSummaryValues(const Star& s) {
-    return {
+    std::vector<double> v = {
         double(s.getRVNPoints()), s.getRVTimespan(), s.getRVAvg(), s.getRVMed(),
         s.getERVAvg(), s.getERVMed(),
         s.getLogP(), s.getDeltaRV(),
@@ -37,6 +38,19 @@ std::vector<double> captureSummaryValues(const Star& s) {
         s.getSedMass2(), s.getSedEMass2(), s.getSedRadius2(), s.getSedERadius2(),
         s.getSedLum2(), s.getSedELum2(),
     };
+
+    // Abundances only join the capture once the star has any: reading them
+    // otherwise would allocate the lazy per-element storage for every star on
+    // every summary recomputation. A star gaining or losing abundances changes
+    // the vector's size, which summaryChanged() already treats as a change.
+    if (s.hasAbundances()) {
+        for (int i = 0; i < astra::elements::count(); ++i) {
+            v.push_back(s.getAbundance(i));
+            v.push_back(s.getEAbundance(i));
+            v.push_back(double(s.getAbundanceLimit(i)));
+        }
+    }
+    return v;
 }
 
 bool summaryChanged(const std::vector<double>& before, const std::vector<double>& after) {
@@ -93,6 +107,90 @@ Star::~Star()
     }
 }
 
+// ── Element abundances ──────────────────────────────────────────────────────
+// The three parallel arrays are allocated on first touch, so the many stars
+// that never get a metal-line fit keep costing nothing. clearAbundances()
+// drops them again, which is why every accessor has to size them itself.
+void Star::ensureAbundanceStorage() const
+{
+    const size_t n = static_cast<size_t>(astra::elements::count());
+    if (_abundance.size() == n) return;
+
+    constexpr double unset = std::numeric_limits<double>::quiet_NaN();
+    _abundance.assign(n, unset);
+    _e_abundance.assign(n, unset);
+    _abundanceLimit.assign(n, 0);
+}
+
+double Star::getAbundance(int elementIndex) const
+{
+    if (elementIndex < 0 || elementIndex >= astra::elements::count())
+        return std::numeric_limits<double>::quiet_NaN();
+    ensureAbundanceStorage();
+    return _abundance[static_cast<size_t>(elementIndex)];
+}
+
+void Star::setAbundance(int elementIndex, double v)
+{
+    if (elementIndex < 0 || elementIndex >= astra::elements::count()) return;
+    ensureAbundanceStorage();
+    _abundance[static_cast<size_t>(elementIndex)] = v;
+}
+
+double Star::getEAbundance(int elementIndex) const
+{
+    if (elementIndex < 0 || elementIndex >= astra::elements::count())
+        return std::numeric_limits<double>::quiet_NaN();
+    ensureAbundanceStorage();
+    return _e_abundance[static_cast<size_t>(elementIndex)];
+}
+
+void Star::setEAbundance(int elementIndex, double v)
+{
+    if (elementIndex < 0 || elementIndex >= astra::elements::count()) return;
+    ensureAbundanceStorage();
+    _e_abundance[static_cast<size_t>(elementIndex)] = v;
+}
+
+int Star::getAbundanceLimit(int elementIndex) const
+{
+    if (elementIndex < 0 || elementIndex >= astra::elements::count())
+        return 0;
+    ensureAbundanceStorage();
+    return _abundanceLimit[static_cast<size_t>(elementIndex)];
+}
+
+void Star::setAbundanceLimit(int elementIndex, int side)
+{
+    if (elementIndex < 0 || elementIndex >= astra::elements::count()) return;
+    ensureAbundanceStorage();
+    _abundanceLimit[static_cast<size_t>(elementIndex)] = side;
+}
+
+double Star::getAbundanceBySymbol(const QString& symbol) const
+{
+    return getAbundance(astra::elements::indexOfSymbol(symbol));
+}
+
+void Star::setAbundanceBySymbol(const QString& symbol, double v)
+{
+    setAbundance(astra::elements::indexOfSymbol(symbol), v);
+}
+
+void Star::clearAbundances()
+{
+    _abundance.clear();
+    _e_abundance.clear();
+    _abundanceLimit.clear();
+}
+
+bool Star::hasAbundances() const
+{
+    for (double v : _abundance)
+        if (!std::isnan(v)) return true;
+    return false;
+}
+
 // Helper: return QVariant for a double, blank string if NaN
 static inline QVariant dblVar(double v)
 {
@@ -106,7 +204,8 @@ static inline QVariant intVar(int v)
 
 const std::unordered_map<QString, Star::FieldGetter>& Star::getFieldMap()
 {
-    static const std::unordered_map<QString, FieldGetter> map = {
+    static const std::unordered_map<QString, FieldGetter> map = [] {
+    std::unordered_map<QString, FieldGetter> m = {
         // ── Identification ──────────────────────────────────────────────────
         { "alias",        [](const Star* s) { return QVariant(s->getAlias());    } },
         { "source_id",    [](const Star* s) { return QVariant(s->getSourceId()); } },
@@ -268,6 +367,22 @@ const std::unordered_map<QString, Star::FieldGetter>& Star::getFieldMap()
         { "has_atlas",      [](const Star* s) { return QVariant(s->getHasAtlas()); } },
         { "has_blackgem",   [](const Star* s) { return QVariant(s->getHasBlackgem()); } },
     };
+
+    // ── Abundances ──────────────────────────────────────────────────────────
+    // Three fields per element (abund_fe, e_abund_fe, abund_fe_limit), built
+    // from the element table so they cannot drift from the database columns.
+    const auto& elements = astra::elements::all();
+    for (int i = 0; i < elements.size(); ++i) {
+        const QString& suffix = elements[i].dbSuffix;
+        m.emplace("abund_" + suffix,
+                  [i](const Star* s) { return dblVar(s->getAbundance(i)); });
+        m.emplace("e_abund_" + suffix,
+                  [i](const Star* s) { return dblVar(s->getEAbundance(i)); });
+        m.emplace("abund_" + suffix + "_limit",
+                  [i](const Star* s) { return intVar(s->getAbundanceLimit(i)); });
+    }
+    return m;
+    }();
     return map;
 }
 
@@ -453,6 +568,7 @@ void Star::recomputeSpectraMetrics()
     _e_teff_up = AsymErr::unset; _e_teff_down = AsymErr::unset;
     _e_logg_up = AsymErr::unset; _e_logg_down = AsymErr::unset;
     _e_he_up   = AsymErr::unset; _e_he_down   = AsymErr::unset;
+    clearAbundances();
 
     for (const auto& spec : _spectra) {
         if (!spec) continue;
@@ -474,6 +590,21 @@ void Star::recomputeSpectraMetrics()
             _e_logg_down = fit->loggErrorDown;
             _e_he_up     = fit->heErrorUp;
             _e_he_down   = fit->heErrorDown;
+
+            // The star reports component 1, so only that component's
+            // abundances land on it. Elements the grid resolves but ASTRA has
+            // no column for stay on the fit, and one that was switched off in
+            // the model is not a measurement at all.
+            for (auto it = fit->abundances.constBegin();
+                 it != fit->abundances.constEnd(); ++it) {
+                const int ei = astra::elements::indexOfSymbol(it.key());
+                if (ei < 0 || !it->isSet() ||
+                    astra::elements::isSwitchedOff(it->value))
+                    continue;
+                setAbundance(ei, it->value);
+                setEAbundance(ei, it->error);
+                setAbundanceLimit(ei, it->limitSide);
+            }
         }
     }
 }

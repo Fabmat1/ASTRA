@@ -6,8 +6,10 @@
 #include "views/widgets/FitPreviewOverlay.h"
 
 class Spectrum;
+class SpectralFit;
 class QTabBar;
 class QComboBox;
+class QCheckBox;
 class QCustomPlot;
 class QLabel;
 class QPushButton;
@@ -83,6 +85,23 @@ private:
     void updateSpectrumDisplay();
     void updateCoaddDisplay();
 
+    // ── Abundance view ──────────────────────────────────────────────────────
+    // The tab bar carries one extra tab after the spectrum tabs; selecting it
+    // swaps the spectrum/residual plots for the abundance plot while leaving
+    // _currentSpectrumIndex (and therefore the fit selector) untouched.
+    void onTabChanged(int index);
+    void setAbundanceViewActive(bool on);
+    void updateAbundanceDisplay();
+    /// Undo the parts of PanelUtils::stylePlot() that assume a numeric x axis.
+    void styleAbundanceAxes();
+    bool starHasAbundances() const;
+    /// Fit currently picked in the combo, or null for "None"/no spectrum.
+    std::shared_ptr<SpectralFit> currentFit() const;
+    /// "Component 1 (28 500 K)", falling back to "Component 1".
+    static QString componentLabel(const SpectralFit& fit, int which);
+    /// Show/hide the model-related toolbar widgets for the active view.
+    void updateToolbarVisibility();
+
     QString formatTabLabel(const std::shared_ptr<Spectrum>& s, int i) const;
     QString formatInfo(const std::shared_ptr<Spectrum>& s) const;
     std::vector<double> interpolateModel(
@@ -95,9 +114,13 @@ private:
     QWidget*     _toolbar      = nullptr;
     QComboBox*   _fitCombo     = nullptr;
     QComboBox*   _displayMode  = nullptr;
+    QCheckBox*   _componentsCheck = nullptr;  // per-component model curves
+    QCheckBox*   _telluricCheck   = nullptr;  // fitted telluric transmission
+    QCheckBox*   _solarRelCheck   = nullptr;  // abundance view: [X/H]
     QLabel*      _modelLabel   = nullptr;
     QCustomPlot* _mainPlot     = nullptr;
     QCustomPlot* _residualPlot = nullptr;
+    QCustomPlot* _abundancePlot = nullptr;
     QLabel*      _infoLabel    = nullptr;
     QPushButton* _resetZoomButton = nullptr;
     QTimer*      _axisSyncTimer   = nullptr;
@@ -106,6 +129,10 @@ private:
 
     int  _currentSpectrumIndex = -1;
     std::vector<std::shared_ptr<Spectrum>> _sortedSpectra;
+
+    int  _abundanceTabIndex  = -1;     ///< tab index of "Abundances", -1 = none
+    bool _showingAbundances  = false;
+    bool _toolbarHasFits     = false;  ///< last hasFits state of the fit combo
 
     bool         _coaddActive = false;
     CoaddDisplay _coadd;

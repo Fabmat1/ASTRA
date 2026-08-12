@@ -63,7 +63,7 @@ QString tiedSignature(const SpectralFit& f)
 {
     if (f.modelId.isEmpty()) return {};
     auto safe = [](double v){ return std::isnan(v) ? 0.0 : v; };
-    return QString("%1|%2|%3|%4|%5|%6|%7")
+    QString sig = QString("%1|%2|%3|%4|%5|%6|%7")
         .arg(f.modelId)
         .arg(safe(f.teff),            0, 'f', 1)
         .arg(safe(f.logg),            0, 'f', 4)
@@ -71,6 +71,18 @@ QString tiedSignature(const SpectralFit& f)
         .arg(safe(f.metallicity),     0, 'f', 4)
         .arg(safe(f.macroturbulence), 0, 'f', 4)
         .arg(safe(f.microturbulence), 0, 'f', 4);
+
+    // Component 2 belongs in the signature too: two joint fits of the same
+    // spectra that differ only in the secondary would otherwise be
+    // indistinguishable, and marking one best would pick siblings of the
+    // other one on every remaining spectrum.
+    if (f.hasSecondComponent())
+        sig += QString("|c2:%1|%2|%3|%4")
+                   .arg(safe(f.teff2),    0, 'f', 1)
+                   .arg(safe(f.logg2),    0, 'f', 4)
+                   .arg(safe(f.he2),      0, 'f', 4)
+                   .arg(safe(f.surRatio), 0, 'f', 6);
+    return sig;
 }
 
 QString formatFitLabel(const std::shared_ptr<SpectralFit>& f)
@@ -82,6 +94,13 @@ QString formatFitLabel(const std::shared_ptr<SpectralFit>& f)
     if (!std::isnan(f->logg) && f->logg != 0) p << QString("logg=%1").arg(f->logg, 0, 'f', 2);
     if (!std::isnan(f->radialVelocity) && f->radialVelocity != 0)
         p << QString("RV=%1").arg(f->radialVelocity, 0, 'f', 1);
+    // The label is how a user tells two fits of the same spectrum apart, so a
+    // binary has to show its secondary rather than looking like a single-star
+    // fit with the same primary.
+    if (f->hasSecondComponent())
+        p << QString("T₂=%1").arg(f->teff2, 0, 'f', 0);
+    if (!f->abundances.isEmpty())
+        p << QString("%1 elem").arg(f->abundances.size());
     if (!p.isEmpty()) lbl += "  (" + p.join(", ") + ")";
     return lbl;
 }

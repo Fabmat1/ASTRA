@@ -488,6 +488,20 @@ QString IsisBackend::generateScript(const SpectralFitJob& job)
         add(pfx, "xi",    c.xi,    c.freezeXi);
         add(pfx, "z",     c.z,     c.freezeZ);
         add(pfx, "HE",    c.he,    c.freezeHe);
+
+        // Component 1's surface ratio is 1 and frozen by definition in ISIS
+        // too, so only the later ones get one.
+        if (i > 0)
+            add(pfx, "sur_ratio", c.surRatio, c.freezeSurRatio);
+
+        // Element abundances are ISIS's cN_<ELEMENT> parameters, which is the
+        // convention the job's map already uses. Only elements with a seed
+        // value can travel - the struct has no way to say "free, but keep
+        // ISIS's stellar_default", so an element the user wants fitted without
+        // seeding it stays on ISIS's default and is reported by run().
+        for (auto it = c.abundances.cbegin(); it != c.abundances.cend(); ++it)
+            add(pfx, it.key(), it.value(),
+                c.freezeAbundances.value(it.key(), true));
     }
     out << "variable initial_guess_params_values = struct{\n"
         << "    name   = [" << names.join(", ")  << "],\n"
@@ -537,8 +551,19 @@ QString IsisBackend::generateScript(const SpectralFitJob& job)
     out << "  xrange             = " << job.isis.xrange << ",\n";
     out << "  error_estimation   = " << (job.isis.errorEstimation ? 1 : 0) << ",\n";
     out << "  auto_freeze_vsini  = " << (job.isis.autoFreezeVsini ? 1 : 0) << ",\n";
-    out << "  add_telluric_model = " << (job.isis.addTelluricModel ? 1 : 0) << ",\n";
+    // The telluric switch is backend-neutral now; honour either spelling.
+    out << "  add_telluric_model = "
+        << ((job.isis.addTelluricModel || job.addTelluricModel) ? 1 : 0) << ",\n";
     out << "  apply_mask         = " << (job.isis.applyMask ? 1 : 0) << ",\n";
+    if (job.components.size() > 1) {
+        // ISIS has this on by default; the job says explicitly whether a second
+        // component may be retired, so pass it either way. Its two thresholds
+        // are *not* qualifiers -- spectroscopy_automated.sl hard-codes
+        // sur_ratio_thres = 5 and c2_detection_thres = 0.05 -- so the job's
+        // values cannot travel; run() says so rather than emitting qualifiers
+        // that would be silently ignored.
+        out << "  auto_freeze_sur_ratio = " << (job.autoFreezeSurRatio ? 1 : 0) << ",\n";
+    }
     out << "  xfig_ignore        = " << job.isis.xfigIgnore << ",\n";
     if (job.filterSnr   > 0) out << "  filter_snr         = " << job.filterSnr   << ",\n";
     if (job.requireBlue > 0) out << "  require_blue       = " << job.requireBlue << ",\n";
@@ -597,6 +622,43 @@ SpectralFitResult IsisBackend::run(const SpectralFitJob& job,
             onLog(QStringLiteral("ISIS binary : %1").arg(binary));
             onLog(QStringLiteral("Work dir    : %1").arg(workDir));
             onLog(QStringLiteral("Script      : %1").arg(scriptPath));
+
+            // Whatever the .sl interface cannot carry is said out loud, so the
+            // run does not look like it honoured a setting it dropped.
+            QStringList unseeded;
+            for (int i = 0; i < job.components.size(); ++i) {
+                const auto& c = job.components[i];
+                for (auto it = c.freezeAbundances.cbegin();
+                     it != c.freezeAbundances.cend(); ++it)
+                    if (!it.value() && !c.abundances.contains(it.key()))
+                        unseeded << QString("c%1_%2").arg(i + 1).arg(it.key());
+            }
+            if (!unseeded.isEmpty())
+                onLog(QStringLiteral(
+                    "Warning: %1 requested free but not seeded - ISIS keeps its "
+                    "own default for them and they are not fitted.")
+                        .arg(unseeded.join(", ")));
+
+            bool tellSeeds = false;
+            for (const auto& o : job.observations)
+                for (const auto& f : o.files)
+                    if (f.airmass != 1.0 || f.pwv != 1.0 || f.barycorr != 0.0)
+                        tellSeeds = true;
+            if (tellSeeds)
+                onLog(QStringLiteral("Note: per-spectrum telluric seeds are a "
+                                      "GAEL feature; ISIS uses its own defaults."));
+            if (job.contJitterK > 0)
+                onLog(QStringLiteral("Note: continuum jitter (K = %1) is a GAEL "
+                                      "feature; ISIS ignores it.")
+                          .arg(job.contJitterK));
+
+            if (job.components.size() > 1 && job.autoFreezeSurRatio
+                && (job.surRatioThres != 5.0 || job.c2DetectionThres != 0.05))
+                onLog(QStringLiteral(
+                    "Note: ISIS hard-codes the second-component thresholds "
+                    "(sur_ratio 5, detection 0.05); the job's %1 / %2 apply to "
+                    "GAEL only.")
+                        .arg(job.surRatioThres).arg(job.c2DetectionThres));
         }
         if (onProgress) onProgress(QStringLiteral("Starting ISIS..."), -1.0);
 

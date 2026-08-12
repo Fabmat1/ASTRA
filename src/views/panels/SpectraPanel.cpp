@@ -3,6 +3,7 @@
 
 #include "models/Star.h"
 #include "models/Spectrum.h"
+#include "models/ElementAbundances.h"
 #include "utils/Logger.h"
 #include "plotting/qcustomplot.h"
 #include "views/widgets/PlotKeyNavigator.h"
@@ -11,6 +12,7 @@
 #include <QHBoxLayout>
 #include <QGroupBox>
 #include <QTabBar>
+#include <QCheckBox>
 #include <QComboBox>
 #include <QLabel>
 #include <QPushButton>
@@ -20,6 +22,67 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+
+namespace {
+
+// Colours for the subordinate model curves and the abundance series. They come
+// from the shared cycling palette, which already has a light and a dark variant
+// per entry, so nothing here breaks when the theme flips.
+QColor componentColor(int which)          // 0 = component 1, 1 = component 2
+{ return PanelUtils::lcColor(which == 0 ? 0 : 1); }   // blue / amber
+
+QColor telluricColor()
+{ return PanelUtils::lcColor(5); }                    // cyan
+
+QColor mutedTextColor()
+{
+    return PanelUtils::isDarkTheme() ? QColor(170, 170, 175)
+                                     : QColor(120, 120, 125);
+}
+
+/// Widen `range` so the overlay curves fit inside it.
+///
+/// The overlays cannot simply be thrown into the main robustRange() call: a
+/// component's model is *undiluted*, so its lines are always deeper than the
+/// composite's, and those few hundred deep samples are a small enough fraction
+/// of the pooled values that the quantile clip cuts them off — the curve then
+/// runs out of the bottom of the plot, which is precisely what the user asked
+/// to be able to see. Giving the overlays their own robust range and taking the
+/// union keeps a genuinely deep line fully on screen.
+///
+/// Their true extent is used rather than a quantile: these are synthetic model
+/// curves, smooth by construction and free of the outlier pixels a quantile
+/// clip exists to defend against, and a line whose core is cut off is worse
+/// than an axis with a little slack.
+void includeOverlayRange(double& yLo, double& yHi,
+                         const std::vector<double>& overlayY)
+{
+    double oLo =  std::numeric_limits<double>::max();
+    double oHi = -std::numeric_limits<double>::max();
+    for (double v : overlayY) {
+        if (!std::isfinite(v)) continue;
+        oLo = std::min(oLo, v);
+        oHi = std::max(oHi, v);
+    }
+    if (!(oHi >= oLo)) return;                 // nothing finite in there
+
+    const double margin = 0.03 * std::max(oHi - oLo, 1e-12);
+    yLo = std::min(yLo, oLo - margin);
+    yHi = std::max(yHi, oHi + margin);
+}
+
+/// Pen for a component / telluric overlay: thinner and dashed so it never
+/// competes with the combined model, which stays the solid primary curve.
+QPen overlayPen(const QColor& base, Qt::PenStyle style)
+{
+    QColor c = base;
+    c.setAlpha(215);
+    QPen p(c, 1.0);
+    p.setStyle(style);
+    return p;
+}
+
+} // namespace
 
 SpectraPanel::SpectraPanel(const Context& ctx, QWidget* parent, bool deferPopulate)
     : DetailPanel(ctx, parent)
@@ -46,13 +109,31 @@ void SpectraPanel::changeEvent(QEvent* ev)
         });
 }
 
+// stylePlot() gives every axis grid a zero-line pen, which is right for a
+// numeric axis and wrong here: the abundance x axis is categorical, so its
+// "zero" is just the first element and the line reads as a stray divider.
+void SpectraPanel::styleAbundanceAxes()
+{
+    if (!_abundancePlot) return;
+    _abundancePlot->xAxis->grid()->setZeroLinePen(Qt::NoPen);
+    _abundancePlot->xAxis2->grid()->setZeroLinePen(Qt::NoPen);
+    // The y zero line would double up with the dashed solar reference the
+    // [X/H] view draws itself, and means nothing in the raw view.
+    _abundancePlot->yAxis->grid()->setZeroLinePen(Qt::NoPen);
+}
+
 void SpectraPanel::refreshTheme()
 {
     PanelUtils::styleFlatTextButton(_resetZoomButton);
     PanelUtils::stylePlot(_mainPlot);
     PanelUtils::stylePlot(_residualPlot);
+    PanelUtils::stylePlot(_abundancePlot);
+    styleAbundanceAxes();
     _mainPlot->replot();
     _residualPlot->replot();
+    _abundancePlot->replot();
+    // Redraws with the new palette; routes to the abundance plot when that
+    // view is the active one.
     if (_currentSpectrumIndex >= 0) updateSpectrumDisplay();
 }
 
@@ -113,6 +194,32 @@ void SpectraPanel::setupUi()
         "Raw + renorm: instrument spectrum with model scaled to match");
     tbLayout->addWidget(_displayMode);
 
+    // ── Overlay toggles ──
+    // Shown only when the selected fit actually carries the extra curves; the
+    // state itself is per session and is never reset behind the user's back.
+    _componentsCheck = new QCheckBox("Components");
+    _componentsCheck->setChecked(true);          // on by default for 2-comp fits
+    _componentsCheck->setToolTip(
+        "Overlay each stellar component's own model (undiluted by the other "
+        "component's light)");
+    _componentsCheck->setVisible(false);
+    tbLayout->addWidget(_componentsCheck);
+
+    _telluricCheck = new QCheckBox("Telluric");
+    _telluricCheck->setChecked(false);
+    _telluricCheck->setToolTip(
+        "Overlay the fitted telluric transmission, scaled onto the local "
+        "continuum so it is comparable with the model in every display mode");
+    _telluricCheck->setVisible(false);
+    tbLayout->addWidget(_telluricCheck);
+
+    _solarRelCheck = new QCheckBox("[X/H]");
+    _solarRelCheck->setToolTip(
+        "Show abundances relative to solar ([X/H]) instead of the stored "
+        "log10 fractional particle number");
+    _solarRelCheck->setVisible(false);
+    tbLayout->addWidget(_solarRelCheck);
+
     layout->addWidget(_toolbar, 0);
 
     // ── Main spectrum plot (QCustomPlot) ──
@@ -121,8 +228,18 @@ void SpectraPanel::setupUi()
     _mainPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom | QCP::iSelectPlottables);
     _mainPlot->axisRect()->setRangeDrag(Qt::Horizontal | Qt::Vertical);
     _mainPlot->axisRect()->setRangeZoom(Qt::Horizontal | Qt::Vertical);
+    // The legend stays hidden until more than one model curve is on screen
+    // (see updateSpectrumDisplay); pre-style it small and tucked into the top
+    // right so it never eats plot area when it does appear.
+    _mainPlot->legend->setVisible(false);
+    _mainPlot->legend->setFont(QFont(font().family(), 8));
+    _mainPlot->legend->setIconSize(18, 8);
+    _mainPlot->legend->setRowSpacing(-3);
+    _mainPlot->legend->setIconTextPadding(4);
+    _mainPlot->axisRect()->insetLayout()->setInsetAlignment(
+        0, Qt::AlignTop | Qt::AlignRight);
     layout->addWidget(_mainPlot, 5);
-    
+
     _fitOverlay = new FitPreviewOverlay(_mainPlot, this);
     connect(_fitOverlay, &FitPreviewOverlay::edited,
             this,        &SpectraPanel::fitPreviewEdited);
@@ -136,6 +253,28 @@ void SpectraPanel::setupUi()
     _residualPlot->setVisible(false);
     layout->addWidget(_residualPlot, 2);
 
+    // ── Abundance plot (QCustomPlot) ──
+    // Lives next to the spectrum plots and is swapped in when the "Abundances"
+    // tab is picked, so neither plot has to be destroyed and rebuilt.
+    _abundancePlot = new QCustomPlot;
+    PanelUtils::stylePlot(_abundancePlot);
+    styleAbundanceAxes();
+    _abundancePlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
+    _abundancePlot->axisRect()->setRangeDrag(Qt::Horizontal | Qt::Vertical);
+    _abundancePlot->axisRect()->setRangeZoom(Qt::Horizontal | Qt::Vertical);
+    _abundancePlot->legend->setVisible(false);
+    _abundancePlot->legend->setFont(QFont(font().family(), 8));
+    _abundancePlot->legend->setIconSize(18, 8);
+    _abundancePlot->legend->setRowSpacing(-3);
+    _abundancePlot->legend->setIconTextPadding(4);
+    _abundancePlot->axisRect()->insetLayout()->setInsetAlignment(
+        0, Qt::AlignTop | Qt::AlignRight);
+    // Error bars belong behind the markers, same as in the LC panel.
+    _abundancePlot->addLayer("errbars", _abundancePlot->layer("main"),
+                             QCustomPlot::limBelow);
+    _abundancePlot->setVisible(false);
+    layout->addWidget(_abundancePlot, 7);
+
     // ── Detect user zoom interactions ──
     connect(_mainPlot, &QCustomPlot::mouseWheel, this,
             [this]() { markCustomZoom(); });
@@ -147,11 +286,20 @@ void SpectraPanel::setupUi()
     connect(_residualPlot, &QCustomPlot::mouseMove, this, [this](QMouseEvent* ev) {
         if (ev->buttons() & Qt::LeftButton) markCustomZoom();
     });
+    connect(_abundancePlot, &QCustomPlot::mouseWheel, this,
+            [this]() { markCustomZoom(); });
+    connect(_abundancePlot, &QCustomPlot::mouseMove, this, [this](QMouseEvent* ev) {
+        if (ev->buttons() & Qt::LeftButton) markCustomZoom();
+    });
 
     // ── Keyboard navigation while the mouse hovers a plot ──
     _keyNav = new PlotKeyNavigator(this);
     _keyNav->addPlot(_mainPlot);
     _keyNav->addPlot(_residualPlot);
+    // The abundance plot is registered only so that R resets it - the navigator
+    // has no per-plot switch, and pan/zoom over a categorical x axis is
+    // harmless, but the key the abundance view actually needs is the reset.
+    _keyNav->addPlot(_abundancePlot);
     _keyNav->setResetHandler([this]() { resetZoomView(); });
     connect(_keyNav, &PlotKeyNavigator::viewChanged, this,
             [this](QCustomPlot*) { markCustomZoom(); });
@@ -164,6 +312,10 @@ void SpectraPanel::setupUi()
         "R  reset the view";
     _mainPlot->setToolTip(navHint);
     _residualPlot->setToolTip(navHint);
+    _abundancePlot->setToolTip(
+        "Fitted element abundances of the selected fit.\n"
+        "Down/up triangles with an arrow mark upper/lower limits.\n"
+        "R (mouse over the plot) resets the view.");
 
     // Debounce timer for axis synchronization
     _axisSyncTimer = new QTimer(this);
@@ -198,11 +350,21 @@ void SpectraPanel::setupUi()
     // ── Connections for fit combo and renorm ──
     connect(_fitCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
         this, [this](int) {
+        // updateSpectrumDisplay() routes to the abundance plot while that view
+        // is active, so switching fits updates whichever plot is on screen.
         updateSpectrumDisplay();
         emit selectionChanged(currentSpectrumId(), currentFitId());
     });
     connect(_displayMode, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { updateSpectrumDisplay(); });
+    connect(_componentsCheck, &QCheckBox::toggled,
+            this, [this](bool) { updateSpectrumDisplay(); });
+    connect(_telluricCheck, &QCheckBox::toggled,
+            this, [this](bool) { updateSpectrumDisplay(); });
+    connect(_solarRelCheck, &QCheckBox::toggled, this, [this](bool) {
+        _hasCustomZoom = false;      // the y scale changes entirely
+        updateAbundanceDisplay();
+    });
 }
 
 void SpectraPanel::resetZoomView()
@@ -229,6 +391,8 @@ void SpectraPanel::populate()
     _currentSpectrumIndex = -1;
     _sortedSpectra.clear();
     _residualPlot->setVisible(false);
+    _abundanceTabIndex = -1;
+    setAbundanceViewActive(false);
 
     auto spectra = _ctx.star->getSpectra();
 
@@ -285,10 +449,18 @@ void SpectraPanel::populate()
         if (instrumentColors.contains(inst))
             _tabBar->setTabTextColor(tabIdx, instrumentColors[inst]);
     }
+
+    // One extra tab after every spectrum tab, present only when some fit on
+    // this star actually carries element abundances.
+    if (starHasAbundances()) {
+        _abundanceTabIndex = _tabBar->addTab("Abundances");
+        _tabBar->setTabToolTip(_abundanceTabIndex,
+            "Fitted element abundances of the selected fit");
+    }
     _tabBar->blockSignals(false);
 
     _tabConnection = connect(_tabBar, &QTabBar::currentChanged,
-                                     this, &SpectraPanel::displaySpectrum);
+                                     this, &SpectraPanel::onTabChanged);
 
     if (!_sortedSpectra.empty()) {
         _tabBar->setCurrentIndex(0);
@@ -381,9 +553,8 @@ void SpectraPanel::displaySpectrum(int index)
 
     // While the co-add is on screen the fit selector applies to nothing.
     bool hasFits = (_fitCombo->count() > 1) && !_coaddActive;
-    _modelLabel->setVisible(hasFits);
-    _fitCombo->setVisible(hasFits);
-    _displayMode->setVisible(hasFits);
+    _toolbarHasFits = hasFits;
+    updateToolbarVisibility();
     _fitCombo->setCurrentIndex(selectIdx);
     _fitCombo->blockSignals(false);
 
@@ -422,10 +593,13 @@ void SpectraPanel::showCoadd(const CoaddDisplay& coadd)
     _coadd       = coadd;
     _coaddActive = true;
 
+    // The stacked spectrum has no fit and no abundances, so the abundance view
+    // has to step aside before the co-add takes over the main plot.
+    setAbundanceViewActive(false);
+
     _tabBar->setVisible(false);
-    _modelLabel->setVisible(false);
-    _fitCombo->setVisible(false);
-    _displayMode->setVisible(false);
+    _toolbarHasFits = false;
+    updateToolbarVisibility();
     _residualPlot->setVisible(false);
     if (_fitOverlay) _fitOverlay->clearConfig();  // no per-spectrum overlay here
 
@@ -571,6 +745,7 @@ void SpectraPanel::updateCoaddDisplay()
 void SpectraPanel::updateSpectrumDisplay()
 {
     if (_coaddActive) { updateCoaddDisplay(); return; }
+    if (_showingAbundances) { updateAbundanceDisplay(); return; }
 
     if (_currentSpectrumIndex < 0 ||
         _currentSpectrumIndex >= static_cast<int>(_sortedSpectra.size()))
@@ -681,6 +856,30 @@ void SpectraPanel::updateSpectrumDisplay()
         (selectedFit->rebinnedFluxes.empty() || selectedFit->modelSplines.empty()))
         displayMode = DisplayRaw;
 
+    // ── Subordinate model curves ────────────────────────────────────────────
+    // Component models only make sense for a two-component fit: for a
+    // one-component fit modelFluxesComp1 *is* modelFluxes, and drawing it again
+    // would just be a duplicate on top of the primary curve.
+    const size_t nModel = selectedFit ? selectedFit->modelWavelengths.size() : 0;
+    const bool hasComponentModels =
+        selectedFit && selectedFit->hasSecondComponent() && nModel > 0 &&
+        selectedFit->modelFluxesComp1.size() == nModel &&
+        selectedFit->modelFluxesComp2.size() == nModel;
+    const bool hasTelluricCurve =
+        selectedFit && nModel > 0 &&
+        selectedFit->telluricTransmission.size() == nModel;
+
+    _componentsCheck->setVisible(hasComponentModels);
+    _telluricCheck->setVisible(hasTelluricCurve);
+
+    const bool showComponents = hasComponentModels && _componentsCheck->isChecked();
+    const bool showTelluric   = hasTelluricCurve   && _telluricCheck->isChecked();
+
+    // Counts the curves that describe the model (combined + overlays); the
+    // legend is only worth its space once there is more than one of them.
+    int modelCurveCount = 0;
+    QCPGraph* modelGraph = nullptr;
+
     std::vector<double> residualWl;
     std::vector<double> residualVal;
 
@@ -705,6 +904,9 @@ void SpectraPanel::updateSpectrumDisplay()
 
             QVector<double> mWlVec = PanelUtils::toQVec(mWl);
             QVector<double> dataVec(N), modelVec(N), upperVec(N), lowerVec(N);
+            QVector<double> comp1Vec, comp2Vec, tellVec;
+            if (showComponents) { comp1Vec.resize(N); comp2Vec.resize(N); }
+            if (showTelluric)   { tellVec.resize(N); }
 
             xMin =  std::numeric_limits<double>::max();
             xMax =  std::numeric_limits<double>::lowest();
@@ -717,6 +919,23 @@ void SpectraPanel::updateSpectrumDisplay()
                 double sig  = (rbS.size() == N) ? rbS[i] / divisor : 0.0;
                 upperVec[i] = dataVec[i] + sig;
                 lowerVec[i] = dataVec[i] - sig;
+                // The component models live on the same grid and in the same
+                // flux units as the combined one, so they go through the exact
+                // same divisor and stay directly comparable with it.
+                if (showComponents) {
+                    comp1Vec[i] = selectedFit->modelFluxesComp1[i] / divisor;
+                    comp2Vec[i] = selectedFit->modelFluxesComp2[i] / divisor;
+                }
+                // The transmission is a dimensionless factor in [0,1]; riding it
+                // on the local continuum (the fitted spline) is what makes it
+                // read correctly in both modes: in Normalized mode the spline
+                // cancels against the divisor so it is drawn straight, as a dip
+                // from 1 exactly like the normalized model's; in Rebinned mode
+                // it rides on the continuum, like the un-normalized model does.
+                if (showTelluric) {
+                    const double cont = (spl[i] != 0.0) ? spl[i] : 1.0;
+                    tellVec[i] = selectedFit->telluricTransmission[i] * cont / divisor;
+                }
                 xMin = std::min(xMin, mWl[i]);
                 xMax = std::max(xMax, mWl[i]);
             }
@@ -788,11 +1007,34 @@ void SpectraPanel::updateSpectrumDisplay()
             dataGraph2->setPen(QPen(dataColor, 1.2));
             dataGraph2->removeFromLegend();
 
+            // Subordinate curves go in *before* the combined model so that the
+            // combined one keeps its place as the topmost, primary curve.
+            if (showTelluric) {
+                QCPGraph* g = _mainPlot->addGraph();
+                g->setData(mWlVec, tellVec);
+                g->setPen(overlayPen(telluricColor(), Qt::DotLine));
+                g->setName("Telluric");
+                ++modelCurveCount;
+            }
+            if (showComponents) {
+                QCPGraph* g1 = _mainPlot->addGraph();
+                g1->setData(mWlVec, comp1Vec);
+                g1->setPen(overlayPen(componentColor(0), Qt::DashLine));
+                g1->setName(componentLabel(*selectedFit, 1));
+                ++modelCurveCount;
+
+                QCPGraph* g2 = _mainPlot->addGraph();
+                g2->setData(mWlVec, comp2Vec);
+                g2->setPen(overlayPen(componentColor(1), Qt::DashDotLine));
+                g2->setName(componentLabel(*selectedFit, 2));
+                ++modelCurveCount;
+            }
+
             // Model line
-            QCPGraph* modelGraph = _mainPlot->addGraph();
+            modelGraph = _mainPlot->addGraph();
             modelGraph->setData(mWlVec, modelVec);
             modelGraph->setPen(QPen(PanelUtils::fitCurveColor(), 1.5));
-            modelGraph->removeFromLegend();
+            ++modelCurveCount;
 
             // Residuals - only over non-ignored points
             for (size_t i = 0; i < N; ++i) {
@@ -801,15 +1043,22 @@ void SpectraPanel::updateSpectrumDisplay()
                 residualVal.push_back(dataVec[i] - modelVec[i]);
             }
 
-            // Y range from active data + model
+            // Y range from the active data + the combined model, then widened
+            // to fit the overlays (see includeOverlayRange).
             std::vector<double> allY;
             allY.insert(allY.end(), activeD.begin(), activeD.end());
             for (double v : modelVec) allY.push_back(v);
+
+            std::vector<double> overlayY;
+            for (double v : comp1Vec) overlayY.push_back(v);
+            for (double v : comp2Vec) overlayY.push_back(v);
+            for (double v : tellVec)  overlayY.push_back(v);
 
             _mainPlot->yAxis->setLabel(
                 displayMode == DisplayNormalized ? "Normalized Flux" : "Flux");
 
             auto [yLo, yHi] = PanelUtils::robustRange(allY, 0.98, 0.15);
+            includeOverlayRange(yLo, yHi, overlayY);
             _mainPlot->yAxis->setRange(yLo, yHi);
 
         } else {
@@ -837,10 +1086,59 @@ void SpectraPanel::updateSpectrumDisplay()
                 yMax = std::max(yMax, mFlVec[i]);
             }
 
-            QCPGraph* modelGraph = _mainPlot->addGraph();
+            // Overlays: the very same renormalization factor the combined model
+            // got, so all model curves stay on one scale.
+            const auto& spl = selectedFit->modelSplines;
+            QVector<double> comp1Vec, comp2Vec, tellVec;
+            if (showComponents) {
+                comp1Vec.resize(mWl.size());
+                comp2Vec.resize(mWl.size());
+                for (size_t i = 0; i < mWl.size(); ++i) {
+                    comp1Vec[i] = selectedFit->modelFluxesComp1[i] * renormC;
+                    comp2Vec[i] = selectedFit->modelFluxesComp2[i] * renormC;
+                }
+            }
+            if (showTelluric) {
+                tellVec.resize(mWl.size());
+                for (size_t i = 0; i < mWl.size(); ++i) {
+                    // renormC puts the model on the data's scale, and the fitted
+                    // spline is the model's continuum, so spline * renormC is
+                    // the data's continuum - which is where a transmission of 1
+                    // has to sit for the curve to read as absorption. Without a
+                    // spline the model is already continuum-normalized, and
+                    // renormC alone is that continuum.
+                    const double cont =
+                        (spl.size() == mWl.size() && spl[i] != 0.0) ? spl[i] : 1.0;
+                    tellVec[i] = selectedFit->telluricTransmission[i] * cont * renormC;
+                }
+            }
+
+            // Subordinate curves first, so the combined model stays on top.
+            if (showTelluric) {
+                QCPGraph* g = _mainPlot->addGraph();
+                g->setPen(overlayPen(telluricColor(), Qt::DotLine));
+                g->setData(mWlVec, tellVec);
+                g->setName("Telluric");
+                ++modelCurveCount;
+            }
+            if (showComponents) {
+                QCPGraph* g1 = _mainPlot->addGraph();
+                g1->setPen(overlayPen(componentColor(0), Qt::DashLine));
+                g1->setData(mWlVec, comp1Vec);
+                g1->setName(componentLabel(*selectedFit, 1));
+                ++modelCurveCount;
+
+                QCPGraph* g2 = _mainPlot->addGraph();
+                g2->setPen(overlayPen(componentColor(1), Qt::DashDotLine));
+                g2->setData(mWlVec, comp2Vec);
+                g2->setName(componentLabel(*selectedFit, 2));
+                ++modelCurveCount;
+            }
+
+            modelGraph = _mainPlot->addGraph();
             modelGraph->setPen(QPen(PanelUtils::fitCurveColor(), 1.5));
             modelGraph->setData(mWlVec, mFlVec);
-            modelGraph->removeFromLegend();
+            ++modelCurveCount;
 
             for (size_t i = 0; i < wavelengths.size(); ++i) {
                 if (std::isnan(modelOnDataGrid[i])) continue;
@@ -848,12 +1146,20 @@ void SpectraPanel::updateSpectrumDisplay()
                 residualVal.push_back(fluxes[i] - modelOnDataGrid[i] * renormC);
             }
 
-            // Y range
+            // Y range from the data + the combined model, then widened to fit
+            // the overlays (see includeOverlayRange).
             std::vector<double> allMainY;
             for (size_t i = 0; i < fluxes.size(); ++i)
                 if (!std::isnan(fluxes[i])) allMainY.push_back(fluxes[i]);
             for (double mf : mFlVec) if (!std::isnan(mf)) allMainY.push_back(mf);
+
+            std::vector<double> overlayY;
+            for (double v : comp1Vec) if (!std::isnan(v)) overlayY.push_back(v);
+            for (double v : comp2Vec) if (!std::isnan(v)) overlayY.push_back(v);
+            for (double v : tellVec)  if (!std::isnan(v)) overlayY.push_back(v);
+
             auto [mainYLo, mainYHi] = PanelUtils::robustRange(allMainY, 0.95, 0.15);
+            includeOverlayRange(mainYLo, mainYHi, overlayY);
             _mainPlot->yAxis->setLabel("Normalized Flux");
             _mainPlot->yAxis->setRange(mainYLo, mainYHi);
         }
@@ -890,6 +1196,19 @@ void SpectraPanel::updateSpectrumDisplay()
     } else {
         _mainPlot->xAxis->setTickLabels(true);
         _mainPlot->xAxis->setLabel("Wavelength [Å]");
+    }
+
+    // ── Legend ──
+    // Only worth showing once there is more than one model curve to tell apart;
+    // the data, error-band and ignored-region graphs all took themselves out of
+    // it above, so it lists model curves only.
+    {
+        const bool showLegend = (modelCurveCount > 1);
+        if (modelGraph) {
+            modelGraph->setName("Model");
+            if (!showLegend) modelGraph->removeFromLegend();
+        }
+        _mainPlot->legend->setVisible(showLegend);
     }
 
     _mainPlot->replot();
@@ -964,6 +1283,334 @@ void SpectraPanel::updateSpectrumDisplay()
     }
 
     // (Zoom was already applied above, before the replots, to avoid a flash.)
+
+    if (_resetZoomButton)
+        _resetZoomButton->setVisible(_hasCustomZoom);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Abundance view
+// ─────────────────────────────────────────────────────────────────────────────
+
+std::shared_ptr<SpectralFit> SpectraPanel::currentFit() const
+{
+    if (_currentSpectrumIndex < 0 ||
+        _currentSpectrumIndex >= static_cast<int>(_sortedSpectra.size()))
+        return nullptr;
+    const int idx = _fitCombo->currentData().toInt();
+    if (idx < 0) return nullptr;
+    auto fits = _sortedSpectra[_currentSpectrumIndex]->getSpectralFits();
+    if (idx >= static_cast<int>(fits.size())) return nullptr;
+    return fits[idx];
+}
+
+QString SpectraPanel::componentLabel(const SpectralFit& fit, int which)
+{
+    const double teff = (which == 2) ? fit.teff2 : fit.teff;
+    QString label = QString("Component %1").arg(which);
+    if (!std::isnan(teff) && teff > 0) {
+        // Thin space between the thousands so "28 500 K" stays readable in the
+        // small legend font.
+        QString t = QString::number(teff, 'f', 0);
+        for (int i = t.size() - 3; i > 0; i -= 3)
+            t.insert(i, QChar(0x2009));
+        label += QString(" (%1 K)").arg(t);
+    }
+    return label;
+}
+
+bool SpectraPanel::starHasAbundances() const
+{
+    if (!_ctx.star) return false;
+    for (const auto& spec : _ctx.star->getSpectra()) {
+        if (!spec) continue;
+        for (const auto& fit : spec->getSpectralFits()) {
+            if (!fit) continue;
+            if (!fit->abundances.isEmpty() || !fit->abundances2.isEmpty())
+                return true;
+        }
+    }
+    return false;
+}
+
+void SpectraPanel::updateToolbarVisibility()
+{
+    _modelLabel->setVisible(_toolbarHasFits);
+    _fitCombo->setVisible(_toolbarHasFits);
+    _displayMode->setVisible(_toolbarHasFits && !_showingAbundances);
+    _solarRelCheck->setVisible(_showingAbundances);
+
+    // The overlay toggles belong to the spectrum view and are only revealed
+    // there, by updateSpectrumDisplay(), once the selected fit carries the
+    // curves they switch.
+    if (_showingAbundances || !_toolbarHasFits) {
+        _componentsCheck->setVisible(false);
+        _telluricCheck->setVisible(false);
+    }
+}
+
+void SpectraPanel::setAbundanceViewActive(bool on)
+{
+    if (_showingAbundances == on) {
+        updateToolbarVisibility();
+        return;
+    }
+
+    _showingAbundances = on;
+    // The two views share nothing on their y axes, so a zoom set in one would
+    // land nowhere useful in the other.
+    _hasCustomZoom = false;
+
+    _mainPlot->setVisible(!on);
+    if (on) _residualPlot->setVisible(false);
+    _abundancePlot->setVisible(on);
+
+    updateToolbarVisibility();
+
+    if (on) {
+        updateAbundanceDisplay();
+    } else if (_currentSpectrumIndex >= 0) {
+        // _currentSpectrumIndex was deliberately left untouched while the
+        // abundance tab was up, so this comes back to the same spectrum.
+        updateSpectrumDisplay();
+    }
+}
+
+void SpectraPanel::onTabChanged(int index)
+{
+    if (_abundanceTabIndex >= 0 && index == _abundanceTabIndex) {
+        setAbundanceViewActive(true);
+        return;
+    }
+    setAbundanceViewActive(false);
+    displaySpectrum(index);
+}
+
+void SpectraPanel::updateAbundanceDisplay()
+{
+    if (!_abundancePlot) return;
+
+    // Save the user's zoom the same way the spectrum view does.
+    const bool restoreZoom =
+        _hasCustomZoom && _abundancePlot->plottableCount() > 0;
+    const QCPRange savedX = _abundancePlot->xAxis->range();
+    const QCPRange savedY = _abundancePlot->yAxis->range();
+
+    _abundancePlot->clearPlottables();
+    _abundancePlot->clearItems();
+    _abundancePlot->legend->setVisible(false);
+
+    auto fit = currentFit();
+    const bool solarRel = _solarRelCheck->isChecked();
+
+    _abundancePlot->xAxis->setLabel("Element");
+    _abundancePlot->yAxis->setLabel(
+        solarRel ? "[X/H]" : "log n(X) / n(total)");
+
+    const auto& elements = astra::elements::all();
+
+    // One x slot per element the fit carries, in the atomic-number order all()
+    // returns. Slot i sits at x = i; the two components are nudged either side
+    // of it so their markers never sit on top of each other.
+    struct Point { double x; double y; double err; int limit; };
+    QVector<Point> series[2];
+    QVector<double> tickPos;
+    QVector<QString> tickLabel;
+
+    const bool twoComponents = fit && fit->hasSecondComponent() &&
+                               !fit->abundances2.isEmpty();
+    const double dx = twoComponents ? 0.14 : 0.0;
+
+    if (fit) {
+        for (int e = 0; e < elements.size(); ++e) {
+            const QString& sym = elements[e].symbol;
+
+            const FittedAbundance* a[2] = {nullptr, nullptr};
+            auto it1 = fit->abundances.constFind(sym);
+            if (it1 != fit->abundances.constEnd()) a[0] = &it1.value();
+            if (twoComponents) {
+                auto it2 = fit->abundances2.constFind(sym);
+                if (it2 != fit->abundances2.constEnd()) a[1] = &it2.value();
+            }
+
+            // An element switched off in the grid, or one the fit never
+            // constrained, carries no information and is skipped entirely.
+            bool used[2] = {false, false};
+            for (int c = 0; c < 2; ++c)
+                used[c] = a[c] && a[c]->isSet() &&
+                          !astra::elements::isSwitchedOff(a[c]->value);
+            if (!used[0] && !used[1]) continue;
+
+            const double slot = static_cast<double>(tickPos.size());
+            tickPos.push_back(slot);
+            tickLabel.push_back(elements[e].display);
+
+            // Split the slot only when both components actually have this
+            // element: a lone point centred on its tick label reads as
+            // belonging to it, an offset one looks misaligned.
+            const double half = (used[0] && used[1]) ? dx : 0.0;
+
+            for (int c = 0; c < 2; ++c) {
+                if (!used[c]) continue;
+                const double v = solarRel
+                    ? astra::elements::toSolarRelative(e, a[c]->value)
+                    : a[c]->value;
+                if (std::isnan(v)) continue;
+                series[c].push_back(Point{
+                    slot + (c == 0 ? -half : half), v,
+                    (a[c]->error > 0.0 && std::isfinite(a[c]->error))
+                        ? a[c]->error : 0.0,
+                    a[c]->limitSide});
+            }
+        }
+    }
+
+    QSharedPointer<QCPAxisTickerText> ticker(new QCPAxisTickerText);
+    ticker->setTicks(tickPos, tickLabel);
+    _abundancePlot->xAxis->setTicker(ticker);
+    _abundancePlot->xAxis->setSubTicks(false);
+
+    if (tickPos.isEmpty()) {
+        // Empty plot with a plain message - the text ticker has no ticks, so
+        // the axes stay blank rather than showing a meaningless numeric scale.
+        auto* note = new QCPItemText(_abundancePlot);
+        note->setPositionAlignment(Qt::AlignCenter);
+        note->position->setType(QCPItemPosition::ptAxisRectRatio);
+        note->position->setCoords(0.5, 0.5);
+        note->setText(fit ? "No element abundances in this fit"
+                          : "Select a fit to see its element abundances");
+        note->setColor(mutedTextColor());
+        note->setFont(QFont(font().family(), 10));
+
+        _abundancePlot->xAxis->setRange(0.0, 1.0);
+        _abundancePlot->yAxis->setRange(0.0, 1.0);
+        _abundancePlot->replot();
+        if (_resetZoomButton) _resetZoomButton->setVisible(_hasCustomZoom);
+        return;
+    }
+
+    // ── Y range: driven by the points and their error bars, plus room for the
+    //    limit arrows, which are drawn with a fixed pixel length. ──
+    double yLo =  std::numeric_limits<double>::max();
+    double yHi =  std::numeric_limits<double>::lowest();
+    for (int c = 0; c < 2; ++c)
+        for (const auto& p : series[c]) {
+            yLo = std::min(yLo, p.y - p.err);
+            yHi = std::max(yHi, p.y + p.err);
+        }
+    if (solarRel) {                       // the solar line is a reference point
+        yLo = std::min(yLo, 0.0);
+        yHi = std::max(yHi, 0.0);
+    }
+    if (!(yHi > yLo)) { yLo -= 0.5; yHi += 0.5; }
+    const double yPad = (yHi - yLo) * 0.18;
+    yLo -= yPad;
+    yHi += yPad;
+
+    const double xLo = -0.6;
+    const double xHi = static_cast<double>(tickPos.size()) - 0.4;
+
+    _abundancePlot->xAxis->setRange(xLo, xHi);
+    _abundancePlot->yAxis->setRange(yLo, yHi);
+
+    // ── Solar reference line ──
+    if (solarRel) {
+        QCPGraph* zero = _abundancePlot->addGraph();
+        zero->setPen(QPen(QColor(120, 120, 120), 1.0, Qt::DashLine));
+        zero->setData(QVector<double>{xLo, xHi}, QVector<double>{0.0, 0.0});
+        zero->removeFromLegend();
+    }
+
+    // ── One set of graphs per component ──
+    for (int c = 0; c < 2; ++c) {
+        if (series[c].isEmpty()) continue;
+
+        const QColor col = componentColor(c);
+
+        QVector<double> mx, my, me;      // measurements
+        QVector<double> ux, uy;          // upper limits (arrow points down)
+        QVector<double> lx, ly;          // lower limits (arrow points up)
+        for (const auto& p : series[c]) {
+            if (p.limit < 0)      { ux.push_back(p.x); uy.push_back(p.y); }
+            else if (p.limit > 0) { lx.push_back(p.x); ly.push_back(p.y); }
+            else { mx.push_back(p.x); my.push_back(p.y); me.push_back(p.err); }
+        }
+
+        QCPGraph* meas = _abundancePlot->addGraph();
+        meas->setLineStyle(QCPGraph::lsNone);
+        meas->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssDisc, col, col, 7));
+        meas->setData(mx, my, /*alreadySorted*/ true);
+        meas->removeFromLegend();
+
+        if (!mx.isEmpty()) {
+            auto* err = new QCPErrorBars(_abundancePlot->xAxis,
+                                         _abundancePlot->yAxis);
+            err->setDataPlottable(meas);
+            err->setErrorType(QCPErrorBars::etValueError);
+            err->setPen(QPen(col.darker(115), 1.0));
+            err->setSymbolGap(2);
+            err->setData(me);
+            err->setLayer("errbars");
+            err->removeFromLegend();
+        }
+
+        // Limits: a filled triangle pointing the way the true value lies, plus
+        // a short arrow-headed stem in *pixels* so it keeps its length at any
+        // zoom. Shape and arrow together read as a limit at a glance, and both
+        // inherit the theme-aware series colour.
+        QCPGraph* upper = nullptr;
+        QCPGraph* lower = nullptr;
+        if (!ux.isEmpty()) {
+            upper = _abundancePlot->addGraph();
+            upper->setLineStyle(QCPGraph::lsNone);
+            upper->setScatterStyle(QCPScatterStyle(
+                QCPScatterStyle::ssTriangleInverted, QPen(col, 1.2),
+                QBrush(col), 10));
+            upper->setData(ux, uy, true);
+            upper->removeFromLegend();
+        }
+        if (!lx.isEmpty()) {
+            lower = _abundancePlot->addGraph();
+            lower->setLineStyle(QCPGraph::lsNone);
+            lower->setScatterStyle(QCPScatterStyle(
+                QCPScatterStyle::ssTriangle, QPen(col, 1.2), QBrush(col), 10));
+            lower->setData(lx, ly, true);
+            lower->removeFromLegend();
+        }
+
+        auto addArrow = [&](double x, double y, double pixelDir) {
+            auto* arrow = new QCPItemLine(_abundancePlot);
+            arrow->start->setCoords(x, y);
+            // Anchoring the end to the start switches it to pixel coordinates,
+            // so the stem is a fixed 16 px regardless of the y scale.
+            arrow->end->setParentAnchor(arrow->start);
+            arrow->end->setCoords(0.0, pixelDir);
+            arrow->setPen(QPen(col, 1.3));
+            arrow->setHead(QCPLineEnding(QCPLineEnding::esSpikeArrow, 7, 8));
+        };
+        for (int i = 0; i < ux.size(); ++i) addArrow(ux[i], uy[i],  16.0);
+        for (int i = 0; i < lx.size(); ++i) addArrow(lx[i], ly[i], -16.0);
+
+        if (twoComponents) {
+            // Legend entry per component: whichever graph actually carries
+            // points takes the name, so its icon matches what is on screen.
+            QCPGraph* named = !mx.isEmpty() ? meas
+                            : (upper ? upper : lower);
+            if (named) {
+                named->setName(componentLabel(*fit, c + 1));
+                named->addToLegend();
+            }
+        }
+    }
+
+    _abundancePlot->legend->setVisible(twoComponents);
+
+    if (restoreZoom) {
+        _abundancePlot->xAxis->setRange(savedX);
+        _abundancePlot->yAxis->setRange(savedY);
+    }
+
+    _abundancePlot->replot();
 
     if (_resetZoomButton)
         _resetZoomButton->setVisible(_hasCustomZoom);

@@ -1,5 +1,6 @@
 #include "io/StarPackage.h"
 
+#include "models/ElementAbundances.h"
 #include "models/Instrument.h"
 #include "models/InstrumentMode.h"
 #include "models/Photometry.h"
@@ -200,6 +201,38 @@ Time timeFromJson(const QJsonObject &o) {
 // ═════════════════════════════════════════════════════════════════════════════
 //  SpectralFit
 // ═════════════════════════════════════════════════════════════════════════════
+
+// Fitted abundances, in the same shape the abundances_json database column
+// uses: {"FE":{"v":…,"e":…,"b":<limit side>,"f":<frozen>}, …}. Elements
+// without a value are left out.
+QJsonObject abundanceMapToJson(const QMap<QString, FittedAbundance> &m) {
+    QJsonObject o;
+    for (auto it = m.constBegin(); it != m.constEnd(); ++it) {
+        if (!it->isSet())
+            continue;
+        QJsonObject e;
+        pD(e, "v", it->value);
+        pD(e, "e", it->error);
+        e["b"] = it->limitSide;
+        e["f"] = it->frozen;
+        o.insert(it.key(), e);
+    }
+    return o;
+}
+QMap<QString, FittedAbundance> abundanceMapFromJson(const QJsonObject &o) {
+    QMap<QString, FittedAbundance> m;
+    for (auto it = o.constBegin(); it != o.constEnd(); ++it) {
+        const QJsonObject e = it->toObject();
+        FittedAbundance   a;
+        a.value     = rD(e, "v");
+        a.error     = rD(e, "e", 0.0);
+        a.limitSide = rI(e, "b");
+        a.frozen    = rB(e, "f");
+        m.insert(it.key(), a);
+    }
+    return m;
+}
+
 QJsonObject fitToJson(const SpectralFit &f, BlobPool &bp) {
     QJsonObject o;
     o["id"]        = f.getId();
@@ -243,6 +276,48 @@ QJsonObject fitToJson(const SpectralFit &f, BlobPool &bp) {
     pD(o, "microErrUp", f.microturbulenceErrorUp);
     pD(o, "microErrDown", f.microturbulenceErrorDown);
 
+    // Second stellar component; only meaningful when nComp == 2.
+    o["nComp"] = f.nComponents;
+    pD(o, "teff2", f.teff2);
+    pD(o, "teff2Err", f.teff2Error);
+    pD(o, "logg2", f.logg2);
+    pD(o, "logg2Err", f.logg2Error);
+    pD(o, "he2", f.he2);
+    pD(o, "he2Err", f.he2Error);
+    pD(o, "vsini2", f.vsini2);
+    pD(o, "vsini2Err", f.vsini2Error);
+    pD(o, "rv2", f.radialVelocity2);
+    pD(o, "rv2Err", f.radialVelocity2Error);
+    pD(o, "metal2", f.metallicity2);
+    pD(o, "metal2Err", f.metallicity2Error);
+    pD(o, "macro2", f.macroturbulence2);
+    pD(o, "macro2Err", f.macroturbulence2Error);
+    pD(o, "micro2", f.microturbulence2);
+    pD(o, "micro2Err", f.microturbulence2Error);
+    pD(o, "surRatio", f.surRatio);
+    pD(o, "surRatioErr", f.surRatioError);
+
+    // Element abundances of both components
+    QJsonObject       abund;
+    const QJsonObject c1 = abundanceMapToJson(f.abundances);
+    if (!c1.isEmpty())
+        abund.insert("c1", c1);
+    if (f.nComponents >= 2) {
+        const QJsonObject c2 = abundanceMapToJson(f.abundances2);
+        if (!c2.isEmpty())
+            abund.insert("c2", c2);
+    }
+    if (!abund.isEmpty())
+        o["abund"] = abund;
+
+    // Fitted telluric component
+    o["hasTelluric"] = f.hasTelluric;
+    pD(o, "tellAirmass", f.telluricAirmass);
+    pD(o, "tellAirmassErr", f.telluricAirmassError);
+    pD(o, "tellPwv", f.telluricPwv);
+    pD(o, "tellPwvErr", f.telluricPwvError);
+    pD(o, "tellBarycorr", f.telluricBarycorr);
+
     // Model arrays are lazy: after a normal DB load only the side-file path is
     // set (loadSpectralFits does not read the blob). Pull it in here so fits
     // are always exported with their data, regardless of whether the UI
@@ -262,6 +337,9 @@ QJsonObject fitToJson(const SpectralFit &f, BlobPool &bp) {
         o["b_rebinSig"]  = bp.addDoubles(src->rebinnedSigmas);
         o["b_splines"]   = bp.addDoubles(src->modelSplines);
         o["b_ignore"]    = bp.addBytes(src->modelIgnore);
+        o["b_modelC1"]   = bp.addDoubles(src->modelFluxesComp1);
+        o["b_modelC2"]   = bp.addDoubles(src->modelFluxesComp2);
+        o["b_telluric"]  = bp.addDoubles(src->telluricTransmission);
     }
     return o;
 }
@@ -308,12 +386,50 @@ std::shared_ptr<SpectralFit> fitFromJson(const QJsonObject &o, BlobReader &br) {
     f->microturbulenceErrorUp  = rD(o, "microErrUp");
     f->microturbulenceErrorDown = rD(o, "microErrDown");
 
+    // A package written before two-component fits existed has no "nComp";
+    // such a fit had exactly one component.
+    f->nComponents           = rI(o, "nComp", 1);
+    if (f->nComponents < 1)
+        f->nComponents = 1;
+    f->teff2                 = rD(o, "teff2");
+    f->teff2Error            = rD(o, "teff2Err", 0.0);
+    f->logg2                 = rD(o, "logg2");
+    f->logg2Error            = rD(o, "logg2Err", 0.0);
+    f->he2                   = rD(o, "he2");
+    f->he2Error              = rD(o, "he2Err", 0.0);
+    f->vsini2                = rD(o, "vsini2");
+    f->vsini2Error           = rD(o, "vsini2Err", 0.0);
+    f->radialVelocity2       = rD(o, "rv2");
+    f->radialVelocity2Error  = rD(o, "rv2Err", 0.0);
+    f->metallicity2          = rD(o, "metal2");
+    f->metallicity2Error     = rD(o, "metal2Err", 0.0);
+    f->macroturbulence2      = rD(o, "macro2");
+    f->macroturbulence2Error = rD(o, "macro2Err", 0.0);
+    f->microturbulence2      = rD(o, "micro2");
+    f->microturbulence2Error = rD(o, "micro2Err", 0.0);
+    f->surRatio              = rD(o, "surRatio");
+    f->surRatioError         = rD(o, "surRatioErr", 0.0);
+
+    const QJsonObject abund = o.value(QLatin1String("abund")).toObject();
+    f->abundances  = abundanceMapFromJson(abund.value("c1").toObject());
+    f->abundances2 = abundanceMapFromJson(abund.value("c2").toObject());
+
+    f->hasTelluric          = rB(o, "hasTelluric");
+    f->telluricAirmass      = rD(o, "tellAirmass");
+    f->telluricAirmassError = rD(o, "tellAirmassErr", 0.0);
+    f->telluricPwv          = rD(o, "tellPwv");
+    f->telluricPwvError     = rD(o, "tellPwvErr", 0.0);
+    f->telluricBarycorr     = rD(o, "tellBarycorr");
+
     f->modelWavelengths = br.getDoubles(rI(o, "b_modelWl", -1));
     f->modelFluxes      = br.getDoubles(rI(o, "b_modelFlux", -1));
     f->rebinnedFluxes   = br.getDoubles(rI(o, "b_rebinFlux", -1));
     f->rebinnedSigmas   = br.getDoubles(rI(o, "b_rebinSig", -1));
     f->modelSplines     = br.getDoubles(rI(o, "b_splines", -1));
     f->modelIgnore      = br.getBytes(rI(o, "b_ignore", -1));
+    f->modelFluxesComp1 = br.getDoubles(rI(o, "b_modelC1", -1));
+    f->modelFluxesComp2 = br.getDoubles(rI(o, "b_modelC2", -1));
+    f->telluricTransmission = br.getDoubles(rI(o, "b_telluric", -1));
     return f;
 }
 
@@ -1071,6 +1187,21 @@ QJsonObject starToJson(Star &s, BlobPool &bp,
     pD(o, "e_logg_down", s.getELoggDown());
     pD(o, "e_he_up", s.getEHeUp());
     pD(o, "e_he_down", s.getEHeDown());
+    // Element abundances, keyed like the database columns. Only elements the
+    // star actually has a value for are written; reading them all would
+    // allocate the star's lazy per-element storage for nothing.
+    if (s.hasAbundances()) {
+        const auto &elements = astra::elements::all();
+        for (int i = 0; i < elements.size(); ++i) {
+            const double v = s.getAbundance(i);
+            if (std::isnan(v))
+                continue;
+            const QString &suffix     = elements[i].dbSuffix;
+            o["abund_" + suffix]      = jD(v);
+            o["e_abund_" + suffix]    = jD(s.getEAbundance(i));
+            o["abund_" + suffix + "_limit"] = s.getAbundanceLimit(i);
+        }
+    }
     // RV scalar
     pD(o, "logp", s.getLogP());
     pD(o, "deltaRV", s.getDeltaRV());
@@ -1259,6 +1390,19 @@ starFromJson(const QJsonObject &o, BlobReader &br,
     s->setELoggDown(rD(o, "e_logg_down"));
     s->setEHeUp(rD(o, "e_he_up"));
     s->setEHeDown(rD(o, "e_he_down"));
+    {
+        const auto &elements = astra::elements::all();
+        for (int i = 0; i < elements.size(); ++i) {
+            const QString &suffix = elements[i].dbSuffix;
+            const double   v = o.value("abund_" + suffix).toDouble(kNaN);
+            if (std::isnan(v))
+                continue;
+            s->setAbundance(i, v);
+            s->setEAbundance(i, o.value("e_abund_" + suffix).toDouble(kNaN));
+            s->setAbundanceLimit(
+                i, o.value("abund_" + suffix + "_limit").toInt(0));
+        }
+    }
     s->setLogP(rD(o, "logp"));
     s->setDeltaRV(rD(o, "deltaRV"));
     s->setEDeltaRV(rD(o, "e_deltaRV"));

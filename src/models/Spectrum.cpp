@@ -8,6 +8,14 @@
 #include <QDebug>
 #include "utils/Logger.h"
 
+// Trailing extension block of a SpectralFit data file. The original format is
+// six length-prefixed arrays with no version field, so there is nowhere to bump
+// a version: new arrays are appended behind this magic instead. A reader that
+// finds anything else (or nothing) after modelIgnore is looking at a file
+// written before the extension existed.
+static constexpr quint32 kFitExtMagic   = 0xA57EA001;
+static constexpr quint32 kFitExtVersion = 1;
+
 // SpectralFit implementation
 SpectralFit::SpectralFit()
     : isBestFit(false)
@@ -240,6 +248,18 @@ bool SpectralFit::saveDataToFile(const QString &filepath) {
         for (const auto& v : rebinnedSigmas)   s << v;
         for (const auto& v : modelSplines)     s << v;
         for (const auto& v : modelIgnore)      s << static_cast<quint8>(v);
+
+        // Extension: per-component models and the fitted telluric transmission.
+        // Appended after the original six arrays so an older reader simply
+        // stops before it.
+        s << kFitExtMagic << kFitExtVersion;
+        auto writeArray = [&s](const std::vector<double>& v) {
+            s << static_cast<quint32>(v.size());
+            for (const auto& x : v) s << x;
+        };
+        writeArray(modelFluxesComp1);
+        writeArray(modelFluxesComp2);
+        writeArray(telluricTransmission);
     }
     return DataStore::writeCompressed(filepath, DataStore::SpectralFitData,
                                       buffer);
@@ -264,6 +284,9 @@ bool SpectralFit::loadDataFromFile(const QString& filepath)
             return false;
         }
 
+        // Minimum size the headers imply. A file may legitimately be larger:
+        // everything after modelIgnore is the optional extension block read at
+        // the end of this function.
         quint64 expectedBytes = (quint64(wlN) + fN + rbfN + rbsN + splN) * sizeof(double)
                               + ignN * sizeof(quint8);
         quint64 headerBytes = legacy ? 8 : 24;
@@ -297,7 +320,51 @@ bool SpectralFit::loadDataFromFile(const QString& filepath)
         modelIgnore.clear(); modelIgnore.reserve(ignN);
         for (quint32 i = 0; i < ignN; ++i) { quint8 v; s >> v; modelIgnore.push_back(v); }
 
-        return s.status() == QDataStream::Ok;
+        if (s.status() != QDataStream::Ok) return false;
+
+        // Optional extension block. Absent in every file written before it
+        // existed, so a stream that ends here — or holds anything other than
+        // the magic — just leaves these three arrays empty; the six arrays
+        // above are already valid either way.
+        modelFluxesComp1.clear();
+        modelFluxesComp2.clear();
+        telluricTransmission.clear();
+
+        if (!s.atEnd()) {
+            quint32 magic = 0;
+            s >> magic;
+            if (s.status() == QDataStream::Ok && magic == kFitExtMagic) {
+                quint32 version = 0;
+                s >> version;
+
+                auto readExtArray = [&s](std::vector<double>& vec) -> bool {
+                    quint32 n = 0;
+                    s >> n;
+                    if (s.status() != QDataStream::Ok) return false;
+                    // Never let a corrupt count turn into a huge reserve().
+                    const QIODevice* dev = s.device();
+                    if (dev && quint64(n) * sizeof(double) >
+                                   quint64(dev->bytesAvailable()))
+                        return false;
+                    vec.clear(); vec.reserve(n);
+                    for (quint32 i = 0; i < n; ++i) { double v; s >> v; vec.push_back(v); }
+                    return s.status() == QDataStream::Ok;
+                };
+
+                if (!(readExtArray(modelFluxesComp1) &&
+                      readExtArray(modelFluxesComp2) &&
+                      readExtArray(telluricTransmission))) {
+                    LOG_WARNING_F("SpectralFit",
+                        QString("Truncated extension block (v%1); keeping the "
+                                "combined model only").arg(version));
+                    modelFluxesComp1.clear();
+                    modelFluxesComp2.clear();
+                    telluricTransmission.clear();
+                }
+            }
+        }
+
+        return true;
     };
 
     QByteArray buf;

@@ -107,6 +107,30 @@ public:
     void setEHeUp(double e)   { _e_he_up = e; }
     void setEHeDown(double e) { _e_he_down = e; }
 
+    // ── Element abundances ──────────────────────────────────────────────────
+    // One slot per element in astra::elements::all(), indexed the same way;
+    // taken from component 1 of the star's best spectral fit. The value is
+    // log10 of the fractional particle number (GAEL's convention). `limit` is
+    // -1 when the fit pinned the abundance at the bottom of its grid axis (an
+    // upper limit), +1 at the top (a lower limit) and 0 for a measurement.
+    // NaN value = the star has no abundance for that element.
+    double getAbundance(int elementIndex) const;
+    void   setAbundance(int elementIndex, double v);
+    double getEAbundance(int elementIndex) const;
+    void   setEAbundance(int elementIndex, double v);
+    int    getAbundanceLimit(int elementIndex) const;
+    void   setAbundanceLimit(int elementIndex, int side);
+
+    // Same, addressed by grid species name ("FE"); a no-op / NaN for an
+    // element ASTRA does not carry a column for.
+    double getAbundanceBySymbol(const QString& symbol) const;
+    void   setAbundanceBySymbol(const QString& symbol, double v);
+
+    /// Drop every element abundance back to "unset".
+    void   clearAbundances();
+    /// True when at least one element has a value.
+    bool   hasAbundances() const;
+
     // Radial velocity fields
     double getLogP() const { return _logp; }
     double getDeltaRV() const { return _deltaRV; }
@@ -506,6 +530,14 @@ private:
     double _e_logg_down = AsymErr::unset;
     double _e_he_up     = AsymErr::unset;
     double _e_he_down   = AsymErr::unset;
+
+    // Element abundances, parallel to astra::elements::all(). Sized lazily by
+    // ensureAbundanceStorage() so that a Star costs nothing extra until one is
+    // actually set; NaN = unset.
+    mutable std::vector<double> _abundance;
+    mutable std::vector<double> _e_abundance;
+    mutable std::vector<int>    _abundanceLimit;
+    void ensureAbundanceStorage() const;
 
     // Radial velocity fields
     double _logp;
