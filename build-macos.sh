@@ -732,7 +732,14 @@ if [[ "${ASTRA_BUNDLE_ISIS}" == "1" ]]; then
       ( cd stellar_isisscripts && make )
       if [[ -f stellar_isisscripts/slirp/c_functions.h ]]; then
         ( cd stellar_isisscripts/slirp
-          "${ISIS_PREFIX}/bin/slirp" -make -lm -lgsl -lgslcblas -lpthread \
+          # c_functions.h includes <gsl/...> and the module links -lgsl, neither
+          # of which resolves from a Homebrew keg on the default search paths —
+          # the same miss that breaks slgsl in build-macos-isis.sh. slirp passes
+          # -I/-L straight through into the Makefile it generates.
+          STELLAR_GSL="$(brew --prefix gsl)"
+          "${ISIS_PREFIX}/bin/slirp" -make \
+            -I "${STELLAR_GSL}/include" -L "${STELLAR_GSL}/lib" \
+            -lm -lgsl -lgslcblas -lpthread \
             c_functions.h c_functions.o
           [[ -f Makefile ]] && make ) || echo "WARN: stellar c_functions build failed (continuing)"
       fi )

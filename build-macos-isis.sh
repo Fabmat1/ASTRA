@@ -206,12 +206,14 @@ clone_jedsoft() {
     || git clone --depth 1 "git://git.jedsoft.org/git/${repo}" "${dest}"
 }
 
+# Trailing arguments are passed through to the package's ./configure, for the
+# ones that need to be pointed at a Homebrew keg (see slgsl below).
 build_slang_pkg() {
-  local name="$1" repo="$2"
+  local name="$1" repo="$2"; shift 2
   echo ">>> S-Lang package: ${name}"
   clone_jedsoft "${WORK}/${name}" "${repo}"
   ( cd "${WORK}/${name}"
-    ./configure --prefix="${PREFIX}" --with-slang="${PREFIX}"
+    ./configure --prefix="${PREFIX}" --with-slang="${PREFIX}" "$@"
     make -j"${JOBS}"
     make install )
 }
@@ -253,11 +255,14 @@ patch_isis_rpath_darwin() {
   local mk
   while IFS= read -r mk; do
     grep -q -- '--disable-new-dtags' "${mk}" || continue
+    # %seen: configure appends the slang dir once per library it probes, so the
+    # list arrives with duplicates and every link would warn "duplicate -rpath".
     perl -i -pe 's{^(RPATH\s*=\s*)(.*--disable-new-dtags.*)$}{
                     my ($l, $r) = ($1, $2);
+                    my %seen;
                     $r =~ s/-Wl,--disable-new-dtags,-rpath,//g;
                     $l . join(" ", map { "-Wl,-rpath,$_" }
-                                   grep { length } split(/:/, $r))
+                                   grep { length && !$seen{$_}++ } split(/:/, $r))
                   }e' "${mk}"
     echo "      $(grep -m1 '^RPATH[[:space:]]*=' "${mk}") (${mk#./})"
   done < <(find . -name Makefile)
@@ -292,7 +297,15 @@ CFITSIO_PREFIX="$(brew --prefix cfitsio)"
   make install )
 
 # ── 4. S-Lang modules the isisscripts pull in ───────────────────────────────
-build_slang_pkg slgsl  slgsl.git
+# slgsl's configure probes only the standard prefixes for GSL, so on Apple
+# Silicon Homebrew (/opt/homebrew) it dies with "unable to find the gsl library
+# and header file gsl/gsl_const_cgsm.h" — the same miss --with-cfitsio fixes for
+# ISIS above. --with-gsl=DIR takes DIR/lib + DIR/include, which is exactly a keg
+# layout. slxfig, slirp and jed need nothing but S-Lang.
+GSL_PREFIX="$(brew --prefix gsl)"
+[[ -f "${GSL_PREFIX}/include/gsl/gsl_const_cgsm.h" ]] \
+  || { echo "gsl headers not found under ${GSL_PREFIX} (brew install gsl)."; exit 1; }
+build_slang_pkg slgsl  slgsl.git --with-gsl="${GSL_PREFIX}"
 build_slang_pkg slxfig slxfig.git
 build_slang_pkg slirp  slirp.git
 
