@@ -82,7 +82,8 @@ private:
 
     // ── Bootstrap tab helpers
     void bsReplot();
-    void bsAddPeakItem(double period, double sigma, double chi2, double prob);
+    void bsAddPeakItem(double period, double sigma, double chi2, double prob,
+                       int nAlias = 0);
     void bsInitParamBounds();   // seed K / γ bounds from the RV span
 
     rv_mcmc::MCMCConfig collectMCMCConfig() const;
@@ -220,11 +221,16 @@ private:
     QSpinBox*       _bsPeakCount    = nullptr;
     QPushButton*    _bsDetectBtn    = nullptr;
     QListWidget*    _bsPeaksList    = nullptr;
+    QCheckBox*      _bsAliasGroup   = nullptr;   // treat an alias comb as 1 peak
+    QDoubleSpinBox* _bsAliasSens    = nullptr;   // envelope width ×alias spacing
     QDoubleSpinBox* _bsPeriodTol    = nullptr;   // ×σ_P prior width for re-fit
     QPushButton*    _bsFitBtn       = nullptr;
 
     Periodogram::Grid _bsGrid;          // frequency grid scanned
     QVector<double>   _bsChi2;          // data χ² per grid cell (freq order)
+    // χ² of the wrapping (alias-envelope) function, same grid as _bsChi2.
+    // Empty unless alias grouping produced one; drawn on top of the landscape.
+    QVector<double>   _bsEnvelope;
     double            _bsChi2Min = 0.0; // best χ² over the landscape
     double            _bsScale   = 1.0; // χ²_min / dof (error rescaling)
     int               _bsTabIndex = -1;

@@ -42,6 +42,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cmath>
+#include <deque>
 #include <limits>
 #include <memory>
 #include <numeric>
@@ -56,7 +57,10 @@ RVAddFitDialog::RVAddFitDialog(std::shared_ptr<Star> star,
       _curve(std::move(curve)), _dbm(dbm)
 {
     setWindowTitle("Add RV solution");
-    resize(820, 680);
+    // Wide enough that the χ²/periodogram plots keep a usable width while the
+    // control column shows its widest row (the "Optimal … Compute" button pair)
+    // without falling back to a scroll bar.
+    resize(1180, 760);
 
     auto* outer = new QVBoxLayout(this);
     _tabs = new QTabWidget(this);
@@ -337,13 +341,6 @@ void RVAddFitDialog::buildMCMCTab(QWidget *parent) {
 void RVAddFitDialog::buildPhotTab(QWidget* parent)
 {
     auto* lay = new QVBoxLayout(parent);
-
-    auto* info = new QLabel(
-        "Select one or more photometric period peaks. For each peak we "
-        "perform a Levenberg–Marquardt least-squares fit of a circular RV "
-        "model, constrained to the photometric period ± its uncertainty.");
-    info->setWordWrap(true);
-    lay->addWidget(info);
 
     _photPeaksList = new QListWidget;
     _photPeaksList->setSelectionMode(QAbstractItemView::ExtendedSelection);
@@ -1850,14 +1847,6 @@ void RVAddFitDialog::buildPeriodogramTab(QWidget* parent)
     auto* outer = new QVBoxLayout(parent);
     outer->setContentsMargins(4, 4, 4, 4);
 
-    auto* info = new QLabel(
-        "Compute a Lomb–Scargle periodogram of the RV curve, optionally "
-        "multiply it (period-wise) with existing light-curve periodograms to "
-        "narrow the candidate periods, then detect peaks and fit them with the "
-        "LM solver to add as solutions.");
-    info->setWordWrap(true);
-    outer->addWidget(info);
-
     auto* splitter = new QSplitter(Qt::Horizontal, parent);
 
     // ── Left: plot + small toolbar ───────────────────────────────────
@@ -2403,17 +2392,6 @@ void RVAddFitDialog::buildBootstrapTab(QWidget* parent)
     auto* outer = new QVBoxLayout(parent);
     outer->setContentsMargins(4, 4, 4, 4);
 
-    auto* info = new QLabel(
-        "Scan a period grid: at every grid point a Levenberg–Marquardt circular "
-        "RV fit is run, bounded to its grid cell (half-way to each neighbour, so "
-        "the whole period range is covered). The data χ² of each final fit forms "
-        "a landscape whose minima are candidate periods. Re-fit a minimum to get "
-        "the full solution with errors; its probability of being the true period "
-        "is its posterior mass (Laplace approximation) measured against the "
-        "integral of the whole probability landscape.");
-    info->setWordWrap(true);
-    outer->addWidget(info);
-
     auto* splitter = new QSplitter(Qt::Horizontal, parent);
 
     // ── Left: plot + toolbar ─────────────────────────────────────────
@@ -2460,8 +2438,11 @@ void RVAddFitDialog::buildBootstrapTab(QWidget* parent)
     ctlLay->setContentsMargins(6, 6, 6, 6);
     ctlLay->setSpacing(8);
     ctlScroll->setWidget(ctl);
-    ctlScroll->setMinimumWidth(330);
-    ctlScroll->setMaximumWidth(440);
+    // Wider floor than the other tabs: the K / γ rows put two full-range
+    // spin boxes side by side, and horizontal scrolling is off, so anything
+    // narrower clips the "Run scan" row rather than scrolling to it.
+    ctlScroll->setMinimumWidth(390);
+    ctlScroll->setMaximumWidth(470);
 
     auto mk = [](double mn, double mx, int dec, double step) {
         auto* s = new PreciseDoubleSpinBox;
@@ -2555,6 +2536,36 @@ void RVAddFitDialog::buildBootstrapTab(QWidget* parent)
     _bsDetectBtn = new QPushButton("Detect minima");
     peakTop->addWidget(_bsDetectBtn);
     peakLay->addLayout(peakTop);
+
+    // Alias grouping: a sparsely sampled RV curve turns one true period into a
+    // comb of near-equally strong minima. Reporting them individually splits
+    // the posterior across dozens of entries and none of them looks likely;
+    // grouping them under the envelope they follow gives the physically
+    // meaningful answer ("this period, aliased" instead of "50 candidates").
+    _bsAliasGroup = new QCheckBox("Group aliases under their envelope");
+    _bsAliasGroup->setToolTip(
+        "Detect the wrapping function the alias minima follow and report one "
+        "peak per envelope lobe, carrying the summed probability of every "
+        "alias in it. The reported period is the strongest single alias of the "
+        "lobe (not its centre, which can fall in a valley).");
+    peakLay->addWidget(_bsAliasGroup);
+
+    auto* aliasRow = new QHBoxLayout;
+    aliasRow->addWidget(new QLabel("Sensitivity:"));
+    _bsAliasSens = new QDoubleSpinBox;
+    _bsAliasSens->setRange(0.10, 20.0);
+    _bsAliasSens->setDecimals(2);
+    _bsAliasSens->setSingleStep(0.25);
+    _bsAliasSens->setValue(2.0);
+    _bsAliasSens->setEnabled(false);
+    _bsAliasSens->setToolTip(
+        "Width of the envelope in multiples of the measured spacing between "
+        "distinguishable minima. Larger merges more aliases into a single "
+        "peak; smaller resolves the comb into more, narrower groups. The "
+        "envelope is drawn on the plot, so the effect is visible immediately.");
+    aliasRow->addWidget(_bsAliasSens, 1);
+    peakLay->addLayout(aliasRow);
+
     _bsPeaksList = new QListWidget;
     _bsPeaksList->setSelectionMode(QAbstractItemView::ExtendedSelection);
     _bsPeaksList->setMinimumHeight(120);
@@ -2562,6 +2573,20 @@ void RVAddFitDialog::buildBootstrapTab(QWidget* parent)
     ctlLay->addWidget(peakBox);
 
     connect(_bsDetectBtn, &QPushButton::clicked, this, &RVAddFitDialog::onBsDetectPeaks);
+
+    // Re-detect live when the grouping settings change, but only once a scan
+    // exists (otherwise onBsDetectPeaks would pop its "run the scan first" box).
+    auto redetect = [this]{
+        if (_bsGrid.isValid() && _bsChi2.size() >= 5) onBsDetectPeaks();
+    };
+    connect(_bsAliasGroup, &QCheckBox::toggled, this, [this, redetect](bool on){
+        _bsAliasSens->setEnabled(on);
+        redetect();
+    });
+    connect(_bsAliasSens, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+            this, [this, redetect](double){
+        if (_bsAliasGroup->isChecked()) redetect();
+    });
 
     // Fit options
     auto* fitBox  = new QGroupBox("Fit selected minima (LM)");
@@ -2754,6 +2779,7 @@ void RVAddFitDialog::onBsRun()
             self->_bsScale   = std::max(1e-12, self->_bsChi2Min / dof);
 
             self->_bsPeaksList->clear();
+            self->_bsEnvelope.clear();
             self->bsReplot();
             if (self->_bsInfoLabel)
                 self->_bsInfoLabel->setText(
@@ -2806,27 +2832,41 @@ void RVAddFitDialog::bsReplot()
                 Z += std::exp(-(c - _bsChi2Min) / (2.0 * _bsScale)) * df;
             }
         }
-        QVector<double> x, yv;
-        x.reserve(Nf); yv.reserve(Nf);
-        for (int i = 0; i < Nf; ++i) {
-            const double f = _bsGrid.f0 + i * df;
-            const double c = _bsChi2[i];
-            if (!std::isfinite(c) || !(f > 0.0)) continue;
-            x.append(periodMode ? 1.0 / f : f);
-            if (pdfMode) {
-                const double pf = (Z > 0.0)
-                    ? std::exp(-(c - _bsChi2Min) / (2.0 * _bsScale)) / Z : 0.0;
-                yv.append(periodMode ? pf * f * f : pf);
-            } else {
-                yv.append(c);
+        // Both the landscape and its alias envelope go through the same
+        // transform, so the envelope keeps wrapping the curve in either Y mode.
+        auto plotCurve = [&](const QVector<double>& chi2, const QString& name,
+                             const QPen& pen) {
+            QVector<double> x, yv;
+            x.reserve(Nf); yv.reserve(Nf);
+            for (int i = 0; i < Nf && i < chi2.size(); ++i) {
+                const double f = _bsGrid.f0 + i * df;
+                const double c = chi2[i];
+                if (!std::isfinite(c) || !(f > 0.0)) continue;
+                x.append(periodMode ? 1.0 / f : f);
+                if (pdfMode) {
+                    const double pf = (Z > 0.0)
+                        ? std::exp(-(c - _bsChi2Min) / (2.0 * _bsScale)) / Z : 0.0;
+                    yv.append(periodMode ? pf * f * f : pf);
+                } else {
+                    yv.append(c);
+                }
             }
-        }
-        auto* g = _bsPlot->addGraph();
-        g->setName(pdfMode ? "Probability density" : "χ²");
+            auto* g = _bsPlot->addGraph();
+            g->setName(name);
+            g->setPen(pen);
+            g->setAdaptiveSampling(true);
+            g->setData(x, yv, false);
+        };
+
         QPen pen(PanelUtils::lcColor(0)); pen.setWidthF(1.2);
-        g->setPen(pen);
-        g->setAdaptiveSampling(true);
-        g->setData(x, yv, false);
+        plotCurve(_bsChi2, pdfMode ? "Probability density" : "χ²", pen);
+
+        if (_bsEnvelope.size() >= Nf) {
+            QPen epen(PanelUtils::lcColor(3));
+            epen.setWidthF(1.6);
+            plotCurve(_bsEnvelope, "Alias envelope", epen);
+        }
+        _bsPlot->legend->setVisible(_bsPlot->graphCount() > 1);
     }
 
     // Candidate minima markers.
@@ -2851,21 +2891,66 @@ void RVAddFitDialog::bsReplot()
 }
 
 void RVAddFitDialog::bsAddPeakItem(double period, double sigma,
-                                   double chi2, double prob)
+                                   double chi2, double prob, int nAlias)
 {
     if (!_bsPeaksList || !(period > 0)) return;
     const double s = (sigma > 0 && std::isfinite(sigma)) ? sigma : 0.0;
-    QString text = QString("P = %1 ± %2 d   (χ² %3, P=%4%)")
+    QString text = QString("P = %1 ± %2 d   (χ² %3, P=%4%%5)")
         .arg(period, 0, 'f', 6)
         .arg(s,      0, 'f', 6)
         .arg(chi2,   0, 'f', 2)
-        .arg(prob * 100.0, 0, 'f', 1);
+        .arg(prob * 100.0, 0, 'f', 1)
+        .arg(nAlias > 1 ? QString(", %1 aliases").arg(nAlias) : QString());
     auto* item = new QListWidgetItem(text, _bsPeaksList);
     item->setData(Qt::UserRole + 0, period);
     item->setData(Qt::UserRole + 1, s);
     item->setData(Qt::UserRole + 2, prob);
+    item->setData(Qt::UserRole + 3, nAlias);
     item->setSelected(true);
 }
+
+// ───────────────────────────────────────────────────────────────────
+namespace {
+
+// Sliding-window minimum, half-width w, edges clamped. Monotonic deque, O(N):
+// the landscape can hold millions of cells and the window is typically a large
+// fraction of an alias period, so the naive O(N·w) scan is not an option.
+QVector<double> slidingMin(const QVector<double>& v, int w)
+{
+    const int n = v.size();
+    QVector<double> out(n);
+    std::deque<int> dq;                 // indices, values increasing
+    for (int j = 0; j < n; ++j) {
+        while (!dq.empty() && v[dq.back()] >= v[j]) dq.pop_back();
+        dq.push_back(j);
+        const int i = j - w;            // the output whose window ends at j
+        if (i < 0) continue;
+        while (dq.front() < i - w) dq.pop_front();
+        out[i] = v[dq.front()];
+    }
+    for (int i = std::max(0, n - w); i < n; ++i) {   // truncated tail windows
+        while (dq.front() < i - w) dq.pop_front();
+        out[i] = v[dq.front()];
+    }
+    return out;
+}
+
+// Sliding-window mean, half-width w, edges clamped (prefix sums, O(N)).
+QVector<double> slidingMean(const QVector<double>& v, int w)
+{
+    const int n = v.size();
+    QVector<double> out(n);
+    std::vector<double> pre(n + 1, 0.0);
+    for (int i = 0; i < n; ++i) pre[i + 1] = pre[i] + v[i];
+    for (int i = 0; i < n; ++i) {
+        const int lo = std::max(0, i - w);
+        const int hi = std::min(n - 1, i + w);
+        out[i] = (pre[hi + 1] - pre[lo]) / double(hi - lo + 1);
+    }
+    return out;
+}
+
+} // namespace
 
 // ───────────────────────────────────────────────────────────────────
 void RVAddFitDialog::onBsDetectPeaks()
@@ -2876,52 +2961,41 @@ void RVAddFitDialog::onBsDetectPeaks()
         return;
     }
 
-    // Strict local minima of the χ² landscape.
-    QVector<int> cand;
-    for (int i = 1; i < Nf - 1; ++i) {
-        const double c = _bsChi2[i];
-        if (std::isfinite(c) && c < _bsChi2[i-1] && c < _bsChi2[i+1])
-            cand.append(i);
-    }
-    std::sort(cand.begin(), cand.end(),
-              [this](int a, int b){ return _bsChi2[a] < _bsChi2[b]; });
+    const double f0 = _bsGrid.f0;
+    const double h  = _bsGrid.df;
 
-    const int maxPeaks = _bsPeakCount->value();
-    const double minRelSep = 0.02;
-    QVector<int> chosen;
-    for (int i : cand) {
-        if (chosen.size() >= maxPeaks) break;
-        const double fi = _bsGrid.f0 + i * _bsGrid.df;
-        bool close = false;
-        for (int j : chosen) {
-            const double fj = _bsGrid.f0 + j * _bsGrid.df;
-            if (std::abs(fi - fj) / std::max(fi, 1e-30) < minRelSep) { close = true; break; }
-        }
-        if (!close) chosen.append(i);
-    }
-
-    // Total probability mass of the whole landscape: Z = Σ L over every grid
-    // cell (the df factor is common to Z and each basin below, so it cancels).
+    // Relative likelihood of a cell, and the mass of the whole landscape:
+    // Z = Σ L over every grid cell (the df factor is common to Z and to every
+    // basin below, so it cancels out of the reported probabilities).
+    auto like = [this](double c) {
+        return std::isfinite(c)
+             ? std::exp(-(c - _bsChi2Min) / (2.0 * _bsScale)) : 0.0;
+    };
     double Zland = 0.0;
-    for (int k = 0; k < Nf; ++k) {
-        const double c = _bsChi2[k];
-        if (std::isfinite(c))
-            Zland += std::exp(-(c - _bsChi2Min) / (2.0 * _bsScale));
-    }
+    for (int k = 0; k < Nf; ++k) Zland += like(_bsChi2[k]);
+    const double invZ = (Zland > 0.0) ? 1.0 / Zland : 0.0;
 
-    // Parabolic refinement (in frequency) → refined P, σ_P and vertex χ²; plus
-    // the posterior probability contained in each minimum's basin (the integral
-    // of the normalised PDF over the χ² valley around it).
-    struct Cand { double P, sigP, chi2v, prob; };
-    QVector<Cand> peaks;
-    const double h = _bsGrid.df;
-    for (int i : chosen) {
+    // ── every strict local minimum, parabolically refined ────────────────
+    // Each carries the posterior mass of its own χ² basin: walk outward to the
+    // crest on either side (where the landscape turns back down towards a
+    // neighbouring minimum) and sum L there. Strict comparisons keep adjacent
+    // basins disjoint, so the masses sum to ≤ 1 — the remainder is mass in
+    // minima that were not selected. This answers "is this the correct period
+    // over the whole scanned range?", not "which of these candidates wins?".
+    struct Minimum {
+        int    idx;                       // grid cell
+        double P, sigP, chi2v, mass;
+    };
+    QVector<Minimum> mins;
+    for (int i = 1; i < Nf - 1; ++i) {
         const double ym = _bsChi2[i-1], y0 = _bsChi2[i], yp = _bsChi2[i+1];
-        const double denom = (ym - 2.0*y0 + yp);   // > 0 for a strict minimum
-        const double fi = _bsGrid.f0 + i * _bsGrid.df;
+        if (!std::isfinite(y0) || !(y0 < ym) || !(y0 < yp)) continue;
+
+        const double fi = f0 + i * h;
         double fPeak = fi, chi2v = y0, sigP = 0.0;
-        if (denom > 0.0) {
-            const double kk = (ym - yp) / (2.0 * denom);    // vertex offset (cells)
+        const double denom = (ym - 2.0*y0 + yp);   // > 0 for a strict minimum
+        if (std::isfinite(ym) && std::isfinite(yp) && denom > 0.0) {
+            const double kk = (ym - yp) / (2.0 * denom);   // vertex offset (cells)
             fPeak = fi + kk * h;
             chi2v = y0 - (yp - ym)*(yp - ym) / (8.0 * denom);
             // Δ(rescaled χ²)=1 ⇒ σ_f = h·√(2·s/denom); σ_P = σ_f / f².
@@ -2930,36 +3004,136 @@ void RVAddFitDialog::onBsDetectPeaks()
         }
         if (!(fPeak > 0.0)) continue;
 
-        // Integrate the PDF over this minimum's basin: walk outward from the
-        // grid minimum to the χ² crest on each side (where the landscape turns
-        // back down towards a neighbouring minimum), then sum L there. Strict
-        // comparisons keep adjacent basins disjoint, so the peak probabilities
-        // sum to ≤ 1 — the remainder is mass in undetected minima elsewhere in
-        // the scanned range. This answers "is this the correct period over the
-        // whole range?" rather than only comparing the detected candidates.
         int lo = i, hi = i;
         while (lo > 0      && _bsChi2[lo-1] > _bsChi2[lo]) --lo;
         while (hi < Nf - 1 && _bsChi2[hi+1] > _bsChi2[hi]) ++hi;
-        double basin = 0.0;
-        for (int k = lo; k <= hi; ++k) {
-            const double c = _bsChi2[k];
-            if (std::isfinite(c))
-                basin += std::exp(-(c - _bsChi2Min) / (2.0 * _bsScale));
-        }
-        const double prob = (Zland > 0.0) ? std::min(1.0, basin / Zland) : 0.0;
-        peaks.append({1.0 / fPeak, sigP, std::min(chi2v, y0), prob});
+        double mass = 0.0;
+        for (int k = lo; k <= hi; ++k) mass += like(_bsChi2[k]);
+
+        mins.append({i, 1.0 / fPeak, sigP, std::min(chi2v, y0), mass});
     }
 
-    // Present sorted by period for a stable reading order.
-    QVector<int> order(peaks.size());
-    std::iota(order.begin(), order.end(), 0);
-    std::sort(order.begin(), order.end(),
-              [&](int a, int b){ return peaks[a].P < peaks[b].P; });
+    const int  maxPeaks = _bsPeakCount->value();
+    const bool grouped  = _bsAliasGroup && _bsAliasGroup->isChecked()
+                          && mins.size() >= 2;
 
+    // Minima ranked by posterior mass, then thinned so the same dip cannot be
+    // reported twice through the jitter on its floor. Serves as the ungrouped
+    // candidate list and, in grouped mode, as the sample the alias pitch is
+    // measured from.
+    constexpr double kMinRelSep = 0.02;
+    QVector<int> byMass(mins.size());
+    std::iota(byMass.begin(), byMass.end(), 0);
+    std::sort(byMass.begin(), byMass.end(),
+              [&](int a, int b){ return mins[a].mass > mins[b].mass; });
+
+    auto separated = [&](int limit) {
+        QVector<int> out;
+        for (int k : byMass) {
+            if (out.size() >= limit) break;
+            const double fi = 1.0 / mins[k].P;
+            bool close = false;
+            for (int j : out)
+                if (std::abs(fi - 1.0/mins[j].P) / std::max(fi, 1e-30) < kMinRelSep) {
+                    close = true; break;
+                }
+            if (!close) out.append(k);
+        }
+        return out;
+    };
+
+    struct Peak { double P, sigP, chi2v, prob; int nAlias; };
+    QVector<Peak> peaks;
+    _bsEnvelope.clear();
+
+    if (!grouped) {
+        for (int k : separated(maxPeaks))
+            peaks.append({ mins[k].P, mins[k].sigP, mins[k].chi2v,
+                           std::min(1.0, mins[k].mass * invZ), 0 });
+    } else {
+        // ── alias grouping ───────────────────────────────────────────────
+        // Sparse sampling reproduces one true period as a comb of nearly
+        // equally deep minima, splitting its posterior across dozens of
+        // entries. The median gap between the strongest distinguishable minima
+        // measures the comb's pitch; a few unrelated minima in between do not
+        // move a median.
+        const QVector<int> sep = separated(200);
+        QVector<double> fx;
+        fx.reserve(sep.size());
+        for (int k : sep) fx.append(1.0 / mins[k].P);
+        std::sort(fx.begin(), fx.end());
+        QVector<double> gaps;
+        gaps.reserve(std::max<qsizetype>(0, fx.size() - 1));
+        for (int k = 1; k < fx.size(); ++k) gaps.append(fx[k] - fx[k-1]);
+        std::sort(gaps.begin(), gaps.end());
+        double pitch = gaps.isEmpty() ? h : gaps[gaps.size() / 2];
+        if (!(pitch > 0.0)) pitch = h;
+
+        const double sens = _bsAliasSens ? _bsAliasSens->value() : 2.0;
+        int w = int(std::lround(sens * pitch / h));        // half-width, cells
+        w = std::clamp(w, 1, std::max(1, Nf / 4));
+
+        // The wrapping function: a running minimum over roughly one alias pitch
+        // rides the tips of the comb, and a running mean turns that staircase
+        // into a smooth curve with one lobe per group of aliases. Working in χ²
+        // rather than in likelihood keeps this well conditioned — the
+        // likelihood underflows to zero far from the best cell.
+        double cWorst = _bsChi2Min;
+        for (int k = 0; k < Nf; ++k)
+            if (std::isfinite(_bsChi2[k])) cWorst = std::max(cWorst, _bsChi2[k]);
+        QVector<double> filled(Nf);
+        for (int k = 0; k < Nf; ++k)
+            filled[k] = std::isfinite(_bsChi2[k]) ? _bsChi2[k] : cWorst;
+
+        _bsEnvelope = slidingMean(slidingMin(filled, w), w);
+
+        // Split at the crests of the envelope: one segment per lobe. The
+        // ≥/> pair puts the boundary at the last cell of a flat crest.
+        QVector<int> crest;
+        crest.append(0);
+        for (int i = 1; i < Nf - 1; ++i)
+            if (_bsEnvelope[i] >= _bsEnvelope[i-1] && _bsEnvelope[i] > _bsEnvelope[i+1])
+                crest.append(i);
+        crest.append(Nf - 1);
+
+        int mi = 0;                       // mins is in increasing-index order
+        for (int b = 0; b + 1 < crest.size(); ++b) {
+            const int a = (b == 0) ? crest[0] : crest[b] + 1;   // disjoint
+            const int z = crest[b + 1];
+            if (a > z) continue;
+
+            while (mi < mins.size() && mins[mi].idx < a) ++mi;
+            int best = -1;
+            for (int k = mi; k < mins.size() && mins[k].idx <= z; ++k)
+                if (best < 0 || mins[k].chi2v < mins[best].chi2v) best = k;
+            if (best < 0) continue;       // lobe holds no minimum of its own
+
+            // How many aliases actually share this lobe's probability: the
+            // ones still within 5σ (Δχ²_rescaled ≤ 25) of its deepest.
+            int nAlias = 0;
+            for (int k = mi; k < mins.size() && mins[k].idx <= z; ++k)
+                if (mins[k].chi2v - mins[best].chi2v <= 25.0 * _bsScale) ++nAlias;
+
+            // Probability of the whole lobe: every alias belonging to it.
+            double mass = 0.0;
+            for (int k = a; k <= z; ++k) mass += like(_bsChi2[k]);
+
+            // Report the deepest single alias, NOT the lobe centre: the centre
+            // routinely lands in a valley between two aliases and would be a
+            // period the data actively reject.
+            peaks.append({ mins[best].P, mins[best].sigP, mins[best].chi2v,
+                           std::min(1.0, mass * invZ), nAlias });
+        }
+
+        std::sort(peaks.begin(), peaks.end(),
+                  [](const Peak& a, const Peak& b){ return a.prob > b.prob; });
+        if (peaks.size() > maxPeaks) peaks.resize(maxPeaks);
+    }
+
+    // Most probable first — that is the order the user wants to work down.
     _bsPeaksList->clear();
-    for (int idx : order)
-        bsAddPeakItem(peaks[idx].P, peaks[idx].sigP, peaks[idx].chi2v,
-                      peaks[idx].prob);
+    for (const auto& p : peaks)
+        bsAddPeakItem(p.P, p.sigP, p.chi2v, p.prob, p.nAlias);
     bsReplot();
 }
 
