@@ -261,9 +261,13 @@ patch_isis_rpath_darwin() {
                   }e' "${mk}"
     echo "      $(grep -m1 '^RPATH[[:space:]]*=' "${mk}") (${mk#./})"
   done < <(find . -name Makefile)
-  # Belt and braces: a stray copy would fail the same link the same way.
-  ! grep -rq -- '--disable-new-dtags' --include=Makefile . \
-    || { echo "ISIS Makefiles still carry --disable-new-dtags after patching."; return 1; }
+  # Belt and braces: a stray copy would fail the same link the same way. Check
+  # the generated Makefiles by name — a recursive grep would also hit configure
+  # and Changes.txt, which mention the flag legitimately.
+  while IFS= read -r mk; do
+    ! grep -q -- '--disable-new-dtags' "${mk}" \
+      || { echo "ISIS Makefile still carries --disable-new-dtags: ${mk#./}"; return 1; }
+  done < <(find . -name Makefile)
 }
 
 # cfitsio is mandatory for ISIS and its configure only searches the usual system

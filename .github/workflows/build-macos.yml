@@ -68,9 +68,13 @@ jobs:
       - name: Build .app and .dmg
         env:
           ASTRA_VERSION_OVERRIDE: ${{ steps.ver.outputs.stamp }}
-          # Fail the job if ISIS doesn't build/stage instead of quietly shipping
-          # a .dmg without it — how v0.5.5's first .dmg went out green but empty.
-          ASTRA_REQUIRE_ISIS: "1"
+          # Deliberately NOT setting ASTRA_REQUIRE_ISIS=1. It was added after
+          # v0.5.5 shipped a silently ISIS-less .dmg, but the cure was worse than
+          # the disease: v0.5.6 then shipped no .dmg at all, because one bad
+          # linker flag in ISIS's configure took the whole macOS release with it.
+          # An ISIS-less .dmg is degraded but usable; no .dmg is not. build-macos.sh
+          # raises a ::warning:: annotation in that case so it still can't pass
+          # unnoticed.
         run: ./build-macos.sh "${{ steps.ver.outputs.version }}"
 
       - name: Upload .dmg artifact

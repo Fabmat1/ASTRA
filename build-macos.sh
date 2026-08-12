@@ -33,9 +33,12 @@ ASTRA_BUNDLE_LCQUERY="${ASTRA_BUNDLE_LCQUERY:-1}" # lightcurvequery Python sourc
 # slow, very stable source build caches independently of this script) and
 # staged into the .app below. Unlike the AppImage's PGPLOT this one has no X11
 # drivers — see the header of build-macos-isis.sh for why. Failure to build it
-# is non-fatal by default: the .dmg still ships, just without the bundled ISIS.
-# Set ASTRA_REQUIRE_ISIS=1 (the release workflow does) to make it fatal instead,
-# so a tagged .dmg can never quietly go out without ISIS.
+# is non-fatal, including for releases: a .dmg without ISIS is still a usable
+# ASTRA (fitting falls back to a user-installed isis on PATH), and is a great
+# deal more useful than the no-.dmg-at-all that a hard failure produces. The
+# risk that buys — an ISIS-less .dmg going out unnoticed, as in v0.5.5 — is
+# covered by the CI annotation the failure branch emits rather than by refusing
+# to package. ASTRA_REQUIRE_ISIS=1 still restores the hard failure if wanted.
 ASTRA_BUNDLE_ISIS="${ASTRA_BUNDLE_ISIS:-1}"
 ASTRA_REQUIRE_ISIS="${ASTRA_REQUIRE_ISIS:-0}"
 LCURVE_REPO="${LCURVE_REPO:-https://github.com/Fabmat1/lcurve_re.git}"
@@ -502,6 +505,65 @@ for d in ${ADDED_RPATHS[@]+"${ADDED_RPATHS[@]}"}; do
   install_name_tool -delete_rpath "${d}" "${EXE}" 2>/dev/null || true
 done
 
+# ── 11a. dylibbundler post-fixups ───────────────────────────────────────────
+# dylibbundler rewrites every Mach-O it touches — the executable *and* the
+# libraries it copies into the libs dir — with the one -p prefix it was given.
+# That prefix is only correct for the executable: a library that now sits
+# *inside* libs/ has @loader_path == libs/, so a recorded
+# "@loader_path/libs/libfoo.dylib" resolves to libs/libs/libfoo.dylib and the
+# helper dies the moment dyld touches it:
+#   dyld: Library not loaded: @loader_path/libs/libnghttp3.9.9.0.dylib
+#     Referenced from: .../libexec/astra/sedfit/libs/libcurl.4.dylib
+#     Reason: tried '.../sedfit/libs/libs/libnghttp3.9.9.0.dylib' (no such file)
+# (That is why SED fitting failed with exit 6 in the shipped .dmg — libcurl is
+# the only bundled lib with bundled dependencies of its own.) Libraries sharing
+# one directory must reference each other as plain @loader_path/<name>, which is
+# also depth-independent: the ISIS tree runs dylibbundler over binaries at
+# several depths against a *single* libs dir, so whichever one happened to be
+# processed last used to decide the prefix baked into the shared libraries.
+fix_sibling_loader_paths() {
+  local libsdir="$1" lib dep base
+  [[ -d "${libsdir}" ]] || return 0
+  while IFS= read -r lib; do
+    # Self-reference: harmless at runtime, but it keeps the tree consistent and
+    # lets the audit below resolve every recorded path the same way.
+    install_name_tool -id "@loader_path/$(basename "${lib}")" "${lib}" 2>/dev/null || true
+    while IFS= read -r dep; do
+      base="${dep##*/}"
+      if [[ "${dep}" != "@loader_path/${base}" && -f "${libsdir}/${base}" ]]; then
+        install_name_tool -change "${dep}" "@loader_path/${base}" "${lib}" 2>/dev/null || true
+      fi
+    done < <(otool -L "${lib}" | tail -n +2 | awk '{print $1}')
+  done < <(find "${libsdir}" -type f \( -name '*.dylib' -o -name '*.so' \))
+}
+
+# Audit a staged tree: every Mach-O must resolve its dependencies from inside
+# the bundle. Catches both the mistake above and libraries dylibbundler failed
+# to copy — an absolute /opt/homebrew path loads fine on the build machine and
+# breaks on every other Mac, which is exactly how the broken .dmg shipped.
+check_bundled_macho() {
+  local root="$1" label="$2" f dep bad=0
+  [[ -d "${root}" ]] || return 0
+  while IFS= read -r f; do
+    file -b "${f}" 2>/dev/null | grep -q 'Mach-O' || continue
+    while IFS= read -r dep; do
+      case "${dep}" in
+        /usr/lib/*|/System/*) continue ;;                  # OS-provided, always there
+        @loader_path/*)
+          [[ -e "$(dirname "${f}")/${dep#@loader_path/}" ]] && continue ;;
+        @executable_path/*|@rpath/*) continue ;;           # not produced here; can't check
+      esac
+      echo "!!! ${label}: unresolved dependency  ${f#"${APP}/"}  ->  ${dep}"
+      bad=$((bad + 1))
+    done < <(otool -L "${f}" 2>/dev/null | tail -n +2 | awk '{print $1}')
+  done < <(find "${root}" -type f)
+  if (( bad > 0 )); then
+    echo "!!! ${label}: ${bad} dependency/dependencies will not resolve on a user's Mac."
+    return 1
+  fi
+  return 0
+}
+
 # ── 11b. Bundle external helper programs (lcurve, lightcurvequery) ───────────
 # ASTRA resolves these at runtime relative to the executable (Contents/MacOS):
 #   lcurve         -> Contents/libexec/astra/lcurve   (ASTRA_LCURVE_BUNDLE_RELDIR)
@@ -564,6 +626,10 @@ if [[ "${ASTRA_BUNDLE_LCURVE}" == "1" ]]; then
       dylibbundler -cd -of -b -x "${LCURVE_DEST}/${b}" \
         -d "${LCURVE_DEST}/libs" -p "@loader_path/libs/" >/dev/null
     done
+    # After the last binary: repoint the shared libs' inter-dependencies at
+    # their own directory (see 11a) and verify nothing dangles.
+    fix_sibling_loader_paths "${LCURVE_DEST}/libs"
+    check_bundled_macho "${LCURVE_DEST}" "lcurve" || true
     echo ">>> lcurve bundled at Contents/libexec/astra/lcurve ($(ls "${LCURVE_DEST}" | tr '\n' ' '))"
   ); then
     :
@@ -586,6 +652,11 @@ if [[ -n "${SEDFIT_BIN}" ]]; then
   cp -f "${SEDFIT_BIN}" "${SEDFIT_DEST}/"
   dylibbundler -cd -of -b -x "${SEDFIT_DEST}/sedfit" \
     -d "${SEDFIT_DEST}/libs" -p "@loader_path/libs/" >/dev/null
+  # libcurl (sedfit queries VizieR/SIMBAD when no photometry.dat is supplied)
+  # drags in libnghttp2/libnghttp3/libssh2/… — the deps whose paths dylibbundler
+  # leaves pointing at libs/libs/. See 11a.
+  fix_sibling_loader_paths "${SEDFIT_DEST}/libs"
+  check_bundled_macho "${SEDFIT_DEST}" "sedfit" || true
   REFDATA_SRC="${SRC_DIR}/resources/sedfit/refdata"
   if [[ -d "${REFDATA_SRC}" ]]; then
     REFDATA_DEST="${APP}/Contents/share/astra/sedfit/refdata"
@@ -698,6 +769,11 @@ if [[ "${ASTRA_BUNDLE_ISIS}" == "1" ]]; then
       dylibbundler -cd -of -b -x "${f}" -d "${ISIS_LIBS}" -p "@loader_path/${rel}/" >/dev/null
     done < <(find "${ISIS_STAGE}" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) \
                   -not -path "${ISIS_LIBS}/*")
+    # Each pass above stamped its own binary's prefix onto the *shared* libs, so
+    # the last one processed decided how the libs find each other. Make that
+    # depth-independent instead (see 11a), then audit the whole staged tree.
+    fix_sibling_loader_paths "${ISIS_LIBS}"
+    check_bundled_macho "${ISIS_STAGE}" "isis" || true
 
     echo ">>> ISIS staged at Contents/share/astra/isis ($(du -sh "${ISIS_STAGE}" | cut -f1))"
   )
@@ -707,8 +783,18 @@ if [[ "${ASTRA_BUNDLE_ISIS}" == "1" ]]; then
     echo "!!! ISIS build/bundle failed (exit ${ISIS_STATUS}) — the .app has NO bundled ISIS."
     echo "!!! ISIS-backed fitting would fall back to a user-installed isis on PATH."
     rm -rf "${APP}/Contents/share/astra/isis"
-    # Release builds must not ship a .dmg that quietly lacks ISIS; local builds
-    # keep the soft fallback (ASTRA_REQUIRE_ISIS=0).
+    # The .dmg still ships (see the ASTRA_BUNDLE_ISIS notes at the top), so the
+    # only thing standing between an ISIS-less release and nobody noticing is
+    # this annotation. ::warning:: surfaces on the run page and next to the job
+    # in the Actions list; the summary line survives in the run's own report.
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+      echo "::warning title=.dmg built without ISIS::The ISIS stack failed to build (exit ${ISIS_STATUS}); this .dmg ships WITHOUT bundled ISIS and falls back to a user-installed isis on PATH."
+      if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+        echo "⚠️ **This \`.dmg\` was packaged without bundled ISIS** (ISIS build exited ${ISIS_STATUS})." \
+          >> "${GITHUB_STEP_SUMMARY}"
+      fi
+    fi
+    # Opt-in hard failure: refuse to package at all rather than ship degraded.
     if [[ "${ASTRA_REQUIRE_ISIS}" == "1" ]]; then
       echo "!!! ASTRA_REQUIRE_ISIS=1 — refusing to package a .dmg without ISIS."
       exit 1
