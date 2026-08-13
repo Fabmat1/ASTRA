@@ -49,10 +49,21 @@ public:
     /// Snapshot of all series. Flagged points excluded by default.
     QList<SeriesData> seriesData(bool includeFlagged = false) const;
 
-    enum class T0Source { Auto = 0, LCFit = 1, RVFit = 2 };
+    /// Where the folding period (and its phase-0 epoch) is taken from. The
+    /// numeric values are persisted per star - keep them stable.
+    enum class PeriodSource {
+        Auto       = 0,  ///< best available; see resolveAutoFoldParams()
+        LCFit      = 1,  ///< best LC fit of any light-curve source
+        RVFit      = 2,  ///< best RV fit
+        PhotPeriod = 3,  ///< star's stored best photometric period
+        RVPeriod   = 4,  ///< star's stored RV period
+        Peak       = 5   ///< one of the star's saved periodogram peaks
+    };
 
-    void     setT0Source(T0Source s);
-    T0Source t0Source() const { return _t0Source; }
+    /// Select the period source. `peakPeriod` picks the saved peak to use and
+    /// is only read for PeriodSource::Peak.
+    void         setPeriodSource(PeriodSource s, double peakPeriod = 0.0);
+    PeriodSource periodSource() const { return _periodSource; }
     void setUniformFoldedBins(int nBins);
     void     setPreviewFit(const QString &source, const QString &filter,
                            std::shared_ptr<LCFit> fit);
@@ -72,7 +83,7 @@ private slots:
     void onFlagModeToggled(bool on);
     void onClearFlagsClicked();
     void onResetZoom();
-    void onT0SourceChanged(int idx);
+    void onPeriodSourceChanged(int idx);
 
 private:
     struct SeriesCache {
@@ -108,6 +119,24 @@ private:
     void persistFlagsForSource(const QString& source);
     void buildSettingsMenu();
     void resolveAutoFoldParams();
+
+    // ── Period sourcing ─────────────────────────────────────────────────
+    /// One selectable entry of the period dropdown, with the period/epoch it
+    /// resolves to already filled in.
+    struct PeriodOption {
+        PeriodSource src    = PeriodSource::Auto;
+        double       period = 0.0;   // 0 for Auto (resolved on demand)
+        double       t0     = 0.0;
+        QString      label;
+    };
+    /// Every period saved for this star that can be folded on, in menu order.
+    QList<PeriodOption> availablePeriods() const;
+    /// Refill the period dropdown from availablePeriods() and re-select the
+    /// active source (falling back to Auto if it is gone).
+    void rebuildPeriodCombo();
+    /// Phase-0 epoch to pair with a bare period (one carrying no T₀ of its
+    /// own): the best fit epoch on record, else 0.
+    double fallbackT0() const;
     /// Emit foldStateChanged() when the fold configuration actually moved.
     void notifyFoldState();
 
@@ -167,8 +196,11 @@ private:
     QMap<QString, bool> _visible;
     QHash<QString, bool> _showFit;
 
-    QComboBox* _t0SourceCombo = nullptr;
-    T0Source   _t0Source      = T0Source::Auto;
+    QComboBox*   _periodSourceCombo = nullptr;
+    PeriodSource _periodSource      = PeriodSource::Auto;
+    /// Period of the saved peak in use when _periodSource == Peak. Kept as the
+    /// value (not an index) so it survives peaks being added or removed.
+    double       _peakPeriod        = 0.0;
 
     std::shared_ptr<LCFit> _previewFit;
     QString                _previewFitSource;

@@ -1,5 +1,6 @@
 #include "LCPanel.h"
 #include "PanelUtils.h"
+#include "PeriodogramPanel.h"
 
 #include "models/Star.h"
 #include "models/Photometry.h"
@@ -97,6 +98,16 @@ binSeries(const QVector<double>& px,
         out.append({xc, yMn, yEr});
     }
     return out;
+}
+
+/// Two periods that agree to ~9 significant digits are the same entry - used to
+/// keep mirrored values (a fit and the star-level period it wrote) out of the
+/// period dropdown, and to match a persisted peak against the saved peak list.
+inline bool samePeriod(double a, double b)
+{
+    if (!std::isfinite(a) || !std::isfinite(b)) return false;
+    return std::fabs(a - b) <=
+           1e-9 * std::max({1.0, std::fabs(a), std::fabs(b)});
 }
 
 constexpr int kErrorBarMax = 8000;   // skip error bars above this count
@@ -212,19 +223,25 @@ void LCPanel::setupUi()
     tb->addWidget(_toggleFoldBtn);
 
     tb->addSpacing(8);
-    tb->addWidget(new QLabel("T₀:"));
-    _t0SourceCombo = new QComboBox;
-    _t0SourceCombo->addItem("Auto",   static_cast<int>(T0Source::Auto));
-    _t0SourceCombo->addItem("LC fit", static_cast<int>(T0Source::LCFit));
-    _t0SourceCombo->addItem("RV fit", static_cast<int>(T0Source::RVFit));
-    _t0SourceCombo->setToolTip(
-        "Source of phase-0 reference time used when folding:\n"
-        "  Auto  – prefer an LC best fit, fall back to RV best fit\n"
-        "  LC fit – force best LC fit's T₀ (if any)\n"
-        "  RV fit – force RV best fit's T₀ (if any)");
-    connect(_t0SourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, &LCPanel::onT0SourceChanged);
-    tb->addWidget(_t0SourceCombo);
+    tb->addWidget(new QLabel("Period:"));
+    _periodSourceCombo = new QComboBox;
+    _periodSourceCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
+    _periodSourceCombo->setToolTip(
+        "Period (and phase-0 epoch) used when folding. Lists every period\n"
+        "saved for this star - fits, the stored best photometric / RV period\n"
+        "and the saved periodogram peaks.\n"
+        "  Auto – the RV fit (keeps the fold in phase with the RV curve),\n"
+        "         else an LC fit, else the stored RV / best photometric\n"
+        "         period, else the strongest periodogram peak");
+    connect(_periodSourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &LCPanel::onPeriodSourceChanged);
+    // Filled in from the star's saved periods by populate(); a deferred panel
+    // must not touch (and thus lazily load) photometry/RV data yet.
+    {
+        QSignalBlocker b(_periodSourceCombo);
+        _periodSourceCombo->addItem("Auto", static_cast<int>(PeriodSource::Auto));
+    }
+    tb->addWidget(_periodSourceCombo);
 
     _flagBtn = new QToolButton;
     _flagBtn->setText("Flag");
@@ -286,49 +303,158 @@ void LCPanel::notifyFoldState()
     emit foldStateChanged(_foldPeriod, _foldT0, _folded);
 }
 
+double LCPanel::fallbackT0() const
+{
+    if (!_ctx.star) return 0.0;
+
+    // A fitted epoch, if the star has one - a bare period folds on the same
+    // phase-0 as the fits do, so the two views line up. RV first, matching the
+    // Auto period order, so the fold stays in phase with the RV curve.
+    if (auto rv = _ctx.star->getRVCurve()) {
+        if (auto bf = rv->getBestFit(); bf && bf->getPeriod() > 0) {
+            double t0 = bf->getT0BJD();
+            if (!std::isfinite(t0) || t0 == 0.0)
+                t0 = bf->getReferenceBJD() - bf->getPhi() * bf->getPeriod();
+            if (std::isfinite(t0)) return t0;
+        }
+    }
+    if (auto phot = _ctx.star->getPhotometry()) {
+        for (const auto& src : phot->getLightcurveSources()) {
+            auto f = phot->getBestLCFit(src);
+            if (f && f->getPeriod() > 0 &&
+                std::isfinite(f->getT0BJD()) && f->getT0BJD() != 0.0)
+                return f->getT0BJD();
+        }
+    }
+    const double rvT0 = _ctx.star->getRVT0();
+    if (Star::isSet(rvT0) && std::isfinite(rvT0)) return rvT0;
+
+    return 0.0;
+}
+
+QList<LCPanel::PeriodOption> LCPanel::availablePeriods() const
+{
+    QList<PeriodOption> out;
+    out.append({PeriodSource::Auto, 0.0, 0.0, QStringLiteral("Auto")});
+    if (!_ctx.star) return out;
+
+    auto fmtP = [](double p) { return QString::number(p, 'g', 8); };
+    // Skip values an earlier (more informative) entry already offers.
+    auto known = [&out](double p) {
+        for (const auto& o : out)
+            if (o.src != PeriodSource::Auto && samePeriod(o.period, p))
+                return true;
+        return false;
+    };
+
+    // The order below is also the Auto preference order: the RV fit first, so
+    // the folded light curve stays in phase with the RV curve, then the LC fit,
+    // then the stored star-level periods (RV before photometric), then the
+    // strongest saved periodogram peak.
+    if (auto rv = _ctx.star->getRVCurve()) {
+        if (auto bf = rv->getBestFit(); bf && bf->getPeriod() > 0) {
+            double t0 = bf->getT0BJD();
+            if (!std::isfinite(t0) || t0 == 0.0)
+                t0 = bf->getReferenceBJD() - bf->getPhi() * bf->getPeriod();
+            out.append({PeriodSource::RVFit, bf->getPeriod(), t0,
+                        QString("RV fit (%1 d)").arg(fmtP(bf->getPeriod()))});
+        }
+    }
+
+    if (auto phot = _ctx.star->getPhotometry()) {
+        for (const auto& src : phot->getLightcurveSources()) {
+            auto f = phot->getBestLCFit(src);
+            if (f && f->getPeriod() > 0) {
+                out.append({PeriodSource::LCFit, f->getPeriod(), f->getT0BJD(),
+                            QString("LC fit (%1 d)").arg(fmtP(f->getPeriod()))});
+                break;
+            }
+        }
+    }
+
+    const double bareT0 = fallbackT0();
+
+    const double rvP = _ctx.star->getRVPeriod();
+    if (Star::isSet(rvP) && rvP > 0 && !known(rvP))
+        out.append({PeriodSource::RVPeriod, rvP, bareT0,
+                    QString("RV period (%1 d)").arg(fmtP(rvP))});
+
+    const double photP = _ctx.star->getPhotPeriod();
+    if (Star::isSet(photP) && photP > 0 && !known(photP))
+        out.append({PeriodSource::PhotPeriod, photP, bareT0,
+                    QString("Phot. period (%1 d)").arg(fmtP(photP))});
+
+    // ── Saved periodogram peaks, strongest first ──
+    QString peaksJson = _ctx.star->getPhotPeaksJson();
+    if (peaksJson.isEmpty() && _ctx.dbm && !_ctx.star->getId().isEmpty())
+        peaksJson = _ctx.dbm->loadStarPhotPeaks(_ctx.star->getId());
+    auto peaks = PeriodogramPanel::peaksFromJson(peaksJson);
+    std::stable_sort(peaks.begin(), peaks.end(),
+                     [](const PeriodogramPanel::PeriodPeak& a,
+                        const PeriodogramPanel::PeriodPeak& b) {
+                         return a.power > b.power;
+                     });
+    for (const auto& pk : peaks) {
+        if (!(pk.period > 0) || known(pk.period)) continue;
+        QString label = QString("Peak (%1 d)").arg(fmtP(pk.period));
+        if (!pk.sourceLabel.isEmpty())
+            label += QString(" – %1").arg(pk.sourceLabel);
+        out.append({PeriodSource::Peak, pk.period, bareT0, label});
+    }
+
+    return out;
+}
+
+void LCPanel::rebuildPeriodCombo()
+{
+    if (!_periodSourceCombo) return;
+
+    const auto opts = availablePeriods();
+
+    QSignalBlocker block(_periodSourceCombo);
+    _periodSourceCombo->clear();
+
+    int selected = 0;   // index 0 is always Auto
+    for (int i = 0; i < opts.size(); ++i) {
+        const auto& o = opts[i];
+        _periodSourceCombo->addItem(o.label, static_cast<int>(o.src));
+        _periodSourceCombo->setItemData(i, o.period, Qt::UserRole + 1);
+        if (o.src == _periodSource &&
+            (o.src != PeriodSource::Peak || samePeriod(o.period, _peakPeriod)))
+            selected = i;
+    }
+
+    // The saved source can be gone (fit deleted, peak removed) → back to Auto.
+    if (selected == 0 && _periodSource != PeriodSource::Auto) {
+        _periodSource = PeriodSource::Auto;
+        _peakPeriod   = 0.0;
+    }
+    _periodSourceCombo->setCurrentIndex(selected);
+
+    const QString autoTip = opts.size() > 1
+        ? QString("Auto currently folds on: %1").arg(opts[1].label)
+        : QString("Auto has no period to fold on yet");
+    _periodSourceCombo->setItemData(0, autoTip, Qt::ToolTipRole);
+}
+
 void LCPanel::resolveAutoFoldParams()
 {
     if (_foldExternal) { notifyFoldState(); return; }
 
+    const auto opts = availablePeriods();
+
     double foldP = 0.0, foldT0 = 0.0;
-
-    auto phot   = _ctx.star ? _ctx.star->getPhotometry() : nullptr;
-    auto rv     = _ctx.star ? _ctx.star->getRVCurve()    : nullptr;
-    auto rvBest = rv ? rv->getBestFit() : nullptr;
-
-    auto bestLCFit = [&]() -> std::shared_ptr<LCFit> {
-        if (!phot) return nullptr;
-        for (auto& src : phot->getLightcurveSources()) {
-            auto f = phot->getBestLCFit(src);
-            if (f && f->getPeriod() > 0) return f;
+    for (const auto& o : opts) {
+        if (o.src == PeriodSource::Auto || !(o.period > 0)) continue;
+        // Auto takes the first (i.e. best) entry; a fixed source takes its own.
+        if (_periodSource != PeriodSource::Auto) {
+            if (o.src != _periodSource) continue;
+            if (o.src == PeriodSource::Peak && !samePeriod(o.period, _peakPeriod))
+                continue;
         }
-        return nullptr;
-    };
-
-    auto applyLC = [&](std::shared_ptr<LCFit> f) {
-        foldP  = f->getPeriod();
-        foldT0 = f->getT0BJD();
-    };
-    auto applyRV = [&](std::shared_ptr<RVFit> bf) {
-        foldP = bf->getPeriod();
-        double T0 = bf->getT0BJD();
-        if (!std::isfinite(T0) || T0 == 0.0)
-            T0 = bf->getReferenceBJD() - bf->getPhi() * foldP;
-        foldT0 = T0;
-    };
-
-    switch (_t0Source) {
-        case T0Source::LCFit:
-            if (auto f = bestLCFit()) applyLC(f);
-            break;
-        case T0Source::RVFit:
-            if (rvBest && rvBest->getPeriod() > 0) applyRV(rvBest);
-            break;
-        case T0Source::Auto:
-        default:
-            if (auto f = bestLCFit())                       applyLC(f);
-            else if (rvBest && rvBest->getPeriod() > 0)     applyRV(rvBest);
-            break;
+        foldP  = o.period;
+        foldT0 = o.t0;
+        break;
     }
 
     _foldPeriod = foldP;
@@ -336,23 +462,38 @@ void LCPanel::resolveAutoFoldParams()
     notifyFoldState();
 }
 
-void LCPanel::setT0Source(T0Source s)
+void LCPanel::setPeriodSource(PeriodSource s, double peakPeriod)
 {
-    if (_t0Source == s) return;
-    _t0Source = s;
-    if (_t0SourceCombo) {
-        QSignalBlocker b(_t0SourceCombo);
-        _t0SourceCombo->setCurrentIndex(static_cast<int>(s));
-    }
+    if (_periodSource == s &&
+        (s != PeriodSource::Peak || samePeriod(_peakPeriod, peakPeriod)))
+        return;
+    _periodSource = s;
+    _peakPeriod   = (s == PeriodSource::Peak) ? peakPeriod : 0.0;
+    rebuildPeriodCombo();
     resolveAutoFoldParams();
+    if (_toggleFoldBtn && !_series.isEmpty())
+        _toggleFoldBtn->setEnabled(_foldPeriod > 0);
     if (_folded) replotAll();
 }
 
-void LCPanel::onT0SourceChanged(int)
+void LCPanel::onPeriodSourceChanged(int)
 {
-    _t0Source = static_cast<T0Source>(_t0SourceCombo->currentData().toInt());
+    const int idx = _periodSourceCombo->currentIndex();
+    if (idx < 0) return;
+
+    _periodSource = static_cast<PeriodSource>(
+        _periodSourceCombo->itemData(idx).toInt());
+    _peakPeriod   = (_periodSource == PeriodSource::Peak)
+                  ? _periodSourceCombo->itemData(idx, Qt::UserRole + 1).toDouble()
+                  : 0.0;
+
+    // An explicit pick wins over a period handed to the panel from outside.
+    _foldExternal = false;
+
     resolveAutoFoldParams();
     saveStarSettings();
+    if (_toggleFoldBtn && !_series.isEmpty())
+        _toggleFoldBtn->setEnabled(_foldPeriod > 0);
     if (_folded) replotAll();
 }
 
@@ -388,6 +529,7 @@ void LCPanel::populate()
     _resetZoomBtn->setEnabled(true);
     _settingsBtn->setEnabled(true);
 
+    rebuildPeriodCombo();
     resolveAutoFoldParams();
     bool canFold = _foldPeriod > 0;
     _toggleFoldBtn->setEnabled(canFold);
@@ -1231,16 +1373,19 @@ void LCPanel::restoreStarSettings()
     QSettings s;
     s.beginGroup(base);
 
-    // ── T₀ source ──
-    if (s.contains("t0Source")) {
-        int v = std::clamp(s.value("t0Source").toInt(),
-                           static_cast<int>(T0Source::Auto),
-                           static_cast<int>(T0Source::RVFit));
-        _t0Source = static_cast<T0Source>(v);
-        if (_t0SourceCombo) {
-            QSignalBlocker b(_t0SourceCombo);
-            _t0SourceCombo->setCurrentIndex(v);
-        }
+    // ── Period source ("t0Source" is the pre-dropdown key; same 0-2 values) ──
+    const QString srcKey = s.contains("periodSource") ? "periodSource"
+                         : s.contains("t0Source")     ? "t0Source"
+                                                      : QString();
+    if (!srcKey.isEmpty()) {
+        int v = std::clamp(s.value(srcKey).toInt(),
+                           static_cast<int>(PeriodSource::Auto),
+                           static_cast<int>(PeriodSource::Peak));
+        _periodSource = static_cast<PeriodSource>(v);
+        _peakPeriod   = (_periodSource == PeriodSource::Peak)
+                      ? s.value("peakPeriod").toDouble() : 0.0;
+        // The combo is filled from the star's periods in rebuildPeriodCombo(),
+        // which also re-selects this source (or drops back to Auto).
     }
 
     // ── View mode ──
@@ -1295,9 +1440,11 @@ void LCPanel::saveStarSettings() const
     QSettings s;
     s.beginGroup(base);
 
-    s.setValue("t0Source", static_cast<int>(_t0Source));
-    s.setValue("viewMode", static_cast<int>(_viewMode));
-    s.setValue("folded",   _folded);
+    s.setValue("periodSource", static_cast<int>(_periodSource));
+    // Full precision: the value is matched back against the saved peak list.
+    s.setValue("peakPeriod",   QString::number(_peakPeriod, 'g', 17));
+    s.setValue("viewMode",     static_cast<int>(_viewMode));
+    s.setValue("folded",       _folded);
 
     s.beginGroup("series");
     for (const auto& sc : _series) {

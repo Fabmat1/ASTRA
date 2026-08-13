@@ -725,13 +725,31 @@ if [[ "${ASTRA_BUNDLE_ISIS}" == "1" ]]; then
     # this code on a runner.)
     perl -MFile::Slurp -e1 >/dev/null 2>&1 || cpanm --notest File::Slurp
 
+    # Both script libraries live on one university server, and unlike the ISIS
+    # stack they are re-cloned every run (always-latest-HEAD, by design), so a
+    # few minutes of downtime there costs the entire bundle — which is exactly
+    # what happened once the build was otherwise working. Retry briefly rather
+    # than lose it to a blip. A genuine outage still falls through to the
+    # non-fatal path and its annotation.
+    clone_isis_scripts() {
+      local url="$1" dest="$2" n
+      for n in 1 2 3; do
+        if git clone --depth 1 "${url}" "${dest}"; then return 0; fi
+        echo "!!! clone of ${dest} failed (attempt ${n}/3)"
+        rm -rf "${dest}"
+        if [[ ${n} -lt 3 ]]; then sleep $((n * 10)); fi
+      done
+      echo "!!! ${url} unreachable after 3 attempts."
+      return 1
+    }
+
     # isisscripts (Remeis) moved off the old /git.public gitweb (dumb HTTP, now
     # 404) to the Remeis GitLab, which speaks smart HTTP — so --depth 1 works.
     ( cd "${ISIS_SCRIPTS_SRC}"
-      git clone --depth 1 \
+      clone_isis_scripts \
         https://www.sternwarte.uni-erlangen.de/gitlab/remeis/isisscripts.git isisscripts
       ( cd isisscripts && make )
-      git clone --depth 1 \
+      clone_isis_scripts \
         http://www.sternwarte.uni-erlangen.de/gitlab/irrgang/stellar.git stellar_isisscripts
       ( cd stellar_isisscripts && make )
       if [[ -f stellar_isisscripts/slirp/c_functions.h ]]; then
