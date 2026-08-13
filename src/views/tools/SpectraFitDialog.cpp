@@ -815,9 +815,23 @@ void SpectraFitDialog::onAddSpectraClicked()
                        "ASCII (*.txt *.dat *.ascii *.csv);;"
                        "All files (*)");
 
-    const QStringList paths = QFileDialog::getOpenFileNames(
+    QStringList paths = QFileDialog::getOpenFileNames(
         this, QStringLiteral("Add Spectra"), QString(), filter);
     if (paths.isEmpty()) return;
+
+    // Users tend to select the `_mjd.txt` sidecars along with the spectra, and
+    // those may well live in another directory. Keep them aside as the time
+    // source instead of trying to read them as spectra - unless they are all
+    // that was picked, in which case they are meant as spectra after all.
+    QStringList sidecars;
+    QStringList spectra;
+    for (const QString& p : paths) {
+        (AddSpectraDialog::isTimeSidecar(p) ? sidecars : spectra) << p;
+    }
+    if (!spectra.isEmpty())
+        paths = spectra;
+    else
+        sidecars.clear();
 
     int added = 0;
     QStringList failures;
@@ -873,7 +887,7 @@ void SpectraFitDialog::onAddSpectraClicked()
     }
 
     if (!pending.empty()) {
-        AddSpectraDialog dlg(pending, instruments, this);
+        AddSpectraDialog dlg(pending, instruments, sidecars, this);
         if (dlg.exec() != QDialog::Accepted) return;
         pending = dlg.entries();
     }

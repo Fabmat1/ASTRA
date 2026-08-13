@@ -14,7 +14,6 @@
 #include <QHBoxLayout>
 #include <QHash>
 #include <QHeaderView>
-#include <QLabel>
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
@@ -77,58 +76,122 @@ QString scaleLabel(TimeScale s)
     return Time::scaleToString(s);
 }
 
+struct SidecarToken { const char* token; TimeScale scale; };
+const SidecarToken kSidecarTokens[] = {
+    { "mjd", TimeScale::MJD },
+    { "bjd", TimeScale::BJD },
+    { "hjd", TimeScale::HJD },
+    { "jd",  TimeScale::JD  },
+};
+
+/// Base names a sidecar may be built on, longest first. Sidecars are commonly
+/// written once per exposure while the spectra are split per order or per
+/// extraction, so `0248_44_gaia_33773_930_01.txt` belongs to
+/// `0248_44_gaia_33773_930_mjd.txt`. Only purely numeric trailing segments are
+/// peeled off, and at most two of them, so unrelated files stay unrelated.
+QStringList candidateStems(const QString& base)
+{
+    QStringList stems { base };
+
+    QString stem = base;
+    for (int i = 0; i < 2; ++i) {
+        const int cut = stem.lastIndexOf('_');
+        if (cut <= 0) break;
+
+        const QString tail = stem.mid(cut + 1);
+        const bool numeric = !tail.isEmpty() &&
+            std::all_of(tail.cbegin(), tail.cend(),
+                        [](QChar c) { return c.isDigit(); });
+        if (!numeric) break;
+
+        stem.truncate(cut);
+        stems << stem;
+    }
+    return stems;
+}
+
 } // namespace
 
 // =====================================================================
 // Sidecar detection
 // =====================================================================
 
+bool AddSpectraDialog::isTimeSidecar(const QString& path)
+{
+    const QFileInfo info(path);
+    const QString   suffix = info.suffix().toLower();
+    const QString   base   = info.completeBaseName().toLower();
+
+    for (const auto& cand : kSidecarTokens) {
+        const QString token = QString::fromLatin1(cand.token);
+        if (suffix == token) return true;
+        if (base == token || base.endsWith('_' + token)) return true;
+    }
+    return false;
+}
+
 std::optional<AddSpectraDialog::DetectedTime>
-AddSpectraDialog::detectSidecarTime(const QString& spectrumPath)
+AddSpectraDialog::detectSidecarTime(const QString& spectrumPath,
+                                    const QStringList& pool)
 {
     const QFileInfo info(spectrumPath);
     const QDir      dir  = info.absoluteDir();
     const QString   base = info.completeBaseName();
-    if (base.isEmpty() || !dir.exists()) return std::nullopt;
+    if (base.isEmpty()) return std::nullopt;
 
-    // Case-insensitive lookup table of the directory, so `_MJD.TXT` is found on
-    // case-sensitive file systems too.
-    QHash<QString, QString> byLowerName;
-    const auto siblings = dir.entryList(QDir::Files);
-    byLowerName.reserve(siblings.size());
-    for (const QString& n : siblings)
-        byLowerName.insert(n.toLower(), n);
+    // Case-insensitive lookup tables, so `_MJD.TXT` is found on case-sensitive
+    // file systems too. Sidecars the user picked explicitly are matched first
+    // and may sit in a different directory than the spectrum; only if none of
+    // them fits does the spectrum's own directory get searched.
+    QHash<QString, QString> picked;
+    picked.reserve(pool.size());
+    for (const QString& p : pool) {
+        const QFileInfo pi(p);
+        const QString   key = pi.fileName().toLower();
+        // Should the same name have been picked in two directories, the one
+        // next to the spectrum wins.
+        if (picked.contains(key) && pi.absolutePath() != dir.absolutePath())
+            continue;
+        picked.insert(key, p);
+    }
 
-    struct Candidate { const char* token; TimeScale scale; };
-    static const Candidate kCandidates[] = {
-        { "mjd", TimeScale::MJD },
-        { "bjd", TimeScale::BJD },
-        { "hjd", TimeScale::HJD },
-        { "jd",  TimeScale::JD  },
-    };
+    QHash<QString, QString> siblings;
+    if (dir.exists()) {
+        const auto names = dir.entryList(QDir::Files);
+        siblings.reserve(names.size());
+        for (const QString& n : names)
+            siblings.insert(n.toLower(), dir.filePath(n));
+    }
 
-    for (const auto& cand : kCandidates) {
-        const QString token = QString::fromLatin1(cand.token);
-        const QStringList names = {
-            base + '_' + token + QStringLiteral(".txt"),
-            base + '_' + token + QStringLiteral(".dat"),
-            base + '_' + token,
-            base + '.' + token,
-        };
+    for (const QString& stem : candidateStems(base)) {
+        for (const auto& cand : kSidecarTokens) {
+            const QString token = QString::fromLatin1(cand.token);
+            const QStringList names = {
+                stem + '_' + token + QStringLiteral(".txt"),
+                stem + '_' + token + QStringLiteral(".dat"),
+                stem + '_' + token,
+                stem + '.' + token,
+            };
 
-        for (const QString& name : names) {
-            const auto it = byLowerName.constFind(name.toLower());
-            if (it == byLowerName.constEnd()) continue;
+            for (const QString& name : names) {
+                const QString key = name.toLower();
+                for (const auto* table : { &picked, &siblings }) {
+                    const auto it = table->constFind(key);
+                    if (it == table->constEnd()) continue;
 
-            const QString actual = *it;
-            const auto value = firstNumberIn(dir.filePath(actual));
-            if (!value.has_value()) continue;
+                    const QString path  = *it;
+                    const auto    value = firstNumberIn(path);
+                    if (!value.has_value()) continue;
 
-            LOG_DEBUG("Tools", QString("Found time sidecar %1 for %2 (%3 = %4)")
-                          .arg(actual, info.fileName(),
-                               Time::scaleToString(cand.scale))
-                          .arg(*value, 0, 'f', 6));
-            return DetectedTime{ *value, cand.scale, actual };
+                    const QString actual = QFileInfo(path).fileName();
+                    LOG_DEBUG("Tools",
+                        QString("Found time sidecar %1 for %2 (%3 = %4)")
+                            .arg(actual, info.fileName(),
+                                 Time::scaleToString(cand.scale))
+                            .arg(*value, 0, 'f', 6));
+                    return DetectedTime{ *value, cand.scale, actual, path };
+                }
+            }
         }
     }
     return std::nullopt;
@@ -141,10 +204,12 @@ AddSpectraDialog::detectSidecarTime(const QString& spectrumPath)
 AddSpectraDialog::AddSpectraDialog(
     std::vector<Entry> entries,
     std::vector<std::shared_ptr<Instrument>> instruments,
+    QStringList sidecarPool,
     QWidget* parent)
     : QDialog(parent)
     , _entries(std::move(entries))
     , _instruments(std::move(instruments))
+    , _sidecarPool(std::move(sidecarPool))
 {
     setWindowTitle(_entries.size() > 1
         ? QString("Add %1 Spectra").arg(_entries.size())
@@ -155,13 +220,6 @@ AddSpectraDialog::AddSpectraDialog(
 void AddSpectraDialog::setupUi()
 {
     auto* v = new QVBoxLayout(this);
-
-    auto* hint = new QLabel(
-        "Check the instrument and the observation time of every file. Times "
-        "found in a FITS header or in a sidecar file (e.g. <name>_mjd.txt) are "
-        "pre-filled; leave the time empty to add the spectrum without one.");
-    hint->setWordWrap(true);
-    v->addWidget(hint);
 
     _table = new QTableWidget(static_cast<int>(_entries.size()),
                              ColumnCount, this);
@@ -187,6 +245,20 @@ void AddSpectraDialog::setupUi()
     }
     _table->horizontalHeader()->setSectionResizeMode(ColFile,
                                                      QHeaderView::Stretch);
+
+    // Cell widgets are laid out inside the cell rect, but a combo box refuses
+    // to shrink below its minimum height and then spills over the row below.
+    // Give every row the height of the tallest editor in the table.
+    int rowHeight = _table->verticalHeader()->defaultSectionSize();
+    for (int row = 0; row < _table->rowCount(); ++row)
+        for (int col = 0; col < ColumnCount; ++col)
+            if (auto* w = _table->cellWidget(row, col))
+                rowHeight = std::max(rowHeight, w->sizeHint().height());
+    rowHeight += 6;   // a little air above and below the editors
+
+    _table->verticalHeader()->setDefaultSectionSize(rowHeight);
+    for (int row = 0; row < _table->rowCount(); ++row)
+        _table->setRowHeight(row, rowHeight);
 
     auto* buttons = new QHBoxLayout;
     if (_entries.size() > 1) {
@@ -257,7 +329,8 @@ void AddSpectraDialog::fillRow(int row, const Entry& entry)
     timeEdit->setPlaceholderText(QStringLiteral("not detected"));
     _table->setCellWidget(row, ColTime, timeEdit);
 
-    QString source = QStringLiteral("—");
+    QString source = QStringLiteral("not found");
+    QString sourceTip;
     TimeScale scale = TimeScale::MJD;
     std::optional<double> value;
 
@@ -275,10 +348,11 @@ void AddSpectraDialog::fillRow(int row, const Entry& entry)
             else if (t.hasBjd())     { scale = TimeScale::BJD; value = t.bjdOr(0.0); }
         }
     }
-    else if (const auto detected = detectSidecarTime(entry.path)) {
-        scale  = detected->scale;
-        value  = detected->value;
-        source = detected->sourceFile;
+    else if (const auto detected = detectSidecarTime(entry.path, _sidecarPool)) {
+        scale     = detected->scale;
+        value     = detected->value;
+        source    = detected->sourceFile;
+        sourceTip = detected->sourcePath;
     }
 
     const int scaleIdx = scaleCombo->findText(scaleLabel(scale));
@@ -287,14 +361,15 @@ void AddSpectraDialog::fillRow(int row, const Entry& entry)
     } else if (value.has_value()) {
         // A scale a spectrum cannot be stored in (HJD, say). Say so instead of
         // quietly relabelling the number as an MJD.
-        source += QString(" — %1 cannot be stored, pick a scale")
+        source += QString(" (%1 cannot be stored, pick a scale)")
                       .arg(Time::scaleToString(scale));
+        sourceTip.clear();
     }
     if (value.has_value())
         timeEdit->setText(QString::number(*value, 'f', 6));
 
     auto* sourceItem = new QTableWidgetItem(source);
-    sourceItem->setToolTip(source);
+    sourceItem->setToolTip(sourceTip.isEmpty() ? source : sourceTip);
     _table->setItem(row, ColSource, sourceItem);
 }
 

@@ -15,6 +15,8 @@
 #include "models/Project.h"
 #include "models/Star.h"
 #include "utils/BackgroundTaskManager.h"
+#include "utils/ThemeManager.h"
+#include "views/panels/PanelUtils.h"
 #include "utils/LightcurveFetchService.h"
 #include "utils/Logger.h"
 #include "views/StarDetailView.h"
@@ -122,6 +124,7 @@ void ProjectView::setupUi()
     QWidget* advancedPanel = _filterWidget->advancedPanelWidget();
     advancedPanel->setParent(this);
     mainLayout->addWidget(advancedPanel);
+    _advancedFilterPanel = advancedPanel;
 
     _starTable = new QTableView(this);
     _starTable->setAlternatingRowColors(false);
@@ -142,12 +145,151 @@ void ProjectView::setupUi()
 
     mainLayout->addWidget(_starTable, 1);
 
+    _emptyState = buildEmptyStateWidget();
+    _emptyState->setVisible(false);
+    mainLayout->addWidget(_emptyState, 1);
+
     connect(_starTable, &QTableView::doubleClicked,
             this, &ProjectView::onStarDoubleClicked);
     connect(_starTable, &QTableView::customContextMenuRequested,
             this, &ProjectView::onTableContextMenu);
     connect(_starTable->horizontalHeader(), &QHeaderView::customContextMenuRequested,
             this, &ProjectView::onHeaderContextMenu);
+}
+
+QWidget* ProjectView::buildEmptyStateWidget()
+{
+    auto* page = new QWidget(this);
+
+    auto* outer = new QVBoxLayout(page);
+    outer->setContentsMargins(24, 24, 24, 24);
+    outer->addStretch(1);
+
+    // Decorative glyph, kept quiet so the sentence carries the message.
+    _emptyStateGlyph = new QLabel(QString::fromUtf8("✧"), page);
+    _emptyStateGlyph->setAlignment(Qt::AlignCenter);
+    outer->addWidget(_emptyStateGlyph);
+    outer->addSpacing(4);
+
+    _emptyStateTitle = new QLabel(page);
+    _emptyStateTitle->setAlignment(Qt::AlignCenter);
+    _emptyStateTitle->setWordWrap(true);
+    outer->addWidget(_emptyStateTitle);
+    outer->addSpacing(12);
+
+    auto makeHint = [this, page](const QString& text) {
+        auto* label = new QLabel(text, page);
+        _emptyStateHints.push_back(label);
+        return label;
+    };
+    auto makeButton = [page](const QString& text) {
+        auto* button = new QPushButton(text, page);
+        button->setCursor(Qt::PointingHandCursor);
+        return button;
+    };
+
+    // The two ways in, as inline buttons mirroring the Stars menu entries.
+    _emptyAddStarButton = makeButton(QString::fromUtf8("Add Star…"));
+    _emptyImportStarsButton = makeButton(QString::fromUtf8("Import Stars…"));
+
+    auto* firstRow = new QHBoxLayout();
+    firstRow->setSpacing(6);
+    firstRow->addStretch(1);
+    firstRow->addWidget(makeHint("Add stars individually using the"));
+    firstRow->addWidget(_emptyAddStarButton);
+    firstRow->addWidget(makeHint("menu item in the menu bar,"));
+    firstRow->addStretch(1);
+    outer->addLayout(firstRow);
+
+    auto* secondRow = new QHBoxLayout();
+    secondRow->setSpacing(6);
+    secondRow->addStretch(1);
+    secondRow->addWidget(makeHint("or add stars in bulk using the"));
+    secondRow->addWidget(_emptyImportStarsButton);
+    secondRow->addWidget(makeHint("menu item."));
+    secondRow->addStretch(1);
+    outer->addLayout(secondRow);
+
+    outer->addStretch(2);
+
+    connect(_emptyAddStarButton, &QPushButton::clicked,
+            this, &ProjectView::onAddStar);
+    connect(_emptyImportStarsButton, &QPushButton::clicked,
+            this, &ProjectView::onImportStars);
+
+    applyEmptyStateTheme();
+    if (auto* themes = _controller->themeManager()) {
+        connect(themes, &ThemeManager::themeChanged,
+                this, [this](const QString&) { applyEmptyStateTheme(); });
+    }
+
+    return page;
+}
+
+void ProjectView::applyEmptyStateTheme()
+{
+    const QColor fg = PanelUtils::themeFg();
+    const QColor bg = PanelUtils::themeBg();
+
+    auto blend = [](const QColor& a, const QColor& b, double t) {
+        return QColor(qRound(a.red()   + (b.red()   - a.red())   * t),
+                      qRound(a.green() + (b.green() - a.green()) * t),
+                      qRound(a.blue()  + (b.blue()  - a.blue())  * t));
+    };
+
+    const QString muted  = blend(fg, bg, 0.55).name();
+    const QString hint   = blend(fg, bg, 0.25).name();
+    const QString border = blend(bg, fg, 0.30).name();
+    const QString fill   = blend(bg, fg, 0.10).name();
+    const QString hover  = blend(bg, fg, 0.22).name();
+
+    if (_emptyStateGlyph)
+        _emptyStateGlyph->setStyleSheet(
+            QString("font-size: 44px; color: %1;").arg(muted));
+
+    if (_emptyStateTitle)
+        _emptyStateTitle->setStyleSheet(
+            QString("font-size: 16px; font-weight: 600; color: %1;").arg(fg.name()));
+
+    for (QLabel* label : _emptyStateHints)
+        label->setStyleSheet(QString("font-size: 13px; color: %1;").arg(hint));
+
+    const QString buttonStyle = QString(
+        "QPushButton {"
+        "  color: %1;"
+        "  background: %2;"
+        "  border: 1px solid %3;"
+        "  border-radius: 6px;"
+        "  padding: 3px 10px;"
+        "  font-weight: 600;"
+        "}"
+        "QPushButton:hover { background: %4; }")
+        .arg(fg.name(), fill, border, hover);
+
+    if (_emptyAddStarButton)
+        _emptyAddStarButton->setStyleSheet(buttonStyle);
+    if (_emptyImportStarsButton)
+        _emptyImportStarsButton->setStyleSheet(buttonStyle);
+}
+
+void ProjectView::updateEmptyState()
+{
+    const bool empty = _currentProject && _tableModel &&
+                       _tableModel->rowCount() == 0;
+
+    if (empty) {
+        _emptyStateTitle->setText(
+            QString::fromUtf8("Oops, there are no stars in the project “%1” just yet!")
+                .arg(_currentProject->getName()));
+        if (_starTable->isVisible() && _advancedFilterPanel)
+            _advancedPanelWasVisible = _advancedFilterPanel->isVisible();
+    }
+
+    _starTable->setVisible(!empty);
+    _emptyState->setVisible(empty);
+    _filterWidget->setVisible(!empty);
+    if (_advancedFilterPanel)
+        _advancedFilterPanel->setVisible(!empty && _advancedPanelWasVisible);
 }
 
 void ProjectView::setupContextMenus()
@@ -227,7 +369,16 @@ void ProjectView::loadProject(const QString& projectId)
 
         // Create source model
         _tableModel = new StarTableModel(_currentProject, this);
-        
+
+        // Every path that adds or drops rows (import, add, remove, refresh)
+        // goes through the model, so the placeholder tracks it from there.
+        connect(_tableModel, &QAbstractItemModel::modelReset,
+                this, &ProjectView::updateEmptyState);
+        connect(_tableModel, &QAbstractItemModel::rowsInserted,
+                this, &ProjectView::updateEmptyState);
+        connect(_tableModel, &QAbstractItemModel::rowsRemoved,
+                this, &ProjectView::updateEmptyState);
+
         // Create proxy - block signals during setup
         _proxyModel = new StarFilterProxyModel(this);
         _proxyModel->blockSignals(true);
@@ -249,7 +400,8 @@ void ProjectView::loadProject(const QString& projectId)
         connect(_starTable->selectionModel(), &QItemSelectionModel::selectionChanged,
                 this, &ProjectView::onSelectionChanged);
         updateStatusBar(QString("Loaded %1 stars").arg(_currentProject->getStarCount()));
-        
+        updateEmptyState();
+
         auto endTime = std::chrono::high_resolution_clock::now();
         auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
         LOG_INFO("ProjectView", QString("Project loaded in %1 ms (%2 stars)")

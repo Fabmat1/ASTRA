@@ -16,6 +16,7 @@ class QLabel;
 class QModelIndex;
 class QMenu;
 class QItemSelection;
+class QPushButton;
 QT_END_NAMESPACE
 
 class ApplicationController;
@@ -214,6 +215,14 @@ private:
     void setupContextMenus();
     QModelIndex mapToSource(const QModelIndex& proxyIndex) const;
 
+    // Placeholder shown instead of the table while the open project has no
+    // stars, pointing at the two ways of getting some in.
+    QWidget* buildEmptyStateWidget();
+    void updateEmptyState();
+    // Themes are applied as app-wide QSS, which leaves the QPalette stale, so
+    // the placeholder's colours are set explicitly and re-applied on a switch.
+    void applyEmptyStateTheme();
+
     // Hands the detail window lazy accessors to this table's selection and
     // filter result. The detail window can outlive the project view, so the
     // callbacks guard themselves against a destroyed ProjectView.
@@ -232,7 +241,17 @@ private:
     StarFilterProxyModel* _proxyModel;
     StarFilterWidget* _filterWidget;
     ScrollingLabel* _projectTitle;
-    
+
+    // Empty-project placeholder and the filter chrome it replaces.
+    QWidget* _emptyState = nullptr;
+    QLabel* _emptyStateGlyph = nullptr;
+    QLabel* _emptyStateTitle = nullptr;
+    std::vector<QLabel*> _emptyStateHints;
+    QPushButton* _emptyAddStarButton = nullptr;
+    QPushButton* _emptyImportStarsButton = nullptr;
+    QWidget* _advancedFilterPanel = nullptr;
+    bool _advancedPanelWasVisible = false;
+
     // Context menus
     QMenu* _tableContextMenu;
     QMenu* _headerContextMenu;
