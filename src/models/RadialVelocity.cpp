@@ -285,6 +285,17 @@ double RVFit::getT0MJD() const
     return _tRefMJD - phaseSign() * _phi * _period;
 }
 
+double RVFit::foldEpochBJD() const
+{
+    const double t0 = getT0BJD();
+    if (std::isfinite(t0) && t0 != 0.0) return t0;
+    if (_period <= 0.0) return 0.0;
+    // _tRefBJD is 0 here (that is why getT0BJD() gave up), so this is the
+    // phase-0 epoch counted from BJD 0 - phase-equivalent to the real one, and
+    // it keeps the model's φ convention either way.
+    return _tRefBJD - phaseSign() * _phi * _period;
+}
+
 RadialVelocityCurve::RadialVelocityCurve()
     : _logP(0.0)
 {

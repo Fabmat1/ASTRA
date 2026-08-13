@@ -284,6 +284,13 @@ public:
     double getT0BJD() const;
     double getT0MJD() const;
 
+    // Epoch to fold on: getT0BJD(), or - when no reference time is bound (a
+    // curve whose points have not been loaded) - the equivalent epoch measured
+    // from BJD 0. Callers must not rebuild that fallback themselves: φ enters
+    // the fold with the sign phaseSign() carries, which differs between the
+    // circular and eccentric models.
+    double foldEpochBJD() const;
+
     // Model evaluation
     double calculateRVAtPhase(double phase) const;   // phase 0 == periapsis
     double computePhase(const Time& t) const;        // [0,1)

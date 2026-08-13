@@ -423,12 +423,10 @@ void ObservabilityDialog::plotRVPrediction()
     const double sOm  = sigmaOf(bestFit->getOmegaError());
 
     // ── Recover absolute T₀ (BJD of phase-0) and its uncertainty ──────────
-    // Prefer the model's helper if a reference time has been bound,
-    // otherwise reconstruct it manually:  T₀ = t_ref − phi · P  (mod P).
-    double T0_bjd = bestFit->getT0BJD();
-    if (!std::isfinite(T0_bjd)) {
-        T0_bjd = bestFit->getReferenceBJD() - bestFit->getPhi() * period0;
-    }
+    // The model's helper falls back to the phase-equivalent epoch when no
+    // reference time is bound; doing that here by hand would drop the sign φ
+    // carries in the eccentric convention.
+    const double T0_bjd = bestFit->foldEpochBJD();
 
     // σ_T₀ - prefer stored t0Error; else propagate from phi and period errors.
     double sigma_T0 = sigmaOf(bestFit->getT0Error());

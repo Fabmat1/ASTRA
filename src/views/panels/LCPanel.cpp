@@ -312,9 +312,7 @@ double LCPanel::fallbackT0() const
     // Auto period order, so the fold stays in phase with the RV curve.
     if (auto rv = _ctx.star->getRVCurve()) {
         if (auto bf = rv->getBestFit(); bf && bf->getPeriod() > 0) {
-            double t0 = bf->getT0BJD();
-            if (!std::isfinite(t0) || t0 == 0.0)
-                t0 = bf->getReferenceBJD() - bf->getPhi() * bf->getPeriod();
+            const double t0 = bf->foldEpochBJD();
             if (std::isfinite(t0)) return t0;
         }
     }
@@ -353,9 +351,7 @@ QList<LCPanel::PeriodOption> LCPanel::availablePeriods() const
     // strongest saved periodogram peak.
     if (auto rv = _ctx.star->getRVCurve()) {
         if (auto bf = rv->getBestFit(); bf && bf->getPeriod() > 0) {
-            double t0 = bf->getT0BJD();
-            if (!std::isfinite(t0) || t0 == 0.0)
-                t0 = bf->getReferenceBJD() - bf->getPhi() * bf->getPeriod();
+            const double t0 = bf->foldEpochBJD();
             out.append({PeriodSource::RVFit, bf->getPeriod(), t0,
                         QString("RV fit (%1 d)").arg(fmtP(bf->getPeriod()))});
         }
@@ -926,11 +922,44 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
                     phot ? phot->getBestLCFit(s.source, s.filter) : nullptr;
             }
             if (overlay && !overlay->modelPoints.empty() && overlay->getPeriod() > 0) {
-                // Model phases are in the input fit frame (T0_input = 0). Shift into the
-                // panel's phase frame, which is folded with _foldT0.
-                const double phaseShift = (_foldPeriod > 0)
-                    ? std::fmod(_foldT0 / _foldPeriod, 1.0)
-                    : 0.0;
+                // Model phases live in the frame the fit was folded in:
+                // phase = fmod(t / P_fit), phase 0 at BJD 0 (LCBinning::fold).
+                // The panel folds at (_foldPeriod, _foldT0), so the curve needs
+                // a constant shift into that frame.
+                //
+                // Shifting by _foldT0 / _foldPeriod only holds while the two
+                // periods are the same number. They are not, as soon as the
+                // fold follows an RV fit: a Keplerian refit moves the period in
+                // its ~9th digit relative to the (photometric) period the light
+                // curve was fitted at. BJD 0 is ~2.5e6 d = ~3e7 cycles away, so
+                // a relative period difference of even 1e-8 is hundreds of
+                // cycles by the time the frames meet the data - an arbitrary
+                // phase - while the same difference smears the folded data
+                // themselves by only ~1e-4 cycles over their baseline. That is
+                // exactly the symptom: clean data, curve parked at a random
+                // phase.
+                //
+                // So anchor the shift on an epoch inside the data instead of on
+                // BJD 0: the curve meets the data where the data live, and a
+                // real period mismatch degrades into the (honest) drift across
+                // the baseline it actually is.
+                double tLo = std::numeric_limits<double>::infinity();
+                double tHi = -std::numeric_limits<double>::infinity();
+                for (int i = 0; i < s.bjd.size(); ++i) {
+                    if (s.flagged.value(i, false) || !std::isfinite(s.bjd[i])) continue;
+                    tLo = std::min(tLo, s.bjd[i]);
+                    tHi = std::max(tHi, s.bjd[i]);
+                }
+                const double tAnchor = std::isfinite(tLo) ? 0.5 * (tLo + tHi) : _foldT0;
+
+                // Phase of the anchor in the model's frame minus its phase in
+                // the panel's frame, wrapped to [0, 1) so the ±1 copies below
+                // still cover the whole visible range.
+                double phaseShift =
+                    std::fmod(tAnchor / overlay->getPeriod(), 1.0)
+                    - phaseOf(tAnchor, _foldT0, _foldPeriod);
+                phaseShift = std::fmod(phaseShift, 1.0);
+                if (phaseShift < 0.0) phaseShift += 1.0;
 
                 struct PP { double x, y; };
                 QVector<PP> samples;
