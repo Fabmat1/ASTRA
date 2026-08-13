@@ -12,13 +12,15 @@
 #include <QApplication>
 #include <QEventLoop>
 #include <QFileDialog>
+#include <QFuture>
 #include <QFutureWatcher>
 #include <QMessageBox>
-#include <QMetaObject>
-#include <QPointer>
+#include <QMutex>
+#include <QMutexLocker>
 #include <QProgressDialog>
 #include <QRegularExpression>
 #include <QString>
+#include <QTimer>
 #include <QUuid>
 #include <QtConcurrent>
 
@@ -36,10 +38,37 @@ inline QString freshId() {
 // call from the worker thread to drive the dialog. The dialog is not
 // cancellable (the work writes files / a DB transaction and must run to
 // completion). Returns the job's result once it finishes.
+//
+// The worker never touches the dialog. It publishes its progress into a shared,
+// mutex-guarded slot, and a GUI-thread timer pulls the latest value into the
+// dialog. That timer is also what ends the wait: it polls the future, so the
+// event loop is left as soon as the work is done even if QFutureWatcher's
+// finished() call-out (a posted event, delivered underneath the
+// processEvents() that a modal QProgressDialog::setValue() runs internally)
+// never reaches us. A single missed signal used to leave the dialog on screen
+// forever with the import already committed behind it.
 template <class Result>
 Result runWithProgress(
     QWidget *parent, const QString &title,
     const std::function<Result(const StarPackage::ProgressFn &)> &job) {
+    struct Progress {
+        QMutex  mutex;
+        int     percent = 0;
+        QString phase;
+        bool    dirty = false;
+    };
+    auto prog = std::make_shared<Progress>();
+
+    StarPackage::ProgressFn report = [prog](int pct, const QString &phase) {
+        QMutexLocker lock(&prog->mutex);
+        prog->percent = qBound(0, pct, 100);
+        prog->phase   = phase;
+        prog->dirty   = true;
+    };
+
+    QFuture<Result> future =
+        QtConcurrent::run([job, report]() -> Result { return job(report); });
+
     QProgressDialog dlg(title, QString(), 0, 100, parent);
     dlg.setWindowTitle(title);
     dlg.setWindowModality(Qt::ApplicationModal);
@@ -49,34 +78,50 @@ Result runWithProgress(
     dlg.setCancelButton(nullptr); // not cancellable
     dlg.setValue(0);
 
-    // Thread-safe reporter: marshals updates onto the GUI thread.
-    QPointer<QProgressDialog> dlgPtr(&dlg);
-    StarPackage::ProgressFn   report = [dlgPtr](int pct, const QString &phase) {
-        if (!dlgPtr)
-            return;
-        QMetaObject::invokeMethod(
-            dlgPtr.data(),
-            [dlgPtr, pct, phase]() {
-                if (!dlgPtr)
-                    return;
-                dlgPtr->setLabelText(phase);
-                dlgPtr->setValue(qBound(0, pct, 100));
-            },
-            Qt::QueuedConnection);
-    };
-
-    QFutureWatcher<Result> watcher;
     QEventLoop             loop;
+    QFutureWatcher<Result> watcher;
     QObject::connect(&watcher, &QFutureWatcherBase::finished, &loop,
                      &QEventLoop::quit);
-    watcher.setFuture(
-        QtConcurrent::run([job, report]() -> Result { return job(report); }));
+    watcher.setFuture(future);
+
+    // Declared last so it is destroyed first: its lambda refers to everything
+    // above. setValue() on a modal dialog pumps the event queue, which can
+    // re-enter this slot, hence the guard.
+    bool   inTick = false;
+    QTimer ticker;
+    QObject::connect(&ticker, &QTimer::timeout, &dlg, [&] {
+        if (inTick)
+            return;
+        inTick = true;
+
+        int     pct   = 0;
+        QString phase;
+        bool    dirty = false;
+        {
+            QMutexLocker lock(&prog->mutex);
+            pct         = prog->percent;
+            phase       = prog->phase;
+            dirty       = prog->dirty;
+            prog->dirty = false;
+        }
+        if (dirty) {
+            if (!phase.isEmpty())
+                dlg.setLabelText(phase);
+            dlg.setValue(pct); // may re-enter the event loop
+        }
+        if (future.isFinished())
+            loop.quit();
+
+        inTick = false;
+    });
+    ticker.start(80);
 
     dlg.show();
-    if (!watcher.isFinished())
+    if (!future.isFinished())
         loop.exec(); // pumps GUI events; modal dialog blocks interaction
-    dlg.close();
-    return watcher.result();
+    ticker.stop();
+    dlg.hide();
+    return future.result();
 }
 
 // Regenerate every ID so imported objects never collide with existing DB rows,
