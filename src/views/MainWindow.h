@@ -83,6 +83,7 @@ private:
     QAction* _configureColumnsAction;
     QAction* _aboutAction;
     QAction* _checkUpdatesAction = nullptr;
+    QAction* _whatsNewAction = nullptr;
 
     // Settings actions
     QMenu* _toolsMenu = nullptr;

@@ -8,6 +8,7 @@
 #include "controllers/ApplicationController.h"
 #include "dialogs/FirstRunDialog.h"
 #include "dialogs/SettingsDialog.h"
+#include "dialogs/WhatsNewDialog.h"
 #include "io/StarShare.h"
 #include "models/Project.h"
 #include "utils/AppSettings.h"
@@ -52,15 +53,26 @@ MainWindow::MainWindow(ApplicationController* controller, QWidget *parent)
     connect(_controller->themeManager(), &ThemeManager::themeChanged,
             this, &MainWindow::onThemeChanged);
 
-    // First-launch onboarding (optional ADS / ATLAS tokens). Deferred so the
-    // main window is shown first; the dialog marks itself as seen so it only
-    // ever appears once.
-    if (FirstRunDialog::shouldShow()) {
-        QTimer::singleShot(0, this, [this] {
+    // Startup dialogs, deferred so the main window is shown first and run in
+    // sequence so they never overlap:
+    //   1. First-launch onboarding (optional ADS / ATLAS tokens). The dialog
+    //      marks itself as seen, so it only ever appears once.
+    //   2. "What's New", on the first launch after the running version changed.
+    //      On a fresh install nothing pops up: we only record the version, so
+    //      the *next* update is what triggers it.
+    QTimer::singleShot(0, this, [this] {
+        if (FirstRunDialog::shouldShow()) {
             FirstRunDialog dlg(_controller->settings(), this);
             dlg.exec();
-        });
-    }
+        }
+
+        if (WhatsNewDialog::shouldShowOnStartup()) {
+            WhatsNewDialog dlg(this);
+            dlg.exec();
+        } else {
+            WhatsNewDialog::markVersionSeen();
+        }
+    });
 
     // Silent check for a newer release on GitHub (deferred so the window is up).
     QTimer::singleShot(0, this, [this] { startupUpdateCheck(); });
@@ -212,6 +224,9 @@ void MainWindow::setupMenus()
 
     // Help menu - always visible  
     _helpMenu = menuBar->addMenu("&Help");
+    _whatsNewAction = _helpMenu->addAction("What's &New...");
+    _whatsNewAction->setStatusTip(
+        tr("Show ASTRA's version history and news"));
     _checkUpdatesAction = _helpMenu->addAction("Check for &Updates...");
     _aboutAction = _helpMenu->addAction("&About ASTRA...");
 
@@ -317,6 +332,11 @@ void MainWindow::createActions()
     connect(_exitAction, &QAction::triggered, this, &QWidget::close);
 
     // Help actions
+    connect(_whatsNewAction, &QAction::triggered, this, [this] {
+        WhatsNewDialog dlg(this);
+        dlg.exec();
+    });
+
     connect(_aboutAction, &QAction::triggered, [this]() {
         QMessageBox::about(this, "About ASTRA",
             "ASTRA - Advanced STellar astrophysics Research and Analysis tool\n\n"

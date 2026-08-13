@@ -14,6 +14,8 @@
         <file>themes/tokyo_night.qss</file>
         <file>themes/solarized_dark.qss</file>
         <file>themes/one_dark.qss</file>
+        <file>changelog/CHANGELOG.md</file>
+        <file>changelog/NEWS.md</file>
         <file>data/default_instruments.json</file>
         <file>data/gaia_cmd.csv</file>
         <file>data/tess_sectors.csv</file>
