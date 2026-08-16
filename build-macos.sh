@@ -815,7 +815,21 @@ if [[ "${ASTRA_BUNDLE_ISIS}" == "1" ]]; then
       rel="$(python3 -c 'import os,sys; print(os.path.relpath(sys.argv[1], os.path.dirname(sys.argv[2])))' \
              "${ISIS_LIBS}" "${f}")"
       dylibbundler -cd -of -b -x "${f}" -d "${ISIS_LIBS}" -p "@loader_path/${rel}/" >/dev/null
-    done < <(find "${ISIS_STAGE}" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -u+x \) \
+      # Point the file's own install ID at itself. ISIS's modules are dlopened,
+      # never linked against, so the ID is not load-bearing — but it is the
+      # first line otool -L prints, so a stale one (the build prefix, or a bare
+      # "pgplot-module.so") reads as an unresolved dependency in the audit and
+      # buries the real findings in noise. Errors are expected and ignored:
+      # the isis executable has no ID to set.
+      install_name_tool -id "@loader_path/$(basename "${f}")" "${f}" 2>/dev/null || true
+      # Versioned modules are the whole reason this sweep exists, and the glob
+      # used to miss every one of them: *.so does not match pgplot-module.so.0.2.0,
+      # and libtool leaves those 0644 so -perm -u+x did not catch them either.
+      # They sailed through untouched, still loading libslang from
+      # ~/.cache/astra-build-macos-isis and libcfitsio/libgfortran/libquadmath
+      # from /opt/homebrew — 13 dependencies that resolve on the runner and
+      # nowhere else.
+    done < <(find "${ISIS_STAGE}" -type f \( -name '*.so' -o -name '*.so.*' -o -name '*.dylib' -o -perm -u+x \) \
                   -not -path "${ISIS_LIBS}/*")
     # Each pass above stamped its own binary's prefix onto the *shared* libs, so
     # the last one processed decided how the libs find each other. Make that
@@ -862,8 +876,26 @@ rm -rf "${STAGE}" "${OUT_DMG}"; mkdir -p "${STAGE}"
 cp -R "${APP}" "${STAGE}/"
 ln -s /Applications "${STAGE}/Applications"     # drag-to-install affordance
 echo ">>> Creating ${OUT_DMG##*/}"
-hdiutil create -volname "ASTRA ${VERSION}" -srcfolder "${STAGE}" \
-  -ov -format UDZO "${OUT_DMG}" >/dev/null
+# hdiutil images the staged tree while the OS may still be finishing with it —
+# the copy above, the ad-hoc signature, and Spotlight indexing 185 MB of newly
+# written ISIS modules all land on the same directory — and it fails the whole
+# build with "create failed - Resource busy" when they overlap. That is a race,
+# not a broken bundle: the same inputs succeed seconds later. Flush, then retry
+# a few times before treating it as real.
+sync
+for attempt in 1 2 3; do
+  if hdiutil create -volname "ASTRA ${VERSION}" -srcfolder "${STAGE}" \
+       -ov -format UDZO "${OUT_DMG}" >/dev/null; then
+    break
+  fi
+  if (( attempt == 3 )); then
+    echo "!!! hdiutil create failed 3 times — no .dmg produced."
+    exit 1
+  fi
+  echo ">>> hdiutil create failed (attempt ${attempt}/3), retrying in $((attempt * 10))s"
+  rm -f "${OUT_DMG}"
+  sleep $((attempt * 10))
+done
 # Bare file name in the checksum file (not the build machine's absolute path),
 # so `shasum -c` works next to a downloaded .dmg.
 (cd "$(dirname "${OUT_DMG}")" && shasum -a 256 "$(basename "${OUT_DMG}")") \
