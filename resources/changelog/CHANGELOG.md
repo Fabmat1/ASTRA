@@ -21,20 +21,36 @@
     implemented.
 -->
 
-## Unreleased (2026-08-13)
+## v0.6.0 (2026-08-17)
 
 ### Added
+- New RV detectability tool: it runs a Monte-Carlo simulation over your actual
+  RV epochs and shows the detection probability as a function of period, so you
+  can tell whether a companion would have been found in the data you already
+  have. The curve builds up while the simulation converges, and the fit stays
+  usable in the meantime.
 - Binary spectral fits and free metal abundances in the spectrum fit setup.
 - WASD / arrow-key zoom and panning for lightcurves and spectra.
+- This "What's New" window, which opens after every update.
+- A hint on what to do first when a project is still empty.
 
 ### Changed
 - The fitting backend is now called GAEL (previously DIGGA).
 - Much finer-grained fit progress, with a working abort button.
 - Radial velocity and spectrum panels stay in sync when selecting points.
 - Reworked Spectrum Fit Setup dialog.
+- Adding spectra to a project is smoother and more forgiving.
 - Lightcurve panel viewer improvements.
+- The RV MCMC sampler is now part of ASTRA itself rather than a separate
+  component, so it is always available and always matches the rest of the app.
+- The macOS download now bundles a complete, working ISIS, so ISIS-backed
+  fitting works out of the box with no separate install. The `.dmg` is
+  considerably larger as a result (~240 MB).
 
 ### Fixed
+- Lightcurves now line up correctly with the RV curve for eccentric fits.
+- Importing an `.astra` file no longer hangs.
+- The RV MCMC window can be closed again.
 - Several fixes to the ISIS installation bundled with the macOS build.
 
 ## v0.5.6 (2026-08-08)
