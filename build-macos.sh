@@ -743,6 +743,16 @@ if [[ "${ASTRA_BUNDLE_ISIS}" == "1" ]]; then
       return 1
     }
 
+    # Both makes concatenate every .sl file and run the result through awk (the
+    # `test` target that share/isisscripts.sl depends on). macOS ships the BSD
+    # one-true-awk, which hard-errors — "towc: multibyte conversion failure" —
+    # on bytes that are not valid UTF-8 once the locale is multibyte, and the
+    # upstream sources carry Latin-1 degree signs in their docstrings. LC_ALL=C
+    # puts awk back in a byte-oriented locale so those bytes pass through
+    # untouched; gawk (what Linux users have) only warns, which is why this
+    # never showed up outside CI.
+    export LC_ALL=C
+
     # isisscripts (Remeis) moved off the old /git.public gitweb (dumb HTTP, now
     # 404) to the Remeis GitLab, which speaks smart HTTP — so --depth 1 works.
     ( cd "${ISIS_SCRIPTS_SRC}"
