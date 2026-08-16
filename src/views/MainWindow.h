@@ -106,6 +106,7 @@ private:
     QAction* _createPlotAction;
     QAction* _fetchLightcurvesAction = nullptr;
     QAction* _computeKinematicsAction = nullptr;
+    QAction* _rvDetectabilityAction = nullptr;
 
     QAction* _instrumentConfigAction = nullptr;
     InstrumentConfigView* _instrumentConfigView = nullptr;

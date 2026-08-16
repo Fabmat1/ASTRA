@@ -496,6 +496,11 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
                 tr("Calculate UVW space velocities and galactocentric XYZ "
                    "positions (with Monte-Carlo errors) for the selected "
                    "stars"));
+            _rvDetectabilityAction =
+                _analysisMenu->addAction("RV &Detectability...");
+            _rvDetectabilityAction->setStatusTip(
+                tr("Monte-Carlo the SB1 detection probability against orbital "
+                   "period, using the stars' real RV epochs and uncertainties"));
             _analysisMenu->addSeparator();
             _instrumentConfigAction = _analysisMenu->addAction("&Instruments...");
 
@@ -506,6 +511,8 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             // "New Fetch…" button to launch a batch fetch for the selection.
             connect(_fetchLightcurvesAction, &QAction::triggered,
                     this, &MainWindow::onShowLcFetchSessions);
+            connect(_rvDetectabilityAction, &QAction::triggered, _projectView,
+                    &ProjectView::onRVDetectability);
             connect(_instrumentConfigAction, &QAction::triggered, this, &MainWindow::onShowInstrumentConfig);
             
             QAction* helpAction = _helpMenu->menuAction();
@@ -534,6 +541,7 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             _analysisMenu = nullptr;
             _fetchLightcurvesAction = nullptr;
             _computeKinematicsAction = nullptr;
+            _rvDetectabilityAction = nullptr;
         }
         
         // Remove Configure Columns from View menu

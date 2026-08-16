@@ -22,6 +22,7 @@
 #include "views/StarDetailView.h"
 #include "views/tools/LightcurveFetchSessionsDialog.h"
 #include "views/tools/ProjectPlotDialog.h"
+#include "views/tools/RVDetectabilityDialog.h"
 
 #include <QAction>
 #include <QApplication>
@@ -1192,6 +1193,30 @@ void ProjectView::updateBoolDelegate()
     _starTable->setItemDelegate(_boolDelegate);
     if (_tableModel)
         _boolDelegate->setBoolColumns(_tableModel->boolColumnIndices());
+}
+
+void ProjectView::onRVDetectability()
+{
+    if (!_currentProject) {
+        QMessageBox::information(this, "RV Detectability", "No project loaded");
+        return;
+    }
+
+    auto allStars = _currentProject->getAllStars();
+    if (allStars.empty()) {
+        QMessageBox::information(this, "RV Detectability",
+                                 "There are no stars in the project.");
+        return;
+    }
+
+    auto* dialog = new RVDetectabilityDialog(std::move(allStars),
+                                             getFilteredStars(),
+                                             getSelectedStars(),
+                                             this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
 }
 
 void ProjectView::onCreatePlot()

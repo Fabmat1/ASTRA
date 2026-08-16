@@ -189,6 +189,7 @@ public:
     void onRemoveStar();
     void onReloadMetrics();
     void onComputeGalacticKinematics();
+    void onRVDetectability();
     void onShowDetailWindow();
     void onConfigureColumns();
     void onCreatePlot();

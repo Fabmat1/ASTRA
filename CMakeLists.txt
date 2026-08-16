@@ -379,6 +379,7 @@ set(SOURCES
     src/views/tools/RVImportPointsDialog.cpp
     src/views/tools/RVMCMCResultsDialog.cpp
     src/views/tools/ObservabilityDialog.cpp
+    src/views/tools/RVDetectabilityDialog.cpp
 
     # views/panels
     src/views/panels/PanelUtils.cpp
@@ -408,6 +409,7 @@ set(SOURCES
     src/fitting/StdStreamRedirector.cpp
     src/fitting/Periodogram.cpp
     src/fitting/RVErrorMC.cpp
+    src/fitting/RVDetectability.cpp
 
     # io
     src/io/StarPackage.cpp
@@ -522,6 +524,7 @@ set(HEADERS
 
     # views/tools
     src/views/tools/CMDDialog.h
+    src/views/tools/RVDetectabilityDialog.h
     src/views/tools/GalacticOrbitDialog.h
     src/views/tools/ProjectPlotDialog.h
     src/views/tools/LightcurveFetchDialog.h
@@ -563,6 +566,7 @@ set(HEADERS
 
     #GAEL fitting
     src/fitting/FitTypes.h
+    src/fitting/RVDetectability.h
     src/fitting/IFitBackend.h
     src/fitting/FitBackendRegistry.h
     src/fitting/GaelBackend.h
