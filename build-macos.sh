@@ -746,15 +746,31 @@ if [[ "${ASTRA_BUNDLE_ISIS}" == "1" ]]; then
     # never showed up outside CI.
     export LC_ALL=C
 
+    # Build the library target ONLY, never the default `all`. Upstream's `all`
+    # is `clean isisscripts help wiki html`, and every doc target shells out to
+    # bin/tmexpand — a jed script. jed wants a terminal, finds none on a runner,
+    # and blocks forever: one run sat on "tmexpand -Isrc doc/ISISscripts_md.tm"
+    # for 85 minutes and had to be killed, leaving an orphan jed behind. ASTRA
+    # only ever loads share/*.sl, so the docs are pure dead weight here. In both
+    # repos the `isisscripts` target is exactly that library (share/isisscripts.sl
+    # and share/stellar_isisscripts.sl respectively), test target included.
+    #
+    # The alarm is a backstop for the next upstream hang rather than this one:
+    # SIGALRM survives the exec, so a wedged make dies at 20 min and drops into
+    # the non-fatal ISIS path below, instead of holding the job hostage until
+    # the workflow's 150-minute timeout. </dev/null closes the same door from
+    # the other side — anything that tries to read stdin gets EOF, not a wait.
+    make_bounded() { perl -e 'alarm shift; exec @ARGV' 1200 make "$@" </dev/null; }
+
     # isisscripts (Remeis) moved off the old /git.public gitweb (dumb HTTP, now
     # 404) to the Remeis GitLab, which speaks smart HTTP — so --depth 1 works.
     ( cd "${ISIS_SCRIPTS_SRC}"
       clone_isis_scripts \
         https://www.sternwarte.uni-erlangen.de/gitlab/remeis/isisscripts.git isisscripts
-      ( cd isisscripts && make )
+      ( cd isisscripts && make_bounded isisscripts )
       clone_isis_scripts \
         http://www.sternwarte.uni-erlangen.de/gitlab/irrgang/stellar.git stellar_isisscripts
-      ( cd stellar_isisscripts && make )
+      ( cd stellar_isisscripts && make_bounded isisscripts )
       if [[ -f stellar_isisscripts/slirp/c_functions.h ]]; then
         ( cd stellar_isisscripts/slirp
           # c_functions.h includes <gsl/...> and the module links -lgsl, neither
