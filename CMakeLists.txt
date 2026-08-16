@@ -230,11 +230,6 @@ set_target_properties(qcustomplot PROPERTIES AUTOMOC ON)
 set(GAEL_BUILD_REPORT OFF CACHE BOOL "" FORCE)   # no matplotlib/Python dep
 add_subdirectory(external/GAEL EXCLUDE_FROM_ALL)
 
-# RV_MCMC submodule – build only the static library, not the CLI
-set(RV_MCMC_BUILD_CLI    OFF CACHE BOOL "" FORCE)
-set(RV_MCMC_BUILD_PYBIND OFF CACHE BOOL "" FORCE)
-add_subdirectory(external/rv_mcmc EXCLUDE_FROM_ALL)
-
 # SEDplusplus submodule – builds the `sedfit` helper executable that ASTRA
 # drives via QProcess for photometric SED fitting. Built by default (not
 # EXCLUDE_FROM_ALL) so `cmake --build` always produces it alongside ASTRA.
@@ -246,7 +241,7 @@ endif()
 # ── Belt-and-braces: force the final ABI on every linked target ─────────────
 # Some submodules unconditionally `set(CMAKE_CXX_STANDARD 17)` in their own
 # CMakeLists.txt, which silently overrides our directory-scope setting.
-foreach(_t IN ITEMS GAELcore rv_mcmc qcustomplot)
+foreach(_t IN ITEMS GAELcore qcustomplot)
     if(TARGET ${_t})
         set_target_properties(${_t} PROPERTIES
             CXX_STANDARD 20
@@ -254,12 +249,6 @@ foreach(_t IN ITEMS GAELcore rv_mcmc qcustomplot)
             CXX_EXTENSIONS OFF)
     endif()
 endforeach()
-
-# rv_mcmc legitimately needs GNU extensions for the `2j` complex literal.
-if(TARGET rv_mcmc)
-    target_compile_options(rv_mcmc PRIVATE
-        $<$<CXX_COMPILER_ID:GNU>:-fext-numeric-literals>)
-endif()
 
 # Source files
 set(SOURCES
@@ -409,6 +398,7 @@ set(SOURCES
     src/fitting/StdStreamRedirector.cpp
     src/fitting/Periodogram.cpp
     src/fitting/RVErrorMC.cpp
+    src/fitting/RVMCMC.cpp
     src/fitting/RVDetectability.cpp
 
     # io
@@ -575,6 +565,7 @@ set(HEADERS
     src/fitting/StdStreamRedirector.h
     src/fitting/Periodogram.h
     src/fitting/RVErrorMC.h
+    src/fitting/RVMCMC.h
 
     # io
     src/io/StarPackage.h
@@ -648,7 +639,6 @@ if(ENABLE_PROFILING)
 
     target_compile_options(ASTRA       PRIVATE ${PROFILING_FLAGS})
     target_compile_options(qcustomplot PRIVATE ${PROFILING_FLAGS})
-    target_compile_options(rv_mcmc     PRIVATE ${PROFILING_FLAGS})
 
     target_link_options(ASTRA PRIVATE -rdynamic)
 endif()
@@ -669,8 +659,48 @@ target_link_libraries(ASTRA PRIVATE
     Qt6::Svg
     qcustomplot
     GAEL::core
-    rv_mcmc
 )
+
+# ── FFTW3 ──────────────────────────────────────────────────────────────────
+# Used directly by Periodogram.cpp (GLS via the FFT-based trig sums). ASTRA
+# used to pick this up by accident, as a transitive dependency of the RV_MCMC
+# submodule; it is a first-class dependency of our own code now.
+if(PkgConfig_FOUND)
+    pkg_check_modules(FFTW3 fftw3)
+endif()
+if(FFTW3_FOUND)
+    target_include_directories(ASTRA PRIVATE ${FFTW3_INCLUDE_DIRS})
+    target_link_libraries(ASTRA PRIVATE ${FFTW3_LIBRARIES})
+    target_link_directories(ASTRA PRIVATE ${FFTW3_LIBRARY_DIRS})
+else()
+    find_path(FFTW3_INCLUDE_DIR fftw3.h)
+    find_library(FFTW3_LIBRARY NAMES fftw3 libfftw3)
+    if(NOT FFTW3_INCLUDE_DIR OR NOT FFTW3_LIBRARY)
+        message(FATAL_ERROR "FFTW3 not found - required by src/fitting/Periodogram.cpp")
+    endif()
+    message(STATUS "Found FFTW3: ${FFTW3_LIBRARY}")
+    target_include_directories(ASTRA PRIVATE ${FFTW3_INCLUDE_DIR})
+    target_link_libraries(ASTRA PRIVATE ${FFTW3_LIBRARY})
+endif()
+
+# ── OpenMP for the RV-MCMC sampler ─────────────────────────────────────────
+# Enabled per source file on purpose: several other translation units carry
+# `#pragma omp` directives that have never actually been compiled with OpenMP
+# on (the flag has never been part of ASTRA's own compile line), so switching
+# the whole target over would change their behaviour as a side effect. The
+# sampler degrades to a correct single-threaded run when OpenMP is missing.
+find_package(OpenMP)
+if(OpenMP_CXX_FOUND)
+    # AppleClang reports "-Xclang -fopenmp" here, which has to reach the driver
+    # as two arguments, not one.
+    separate_arguments(ASTRA_OPENMP_FLAGS NATIVE_COMMAND "${OpenMP_CXX_FLAGS}")
+    set_source_files_properties(src/fitting/RVMCMC.cpp PROPERTIES
+        COMPILE_OPTIONS "${ASTRA_OPENMP_FLAGS}")
+    target_include_directories(ASTRA PRIVATE ${OpenMP_CXX_INCLUDE_DIRS})
+    target_link_libraries(ASTRA PRIVATE ${OpenMP_CXX_LIBRARIES})
+else()
+    message(WARNING "OpenMP not found - the RV-MCMC sampler will be single-threaded")
+endif()
 
 # Add CCfits support if available
 if(CCFITS_FOUND)
@@ -924,6 +954,62 @@ if(BUILD_TESTING)
     if(TARGET generate_reference)
         add_dependencies(test_barycentric generate_reference)
     endif()
+
+    # ── RV-MCMC sampler test ─────────────────────────────────────────────
+    # Compiles the sampler (plus the periodogram it seeds from and the logger
+    # it reports through) straight into the test binary - no GUI, no database.
+    add_executable(test_rvmcmc
+        tests/test_rvmcmc.cpp
+        src/fitting/RVMCMC.cpp
+        src/fitting/Periodogram.cpp
+        src/utils/Logger.cpp
+    )
+    set_target_properties(test_rvmcmc PROPERTIES AUTOMOC ON)
+    target_include_directories(test_rvmcmc PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_compile_definitions(test_rvmcmc PRIVATE
+        ASTRA_DATA_DIR="${ASTRA_DATA_DIR}"
+    )
+    target_link_libraries(test_rvmcmc PRIVATE Qt6::Core)
+    # Periodogram.cpp uses Eigen; the app gets it transitively through GAEL.
+    find_package(Eigen3 QUIET NO_MODULE)
+    if(TARGET Eigen3::Eigen)
+        target_link_libraries(test_rvmcmc PRIVATE Eigen3::Eigen)
+    elseif(TARGET GAEL::core)
+        target_link_libraries(test_rvmcmc PRIVATE GAEL::core)
+    endif()
+    # EIGEN_USE_BLAS/LAPACKE are set project-wide, so Eigen calls out to them.
+    find_package(BLAS QUIET)
+    if(BLAS_FOUND)
+        target_link_libraries(test_rvmcmc PRIVATE ${BLAS_LIBRARIES})
+    endif()
+    find_package(LAPACK QUIET)
+    if(LAPACK_FOUND)
+        target_link_libraries(test_rvmcmc PRIVATE ${LAPACK_LIBRARIES})
+    endif()
+    if(OpenMP_CXX_FOUND)
+        target_include_directories(test_rvmcmc PRIVATE ${OpenMP_CXX_INCLUDE_DIRS})
+        target_link_libraries(test_rvmcmc PRIVATE ${OpenMP_CXX_LIBRARIES})
+    endif()
+    if(FFTW3_FOUND)
+        target_include_directories(test_rvmcmc PRIVATE ${FFTW3_INCLUDE_DIRS})
+        target_link_directories(test_rvmcmc PRIVATE ${FFTW3_LIBRARY_DIRS})
+        target_link_libraries(test_rvmcmc PRIVATE ${FFTW3_LIBRARIES})
+    else()
+        target_include_directories(test_rvmcmc PRIVATE ${FFTW3_INCLUDE_DIR})
+        target_link_libraries(test_rvmcmc PRIVATE ${FFTW3_LIBRARY})
+    endif()
+
+    add_test(
+        NAME    rv_mcmc_sampler
+        COMMAND test_rvmcmc
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(rv_mcmc_sampler PROPERTIES
+        LABELS "fitting;statistics"
+        TIMEOUT 300
+    )
 
     # Register with CTest
     add_test(

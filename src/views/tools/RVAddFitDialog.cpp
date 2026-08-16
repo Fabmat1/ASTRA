@@ -28,6 +28,7 @@
 #include <QListWidget>
 #include <QMessageBox>
 #include <QPointer>
+#include <QProgressBar>
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QScrollArea>
@@ -574,9 +575,9 @@ std::shared_ptr<RVFit> RVAddFitDialog::buildManualFit() const {
 }
 
 // ───────────────────────────────────────────────────────────────────
-rv_mcmc::RVData RVAddFitDialog::buildRVData() const
+RVMCMC::Data RVAddFitDialog::buildRVData() const
 {
-    rv_mcmc::RVData d;
+    RVMCMC::Data d;
     if (!_curve) return d;
 
     for (const auto& p : _curve->getRVPoints()) {
@@ -596,9 +597,9 @@ rv_mcmc::RVData RVAddFitDialog::buildRVData() const
     return d;
 }
 
-rv_mcmc::MCMCConfig RVAddFitDialog::collectMCMCConfig() const
+RVMCMC::Config RVAddFitDialog::collectMCMCConfig() const
 {
-    rv_mcmc::MCMCConfig c = rv_mcmc::default_config(_mcmcEccentric->isChecked());
+    RVMCMC::Config c = RVMCMC::defaultConfig(_mcmcEccentric->isChecked());
 
     // ── Period range: peak-limited or explicit ─────────────────
     if (_mcmcLimitPeak && _mcmcLimitPeak->isChecked() && _mcmcPeakCombo &&
@@ -638,7 +639,6 @@ rv_mcmc::MCMCConfig RVAddFitDialog::collectMCMCConfig() const
     c.chain_thin = _nThin->value();
     c.n_temperatures  = _nTemp->value();
     c.max_temperature = _maxTemp->value();
-    c.noplot = true;
     return c;
 }
 
@@ -650,10 +650,10 @@ namespace {
 // Build an LCPriorData from a Periodogram::Result. Frequencies → periods.
 // If ellipsoidal, the orbital period is twice the photometric peak period,
 // so we double the period axis (equivalently halve frequencies).
-rv_mcmc::LCPriorData makeLCPriorData(
+RVMCMC::LCPrior makeLCPriorData(
     const Periodogram::Result& res, bool ellipsoidal)
 {
-    rv_mcmc::LCPriorData out;
+    RVMCMC::LCPrior out;
     const size_t N = std::min(res.frequency.size(), res.power.size());
     out.periods.reserve(N);
     out.powers.reserve(N);
@@ -666,7 +666,7 @@ rv_mcmc::LCPriorData makeLCPriorData(
         out.periods.push_back(P);
         out.powers .push_back(p);
     }
-    // rv_mcmc expects periods ascending; sort just in case.
+    // RVMCMC expects periods ascending; sort just in case.
     std::vector<size_t> order(out.periods.size());
     std::iota(order.begin(), order.end(), size_t{0});
     std::sort(order.begin(), order.end(),
@@ -709,7 +709,7 @@ void RVAddFitDialog::onRunMCMC()
     auto cfg = collectMCMCConfig();
 
     // ── Build LC prior (optional) ────────────────────────────
-    std::shared_ptr<rv_mcmc::LCPriorData> lcPrior;
+    std::shared_ptr<RVMCMC::LCPrior> lcPrior;
     if (_lcPriorEnable && _lcPriorEnable->isChecked() && _star) {
         Periodogram::Result res;
         const QString tag = _lcPriorSource->currentData().toString();
@@ -717,9 +717,7 @@ void RVAddFitDialog::onRunMCMC()
         if (resolvePeriodogramResult(_dbm, _star->getId(), tag, res)) {
             auto built = makeLCPriorData(res, ellips);
             if (!built.periods.empty()) {
-                lcPrior = std::make_shared<rv_mcmc::LCPriorData>(std::move(built));
-                cfg.lc_prior      = true;
-                cfg.lc_pgram_data = { lcPrior->periods, lcPrior->powers };
+                lcPrior = std::make_shared<RVMCMC::LCPrior>(std::move(built));
                 LOG_INFO("Tools",
                     QString("RV-MCMC: LC prior (source=%1, ellipsoidal=%2, "
                             "%3 bins, P=[%4..%5] d)")
@@ -734,79 +732,117 @@ void RVAddFitDialog::onRunMCMC()
         }
     }
 
-    // Chain buffer for progress monitoring
-    auto chainBuffer = std::make_shared<std::vector<std::vector<double>>>();
-    cfg.chain_buffer = chainBuffer.get();
+    // Live counters shared with the sampler thread; also carries the cancel flag.
+    auto shared = std::make_shared<RVMCMC::Progress>();
 
-    const int totalSamples = cfg.n_samples;
-    const int chainThin    = std::max(1, cfg.chain_thin);
+    const qint64 totalIters = cfg.n_burn_in + cfg.n_samples;
+    const qint64 burnIters  = cfg.n_burn_in;
 
-    auto* progress = new QProgressDialog(
-        QString("Running RV-MCMC fit… burn-in (%1 samples)").arg(cfg.n_burn_in),
-        QString(), 0, totalSamples, this);
+    // A plain dialog rather than QProgressDialog: that class re-enters the event
+    // loop from setValue() while modal, emits canceled() from its closeEvent and
+    // resets its shown-once state on cancel, all of which fight a teardown that
+    // has to happen while a results dialog is about to open.
+    auto* progress = new QDialog(this);
+    progress->setWindowTitle("RV-MCMC");
     progress->setWindowModality(Qt::WindowModal);
-    progress->setMinimumDuration(0);
-    progress->setAutoClose(false);
-    progress->setAutoReset(false);
-    progress->setCancelButton(nullptr);
-    progress->setValue(0);
+    progress->setWindowFlags((progress->windowFlags() | Qt::CustomizeWindowHint)
+                             & ~Qt::WindowCloseButtonHint);
+    progress->setMinimumWidth(420);
+
+    auto* progressLay   = new QVBoxLayout(progress);
+    auto* progressLabel = new QLabel(
+        QString("Running RV-MCMC fit… burn-in (%L1 iterations)").arg(burnIters),
+        progress);
+    auto* progressBar   = new QProgressBar(progress);
+    progressBar->setRange(0, 1000);
+    progressBar->setValue(0);
+    auto* stopBtn = new QPushButton("Stop and keep samples", progress);
+    progressLay->addWidget(progressLabel);
+    progressLay->addWidget(progressBar);
+    progressLay->addWidget(stopBtn, 0, Qt::AlignRight);
     progress->show();
 
-    auto elapsedTimer  = std::make_shared<QElapsedTimer>();
+    auto elapsedTimer = std::make_shared<QElapsedTimer>();
     elapsedTimer->start();
-    auto firstSampleMs = std::make_shared<qint64>(-1);
 
     auto* poll = new QTimer(progress);
     poll->setInterval(400);
+
+    // Stopping halts the sampler at its next synchronisation point; whatever has
+    // been drawn so far is still post-processed and offered as solutions. The
+    // dialog stays up meanwhile - that post-processing takes a moment.
+    auto requestStop = [shared, poll, progressLabel, stopBtn]() {
+        if (shared->cancelled()) return;
+        shared->requestCancel();
+        poll->stop();
+        stopBtn->setEnabled(false);
+        progressLabel->setText("Stopping - finishing the current block…");
+    };
+    connect(stopBtn, &QPushButton::clicked, progress, requestStop);
+    connect(progress, &QDialog::rejected, progress, requestStop);   // Esc
+
     connect(poll, &QTimer::timeout, progress,
-        [progress, chainBuffer, totalSamples, chainThin, elapsedTimer, firstSampleMs]()
+        [progressLabel, progressBar, shared, totalIters, burnIters, elapsedTimer]()
     {
-        const int done = static_cast<int>(chainBuffer->size()) * chainThin;
-        progress->setValue(std::min(done, totalSamples));
-        if (done <= 0) return;
-        if (*firstSampleMs < 0) *firstSampleMs = elapsedTimer->elapsed();
-        const qint64 now      = elapsedTimer->elapsed();
-        const qint64 since1st = now - *firstSampleMs;
+        const qint64 done = shared->iterations.load(std::memory_order_relaxed);
+        if (done <= 0 || totalIters <= 0) return;
+        progressBar->setValue(int(1000 * std::min<qint64>(done, totalIters) / totalIters));
+
         QString etaStr;
-        if (since1st > 1500 && done > 0) {
-            const double rate = double(done) / (double(since1st) / 1000.0);
+        const qint64 ms = elapsedTimer->elapsed();
+        if (ms > 1500) {
+            const double rate = double(done) / (double(ms) / 1000.0);
             if (rate > 0.0) {
-                const double remaining = std::max(0, totalSamples - done) / rate;
-                const int s = int(remaining);
+                const int s = int(double(std::max<qint64>(0, totalIters - done)) / rate);
                 etaStr = QString(" - ETA %1:%2:%3")
                     .arg(s / 3600, 2, 10, QChar('0'))
                     .arg((s / 60) % 60, 2, 10, QChar('0'))
                     .arg(s % 60, 2, 10, QChar('0'));
             }
         }
-        progress->setLabelText(QString("RV-MCMC fit: %L1 / %L2 samples%3")
-            .arg(done).arg(totalSamples).arg(etaStr));
+        if (done < burnIters) {
+            progressLabel->setText(QString("RV-MCMC burn-in: %L1 / %L2%3")
+                .arg(done).arg(burnIters).arg(etaStr));
+        } else {
+            progressLabel->setText(QString("RV-MCMC sampling: %L1 / %L2 iterations "
+                                            "(%L3 stored)%4")
+                .arg(done).arg(totalIters)
+                .arg(shared->samples.load(std::memory_order_relaxed))
+                .arg(etaStr));
+        }
     });
     poll->start();
 
     QPointer<RVAddFitDialog>  self = this;
-    QPointer<QProgressDialog> pd   = progress;
+    QPointer<QDialog>         pd   = progress;
+    QPointer<QTimer>          pollPtr = poll;
     const QString curveId = _curve ? _curve->getId() : QString();
 
-    std::thread worker([self, pd, curveId, chainBuffer, lcPrior,
+    std::thread worker([self, pd, pollPtr, curveId, shared, lcPrior,
                         data = std::move(data),
                         cfg]() mutable
     {
-        rv_mcmc::FitResult result;
+        RVMCMC::Result result;
         QString error;
         try {
-            result = rv_mcmc::run_fit(data, cfg, lcPrior.get());
+            result = RVMCMC::run(data, cfg, lcPrior.get(), shared.get());
         } catch (const std::exception& e) {
             error = QString::fromStdString(e.what());
         } catch (...) {
-            error = "Unknown exception in rv_mcmc::run_fit";
+            error = "Unknown exception in RVMCMC::run";
         }
 
         QMetaObject::invokeMethod(qApp,
-            [self, pd, curveId, chainBuffer,
+            [self, pd, pollPtr, curveId,
              result = std::move(result), error]() mutable
         {
-            if (pd) { pd->close(); pd->deleteLater(); }
+            // Order matters. The results dialog below runs a nested event loop,
+            // and a deleteLater() posted here would not be delivered until that
+            // loop exits - so the poll timer is stopped and the dialog destroyed
+            // outright, rather than left alive and ticking behind the results
+            // window.
+            if (pollPtr) pollPtr->stop();
+            if (pd) { pd->hide(); delete pd.data(); }
             if (!self) return;
 
             if (!error.isEmpty()) {
@@ -814,14 +850,21 @@ void RVAddFitDialog::onRunMCMC()
                 return;
             }
             if (!result.success) {
-                QMessageBox::critical(self, "RV-MCMC",
-                    "MCMC failed: " +
-                    QString::fromStdString(result.error_message));
+                // Stopping before the first sample is a user action, not a failure.
+                if (result.cancelled) {
+                    QMessageBox::information(self, "RV-MCMC",
+                        "Stopped before any samples were drawn - nothing to show.");
+                } else {
+                    QMessageBox::critical(self, "RV-MCMC",
+                        "MCMC failed: " +
+                        QString::fromStdString(result.error_message));
+                }
                 return;
             }
 
-            LOG_INFO("Tools", QString("RV-MCMC: %1 samples, %2 peaks detected")
-                .arg(result.chain.size()).arg(result.solutions.size()));
+            LOG_INFO("Tools", QString("RV-MCMC: %1 samples, %2 peaks detected%3")
+                .arg(result.chain.rows()).arg(result.solutions.size())
+                .arg(result.cancelled ? " (stopped early)" : ""));
 
             RVMCMCResultsDialog dlg(std::move(result), curveId, self);
             if (dlg.exec() == QDialog::Accepted) {
@@ -2305,7 +2348,7 @@ void RVAddFitDialog::onPgCompute()
     progress->show();
 
     QPointer<RVAddFitDialog>  self = this;
-    QPointer<QProgressDialog> pd   = progress;
+    QPointer<QDialog>         pd   = progress;
 
     std::thread worker([self, pd, t, y, dy, grid]() mutable {
         Periodogram::Result res = Periodogram::computeGLS(t, y, dy, grid);

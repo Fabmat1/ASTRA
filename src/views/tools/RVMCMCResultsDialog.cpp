@@ -21,7 +21,7 @@
 #include <cmath>
 
 // ────────────────────────────────────────────────────────────────────
-RVMCMCResultsDialog::RVMCMCResultsDialog(rv_mcmc::FitResult result,
+RVMCMCResultsDialog::RVMCMCResultsDialog(RVMCMC::Result result,
                                           QString curveId,
                                           QWidget* parent)
     : QDialog(parent), _result(std::move(result)), _curveId(std::move(curveId))
@@ -81,12 +81,15 @@ void RVMCMCResultsDialog::buildUi()
     _pMaxSpin = new QDoubleSpinBox;
     _pMaxSpin->setRange(1e-6, 1e8); _pMaxSpin->setDecimals(6);
 
-    auto periods_minmax = std::minmax_element(
-        _result.chain.begin(), _result.chain.end(),
-        [](const auto& a, const auto& b){ return a[0] < b[0]; });
-    if (periods_minmax.first != _result.chain.end()) {
-        _pMinSpin->setValue((*periods_minmax.first)[0]);
-        _pMaxSpin->setValue((*periods_minmax.second)[0]);
+    if (const std::size_t rows = _result.chain.rows()) {
+        double pLo = _result.chain.at(0, 0), pHi = pLo;
+        for (std::size_t i = 1; i < rows; ++i) {
+            const double p = _result.chain.at(i, 0);
+            pLo = std::min(pLo, p);
+            pHi = std::max(pHi, p);
+        }
+        _pMinSpin->setValue(pLo);
+        _pMaxSpin->setValue(pHi);
     }
 
     form->addRow("Min P [d]", _pMinSpin);
@@ -280,7 +283,7 @@ void RVMCMCResultsDialog::onCornerRangeChanged()
 std::vector<bool> RVMCMCResultsDialog::currentFilterMask() const
 {
     const int n = (int)_diagPlots.size();
-    const size_t M = _result.chain.size();
+    const size_t M = _result.chain.rows();
     std::vector<bool> mask(M, true);
     if (M == 0 || n == 0) return mask;
 
@@ -289,9 +292,9 @@ std::vector<bool> RVMCMCResultsDialog::currentFilterMask() const
         r[k] = _diagPlots[k] ? _diagPlots[k]->xAxis->range() : QCPRange();
 
     for (size_t i = 0; i < M; ++i) {
+        const double* row = _result.chain.row(i);
         for (int k = 0; k < n; ++k) {
-            double v = _result.chain[i][k];
-            if (v < r[k].lower || v > r[k].upper) { mask[i] = false; break; }
+            if (row[k] < r[k].lower || row[k] > r[k].upper) { mask[i] = false; break; }
         }
     }
     return mask;
@@ -304,7 +307,7 @@ void RVMCMCResultsDialog::rebuildHistogramsForActiveFilter()
 
     auto mask = currentFilterMask();
     int kept = (int)std::count(mask.begin(), mask.end(), true);
-    int total = (int)_result.chain.size();
+    int total = (int)_result.chain.rows();
     if (_filterInfo)
         _filterInfo->setText(QString("Filter: %1 / %2 samples").arg(kept).arg(total));
 
@@ -325,9 +328,9 @@ void RVMCMCResultsDialog::rebuildHistogramsForActiveFilter()
         double step = (hi - lo) / nb;
         QVector<double> counts(nb, 0.0), centers(nb);
         for (int b = 0; b < nb; ++b) centers[b] = lo + (b + 0.5) * step;
-        for (size_t i = 0; i < _result.chain.size(); ++i) {
+        for (size_t i = 0; i < _result.chain.rows(); ++i) {
             if (!mask[i]) continue;
-            double v = _result.chain[i][k];
+            double v = _result.chain.at(i, k);
             if (log) v = std::log10(std::max(v, 1e-300));
             int b = (int)((v - lo) / step);
             if (b >= 0 && b < nb) counts[b] += 1.0;
@@ -366,10 +369,10 @@ void RVMCMCResultsDialog::rebuildHistogramsForActiveFilter()
                                   QCPRange(ry.lower, ry.upper));
             cm->data()->fill(0);
 
-            for (size_t s = 0; s < _result.chain.size(); ++s) {
+            for (size_t s = 0; s < _result.chain.rows(); ++s) {
                 if (!mask[s]) continue;
-                double xv = _result.chain[s][j];
-                double yv = _result.chain[s][i];
+                double xv = _result.chain.at(s, j);
+                double yv = _result.chain.at(s, i);
                 if (xlog) xv = std::log10(std::max(xv, 1e-300));
                 if (ylog) yv = std::log10(std::max(yv, 1e-300));
                 int bx = (int)((xv - xlo) / sx);
@@ -387,7 +390,7 @@ void RVMCMCResultsDialog::rebuildHistogramsForActiveFilter()
 //  Solution construction
 // ────────────────────────────────────────────────────────────────────
 std::shared_ptr<RVFit> RVMCMCResultsDialog::fitFromSubChain(
-    const std::vector<std::vector<double>>& sub,
+    const RVMCMC::Chain& sub,
     const QString& methodTag) const
 {
     if (sub.empty()) return nullptr;
@@ -395,8 +398,8 @@ std::shared_ptr<RVFit> RVMCMCResultsDialog::fitFromSubChain(
     const int dim = (int)names.size();
 
     auto quantile = [&](int col, double q) {
-        std::vector<double> v(sub.size());
-        for (size_t i = 0; i < sub.size(); ++i) v[i] = sub[i][col];
+        std::vector<double> v(sub.rows());
+        for (size_t i = 0; i < sub.rows(); ++i) v[i] = sub.at(i, col);
         size_t idx = std::min<size_t>(v.size() - 1,
                                       static_cast<size_t>(q * (v.size() - 1)));
         std::nth_element(v.begin(), v.begin() + idx, v.end());
@@ -505,7 +508,7 @@ void RVMCMCResultsDialog::onAddSelectedPeaks()
         const bool isCustom = m.data(Qt::UserRole + 1).toBool();
         const int  idx      = m.data(Qt::UserRole).toInt();
 
-        std::vector<std::vector<double>> sub;
+        RVMCMC::Chain sub(_result.chain.dim());
         QString tag;
 
         if (isCustom) {
@@ -513,13 +516,14 @@ void RVMCMCResultsDialog::onAddSelectedPeaks()
             const auto& r = _customRegions[idx];
 
             const int dim = (int)r.ranges.size();
-            for (const auto& row : _result.chain) {
+            for (std::size_t i = 0; i < _result.chain.rows(); ++i) {
+                const double* row = _result.chain.row(i);
                 bool inside = true;
                 for (int k = 0; k < dim; ++k) {
                     const double v = row[k];
                     if (v < r.ranges[k].lo || v > r.ranges[k].hi) { inside = false; break; }
                 }
-                if (inside) sub.push_back(row);
+                if (inside) sub.push(row);
             }
 
             const auto& pr = r.ranges[0];
@@ -534,8 +538,10 @@ void RVMCMCResultsDialog::onAddSelectedPeaks()
             double pad  = std::max(pmed - pq16, pq84 - pmed) * 1.5;
             double plo  = pmed - pad;
             double phi  = pmed + pad;
-            for (const auto& row : _result.chain)
-                if (row[0] >= plo && row[0] <= phi) sub.push_back(row);
+            for (std::size_t i = 0; i < _result.chain.rows(); ++i) {
+                const double* row = _result.chain.row(i);
+                if (row[0] >= plo && row[0] <= phi) sub.push(row);
+            }
             tag = QString("rv_mcmc#%1").arg(idx + 1);
         }
 

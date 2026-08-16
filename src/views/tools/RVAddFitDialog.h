@@ -1,6 +1,6 @@
 #pragma once
 
-#include "rv_mcmc/api.h" // from external/rv_mcmc
+#include "fitting/RVMCMC.h"
 #include "fitting/Periodogram.h"
 #include "views/widgets/PreciseDoubleSpinBox.h"
 #include <QDialog>
@@ -86,8 +86,8 @@ private:
                        int nAlias = 0);
     void bsInitParamBounds();   // seed K / γ bounds from the RV span
 
-    rv_mcmc::MCMCConfig collectMCMCConfig() const;
-    rv_mcmc::RVData     buildRVData()       const;
+    RVMCMC::Config collectMCMCConfig() const;
+    RVMCMC::Data   buildRVData()       const;
     std::shared_ptr<RVFit> buildManualFit() const;
 
     // LM least-squares (circular sinusoid) around a fixed/constrained period

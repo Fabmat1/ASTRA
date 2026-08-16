@@ -3,7 +3,7 @@
 #include <QDialog>
 #include <QList>
 #include <memory>
-#include "rv_mcmc/api.h"
+#include "fitting/RVMCMC.h"
 
 class RVFit;
 class QListWidget;
@@ -19,7 +19,7 @@ class RVMCMCResultsDialog : public QDialog
 {
     Q_OBJECT
 public:
-    RVMCMCResultsDialog(rv_mcmc::FitResult result,
+    RVMCMCResultsDialog(RVMCMC::Result result,
                         QString curveId,
                         QWidget* parent = nullptr);
 
@@ -39,10 +39,10 @@ private:
     std::vector<bool> currentFilterMask() const;
 
     std::shared_ptr<RVFit> fitFromSubChain(
-        const std::vector<std::vector<double>>& sub,
+        const RVMCMC::Chain& sub,
         const QString& methodTag) const;
 
-    rv_mcmc::FitResult _result;
+    RVMCMC::Result     _result;
     QString            _curveId;
     QList<std::shared_ptr<RVFit>> _selected;
 
