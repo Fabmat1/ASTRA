@@ -89,9 +89,11 @@ private:
     const std::vector<std::shared_ptr<Star>>& currentSampleBase() const;
 
     // quantity extraction for the 2D plot axis combos
-    enum class Quantity { T, X, Y, Z, Rho, R, VX, VY, VZ, VTot, Energy, Lz };
-    static QVector<double> extract(const GalKin::Trajectory& tr, Quantity q);
-    static QString quantityLabel(Quantity q);
+    // Trace axis selector. Named PlotQuantity so it does not shadow the global
+    // Quantity (a measured value with its error) used by the results grid.
+    enum class PlotQuantity { T, X, Y, Z, Rho, R, VX, VY, VZ, VTot, Energy, Lz };
+    static QVector<double> extract(const GalKin::Trajectory& tr, PlotQuantity q);
+    static QString quantityLabel(PlotQuantity q);
 
     std::shared_ptr<Star> _star;
     DatabaseManager*      _dbm = nullptr;

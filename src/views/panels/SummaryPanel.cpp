@@ -5,6 +5,7 @@
 #include "dialogs/ReidentifyStarDialog.h"
 #include "models/AsymmetricErrors.h"
 #include "models/Photometry.h"
+#include "models/Quantity.h"
 #include "models/RadialVelocity.h"
 #include "models/Spectrum.h"
 #include "db/DatabaseManager.h"
@@ -12,11 +13,12 @@
 #include "models/Star.h"
 #include "utils/AppPaths.h"
 #include "utils/CrossRefResolver.h"
+#include "utils/QuantityFormat.h"
 #include "utils/UiIcons.h"
+#include "views/widgets/CopyToast.h"
+#include "views/widgets/QuantityLabel.h"
 
 #include <QApplication>
-#include <QClipboard>
-#include <QCursor>
 #include <QFile>
 #include <QIcon>
 #include <QPainter>
@@ -42,14 +44,21 @@
 
 #include <algorithm>
 #include <cmath>
+#include <functional>
 #include <random>
 
 namespace {
 
+// A row of the property grids. Rows that carry a measured quantity hold it
+// directly, so the grid can render it with QuantityLabel (stacked asymmetric
+// errors, per-piece selection, format-aware copy); the plain string form stays
+// for rows that are not numbers with an uncertainty (method names, flags, ...).
 struct PropRow {
-    QString label;
-    QString value;
-    QString copyValue;
+    QString  label;
+    QString  value;
+    QString  copyValue;
+    Quantity quantity;
+    bool     useQuantity = false;
 };
 
 // --- Theme-derived colours -------------------------------------------------
@@ -102,39 +111,37 @@ QColor sectionBorderColor() {
 class CopyEventFilter : public QObject
 {
 public:
-    CopyEventFilter(const QString& text, QWidget* target, QObject* parent = nullptr)
-        : QObject(parent), _text(text), _target(target) {}
+    // The text is produced on click rather than captured, so rows whose copy
+    // form depends on the current preferences stay correct after a settings
+    // change without rebuilding the panel.
+    CopyEventFilter(std::function<QString()> provider, QObject* parent = nullptr)
+        : QObject(parent), _provider(std::move(provider)) {}
 
 protected:
     bool eventFilter(QObject*, QEvent* ev) override
     {
         if (ev->type() == QEvent::MouseButtonPress) {
-            QApplication::clipboard()->setText(_text);
-            auto* popup = new QLabel("\xe2\x9c\x93 Copied");
-            popup->setAttribute(Qt::WA_DeleteOnClose);
-            popup->setAttribute(Qt::WA_ShowWithoutActivating);
-            popup->setWindowFlags(Qt::ToolTip | Qt::FramelessWindowHint);
-            popup->setStyleSheet(
-                "QLabel { background: #4CAF50; color: white; font-weight: bold;"
-                " padding: 4px 12px; border-radius: 4px; font-size: 12px; }");
-            popup->adjustSize();
-            popup->move(QCursor::pos() + QPoint(12, 12));
-            popup->show();
-            QTimer::singleShot(1000, popup, &QLabel::close);
+            CopyToast::copy(_provider());
             return true;
         }
         return false;
     }
 
 private:
-    QString  _text;
-    QWidget* _target;
+    std::function<QString()> _provider;
 };
 
 void makeCopyable(QLabel* label, const QString& textToCopy)
 {
     label->setCursor(Qt::PointingHandCursor);
-    label->installEventFilter(new CopyEventFilter(textToCopy, label, label));
+    label->installEventFilter(
+        new CopyEventFilter([textToCopy] { return textToCopy; }, label));
+}
+
+void makeCopyable(QLabel* label, std::function<QString()> provider)
+{
+    label->setCursor(Qt::PointingHandCursor);
+    label->installEventFilter(new CopyEventFilter(std::move(provider), label));
 }
 
 QString bibcodeDisplayJournal(const QString& rawAbbrev)
@@ -175,36 +182,17 @@ QString formatBibcodeMeta(const QString& bib)
     }
     return parts.join(", ");
 }
-struct ValDisp {
-    QString display;
-    QString copy;
-};
-// Formats "v ± e unit"; when an asymmetric interval is set (errUp/errDown
-// finite, see AsymmetricErrors.h) renders "v ⁺ᵘ₋d unit" instead, using the
-// same rich-text superscript/subscript style as the SED inventory.
-inline ValDisp fmtValErr(double v, double err, int prec,
-                         const QString &unit = "",
-                         double errUp = AsymErr::unset,
-                         double errDown = AsymErr::unset) {
-    QString num = QString::number(v, 'f', prec);
-    QString s   = num;
-    const double up   = AsymErr::upOr(errUp, err);
-    const double down = AsymErr::downOr(errDown, err);
-    if (AsymErr::hasAsymmetric(errUp, errDown) &&
-        std::isfinite(up) && std::isfinite(down) && (up > 0.0 || down > 0.0)) {
-        if (up == down)
-            s += QString(" ± %1").arg(up, 0, 'f', prec);
-        else
-            s += QString("<sup><small>+%1</small></sup>"
-                         "<sub><small>−%2</small></sub>")
-                     .arg(up, 0, 'f', prec)
-                     .arg(down, 0, 'f', prec);
-    } else if (std::isfinite(err) && err > 0.0) {
-        s += QString(" ± %1").arg(err, 0, 'f', prec);
-    }
-    if (!unit.isEmpty())
-        s += " " + unit;
-    return {s, num};
+// A property row backed by a measured quantity. `name` is the LaTeX-ish
+// parameter name used when the copy format is set to prefix it.
+inline PropRow qRow(const QString &label, double v, double err, int prec,
+                    const QString &unit = "", double errUp = AsymErr::unset,
+                    double errDown = AsymErr::unset,
+                    const QString &name = QString()) {
+    PropRow r;
+    r.label       = label;
+    r.quantity    = Quantity(v, err, prec, unit, errUp, errDown, name);
+    r.useQuantity = true;
+    return r;
 }
 
 // Mass function (M_sun) with K [km/s], P [days]
@@ -388,21 +376,34 @@ QWidget *buildPropertyGrid(const std::vector<PropRow> &rows,
     for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
         int     col = (i < maxPerCol) ? 0 : 2;
         int     row = (i < maxPerCol) ? i : i - maxPerCol;
-        QString copyText =
-            rows[i].copyValue.isEmpty() ? rows[i].value : rows[i].copyValue;
-
         QLabel *lbl = new QLabel(rows[i].label);
         lbl->setStyleSheet(
             QString("font-size: 11px; font-weight: 600; color: %1; "
                     "background: transparent; border: none;")
                 .arg(labelCol.name()));
-        makeCopyable(lbl, copyText);
 
-        QLabel *val = new QLabel(rows[i].value);
-        val->setStyleSheet(QString("font-size: 12px; color: %1; background: "
-                                   "transparent; border: none;")
-                               .arg(valCol.name()));
-        makeCopyable(val, copyText);
+        QWidget *val = nullptr;
+        if (rows[i].useQuantity) {
+            // Measured quantity: rendered by QuantityLabel so the asymmetric
+            // sides stack, each piece can be selected, and a click copies the
+            // value with its errors and unit in the configured notation.
+            auto *ql = new QuantityLabel(rows[i].quantity);
+            ql->setTextPixelSize(12);
+            ql->setColors(valCol, labelCol);
+            const Quantity q = rows[i].quantity;
+            makeCopyable(lbl, [q] { return QuantityFormat::copyText(q); });
+            val = ql;
+        } else {
+            const QString copyText =
+                rows[i].copyValue.isEmpty() ? rows[i].value : rows[i].copyValue;
+            QLabel *plain = new QLabel(rows[i].value);
+            plain->setStyleSheet(QString("font-size: 12px; color: %1; "
+                                         "background: transparent; border: none;")
+                                     .arg(valCol.name()));
+            makeCopyable(plain, copyText);
+            makeCopyable(lbl, copyText);
+            val = plain;
+        }
 
         gl->addWidget(lbl, row, col);
         gl->addWidget(val, row, col + 1);
@@ -699,23 +700,31 @@ QWidget *SummaryPanel::createMetricCardsRow() {
         else if (nSpec > 0)
             subtitle = QString("from %1 spectra").arg(nSpec);
 
-        QString value = has(logP) ? QString::number(logP, 'f', 2) : "-";
-        layout->addWidget(
-            createMetricCard(value, "log(p)", subtitle, logPColor(logP)));
+        if (has(logP))
+            layout->addWidget(createMetricCard(
+                Quantity(logP, std::numeric_limits<double>::quiet_NaN(), 2, "",
+                         AsymErr::unset, AsymErr::unset, "\\log p"),
+                "log(p)", subtitle, logPColor(logP)));
+        else
+            layout->addWidget(
+                createMetricCard(QString("-"), "log(p)", subtitle,
+                                 logPColor(logP)));
     }
 
     // ── ΔRV_max
     {
-        const double drv   = S.getDeltaRV();
-        const double edrv  = S.getEDeltaRV();
-        QString      value = has(drv) ? QString::number(drv, 'f', 1) : "-";
-        QString      subtitle;
-        if (has(drv)) {
-            subtitle = has(edrv) ? QString("± %1 km/s").arg(edrv, 0, 'f', 1)
-                                 : QString("km/s");
-        }
-        layout->addWidget(
-            createMetricCard(value, "ΔRV_max", subtitle, deltaRVColor(drv)));
+        const double drv  = S.getDeltaRV();
+        const double edrv = S.getEDeltaRV();
+        // The error and unit used to live in the card's subtitle; they are
+        // part of the headline quantity now, so it copies as one value.
+        if (has(drv))
+            layout->addWidget(createMetricCard(
+                Quantity(drv, edrv, 1, "km/s", AsymErr::unset, AsymErr::unset,
+                         "\\Delta RV_{max}"),
+                "ΔRV_max", QString(), deltaRVColor(drv)));
+        else
+            layout->addWidget(createMetricCard(QString("-"), "ΔRV_max",
+                                               QString(), deltaRVColor(drv)));
     }
 
     // ── N spectra (cached; no lazy load)
@@ -746,8 +755,38 @@ QWidget *SummaryPanel::createMetricCardsRow() {
     return row;
 }
 
+QWidget* SummaryPanel::createMetricCard(const Quantity& q, const QString& label,
+                                        const QString& subtitle,
+                                        const QColor& accentColor)
+{
+    // The measured variant: the headline number keeps the card's big accent
+    // type while its uncertainty and unit ride along, stacked when asymmetric.
+    auto* value = new QuantityLabel(q);
+    value->setTextPixelSize(22, true);
+    value->setColors(accentColor,
+                     blendColor(accentColor, PanelUtils::themeSurface(), 0.35));
+    return buildMetricCard(value, label, subtitle, accentColor,
+                           QuantityFormat::copyText(q));
+}
+
 QWidget* SummaryPanel::createMetricCard(const QString& value, const QString& label,
                                            const QString& subtitle, const QColor& accentColor)
+{
+    QLabel* valueLabel = new QLabel(value);
+    valueLabel->setStyleSheet(QString(
+        "font-size: 22px; font-weight: 700; color: %1; border: none; background: transparent;"
+    ).arg(accentColor.name()));
+    valueLabel->setAlignment(Qt::AlignLeft);
+    if (value != "-")
+        makeCopyable(valueLabel, value);
+    return buildMetricCard(valueLabel, label, subtitle, accentColor,
+                           value == "-" ? QString() : value);
+}
+
+QWidget* SummaryPanel::buildMetricCard(QWidget* valueWidget, const QString& label,
+                                       const QString& subtitle,
+                                       const QColor& accentColor,
+                                       const QString& copyText)
 {
     QColor cardBg   = PanelUtils::themeSurface();
     QColor border   = sectionBorderColor();
@@ -766,21 +805,14 @@ QWidget* SummaryPanel::createMetricCard(const QString& value, const QString& lab
     layout->setContentsMargins(12, 10, 12, 10);
     layout->setSpacing(2);
 
-    QLabel* valueLabel = new QLabel(value);
-    valueLabel->setStyleSheet(QString(
-        "font-size: 22px; font-weight: 700; color: %1; border: none; background: transparent;"
-    ).arg(accentColor.name()));
-    valueLabel->setAlignment(Qt::AlignLeft);
-    if (value != "-")
-        makeCopyable(valueLabel, value);
-    layout->addWidget(valueLabel);
+    layout->addWidget(valueWidget);
 
     QLabel* labelWidget = new QLabel(label);
     labelWidget->setStyleSheet(QString(
         "font-size: 11px; font-weight: 600; color: %1; border: none; background: transparent;"
     ).arg(labelCol.name()));
-    if (value != "-")
-        makeCopyable(labelWidget, value);
+    if (!copyText.isEmpty())
+        makeCopyable(labelWidget, copyText);
     layout->addWidget(labelWidget);
 
     if (!subtitle.isEmpty()) {
@@ -806,11 +838,11 @@ QWidget *SummaryPanel::createPropertiesSection() {
     auto addV = [&](std::vector<PropRow> &rows, const QString &l, double v,
                     double err, int prec, const QString &unit = "",
                     double errUp = AsymErr::unset,
-                    double errDown = AsymErr::unset) {
+                    double errDown = AsymErr::unset,
+                    const QString &name = QString()) {
         if (!has(v))
             return;
-        auto d = fmtValErr(v, err, prec, unit, errUp, errDown);
-        rows.push_back({l, d.display, d.copy});
+        rows.push_back(qRow(l, v, err, prec, unit, errUp, errDown, name));
     };
     auto addPlain = [&](std::vector<PropRow> &rows, const QString &l, double v,
                         int prec, const QString &unit = "") {
@@ -999,26 +1031,28 @@ QWidget *SummaryPanel::createOrbitalFitSection() {
     auto pushV = [&](std::vector<PropRow> &rows, const QString &l, double v,
                      double e, int p, const QString &u = "",
                      double eUp = AsymErr::unset,
-                     double eDown = AsymErr::unset) {
-        auto d = fmtValErr(v, e, p, u, eUp, eDown);
-        rows.push_back({l, d.display, d.copy});
+                     double eDown = AsymErr::unset,
+                     const QString &name = QString()) {
+        rows.push_back(qRow(l, v, e, p, u, eUp, eDown, name));
     };
 
     pushV(compact, "Period", bestFit->getPeriod(), bestFit->getPeriodError(), 6,
-          "d", bestFit->getPeriodErrorUp(), bestFit->getPeriodErrorDown());
+          "d", bestFit->getPeriodErrorUp(), bestFit->getPeriodErrorDown(), "P");
     pushV(compact, "K", bestFit->getK(), bestFit->getKError(), 2, "km/s",
-          bestFit->getKErrorUp(), bestFit->getKErrorDown());
+          bestFit->getKErrorUp(), bestFit->getKErrorDown(), "K");
     pushV(compact, "γ", bestFit->getGamma(), bestFit->getGammaError(), 2,
-          "km/s", bestFit->getGammaErrorUp(), bestFit->getGammaErrorDown());
+          "km/s", bestFit->getGammaErrorUp(), bestFit->getGammaErrorDown(),
+          "\\gamma");
     pushV(compact, "T₀ (ϕ)", bestFit->getPhi(), bestFit->getPhiError(), 4, "",
-          bestFit->getPhiErrorUp(), bestFit->getPhiErrorDown());
+          bestFit->getPhiErrorUp(), bestFit->getPhiErrorDown(), "\\phi_0");
     if (bestFit->isEccentric()) {
         pushV(compact, "e", bestFit->getEccentricity(),
               bestFit->getEccentricityError(), 4, "",
               bestFit->getEccentricityErrorUp(),
-              bestFit->getEccentricityErrorDown());
+              bestFit->getEccentricityErrorDown(), "e");
         pushV(compact, "ω", bestFit->getOmega(), bestFit->getOmegaError(), 1,
-              "°", bestFit->getOmegaErrorUp(), bestFit->getOmegaErrorDown());
+              "°", bestFit->getOmegaErrorUp(), bestFit->getOmegaErrorDown(),
+              "\\omega");
     }
     if (has(bestFit->getRms())) {
         QString n = QString::number(bestFit->getRms(), 'f', 2);
@@ -1069,8 +1103,11 @@ QWidget* SummaryPanel::createDataInventorySection()
 
     struct Inventory {
         QString label;
-        bool available;
+        bool    available;
         QString detail;
+        // Measured values shown after the detail text, each as its own
+        // QuantityLabel so asymmetric errors stack and stay copyable.
+        std::vector<std::pair<QString, Quantity>> quantities;
     };
 
     std::vector<Inventory> items;
@@ -1137,8 +1174,9 @@ QWidget* SummaryPanel::createDataInventorySection()
 
     // SED
     {
-        bool hasSED = false;
+        bool    hasSED = false;
         QString detail;
+        std::vector<std::pair<QString, Quantity>> quantities;
         if (phot) {
             auto sed = phot->getBestSEDModel();
             if (sed) {
@@ -1146,33 +1184,34 @@ QWidget* SummaryPanel::createDataInventorySection()
                 QStringList parts;
                 parts << QString("%1-comp").arg(sed->numComponents);
 
-                auto fmtAsym = [](double val, double up, double down, int prec) -> QString {
-                    return QString("%1<sup><small>+%2</small></sup><sub><small>-%3</small></sub>")
-                        .arg(val,  0, 'f', prec)
-                        .arg(up,   0, 'f', prec)
-                        .arg(down, 0, 'f', prec);
+                auto addComp = [&](const SEDComponentParams &c, int idx) {
+                    const QString sub = idx == 1 ? "₁" : "₂";
+                    const QString tex = QString::number(idx);
+                    if (c.teff > 0)
+                        quantities.push_back(
+                            {"T" + sub,
+                             Quantity(c.teff, AsymErr::unset, 0, "K",
+                                      c.teffErrUp, c.teffErrDown,
+                                      "T_{eff," + tex + "}")});
+                    if (c.radius.value > 0)
+                        quantities.push_back(
+                            {"R" + sub,
+                             Quantity(c.radius.value, AsymErr::unset, 3, "R☉",
+                                      c.radius.errUp, c.radius.errDown,
+                                      "R_" + tex)});
+                    if (c.mass.value > 0)
+                        quantities.push_back(
+                            {"M" + sub,
+                             Quantity(c.mass.value, AsymErr::unset, 3, "M☉",
+                                      c.mass.errUp, c.mass.errDown,
+                                      "M_" + tex)});
                 };
 
-                // Show primary component Teff, radius, mass
-                if (!sed->components.empty()) {
-                    const auto& c1 = sed->components[0];
-                    if (c1.teff > 0)
-                        parts << QString("T₁=%1 K").arg(c1.teff, 0, 'f', 0);
-                    if (c1.radius.value > 0)
-                        parts << QString("R₁=%1 R☉").arg(fmtAsym(c1.radius.value, c1.radius.errUp, c1.radius.errDown, 3));
-                    if (c1.mass.value > 0)
-                        parts << QString("M₁=%1 M☉").arg(fmtAsym(c1.mass.value, c1.mass.errUp, c1.mass.errDown, 3));
-                }
-                // Show companion Teff, radius, mass if 2-component
-                if (sed->numComponents >= 2 && sed->components.size() >= 2) {
-                    const auto& c2 = sed->components[1];
-                    if (c2.teff > 0)
-                        parts << QString("T₂=%1 K").arg(c2.teff, 0, 'f', 0);
-                    if (c2.radius.value > 0)
-                        parts << QString("R₂=%1 R☉").arg(fmtAsym(c2.radius.value, c2.radius.errUp, c2.radius.errDown, 3));
-                    if (c2.mass.value > 0)
-                        parts << QString("M₂=%1 M☉").arg(fmtAsym(c2.mass.value, c2.mass.errUp, c2.mass.errDown, 3));
-                }
+                if (!sed->components.empty())
+                    addComp(sed->components[0], 1);
+                if (sed->numComponents >= 2 && sed->components.size() >= 2)
+                    addComp(sed->components[1], 2);
+
                 if (sed->distanceMode > 0)
                     parts << QString("d=%1 pc").arg(sed->distanceMode, 0, 'f', 0);
                 if (sed->chi2Reduced > 0)
@@ -1180,7 +1219,7 @@ QWidget* SummaryPanel::createDataInventorySection()
                 detail = parts.join(" · ");
             }
         }
-        items.push_back({"SED Fit", hasSED, detail});
+        items.push_back({"SED Fit", hasSED, detail, quantities});
     }
 
     // Build tag strip
@@ -1218,10 +1257,41 @@ QWidget* SummaryPanel::createDataInventorySection()
                 "font-size: 11px; color: %1; background: transparent; border: none;"
             ).arg(detailCol.name()));
             det->setTextInteractionFlags(Qt::TextSelectableByMouse);
-            row->addWidget(det, 1);
-        } else {
-            row->addStretch();
+            row->addWidget(det);
         }
+
+        // The inventory line is one run of small muted text, so the values
+        // carry exactly the detail text's size and colour, sit on its
+        // baseline, and keep the same "·" separators as the rest of the line.
+        auto detailLabel = [&](const QString& text) {
+            QLabel* l = new QLabel(text);
+            l->setStyleSheet(QString("font-size: 11px; color: %1; background: "
+                                     "transparent; border: none;")
+                                 .arg(detailCol.name()));
+            return l;
+        };
+        bool needSeparator = !item.detail.isEmpty();
+        for (const auto& [name, q] : item.quantities) {
+            if (needSeparator)
+                row->addWidget(detailLabel("·"));
+            needSeparator = true;
+            // Name and value are one phrase, so they get their own tight
+            // layout instead of the row's separator spacing.
+            QWidget* pair = new QWidget;
+            auto* pl = new QHBoxLayout(pair);
+            pl->setContentsMargins(0, 0, 0, 0);
+            pl->setSpacing(2);
+
+            pl->addWidget(detailLabel(name + " ="));
+
+            auto* ql = new QuantityLabel(q);
+            ql->setTextPixelSize(11);
+            ql->setColors(detailCol, detailCol);
+            pl->addWidget(ql);
+            row->addWidget(pair);
+        }
+
+        row->addStretch();
 
         layout->addLayout(row);
     }
@@ -1798,21 +1868,19 @@ QWidget *SummaryPanel::createCompanionSection() {
     std::vector<PropRow> rows;
 
     if (hasM1) {
-        auto d = fmtValErr(m1, eM1, 3, "M☉", _ctx.star->getSedEMass1Up(),
-                           _ctx.star->getSedEMass1Down());
-        rows.push_back({"M₁ (SED)", d.display, d.copy});
+        rows.push_back(qRow("M₁ (SED)", m1, eM1, 3, "M☉",
+                            _ctx.star->getSedEMass1Up(),
+                            _ctx.star->getSedEMass1Down(), "M_1"));
     }
     if (hasMin) {
-        auto d = fmtValErr(mMin, eMin, 3, "M☉",
-                           _ctx.star->getECompMassMinUp(),
-                           _ctx.star->getECompMassMinDown());
-        rows.push_back({"M₂ (min)", d.display, d.copy});
+        rows.push_back(qRow("M₂ (min)", mMin, eMin, 3, "M☉",
+                            _ctx.star->getECompMassMinUp(),
+                            _ctx.star->getECompMassMinDown(), "M_{2,min}"));
     }
     if (hasTrue) {
-        auto d = fmtValErr(mTrue, eTrue, 3, "M☉",
-                           _ctx.star->getECompMassTrueUp(),
-                           _ctx.star->getECompMassTrueDown());
-        rows.push_back({"M₂ (true)", d.display, d.copy});
+        rows.push_back(qRow("M₂ (true)", mTrue, eTrue, 3, "M☉",
+                            _ctx.star->getECompMassTrueUp(),
+                            _ctx.star->getECompMassTrueDown(), "M_2"));
     }
     if (hasMassFunc) {
         const double f = massFunctionMsun(in.K, in.P, in.e);
@@ -1830,15 +1898,15 @@ QWidget *SummaryPanel::createCompanionSection() {
         rows.push_back({"a", n + unit, n});
     }
     if (hasIncl) {
-        auto d = fmtValErr(incl, eIncl, 2, "°", _ctx.star->getPhotEInclUp(),
-                           _ctx.star->getPhotEInclDown());
-        rows.push_back({"i (LC)", d.display, d.copy});
+        rows.push_back(qRow("i (LC)", incl, eIncl, 2, "°",
+                            _ctx.star->getPhotEInclUp(),
+                            _ctx.star->getPhotEInclDown(), "i"));
     }
     if (hasQ) {
-        auto d =
-            fmtValErr(_ctx.star->getPhotQ(), _ctx.star->getPhotEQ(), 3, "",
-                      _ctx.star->getPhotEQUp(), _ctx.star->getPhotEQDown());
-        rows.push_back({"q (LC)", d.display, d.copy});
+        rows.push_back(qRow("q (LC)", _ctx.star->getPhotQ(),
+                            _ctx.star->getPhotEQ(), 3, "",
+                            _ctx.star->getPhotEQUp(),
+                            _ctx.star->getPhotEQDown(), "q"));
     }
 
     QWidget *grid = buildPropertyGrid(rows, valCol, labelCol);
@@ -2283,45 +2351,37 @@ QWidget *SummaryPanel::createGalacticSection() {
 
     std::vector<PropRow> rows;
     if (hasUVW) {
-        auto u = fmtValErr(s.getGalU(), s.getGalEU(), 1, "km/s",
-                           s.getGalEUUp(), s.getGalEUDown());
-        auto v = fmtValErr(s.getGalV(), s.getGalEV(), 1, "km/s",
-                           s.getGalEVUp(), s.getGalEVDown());
-        auto w = fmtValErr(s.getGalW(), s.getGalEW(), 1, "km/s",
-                           s.getGalEWUp(), s.getGalEWDown());
-        rows.push_back({"U", u.display, u.copy});
-        rows.push_back({"V", v.display, v.copy});
-        rows.push_back({"W", w.display, w.copy});
+        rows.push_back(qRow("U", s.getGalU(), s.getGalEU(), 1, "km/s",
+                            s.getGalEUUp(), s.getGalEUDown(), "U"));
+        rows.push_back(qRow("V", s.getGalV(), s.getGalEV(), 1, "km/s",
+                            s.getGalEVUp(), s.getGalEVDown(), "V"));
+        rows.push_back(qRow("W", s.getGalW(), s.getGalEW(), 1, "km/s",
+                            s.getGalEWUp(), s.getGalEWDown(), "W"));
     }
     if (hasXYZ) {
-        auto x = fmtValErr(s.getGalX(), s.getGalEX(), 3, "kpc",
-                           s.getGalEXUp(), s.getGalEXDown());
-        auto y = fmtValErr(s.getGalY(), s.getGalEY(), 3, "kpc",
-                           s.getGalEYUp(), s.getGalEYDown());
-        auto z = fmtValErr(s.getGalZ(), s.getGalEZ(), 3, "kpc",
-                           s.getGalEZUp(), s.getGalEZDown());
-        rows.push_back({"X", x.display, x.copy});
-        rows.push_back({"Y", y.display, y.copy});
-        rows.push_back({"Z", z.display, z.copy});
+        rows.push_back(qRow("X", s.getGalX(), s.getGalEX(), 3, "kpc",
+                            s.getGalEXUp(), s.getGalEXDown(), "X"));
+        rows.push_back(qRow("Y", s.getGalY(), s.getGalEY(), 3, "kpc",
+                            s.getGalEYUp(), s.getGalEYDown(), "Y"));
+        rows.push_back(qRow("Z", s.getGalZ(), s.getGalEZ(), 3, "kpc",
+                            s.getGalEZUp(), s.getGalEZDown(), "Z"));
     }
     if (hasOrbit) {
         if (Star::isSet(s.getGalJz())) {
-            auto jz = fmtValErr(s.getGalJz(), s.getGalEJz(), 0, "kpc km/s",
-                                s.getGalEJzUp(), s.getGalEJzDown());
-            rows.push_back({"J_z", jz.display, jz.copy});
+            rows.push_back(qRow("J_z", s.getGalJz(), s.getGalEJz(), 0,
+                                "kpc km/s", s.getGalEJzUp(),
+                                s.getGalEJzDown(), "J_z"));
         }
         if (Star::isSet(s.getGalEcc())) {
-            auto ecc = fmtValErr(s.getGalEcc(), s.getGalEEcc(), 3, "",
-                                 s.getGalEEccUp(), s.getGalEEccDown());
-            rows.push_back({"ecc", ecc.display, ecc.copy});
+            rows.push_back(qRow("ecc", s.getGalEcc(), s.getGalEEcc(), 3, "",
+                                s.getGalEEccUp(), s.getGalEEccDown(), "e"));
         }
     }
     if (hasPop) {
         auto addP = [&](const char *name, double p, double ep) {
             if (!Star::isSet(p))
                 return;
-            auto d = fmtValErr(p, ep, 2, "");
-            rows.push_back({name, d.display, d.copy});
+            rows.push_back(qRow(name, p, ep, 2, ""));
         };
         addP("P(thin)", s.getGalPThin(), s.getGalEPThin());
         addP("P(thick)", s.getGalPThick(), s.getGalEPThick());

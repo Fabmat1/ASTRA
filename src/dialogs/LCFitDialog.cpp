@@ -1,6 +1,7 @@
 #include "LCFitDialog.h"
 #include "controllers/ApplicationController.h"
 #include "db/DatabaseManager.h"
+#include "models/Quantity.h"
 #include "models/Star.h"
 #include "utils/AppPaths.h"
 #include "utils/AppSettings.h"
@@ -10,10 +11,13 @@
 #include "utils/LCBinning.h"
 #include "utils/LCFitRunner.h"
 #include "utils/Logger.h"
+#include "utils/QuantityFormat.h"
 #include "utils/UiIcons.h"
 #include "plotting/qcustomplot.h"
 #include "views/widgets/AnsiTerminalWidget.h"
+#include "views/widgets/CopyToast.h"
 #include "views/widgets/LCModelPreview.h"
+#include "views/widgets/QuantityDelegate.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -35,6 +39,7 @@
 #include <QDoubleValidator>
 #include <QLineEdit>
 #include <QLocale>
+#include <QMenu>
 #include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -62,6 +67,33 @@
 namespace {
 
 QString fmt(double v, int prec = 6) { return QString::number(v, 'g', prec); }
+
+// Turn a solver result (value, covariance σ and optional percentile sides)
+// into a displayable quantity. Sides that agree within the storage margin
+// collapse to one symmetric error, the same rule the fits are stored with.
+// `prec` below zero derives the decimals from the error magnitude, which the
+// results table needs: its rows range from fractional radii to Julian dates.
+Quantity quantityFromFit(double value, double sym, double up, double down,
+                         const QString &unit, const QString &name,
+                         int prec = -1) {
+  Quantity q;
+  q.value = value;
+  q.unit  = unit;
+  q.name  = name;
+  q.error = (std::isfinite(sym) && sym > 0.0) ? sym : AsymErr::unset;
+  if (std::isfinite(up) && std::isfinite(down)) {
+    const auto st = AsymErr::toStorage(up, down);
+    q.error       = st.sym;
+    q.errorUp     = st.up;
+    q.errorDown   = st.down;
+  }
+  q.precision =
+      prec >= 0 ? prec
+                : QuantityFormat::autoDecimals(
+                      value,
+                      AsymErr::symmetrized(q.error, q.errorUp, q.errorDown));
+  return q;
+}
 
 // First whitespace-separated number of an lcurve parameter string
 // ("value range step vary defined").
@@ -2090,16 +2122,33 @@ QWidget *LCFitDialog::buildRunPage() {
   _quality->setTextFormat(Qt::RichText);
   rl->addWidget(_quality);
 
-  _results = new QTableWidget(0, 5);
-  _results->setHorizontalHeaderLabels({tr("Parameter"), tr("Best fit"), tr("σ"),
+  // The best-fit column carries the uncertainty with the value (stacked when
+  // asymmetric) through QuantityDelegate, so no separate σ column is needed.
+  _results = new QTableWidget(0, 4);
+  _results->setHorizontalHeaderLabels({tr("Parameter"), tr("Best fit"),
                                        tr("Initial"),
                                        tr("Δ / σ vs. prior or stored")});
-  _results->horizontalHeaderItem(4)->setToolTip(
+  _results->setItemDelegateForColumn(1, new QuantityDelegate(_results));
+  _results->setContextMenuPolicy(Qt::CustomContextMenu);
+  connect(_results, &QTableWidget::customContextMenuRequested, this,
+          [this](const QPoint &pos) {
+            const QModelIndex idx = _results->indexAt(pos);
+            if (!idx.isValid())
+              return;
+            QMenu menu(_results);
+            menu.addAction(tr("Copy"), this, [idx] {
+              CopyToast::copy(QuantityDelegate::copyTextFor(idx));
+            });
+            menu.exec(_results->viewport()->mapToGlobal(pos));
+          });
+  _results->horizontalHeaderItem(3)->setToolTip(
       tr("Deviation from the prior used in the fit, or from the value stored "
          "on the star when the parameter carries no prior. Hover a cell for "
          "the reference value."));
   _results->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
   _results->verticalHeader()->setVisible(false);
+  // Stacked error sides make a cell taller than one text line.
+  _results->verticalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
   _results->setEditTriggers(QAbstractItemView::NoEditTriggers);
   _results->setSelectionMode(QAbstractItemView::NoSelection);
   _results->setMinimumHeight(220);
@@ -3262,27 +3311,37 @@ void LCFitDialog::populateResultsView() {
     const QJsonObject sigmasUp   = results.value("sigma_up").toObject();
     const QJsonObject sigmasDown = results.value("sigma_down").toObject();
 
-    // "+u / −d" when the interval is genuinely asymmetric, "± σ" otherwise.
-    auto sigmaText = [&](const QString &name, double scale) -> QString {
+    // The best-fit cell carries value and uncertainty as one quantity: the
+    // sides stack when the interval is genuinely asymmetric, collapse to "± σ"
+    // when they agree, and fall back to the covariance σ when the solver
+    // published no percentiles.
+    auto sigmaSides = [&](const QString &name, double scale, double &up,
+                          double &down) {
+        up = down = std::nan("");
         if (sigmasUp.contains(name) && sigmasDown.contains(name)) {
-            double u = sigmasUp.value(name).toDouble() * scale;
-            double d = sigmasDown.value(name).toDouble() * scale;
-            if (!AsymErr::nearlySymmetric(u, d)) {
-                // A zero side means the estimate sits at the edge of the
-                // credible interval; flag it so the "+0" reads as intentional.
-                const QString atBound = (u == 0.0 || d == 0.0)
-                                            ? QStringLiteral(" ⚠")
-                                            : QString();
-                return QString("+%1 / −%2%3")
-                    .arg(QString::number(u, 'g', 3),
-                         QString::number(d, 'g', 3),
-                         atBound);
-            }
+            up   = sigmasUp.value(name).toDouble() * scale;
+            down = sigmasDown.value(name).toDouble() * scale;
         }
-        if (sigmas.contains(name))
-            return QString::number(sigmas.value(name).toDouble() * scale,
-                                   'g', 3);
-        return QStringLiteral("-");
+    };
+    auto makeQuantity = [&](const QString &name, double value, double scale,
+                            const QString &unit, int prec = -1) -> Quantity {
+        double up = 0, down = 0;
+        sigmaSides(name, scale, up, down);
+        const double sym = sigmas.contains(name)
+                               ? sigmas.value(name).toDouble() * scale
+                               : std::nan("");
+        return quantityFromFit(value, sym, up, down, unit, name, prec);
+    };
+    // A cell whose uncertainty pins one side at zero: the estimate sits at the
+    // edge of the credible interval, which is a real result, not a defect.
+    auto setQuantityCell = [&](int row, const Quantity &q) {
+        auto *item = new QTableWidgetItem(QuantityFormat::plainText(q));
+        item->setData(QuantityDelegate::QuantityRole, QVariant::fromValue(q));
+        if (q.isAsymmetric() && (q.up() == 0.0 || q.down() == 0.0))
+            item->setToolTip(
+                tr("One side of the interval is zero: the best fit sits at the "
+                   "edge of the credible range."));
+        _results->setItem(row, 1, item);
     };
 
     // ── Reference values the fit can be held against ──────────────────
@@ -3363,12 +3422,12 @@ void LCFitDialog::populateResultsView() {
                                QString::number(ref.errHi, 'g', 3));
             }
         }
-        _results->setItem(row, 4, new QTableWidgetItem);
+        _results->setItem(row, 3, new QTableWidgetItem);
         auto *lbl = new QLabel(delta);
         lbl->setTextFormat(Qt::RichText);
         if (!tip.isEmpty())
             lbl->setToolTip(tip);
-        _results->setCellWidget(row, 4, lbl);
+        _results->setCellWidget(row, 3, lbl);
     };
 
     auto addRow = [&](const QString &name, const QString &displayName,
@@ -3386,16 +3445,10 @@ void LCFitDialog::populateResultsView() {
 
         const int row = _results->rowCount();
         _results->insertRow(row);
+        _results->setItem(row, 0, new QTableWidgetItem(displayName));
+        setQuantityCell(row, makeQuantity(name, best * scale, scale, units));
         _results->setItem(
-            row, 0,
-            new QTableWidgetItem(displayName +
-                                 (units.isEmpty() ? "" : " " + units)));
-        _results->setItem(
-            row, 1,
-            new QTableWidgetItem(QString::number(best * scale, 'g', 6)));
-        _results->setItem(row, 2, new QTableWidgetItem(sigmaText(name, scale)));
-        _results->setItem(
-            row, 3,
+            row, 2,
             new QTableWidgetItem(std::isfinite(initial)
                                      ? QString::number(initial * scale, 'g', 6)
                                      : "-"));
@@ -3435,15 +3488,13 @@ void LCFitDialog::populateResultsView() {
             std::isfinite(init_t0_ph) ? init_t0_ph * _in.period : std::nan("");
         const int row = _results->rowCount();
         _results->insertRow(row);
-        _results->setItem(row, 0, new QTableWidgetItem("t₀ [BJD] (derived)"));
-        _results->setItem(row, 1,
-                          new QTableWidgetItem(QString::number(t0_bjd, 'g', 10)));
+        _results->setItem(row, 0, new QTableWidgetItem("t₀ (derived)"));
+        setQuantityCell(row,
+                        quantityFromFit(t0_bjd, t0_bjd_sig > 0 ? t0_bjd_sig
+                                                               : std::nan(""),
+                                        std::nan(""), std::nan(""), "BJD",
+                                        "t0_bjd", 6));
         _results->setItem(row, 2,
-                          new QTableWidgetItem(
-                              t0_bjd_sig > 0
-                                  ? QString::number(t0_bjd_sig, 'g', 3)
-                                  : "-"));
-        _results->setItem(row, 3,
                           new QTableWidgetItem(
                               std::isfinite(init_t0_bjd)
                                   ? QString::number(init_t0_bjd, 'g', 10)
@@ -3464,10 +3515,10 @@ void LCFitDialog::populateResultsView() {
 
     auto addDerived = [&](const QString &label, const QString &impliedKey,
                           double fallbackVal, double fallbackSig,
-                          double initial, const Ref &ref, int prec = 4) {
-        double  v = fallbackVal, sig = fallbackSig;
-        QString sigTxt;
-        double  sigUp = fallbackSig, sigDown = fallbackSig;
+                          double initial, const Ref &ref,
+                          const QString &unit = QString(), int prec = -1) {
+        double v = fallbackVal, sig = fallbackSig;
+        double sigUp = std::nan(""), sigDown = std::nan("");
 
         const QJsonObject imp = implied.value(impliedKey).toObject();
         if (!imp.isEmpty()) {
@@ -3476,31 +3527,24 @@ void LCFitDialog::populateResultsView() {
                 sigUp   = imp.value("sigma_up").toDouble();
                 sigDown = imp.value("sigma_down").toDouble();
                 sig     = 0.5 * (sigUp + sigDown);
-                if (!AsymErr::nearlySymmetric(sigUp, sigDown))
-                    sigTxt = QString("+%1 / −%2")
-                                 .arg(QString::number(sigUp, 'g', 3),
-                                      QString::number(sigDown, 'g', 3));
             } else if (imp.contains("sigma")) {
-                sig = sigUp = sigDown = imp.value("sigma").toDouble();
+                sig = imp.value("sigma").toDouble();
             }
         }
         if (!std::isfinite(v) || v == 0.0)
             return;
-        if (sigTxt.isEmpty())
-            sigTxt = sig > 0 ? QString::number(sig, 'g', 3) : QStringLiteral("-");
 
         const int row = _results->rowCount();
         _results->insertRow(row);
         _results->setItem(row, 0, new QTableWidgetItem(label));
-        _results->setItem(row, 1,
-                          new QTableWidgetItem(QString::number(v, 'g', prec)));
-        _results->setItem(row, 2, new QTableWidgetItem(sigTxt));
-        _results->setItem(row, 3,
+        setQuantityCell(row, quantityFromFit(v, sig, sigUp, sigDown, unit,
+                                             impliedKey, prec));
+        _results->setItem(row, 2,
                           new QTableWidgetItem(
-                              std::isfinite(initial)
-                                  ? QString::number(initial, 'g', prec)
-                                  : "-"));
-        setDeltaCell(row, v, sigUp, sigDown, ref);
+                              std::isfinite(initial) ? fmt(initial) : "-"));
+        setDeltaCell(row, v,
+                     std::isfinite(sigUp) ? sigUp : sig,
+                     std::isfinite(sigDown) ? sigDown : sig, ref);
     };
 
     // A parameter held fixed never appears in best_pars, so fall back to the
@@ -3531,7 +3575,7 @@ void LCFitDialog::populateResultsView() {
 
         auto addRadius = [&](const QString &par, const QString &label,
                              const QString &impliedKey, const QString &priorKey,
-                             const QString &starKey) {
+                             const QString &starKey, const QString &unit) {
             const double rf = bestOrInit(par);
             if (!std::isfinite(rf) || rf <= 0)
                 return;
@@ -3545,12 +3589,13 @@ void LCFitDialog::populateResultsView() {
                                      ? initRf * initA
                                      : std::nan("");
             addDerived(label, impliedKey, R, s, initR,
-                       refFor(priorKey, starKey));
+                       refFor(priorKey, starKey), unit);
         };
 
-        addDerived("a [R☉] (derived)", "a_Rsun", aRsun, aRsun * relA, initA, {});
-        addRadius("r1", "R₁ [R☉] (derived)", "R1_Rsun", "R1", "R1");
-        addRadius("r2", "R₂ [R☉] (derived)", "R2_Rsun", "R2", {});
+        addDerived("a (derived)", "a_Rsun", aRsun, aRsun * relA, initA, {},
+                   "R☉");
+        addRadius("r1", "R₁ (derived)", "R1_Rsun", "R1", "R1", "R☉");
+        addRadius("r2", "R₂ (derived)", "R2_Rsun", "R2", {}, "R☉");
 
         // Masses follow from a, the period and q; only worth a row when the
         // solver published them or a prior exists to compare against.
@@ -3558,12 +3603,12 @@ void LCFitDialog::populateResultsView() {
         const auto   imp = LCFitPhysics::impliedFromParams(
             ia, q, vs, bestOrInit("r1"), _in.period,
             std::isfinite(r2b) ? std::optional<double>(r2b) : std::nullopt);
-        addDerived("M₁ [M☉] (derived)", "M1_Msun", imp.M1, 0.0, std::nan(""),
-                   refFor("M1", {}));
-        addDerived("M₂ [M☉] (derived)", "M2_Msun", imp.M2, 0.0, std::nan(""),
-                   refFor("M2", {}));
-        addDerived("K₁ [km/s] (derived)", "K1_km_s", imp.K1, 0.0, std::nan(""),
-                   refFor("K1", {}));
+        addDerived("M₁ (derived)", "M1_Msun", imp.M1, 0.0, std::nan(""),
+                   refFor("M1", {}), "M☉");
+        addDerived("M₂ (derived)", "M2_Msun", imp.M2, 0.0, std::nan(""),
+                   refFor("M2", {}), "M☉");
+        addDerived("K₁ (derived)", "K1_km_s", imp.K1, 0.0, std::nan(""),
+                   refFor("K1", {}), "km/s");
     }
 }
 

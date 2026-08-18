@@ -1,5 +1,7 @@
 #pragma once
 
+#include "QuantityFormat.h"
+
 #include <QObject>
 #include <QString>
 #include <QVector>
@@ -80,6 +82,24 @@ public:
     /// Uses _lcurveDir if set, otherwise searches PATH. Returns "" if not found.
     QString lcurveBinary(const QString& name) const;
 
+    // ── Number display & copying ─────────────────────────────────────────
+    /// How much of a parameter a copy carries (value / +error / +unit).
+    QuantityFormat::CopyContent copyContent() const { return _copy.content; }
+    /// Notation used when copying (LaTeX or plain text).
+    QuantityFormat::CopyStyle   copyStyle()   const { return _copy.style; }
+    /// Wrap LaTeX copies in $...$.
+    bool copyLatexWrapMath()  const { return _copy.latexWrapMath; }
+    /// Prefix "name = " when the parameter has a name.
+    bool copyIncludeName()    const { return _copy.latexIncludeName; }
+    /// Round the error to two significant digits on copy (display unaffected).
+    bool copyRoundErrors()    const { return _copy.roundOnCopy; }
+
+    void setCopyContent(QuantityFormat::CopyContent c);
+    void setCopyStyle(QuantityFormat::CopyStyle s);
+    void setCopyLatexWrapMath(bool on);
+    void setCopyIncludeName(bool on);
+    void setCopyRoundErrors(bool on);
+
     // ── Updates ──────────────────────────────────────────────────────────
     bool checkUpdatesOnStartup() const { return _checkUpdatesOnStartup; }
     void setCheckUpdatesOnStartup(bool on);
@@ -98,12 +118,15 @@ signals:
     void lcurveSettingsChanged();
     void adsApiTokenChanged();
     void updateSettingsChanged();
+    void numberFormatChanged();
     void fitWorkerThreadsChanged();
 
   private:
     void load();
     void save() const;
     void applyDefaults();
+    /// Publish the copy preferences to the formatter used by the widgets.
+    void publishCopyPrefs() const;
 
     QString _isisBinaryPath;
     QString _sedFitBinaryPath;
@@ -121,6 +144,8 @@ signals:
     QString _atlasToken;
     QString _blackgemScript;
     QString _adsApiToken;
+
+    QuantityFormat::Prefs _copy;
 
     bool    _checkUpdatesOnStartup = true;
     QString _skippedUpdateVersion;

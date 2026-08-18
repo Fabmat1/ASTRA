@@ -15,11 +15,15 @@ class QLabel;
 class QCheckBox;
 class QPushButton;
 class QSpinBox;
+class QComboBox;
+class QuantityLabel;
 
 class SettingsDialog : public QDialog
 {
 public:
-    explicit SettingsDialog(AppSettings* settings, QWidget* parent = nullptr);
+    /// `page` selects the topic to open on, e.g. "Numbers & Copying".
+    explicit SettingsDialog(AppSettings* settings, QWidget* parent = nullptr,
+                            const QString& page = QString());
 
 private slots:
     void apply();
@@ -28,6 +32,7 @@ private:
     void setupUi();
     QWidget* createGeneralPage();
     QWidget* createStarDetailPage();
+    QWidget* createNumberFormatPage();
     QWidget* createGridPathsPage();
     QWidget* createLightcurveFetchPage();
     QWidget *createLightcurveFitPage();
@@ -46,6 +51,16 @@ private:
 
     // Star detail page
     DetailGridEditor* _gridEditor = nullptr;
+
+    // Numbers & copying page
+    QComboBox*     _copyContentCombo = nullptr;
+    QComboBox*     _copyStyleCombo   = nullptr;
+    QCheckBox*     _copyWrapMath     = nullptr;
+    QCheckBox*     _copyIncludeName  = nullptr;
+    QCheckBox*     _copyRound        = nullptr;
+    QuantityLabel* _copyPreviewValue = nullptr;
+    QLabel*        _copyPreviewText  = nullptr;
+    void updateCopyPreview();
 
     QListWidget* _gridPathsList = nullptr;
 

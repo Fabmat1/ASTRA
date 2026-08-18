@@ -23,6 +23,7 @@ class QSpinBox;
 class QDoubleSpinBox;
 class QGroupBox;
 class QLabel;
+class QVBoxLayout;
 class QPushButton;
 class QSplitter;
 class QScrollArea;
@@ -107,9 +108,7 @@ private:
     void    importFitResults(const QString& workDir);
     void    applyBestFitToStar(std::shared_ptr<SEDModel> model);
 
-    QString formatAsymVal(double val, double up, double down,
-                          int prec = 3, const QString& unit = {}) const;
-    QString formatParamRow(const QString& label, const QString& value) const;
+    void    clearParameterPanel();
     QString statusTag(int status) const;
     
     void writePhotometryDat(const QString& filepath);
@@ -132,7 +131,8 @@ private:
     QCustomPlot* _residualPlot  = nullptr;
 
     QScrollArea* _paramScroll   = nullptr;
-    QLabel*      _paramLabel    = nullptr;
+    QWidget*     _paramPanel    = nullptr;
+    QVBoxLayout* _paramLayout   = nullptr;
 
     QPushButton*  _photToggleBtn = nullptr;
     QWidget*      _photContent   = nullptr;

@@ -25,6 +25,11 @@ constexpr const char* kLcqScript     = "lcquery/script";
 constexpr const char* kAtlasToken    = "lcquery/atlasToken";
 constexpr const char* kBlackgemScr   = "lcquery/blackgemScript";
 constexpr const char* kLcurveDir = "lcurve/installDir";
+constexpr const char* kCopyContent   = "format/copyContent";
+constexpr const char* kCopyStyle     = "format/copyStyle";
+constexpr const char* kCopyWrapMath  = "format/latexWrapMath";
+constexpr const char* kCopyName      = "format/latexIncludeName";
+constexpr const char* kCopyRound     = "format/roundOnCopy";
 constexpr const char* kUpdateCheck   = "update/checkOnStartup";
 constexpr const char* kUpdateSkipped = "update/skippedVersion";
 }
@@ -140,9 +145,18 @@ void AppSettings::load()
     _atlasToken      = s.value(kAtlasToken,   _atlasToken     ).toString();
     _blackgemScript  = s.value(kBlackgemScr,  _blackgemScript ).toString();
     _lcurveDir = s.value(kLcurveDir, _lcurveDir).toString();
+    _copy.content = static_cast<QuantityFormat::CopyContent>(std::clamp(
+        s.value(kCopyContent, static_cast<int>(_copy.content)).toInt(), 0, 2));
+    _copy.style = static_cast<QuantityFormat::CopyStyle>(std::clamp(
+        s.value(kCopyStyle, static_cast<int>(_copy.style)).toInt(), 0, 1));
+    _copy.latexWrapMath    = s.value(kCopyWrapMath, _copy.latexWrapMath).toBool();
+    _copy.latexIncludeName = s.value(kCopyName,     _copy.latexIncludeName).toBool();
+    _copy.roundOnCopy      = s.value(kCopyRound,    _copy.roundOnCopy).toBool();
     _checkUpdatesOnStartup = s.value(kUpdateCheck,   _checkUpdatesOnStartup).toBool();
     _skippedUpdateVersion  = s.value(kUpdateSkipped, _skippedUpdateVersion ).toString();
     s.endGroup();
+
+    publishCopyPrefs();
 
     if (!flat.isEmpty()) {
         QStringList parts = flat.split(',', Qt::SkipEmptyParts);
@@ -182,11 +196,66 @@ void AppSettings::save() const
     s.setValue(kAtlasToken,   _atlasToken);
     s.setValue(kBlackgemScr,  _blackgemScript);
     s.setValue(kLcurveDir, _lcurveDir);
+    s.setValue(kCopyContent,  static_cast<int>(_copy.content));
+    s.setValue(kCopyStyle,    static_cast<int>(_copy.style));
+    s.setValue(kCopyWrapMath, _copy.latexWrapMath);
+    s.setValue(kCopyName,     _copy.latexIncludeName);
+    s.setValue(kCopyRound,    _copy.roundOnCopy);
     s.setValue(kUpdateCheck,   _checkUpdatesOnStartup);
     s.setValue(kUpdateSkipped, _skippedUpdateVersion);
 
     s.endGroup();
     s.sync();
+}
+
+void AppSettings::publishCopyPrefs() const
+{
+    QuantityFormat::setPrefs(_copy);
+}
+
+void AppSettings::setCopyContent(QuantityFormat::CopyContent c)
+{
+    if (_copy.content == c) return;
+    _copy.content = c;
+    publishCopyPrefs();
+    save();
+    emit numberFormatChanged();
+}
+
+void AppSettings::setCopyStyle(QuantityFormat::CopyStyle st)
+{
+    if (_copy.style == st) return;
+    _copy.style = st;
+    publishCopyPrefs();
+    save();
+    emit numberFormatChanged();
+}
+
+void AppSettings::setCopyLatexWrapMath(bool on)
+{
+    if (_copy.latexWrapMath == on) return;
+    _copy.latexWrapMath = on;
+    publishCopyPrefs();
+    save();
+    emit numberFormatChanged();
+}
+
+void AppSettings::setCopyIncludeName(bool on)
+{
+    if (_copy.latexIncludeName == on) return;
+    _copy.latexIncludeName = on;
+    publishCopyPrefs();
+    save();
+    emit numberFormatChanged();
+}
+
+void AppSettings::setCopyRoundErrors(bool on)
+{
+    if (_copy.roundOnCopy == on) return;
+    _copy.roundOnCopy = on;
+    publishCopyPrefs();
+    save();
+    emit numberFormatChanged();
 }
 
 void AppSettings::setIsisBinaryPath(const QString& path)

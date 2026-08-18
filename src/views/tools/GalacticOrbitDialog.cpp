@@ -2,11 +2,13 @@
 
 #include "db/DatabaseManager.h"
 #include "models/AsymmetricErrors.h"
+#include "models/Quantity.h"
 #include "models/Star.h"
 #include "plotting/qcustomplot.h"
 #include "utils/Logger.h"
 #include "utils/UiIcons.h"
 #include "views/panels/PanelUtils.h"
+#include "views/widgets/QuantityLabel.h"
 #include "views/widgets/SquarePlotFrame.h"
 
 #include <QCheckBox>
@@ -41,25 +43,24 @@ using namespace GalKin;
 
 namespace {
 
-// value ± error label text (falls back to plain value when errors are 0)
-QString fmtDist(const ValueDist& d, int prec, const QString& unit)
+// A Monte-Carlo result as a displayable quantity. Sides that agree within 5%
+// collapse to a single symmetric error, matching how the solvers store them.
+Quantity distQuantity(const ValueDist& d, int prec, const QString& unit,
+                      const QString& name = QString())
 {
     if (!d.valid)
-        return "-";
-    QString s = QString::number(d.value, 'f', prec);
+        return Quantity();
+    Quantity q(d.value, AsymErr::unset, prec, unit, AsymErr::unset,
+               AsymErr::unset, name);
     if (d.errUp > 0.0 || d.errDown > 0.0) {
-        if (std::abs(d.errUp - d.errDown) <
-            0.05 * std::max(d.errUp, d.errDown))
-            s += QString(" ± %1").arg(0.5 * (d.errUp + d.errDown), 0, 'f', prec);
-        else
-            s += QString(" <sup><small>+%1</small></sup>"
-                         "<sub><small>−%2</small></sub>")
-                     .arg(d.errUp, 0, 'f', prec)
-                     .arg(d.errDown, 0, 'f', prec);
+        if (std::abs(d.errUp - d.errDown) < 0.05 * std::max(d.errUp, d.errDown))
+            q.error = 0.5 * (d.errUp + d.errDown);
+        else {
+            q.errorUp   = d.errUp;
+            q.errorDown = d.errDown;
+        }
     }
-    if (!unit.isEmpty())
-        s += " " + unit;
-    return s;
+    return q;
 }
 
 } // namespace
@@ -230,19 +231,19 @@ void GalacticOrbitDialog::setupUi()
     auto* axisRow = new QHBoxLayout;
     _xAxisCombo = new QComboBox;
     _yAxisCombo = new QComboBox;
-    const struct { const char* name; Quantity q; } axes[] = {
-        {"t [Myr]", Quantity::T},
-        {"X [kpc]", Quantity::X},
-        {"Y [kpc]", Quantity::Y},
-        {"Z [kpc]", Quantity::Z},
-        {"ρ = √(X²+Y²) [kpc]", Quantity::Rho},
-        {"r = √(X²+Y²+Z²) [kpc]", Quantity::R},
-        {"v_x [km/s]", Quantity::VX},
-        {"v_y [km/s]", Quantity::VY},
-        {"v_z [km/s]", Quantity::VZ},
-        {"v_Grf [km/s]", Quantity::VTot},
-        {"E [km²/s²]", Quantity::Energy},
-        {"L_z [kpc km/s]", Quantity::Lz},
+    const struct { const char* name; PlotQuantity q; } axes[] = {
+        {"t [Myr]", PlotQuantity::T},
+        {"X [kpc]", PlotQuantity::X},
+        {"Y [kpc]", PlotQuantity::Y},
+        {"Z [kpc]", PlotQuantity::Z},
+        {"ρ = √(X²+Y²) [kpc]", PlotQuantity::Rho},
+        {"r = √(X²+Y²+Z²) [kpc]", PlotQuantity::R},
+        {"v_x [km/s]", PlotQuantity::VX},
+        {"v_y [km/s]", PlotQuantity::VY},
+        {"v_z [km/s]", PlotQuantity::VZ},
+        {"v_Grf [km/s]", PlotQuantity::VTot},
+        {"E [km²/s²]", PlotQuantity::Energy},
+        {"L_z [kpc km/s]", PlotQuantity::Lz},
     };
     for (const auto& a : axes) {
         _xAxisCombo->addItem(a.name, int(a.q));
@@ -783,15 +784,28 @@ void GalacticOrbitDialog::updateResultsGrid()
                              .arg(row == 0 ? 0 : 8));
         _resultsGrid->addWidget(l, row++, 0, 1, 2);
     };
-    auto addRow = [&](const QString& label, const QString& value) {
+    auto addLabel = [&](const QString& label) {
         auto* l = new QLabel(label);
         l->setStyleSheet(QString("color:%1; font-size:11px; font-weight:600;")
                              .arg(lblCol.name()));
+        _resultsGrid->addWidget(l, row, 0);
+    };
+    auto addRow = [&](const QString& label, const QString& value) {
+        addLabel(label);
         auto* v = new QLabel(value);
         v->setTextFormat(Qt::RichText);
         v->setStyleSheet(QString("color:%1; font-size:12px;").arg(valCol.name()));
         v->setTextInteractionFlags(Qt::TextSelectableByMouse);
-        _resultsGrid->addWidget(l, row, 0);
+        _resultsGrid->addWidget(v, row, 1);
+        ++row;
+    };
+    // Measured rows go through QuantityLabel: the asymmetric sides stack, each
+    // piece is selectable and a click copies the value with error and unit.
+    auto addQRow = [&](const QString& label, const Quantity& q) {
+        addLabel(label);
+        auto* v = new QuantityLabel(q);
+        v->setTextPixelSize(12);
+        v->setColors(valCol, lblCol);
         _resultsGrid->addWidget(v, row, 1);
         ++row;
     };
@@ -804,23 +818,23 @@ void GalacticOrbitDialog::updateResultsGrid()
     }
 
     addHeader("Velocities (heliocentric)");
-    addRow("U", fmtDist(_uvwxyz.U, 2, "km/s"));
-    addRow("V", fmtDist(_uvwxyz.V, 2, "km/s"));
-    addRow("W", fmtDist(_uvwxyz.W, 2, "km/s"));
+    addQRow("U", distQuantity(_uvwxyz.U, 2, "km/s", "U"));
+    addQRow("V", distQuantity(_uvwxyz.V, 2, "km/s", "V"));
+    addQRow("W", distQuantity(_uvwxyz.W, 2, "km/s", "W"));
 
     addHeader("Position (galactocentric)");
-    addRow("X", fmtDist(_uvwxyz.X, 3, "kpc"));
-    addRow("Y", fmtDist(_uvwxyz.Y, 3, "kpc"));
-    addRow("Z", fmtDist(_uvwxyz.Z, 3, "kpc"));
-    addRow("ρ", fmtDist(_uvwxyz.rho, 3, "kpc"));
+    addQRow("X", distQuantity(_uvwxyz.X, 3, "kpc", "X"));
+    addQRow("Y", distQuantity(_uvwxyz.Y, 3, "kpc", "Y"));
+    addQRow("Z", distQuantity(_uvwxyz.Z, 3, "kpc", "Z"));
+    addQRow("ρ", distQuantity(_uvwxyz.rho, 3, "kpc", "\\rho"));
 
     addHeader("Galactic rest frame");
-    addRow("v<sub>r</sub>", fmtDist(_uvwxyz.vr, 2, "km/s"));
-    addRow("v<sub>φ</sub>", fmtDist(_uvwxyz.vphi, 2, "km/s"));
-    addRow("v<sub>Grf</sub>", fmtDist(_uvwxyz.vGrf, 2, "km/s"));
-    addRow("v<sub>esc</sub>", fmtDist(_uvwxyz.vEsc, 2, "km/s"));
-    addRow("E", fmtDist(_uvwxyz.energy, 0, "km²/s²"));
-    addRow("L<sub>z</sub>", fmtDist(_uvwxyz.Lz, 0, "kpc km/s"));
+    addQRow("v<sub>r</sub>", distQuantity(_uvwxyz.vr, 2, "km/s", "v_r"));
+    addQRow("v<sub>φ</sub>", distQuantity(_uvwxyz.vphi, 2, "km/s", "v_\\phi"));
+    addQRow("v<sub>Grf</sub>", distQuantity(_uvwxyz.vGrf, 2, "km/s", "v_{Grf}"));
+    addQRow("v<sub>esc</sub>", distQuantity(_uvwxyz.vEsc, 2, "km/s", "v_{esc}"));
+    addQRow("E", distQuantity(_uvwxyz.energy, 0, "km²/s²", "E"));
+    addQRow("L<sub>z</sub>", distQuantity(_uvwxyz.Lz, 0, "kpc km/s", "L_z"));
 
     addHeader("Boundness");
     const double pb = _uvwxyz.boundFraction * 100.0;
@@ -842,9 +856,7 @@ void GalacticOrbitDialog::updateResultsGrid()
         addHeader(QString("Population (EM over %1 stars)")
                       .arg(_popFit.starsUsed));
         auto pRow = [&](const char* label, double p, double e) {
-            addRow(label, QString("%1 ± %2")
-                              .arg(p, 0, 'f', 3)
-                              .arg(e, 0, 'f', 3));
+            addQRow(label, Quantity(p, e, 3));
         };
         pRow("P(thin disk)", m.pThin, m.ePThin);
         pRow("P(thick disk)", m.pThick, m.ePThick);
@@ -854,10 +866,13 @@ void GalacticOrbitDialog::updateResultsGrid()
     if (_orbitStats.valid) {
         addHeader(QString("Orbit statistics (%1 MC orbits)")
                       .arg(_orbitStats.samplesUsed));
-        addRow("r<sub>min</sub>", fmtDist(_orbitStats.rMin, 2, "kpc"));
-        addRow("r<sub>max</sub>", fmtDist(_orbitStats.rMax, 2, "kpc"));
-        addRow("|z|<sub>max</sub>", fmtDist(_orbitStats.zMax, 2, "kpc"));
-        addRow("ecc", fmtDist(_orbitStats.ecc, 3, ""));
+        addQRow("r<sub>min</sub>",
+                distQuantity(_orbitStats.rMin, 2, "kpc", "r_{min}"));
+        addQRow("r<sub>max</sub>",
+                distQuantity(_orbitStats.rMax, 2, "kpc", "r_{max}"));
+        addQRow("|z|<sub>max</sub>",
+                distQuantity(_orbitStats.zMax, 2, "kpc", "|z|_{max}"));
+        addQRow("ecc", distQuantity(_orbitStats.ecc, 3, "", "e"));
     } else if (_haveOrbit) {
         addHeader("Nominal orbit");
         addRow("r<sub>min</sub>",
@@ -871,31 +886,31 @@ void GalacticOrbitDialog::updateResultsGrid()
     }
 }
 
-QVector<double> GalacticOrbitDialog::extract(const Trajectory& tr, Quantity q)
+QVector<double> GalacticOrbitDialog::extract(const Trajectory& tr, PlotQuantity q)
 {
     const size_t n = tr.size();
     QVector<double> out(static_cast<int>(n));
     for (size_t i = 0; i < n; ++i) {
         double v = 0.0;
         switch (q) {
-        case Quantity::T:   v = tr.t[i]; break;
-        case Quantity::X:   v = tr.x[i]; break;
-        case Quantity::Y:   v = tr.y[i]; break;
-        case Quantity::Z:   v = tr.z[i]; break;
-        case Quantity::Rho: v = std::hypot(tr.x[i], tr.y[i]); break;
-        case Quantity::R:
+        case PlotQuantity::T:   v = tr.t[i]; break;
+        case PlotQuantity::X:   v = tr.x[i]; break;
+        case PlotQuantity::Y:   v = tr.y[i]; break;
+        case PlotQuantity::Z:   v = tr.z[i]; break;
+        case PlotQuantity::Rho: v = std::hypot(tr.x[i], tr.y[i]); break;
+        case PlotQuantity::R:
             v = std::sqrt(tr.x[i] * tr.x[i] + tr.y[i] * tr.y[i] +
                           tr.z[i] * tr.z[i]);
             break;
-        case Quantity::VX:  v = tr.vx[i]; break;
-        case Quantity::VY:  v = tr.vy[i]; break;
-        case Quantity::VZ:  v = tr.vz[i]; break;
-        case Quantity::VTot:
+        case PlotQuantity::VX:  v = tr.vx[i]; break;
+        case PlotQuantity::VY:  v = tr.vy[i]; break;
+        case PlotQuantity::VZ:  v = tr.vz[i]; break;
+        case PlotQuantity::VTot:
             v = std::sqrt(tr.vx[i] * tr.vx[i] + tr.vy[i] * tr.vy[i] +
                           tr.vz[i] * tr.vz[i]);
             break;
-        case Quantity::Energy: v = tr.energy[i]; break;
-        case Quantity::Lz:
+        case PlotQuantity::Energy: v = tr.energy[i]; break;
+        case PlotQuantity::Lz:
             v = tr.x[i] * tr.vy[i] - tr.y[i] * tr.vx[i];
             break;
         }
@@ -904,21 +919,21 @@ QVector<double> GalacticOrbitDialog::extract(const Trajectory& tr, Quantity q)
     return out;
 }
 
-QString GalacticOrbitDialog::quantityLabel(Quantity q)
+QString GalacticOrbitDialog::quantityLabel(PlotQuantity q)
 {
     switch (q) {
-    case Quantity::T:    return "t [Myr]";
-    case Quantity::X:    return "X [kpc]";
-    case Quantity::Y:    return "Y [kpc]";
-    case Quantity::Z:    return "Z [kpc]";
-    case Quantity::Rho:  return "ρ [kpc]";
-    case Quantity::R:    return "r [kpc]";
-    case Quantity::VX:   return "v_x [km/s]";
-    case Quantity::VY:   return "v_y [km/s]";
-    case Quantity::VZ:   return "v_z [km/s]";
-    case Quantity::VTot: return "v_Grf [km/s]";
-    case Quantity::Energy: return "E [km²/s²]";
-    case Quantity::Lz:   return "L_z [kpc km/s]";
+    case PlotQuantity::T:    return "t [Myr]";
+    case PlotQuantity::X:    return "X [kpc]";
+    case PlotQuantity::Y:    return "Y [kpc]";
+    case PlotQuantity::Z:    return "Z [kpc]";
+    case PlotQuantity::Rho:  return "ρ [kpc]";
+    case PlotQuantity::R:    return "r [kpc]";
+    case PlotQuantity::VX:   return "v_x [km/s]";
+    case PlotQuantity::VY:   return "v_y [km/s]";
+    case PlotQuantity::VZ:   return "v_z [km/s]";
+    case PlotQuantity::VTot: return "v_Grf [km/s]";
+    case PlotQuantity::Energy: return "E [km²/s²]";
+    case PlotQuantity::Lz:   return "L_z [kpc km/s]";
     }
     return "";
 }
@@ -1004,8 +1019,8 @@ void GalacticOrbitDialog::replot2D()
         return;
     }
 
-    const auto qx = Quantity(_xAxisCombo->currentData().toInt());
-    const auto qy = Quantity(_yAxisCombo->currentData().toInt());
+    const auto qx = PlotQuantity(_xAxisCombo->currentData().toInt());
+    const auto qy = PlotQuantity(_yAxisCombo->currentData().toInt());
     const bool dark = PanelUtils::isDarkTheme();
     const QColor mainColor(220, 60, 50);
     const QColor uncColor = dark ? QColor(120, 120, 140, 60)
@@ -1028,8 +1043,8 @@ void GalacticOrbitDialog::replot2D()
 
     if (_showMarkersCb->isChecked() && _sunTrajectory.size() > 0) {
         const bool spatial =
-            (qx != Quantity::T && qy != Quantity::T && qx != Quantity::Energy &&
-             qy != Quantity::Energy);
+            (qx != PlotQuantity::T && qy != PlotQuantity::T && qx != PlotQuantity::Energy &&
+             qy != PlotQuantity::Energy);
         if (spatial)
             addCurve(_sunTrajectory, QColor(sunColor.red(), sunColor.green(),
                                             sunColor.blue(), 110), 1.2);
@@ -1058,16 +1073,16 @@ void GalacticOrbitDialog::replot2D()
         };
         // GC at origin, Sun at its current position - only meaningful for
         // spatial axes; harmless otherwise, so gate on those.
-        auto value0 = [&](Quantity q, bool sun) -> double {
+        auto value0 = [&](PlotQuantity q, bool sun) -> double {
             const double sunX = _sunTrajectory.size() ? _sunTrajectory.x[0] : -8.4;
             const double px = sun ? sunX : 0.0;
             const double py = 0.0, pz = 0.0;
             switch (q) {
-            case Quantity::X: return px;
-            case Quantity::Y: return py;
-            case Quantity::Z: return pz;
-            case Quantity::Rho: return std::abs(px);
-            case Quantity::R: return std::abs(px);
+            case PlotQuantity::X: return px;
+            case PlotQuantity::Y: return py;
+            case PlotQuantity::Z: return pz;
+            case PlotQuantity::Rho: return std::abs(px);
+            case PlotQuantity::R: return std::abs(px);
             default: return std::nan("");
             }
         };

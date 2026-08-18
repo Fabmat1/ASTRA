@@ -307,6 +307,7 @@ set(SOURCES
 
     # utils
     src/utils/AppSettings.cpp
+    src/utils/QuantityFormat.cpp
     src/utils/BackgroundTaskManager.cpp
     src/utils/CatalogQueryWorkers.cpp
     src/utils/CoastlineData.cpp
@@ -383,6 +384,10 @@ set(SOURCES
     src/views/panels/PeriodogramPanel.cpp
 
     # views/widgets
+    src/views/widgets/CopyToast.cpp
+    src/views/widgets/QuantityRenderer.cpp
+    src/views/widgets/QuantityLabel.cpp
+    src/views/widgets/QuantityDelegate.cpp
     src/views/widgets/FitPreviewOverlay.cpp
     src/views/widgets/GridSelectorWidget.cpp
     src/views/widgets/ShimmerWidget.cpp
@@ -1006,6 +1011,26 @@ if(BUILD_TESTING)
         target_include_directories(test_rvmcmc PRIVATE ${FFTW3_INCLUDE_DIR})
         target_link_libraries(test_rvmcmc PRIVATE ${FFTW3_LIBRARY})
     endif()
+
+    # ── Copy-format test ─────────────────────────────────────────────────
+    add_executable(test_quantityformat
+        tests/test_quantityformat.cpp
+        src/utils/QuantityFormat.cpp
+    )
+    target_include_directories(test_quantityformat PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(test_quantityformat PRIVATE Qt6::Core)
+
+    add_test(
+        NAME    quantity_format
+        COMMAND test_quantityformat
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(quantity_format PROPERTIES
+        LABELS "utils;formatting"
+        TIMEOUT 30
+    )
 
     add_test(
         NAME    rv_mcmc_sampler

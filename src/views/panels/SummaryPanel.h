@@ -1,6 +1,7 @@
 #pragma once
 
 #include "DetailPanel.h"
+#include "models/Quantity.h"
 #include "kinematics/KinematicsCalculator.h"
 #include <limits>
 
@@ -36,6 +37,14 @@ class SummaryPanel : public DetailPanel {
     QWidget *createMetricCard(const QString &value, const QString &label,
                               const QString &subtitle,
                               const QColor  &accentColor);
+    /// Card whose headline is a measured quantity (value, error, unit).
+    QWidget *createMetricCard(const Quantity &q, const QString &label,
+                              const QString &subtitle,
+                              const QColor   &accentColor);
+    /// Shared card chrome around an already-built headline widget.
+    QWidget *buildMetricCard(QWidget *valueWidget, const QString &label,
+                             const QString &subtitle, const QColor &accentColor,
+                             const QString &copyText);
     QWidget *createPropertiesSection();
     QWidget *createOrbitalFitSection();
     QWidget *createCompanionSection(); // ← was createCompanionMassBanner

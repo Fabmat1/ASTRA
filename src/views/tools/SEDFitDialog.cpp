@@ -3,6 +3,7 @@
 #include "db/PhotometryRepository.h"
 #include "dialogs/SettingsDialog.h"
 #include "models/Photometry.h"
+#include "models/Quantity.h"
 #include "models/Spectrum.h"
 #include "models/Star.h"
 #include "plotting/qcustomplot.h"
@@ -13,6 +14,7 @@
 #include "utils/SystematicErrors.h"
 #include "utils/UiIcons.h"
 #include "views/widgets/GridSelectorWidget.h"
+#include "views/widgets/QuantityLabel.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -302,7 +304,10 @@ QWidget* SEDFitDialog::createPlotArea()
     return split;
 }
 
-// ── Parameter panel (right side, scrollable HTML) ────────────────
+// ── Parameter panel (right side, scrollable) ─────────────────────
+//  Built from widgets rather than one HTML block so every fitted value is a
+//  QuantityLabel: asymmetric errors stack, pieces are selectable, and a click
+//  copies the value with its error and unit in the configured notation.
 
 QWidget* SEDFitDialog::createParameterPanel()
 {
@@ -311,14 +316,14 @@ QWidget* SEDFitDialog::createParameterPanel()
     _paramScroll->setMinimumWidth(260);
     _paramScroll->setMaximumWidth(380);
 
-    _paramLabel = new QLabel;
-    _paramLabel->setWordWrap(true);
-    _paramLabel->setAlignment(Qt::AlignTop | Qt::AlignLeft);
-    _paramLabel->setTextFormat(Qt::RichText);
-    _paramLabel->setMargin(8);
-    _paramLabel->setText("<i style='color:gray;'>No fit selected</i>");
+    _paramPanel  = new QWidget;
+    _paramLayout = new QVBoxLayout(_paramPanel);
+    _paramLayout->setContentsMargins(8, 8, 8, 8);
+    _paramLayout->setSpacing(2);
+    _paramLayout->setAlignment(Qt::AlignTop);
 
-    _paramScroll->setWidget(_paramLabel);
+    _paramScroll->setWidget(_paramPanel);
+    updateParameterDisplay();
     return _paramScroll;
 }
 
@@ -1987,27 +1992,6 @@ void SEDFitDialog::updateResidualPlot()
 // Parameter display (HTML)
 // ═══════════════════════════════════════════════════════════════════
 
-QString SEDFitDialog::formatAsymVal(double val, double up, double down,
-                                    int prec, const QString& unit) const
-{
-    if (up == 0.0 && down == 0.0)
-        return QString("<b>%1</b>%2").arg(val, 0, 'f', prec).arg(unit.isEmpty() ? "" : " " + unit);
-    if (qAbs(up - down) < 1e-10 * (qAbs(up) + 1e-30))
-        return QString("<b>%1</b> ± %2%3")
-            .arg(val, 0, 'f', prec).arg(up, 0, 'f', prec)
-            .arg(unit.isEmpty() ? "" : " " + unit);
-    return QString("<b>%1</b> <sup>+%2</sup><sub>−%3</sub>%4")
-        .arg(val, 0, 'f', prec).arg(up, 0, 'f', prec).arg(down, 0, 'f', prec)
-        .arg(unit.isEmpty() ? "" : " " + unit);
-}
-
-QString SEDFitDialog::formatParamRow(const QString& label,
-                                     const QString& value) const
-{
-    return QString("<tr><td style='color:gray; padding-right:12px;'>%1</td>"
-                   "<td>%2</td></tr>").arg(label, value);
-}
-
 QString SEDFitDialog::statusTag(int status) const
 {
     switch (status) {
@@ -2017,127 +2001,184 @@ QString SEDFitDialog::statusTag(int status) const
     }
 }
 
+void SEDFitDialog::clearParameterPanel()
+{
+    while (QLayoutItem* item = _paramLayout->takeAt(0)) {
+        if (QWidget* w = item->widget())
+            w->deleteLater();
+        delete item;
+    }
+}
+
 void SEDFitDialog::updateParameterDisplay()
 {
+    if (!_paramLayout)
+        return;
+    clearParameterPanel();
+
     if (_currentFitIndex < 0 || _currentFitIndex >= static_cast<int>(_fits.size())) {
-        _paramLabel->setText("<i style='color:gray;'>No fit selected</i>");
+        auto* empty = new QLabel("No fit selected");
+        empty->setStyleSheet("color:gray; font-style:italic;");
+        _paramLayout->addWidget(empty);
         return;
     }
 
-    auto& m = _fits[_currentFitIndex];
-    QColor accent = isDarkTheme() ? QColor("#7EC8E3") : QColor("#2980B9");
-    QColor c1col  = comp1Color();
-    QColor c2col  = comp2Color();
+    auto&  m       = _fits[_currentFitIndex];
+    QColor accent  = isDarkTheme() ? QColor("#7EC8E3") : QColor("#2980B9");
+    QColor c1col   = comp1Color();
+    QColor c2col   = comp2Color();
     QColor distcol = isDarkTheme() ? QColor("#A3D977") : QColor("#27AE60");
+    QColor valCol  = palette().color(QPalette::WindowText);
+    QColor lblCol  = isDarkTheme() ? QColor(150, 150, 155) : QColor(110, 110, 115);
 
-    QString html;
-    QTextStream s(&html);
+    QGridLayout* grid = nullptr;
+
+    auto addHeader = [&](const QString& text, const QColor& col) {
+        auto* h = new QLabel(text);
+        h->setStyleSheet(QString("color:%1; font-weight:700; font-size:13px; "
+                                 "padding-top:8px;").arg(col.name()));
+        _paramLayout->addWidget(h);
+        grid = nullptr;
+    };
+    auto ensureGrid = [&]() {
+        if (grid)
+            return;
+        auto* host = new QWidget;
+        grid = new QGridLayout(host);
+        grid->setContentsMargins(2, 2, 2, 2);
+        grid->setHorizontalSpacing(10);
+        grid->setVerticalSpacing(2);
+        grid->setColumnStretch(2, 1);
+        _paramLayout->addWidget(host);
+    };
+    auto addLabelCell = [&](const QString& label) -> int {
+        ensureGrid();
+        const int r = grid->rowCount();
+        auto* l = new QLabel(label);
+        l->setTextFormat(Qt::RichText);
+        l->setStyleSheet(QString("color:%1;").arg(lblCol.name()));
+        grid->addWidget(l, r, 0);
+        return r;
+    };
+    auto addTag = [&](int r, int status) {
+        const QString tag = statusTag(status);
+        if (tag.isEmpty())
+            return;
+        auto* t = new QLabel(tag);
+        t->setTextFormat(Qt::RichText);
+        grid->addWidget(t, r, 2);
+    };
+    // A fitted parameter. up/down of 0 mean "no error" in the SED model, which
+    // Quantity reads the same way, so plain values stay plain.
+    auto addQ = [&](const QString& label, double val, double up, double down,
+                    int prec, const QString& unit = QString(),
+                    const QString& name = QString(), int status = 0) {
+        const int r = addLabelCell(label);
+        auto* v = new QuantityLabel(
+            Quantity(val, AsymErr::unset, prec, unit, up, down, name));
+        v->setValueBold(true);
+        v->setColors(valCol, lblCol);
+        grid->addWidget(v, r, 1);
+        addTag(r, status);
+    };
+    auto addText = [&](const QString& label, const QString& value,
+                       int status = 0) {
+        const int r = addLabelCell(label);
+        auto* v = new QLabel(value);
+        v->setTextFormat(Qt::RichText);
+        v->setTextInteractionFlags(Qt::TextSelectableByMouse);
+        grid->addWidget(v, r, 1);
+        addTag(r, status);
+    };
 
     // ── Global ───────────────────────────────────────────────
-    s << "<h3 style='color:" << accent.name() << ";margin-bottom:4px;'>Global</h3>";
-    s << "<table cellpadding='2'>";
-
+    addHeader("Global", accent);
     if (m->e4455 > 0 || m->e4455Error > 0)
-        s << formatParamRow("E(44−55)",
-               formatAsymVal(m->e4455, m->e4455Error, m->e4455Error, 3));
+        addQ("E(44−55)", m->e4455, m->e4455Error, m->e4455Error, 3, "",
+             "E(44-55)");
     if (m->r55 > 0)
-        s << formatParamRow("R(55)", QString("<b>%1</b>").arg(m->r55, 0, 'f', 2));
+        addText("R(55)", QString("<b>%1</b>").arg(m->r55, 0, 'f', 2));
     if (m->logTheta != 0)
-        s << formatParamRow("log θ",
-               formatAsymVal(m->logTheta, m->logThetaError, m->logThetaError, 3));
+        addQ("log θ", m->logTheta, m->logThetaError, m->logThetaError, 3, "",
+             "\\log\\theta");
     if (m->chi2Reduced > 0)
-        s << formatParamRow("χ²<sub>red</sub>",
-               QString("<b>%1</b>").arg(m->chi2Reduced, 0, 'f', 3));
+        addText("χ²<sub>red</sub>",
+                QString("<b>%1</b>").arg(m->chi2Reduced, 0, 'f', 3));
     if (m->excessNoise > 0)
-        s << formatParamRow("δ<sub>excess</sub>",
-               QString("<b>%1</b>").arg(m->excessNoise, 0, 'f', 3));
+        addText("δ<sub>excess</sub>",
+                QString("<b>%1</b>").arg(m->excessNoise, 0, 'f', 3));
     if (m->ebvSFD > 0)
-        s << formatParamRow("E(B−V)<sub>SFD</sub>",
-               formatAsymVal(m->ebvSFD, m->ebvSFDError, m->ebvSFDError, 3));
+        addQ("E(B−V)<sub>SFD</sub>", m->ebvSFD, m->ebvSFDError, m->ebvSFDError,
+             3, "", "E(B-V)_{SFD}");
     if (m->ebvSF > 0)
-        s << formatParamRow("E(B−V)<sub>S&amp;F</sub>",
-               formatAsymVal(m->ebvSF, m->ebvSFError, m->ebvSFError, 3));
-    s << "</table>";
+        addQ("E(B−V)<sub>S&amp;F</sub>", m->ebvSF, m->ebvSFError, m->ebvSFError,
+             3, "", "E(B-V)_{S&F}");
 
     // ── Components ───────────────────────────────────────────
-    QList<QColor> compColors = { c1col, c2col };
+    const QList<QColor> compColors = { c1col, c2col };
     for (int ci = 0; ci < static_cast<int>(m->components.size()); ++ci) {
-        auto& c = m->components[ci];
+        auto&  c  = m->components[ci];
         QColor cc = compColors[ci % compColors.size()];
+        const QString idx = QString::number(ci + 1);
 
-        s << "<h3 style='color:" << cc.name() << ";margin-bottom:4px;'>"
-          << "Component " << (ci + 1) << "</h3>";
-        s << "<table cellpadding='2'>";
+        addHeader(QString("Component %1").arg(ci + 1), cc);
 
         if (c.teff > 0)
-            s << formatParamRow("T<sub>eff</sub>",
-                   formatAsymVal(c.teff, c.teffErrUp, c.teffErrDown, 0, "K")
-                   + statusTag(static_cast<int>(c.teffStatus)));
+            addQ("T<sub>eff</sub>", c.teff, c.teffErrUp, c.teffErrDown, 0, "K",
+                 "T_{eff," + idx + "}", static_cast<int>(c.teffStatus));
         if (c.logg > 0)
-            s << formatParamRow("log g",
-                   formatAsymVal(c.logg, c.loggErrUp, c.loggErrDown, 2)
-                   + statusTag(static_cast<int>(c.loggStatus)));
+            addQ("log g", c.logg, c.loggErrUp, c.loggErrDown, 2, "",
+                 "\\log g_" + idx, static_cast<int>(c.loggStatus));
         if (c.heAbundance != 0)
-            s << formatParamRow("log n(He)",
-                   formatAsymVal(c.heAbundance, c.heAbundanceErrUp,
-                                 c.heAbundanceErrDown, 2)
-                   + statusTag(static_cast<int>(c.heAbundanceStatus)));
+            addQ("log n(He)", c.heAbundance, c.heAbundanceErrUp,
+                 c.heAbundanceErrDown, 2, "", "\\log n(He)_" + idx,
+                 static_cast<int>(c.heAbundanceStatus));
         if (c.metallicity != 0 || c.metallicityStatus == SEDParamStatus::Fixed)
-            s << formatParamRow("[Z]",
-                   QString("<b>%1</b>").arg(c.metallicity, 0, 'f', 2)
-                   + statusTag(static_cast<int>(c.metallicityStatus)));
+            addText("[Z]", QString("<b>%1</b>").arg(c.metallicity, 0, 'f', 2),
+                    static_cast<int>(c.metallicityStatus));
         if (c.surfaceRatio > 0 && c.surfaceRatio != 1.0)
-            s << formatParamRow("Surf. ratio",
-                   formatAsymVal(c.surfaceRatio, c.surfaceRatioErrUp,
-                                 c.surfaceRatioErrDown, 3));
+            addQ("Surf. ratio", c.surfaceRatio, c.surfaceRatioErrUp,
+                 c.surfaceRatioErrDown, 3);
 
         // Derived quantities
         if (c.radius.isValid())
-            s << formatParamRow("R",
-                   formatAsymVal(c.radius.value, c.radius.errUp,
-                                 c.radius.errDown, 3, "R☉"));
+            addQ("R", c.radius.value, c.radius.errUp, c.radius.errDown, 3,
+                 "R☉", "R_" + idx);
         if (c.mass.isValid())
-            s << formatParamRow("M",
-                   formatAsymVal(c.mass.value, c.mass.errUp,
-                                 c.mass.errDown, 3, "M☉"));
+            addQ("M", c.mass.value, c.mass.errUp, c.mass.errDown, 3, "M☉",
+                 "M_" + idx);
         if (c.luminosity.isValid())
-            s << formatParamRow("L",
-                   formatAsymVal(c.luminosity.value, c.luminosity.errUp,
-                                 c.luminosity.errDown, 1, "L☉"));
+            addQ("L", c.luminosity.value, c.luminosity.errUp,
+                 c.luminosity.errDown, 1, "L☉", "L_" + idx);
         if (c.vGrav.isValid())
-            s << formatParamRow("v<sub>grav</sub>",
-                   formatAsymVal(c.vGrav.value, c.vGrav.errUp,
-                                 c.vGrav.errDown, 1, "km/s"));
-        s << "</table>";
+            addQ("v<sub>grav</sub>", c.vGrav.value, c.vGrav.errUp,
+                 c.vGrav.errDown, 1, "km/s", "v_{grav," + idx + "}");
     }
 
     // ── Distance ─────────────────────────────────────────────
-    s << "<h3 style='color:" << distcol.name() << ";margin-bottom:4px;'>"
-      << "Distance</h3>";
-    s << "<table cellpadding='2'>";
+    addHeader("Distance", distcol);
     if (m->parallax > 0)
-        s << formatParamRow("π",
-               formatAsymVal(m->parallax, m->parallaxError, m->parallaxError, 3, "mas"));
+        addQ("π", m->parallax, m->parallaxError, m->parallaxError, 3, "mas",
+             "\\varpi");
     if (m->parallaxRuwe > 0)
-        s << formatParamRow("RUWE",
-               QString("<b>%1</b>").arg(m->parallaxRuwe, 0, 'f', 1));
+        addText("RUWE", QString("<b>%1</b>").arg(m->parallaxRuwe, 0, 'f', 1));
     if (m->distanceMode > 0)
-        s << formatParamRow("d (mode)",
-               formatAsymVal(m->distanceMode, m->distanceModeError,
-                             m->distanceModeError, 3, "kpc"));
+        addQ("d (mode)", m->distanceMode, m->distanceModeError,
+             m->distanceModeError, 3, "kpc", "d");
     if (m->distanceMedian > 0)
-        s << formatParamRow("d (median)",
-               formatAsymVal(m->distanceMedian, m->distanceMedianError,
-                             m->distanceMedianError, 3, "kpc"));
-    s << "</table>";
+        addQ("d (median)", m->distanceMedian, m->distanceMedianError,
+             m->distanceMedianError, 3, "kpc", "d");
 
     // ── Metadata ─────────────────────────────────────────────
-    s << "<hr><p style='color:gray; font-size:9pt;'>"
-      << "Created: " << m->creationDate.toString("yyyy-MM-dd hh:mm")
-      << "<br>Components: " << m->numComponents
-      << "<br>ID: " << m->getId().left(8) << "…</p>";
-
-    _paramLabel->setText(html);
+    auto* meta = new QLabel(
+        QString("Created: %1<br>Components: %2<br>ID: %3…")
+            .arg(m->creationDate.toString("yyyy-MM-dd hh:mm"))
+            .arg(m->numComponents)
+            .arg(m->getId().left(8)));
+    meta->setTextFormat(Qt::RichText);
+    meta->setStyleSheet("color:gray; font-size:9pt; padding-top:10px;");
+    meta->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    _paramLayout->addWidget(meta);
 }
 
 // ═══════════════════════════════════════════════════════════════════

@@ -8,6 +8,7 @@
 #include "controllers/ApplicationController.h"
 #include "dialogs/FirstRunDialog.h"
 #include "dialogs/SettingsDialog.h"
+#include "views/widgets/QuantityLabel.h"
 #include "dialogs/WhatsNewDialog.h"
 #include "io/StarShare.h"
 #include "models/Project.h"
@@ -45,6 +46,15 @@ MainWindow::MainWindow(ApplicationController* controller, QWidget *parent)
     setupUi();
     setupMenus();
     createActions();
+
+    // Let every QuantityLabel offer a shortcut to the copy-format settings
+    // from its context menu without threading the controller through panels.
+    QuantityLabel::setSettingsInvoker([this](QWidget* origin) {
+        SettingsDialog dlg(_controller->settings(),
+                           origin ? origin->window() : this,
+                           "Numbers & Copying");
+        dlg.exec();
+    });
     setupThemeMenu();
     updateOpenProjectAction();
     showProjectSelection();

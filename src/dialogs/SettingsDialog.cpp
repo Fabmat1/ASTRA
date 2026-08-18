@@ -4,8 +4,10 @@
 #include "utils/SedFitEnvironment.h"
 #include "utils/LcqueryEnvironment.h"
 #include "utils/LightcurveFetcher.h"
+#include "utils/QuantityFormat.h"
 #include "utils/UpdateManager.h"
 #include "views/tools/LcquerySetupDialog.h"
+#include "views/widgets/QuantityLabel.h"
 
 #include <QMessageBox>
 #include <QProgressDialog>
@@ -153,10 +155,16 @@ private:
 // SettingsDialog
 // =====================================================================
 
-SettingsDialog::SettingsDialog(AppSettings* settings, QWidget* parent)
+SettingsDialog::SettingsDialog(AppSettings* settings, QWidget* parent,
+                               const QString& page)
     : QDialog(parent), _settings(settings)
 {
     setupUi();
+    if (!page.isEmpty()) {
+        const auto hits = _topicList->findItems(page, Qt::MatchExactly);
+        if (!hits.isEmpty())
+            _topicList->setCurrentRow(_topicList->row(hits.first()));
+    }
 }
 
 void SettingsDialog::setupUi()
@@ -178,6 +186,7 @@ void SettingsDialog::setupUi()
     _topicList->setFrameShape(QFrame::NoFrame);
     _topicList->addItem("General");
     _topicList->addItem("Star Detail View");
+    _topicList->addItem("Numbers & Copying");
     _topicList->addItem("Grid Paths");
     _topicList->addItem("Lightcurve Fetching");
     _topicList->addItem("Lightcurve Fitting");
@@ -186,6 +195,7 @@ void SettingsDialog::setupUi()
     _pages = new QStackedWidget;
     _pages->addWidget(createGeneralPage());
     _pages->addWidget(createStarDetailPage());
+    _pages->addWidget(createNumberFormatPage());
     _pages->addWidget(createGridPathsPage());
     _pages->addWidget(createLightcurveFetchPage());
     _pages->addWidget(createLightcurveFitPage());
@@ -586,6 +596,156 @@ void SettingsDialog::apply()
 
     if (_updateOnStartup)
         _settings->setCheckUpdatesOnStartup(_updateOnStartup->isChecked());
+
+    // Numbers & copying
+    if (_copyContentCombo) {
+        _settings->setCopyContent(static_cast<QuantityFormat::CopyContent>(
+            _copyContentCombo->currentData().toInt()));
+        _settings->setCopyStyle(static_cast<QuantityFormat::CopyStyle>(
+            _copyStyleCombo->currentData().toInt()));
+        _settings->setCopyLatexWrapMath(_copyWrapMath->isChecked());
+        _settings->setCopyIncludeName(_copyIncludeName->isChecked());
+        _settings->setCopyRoundErrors(_copyRound->isChecked());
+    }
+}
+
+// =====================================================================
+// Numbers & copying
+// =====================================================================
+
+namespace {
+/// The example the preview is built from: an asymmetric interval whose sides
+/// need different rounding, so every option visibly changes the output.
+Quantity previewQuantity()
+{
+    Quantity q(12.3456, 0.4213, 4, "km/s", 0.5213, 0.3117, "K");
+    return q;
+}
+} // namespace
+
+void SettingsDialog::updateCopyPreview()
+{
+    if (!_copyPreviewText)
+        return;
+
+    // Render the preview through the real formatter by installing the pending
+    // settings for the duration of the call, so what is shown here is exactly
+    // what a copy would produce once applied.
+    const QuantityFormat::Prefs saved = QuantityFormat::prefs();
+    QuantityFormat::Prefs pending;
+    pending.content = static_cast<QuantityFormat::CopyContent>(
+        _copyContentCombo->currentData().toInt());
+    pending.style = static_cast<QuantityFormat::CopyStyle>(
+        _copyStyleCombo->currentData().toInt());
+    pending.latexWrapMath    = _copyWrapMath->isChecked();
+    pending.latexIncludeName = _copyIncludeName->isChecked();
+    pending.roundOnCopy      = _copyRound->isChecked();
+    QuantityFormat::setPrefs(pending);
+
+    const QString text = QuantityFormat::copyText(previewQuantity());
+    QuantityFormat::setPrefs(saved);
+
+    _copyPreviewText->setText(text.toHtmlEscaped());
+
+    const bool latex = pending.style == QuantityFormat::CopyStyle::Latex;
+    _copyWrapMath->setEnabled(latex);
+}
+
+QWidget* SettingsDialog::createNumberFormatPage()
+{
+    auto* page  = new QWidget;
+    auto* outer = new QVBoxLayout(page);
+    outer->setContentsMargins(16, 16, 16, 16);
+
+    auto* intro = new QLabel(
+        "Parameters shown across ASTRA carry their uncertainty and unit. "
+        "Clicking one copies it; these settings decide what ends up on the "
+        "clipboard. Drag across a value to select single pieces, or "
+        "right-click it for the other options without changing the default.");
+    intro->setWordWrap(true);
+    outer->addWidget(intro);
+
+    auto* box  = new QGroupBox("Copying", page);
+    auto* form = new QFormLayout(box);
+
+    _copyContentCombo = new QComboBox;
+    _copyContentCombo->addItem(
+        "Value only",
+        static_cast<int>(QuantityFormat::CopyContent::Value));
+    _copyContentCombo->addItem(
+        "Value and error",
+        static_cast<int>(QuantityFormat::CopyContent::ValueError));
+    _copyContentCombo->addItem(
+        "Value, error and unit",
+        static_cast<int>(QuantityFormat::CopyContent::ValueErrorUnit));
+    _copyContentCombo->setCurrentIndex(
+        _copyContentCombo->findData(static_cast<int>(_settings->copyContent())));
+    form->addRow("Copy:", _copyContentCombo);
+
+    _copyStyleCombo = new QComboBox;
+    _copyStyleCombo->addItem("LaTeX",
+                             static_cast<int>(QuantityFormat::CopyStyle::Latex));
+    _copyStyleCombo->addItem("Plain text",
+                             static_cast<int>(QuantityFormat::CopyStyle::Plain));
+    _copyStyleCombo->setCurrentIndex(
+        _copyStyleCombo->findData(static_cast<int>(_settings->copyStyle())));
+    form->addRow("Notation:", _copyStyleCombo);
+
+    _copyWrapMath = new QCheckBox("Wrap LaTeX in $...$");
+    _copyWrapMath->setToolTip(
+        "Off pastes into an existing math environment; on gives a "
+        "self-contained inline formula.");
+    _copyWrapMath->setChecked(_settings->copyLatexWrapMath());
+    form->addRow(QString(), _copyWrapMath);
+
+    _copyIncludeName = new QCheckBox("Prefix the parameter name");
+    _copyIncludeName->setToolTip(
+        "Copies \"K = 12.35 ...\" instead of the bare value, where the "
+        "parameter has a name.");
+    _copyIncludeName->setChecked(_settings->copyIncludeName());
+    form->addRow(QString(), _copyIncludeName);
+
+    _copyRound = new QCheckBox("Round errors to two significant digits");
+    _copyRound->setToolTip(
+        "Publication rounding: the error keeps two significant digits and the "
+        "value is given to the same decimal. Only the copied text is "
+        "affected, never what is shown on screen.");
+    _copyRound->setChecked(_settings->copyRoundErrors());
+    form->addRow(QString(), _copyRound);
+
+    outer->addWidget(box);
+
+    auto* prevBox = new QGroupBox("Preview", page);
+    auto* prevLay = new QVBoxLayout(prevBox);
+
+    auto* shownRow = new QHBoxLayout;
+    shownRow->addWidget(new QLabel("Shown:"));
+    _copyPreviewValue = new QuantityLabel(previewQuantity());
+    shownRow->addWidget(_copyPreviewValue);
+    shownRow->addStretch();
+    prevLay->addLayout(shownRow);
+
+    auto* copiedRow = new QHBoxLayout;
+    copiedRow->addWidget(new QLabel("Copied:"));
+    _copyPreviewText = new QLabel;
+    _copyPreviewText->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    _copyPreviewText->setStyleSheet("font-family: monospace;");
+    _copyPreviewText->setWordWrap(true);
+    copiedRow->addWidget(_copyPreviewText, 1);
+    prevLay->addLayout(copiedRow);
+
+    outer->addWidget(prevBox);
+    outer->addStretch();
+
+    auto refresh = [this] { updateCopyPreview(); };
+    connect(_copyContentCombo, &QComboBox::currentIndexChanged, this, refresh);
+    connect(_copyStyleCombo,   &QComboBox::currentIndexChanged, this, refresh);
+    connect(_copyWrapMath,     &QCheckBox::toggled, this, refresh);
+    connect(_copyIncludeName,  &QCheckBox::toggled, this, refresh);
+    connect(_copyRound,        &QCheckBox::toggled, this, refresh);
+    updateCopyPreview();
+
+    return page;
 }
 
 QWidget *SettingsDialog::createLightcurveFitPage() {

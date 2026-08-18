@@ -80,6 +80,8 @@ under **Preferences → Star Detail View**; the default is a 2×2 grid.
   parameters, RV results, data inventory, companion constraints, galactic
   kinematics, and literature references (resolved via CrossRef / NASA ADS).
   The spectral-class badge next to the star name is click-to-edit.
+  Every measured value is click-to-copy; see
+  [Copying parameters](#copying-parameters).
 - **Radial Velocity** - the RV curve, folded or as a timeline, with flagged
   points toggleable. Highlights the point belonging to the spectrum currently
   shown in the Spectra panel.
@@ -110,16 +112,41 @@ described in the [workflow guides](workflows/radial-velocity.md).
 
 ## Settings
 
-**File → Preferences…** has six pages:
+**File → Preferences…** has seven pages:
 
 | Page | What it configures |
 |---|---|
 | General | ISIS and sedfit binaries, ADS API token, fit worker threads |
 | Star Detail View | Panel grid layout (rows/columns, panel per cell) |
+| Numbers & Copying | What a copied parameter carries and in which notation |
 | Grid Paths | Base directories scanned recursively for stellar model grids |
 | Lightcurve Fetching | Python interpreter, `lightcurvequery` environment setup, ATLAS token, BlackGEM script |
 | Lightcurve Fitting | Install directory of the `lcurve` binaries |
 | Updates | Automatic update check on startup |
+
+### Copying parameters
+
+Fitted values are shown with their uncertainty and unit, the two sides stacked
+when the interval is asymmetric:
+
+```
+K = 12.34 +0.52   km/s
+          -0.31
+```
+
+- **Click** a value to copy it. By default the clipboard gets value, error and
+  unit as LaTeX: `12.35^{+0.52}_{-0.31}\,\mathrm{km\,s^{-1}}`.
+- **Drag** across a value to select single pieces (the number, one error side,
+  the unit) and copy just those with ++ctrl+c++.
+- **Right-click** for the other content levels and for plain-text output,
+  without changing the default.
+
+**Preferences → Numbers & Copying** sets the default: value only, value and
+error, or value, error and unit; LaTeX or plain text; whether LaTeX is wrapped
+in `$...$` and prefixed with the parameter name. Copies round the error to two
+significant digits and match the value to it, which is what a paper wants; the
+displayed precision is never changed by this. Turn it off there if you need the
+digits exactly as shown.
 
 ## Keyboard shortcuts
 

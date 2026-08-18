@@ -2,7 +2,9 @@
 #include "PanelUtils.h"
 
 #include "models/Star.h"
+#include "models/Quantity.h"
 #include "models/Spectrum.h"
+#include "utils/QuantityFormat.h"
 #include "models/ElementAbundances.h"
 #include "utils/Logger.h"
 #include "plotting/qcustomplot.h"
@@ -1665,21 +1667,25 @@ QString SpectraPanel::formatInfo(
     auto bestFit = spec->getBestFit();
     if (bestFit) {
         QStringList fitParts;
-        auto fmtParam = [](const QString& name, double val, double err, int prec) -> QString {
+        // One flowing line, so this stays rich text rather than a
+        // QuantityLabel; the formatting still comes from QuantityFormat so it
+        // matches the panels and picks up asymmetric errors once the spectral
+        // solver stores them.
+        auto fmtParam = [](const QString& name, double val, double err,
+                           int prec, const QString& unit = {}) -> QString {
             if (std::isnan(val) || val == 0.0) return QString();
-            QString s = QString("%1=%2").arg(name).arg(val, 0, 'f', prec);
-            if (!std::isnan(err) && err > 0.0)
-                s += QString("±%1").arg(err, 0, 'f', prec);
-            return s;
+            return name + "=" +
+                   QuantityFormat::richText(Quantity(val, err, prec, unit));
         };
 
         QString tStr = fmtParam("Teff", bestFit->teff, bestFit->teffError, 0);
         QString gStr = fmtParam("logg", bestFit->logg, bestFit->loggError, 2);
-        QString rvStr = fmtParam("RV", bestFit->radialVelocity, bestFit->radialVelocityError, 1);
+        QString rvStr = fmtParam("RV", bestFit->radialVelocity,
+                                 bestFit->radialVelocityError, 1, "km/s");
 
         if (!tStr.isEmpty()) fitParts << tStr;
         if (!gStr.isEmpty()) fitParts << gStr;
-        if (!rvStr.isEmpty()) fitParts << rvStr + " km/s";
+        if (!rvStr.isEmpty()) fitParts << rvStr;
 
         if (!fitParts.isEmpty())
             parts << QString("│ Fit: %1").arg(fitParts.join(", "));
