@@ -6,6 +6,7 @@
 #include "plotting/qcustomplot.h"
 #include "utils/Logger.h"
 #include "views/panels/PanelUtils.h"
+#include "views/widgets/SquarePlotFrame.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -21,6 +22,7 @@
 #include <QMouseEvent>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSettings>
 #include <QSlider>
 #include <QSpinBox>
@@ -103,8 +105,6 @@ void GalacticOrbitDialog::setupUi()
     auto* left       = new QWidget;
     auto* leftLayout = new QVBoxLayout(left);
     leftLayout->setContentsMargins(0, 0, 6, 0);
-    left->setMinimumWidth(330);
-    left->setMaximumWidth(420);
 
     auto* inputBox  = new QGroupBox("Input parameters");
     auto* inputForm = new QFormLayout(inputBox);
@@ -203,7 +203,17 @@ void GalacticOrbitDialog::setupUi()
     _saveButton->setEnabled(false);
     leftLayout->addWidget(_saveButton);
 
-    splitter->addWidget(left);
+    // The results grid grows to ~40 rows once everything has been computed,
+    // which would otherwise drag the whole dialog past the bottom of a laptop
+    // screen, so the column scrolls instead of pushing.
+    auto* leftScroll = new QScrollArea;
+    leftScroll->setWidget(left);
+    leftScroll->setWidgetResizable(true);
+    leftScroll->setFrameShape(QFrame::NoFrame);
+    leftScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    leftScroll->setMinimumWidth(345);
+    leftScroll->setMaximumWidth(440);
+    splitter->addWidget(leftScroll);
 
     // ── right column: plots ────────────────────────────────────────────────
     auto* right       = new QWidget;
@@ -262,7 +272,9 @@ void GalacticOrbitDialog::setupUi()
     _azimuthSlider->setRange(0, 359);
     _azimuthSlider->setValue(300);
     _elevationSlider = new QSlider(Qt::Horizontal);
-    _elevationSlider->setRange(5, 85);
+    // +90 looks straight down onto the galactic plane, -90 straight up at it;
+    // the fixed cube range below holds over the whole span.
+    _elevationSlider->setRange(-90, 90);
     _elevationSlider->setValue(22);
     cubeRow->addWidget(new QLabel("Azimuth:"));
     cubeRow->addWidget(_azimuthSlider, 1);
@@ -270,11 +282,21 @@ void GalacticOrbitDialog::setupUi()
     cubeRow->addWidget(_elevationSlider, 1);
     layCube->addLayout(cubeRow);
     _plotCube = new QCustomPlot;
+    // The cube draws its own projected axes, so the plot's axes are nothing but
+    // a coordinate system: hidden, and with the margins they would have
+    // reserved handed back to the drawing.
+    for (auto* ax : {_plotCube->xAxis, _plotCube->yAxis, _plotCube->xAxis2,
+                     _plotCube->yAxis2})
+        ax->setVisible(false);
+    _plotCube->axisRect()->setAutoMargins(QCP::msNone);
+    _plotCube->axisRect()->setMargins(QMargins(4, 4, 4, 4));
     // drag the cube to rotate; the wheel is left to QCustomPlot (no-op here)
     _plotCube->setInteractions(QCP::Interactions());
     _plotCube->setCursor(Qt::OpenHandCursor);
     _plotCube->installEventFilter(this);
-    layCube->addWidget(_plotCube, 1);
+    // The cube fixes equal X/Y ranges below; without a square panel to draw
+    // them in, that equality turns into a sheared box.
+    layCube->addWidget(new SquarePlotFrame(_plotCube), 1);
     _plotTabs->addTab(tabCube, "3D cube");
 
     // boundness tab: histogram of v_Grf − v_esc over the MC realizations
@@ -1248,13 +1270,18 @@ void GalacticOrbitDialog::replotCube()
     addAxisLabel(c * 1.15, 0, -c, QString("Y [±%1 kpc]").arg(m));
     addAxisLabel(-c, -c * 1.12, 0, QString("Z [±%1 kpc]").arg(m));
 
-    // hide axes; fix an equal-aspect viewport
-    _plotCube->xAxis->setVisible(false);
-    _plotCube->yAxis->setVisible(false);
-    const double lim = m * 2.05;
-    _plotCube->xAxis->setRange(-lim, lim);
-    _plotCube->yAxis->setRange(-lim, lim);
-    _plotCube->axisRect()->setupFullAxesBox(false);
+    // Equal ranges in a square panel keep the projection undistorted, and the
+    // range has to be the same at every viewing angle: deriving it from the
+    // extent of the current projection would rescale the cube while it is being
+    // dragged. However the cube is turned, over the full -90..+90 elevation
+    // span, no corner projects further than its circumsphere radius, and the
+    // corner labels sit inside that with room to spare - about 50 px on a
+    // 600 px panel, half a label width. Looking at the cube edge-on therefore
+    // shows it smaller than corner-on, which is what an orthographic
+    // projection is supposed to do.
+    const double half = c * std::sqrt(3.0) * 1.06;
+    _plotCube->xAxis->setRange(-half, half);
+    _plotCube->yAxis->setRange(-half, half);
     _plotCube->replot();
 }
 

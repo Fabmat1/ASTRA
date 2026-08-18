@@ -316,6 +316,7 @@ set(SOURCES
     src/utils/Logger.cpp
     src/utils/SpectrumReader.cpp
     src/utils/ThemeManager.cpp
+    src/utils/WindowSizing.cpp
     src/utils/UiIcons.cpp
     src/utils/UpdateManager.cpp
     src/utils/ObservabilityCalculator.cpp
@@ -385,6 +386,7 @@ set(SOURCES
     src/views/widgets/FitPreviewOverlay.cpp
     src/views/widgets/GridSelectorWidget.cpp
     src/views/widgets/ShimmerWidget.cpp
+    src/views/widgets/SquarePlotFrame.cpp
     src/views/widgets/TerminalView.cpp
     src/views/widgets/AnsiTerminalWidget.cpp
     src/views/widgets/LCModelPreview.cpp
@@ -481,6 +483,7 @@ set(HEADERS
     src/utils/Logger.h
     src/utils/SpectrumReader.h
     src/utils/ThemeManager.h
+    src/utils/WindowSizing.h
     src/utils/UiIcons.h
     src/utils/UpdateManager.h
     src/utils/ObservabilityCalculator.h
@@ -549,6 +552,7 @@ set(HEADERS
     src/views/widgets/FitPreviewOverlay.h
     src/views/widgets/GridSelectorWidget.h
     src/views/widgets/ShimmerWidget.h
+    src/views/widgets/SquarePlotFrame.h
     src/views/widgets/TerminalView.h
     src/views/widgets/AnsiTerminalWidget.h
     src/views/widgets/LCModelPreview.h

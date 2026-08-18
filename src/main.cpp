@@ -3,6 +3,7 @@
 #include "controllers/ApplicationController.h"
 #include "utils/Logger.h"
 #include "utils/AppPaths.h"
+#include "utils/WindowSizing.h"
 #include "fitting/FitTypes.h"
 #include "fitting/FitBackendRegistry.h"
 #include <QDebug>
@@ -16,6 +17,10 @@ int main(int argc, char *argv[])
     app.setApplicationName("ASTRA");
     app.setApplicationVersion(ASTRA_VERSION_STRING);
     app.setOrganizationName("ASTRA");
+
+    // Keeps dialogs whose content grows after construction from pushing their
+    // own window past the edge of the screen.
+    WindowSizing::installScreenGuard(&app);
 
     QFontDatabase::addApplicationFont(":/fonts/FiraCode-Regular.ttf");
     QFontDatabase::addApplicationFont(":/fonts/FiraCode-Medium.ttf");

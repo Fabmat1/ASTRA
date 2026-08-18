@@ -581,12 +581,21 @@ QWidget *LightcurveFetchDialog::buildFitTab() {
     _fitLcPanel    = new LCPanel(ctx, nullptr, /*deferPopulate=*/true);
     root->addWidget(_fitLcPanel, 1);
 
+    // Stacked end to end the sidebar groups need more height than a laptop
+    // screen has, and a plain column would push that minimum onto the dialog
+    // the moment this tab is built. Scroll the column instead.
+    auto *sidebarScroll = new QScrollArea;
+    sidebarScroll->setWidgetResizable(true);
+    sidebarScroll->setFrameShape(QFrame::NoFrame);
+    sidebarScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    sidebarScroll->setMinimumWidth(300);
+    sidebarScroll->setMaximumWidth(400);
+
     auto *sidebar = new QWidget;
-    sidebar->setMinimumWidth(280);
-    sidebar->setMaximumWidth(380);
     auto *sv = new QVBoxLayout(sidebar);
     sv->setContentsMargins(4, 4, 4, 4);
     sv->setSpacing(8);
+    sidebarScroll->setWidget(sidebar);
 
     // ── Data selection ──────────────────────────────────────────────────
     auto *dBox      = new QGroupBox(tr("Data to fit"));
@@ -712,7 +721,8 @@ QWidget *LightcurveFetchDialog::buildFitTab() {
     detScroll->setWidget(_fitDetailsLabel);
     detScroll->setWidgetResizable(true);
     detScroll->setFrameShape(QFrame::NoFrame);
-    detScroll->setFixedHeight(200);
+    detScroll->setMinimumHeight(120);
+    detScroll->setMaximumHeight(240);
     detLay->addWidget(detScroll);
     sv->addWidget(detBox);
 
@@ -734,7 +744,7 @@ QWidget *LightcurveFetchDialog::buildFitTab() {
                 updateSelectedFitDetails();
             });
 
-    root->addWidget(sidebar);
+    root->addWidget(sidebarScroll);
 
     // These read the star's photometry directly (not the LCPanel's populated
     // series), so they can run now while the panel is still showing its shimmer.
