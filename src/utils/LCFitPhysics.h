@@ -6,6 +6,7 @@
 #include <QSet>
 #include <QString>
 #include <QStringList>
+#include <QVector>
 #include <array>
 #include <optional>
 #include <tuple>
@@ -82,6 +83,37 @@ struct ModelInputs {
 };
 
 QMap<QString, QString> buildModelParameters(const ModelInputs &in);
+
+// ── Free-parameter catalogue ──────────────────────────────────────
+// Every model parameter lcurve is able to fit. buildModelParameters()
+// honours ModelInputs::varied for each of these keys; everything else it
+// writes is a computational scalar (grid resolution, switches) with no vary
+// flag at all, and star spots, which ASTRA does not configure.
+struct VaryableParam {
+  /// Switch on the Advanced page lcurve needs before it so much as looks at
+  /// the parameter — freeing a gated-off one costs nothing and achieves
+  /// nothing.
+  enum class Gate { None, DiscOn, SpotOn, RadiiOff };
+
+  QString key;
+  QString group;
+  QString description;
+  Gate    gate = Gate::None;
+  /// True when no other page of the fit dialog edits this parameter, so its
+  /// starting value has to be given wherever it is set free. The defaults
+  /// below are legal starting points; lcurve rejects a step outside
+  /// [lo, hi] outright, and most of these parameters default to 0, which is
+  /// itself illegal for several of them.
+  bool   needsStartEditor = false;
+  double start = 0.0;
+  double range = 0.0; ///< Search half-width offered next to the start value
+  double lo = 0.0, hi = 0.0; ///< lcurve's legality bounds
+  int    decimals = 4;
+};
+
+const QVector<VaryableParam> &varyableParameters();
+/// The catalogue entry for `key`, or nullptr when lcurve cannot fit it.
+const VaryableParam *varyableParameter(const QString &key);
 
 // "name → 'v eLo eHi'" map for the priors block.
 struct PriorInputs {

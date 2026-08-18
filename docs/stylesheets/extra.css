@@ -1,0 +1,40 @@
+/* Placeholder boxes for screenshots and screen recordings that have not
+   been captured yet. Replace each placeholder with the real <img> or
+   <video> element once the asset exists (the target filename is shown
+   inside the box). */
+
+.media-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  aspect-ratio: 16 / 9;
+  margin: 1rem 0;
+  border: 2px dashed var(--md-default-fg-color--lighter);
+  border-radius: 0.4rem;
+  background: var(--md-code-bg-color);
+  color: var(--md-default-fg-color--light);
+  text-align: center;
+  padding: 1rem;
+}
+
+.media-placeholder .mp-icon {
+  font-size: 2.2rem;
+  line-height: 1;
+}
+
+.media-placeholder .mp-caption {
+  font-weight: 700;
+}
+
+.media-placeholder .mp-file {
+  font-family: var(--md-code-font-family, monospace);
+  font-size: 0.7rem;
+  opacity: 0.7;
+}
+
+/* Screenshots are usually not 16:9; let them be a bit shorter */
+.media-placeholder.screenshot {
+  aspect-ratio: 16 / 10;
+}

@@ -12,6 +12,7 @@
 #include "models/Star.h"
 #include "utils/AppPaths.h"
 #include "utils/CrossRefResolver.h"
+#include "utils/UiIcons.h"
 
 #include <QApplication>
 #include <QClipboard>
@@ -1932,7 +1933,8 @@ QFrame *SummaryPanel::createExpandableSectionFrame(const QString &title,
     layout->addWidget(expandedContent);
 
     const bool   dark   = PanelUtils::isDarkTheme();
-    QPushButton *toggle = new QPushButton("Show all ▾");
+    QPushButton *toggle = new QPushButton(tr("Show all"));
+    UiIcons::apply(toggle, UiIcons::Role::DisclosureCollapsed, 12);
     toggle->setFlat(true);
     toggle->setCursor(Qt::PointingHandCursor);
     toggle->setStyleSheet(
@@ -1948,8 +1950,11 @@ QFrame *SummaryPanel::createExpandableSectionFrame(const QString &title,
                          const bool showAll = !expandedContent->isVisible();
                          compactContent->setVisible(!showAll);
                          expandedContent->setVisible(showAll);
-                         toggle->setText(showAll ? "Show less ▴"
-                                                 : "Show all ▾");
+                         toggle->setText(showAll ? tr("Show less") : tr("Show all"));
+                         UiIcons::apply(toggle,
+                                        showAll ? UiIcons::Role::DisclosureExpanded
+                                                : UiIcons::Role::DisclosureCollapsed,
+                                        12);
                      });
 
     return frame;

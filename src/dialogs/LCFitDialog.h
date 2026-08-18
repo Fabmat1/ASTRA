@@ -301,6 +301,35 @@ class LCFitDialog : public QDialog {
     int _cudaDevice = -1;
     QMap<QString, QCheckBox *> _vary;
 
+    // ── Free parameters ─────────────────────────────────────────────────
+    // Beyond the handful of parameters that always get a checkbox, any model
+    // parameter lcurve can fit may be added to the list from a dropdown of
+    // the ones still frozen. Parameters no other page edits bring their own
+    // starting value and search range along.
+    struct ExtraVary {
+        QWidget        *row   = nullptr;
+        QCheckBox      *check = nullptr;
+        QDoubleSpinBox *start = nullptr; ///< null when edited on another page
+        QDoubleSpinBox *range = nullptr; ///< ditto
+    };
+    QGroupBox   *buildVaryBox();
+    void         addFreeParameter(const QString &key);
+    void         removeFreeParameter(const QString &key);
+    void         refreshFreeParamCombo();
+    /// Warn about free parameters lcurve will ignore because the disc, the
+    /// bright spot or the contact-phase parameterisation is switched off.
+    void         refreshFreeParamNote();
+    /// Write the start value and range of the added parameters into the
+    /// model block, on top of the neutral defaults buildModelParameters uses.
+    void         applyFreeParamStarts(QJsonObject &mp) const;
+
+    QMap<QString, ExtraVary> _extraVary;
+    QComboBox               *_freeParamPick = nullptr;
+    QPushButton             *_freeParamAdd = nullptr;
+    QVBoxLayout             *_extraVaryLay = nullptr;
+    QLabel                  *_extraVaryEmpty = nullptr;
+    QLabel                  *_extraVaryNote = nullptr;
+
     // - Advanced page -
     QSpinBox       *_nlat1f{}, *_nlat2f{}, *_nlat1c{}, *_nlat2c{};
     QSpinBox       *_npole{}, *_nlatfill{}, *_nlngfill{};

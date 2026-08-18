@@ -18,6 +18,7 @@
 #include "views/panels/LCPanel.h"
 #include "views/panels/PeriodogramPanel.h"
 #include "views/widgets/PreciseDoubleSpinBox.h"
+#include "utils/UiIcons.h"
 
 #include <QButtonGroup>
 #include <QCheckBox>
@@ -1807,8 +1808,10 @@ QWidget* LightcurveFetchDialog::buildPreviewsTab()
     root->addWidget(_previewImage, 1);
 
     auto* nav = new QHBoxLayout;
-    _prevPreviewBtn = new QPushButton("◀  Previous");
-    _nextPreviewBtn = new QPushButton("Next  ▶");
+    _prevPreviewBtn = new QPushButton(tr("Previous"));
+    _nextPreviewBtn = new QPushButton(tr("Next"));
+    UiIcons::apply(_prevPreviewBtn, UiIcons::Role::NavigatePrev);
+    UiIcons::applyTrailing(_nextPreviewBtn, UiIcons::Role::NavigateNext);
     connect(_prevPreviewBtn, &QPushButton::clicked, this, [this]{ stepPreview(-1); });
     connect(_nextPreviewBtn, &QPushButton::clicked, this, [this]{ stepPreview(+1); });
     nav->addStretch();

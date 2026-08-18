@@ -1,6 +1,7 @@
 #include "LCFitPhysics.h"
 
 #include <QFile>
+#include <QObject>
 #include <QRegularExpression>
 #include <QTextStream>
 
@@ -372,20 +373,22 @@ QMap<QString, QString> buildModelParameters(const ModelInputs &in) {
   p["gravity_dark1"] = lcurveParam(in.gd1, 0.1, 1e-6, V("gravity_dark1"));
   p["gravity_dark2"] = lcurveParam(in.gd2, 0.1, 1e-6, V("gravity_dark2"));
 
-  // Fixed values
-  p["absorb"] = lcurveParam(1.0, 0.5, 0.01, false);
-  p["cphi3"] = lcurveParam(0.01, 0.05, 0.01, false);
-  p["cphi4"] = lcurveParam(0.055, 0.05, 0.01, false);
-  p["spin1"] = lcurveParam(1.0, 0.1, 0.01, false);
-  p["spin2"] = lcurveParam(1.0, 0.1, 0.01, false);
+  // Parameters the dialog has no dedicated editor for. They keep lcurve's
+  // neutral defaults unless the user sets one free on the solver page, which
+  // is also where a legal starting value for it comes from.
+  p["absorb"] = lcurveParam(1.0, 0.5, 0.01, V("absorb"));
+  p["cphi3"] = lcurveParam(0.01, 0.05, 0.01, V("cphi3"));
+  p["cphi4"] = lcurveParam(0.055, 0.05, 0.01, V("cphi4"));
+  p["spin1"] = lcurveParam(1.0, 0.1, 0.01, V("spin1"));
+  p["spin2"] = lcurveParam(1.0, 0.1, 0.01, V("spin2"));
   for (const char *k : {"slope", "quad", "cube", "third"})
-    p[k] = lcurveParam(0.0, 0.01, 1e-5, false);
+    p[k] = lcurveParam(0.0, 0.01, 1e-5, V(k));
 
   struct PD {
     const char *name;
     double val, rng, step;
   };
-  for (const PD &d : std::array<PD, 8>{{
+  for (const PD &d : std::array<PD, 10>{{
            {"rdisc1", 0, 0.01, 0.001},
            {"rdisc2", 0, 0.01, 0.02},
            {"height_disc", 0, 0.01, 1e-5},
@@ -394,8 +397,12 @@ QMap<QString, QString> buildModelParameters(const ModelInputs &in) {
            {"texp_disc", 0, 0.2, 0.001},
            {"lin_limb_disc", 0, 0.02, 1e-4},
            {"quad_limb_disc", 0, 0.02, 1e-4},
+           // lcurve warns and zeroes these two when they are missing; write
+           // them out so the config says what the model will use.
+           {"temp_edge", 0, 50, 40},
+           {"absorb_edge", 0, 0.5, 0.01},
        }})
-    p[d.name] = lcurveParam(d.val, d.rng, d.step, false);
+    p[d.name] = lcurveParam(d.val, d.rng, d.step, V(d.name));
 
   for (const PD &d : std::array<PD, 10>{{
            {"radius_spot", 0, 0.01, 0.01},
@@ -409,7 +416,7 @@ QMap<QString, QString> buildModelParameters(const ModelInputs &in) {
            {"tilt_spot", 0, 5, 2},
            {"cfrac_spot", 0, 0.05, 0.008},
        }})
-    p[d.name] = lcurveParam(d.val, d.rng, d.step, false);
+    p[d.name] = lcurveParam(d.val, d.rng, d.step, V(d.name));
 
   for (const char *star : {"1", "2"})
     for (const char *attr : {"long", "lat", "fwhm", "tcen"})
@@ -457,6 +464,199 @@ QMap<QString, QString> buildModelParameters(const ModelInputs &in) {
     p[it.key()] = it.value();
 
   return p;
+}
+
+const QVector<VaryableParam> &varyableParameters() {
+  using G = VaryableParam::Gate;
+  // Grouped in the order the picker shows them. `managed` parameters take
+  // their starting value from the setup or advanced pages; `standalone` ones
+  // have no editor anywhere else, so they carry their own start and search
+  // range, seeded with a value lcurve considers legal — several of them
+  // default to 0, which lcurve rejects outright once they are free.
+  static const QVector<VaryableParam> params = [] {
+    QVector<VaryableParam> v;
+    auto managed = [&v](const QString &key, const QString &group,
+                        const QString &desc, G gate = G::None) {
+      VaryableParam p;
+      p.key         = key;
+      p.group       = group;
+      p.description = desc;
+      p.gate        = gate;
+      v.push_back(p);
+    };
+    auto standalone = [&v](const QString &key, const QString &group,
+                           const QString &desc, G gate, double start,
+                           double range, double lo, double hi, int decimals) {
+      VaryableParam p;
+      p.key              = key;
+      p.group            = group;
+      p.description      = desc;
+      p.gate             = gate;
+      p.needsStartEditor = true;
+      p.start            = start;
+      p.range            = range;
+      p.lo               = lo;
+      p.hi               = hi;
+      p.decimals         = decimals;
+      v.push_back(p);
+    };
+
+    const QString geom = QObject::tr("Geometry & scale");
+    managed("q", geom, QObject::tr("Mass ratio M₂/M₁."));
+    managed("iangle", geom, QObject::tr("Orbital inclination in degrees."));
+    managed("r1", geom,
+            QObject::tr("Radius of star 1 in units of the orbital "
+                        "separation."));
+    managed("r2", geom,
+            QObject::tr("Radius of star 2 in units of the orbital "
+                        "separation."));
+    managed("velocity_scale", geom,
+            QObject::tr("K₁+K₂ in km/s — sets the absolute scale of the "
+                        "system."));
+    standalone("cphi3", geom,
+               QObject::tr("Third-contact phase. Used only when the model is "
+                           "parameterised by contact phases instead of radii "
+                           "(<i>use_radii</i> off on the Advanced page)."),
+               G::RadiiOff, 0.01, 0.05, 0.0, 0.25, 5);
+    standalone("cphi4", geom,
+               QObject::tr("Fourth-contact phase. Used only when the model is "
+                           "parameterised by contact phases instead of radii "
+                           "(<i>use_radii</i> off on the Advanced page)."),
+               G::RadiiOff, 0.055, 0.05, 0.0, 0.25, 5);
+
+    const QString surf = QObject::tr("Stellar surfaces");
+    managed("t1", surf, QObject::tr("Temperature of star 1 in K."));
+    managed("t2", surf, QObject::tr("Temperature of star 2 in K."));
+    managed("spin1", surf,
+            QObject::tr("Spin/orbit frequency ratio of star 1 "
+                        "(1 = synchronous)."));
+    managed("spin2", surf,
+            QObject::tr("Spin/orbit frequency ratio of star 2 "
+                        "(1 = synchronous)."));
+    managed("gravity_dark1", surf,
+            QObject::tr("Gravity-darkening exponent of star 1."));
+    managed("gravity_dark2", surf,
+            QObject::tr("Gravity-darkening exponent of star 2."));
+    managed("beam_factor1", surf,
+            QObject::tr("Doppler-beaming factor of star 1."));
+    managed("beam_factor2", surf,
+            QObject::tr("Doppler-beaming factor of star 2."));
+    managed("absorb", surf,
+            QObject::tr("Fraction of the irradiating flux that is absorbed "
+                        "and reprocessed."));
+
+    const QString limb = QObject::tr("Limb darkening");
+    for (int s = 1; s <= 2; ++s)
+      for (int j = 1; j <= 4; ++j)
+        managed(QStringLiteral("ldc%1_%2").arg(s).arg(j), limb,
+                QObject::tr("Limb-darkening coefficient %1 of star %2, "
+                            "otherwise taken from the Claret tables on the "
+                            "setup page.")
+                    .arg(j)
+                    .arg(s));
+
+    const QString eph = QObject::tr("Ephemeris");
+    managed("t0", eph, QObject::tr("Zero point of the ephemeris."));
+    managed("period", eph,
+            QObject::tr("Period in the units of the fitted data. The light "
+                        "curve is phase-folded, so this is 1 and freeing it "
+                        "stretches the fold."));
+    managed("pdot", eph, QObject::tr("Rate of change of the period."));
+    managed("deltat", eph,
+            QObject::tr("Timing offset between the primary and the secondary "
+                        "eclipse."));
+
+    const QString base = QObject::tr("Baseline & third light");
+    managed("slope", base, QObject::tr("Linear term of the baseline trend."));
+    managed("quad", base,
+            QObject::tr("Quadratic term of the baseline trend."));
+    managed("cube", base, QObject::tr("Cubic term of the baseline trend."));
+    managed("third", base,
+            QObject::tr("Third light — flux from a source that is neither "
+                        "star."));
+
+    const QString disc = QObject::tr("Accretion disc");
+    standalone("rdisc1", disc,
+               QObject::tr("Inner disc radius, in units of the orbital "
+                           "separation."),
+               G::DiscOn, 0.05, 0.05, 0.0, 1.0, 5);
+    standalone("rdisc2", disc,
+               QObject::tr("Outer disc radius, in units of the orbital "
+                           "separation."),
+               G::DiscOn, 0.40, 0.20, 0.0, 1.0, 5);
+    standalone("height_disc", disc,
+               QObject::tr("Disc height at the outer edge, in units of the "
+                           "orbital separation."),
+               G::DiscOn, 0.01, 0.01, 0.0, 1.0, 5);
+    standalone("beta_disc", disc, QObject::tr("Disc flaring exponent."),
+               G::DiscOn, 1.5, 0.5, 1.0, 100.0, 3);
+    standalone("temp_disc", disc,
+               QObject::tr("Disc temperature at the outer edge, in K."),
+               G::DiscOn, 5000.0, 2000.0, 500.0, 1e6, 1);
+    standalone("texp_disc", disc,
+               QObject::tr("Exponent of the disc's radial temperature "
+                           "profile."),
+               G::DiscOn, -0.75, 0.5, -100.0, 100.0, 3);
+    standalone("lin_limb_disc", disc,
+               QObject::tr("Linear limb-darkening coefficient of the disc."),
+               G::DiscOn, 0.3, 0.3, 0.0, 1.0, 4);
+    standalone("quad_limb_disc", disc,
+               QObject::tr("Quadratic limb-darkening coefficient of the "
+                           "disc."),
+               G::DiscOn, 0.0, 0.2, 0.0, 1.0, 4);
+    standalone("temp_edge", disc,
+               QObject::tr("Temperature of the disc edge, in K."), G::DiscOn,
+               5000.0, 2000.0, 1.0, 1e6, 1);
+    standalone("absorb_edge", disc,
+               QObject::tr("Absorption by the disc edge."), G::DiscOn, 0.5,
+               0.5, 0.0, 1000.0, 4);
+
+    const QString spot = QObject::tr("Hot spot");
+    standalone("radius_spot", spot,
+               QObject::tr("Distance of the hot spot from the accretor, "
+                           "in units of the orbital separation."),
+               G::SpotOn, 0.3, 0.1, 0.0, 1.0, 5);
+    standalone("length_spot", spot,
+               QObject::tr("Length scale of the hot spot."), G::SpotOn,
+               0.05, 0.05, 0.0, 1.0, 5);
+    standalone("height_spot", spot,
+               QObject::tr("Height of the hot spot above the disc."),
+               G::SpotOn, 0.05, 0.05, 0.0, 1.0, 5);
+    standalone("expon_spot", spot,
+               QObject::tr("Exponent of the hot spot's brightness "
+                           "profile."),
+               G::SpotOn, 2.0, 1.0, 1e-4, 100.0, 3);
+    standalone("epow_spot", spot,
+               QObject::tr("Exponent controlling how sharply the hot spot "
+                           "falls off."),
+               G::SpotOn, 1.0, 1.0, 1e-4, 10.0, 3);
+    standalone("angle_spot", spot,
+               QObject::tr("Orientation of the hot spot's beaming, in "
+                           "degrees."),
+               G::SpotOn, 140.0, 45.0, -1000.0, 1000.0, 2);
+    standalone("yaw_spot", spot,
+               QObject::tr("Yaw of the hot spot's beaming, in degrees."),
+               G::SpotOn, 0.0, 45.0, -1000.0, 1000.0, 2);
+    standalone("temp_spot", spot,
+               QObject::tr("Temperature of the hot spot, in K."), G::SpotOn,
+               10000.0, 5000.0, 0.0, 1e8, 1);
+    standalone("tilt_spot", spot,
+               QObject::tr("Tilt of the hot spot's beaming, in degrees."),
+               G::SpotOn, 90.0, 45.0, -1000.0, 1000.0, 2);
+    standalone("cfrac_spot", spot,
+               QObject::tr("Fraction of the hot spot's light that is "
+                           "emitted isotropically."),
+               G::SpotOn, 0.5, 0.5, 0.0, 1.0, 4);
+    return v;
+  }();
+  return params;
+}
+
+const VaryableParam *varyableParameter(const QString &key) {
+  for (const auto &p : varyableParameters())
+    if (p.key == key)
+      return &p;
+  return nullptr;
 }
 
 QMap<QString, QString> buildPriors(const PriorInputs &in) {

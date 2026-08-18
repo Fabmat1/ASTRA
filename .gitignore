@@ -144,6 +144,7 @@ venv/
 docs/_build/
 html/
 latex/
+site/
 
 # Temporary files
 *.tmp
@@ -168,7 +169,7 @@ CLAUDE.md
 
 IMPROVEMENT_TASKS.md
 
-flame.svg
+/flame.svg
 perf.data
 perf.data*
 

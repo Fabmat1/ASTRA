@@ -11,6 +11,7 @@
 #include "utils/Logger.h"
 #include "utils/SedFitEnvironment.h"
 #include "utils/SystematicErrors.h"
+#include "utils/UiIcons.h"
 #include "views/widgets/GridSelectorWidget.h"
 
 #include <QApplication>
@@ -330,7 +331,8 @@ QWidget* SEDFitDialog::createPhotometrySection()
     vlay->setContentsMargins(0, 0, 0, 0);
     vlay->setSpacing(0);
 
-    _photToggleBtn = new QPushButton("▾ Photometry Points");
+    _photToggleBtn = new QPushButton(tr("Photometry Points"));
+    UiIcons::apply(_photToggleBtn, UiIcons::Role::DisclosureExpanded);
     _photToggleBtn->setFlat(true);
     _photToggleBtn->setStyleSheet("text-align: left; font-weight: bold; padding: 4px;");
     vlay->addWidget(_photToggleBtn);
@@ -356,8 +358,8 @@ QWidget* SEDFitDialog::createPhotometrySection()
     connect(_photToggleBtn, &QPushButton::clicked, this, [this] {
         bool vis = !_photContent->isVisible();
         _photContent->setVisible(vis);
-        _photToggleBtn->setText(vis ? "▾ Photometry Points"
-                                    : "▸ Photometry Points");
+        UiIcons::apply(_photToggleBtn, vis ? UiIcons::Role::DisclosureExpanded
+                                           : UiIcons::Role::DisclosureCollapsed);
     });
 
     connect(_photTable, &QTableWidget::cellChanged,
@@ -572,7 +574,8 @@ QWidget* SEDFitDialog::createNewFitPanel()
 
     // ── Run / preview ────────────────────────────────────────
     auto* runLay = new QHBoxLayout;
-    _runFitBtn = new QPushButton("▶ Run Fit");
+    _runFitBtn = new QPushButton(tr("Run Fit"));
+    UiIcons::apply(_runFitBtn, UiIcons::Role::Run);
     _runFitBtn->setEnabled(isSedFitAvailable());
     _runFitBtn->setStyleSheet("font-weight: bold; padding: 6px 20px;");
     runLay->addWidget(_runFitBtn);
@@ -1099,7 +1102,8 @@ QWidget* SEDFitDialog::createAdvancedOptions()
     topLay->setContentsMargins(0, 0, 0, 0);
     topLay->setSpacing(0);
 
-    _advToggleBtn = new QPushButton("▸ Advanced Options");
+    _advToggleBtn = new QPushButton(tr("Advanced Options"));
+    UiIcons::apply(_advToggleBtn, UiIcons::Role::DisclosureCollapsed);
     _advToggleBtn->setFlat(true);
     _advToggleBtn->setStyleSheet("text-align: left; padding: 2px;");
     topLay->addWidget(_advToggleBtn);
@@ -1184,8 +1188,8 @@ QWidget* SEDFitDialog::createAdvancedOptions()
     connect(_advToggleBtn, &QPushButton::clicked, this, [this] {
         bool vis = !_advContent->isVisible();
         _advContent->setVisible(vis);
-        _advToggleBtn->setText(vis ? "▾ Advanced Options"
-                                   : "▸ Advanced Options");
+        UiIcons::apply(_advToggleBtn, vis ? UiIcons::Role::DisclosureExpanded
+                                          : UiIcons::Role::DisclosureCollapsed);
     });
 
     return w;

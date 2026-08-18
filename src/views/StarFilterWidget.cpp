@@ -4,6 +4,7 @@
 #include "models/ColumnPreset.h"
 #include "models/Instrument.h"
 #include "utils/ObservabilityCalculator.h"
+#include "utils/UiIcons.h"
 
 #include <QDateEdit>
 #include <QDoubleSpinBox>
@@ -962,9 +963,10 @@ void StarFilterWidget::setupUi()
     topBar->addWidget(_filterCountLabel);
 
     _toggleAdvancedButton = new QToolButton(this);
-    _toggleAdvancedButton->setText("Filters ▼");
+    _toggleAdvancedButton->setText(tr("Filters"));
     _toggleAdvancedButton->setCheckable(true);
-    _toggleAdvancedButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    _toggleAdvancedButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    UiIcons::apply(_toggleAdvancedButton, UiIcons::Role::DisclosureCollapsed);
     _toggleAdvancedButton->setToolTip("Show/hide advanced filters");
     topBar->addWidget(_toggleAdvancedButton);
 
@@ -1012,10 +1014,11 @@ void StarFilterWidget::setupUi()
 
     // ── Observability filter (collapsible, off by default) ─────────────────
     _obsToggleButton = new QToolButton(_advancedPanel);
-    _obsToggleButton->setText("▸ Observability filter");
+    _obsToggleButton->setText(tr("Observability filter"));
     _obsToggleButton->setCheckable(true);
     _obsToggleButton->setChecked(false);
-    _obsToggleButton->setToolButtonStyle(Qt::ToolButtonTextOnly);
+    _obsToggleButton->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    UiIcons::apply(_obsToggleButton, UiIcons::Role::DisclosureCollapsed);
     _obsToggleButton->setAutoRaise(true);
     _obsToggleButton->setStyleSheet("QToolButton { font-weight: normal; }");
     advLayout->addWidget(_obsToggleButton);
@@ -1081,8 +1084,8 @@ void StarFilterWidget::setupUi()
 
     connect(_obsToggleButton, &QToolButton::toggled, this, [this](bool open) {
         _obsBody->setVisible(open);
-        _obsToggleButton->setText(open ? "▾ Observability filter"
-                                       : "▸ Observability filter");
+        UiIcons::apply(_obsToggleButton, open ? UiIcons::Role::DisclosureExpanded
+                                              : UiIcons::Role::DisclosureCollapsed);
     });
 
     connect(_obsEnableButton, &QToolButton::toggled,
@@ -1115,7 +1118,8 @@ void StarFilterWidget::setupUi()
 
     connect(_toggleAdvancedButton, &QToolButton::toggled, this, [this](bool checked) {
         _advancedPanel->setVisible(checked);
-        _toggleAdvancedButton->setText(checked ? "Filters ▲" : "Filters ▼");
+        UiIcons::apply(_toggleAdvancedButton, checked ? UiIcons::Role::DisclosureExpanded
+                                                      : UiIcons::Role::DisclosureCollapsed);
     });
 
     updateFilterCountLabel();

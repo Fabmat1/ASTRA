@@ -1,6 +1,7 @@
 // In src/utils/ThemeManager.cpp - create new file
 
 #include "ThemeManager.h"
+#include "UiIcons.h"
 #include <QApplication>
 #include <QColor>
 #include <QFile>
@@ -170,6 +171,9 @@ bool ThemeManager::applyTheme(const QString& themeId)
 
     saveCurrentTheme();
 
+    // Re-render C++-side icons in the new theme's arrow colour.
+    UiIcons::refresh();
+
     emit themeChanged(themeId);
     emit themeApplied(theme);
     return true;
@@ -196,6 +200,8 @@ bool ThemeManager::applyThemeFromFile(const QString& filePath)
 
     qApp->setProperty("isDarkTheme", isDark);
     publishThemeColors(styleSheet, isDark);
+
+    UiIcons::refresh();
     return true;
 }
 
@@ -269,6 +275,10 @@ QString ThemeManager::prepareThemeIcons(const QString& themeId, const QString& s
     auto ma = icoArrow.match(styleSheet);
     if (ma.hasMatch()) arrowColor = ma.captured(1);
 
+    // Publish the arrow colour so C++-side icons (UiIcons) can match the arrows
+    // the QSS subcontrols draw. Both applyTheme() paths route through here.
+    qApp->setProperty("themeArrow", QColor(arrowColor));
+
     // Map each icon template to the colour it should be recoloured with.
     struct IconSpec { const char* name; const QString& color; };
     const QVector<IconSpec> icons = {
@@ -281,6 +291,10 @@ QString ThemeManager::prepareThemeIcons(const QString& themeId, const QString& s
         { "arrow-left.svg",    arrowColor },
         { "branch-closed.svg", arrowColor },
         { "branch-open.svg",   arrowColor },
+        { "play.svg",          arrowColor },
+        { "swap.svg",          arrowColor },
+        { "arrow-double-right.svg", arrowColor },
+        { "arrow-double-left.svg",  arrowColor },
     };
 
     QString outDir = QStandardPaths::writableLocation(QStandardPaths::TempLocation)

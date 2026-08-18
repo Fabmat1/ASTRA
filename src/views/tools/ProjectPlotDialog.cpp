@@ -4,6 +4,7 @@
 #include "utils/PlotPresetStore.h"
 #include "views/panels/PanelUtils.h"
 #include "plotting/qcustomplot.h"
+#include "utils/UiIcons.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -583,10 +584,9 @@ QWidget* ProjectPlotDialog::buildControlPanel()
     populateFieldCombo(_xFieldCombo, "teff");
     populateFieldCombo(_yFieldCombo, "logg");
     // Swap button sits between the row labels and the dropdowns, vertically
-    // centred across both axis rows. Plain ↑↓ arrows render everywhere,
-    // unlike the fancier combined-arrow glyphs.
+    // centred across both axis rows.
     auto* swapBtn = new QToolButton(scatterPage);
-    swapBtn->setText(QStringLiteral("↑↓"));
+    UiIcons::apply(swapBtn, UiIcons::Role::Swap);
     swapBtn->setAutoRaise(true);
     swapBtn->setToolTip(tr("Swap X and Y axes"));
     connect(swapBtn, &QToolButton::clicked, this, &ProjectPlotDialog::onSwapAxes);

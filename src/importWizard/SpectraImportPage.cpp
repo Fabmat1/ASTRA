@@ -4,6 +4,7 @@
 #include "../importWizard/StarImportWizard.h"
 #include "../utils/BackgroundTaskManager.h"
 #include "../utils/Logger.h"
+#include "../utils/UiIcons.h"
 #include "controllers/ApplicationController.h"
 #include "db/DatabaseManager.h"
 #include "models/Project.h"
@@ -236,12 +237,14 @@ void SpectraImportPage::setupUi()
     
     // Up/Down buttons for reordering
     QVBoxLayout* arrowLayout = new QVBoxLayout;
-    _moveUpButton = new QPushButton("▲");
+    _moveUpButton = new QPushButton;
+    UiIcons::apply(_moveUpButton, UiIcons::Role::ReorderUp);
     _moveUpButton->setFixedWidth(30);
     _moveUpButton->setToolTip("Move selected method up (higher priority)");
     connect(_moveUpButton, &QPushButton::clicked, this, &SpectraImportPage::onMatchMethodMoveUp);
     
-    _moveDownButton = new QPushButton("▼");
+    _moveDownButton = new QPushButton;
+    UiIcons::apply(_moveDownButton, UiIcons::Role::ReorderDown);
     _moveDownButton->setFixedWidth(30);
     _moveDownButton->setToolTip("Move selected method down (lower priority)");
     connect(_moveDownButton, &QPushButton::clicked, this, &SpectraImportPage::onMatchMethodMoveDown);

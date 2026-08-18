@@ -17,6 +17,7 @@
 #include "utils/CheckBoxDragger.h"
 #include "utils/CheckStateDragger.h"
 #include "utils/WheelGuard.h"
+#include "utils/UiIcons.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -161,7 +162,8 @@ void FitSetupWidget::setupUi()
     connect(_previewScriptBtn, &QPushButton::clicked,
             this, &FitSetupWidget::onPreviewScript);
 
-    _runButton = new QPushButton(QStringLiteral("▶  Run Fit"));
+    _runButton = new QPushButton(tr("Run Fit"));
+    UiIcons::apply(_runButton, UiIcons::Role::Run);
     _runButton->setMinimumHeight(36);
     QFont f = _runButton->font();
     f.setBold(true);

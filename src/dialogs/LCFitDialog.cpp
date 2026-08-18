@@ -10,6 +10,7 @@
 #include "utils/LCBinning.h"
 #include "utils/LCFitRunner.h"
 #include "utils/Logger.h"
+#include "utils/UiIcons.h"
 #include "plotting/qcustomplot.h"
 #include "views/widgets/AnsiTerminalWidget.h"
 #include "views/widgets/LCModelPreview.h"
@@ -23,6 +24,7 @@
 #include <QDoubleSpinBox>
 #include <QFile>
 #include <QFormLayout>
+#include <QFrame>
 #include <QGridLayout>
 #include <QGroupBox>
 #include <QHBoxLayout>
@@ -40,6 +42,7 @@
 #include <QSplitter>
 #include <QSpinBox>
 #include <QStackedWidget>
+#include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QStyle>
 #include <QTabWidget>
@@ -343,6 +346,14 @@ void LCFitDialog::setupUi() {
     _pages->addWidget(buildReviewPage());
     _pages->addWidget(buildRunPage());
 
+    // Disc, hot-spot and contact-phase parameters can be set free on the
+    // solver page, but lcurve only looks at them when the matching switch
+    // here is on — the free-parameter list says so as soon as it is not.
+    for (QCheckBox *gate : {_addDisc, _addSpot, _useRadii})
+        if (gate)
+            connect(gate, &QCheckBox::toggled, this,
+                    &LCFitDialog::refreshFreeParamNote);
+
     // ── Model preview beside the pages ──────────────────────────────────
     _previewPanel   = new QWidget;
     auto *previewLay = new QVBoxLayout(_previewPanel);
@@ -376,8 +387,10 @@ void LCFitDialog::setupUi() {
     auto *nav = new QHBoxLayout;
     _pageInfo = new QLabel;
     _pageInfo->setStyleSheet("color: gray;");
-    _prevBtn = new QPushButton(tr("◀  Previous"));
-    _nextBtn = new QPushButton(tr("Next  ▶"));
+    _prevBtn = new QPushButton(tr("Previous"));
+    _nextBtn = new QPushButton(tr("Next"));
+    UiIcons::apply(_prevBtn, UiIcons::Role::NavigatePrev);
+    UiIcons::applyTrailing(_nextBtn, UiIcons::Role::NavigateNext);
     _closeBtn = new QPushButton(tr("Close"));
     _closeBtn->setAutoDefault(false);
     nav->addWidget(_prevBtn);
@@ -1451,25 +1464,7 @@ QWidget *LCFitDialog::buildSolverPage() {
   mcLay->addRow(_sinIPrior);
   root->addWidget(mcBox);
 
-  auto *vBox = new QGroupBox(tr("Parameters to vary"));
-  auto *g = new QGridLayout(vBox);
-  static const QStringList keys = {
-      "q", "iangle", "r1", "r2", "velocity_scale", "t0", "t1", "t2",
-  };
-  static const QSet<QString> defaultOn = {"q",  "iangle",         "r1",
-                                          "r2", "velocity_scale", "t0"};
-  int row = 0, col = 0;
-  for (const QString &k : keys) {
-    auto *cb = new QCheckBox(k);
-    cb->setChecked(defaultOn.contains(k));
-    _vary[k] = cb;
-    g->addWidget(cb, row, col);
-    if (++col >= 4) {
-      col = 0;
-      ++row;
-    }
-  }
-  root->addWidget(vBox);
+  root->addWidget(buildVaryBox());
   root->addStretch();
 
   auto *scroll = new QScrollArea;
@@ -1482,6 +1477,269 @@ QWidget *LCFitDialog::buildSolverPage() {
   ol->setContentsMargins(0, 0, 0, 0);
   ol->addWidget(scroll);
   return outer;
+}
+
+// ── Free parameters ────────────────────────────────────────────────
+//
+// The six or so parameters an eclipsing binary is normally fitted for get a
+// permanent checkbox. Everything else lcurve can fit — disc and hot-spot
+// geometry, baseline polynomial, spins, limb-darkening coefficients … — is
+// reachable through the picker below them: choose a frozen parameter, press
+// "Add to free", and it joins the list with its own checkbox.
+QGroupBox *LCFitDialog::buildVaryBox() {
+  auto *vBox = new QGroupBox(tr("Parameters to vary"));
+  auto *vLay = new QVBoxLayout(vBox);
+
+  auto *g = new QGridLayout;
+  static const QStringList keys = {
+      "q", "iangle", "r1", "r2", "velocity_scale", "t0", "t1", "t2",
+  };
+  static const QSet<QString> defaultOn = {"q",  "iangle",         "r1",
+                                          "r2", "velocity_scale", "t0"};
+  int row = 0, col = 0;
+  for (const QString &k : keys) {
+    auto *cb = new QCheckBox(k);
+    cb->setChecked(defaultOn.contains(k));
+    if (const auto *p = LCFitPhysics::varyableParameter(k))
+      cb->setToolTip(p->description);
+    _vary[k] = cb;
+    g->addWidget(cb, row, col);
+    if (++col >= 4) {
+      col = 0;
+      ++row;
+    }
+  }
+  vLay->addLayout(g);
+
+  auto *sep = new QFrame;
+  sep->setFrameShape(QFrame::HLine);
+  sep->setFrameShadow(QFrame::Sunken);
+  vLay->addWidget(sep);
+
+  auto *pick = new QHBoxLayout;
+  _freeParamPick = new QComboBox;
+  _freeParamPick->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+  _freeParamPick->setToolTip(
+      tr("Every model parameter lcurve can fit that is currently held "
+         "fixed."));
+  _freeParamAdd = new QPushButton(tr("Add to free"));
+  _freeParamAdd->setAutoDefault(false);
+  pick->addWidget(new QLabel(tr("Frozen parameter:")));
+  pick->addWidget(_freeParamPick, 1);
+  pick->addWidget(_freeParamAdd);
+  vLay->addLayout(pick);
+
+  _extraVaryLay = new QVBoxLayout;
+  _extraVaryLay->setContentsMargins(0, 0, 0, 0);
+  _extraVaryEmpty = new QLabel(tr("No other parameters are free."));
+  _extraVaryEmpty->setStyleSheet("color: gray;");
+  _extraVaryLay->addWidget(_extraVaryEmpty);
+  vLay->addLayout(_extraVaryLay);
+
+  _extraVaryNote = new QLabel;
+  _extraVaryNote->setWordWrap(true);
+  _extraVaryNote->setStyleSheet("color: #dca84d;");
+  _extraVaryNote->hide();
+  vLay->addWidget(_extraVaryNote);
+
+  connect(_freeParamAdd, &QPushButton::clicked, this, [this] {
+    addFreeParameter(_freeParamPick->currentData().toString());
+  });
+  connect(_freeParamPick, &QComboBox::currentIndexChanged, this, [this](int) {
+    _freeParamAdd->setEnabled(!_freeParamPick->currentData().toString().isEmpty());
+  });
+  refreshFreeParamCombo();
+  return vBox;
+}
+
+// Rebuild the dropdown so it lists exactly the parameters that are not on the
+// list yet, under disabled group headers.
+void LCFitDialog::refreshFreeParamCombo() {
+  if (!_freeParamPick)
+    return;
+  const QString keep = _freeParamPick->currentData().toString();
+  QSignalBlocker blocked(_freeParamPick);
+  _freeParamPick->clear();
+
+  QString group;
+  for (const auto &p : LCFitPhysics::varyableParameters()) {
+    if (_vary.contains(p.key))
+      continue;
+    if (p.group != group) {
+      group = p.group;
+      _freeParamPick->addItem(QStringLiteral("— %1 —").arg(group));
+      const int i = _freeParamPick->count() - 1;
+      if (auto *m = qobject_cast<QStandardItemModel *>(_freeParamPick->model()))
+        if (auto *item = m->item(i))
+          item->setFlags(item->flags() &
+                         ~(Qt::ItemIsEnabled | Qt::ItemIsSelectable));
+    }
+    _freeParamPick->addItem(QStringLiteral("    %1").arg(p.key), p.key);
+    _freeParamPick->setItemData(_freeParamPick->count() - 1, p.description,
+                                Qt::ToolTipRole);
+  }
+
+  int idx = keep.isEmpty() ? -1 : _freeParamPick->findData(keep);
+  if (idx < 0)
+    for (int i = 0; i < _freeParamPick->count() && idx < 0; ++i)
+      if (!_freeParamPick->itemData(i).toString().isEmpty())
+        idx = i;
+  _freeParamPick->setCurrentIndex(idx);
+  const bool any = idx >= 0;
+  _freeParamPick->setEnabled(any);
+  if (_freeParamAdd)
+    _freeParamAdd->setEnabled(any);
+  if (!any)
+    _freeParamPick->addItem(tr("(every parameter is already listed)"));
+}
+
+void LCFitDialog::addFreeParameter(const QString &key) {
+  if (key.isEmpty() || _vary.contains(key) || !_extraVaryLay)
+    return;
+  const auto *cat = LCFitPhysics::varyableParameter(key);
+  if (!cat)
+    return;
+
+  ExtraVary ev;
+  ev.row   = new QWidget;
+  auto *rl = new QHBoxLayout(ev.row);
+  rl->setContentsMargins(0, 0, 0, 0);
+
+  ev.check = new QCheckBox(cat->key);
+  ev.check->setChecked(true);
+  ev.check->setToolTip(cat->description);
+  ev.check->setMinimumWidth(140);
+  rl->addWidget(ev.check);
+
+  if (cat->needsStartEditor) {
+    // Nothing else in the dialog sets this parameter, so its starting point
+    // and the width of the region the solver may search come from here.
+    const double vStep = std::max(cat->range / 10.0,
+                                  std::pow(10.0, -cat->decimals));
+    ev.start = mkSpin(cat->lo, cat->hi, cat->decimals, vStep, cat->start);
+    ev.start->setToolTip(tr("Starting value. lcurve rejects anything outside "
+                            "%1 … %2.")
+                             .arg(fmt(cat->lo), fmt(cat->hi)));
+    ev.range = mkSpin(0.0, std::max(cat->hi - cat->lo, cat->range),
+                      cat->decimals, vStep, cat->range);
+    ev.range->setToolTip(
+        tr("Half-width of the region the solver searches, and the scale of "
+           "the steps it takes."));
+    rl->addWidget(new QLabel(tr("start:")));
+    rl->addWidget(ev.start);
+    rl->addWidget(new QLabel(tr("±")));
+    rl->addWidget(ev.range);
+    rl->addStretch(1);
+  } else {
+    auto *note = new QLabel(tr("starting value from the Setup/Advanced pages"));
+    note->setStyleSheet("color: gray;");
+    rl->addWidget(note);
+    rl->addStretch(1);
+  }
+
+  auto *rm = new QToolButton;
+  rm->setText(QStringLiteral("✕"));
+  rm->setAutoRaise(true);
+  rm->setToolTip(tr("Freeze this parameter again and drop it from the list."));
+  rl->addWidget(rm);
+
+  // The empty-state label sits at index 0 and is hidden while rows exist.
+  _extraVaryLay->addWidget(ev.row);
+  _vary[key]      = ev.check;
+  _extraVary[key] = ev;
+
+  connect(rm, &QToolButton::clicked, this,
+          [this, key] { removeFreeParameter(key); });
+  connect(ev.check, &QCheckBox::toggled, this,
+          &LCFitDialog::refreshFreeParamNote);
+  connect(ev.check, &QCheckBox::toggled, this,
+          &LCFitDialog::schedulePreviewUpdate);
+  if (ev.start)
+    connect(ev.start, &QDoubleSpinBox::valueChanged, this,
+            &LCFitDialog::schedulePreviewUpdate);
+
+  _extraVaryEmpty->hide();
+  refreshFreeParamCombo();
+  refreshFreeParamNote();
+}
+
+void LCFitDialog::removeFreeParameter(const QString &key) {
+  const auto it = _extraVary.find(key);
+  if (it == _extraVary.end())
+    return;
+  _vary.remove(key);
+  it.value().row->deleteLater();
+  _extraVary.erase(it);
+  _extraVaryEmpty->setVisible(_extraVary.isEmpty());
+  refreshFreeParamCombo();
+  refreshFreeParamNote();
+  schedulePreviewUpdate();
+}
+
+// A free disc or hot-spot parameter is invisible to lcurve until the disc
+// or the spot itself is switched on, and the contact phases only replace the
+// radii when use_radii is off. Say so rather than let the fit come back with
+// the parameter untouched.
+void LCFitDialog::refreshFreeParamNote() {
+  if (!_extraVaryNote)
+    return;
+  using Gate = LCFitPhysics::VaryableParam::Gate;
+  QStringList disc, spot, radii;
+  for (auto it = _extraVary.cbegin(); it != _extraVary.cend(); ++it) {
+    if (!it.value().check->isChecked())
+      continue;
+    const auto *cat = LCFitPhysics::varyableParameter(it.key());
+    if (!cat)
+      continue;
+    if (cat->gate == Gate::DiscOn && _addDisc && !_addDisc->isChecked())
+      disc << it.key();
+    else if (cat->gate == Gate::SpotOn && _addSpot && !_addSpot->isChecked())
+      spot << it.key();
+    else if (cat->gate == Gate::RadiiOff && _useRadii && _useRadii->isChecked())
+      radii << it.key();
+  }
+
+  auto needs = [](const QStringList &keys, const QString &what) {
+    return (keys.size() == 1
+                ? tr("%1 does nothing until <b>%2</b> is ticked on the "
+                     "Advanced page.")
+                : tr("%1 do nothing until <b>%2</b> is ticked on the "
+                     "Advanced page."))
+        .arg(keys.join(", "), what);
+  };
+
+  QStringList msg;
+  if (!disc.isEmpty())
+    msg << needs(disc, tr("Include accretion disc"));
+  if (!spot.isEmpty())
+    msg << needs(spot, tr("Include hot spot"));
+  if (!radii.isEmpty())
+    msg << (radii.size() == 1
+                ? tr("%1 is only used with <b>Use radii</b> off on the "
+                     "Advanced page.")
+                : tr("%1 are only used with <b>Use radii</b> off on the "
+                     "Advanced page."))
+               .arg(radii.join(", "));
+  _extraVaryNote->setText(msg.join(QStringLiteral("<br>")));
+  _extraVaryNote->setVisible(!msg.isEmpty());
+}
+
+void LCFitDialog::applyFreeParamStarts(QJsonObject &mp) const {
+  for (auto it = _extraVary.cbegin(); it != _extraVary.cend(); ++it) {
+    const ExtraVary &ev = it.value();
+    if (!ev.start)
+      continue; // value comes from the page that owns the parameter
+    const double v = ev.start->value();
+    const double r = ev.range ? ev.range->value() : 0.0;
+    // lcurve's dstep is the derivative/proposal step; a fiftieth of the
+    // search width is small enough to differentiate on and large enough to
+    // clear the finite-difference noise floor.
+    const double step =
+        r > 0 ? r / 50.0 : std::max(std::abs(v) * 0.01, 1e-6);
+    mp[it.key()] = QStringLiteral("%1 %2 %3 %4 1")
+                       .arg(fmt(v, 10), fmt(r, 10), fmt(step, 10))
+                       .arg(ev.check->isChecked() ? 1 : 0);
+  }
 }
 
 QWidget *LCFitDialog::buildAdvancedPage() {
@@ -1893,8 +2151,10 @@ void LCFitDialog::showRunSection(bool plot) {
   _resultsBody->setVisible(!plot);
   _plotToggle->setChecked(plot);
   _resultsToggle->setChecked(!plot);
-  _plotToggle->setArrowType(plot ? Qt::DownArrow : Qt::RightArrow);
-  _resultsToggle->setArrowType(plot ? Qt::RightArrow : Qt::DownArrow);
+  UiIcons::apply(_plotToggle, plot ? UiIcons::Role::DisclosureExpanded
+                                   : UiIcons::Role::DisclosureCollapsed);
+  UiIcons::apply(_resultsToggle, plot ? UiIcons::Role::DisclosureCollapsed
+                                      : UiIcons::Role::DisclosureExpanded);
   _runAccordion->setStretch(1, plot ? 1 : 0);
   _runAccordion->setStretch(3, plot ? 0 : 1);
 }
@@ -2211,6 +2471,7 @@ QJsonObject LCFitDialog::buildFullConfig() const {
     if (_wlSpin)
         mpJson["wavelength"] = QString::number(_wlSpin->value(), 'f', 2);
     applyAdvancedOverrides(mpJson);
+    applyFreeParamStarts(mpJson);
     cfg["model_parameters"] = mpJson;
     return cfg;
 }

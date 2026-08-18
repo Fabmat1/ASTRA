@@ -1,0 +1,76 @@
+site_name: ASTRA
+site_description: Documentation for ASTRA, the Stellar Astrophysics Data Manager
+site_url: https://fabmat1.github.io/ASTRA/
+repo_url: https://github.com/Fabmat1/ASTRA
+repo_name: Fabmat1/ASTRA
+edit_uri: edit/main/docs/
+
+theme:
+  name: material
+  logo: assets/astra.svg
+  favicon: assets/astra.svg
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: blue
+      accent: light blue
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: blue
+      accent: light blue
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.tabs.link
+
+extra_css:
+  - stylesheets/extra.css
+
+plugins:
+  - search
+  - glightbox
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - footnotes
+  - toc:
+      permalink: true
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
+  - pymdownx.keys
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+
+nav:
+  - Home: index.md
+  - Installation: installation.md
+  - Getting Started: getting-started.md
+  - Tutorials:
+      - One Star, Start to Finish: tutorials/single-star.md
+      - Importing a Catalog: tutorials/bulk-import.md
+      - Complex Plots: tutorials/plotting.md
+  - UI Tour: ui-tour.md
+  - Workflows:
+      - Catalog Management: workflows/catalog-management.md
+      - Radial Velocities: workflows/radial-velocity.md
+      - Light Curves: workflows/light-curves.md
+      - SED & Spectral Fitting: workflows/sed-spectral.md
+  - Reference:
+      - Database & Files: reference/database.md
+      - Python Scripts: reference/scripts.md
+  - Troubleshooting & FAQ: troubleshooting.md

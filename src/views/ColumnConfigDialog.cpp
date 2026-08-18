@@ -1,5 +1,6 @@
 #include "ColumnConfigDialog.h"
 #include "models/ColumnPreset.h"
+#include "utils/UiIcons.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -67,12 +68,23 @@ void ColumnConfigDialog::setupUi()
     auto* centreWidget = new QWidget;
     auto* centreLay = new QVBoxLayout(centreWidget);
     centreLay->setAlignment(Qt::AlignCenter);
-    _addBtn      = new QPushButton("→");
-    _removeBtn   = new QPushButton("←");
-    _addAllBtn   = new QPushButton("⇒");
-    _removeAllBtn= new QPushButton("⇐");
-    for (auto* b : {_addBtn, _removeBtn, _addAllBtn, _removeAllBtn})
+    _addBtn      = new QPushButton;
+    _removeBtn   = new QPushButton;
+    _addAllBtn   = new QPushButton;
+    _removeAllBtn= new QPushButton;
+    UiIcons::apply(_addBtn,       UiIcons::Role::TransferAdd);
+    UiIcons::apply(_removeBtn,    UiIcons::Role::TransferRemove);
+    UiIcons::apply(_addAllBtn,    UiIcons::Role::TransferAddAll);
+    UiIcons::apply(_removeAllBtn, UiIcons::Role::TransferRemoveAll);
+    // The buttons are icon-only, so the tooltip carries the whole label.
+    _addBtn->setToolTip(tr("Add selected columns"));
+    _removeBtn->setToolTip(tr("Remove selected columns"));
+    _addAllBtn->setToolTip(tr("Add all columns"));
+    _removeAllBtn->setToolTip(tr("Remove all columns"));
+    for (auto* b : {_addBtn, _removeBtn, _addAllBtn, _removeAllBtn}) {
         b->setFixedWidth(44);
+        b->setAccessibleName(b->toolTip());
+    }
     centreLay->addStretch();
     centreLay->addWidget(_addAllBtn);
     centreLay->addWidget(_addBtn);
@@ -90,10 +102,16 @@ void ColumnConfigDialog::setupUi()
 
     auto* orderLay = new QVBoxLayout;
     orderLay->setAlignment(Qt::AlignCenter);
-    _upBtn   = new QPushButton("▲");
-    _downBtn = new QPushButton("▼");
-    _upBtn->setFixedWidth(36);
-    _downBtn->setFixedWidth(36);
+    _upBtn   = new QPushButton;
+    _downBtn = new QPushButton;
+    UiIcons::apply(_upBtn,   UiIcons::Role::ReorderUp);
+    UiIcons::apply(_downBtn, UiIcons::Role::ReorderDown);
+    _upBtn->setToolTip(tr("Move selected column up"));
+    _downBtn->setToolTip(tr("Move selected column down"));
+    for (auto* b : {_upBtn, _downBtn}) {
+        b->setFixedWidth(36);
+        b->setAccessibleName(b->toolTip());
+    }
     orderLay->addStretch();
     orderLay->addWidget(_upBtn);
     orderLay->addWidget(_downBtn);
