@@ -16,7 +16,7 @@
 // all existing symmetric-error code paths working unchanged.
 //
 // NOTE: a zero up/down side is a VALID value, not a defect. It means the point
-// estimate sits at (or beyond) that edge of the credible interval — e.g. an
+// estimate sits at (or beyond) that edge of the credible interval - e.g. an
 // inclination optimum at 88.7° whose posterior bulk lies lower yields
 // sigma_up = 0, sigma_down = 32.25. The solver's interval endpoints are actual
 // posterior percentiles and always respect hard physical limits (e.g. i ≤ 90°).
@@ -53,7 +53,7 @@ inline double symmetrized(double sym, double up, double down)
 
 // True when the two sides of an interval agree within relTol of the larger
 // side (both zero counts as symmetric). Such intervals should be stored as a
-// single symmetric error — their mean — with the asymmetric pair left unset.
+// single symmetric error, their mean, with the asymmetric pair left unset.
 inline bool nearlySymmetric(double up, double down, double relTol = 0.10)
 {
     if (!isSet(up) || !isSet(down)) return false;

@@ -1,5 +1,6 @@
 #include "GridSelectorWidget.h"
 #include "utils/Logger.h"
+#include "utils/UiIcons.h"
 
 #include "utils/Logger.h"
 #include <QComboBox>
@@ -252,7 +253,8 @@ void GridSelectorWidget::buildUi()
     _spinner->setVisible(false);
     bar->addWidget(_spinner);
 
-    _refreshBtn = new QPushButton(QString::fromUtf8("\xE2\x9F\xB3"));
+    _refreshBtn = new QPushButton;
+    UiIcons::apply(_refreshBtn, UiIcons::Role::Refresh);
     _refreshBtn->setToolTip("Rescan grid base paths");
     _refreshBtn->setMaximumWidth(30);
     bar->addWidget(_refreshBtn);

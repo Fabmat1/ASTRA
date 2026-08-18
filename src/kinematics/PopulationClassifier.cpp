@@ -6,7 +6,7 @@
 
 namespace GalKin {
 
-// Anguiano et al. (2020), Table 4 — chemically separated populations,
+// Anguiano et al. (2020), Table 4 - chemically separated populations,
 // galactocentric (U,V,W); same numbers as Table 1 of the thesis.
 const double PopulationClassifier::kMean[3][3] = {
     {-0.25, 229.43, 0.02},  // thin disk
@@ -184,7 +184,7 @@ PopulationFit PopulationClassifier::fit(const std::vector<VelocityInput>& stars,
             const auto& s = stars[p.idx];
             // MC draws use zero measurement variance in the density: the
             // uncertainty is represented by the scatter of the draws (thesis
-            // §3.3 — "recalculated using the fixed GMM parameters").
+            // §3.3 - "recalculated using the fixed GMM parameters").
             const double zeroVar[3] = {0, 0, 0};
             double sum[3] = {0, 0, 0}, sum2[3] = {0, 0, 0};
             for (int j = 0; j < mcSamples; ++j) {

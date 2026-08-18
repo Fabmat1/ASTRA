@@ -4,6 +4,7 @@
 #include "models/Star.h"
 #include "plotting/qcustomplot.h"
 #include "utils/WheelGuard.h"
+#include "utils/UiIcons.h"
 #include "views/panels/PanelUtils.h"
 
 #include <QCheckBox>
@@ -64,7 +65,7 @@ void histogramSteps(const std::vector<double>& values, double lo, double hi,
     // Each series is scaled to its own peak rather than to a shared density.
     // A narrow M1 gaussian has an enormous peak density next to a broad uniform
     // M2, and on a shared scale the companion distribution would collapse onto
-    // the axis. The preview is about shape — its y axis carries no tick labels.
+    // the axis. The preview is about shape - its y axis carries no tick labels.
     const double peak = *std::max_element(counts.begin(), counts.end());
     if (peak <= 0.0) return;
 
@@ -85,7 +86,7 @@ QString formatThreshold(double t)
     return QString::number(t, 'g', 4);
 }
 
-// Identifier for bookkeeping only — the aggregate result never shows it. Alias
+// Identifier for bookkeeping only - the aggregate result never shows it. Alias
 // first, but ASTRA leaves plenty of stars on a literal "-", so fall through to
 // the source id and finally the UUID rather than labelling them all alike.
 QString starLabel(const Star& star)
@@ -124,7 +125,7 @@ RVDetectabilityDialog::RVDetectabilityDialog(
 RVDetectabilityDialog::~RVDetectabilityDialog()
 {
     // The worker holds raw pointers into this dialog only through queued calls,
-    // which Qt drops when the receiver dies — but the run itself must be told to
+    // which Qt drops when the receiver dies, but the run itself must be told to
     // stop before the members it reads go away.
     _cancelRequested.store(true, std::memory_order_relaxed);
 }
@@ -168,6 +169,7 @@ void RVDetectabilityDialog::setupUi()
     _exportPlotButton = new QPushButton(tr("Export Plot..."), this);
     _exportPlotButton->setEnabled(false);
     auto* closeButton = new QPushButton(tr("Close"), this);
+    UiIcons::apply(closeButton, UiIcons::Role::Dismiss);
 
     buttonRow->addWidget(_runButton);
     buttonRow->addWidget(_cancelButton);
@@ -409,7 +411,7 @@ QGroupBox* RVDetectabilityDialog::buildMonteCarloGroup()
     _tolSpin->setToolTip(
         tr("Target on the worst per-bin standard error.\n"
            "Reaching tolerance t needs about 0.25/t^2 curves per bin, summed\n"
-           "over all stars — with many stars that is only a few batches."));
+           "over all stars. With many stars that is only a few batches."));
     form->addRow(tr("Tolerance:"), _tolSpin);
 
     _maxTrialsSpin = new QSpinBox(group);
@@ -449,7 +451,7 @@ QGroupBox* RVDetectabilityDialog::buildAdvancedGroup()
     _sigmaScaleSpin->setSingleStep(0.1);
     _sigmaScaleSpin->setValue(1.0);
     _sigmaScaleSpin->setToolTip(
-        tr("Multiply every RV uncertainty by this factor — the quick way to\n"
+        tr("Multiply every RV uncertainty by this factor: the quick way to\n"
            "test how the result depends on the error budget."));
     form->addRow(tr("Sigma scale:"), _sigmaScaleSpin);
 
@@ -473,7 +475,7 @@ QGroupBox* RVDetectabilityDialog::buildAdvancedGroup()
     _seedSpin = new QSpinBox(group);
     _seedSpin->setRange(0, 2000000000);
     _seedSpin->setValue(1234);
-    _seedSpin->setToolTip(tr("RNG seed — the same seed reproduces the same run."));
+    _seedSpin->setToolTip(tr("RNG seed. The same seed reproduces the same run."));
     form->addRow(tr("Seed:"), _seedSpin);
 
     _threadsSpin = new QSpinBox(group);
@@ -514,7 +516,7 @@ RVDetectabilityDialog::gatherEpochs(int* starsWithoutRV) const
 
     for (const auto& star : sample) {
         if (!star) continue;
-        // Lazily loads from the database — GUI thread only.
+        // Lazily loads from the database - GUI thread only.
         auto curve = star->getRVCurve();
         if (!curve) { ++without; continue; }
 

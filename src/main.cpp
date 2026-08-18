@@ -3,6 +3,7 @@
 #include "controllers/ApplicationController.h"
 #include "utils/Logger.h"
 #include "utils/AppPaths.h"
+#include "utils/UiIcons.h"
 #include "utils/WindowSizing.h"
 #include "fitting/FitTypes.h"
 #include "fitting/FitBackendRegistry.h"
@@ -21,6 +22,10 @@ int main(int argc, char *argv[])
     // Keeps dialogs whose content grows after construction from pushing their
     // own window past the edge of the screen.
     WindowSizing::installScreenGuard(&app);
+
+    // Dialog button boxes otherwise pick up Ok/Cancel/Close icons from the
+    // desktop icon theme, which matches nothing else in ASTRA.
+    UiIcons::installDialogButtonIcons(&app);
 
     QFontDatabase::addApplicationFont(":/fonts/FiraCode-Regular.ttf");
     QFontDatabase::addApplicationFont(":/fonts/FiraCode-Medium.ttf");

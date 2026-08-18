@@ -4,6 +4,7 @@
 #include "utils/AppPaths.h"
 #include "utils/AppSettings.h"
 #include "utils/IsisEnvironment.h"
+#include "utils/UiIcons.h"
 
 #include <QCloseEvent>
 #include <QDir>
@@ -347,6 +348,7 @@ InteractiveIsisDialog::InteractiveIsisDialog(const SpectralFitJob& job,
 
     _hotkeyToggle = new QCheckBox("Hotkey mode");
     _closeBtn     = new QPushButton("Close");
+    UiIcons::apply(_closeBtn, UiIcons::Role::Dismiss);
     _stopBtn->setEnabled(false);
     _hotkeyToggle->setToolTip(
         "Send each keystroke to ISIS as its own line, for 'hotkeys;' sessions.");

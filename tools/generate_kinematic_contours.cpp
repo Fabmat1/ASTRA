@@ -17,7 +17,7 @@
 // quotes no φz term, as expected from Galactic-plane symmetry).
 //
 // All contours enclose 86.47% (1 − e⁻²) of the probability mass in their
-// plane — the mass of a 2σ Mahalanobis ellipse of a 2D Gaussian:
+// plane - the mass of a 2σ Mahalanobis ellipse of a 2D Gaussian:
 //   uv_{thin,thick,halo}.csv      V,U   2σ ellipse of the (U,V) marginal
 //   wv_{thin,thick,halo}.csv      V,W   2σ ellipse of the (V,W) marginal
 //   uw_{thin,thick,halo}.csv      U,W   2σ ellipse of the (U,W) marginal
@@ -122,7 +122,7 @@ void writeCsv(const std::string& dir, const std::string& name,
 std::string headerFor(const std::string& diagram, int pop,
                       const std::string& what, const std::string& columns)
 {
-    return "# " + diagram + " contour, " + kPopName[pop] + " — " + what +
+    return "# " + diagram + " contour, " + kPopName[pop] + " - " + what +
            "\n"
            "# of the Anguiano et al. (2020) velocity distribution "
            "(classifier\n"
@@ -246,7 +246,7 @@ std::vector<std::array<double, 2>> toomreContour(int pop, int nV)
     auto density = [&](double v, double s) {
         return toomreDensity(g, v, s, NTH);
     };
-    // coarse sup_s p(v, s) — only used to bracket the contour's V extent
+    // coarse sup_s p(v, s) - only used to bracket the contour's V extent
     auto maxOverS = [&](double v) {
         double best = 0.0;
         for (int j = 1; j <= 300; ++j)

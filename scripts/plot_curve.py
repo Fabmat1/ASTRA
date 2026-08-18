@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Plot the phase-folded RV curve of an ASTRA star — and, if available,
+Plot the phase-folded RV curve of an ASTRA star - and, if available,
 its lightcurves folded and synchronized to the same ephemeris.
 
 Usage:
@@ -158,7 +158,7 @@ def plot_rv_and_lightcurves(
     if fit_overrides:
         fit.update(fit_overrides)
     if fit["period"] <= 0:
-        print("Fit has no valid period — cannot phase-fold.")
+        print("Fit has no valid period - cannot phase-fold.")
         return None
 
     period = fit["period"]

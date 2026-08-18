@@ -289,7 +289,7 @@ KeplerianErrors sampleKeplerian(const std::vector<double>& t,
 {
     KeplerianErrors out;
     const int N = int(t.size());
-    constexpr int NP = 6;   // x = (P, K, γ, φ, e, ω) — keplerLM's ordering
+    constexpr int NP = 6;   // x = (P, K, γ, φ, e, ω) - keplerLM's ordering
     if (N < NP || !(Pbest > 0.0) || !(Kbest >= 0.0)) return out;
     const bool usePrior = (sigP > 0.0) && std::isfinite(sigP) && (P0 > 0.0);
     if (eMin < 0.0) eMin = 0.0;

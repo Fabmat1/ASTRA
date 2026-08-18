@@ -324,7 +324,7 @@ def load_best_fit(conn, curve_id):
 
 
 # --------------------------------------------------------------------
-#  RV model — must mirror RVFit in src/models/RadialVelocity.cpp
+#  RV model - must mirror RVFit in src/models/RadialVelocity.cpp
 # --------------------------------------------------------------------
 
 def fit_is_eccentric(fit):

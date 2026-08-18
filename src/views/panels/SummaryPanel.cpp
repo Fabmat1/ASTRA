@@ -226,8 +226,8 @@ double solveCompanionMass(double f, double M1, double sini) {
     // Fixed-point pre-iteration  M2 = cbrt(fp·(M1+M2)²).  Its derivative at the
     // root is (2/3)·M2/(M1+M2) < 1, so it is a contraction that climbs to the
     // root monotonically from below for *any* seed. A bare Newton step, by
-    // contrast, overshoots into M2 < 0 for massive companions (q ≳ 1) — the
-    // seed lands left of the curve's minimum where g is still decreasing — and
+    // contrast, overshoots into M2 < 0 for massive companions (q ≳ 1) - the
+    // seed lands left of the curve's minimum where g is still decreasing, and
     // the old clamp then trapped it at ~1e-6 (i.e. a spurious M2 ≈ 0).
     double M2 = std::cbrt(fp) * std::cbrt(M1 * M1); // small-M2 seed
     for (int i = 0; i < 80; ++i) {
@@ -290,13 +290,13 @@ double propagateM2Error(double P, double eP, double K, double eK, double M1,
 // As soon as an input carries an asymmetric interval, linearised Gaussian
 // propagation is biased (and adding per-side errors in quadrature is worse,
 // Barlow 2003). Instead each input's posterior is reconstructed from
-// (v, σ₊, σ₋) as a two-piece ("dimidiated") Gaussian — z ~ N(0,1) scaled by
+// (v, σ₊, σ₋) as a two-piece ("dimidiated") Gaussian - z ~ N(0,1) scaled by
 // σ₊ above the centre and σ₋ below it. Unlike the continuous split normal,
 // this reproduces the stored 15.9/50/84.1 percentiles *exactly*, which is
 // precisely the information (v, σ₊, σ₋) encodes. Inputs are drawn jointly
 // (independently of each other) and the target is evaluated per draw; the
 // returned up/down are the distances from `central` to the 84.1/15.9
-// percentiles — the same convention the fit solvers use. Bounded inputs
+// percentiles - the same convention the fit solvers use. Bounded inputs
 // are redrawn until they land inside their physical range (truncation).
 class SplitNormalMC {
   public:
@@ -2339,7 +2339,7 @@ QWidget *SummaryPanel::createGalacticSection() {
         vl->setSpacing(6);
         vl->addWidget(grid);
         QLabel *note = new QLabel(
-            tr("Imported values — astrometry/RV incomplete, cannot recompute."));
+            tr("Imported values: astrometry/RV incomplete, cannot recompute."));
         note->setWordWrap(true);
         note->setStyleSheet(QString("font-size: 10px; color: %1; background: "
                                     "transparent; border: none; font-style: italic;")

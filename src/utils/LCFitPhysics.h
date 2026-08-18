@@ -91,7 +91,7 @@ QMap<QString, QString> buildModelParameters(const ModelInputs &in);
 // flag at all, and star spots, which ASTRA does not configure.
 struct VaryableParam {
   /// Switch on the Advanced page lcurve needs before it so much as looks at
-  /// the parameter — freeing a gated-off one costs nothing and achieves
+  /// the parameter - freeing a gated-off one costs nothing and achieves
   /// nothing.
   enum class Gate { None, DiscOn, SpotOn, RadiiOff };
 

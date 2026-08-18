@@ -619,7 +619,7 @@ void ProjectView::onStarDoubleClicked(const QModelIndex& index)
                 break;
             }
         }
-        // Only restore when the star was part of that selection — clicking a
+        // Only restore when the star was part of that selection - clicking a
         // row outside it is a deliberate move to a new single-row selection.
         if (doubleClickedInside)
             _starTable->selectionModel()->select(
@@ -862,7 +862,7 @@ void ProjectView::onComputeGalacticKinematics()
     }
 
     // ── which stars, and what to compute ────────────────────────────────────
-    // Everything below — including the EM population fit — runs on exactly
+    // Everything below, including the EM population fit, runs on exactly
     // the chosen sample.
     auto allStars      = _currentProject->getAllStars();
     auto filteredStars = getFilteredStars();
@@ -997,7 +997,7 @@ void ProjectView::onComputeGalacticKinematics()
         }
     }
 
-    // EM classification over the chosen sample only — the mixing weights are
+    // EM classification over the chosen sample only - the mixing weights are
     // fitted to exactly these stars, so the memberships are relative to the
     // sample rather than to the whole project. Uses stored UVW, so it also
     // covers stars whose velocities were computed in an earlier run.

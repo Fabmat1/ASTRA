@@ -419,7 +419,7 @@ std::shared_ptr<RVFit> RVMCMCResultsDialog::fitFromSubChain(
         double err = 0.5 * (q84 - q16);
         // Asymmetric 1σ bounds: distances from the median to the 15.9/84.1
         // posterior percentiles (AsymErr convention). Sides that agree within
-        // 10% collapse to a single symmetric error — their mean.
+        // 10% collapse to a single symmetric error - their mean.
         double up   = std::max(0.0, q84 - med);
         double down = std::max(0.0, med - q16);
         if (AsymErr::nearlySymmetric(up, down)) {

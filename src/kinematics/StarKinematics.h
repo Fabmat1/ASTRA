@@ -25,7 +25,7 @@ enum class RVSource { None, OrbitGamma, Median, Average, MidRange };
 // fallback chain (orbit γ → median → average); the specific choices fail
 // (no silent fallback) when that source is unavailable on the star.
 // MidRange = (max + min)/2 of the active RV curve points, i.e. the middle
-// between peak and trough — useful for well-sampled binaries without an
+// between peak and trough - useful for well-sampled binaries without an
 // orbit fit. Values are persisted in QSettings, keep them stable.
 enum class RVPreference {
     Auto = 0,
@@ -46,7 +46,7 @@ bool kinematicsInputFromStar(Star& star, KinematicsInput& in,
                              RVPreference rvPref = RVPreference::Auto);
 
 // Compute UVW/XYZ for the star and store them on the model (does not
-// persist to the DB — callers decide via persistSummary()/updateStarRow()).
+// persist to the DB - callers decide via persistSummary()/updateStarRow()).
 // Returns false when inputs are missing or the computation failed.
 // Values are only touched when the result is valid; returns true also when
 // nothing changed (idempotent).
@@ -57,7 +57,7 @@ bool computeAndStoreUVWXYZ(Star& star,
 
 // Orbit parameters: integrate the MC orbit sample and store J_z (positive =
 // prograde, from the current-state MC) and the orbital eccentricity on the
-// star (gal_jz / gal_ecc fields). Slower than computeAndStoreUVWXYZ — each
+// star (gal_jz / gal_ecc fields). Slower than computeAndStoreUVWXYZ - each
 // MC realization is integrated for |tEndMyr|. Parallelized over samples.
 bool computeAndStoreOrbitParams(Star& star,
                                 GalacticPotential::Model model =

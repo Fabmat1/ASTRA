@@ -471,7 +471,7 @@ const QVector<VaryableParam> &varyableParameters() {
   // Grouped in the order the picker shows them. `managed` parameters take
   // their starting value from the setup or advanced pages; `standalone` ones
   // have no editor anywhere else, so they carry their own start and search
-  // range, seeded with a value lcurve considers legal — several of them
+  // range, seeded with a value lcurve considers legal - several of them
   // default to 0, which lcurve rejects outright once they are free.
   static const QVector<VaryableParam> params = [] {
     QVector<VaryableParam> v;
@@ -511,7 +511,7 @@ const QVector<VaryableParam> &varyableParameters() {
             QObject::tr("Radius of star 2 in units of the orbital "
                         "separation."));
     managed("velocity_scale", geom,
-            QObject::tr("K₁+K₂ in km/s — sets the absolute scale of the "
+            QObject::tr("K₁+K₂ in km/s. Sets the absolute scale of the "
                         "system."));
     standalone("cphi3", geom,
                QObject::tr("Third-contact phase. Used only when the model is "
@@ -572,7 +572,7 @@ const QVector<VaryableParam> &varyableParameters() {
             QObject::tr("Quadratic term of the baseline trend."));
     managed("cube", base, QObject::tr("Cubic term of the baseline trend."));
     managed("third", base,
-            QObject::tr("Third light — flux from a source that is neither "
+            QObject::tr("Third light: flux from a source that is neither "
                         "star."));
 
     const QString disc = QObject::tr("Accretion disc");

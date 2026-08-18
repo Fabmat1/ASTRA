@@ -55,7 +55,7 @@ StateVector celestialToGalactic(const CelestialInput& in,
                                 const FrameParams& fp);
 
 // Heliocentric UVW [km/s] (no solar-motion/LSR correction), U positive
-// towards the Galactic centre — matches the Star model convention.
+// towards the Galactic centre - matches the Star model convention.
 Vec3 heliocentricUVW(const CelestialInput& in);
 
 // Galactocentric velocity components of a state vector:

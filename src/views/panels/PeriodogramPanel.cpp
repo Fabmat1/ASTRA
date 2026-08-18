@@ -5,6 +5,7 @@
 #include "db/DatabaseManager.h"
 #include "models/PeriodogramRecord.h"
 #include "views/widgets/ShimmerWidget.h"
+#include "utils/UiIcons.h"
 
 #include <QResizeEvent>
 #include <QTimer>
@@ -83,6 +84,7 @@ void PeriodogramPanel::setupUi()
     tb->addWidget(_progress);
 
     _cancelBtn = new QPushButton("Cancel");
+    UiIcons::apply(_cancelBtn, UiIcons::Role::Dismiss);
     _cancelBtn->setVisible(false);
     connect(_cancelBtn, &QPushButton::clicked, this, &PeriodogramPanel::cancelCompute);
     tb->addWidget(_cancelBtn);

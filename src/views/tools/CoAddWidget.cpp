@@ -87,8 +87,8 @@ void CoAddWidget::setupUi()
     // which fit the data is taken from changes the normalization itself.
     _fitSourceCombo = new QComboBox;
     _fitSourceCombo->setToolTip(
-        tr("Which model fit each spectrum's normalized data — rebinned flux "
-           "and continuum spline — is taken from.\n"
+        tr("Which model fit each spectrum's normalized data (rebinned flux "
+           "and continuum spline) is taken from.\n"
            "\"Best fit\" uses whichever fit each spectrum is tagged with; "
            "picking a grid uses that grid's fit for every spectrum."));
     optForm->addRow(tr("Normalization from:"), _fitSourceCombo);
@@ -407,7 +407,7 @@ QString CoAddWidget::describe(const std::shared_ptr<Spectrum>& s) const
         if (R > 0.0) parts << QString("R≈%1").arg(R, 0, 'f', 0);
     }
 
-    // Which fit supplies the normalization — worth showing, since it decides
+    // Which fit supplies the normalization - worth showing, since it decides
     // the continuum spline and so the normalized flux itself.
     if (auto fit = pickFit(s)) {
         parts << (fit->modelId.isEmpty()
@@ -475,7 +475,7 @@ void CoAddWidget::recompute()
 
         _provenance << QString("%1  [normalization: %2, fit %3]")
             .arg(in.label,
-                 fit->modelId.isEmpty() ? QStringLiteral("—") : fit->modelId,
+                 fit->modelId.isEmpty() ? QStringLiteral("-") : fit->modelId,
                  fit->getId().left(8));
         inputs.push_back(std::move(in));
     }

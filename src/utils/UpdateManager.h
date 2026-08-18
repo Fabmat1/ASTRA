@@ -29,8 +29,8 @@ struct UpdateInfo {
 /// know how to replace, downloads, verifies and installs the new version.
 ///
 /// Two install targets are supported:
-///   • Linux  — the AppImage we were launched from is swapped in place.
-///   • macOS  — the .dmg is mounted and the new ASTRA.app replaces the bundle
+///   • Linux  - the AppImage we were launched from is swapped in place.
+///   • macOS  - the .dmg is mounted and the new ASTRA.app replaces the bundle
 ///              we are running from. When that bundle is not writable (e.g. it
 ///              belongs to another admin user), the download is handed to the
 ///              Finder instead via manualInstallRequired().

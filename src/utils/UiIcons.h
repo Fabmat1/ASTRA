@@ -4,6 +4,8 @@
 #include <QIcon>
 
 class QAbstractButton;
+class QDialogButtonBox;
+class QObject;
 
 // Themed, semantic UI icons.
 //
@@ -45,6 +47,27 @@ enum class Role {
 
     // Exchange two things (e.g. swap plot axes).
     Swap,
+
+    // Commit / dismiss. Accept is the same checkmark the themed checkbox
+    // indicator draws, so "OK" reads as the same gesture as ticking a box.
+    Accept,
+    Dismiss,
+
+    // Drop one entry from an editable list (a filter condition, an ignore
+    // region, a free parameter). Deliberately shares Dismiss' art: both mean
+    // "make this go away", and one glyph for one concept is the point.
+    Remove,
+
+    // Re-run a query or rescan a source (Gaia lookup, grid rescan).
+    Refresh,
+
+    // Two states of an inline on/off toggle, e.g. the enable switch on a
+    // filter row. On borrows the checkmark; Off is the empty ring.
+    ToggleOn,
+    ToggleOff,
+
+    // Edit the thing this button sits next to.
+    Edit,
 };
 
 // Themed icon for `role`, rendered at `px` logical pixels.
@@ -62,6 +85,22 @@ void apply(QAbstractButton* button, Role role, int px = 16);
 // combined with the RTL-aware roles the arrow still points along the reading
 // direction and still trails the text under RTL.
 void applyTrailing(QAbstractButton* button, Role role, int px = 16);
+
+// Give one QDialogButtonBox's buttons their ASTRA icons right now.
+//
+// Qt asks the platform style whether dialog buttons carry icons, and on the
+// desktops that say yes the icons come from the *desktop's* icon theme - so
+// "Close" and "Cancel" arrive as Adwaita/Breeze glyphs that match nothing else
+// in ASTRA. This replaces those with the themed :/icons/ set and strips the
+// icon off any standard button we have no glyph for, so a button box is never
+// half ASTRA and half desktop theme. Buttons added by the caller are matched
+// on their accept/reject role; every other role is left alone.
+void applyDialogButtons(QDialogButtonBox* box);
+
+// Install an application-wide filter that runs applyDialogButtons() on every
+// QDialogButtonBox as it is shown, including the ones QMessageBox builds for
+// itself. Install once on the QApplication before any window is shown.
+void installDialogButtonIcons(QObject* app);
 
 // Drop the icon cache and re-apply icons to every button passed to apply().
 // ThemeManager calls this after a new stylesheet is installed.

@@ -3,7 +3,7 @@
 // High-level galactic-kinematics driver: builds Monte-Carlo realizations of
 // the astrometric input parameters (with Gaia correlations or asymmetric
 // two-piece-Gaussian errors), transforms them to the galactocentric frame,
-// and derives UVW/XYZ (with percentile errors) and — optionally — orbit
+// and derives UVW/XYZ (with percentile errors) and, optionally, orbit
 // statistics (boundness, rmin/rmax/zmax, eccentricity, escape velocity) by
 // integrating each realization in a Milky-Way potential.
 //

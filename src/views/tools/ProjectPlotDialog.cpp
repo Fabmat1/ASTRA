@@ -901,6 +901,7 @@ QWidget* ProjectPlotDialog::buildControlPanel()
     presetsBtn->setToolTip(tr("Save the current plot configuration as a preset "
                               "or load a saved one"));
     auto* closeBtn = new QPushButton(tr("Close"), panel);
+    UiIcons::apply(closeBtn, UiIcons::Role::Dismiss);
     btnRow->addWidget(exportBtn);
     btnRow->addWidget(presetsBtn);
     btnRow->addStretch();
@@ -2816,6 +2817,7 @@ public:
         auto* saveBtn  = new QPushButton(tr("Save current plot as preset…"), this);
         _deleteBtn     = new QPushButton(tr("Delete"), this);
         auto* closeBtn = new QPushButton(tr("Close"), this);
+        UiIcons::apply(closeBtn, UiIcons::Role::Dismiss);
         _loadBtn->setDefault(true);
         btnRow->addWidget(_loadBtn);
         btnRow->addWidget(saveBtn);

@@ -71,7 +71,7 @@ private:
     double _gamma;             // AS halo exponent
     double _cutoff;            // AS halo cutoff radius
 
-    // dΦ/dr / r for the halo (spherical part), in model units — multiplying
+    // dΦ/dr / r for the halo (spherical part), in model units - multiplying
     // by a coordinate gives the gradient component.
     double haloGradOverR(double r2) const;
     double haloPotential(double r) const;

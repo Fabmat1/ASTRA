@@ -245,8 +245,8 @@ bool extractNormalized(const std::shared_ptr<SpectralFit>& fit,
         if (!wl.empty() && mWl[i] <= wl.back()) continue;
 
         // Unusable samples are masked in place rather than removed. Deleting
-        // them would leave the surrounding bin edges — which come from the
-        // midpoints of this grid — spanning the hole, smearing good flux
+        // them would leave the surrounding bin edges, which come from the
+        // midpoints of this grid, spanning the hole, smearing good flux
         // across it. A NaN simply contributes nothing downstream.
         //
         // modelIgnore == 0 marks the ranges excluded from the fit (tellurics,
@@ -308,7 +308,7 @@ CoaddResult coadd(const std::vector<CoaddInput>& inputs,
 
     if (!unknownR.isEmpty()) {
         out.warnings << QObject::tr(
-            "No resolution is configured for %1 — passed through undegraded.")
+            "No resolution is configured for %1, so it is passed through undegraded.")
             .arg(unknownR.join(QStringLiteral(", ")));
     }
     if (knownR.size() > 1) {
@@ -327,8 +327,8 @@ CoaddResult coadd(const std::vector<CoaddInput>& inputs,
     out.inverseVarianceWeighted = useIvar;
     if (!useIvar) {
         out.warnings << QObject::tr(
-            "At least one spectrum carries no flux errors — combining with an "
-            "unweighted mean instead of inverse-variance weights.");
+            "At least one spectrum carries no flux errors, so they are combined with "
+            "an unweighted mean instead of inverse-variance weights.");
     }
 
     // ── Per-spectrum preparation: degrade, then shift ───────────────────────
@@ -361,8 +361,8 @@ CoaddResult coadd(const std::vector<CoaddInput>& inputs,
 
     if (!missingRv.isEmpty()) {
         out.warnings << QObject::tr(
-            "No fitted radial velocity for %1 — stacked without a rest-frame "
-            "shift.").arg(missingRv.join(QStringLiteral(", ")));
+            "No fitted radial velocity for %1, so it is stacked without a "
+            "rest-frame shift.").arg(missingRv.join(QStringLiteral(", ")));
     }
 
     // ── Output grid: uniform in ln λ over the union of the coverages ────────

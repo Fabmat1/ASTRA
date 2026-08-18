@@ -5,6 +5,7 @@
 #include "models/Star.h"
 #include "plotting/qcustomplot.h"
 #include "utils/Logger.h"
+#include "utils/UiIcons.h"
 #include "views/panels/PanelUtils.h"
 #include "views/widgets/SquarePlotFrame.h"
 
@@ -44,7 +45,7 @@ namespace {
 QString fmtDist(const ValueDist& d, int prec, const QString& unit)
 {
     if (!d.valid)
-        return "—";
+        return "-";
     QString s = QString::number(d.value, 'f', prec);
     if (d.errUp > 0.0 || d.errDown > 0.0) {
         if (std::abs(d.errUp - d.errDown) <
@@ -93,7 +94,7 @@ GalacticOrbitDialog::~GalacticOrbitDialog()
 
 void GalacticOrbitDialog::setupUi()
 {
-    setWindowTitle(QString("Galactic Orbit — %1").arg(
+    setWindowTitle(QString("Galactic Orbit - %1").arg(
         _star->getAlias().isEmpty() ? _star->getSourceId() : _star->getAlias()));
     resize(1250, 800);
 
@@ -114,11 +115,11 @@ void GalacticOrbitDialog::setupUi()
     inputForm->addRow(_inputSummary);
 
     _modelCombo = new QComboBox;
-    _modelCombo->addItem("Model I — Allen && Santillan (rev.)",
+    _modelCombo->addItem("Model I: Allen && Santillan (rev.)",
                          int(GalacticPotential::Model::AS));
-    _modelCombo->addItem("Model II — MN disc + flat halo",
+    _modelCombo->addItem("Model II: MN disc + flat halo",
                          int(GalacticPotential::Model::MN_TF));
-    _modelCombo->addItem("Model III — MN disc + NFW halo",
+    _modelCombo->addItem("Model III: MN disc + NFW halo",
                          int(GalacticPotential::Model::MN_NFW));
     inputForm->addRow("Potential:", _modelCombo);
 
@@ -197,6 +198,7 @@ void GalacticOrbitDialog::setupUi()
     leftLayout->addWidget(resultsBox, 1);
 
     _saveButton = new QPushButton("Save Kinematics to Star");
+    UiIcons::apply(_saveButton, UiIcons::Role::Accept);
     _saveButton->setToolTip(
         "Stores UVW/XYZ, J_z, eccentricity (when computed) and the\n"
         "population membership probabilities on the star.");
@@ -599,7 +601,7 @@ void GalacticOrbitDialog::onComputeOrbit()
     auto* watcher = _watcher;
 
     // results are written by the worker and consumed on the GUI thread only
-    // after finished() — no concurrent access.
+    // after finished() - no concurrent access.
     auto trajectories = std::make_shared<std::vector<Trajectory>>();
     auto sunTraj      = std::make_shared<Trajectory>();
     auto nominal      = std::make_shared<OrbitSummary>();
@@ -751,7 +753,7 @@ void GalacticOrbitDialog::onSaveToStar()
         _star->persistSummary();
 
     emit kinematicsSaved();
-    _saveButton->setText("Saved ✓");
+    _saveButton->setText("Saved");
     QTimer::singleShot(1500, this, [this]() {
         _saveButton->setText("Save Kinematics to Star");
     });
@@ -1054,7 +1056,7 @@ void GalacticOrbitDialog::replot2D()
             t->setColor(c);
             t->setFont(QFont(font().family(), 12, QFont::Bold));
         };
-        // GC at origin, Sun at its current position — only meaningful for
+        // GC at origin, Sun at its current position - only meaningful for
         // spatial axes; harmless otherwise, so gate on those.
         auto value0 = [&](Quantity q, bool sun) -> double {
             const double sunX = _sunTrajectory.size() ? _sunTrajectory.x[0] : -8.4;
@@ -1162,7 +1164,7 @@ void GalacticOrbitDialog::replotCube()
     addSeg(-c, c, 0, -c, -c, 0, edgeColor, 0.7, Qt::DashLine);
 
     // Long integrations record up to ~4000 points per orbit, and long
-    // orbits fill the cube with long antialiased segments — repainting all
+    // orbits fill the cube with long antialiased segments - repainting all
     // of that on every drag tick makes the rotation rubber-band. While
     // dragging, thin each curve to ~1200 points (plus the last one); the
     // full-resolution frame is repainted on release.
@@ -1170,7 +1172,7 @@ void GalacticOrbitDialog::replotCube()
         return _cubeDragging ? std::max<size_t>(1, n / 1200) : size_t(1);
     };
 
-    // wall projections of the orbit (xy floor, xz and yz rear walls) — the
+    // wall projections of the orbit (xy floor, xz and yz rear walls) - the
     // "shadows" of the classic ISIS cube plot
     auto addProjected = [&](const Trajectory& tr, int wall, const QColor& col,
                             double w) {
@@ -1382,9 +1384,9 @@ void GalacticOrbitDialog::replotBoundness()
 namespace {
 
 // population colors (matplotlib C0/C1/C2, as in the thesis figures)
-const QColor kPopColor[3] = {QColor(31, 119, 180),   // thin disk — blue
-                             QColor(255, 127, 14),   // thick disk — orange
-                             QColor(44, 160, 44)};   // halo — green
+const QColor kPopColor[3] = {QColor(31, 119, 180),   // thin disk - blue
+                             QColor(255, 127, 14),   // thick disk - orange
+                             QColor(44, 160, 44)};   // halo - green
 
 // desaturate a population color toward grey for uncertain memberships:
 // certainty 1 → full color, certainty 0 (p = 1/3) → grey
@@ -1435,7 +1437,7 @@ DiagPoint velocityDiagPoint(GalKin::Diagram dia, double U, double eU,
                 ? std::sqrt(Ugc * Ugc * eU * eU + Wgc * Wgc * eW * eW) / p.y
                 : std::hypot(eU, eW);
         p.eyUp = e;
-        // √(U²+W²) ≥ 0 — the linearized error can exceed the value near the
+        // √(U²+W²) ≥ 0 - the linearized error can exceed the value near the
         // origin; truncate the lower bar at zero instead of going unphysical
         p.eyDown = std::min(e, p.y);
         break;
@@ -1534,7 +1536,7 @@ void GalacticOrbitDialog::runPopulationFit()
                            .arg(m.pHalo, 0, 'f', 2)
                            .arg(m.ePHalo, 0, 'f', 2);
             else
-                self = "Current star has no UVW yet — run the integration "
+                self = "Current star has no UVW yet, run the integration "
                        "(or the bulk kinematics) first.&nbsp; ";
             _popSummary->setText(
                 self +

@@ -102,7 +102,7 @@ void spectresResample(const std::vector<double>& wl,
 
 /// Convolve to a lower resolving power. At each λ the kernel FWHM is
 /// √((λ/R_target)² − (λ/R_native(λ))²); where that is not positive the sample
-/// is passed through. `sigma` is propagated assuming independent pixels — an
+/// is passed through. `sigma` is propagated assuming independent pixels - an
 /// approximation, since the convolution correlates neighbours.
 /// Non-finite samples are masked: they neither contribute to their neighbours
 /// nor get filled in from them.

@@ -1,6 +1,7 @@
 #include "LightcurveFetchSessionsDialog.h"
 
 #include "views/widgets/AnsiTerminalWidget.h"
+#include "utils/UiIcons.h"
 
 #include <QCheckBox>
 #include <QDialogButtonBox>
@@ -26,8 +27,8 @@ QString stateGlyph(LightcurveFetchService::State s)
     switch (s) {
         case State::Queued:    return QStringLiteral("◌");
         case State::Running:   return QStringLiteral("▶");
-        case State::Finished:  return QStringLiteral("✔");
-        case State::Failed:    return QStringLiteral("✘");
+        case State::Finished:  return QStringLiteral("✓");
+        case State::Failed:    return QStringLiteral("✗");
         case State::Cancelled: return QStringLiteral("◼");
     }
     return {};
@@ -92,6 +93,9 @@ LightcurveFetchSessionsDialog::LightcurveFetchSessionsDialog(
     _cancelBtn    = new QPushButton(tr("Cancel Selected"));
     _cancelAllBtn = new QPushButton(tr("Cancel All"));
     auto* closeBtn = new QPushButton(tr("Close"));
+    UiIcons::apply(_cancelBtn,    UiIcons::Role::Dismiss);
+    UiIcons::apply(_cancelAllBtn, UiIcons::Role::Dismiss);
+    UiIcons::apply(closeBtn,      UiIcons::Role::Dismiss);
     btnRow->addWidget(_cancelBtn);
     btnRow->addWidget(_cancelAllBtn);
     btnRow->addStretch();
@@ -152,7 +156,7 @@ void LightcurveFetchSessionsDialog::rebuildList()
     for (auto it = sessions.crbegin(); it != sessions.crend(); ++it) {
         const auto& info = *it;
         auto* item = new QListWidgetItem(
-            QString("%1  %2 — %3")
+            QString("%1  %2 - %3")
                 .arg(stateGlyph(info.state),
                      info.starLabel,
                      LightcurveFetchService::stateLabel(info.state)));
@@ -186,7 +190,7 @@ void LightcurveFetchSessionsDialog::onSelectionChanged()
     bool found = false;
     const auto info = _service->sessionInfo(id, &found);
     if (found) {
-        _statusLbl->setText(QString("%1 — Gaia DR3 %2 — %3%4")
+        _statusLbl->setText(QString("%1 - Gaia DR3 %2 - %3%4")
                                 .arg(info.starLabel,
                                      info.gaiaId,
                                      LightcurveFetchService::stateLabel(info.state),

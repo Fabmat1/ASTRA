@@ -427,6 +427,7 @@ QWidget* LightcurveFetchDialog::buildFetchTab()
     _fetchBtn = new QPushButton(tr("Fetch"));
     _fetchBtn->setDefault(true);
     _cancelFetch = new QPushButton(tr("Cancel"));
+    UiIcons::apply(_cancelFetch, UiIcons::Role::Dismiss);
     _cancelFetch->setEnabled(false);
     _importCsvBtn = new QPushButton(tr("Import from CSV…"));
     _importCsvBtn->setToolTip(tr("Import a lightcurve from a CSV file for "
@@ -2691,7 +2692,7 @@ void LightcurveFetchDialog::updateSelectedFitDetails() {
     //  r₁ and r₂ are fractions of the orbital separation, so on their own
     //  they say nothing about how big the stars actually are.  a follows
     //  from v_scale and the period for every fit, so R = r·a is always
-    //  available — show it rather than making the reader do the algebra.
+    //  available - show it rather than making the reader do the algebra.
     if (fit->velocityScale > 0 && fit->period > 0) {
         const double aRsun = fit->velocityScale * fit->period *
                              LCFitPhysics::kDay2Sec / (2.0 * M_PI) /

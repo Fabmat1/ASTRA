@@ -136,7 +136,7 @@ SpectraFitDialog::~SpectraFitDialog()
 
 void SpectraFitDialog::setupUi()
 {
-    setWindowTitle(QString("Spectral Analysis \xe2\x80\x94 %1").arg(
+    setWindowTitle(QString("Spectral Analysis - %1").arg(
         _star->getAlias().isEmpty() ? _star->getSourceId() : _star->getAlias()));
     resize(1400, 820);
 
@@ -1273,7 +1273,7 @@ void SpectraFitDialog::defineInstrumentManually(const QStringList& spectrumIds)
 
     QDialog dlg(this);
     dlg.setWindowTitle(specs.size() > 1
-        ? QString("Set instrument / mode — %1 spectra").arg(specs.size())
+        ? QString("Set instrument / mode - %1 spectra").arg(specs.size())
         : QStringLiteral("Set instrument / mode"));
     auto* form = new QFormLayout(&dlg);
 

@@ -350,7 +350,7 @@ void MainWindow::createActions()
         dlg.exec();
     });
 
-    // Manual "Check for Updates" — always reports the outcome, even when the
+    // Manual "Check for Updates" - always reports the outcome, even when the
     // app is already current or a previously-skipped version is available.
     connect(_checkUpdatesAction, &QAction::triggered, this, [this] {
         if (!_updater) {
@@ -716,7 +716,7 @@ void MainWindow::onUpdateAvailable(const UpdateInfo& info)
     } else if (canInstall && clicked == installBtn) {
         promptInstallUpdate(info);
     }
-    // "Later": do nothing — we'll prompt again next launch.
+    // "Later": do nothing - we'll prompt again next launch.
 }
 
 void MainWindow::promptInstallUpdate(const UpdateInfo& info)
@@ -742,7 +742,7 @@ void MainWindow::promptInstallUpdate(const UpdateInfo& info)
     connect(progress, &QProgressDialog::canceled, _updater,
             &UpdateManager::cancelDownload);
 
-    // Once the install starts the download can no longer be cancelled — the
+    // Once the install starts the download can no longer be cancelled - the
     // package is being unpacked over the running installation.
     connect(_updater, &UpdateManager::installStarted, progress,
             [progress, info] {
@@ -764,7 +764,7 @@ void MainWindow::promptInstallUpdate(const UpdateInfo& info)
         QMessageBox::information(this, "Finish the update manually",
             QString("ASTRA %1 was downloaded and verified, but it could not be "
                     "installed automatically:\n%2\n\n"
-                    "The disk image has been opened — drag ASTRA to your "
+                    "The disk image has been opened. Drag ASTRA to your "
                     "Applications folder to finish, then restart ASTRA.\n\n%3")
                 .arg(info.version, reason, path));
     });

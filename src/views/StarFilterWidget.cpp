@@ -628,12 +628,13 @@ FilterConditionRow::FilterConditionRow(const QStringList& projectColumnKeys,
     _enableButton = new QToolButton(this);
     _enableButton->setCheckable(true);
     _enableButton->setChecked(true);
-    _enableButton->setText("✓");
+    UiIcons::apply(_enableButton, UiIcons::Role::ToggleOn);
     _enableButton->setFixedSize(24, 24);
     _enableButton->setToolTip("Enable/disable this filter");
     connect(_enableButton, &QToolButton::toggled, this, [this](bool checked) {
         _enabled = checked;
-        _enableButton->setText(checked ? "✓" : "○");
+        UiIcons::apply(_enableButton, checked ? UiIcons::Role::ToggleOn
+                                              : UiIcons::Role::ToggleOff);
         _columnCombo->setEnabled(checked);
         _operatorCombo->setEnabled(checked);
         _valueEdit1->setEnabled(checked);
@@ -691,7 +692,7 @@ FilterConditionRow::FilterConditionRow(const QStringList& projectColumnKeys,
 
     // Remove button
     _removeButton = new QToolButton(this);
-    _removeButton->setText("✕");
+    UiIcons::apply(_removeButton, UiIcons::Role::Remove);
     _removeButton->setFixedSize(24, 24);
     _removeButton->setToolTip("Remove this filter");
     connect(_removeButton, &QToolButton::clicked, this, &FilterConditionRow::removeRequested);

@@ -323,8 +323,8 @@ bool SpectralFit::loadDataFromFile(const QString& filepath)
         if (s.status() != QDataStream::Ok) return false;
 
         // Optional extension block. Absent in every file written before it
-        // existed, so a stream that ends here — or holds anything other than
-        // the magic — just leaves these three arrays empty; the six arrays
+        // existed, so a stream that ends here, or holds anything other than
+        // the magic, just leaves these three arrays empty; the six arrays
         // above are already valid either way.
         modelFluxesComp1.clear();
         modelFluxesComp2.clear();

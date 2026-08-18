@@ -83,7 +83,7 @@ double firstFloat(const QString &s) {
 // eclipse, and the next fit gets the eclipse wronger still.
 //
 // With the binary in the orbital plane and the Earth vector at phase φ equal
-// to (sin i·cos 2πφ, −sin i·sin 2πφ, cos i) — Roche::set_earth — the sky-plane
+// to (sin i·cos 2πφ, −sin i·sin 2πφ, cos i) via Roche::set_earth, the sky-plane
 // separation of the two centres is √(1 − sin²i·cos²2πφ). The discs overlap
 // while that is below r₁+r₂, which bounds |cos 2πφ| from below and so gives a
 // half-width around each conjunction.
@@ -348,7 +348,7 @@ void LCFitDialog::setupUi() {
 
     // Disc, hot-spot and contact-phase parameters can be set free on the
     // solver page, but lcurve only looks at them when the matching switch
-    // here is on — the free-parameter list says so as soon as it is not.
+    // here is on - the free-parameter list says so as soon as it is not.
     for (QCheckBox *gate : {_addDisc, _addSpot, _useRadii})
         if (gate)
             connect(gate, &QCheckBox::toggled, this,
@@ -1202,7 +1202,7 @@ QWidget *LCFitDialog::buildSolverPage() {
          "iteration limit is what actually binds.<br><br>Stopping on the "
          "evaluation budget leaves the solution off the minimum, which biases "
          "every error bar to one side."));
-  // Tolerances live around 1e-8, so a spin box is unreadable — take them as
+  // Tolerances live around 1e-8, so a spin box is unreadable - take them as
   // free text in scientific notation and fall back to the lcurve default
   // when the field cannot be parsed.
   _lmFtol = mkTolEdit(QStringLiteral("1.49e-8"));
@@ -1277,7 +1277,7 @@ QWidget *LCFitDialog::buildSolverPage() {
   _emcRounds->setToolTip(
       tr("A chain launched from a point that is not the optimum spends the "
          "whole run descending, and its percentiles then describe that "
-         "trajectory rather than the posterior — collapsing one side of "
+         "trajectory rather than the posterior, collapsing one side of "
          "every interval.<br><br>When a round finds a materially better "
          "state, the solver adopts it and samples again from there. This is "
          "the maximum number of extra rounds; 0 keeps the LM point no matter "
@@ -1307,7 +1307,7 @@ QWidget *LCFitDialog::buildSolverPage() {
          "samples the model cannot account for, scale the error bars to the "
          "scatter that is actually left, and fit again from the parameters "
          "just found. Repeats until nothing changes.<br><br>Both steps act on "
-         "the <b>raw</b> photometry, before binning — a single bad sample "
+         "the <b>raw</b> photometry, before binning: a single bad sample "
          "with a small quoted error otherwise takes over the mean of its bin, "
          "and no amount of clipping at the binned level can undo that."));
   auto *refLay = new QFormLayout(_refineBox);
@@ -1336,7 +1336,7 @@ QWidget *LCFitDialog::buildSolverPage() {
   _refEclipseWiden->setSuffix(tr(" ×"));
   const QString eclipseHelp =
       tr("An eclipse the model gets slightly wrong is wrong for a whole run "
-         "of consecutive points, all in the same direction — and every one of "
+         "of consecutive points, all in the same direction, and every one of "
          "them reads as an outlier. Clipping them deletes precisely the data "
          "that pins the eclipse down, and the next fit gets it wronger.<br><br>"
          "The protected phases are computed from the fit itself: the two "
@@ -1372,7 +1372,7 @@ QWidget *LCFitDialog::buildSolverPage() {
   _refPasses->setToolTip(
       tr("A pass costs one extra fit. Passes stop early once a pass rejects "
          "nothing and leaves the error scale within 2% of 1.<br><br>Only the "
-         "closing fit runs the post-LM error refinement — the intermediate "
+         "closing fit runs the post-LM error refinement; the intermediate "
          "ones exist to move the parameters, and sampling a posterior for "
          "data that is about to change again would be wasted time."));
   refLay->addRow(tr("Max passes:"), _refPasses);
@@ -1482,8 +1482,8 @@ QWidget *LCFitDialog::buildSolverPage() {
 // ── Free parameters ────────────────────────────────────────────────
 //
 // The six or so parameters an eclipsing binary is normally fitted for get a
-// permanent checkbox. Everything else lcurve can fit — disc and hot-spot
-// geometry, baseline polynomial, spins, limb-darkening coefficients … — is
+// permanent checkbox. Everything else lcurve can fit - disc and hot-spot
+// geometry, baseline polynomial, spins, limb-darkening coefficients … - is
 // reachable through the picker below them: choose a frozen parameter, press
 // "Add to free", and it joins the list with its own checkbox.
 QGroupBox *LCFitDialog::buildVaryBox() {
@@ -1567,7 +1567,7 @@ void LCFitDialog::refreshFreeParamCombo() {
       continue;
     if (p.group != group) {
       group = p.group;
-      _freeParamPick->addItem(QStringLiteral("— %1 —").arg(group));
+      _freeParamPick->addItem(QStringLiteral("– %1 –").arg(group));
       const int i = _freeParamPick->count() - 1;
       if (auto *m = qobject_cast<QStandardItemModel *>(_freeParamPick->model()))
         if (auto *item = m->item(i))
@@ -1638,7 +1638,7 @@ void LCFitDialog::addFreeParameter(const QString &key) {
   }
 
   auto *rm = new QToolButton;
-  rm->setText(QStringLiteral("✕"));
+  UiIcons::apply(rm, UiIcons::Role::Remove);
   rm->setAutoRaise(true);
   rm->setToolTip(tr("Freeze this parameter again and drop it from the list."));
   rl->addWidget(rm);
@@ -1886,6 +1886,9 @@ QWidget *LCFitDialog::buildReviewPage() {
     auto *refreshBtn = new QPushButton(tr("Refresh from form"));
     auto *applyBtn   = new QPushButton(tr("Apply override"));
     auto *discardBtn = new QPushButton(tr("Discard override"));
+    UiIcons::apply(refreshBtn, UiIcons::Role::Refresh);
+    UiIcons::apply(applyBtn,   UiIcons::Role::Accept);
+    UiIcons::apply(discardBtn, UiIcons::Role::Dismiss);
     _reviewStatus    = new QLabel(tr("No override active."));
     _reviewStatus->setStyleSheet("color: gray;");
     _reviewStatus->setWordWrap(true);
@@ -2261,7 +2264,7 @@ void LCFitDialog::updatePriorConflictWarning() {
   const QString text =
       names.isEmpty()
           ? QString()
-          : tr("⚠ Conflicting priors — each group over-determines "
+          : tr("⚠ Conflicting priors: each group over-determines "
                "itself, drop one member: %1")
                 .arg(names.join(tr("; ")));
   if (_priorWarn) {
@@ -2277,7 +2280,7 @@ void LCFitDialog::updatePriorConflictWarning() {
       continue;
     e->setProperty("priorConflict", conflicting);
     e->setToolTip(conflicting
-                      ? tr("Part of an over-determined prior group — this "
+                      ? tr("Part of an over-determined prior group; this "
                            "value is already implied by the others.")
                       : QString());
     e->style()->unpolish(e);
@@ -2417,7 +2420,7 @@ QJsonObject LCFitDialog::buildFullConfig() const {
     cfg["lm_max_iter"]             = _lmMaxIter->value();
     // lcurve caps a descent at lm_max_fev model evaluations, defaulting to
     // 200·(nvary+1). With central differences that is ~100 iterations, so the
-    // budget — not lm_max_iter, and not the convergence tests — decided when
+    // budget (not lm_max_iter, and not the convergence tests) decided when
     // every fit stopped, leaving the solution off the minimum. Derive the cap
     // from the iteration limit instead: one central-difference Jacobian costs
     // 2·nvary evaluations plus the trial steps.
@@ -2703,11 +2706,11 @@ void LCFitDialog::onPlotFrame(const QJsonObject &frame) {
   QString status = meta.value(QStringLiteral("phase")).toString();
   if (meta.contains(QStringLiteral("step")) &&
       meta.contains(QStringLiteral("total"))) {
-    status += tr(" — %1 / %2")
+    status += tr(" - %1 / %2")
                   .arg(meta.value(QStringLiteral("step")).toInt())
                   .arg(meta.value(QStringLiteral("total")).toInt());
   } else if (meta.contains(QStringLiteral("iteration"))) {
-    status += tr(" — iteration %1")
+    status += tr(" - iteration %1")
                   .arg(meta.value(QStringLiteral("iteration")).toInt());
   }
   _plotStatus->setText(status.isEmpty() ? tr("Live fit") : status);
@@ -2839,7 +2842,7 @@ bool LCFitDialog::startRefinementPass() {
 
   // Every surviving raw sample, at its own phase. dPhase is 0 and the divisor
   // 1, so the model is evaluated at the instant rather than smeared over a
-  // bin — these are individual exposures, not bins.
+  // bin - these are individual exposures, not bins.
   QFile df(_refDataPath);
   if (!df.open(QIODevice::WriteOnly | QIODevice::Text)) {
     _term->feed(tr("[refine] could not write %1 - skipping refinement.\n")
@@ -3016,7 +3019,7 @@ bool LCFitDialog::applyRefinement(const QVector<double> &model) {
 
     // The scatter the cut is measured against describes the part of the curve
     // the model is actually asked to reproduce point-for-point. Eclipse
-    // residuals would only widen it and let genuine outliers through — unless
+    // residuals would only widen it and let genuine outliers through - unless
     // protecting them leaves too little curve to measure anything on.
     QVector<double> open;
     open.reserve(live.size());
@@ -3198,7 +3201,7 @@ void LCFitDialog::populateResultsView() {
             "<br><span style='color:#dca84d;'>⚠ Covariance inversion failed - "
             "no parameter σ available.</span>");
     if (!_refLog.isEmpty()) {
-        // A reduced χ² of 1 is a construction here, not a verdict — say so
+        // A reduced χ² of 1 is a construction here, not a verdict - say so
         // next to it, and say what the data cost to get there.
         q += tr("<br><span style='color:#dca84d;'>Refined over %1 pass(es): "
                 "%2 of %3 raw samples rejected, bin errors × %4. Reduced χ² is "
@@ -3283,7 +3286,7 @@ void LCFitDialog::populateResultsView() {
     };
 
     // ── Reference values the fit can be held against ──────────────────
-    //  The priors actually fed to the solver come first — they are the
+    //  The priors actually fed to the solver come first - they are the
     //  constraints the fit was asked to respect, so their tension is what
     //  tells you whether the result is believable.  Values stored on the
     //  star are the fallback for rows that carry no prior.  Without this
@@ -3403,7 +3406,7 @@ void LCFitDialog::populateResultsView() {
         return firstFloat(mp.value(n).toString());
     };
 
-    // The radii and velocity scale carry no prior of their own — the priors
+    // The radii and velocity scale carry no prior of their own - the priors
     // live on the physical R₁/R₂ and on M₁, which are the derived rows
     // added further down.
     addRow("q", "q", initOf("q"), refFor("q", "q"));
@@ -3450,7 +3453,7 @@ void LCFitDialog::populateResultsView() {
 
     // ── Derived physical quantities ───────────────────────────────────
     //  The priors are stated in physical units (R☉, M☉, K), so this is
-    //  where their tension is actually meaningful — the fractional radii
+    //  where their tension is actually meaningful - the fractional radii
     //  above carry no prior of their own.  Values come from the solver's
     //  own propagation when it published one (it keeps the r–v_scale
     //  correlation and the asymmetry); otherwise they are recomputed here.
@@ -3501,7 +3504,7 @@ void LCFitDialog::populateResultsView() {
     };
 
     // A parameter held fixed never appears in best_pars, so fall back to the
-    // starting value — the derived rows are just as meaningful then.
+    // starting value - the derived rows are just as meaningful then.
     auto bestOrInit = [&](const QString &n) {
         return bestPars.contains(n) ? bestPars.value(n).toDouble() : initOf(n);
     };

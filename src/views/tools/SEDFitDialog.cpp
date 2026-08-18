@@ -449,7 +449,7 @@ QWidget* SEDFitDialog::createNewFitPanel()
     // Small icon button: query Gaia DR3 and apply the Lindegren (2021)
     // parallax zero-point correction + El-Badry (2021) error inflation.
     _distCorrectBtn = new QToolButton;
-    _distCorrectBtn->setIcon(style()->standardIcon(QStyle::SP_BrowserReload));
+    UiIcons::apply(_distCorrectBtn, UiIcons::Role::Refresh);
     _distCorrectBtn->setAutoRaise(true);
     _distCorrectBtn->setEnabled(false);
     _distCorrectBtn->setToolTip(

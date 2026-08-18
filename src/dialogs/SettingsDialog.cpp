@@ -791,7 +791,7 @@ QWidget* SettingsDialog::createUpdatesPage()
                     .arg(info.version.toHtmlEscaped(), info.htmlUrl.toHtmlEscaped()));
         } else {
             // Development build: offer the release without claiming it is newer
-            // — a git-<hash> build can't be compared against a version number.
+            // - a git-<hash> build can't be compared against a version number.
             _updateStatus->setText(
                 QString("You are on development build <b>%1</b>. The latest "
                         "release is <b>%2</b> (<a href=\"%3\">release notes</a>).")
@@ -844,7 +844,7 @@ void SettingsDialog::startUpdateInstall(const UpdateInfo& info)
     connect(progress, &QProgressDialog::canceled, _updater,
             &UpdateManager::cancelDownload);
 
-    // Past this point the package is being written over the running install —
+    // Past this point the package is being written over the running install -
     // cancelling would leave it half-replaced.
     connect(_updater, &UpdateManager::installStarted, progress,
             [progress, info] {
@@ -868,7 +868,7 @@ void SettingsDialog::startUpdateInstall(const UpdateInfo& info)
         QMessageBox::information(this, "Finish the update manually",
             QString("ASTRA %1 was downloaded and verified, but it could not be "
                     "installed automatically:\n%2\n\n"
-                    "The disk image has been opened — drag ASTRA to your "
+                    "The disk image has been opened. Drag ASTRA to your "
                     "Applications folder to finish, then restart ASTRA.\n\n%3")
                 .arg(info.version, reason, path));
     });

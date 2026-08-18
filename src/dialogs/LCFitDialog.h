@@ -147,7 +147,7 @@ class LCFitDialog : public QDialog {
     // the parameters just found. Passes repeat until nothing changes.
     bool refinementAvailable() const;
     bool refinementEnabled() const;
-    /// End the run — or, when the reported numbers would otherwise come from a
+    /// End the run - or, when the reported numbers would otherwise come from a
     /// fit whose error refinement was suppressed, spend one more fit on them.
     void concludeRun();
     /// Launch the forward-model evaluation the pass is built on. Returns false

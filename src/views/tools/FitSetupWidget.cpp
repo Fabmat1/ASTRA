@@ -949,7 +949,10 @@ void FitSetupWidget::rebuildIgnoreRows()
         auto* row = new QHBoxLayout;
         auto* lo = makeDoubleSpin(0, 100000, 2, cfg.ignore[i].wlLow,  0.5, "Å");
         auto* hi = makeDoubleSpin(0, 100000, 2, cfg.ignore[i].wlHigh, 0.5, "Å");
-        auto* rm = new QPushButton("×"); rm->setMaximumWidth(28);
+        auto* rm = new QPushButton;
+        UiIcons::apply(rm, UiIcons::Role::Remove);
+        rm->setMaximumWidth(28);
+        rm->setToolTip("Remove this ignore region");
         connect(lo, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                 this, [this, i](double v){
             _configs[_currentId].ignore[i].wlLow = v;
@@ -986,7 +989,10 @@ void FitSetupWidget::rebuildAnchorRows()
         auto* hi = makeDoubleSpin(0, 100000, 1, cfg.anchors[i].wlHigh,  0.5, "Å");
         auto* sp = makeDoubleSpin(1, 10000,  0, cfg.anchors[i].spacing, 1.0, "Å");
         sp->setPrefix("Δ ");
-        auto* rm = new QPushButton("×"); rm->setMaximumWidth(28);
+        auto* rm = new QPushButton;
+        UiIcons::apply(rm, UiIcons::Role::Remove);
+        rm->setMaximumWidth(28);
+        rm->setToolTip("Remove this anchor region");
         connect(lo, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
                 this, [this, i](double v){
             _configs[_currentId].anchors[i].wlLow = v;  pushPreviewToPanel();

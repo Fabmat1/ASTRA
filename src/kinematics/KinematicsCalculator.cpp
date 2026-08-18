@@ -192,7 +192,7 @@ KinematicsCalculator::drawFrames(const KinematicsInput& in) const
             f.vzs = sm.vzs + SolarMotion::vzsErr * gauss(rng);
             // NOTE (fix w.r.t. ISIS): vlsr is re-evaluated from the potential
             // at the drawn Sun–GC distance instead of being held fixed while
-            // the distance varies — keeps the frame self-consistent.
+            // the distance varies - keeps the frame self-consistent.
             f.vlsrKmS = _pot.circularVelocityKmS(f.sunGCDistKpc);
         }
         out.push_back(f);
@@ -221,7 +221,7 @@ UVWXYZResult KinematicsCalculator::computeUVWXYZ(const KinematicsInput& in) cons
 
     for (size_t k = 0; k < n; ++k) {
         // frames was drawn for mcSamples+1 entries; samples may be shorter
-        // (skipped negative distances) — index 0 is nominal in both, the
+        // (skipped negative distances) - index 0 is nominal in both, the
         // remaining pairing is arbitrary but statistically equivalent.
         const auto& c = samples[k];
         const auto& f = frames[std::min(k, frames.size() - 1)];

@@ -3,6 +3,8 @@
 #include <QAbstractButton>
 #include <QApplication>
 #include <QColor>
+#include <QDialogButtonBox>
+#include <QEvent>
 #include <QFile>
 #include <QGuiApplication>
 #include <QHash>
@@ -11,6 +13,8 @@
 #include <QPointer>
 #include <QSvgRenderer>
 #include <QVector>
+
+#include <optional>
 
 namespace {
 
@@ -70,8 +74,50 @@ QString templateFor(UiIcons::Role role)
         return ltr ? QStringLiteral(":/icons/arrow-double-left.svg")
                    : QStringLiteral(":/icons/arrow-double-right.svg");
     case UiIcons::Role::Swap:                return QStringLiteral(":/icons/swap.svg");
+    case UiIcons::Role::Accept:              return QStringLiteral(":/icons/check.svg");
+    case UiIcons::Role::Dismiss:             return QStringLiteral(":/icons/close.svg");
+    case UiIcons::Role::Remove:              return QStringLiteral(":/icons/close.svg");
+    case UiIcons::Role::Refresh:             return QStringLiteral(":/icons/refresh.svg");
+    case UiIcons::Role::ToggleOn:            return QStringLiteral(":/icons/check.svg");
+    case UiIcons::Role::ToggleOff:           return QStringLiteral(":/icons/circle.svg");
+    case UiIcons::Role::Edit:                return QStringLiteral(":/icons/pencil.svg");
     }
     return QString();
+}
+
+// Role for one of QDialogButtonBox's standard buttons, or nullopt when ASTRA
+// has no glyph for it - those get their platform icon stripped instead, so a
+// box never mixes two icon sets.
+std::optional<UiIcons::Role> roleForStandardButton(QDialogButtonBox::StandardButton sb)
+{
+    switch (sb) {
+    // Everything that commits the dialog.
+    case QDialogButtonBox::Ok:
+    case QDialogButtonBox::Yes:
+    case QDialogButtonBox::YesToAll:
+    case QDialogButtonBox::Apply:
+    case QDialogButtonBox::Save:
+    case QDialogButtonBox::SaveAll:
+        return UiIcons::Role::Accept;
+
+    // Everything that walks away from it.
+    case QDialogButtonBox::Cancel:
+    case QDialogButtonBox::Close:
+    case QDialogButtonBox::No:
+    case QDialogButtonBox::NoToAll:
+    case QDialogButtonBox::Discard:
+    case QDialogButtonBox::Abort:
+        return UiIcons::Role::Dismiss;
+
+    // Start over / try again: both put the dialog back to a previous state.
+    case QDialogButtonBox::Reset:
+    case QDialogButtonBox::RestoreDefaults:
+    case QDialogButtonBox::Retry:
+        return UiIcons::Role::Refresh;
+
+    default:
+        return std::nullopt;
+    }
 }
 
 } // namespace
@@ -120,15 +166,21 @@ void UiIcons::apply(QAbstractButton* button, Role role, int px)
     button->setIcon(icon(role, px));
     button->setIconSize(QSize(px, px));
 
-    auto& list = bindings();
-    for (Binding& b : list) {
-        if (b.button == button) {   // already bound: just update the state
-            b.role = role;
-            b.px   = px;
-            return;
+    // Compact while scanning: every dialog that is shown registers its button
+    // box here, so without this the list would only ever shed dead entries on
+    // a theme change and would grow for the whole session.
+    auto& list  = bindings();
+    bool  bound = false;
+    for (int i = list.size() - 1; i >= 0; --i) {
+        if (!list[i].button) { list.removeAt(i); continue; }
+        if (list[i].button == button) {   // already bound: just update the state
+            list[i].role = role;
+            list[i].px   = px;
+            bound = true;
         }
     }
-    list.append(Binding{ button, role, px });
+    if (!bound)
+        list.append(Binding{ button, role, px });
 }
 
 void UiIcons::applyTrailing(QAbstractButton* button, Role role, int px)
@@ -138,6 +190,67 @@ void UiIcons::applyTrailing(QAbstractButton* button, Role role, int px)
     button->setLayoutDirection(
         QGuiApplication::layoutDirection() == Qt::RightToLeft ? Qt::LeftToRight
                                                              : Qt::RightToLeft);
+}
+
+void UiIcons::applyDialogButtons(QDialogButtonBox* box)
+{
+    if (!box) return;
+
+    const auto buttons = box->buttons();
+    for (QAbstractButton* button : buttons) {
+        const QDialogButtonBox::StandardButton sb = box->standardButton(button);
+        if (sb != QDialogButtonBox::NoButton) {
+            if (const auto role = roleForStandardButton(sb))
+                apply(button, *role);
+            else
+                button->setIcon(QIcon());   // no ASTRA glyph: better bare than foreign
+            continue;
+        }
+
+        // Caller-added button. Only the two roles that mean the same thing as
+        // Ok/Cancel are safe to decorate; ActionRole and friends are the
+        // dialog author's own verbs and are left as they were built.
+        switch (box->buttonRole(button)) {
+        case QDialogButtonBox::AcceptRole:
+        case QDialogButtonBox::YesRole:
+            apply(button, Role::Accept);
+            break;
+        case QDialogButtonBox::RejectRole:
+        case QDialogButtonBox::NoRole:
+            apply(button, Role::Dismiss);
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+namespace {
+
+// Applies the icons as each button box is shown. Show is the first moment at
+// which QDialogButtonBox is guaranteed to have built its standard buttons, and
+// QMessageBox's internal box goes through it too.
+class DialogButtonIconFilter : public QObject
+{
+public:
+    using QObject::QObject;
+
+protected:
+    bool eventFilter(QObject* obj, QEvent* event) override
+    {
+        if (event->type() == QEvent::Show)
+            if (auto* box = qobject_cast<QDialogButtonBox*>(obj))
+                UiIcons::applyDialogButtons(box);
+        return false;
+    }
+};
+
+} // namespace
+
+void UiIcons::installDialogButtonIcons(QObject* app)
+{
+    if (!app) return;
+    app->installEventFilter(new DialogButtonIconFilter(app));
 }
 
 void UiIcons::refresh()

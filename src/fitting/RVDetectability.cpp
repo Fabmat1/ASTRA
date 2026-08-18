@@ -70,7 +70,7 @@ private:
 };
 
 // sin(2πu) for arbitrary u: quadrant folding plus an odd polynomial on [0,π/2].
-// Absolute error < 1e-11 — orders of magnitude below any RV precision that
+// Absolute error < 1e-11 - orders of magnitude below any RV precision that
 // matters, and appreciably faster than std::sin in this hot loop.
 inline double sinTurns(double u) {
     u -= std::floor(u);                                // → [0,1)
@@ -142,7 +142,7 @@ double chi2Critical(int dof, double thresh) {
 }
 
 // Standard-normal quantile (probit), Acklam's rational approximation.
-// |error| < 1.15e-9 — far beyond what a settings preview needs.
+// |error| < 1.15e-9 - far beyond what a settings preview needs.
 double probit(double p) {
     if (p <= 0.0) return -std::numeric_limits<double>::infinity();
     if (p >= 1.0) return  std::numeric_limits<double>::infinity();
@@ -424,7 +424,7 @@ bool previewMasses(const Config& cfg,
     if (!dcomp.parse(cfg.compSpec, err)) return false;
 
     // Nodes per distribution. Chosen far above the preview's bin count so the
-    // number of nodes landing in each bin varies by at most ~0.1% — any coarser
+    // number of nodes landing in each bin varies by at most ~0.1% - any coarser
     // and the quantile grid's own discretisation would reintroduce exactly the
     // bin-to-bin wiggle this function exists to remove.
     constexpr int kNodes        = 60000;   // direct path

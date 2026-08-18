@@ -941,7 +941,7 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE spectral_fits ADD COLUMN sur_ratio_error REAL",
 
         // Per-element abundances of both components, as JSON (see
-        // SpectrumRepository) — 144 real columns would be absurd.
+        // SpectrumRepository) - 144 real columns would be absurd.
         "ALTER TABLE spectral_fits ADD COLUMN abundances_json TEXT",
 
         // Fitted telluric component
@@ -1010,7 +1010,7 @@ bool DatabaseManager::runMigrations()
 
             // "usable RV" ⇔ some source has a positive, finite uncertainty.
             // COALESCE(...,0) is essential: a bare `NULL > 0` yields NULL, and
-            // `NOT (false OR NULL)` is NULL — which matches no rows — so any
+            // `NOT (false OR NULL)` is NULL, which matches no rows, so any
             // NULL error column would silently disable the whole cleanup.
             // gal_p_* population probabilities may come from an import (they
             // are also computed in-app, but only from valid UVW) and are
@@ -1434,7 +1434,7 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
         if (idxCompEMassTrue >= 0 && !query.isNull(idxCompEMassTrue))
             star->setECompMassTrue(query.value(idxCompEMassTrue).toDouble());
         // Galactic kinematics: NaN sentinel for unset, like the comp_mass_*
-        // fields — never let NULL degrade to 0.0.
+        // fields - never let NULL degrade to 0.0.
         star->setGalU(SqlValue::toDoubleOrNaN(query, idxGalU));
         star->setGalEU(SqlValue::toDoubleOrNaN(query, idxGalEU));
         star->setGalEUUp(SqlValue::toDoubleOrNaN(query, idxGalEUUp));

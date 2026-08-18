@@ -45,7 +45,7 @@ QColor mutedTextColor()
 /// The overlays cannot simply be thrown into the main robustRange() call: a
 /// component's model is *undiluted*, so its lines are always deeper than the
 /// composite's, and those few hundred deep samples are a small enough fraction
-/// of the pooled values that the quantile clip cuts them off — the curve then
+/// of the pooled values that the quantile clip cuts them off - the curve then
 /// runs out of the bottom of the plot, which is precisely what the user asked
 /// to be able to see. Giving the overlays their own robust range and taking the
 /// union keeps a genuinely deep line fully on screen.
@@ -629,7 +629,7 @@ void SpectraPanel::updateCoaddDisplay()
     disconnect(_axisSyncConn2);
 
     // Restacking replaces every plottable, so a zoom the user set on the
-    // co-add has to be captured here and put back at the end — both axes.
+    // co-add has to be captured here and put back at the end - both axes.
     // Otherwise changing the selection or the normalization would throw away
     // the region they were looking at.
     const bool restoreZoom = _hasCustomZoom && _mainPlot->graphCount() > 0;

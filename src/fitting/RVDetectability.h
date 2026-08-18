@@ -26,7 +26,7 @@
 //     log p = log10( chi2.sf(χ², n−1) )
 //
 // A curve counts as detected when log p < threshold. The result is the detected
-// fraction per period bin — the sample's SB1 detection probability.
+// fraction per period bin - the sample's SB1 detection probability.
 //
 // log p decreases monotonically with χ² at fixed dof, so "log p < thr" is
 // evaluated as the exactly equivalent "χ² > chi2.isf(10^thr, dof)"; the critical
@@ -146,7 +146,7 @@ struct PreparedStar {
 };
 
 // Runs the simulation. `stars` is filtered by Config::minEpochs internally, and
-// σ floor/scale are applied to a private copy — the caller's data is untouched.
+// σ floor/scale are applied to a private copy - the caller's data is untouched.
 class Runner {
 public:
     Runner(Config cfg, std::vector<StarEpochs> stars);
@@ -169,7 +169,7 @@ public:
     const Result& result() const { return _result; }
 
     // The thresholds actually used, sorted descending by prepare(). Result rows
-    // follow this order — always label output from here rather than from the
+    // follow this order - always label output from here rather than from the
     // Config you passed in, which prepare() does not reorder for you.
     const std::vector<double>& thresholds() const { return _cfg.thresholds; }
 

@@ -11,6 +11,7 @@
 #include "models/Time.h"
 #include "utils/CheckStateDragger.h"
 #include "utils/Logger.h"
+#include "utils/UiIcons.h"
 #include "views/panels/DetailPanel.h"
 #include "views/panels/RVPanel.h"
 #include "views/widgets/PreciseDoubleSpinBox.h"
@@ -560,6 +561,7 @@ void RVSolutionsWidget::buildUi()
     auto* applyRow = new QHBoxLayout;
     _revertBtn = new QPushButton("Revert");
     _applyBtn  = new QPushButton("Save");
+    UiIcons::apply(_applyBtn, UiIcons::Role::Accept);
     applyRow->addStretch();
     applyRow->addWidget(_revertBtn);
     applyRow->addWidget(_applyBtn);

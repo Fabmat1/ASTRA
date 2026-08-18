@@ -32,7 +32,7 @@ class QSpinBox;
 // the curve builds up while it converges.
 //
 // RV epochs are read from each star's active (unflagged) RV points on the GUI
-// thread before the worker starts — Star::getRVCurve() lazily hits the
+// thread before the worker starts - Star::getRVCurve() lazily hits the
 // database and must not be touched from the worker.
 // ─────────────────────────────────────────────────────────────────────────────
 class RVDetectabilityDialog : public QDialog

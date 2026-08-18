@@ -1022,7 +1022,7 @@ double fitCellChi2(const std::vector<double>& t,
 
     // Clamp γ and the semi-amplitude K=√(Kc²+Ks²) into their bounds while
     // preserving the phase (scale Kc,Ks together). Two compares + a hypot per
-    // call — negligible against the LM step it guards.
+    // call - negligible against the LM step it guards.
     auto clampParams = [&](double& Kc, double& Ks, double& g){
         g = std::clamp(g, gMin, gMax);
         const double K = std::hypot(Kc, Ks);
@@ -1702,7 +1702,7 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidFixedPhase(
         const double pUp   = f * lcFit->periodErrorUp;    // NaN stays NaN
         const double pDown = f * lcFit->periodErrorDown;
         if (AsymErr::nearlySymmetric(pUp, pDown)) {
-            // Sides agree within 10% — keep only their mean as symmetric.
+            // Sides agree within 10% - keep only their mean as symmetric.
             fit->setPeriodError(0.5 * (pUp + pDown));
         } else {
             if (AsymErr::isSet(pUp))   fit->setPeriodErrorUp(pUp);
@@ -2540,7 +2540,7 @@ void RVAddFitDialog::buildBootstrapTab(QWidget* parent)
     // Parameter bounds: constrain the per-cell circular fit. K is the semi-
     // amplitude √(Kc²+Ks²); γ the systemic velocity. Both are clamped at every
     // LM iteration of every grid cell, so a sensible range keeps the landscape
-    // physical (and is cheap — just two clamps per step).
+    // physical (and is cheap - just two clamps per step).
     auto* boundBox  = new QGroupBox("Parameter bounds");
     auto* boundForm = new QFormLayout(boundBox);
     _bsKMin     = mk(0.0,      1.0e6, 4, 1.0);
@@ -3022,7 +3022,7 @@ void RVAddFitDialog::onBsDetectPeaks()
     // Each carries the posterior mass of its own χ² basin: walk outward to the
     // crest on either side (where the landscape turns back down towards a
     // neighbouring minimum) and sum L there. Strict comparisons keep adjacent
-    // basins disjoint, so the masses sum to ≤ 1 — the remainder is mass in
+    // basins disjoint, so the masses sum to ≤ 1 - the remainder is mass in
     // minima that were not selected. This answers "is this the correct period
     // over the whole scanned range?", not "which of these candidates wins?".
     struct Minimum {
@@ -3119,7 +3119,7 @@ void RVAddFitDialog::onBsDetectPeaks()
         // The wrapping function: a running minimum over roughly one alias pitch
         // rides the tips of the comb, and a running mean turns that staircase
         // into a smooth curve with one lobe per group of aliases. Working in χ²
-        // rather than in likelihood keeps this well conditioned — the
+        // rather than in likelihood keeps this well conditioned - the
         // likelihood underflows to zero far from the best cell.
         double cWorst = _bsChi2Min;
         for (int k = 0; k < Nf; ++k)
@@ -3173,7 +3173,7 @@ void RVAddFitDialog::onBsDetectPeaks()
         if (peaks.size() > maxPeaks) peaks.resize(maxPeaks);
     }
 
-    // Most probable first — that is the order the user wants to work down.
+    // Most probable first - that is the order the user wants to work down.
     _bsPeaksList->clear();
     for (const auto& p : peaks)
         bsAddPeakItem(p.P, p.sigP, p.chi2v, p.prob, p.nAlias);

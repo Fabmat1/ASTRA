@@ -1,6 +1,7 @@
 #include "InstrumentConfigView.h"
 #include "db/DatabaseManager.h"
 #include "utils/CoastlineData.h"
+#include "utils/UiIcons.h"
 
 #include <QPainter>
 #include <QPaintEvent>
@@ -272,6 +273,7 @@ void InstrumentConfigView::setupUi()
     _removeBtn  = new QPushButton(tr("- Instrument"));
     _restoreBtn = new QPushButton(tr("Restore Defaults"));
     _saveBtn    = new QPushButton(tr("Save"));
+    UiIcons::apply(_saveBtn, UiIcons::Role::Accept);
     _revertBtn  = new QPushButton(tr("Revert"));
 
     toolbar->addWidget(_addBtn);

@@ -127,7 +127,7 @@ struct MacInstallOutcome {
 };
 
 /// Mount `dmg`, copy the ASTRA.app it contains over `bundle`, unmount again.
-/// Runs on a worker thread — no Qt GUI types here.
+/// Runs on a worker thread - no Qt GUI types here.
 MacInstallOutcome performMacInstall(const QString& dmg, const QString& bundle)
 {
     MacInstallOutcome out;
@@ -222,7 +222,7 @@ MacInstallOutcome performMacInstall(const QString& dmg, const QString& bundle)
     }
 
     // Downloads that never touched a browser carry no quarantine flag, but the
-    // .dmg may still propagate one — strip it so Gatekeeper doesn't block the
+    // .dmg may still propagate one - strip it so Gatekeeper doesn't block the
     // update the user just approved. Best effort; not fatal.
     QString ignored;
     runTool(QStringLiteral("/usr/bin/xattr"),
@@ -441,7 +441,7 @@ void UpdateManager::onReleaseReply(QNetworkReply* reply, bool respectSkip)
             info.assetName  = match.value("name").toString();
             info.assetSize  = static_cast<qint64>(match.value("size").toDouble());
 
-            // Checksums are published as "<asset>.sha256" next to the asset —
+            // Checksums are published as "<asset>.sha256" next to the asset -
             // match by name so a release carrying several packages (AppImage +
             // dmg) can't hand us the wrong one.
             const QString shaName = info.assetName + QStringLiteral(".sha256");
@@ -577,7 +577,7 @@ void UpdateManager::startPackageDownload(const QString& expectedSha256)
                                 .arg(QCoreApplication::applicationPid());
     } else {
         // macOS: the .dmg is mounted, not renamed into place, so a temp dir is
-        // fine — and stays usable when we have to fall back to a manual drag.
+        // fine - and stays usable when we have to fall back to a manual drag.
         const QString tmp = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
         QString name = _dlInfo.assetName;
         if (name.isEmpty())
@@ -636,7 +636,7 @@ void UpdateManager::startPackageDownload(const QString& expectedSha256)
 
         const QString got = QString::fromLatin1(_dlHash->result().toHex());
         if (!expected.isEmpty() && got != expected) {
-            failInstall(tr("Checksum mismatch — the download may be corrupt.\n"
+            failInstall(tr("Checksum mismatch, the download may be corrupt.\n"
                            "expected %1\n     got %2").arg(expected, got));
             return;
         }
@@ -745,7 +745,7 @@ void UpdateManager::failInstall(const QString& error)
 
 void UpdateManager::requireManualInstall(const QString& reason)
 {
-    // The download itself is good — hand it to the desktop so the user can
+    // The download itself is good - hand it to the desktop so the user can
     // install it by hand, and keep the file around for them.
     QString path = _dlPath;
     if (!path.isEmpty()) {

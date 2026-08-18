@@ -19,7 +19,7 @@ double median(std::vector<double> v) {
     return 0.5 * (lo + hi);
 }
 
-// 1.4826·MAD — the σ of a Gaussian that would produce this median absolute
+// 1.4826·MAD - the σ of a Gaussian that would produce this median absolute
 // deviation, i.e. a scatter estimate that a handful of wild points cannot move.
 double robustSigma(const std::vector<double> &v) {
     if (v.size() < 2)

@@ -37,7 +37,7 @@ struct StellarComponent {
     bool   freezeSurRatio = false;
 
     // Element abundances keyed by the grid's own species name ("FE", "SI", …),
-    // as log10 of the fractional particle number — GAEL's convention, which is
+    // as log10 of the fractional particle number - GAEL's convention, which is
     // ISIS's cN_<ELEMENT>. Every element the grid resolves is *modelled*
     // whether or not it appears here (an absent one is frozen at the middle of
     // its axis); only the ones named here with freeze = false are *fitted*.
@@ -197,7 +197,7 @@ struct FittedSpectrum {
 
     // Each component's own model on the same lambda grid, in component order:
     // the fitted continuum (and telluric, when one was fitted) times that
-    // component's normalised flux alone — what the spectrum would look like if
+    // component's normalised flux alone - what the spectrum would look like if
     // that component were the only star in it, so its lines appear at full
     // depth rather than diluted by the other's light. One entry per component;
     // for a single-component fit the entry equals `model`.

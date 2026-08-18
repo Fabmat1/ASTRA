@@ -18,7 +18,7 @@ namespace LCBinning {
 // How the samples inside one phase bin are collapsed into a single point.
 //
 // WeightedMean propagates the catalogue errors: σ_bin = 1/√Σ(1/σᵢ²). That is
-// only honest when the catalogue errors are honest — for surveys that quote
+// only honest when the catalogue errors are honest - for surveys that quote
 // them too small (ATLAS routinely does, by an order of magnitude) the binned
 // error bar inherits the underestimate, and one wild sample with a tiny quoted
 // error dominates the mean of its bin.
@@ -51,7 +51,7 @@ struct Result {
 };
 
 // Fold `raw` on `period` into `nBins` uniform phase bins, skipping rejected
-// samples and empty bins. `errorScale` multiplies every resulting bin error —
+// samples and empty bins. `errorScale` multiplies every resulting bin error -
 // this is where a post-fit error rescaling is applied, after the combination,
 // so it also reaches errors derived from scatter rather than from σᵢ.
 Result fold(const std::vector<RawPoint> &raw, double period, int nBins,

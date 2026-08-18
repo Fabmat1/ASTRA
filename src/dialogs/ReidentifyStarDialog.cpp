@@ -310,9 +310,9 @@ void ReidentifyStarDialog::populateTable() {
 
         auto *nameItem = new QTableWidgetItem(name);
         auto *gItem    = new QTableWidgetItem(
-            std::isnan(c.gmag) ? "\u2014" : QString::number(c.gmag, 'f', 3));
+            std::isnan(c.gmag) ? "-" : QString::number(c.gmag, 'f', 3));
         auto *sepItem = new QTableWidgetItem(
-            std::isnan(c.sepArcsec) ? "\u2014"
+            std::isnan(c.sepArcsec) ? "-"
                                     : QString::number(c.sepArcsec, 'f', 2));
         gItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);
         sepItem->setTextAlignment(Qt::AlignRight | Qt::AlignVCenter);

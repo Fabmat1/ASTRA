@@ -1,4 +1,5 @@
 #include "FitProgressDialog.h"
+#include "utils/UiIcons.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -67,6 +68,7 @@ FitProgressDialog::FitProgressDialog(QWidget* parent) : QDialog(parent)
     auto* row = new QHBoxLayout;
     _abortBtn = new QPushButton("Abort");
     _closeBtn = new QPushButton("Close");
+    UiIcons::apply(_closeBtn, UiIcons::Role::Dismiss);
     _closeBtn->setEnabled(false);
     connect(_abortBtn, &QPushButton::clicked, this, [this]{
         _abortBtn->setEnabled(false);
@@ -137,7 +139,7 @@ void FitProgressDialog::setFinished(const astra::fitting::SpectralFitResult& r)
     _bar->setValue(1000);
 
     QString summary = QString(
-        "✔ Finished - χ² = %1, iter = %2, free = %3, points = %4, converged = %5")
+        "✓ Finished - χ² = %1, iter = %2, free = %3, points = %4, converged = %5")
         .arg(r.finalChi2, 0, 'f', 3)
         .arg(r.iterations)
         .arg(r.nFreeParameters)
@@ -155,7 +157,7 @@ void FitProgressDialog::setError(const QString& msg)
 {
     stopRunning();
     _bar->setValue(0);
-    _status->setText("✘ Failed: " + msg);
+    _status->setText("✗ Failed: " + msg);
     _detail->clear();
     appendLog("ERROR: " + msg);
 }

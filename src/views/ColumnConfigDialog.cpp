@@ -132,6 +132,9 @@ void ColumnConfigDialog::setupUi()
     _applyBtn  = new QPushButton("Apply");
     _okBtn     = new QPushButton("OK");
     _cancelBtn = new QPushButton("Cancel");
+    UiIcons::apply(_applyBtn,  UiIcons::Role::Accept);
+    UiIcons::apply(_okBtn,     UiIcons::Role::Accept);
+    UiIcons::apply(_cancelBtn, UiIcons::Role::Dismiss);
     _okBtn->setDefault(true);
     btnRow->addWidget(_applyBtn);
     btnRow->addWidget(_okBtn);
