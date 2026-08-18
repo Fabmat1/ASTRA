@@ -38,6 +38,16 @@ double FilterWavelength::lookupNm(const QString &filter) {
         {"Ks", 2150.0},
         // BlackGEM (filter labels)
         {"q", 590.0},
+        // HST (pivot wavelengths; WFC3 values used where ACS shares a name)
+        {"F218W", 222.3}, {"F225W", 235.9}, {"F275W", 270.4},
+        {"F336W", 335.5}, {"F435W", 431.9}, {"F438W", 432.6},
+        {"F475W", 477.3}, {"F555W", 530.8}, {"F606W", 588.7},
+        {"F625W", 624.2}, {"F775W", 764.4}, {"F814W", 802.4},
+        {"F850LP", 901.7},
+        {"F105W", 1055.2}, {"F110W", 1153.4}, {"F125W", 1248.6},
+        {"F140W", 1392.3}, {"F160W", 1536.9},
+        {"F115LP", 140.6}, {"F125LP", 143.8}, {"F140LP", 152.7},
+        {"F150LP", 161.1}, {"F165LP", 175.8},
     };
     auto it = table.constFind(filter);
     if (it != table.constEnd())

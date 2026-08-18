@@ -3,12 +3,17 @@
 #include <QEvent>
 #include <QGuiApplication>
 #include <QLayout>
+#include <QList>
 #include <QPoint>
+#include <QPointer>
 #include <QRect>
 #include <QScreen>
 #include <QSize>
+#include <QTimer>
 #include <QWidget>
 #include <QWindow>
+
+#include <utility>
 
 namespace {
 
@@ -52,6 +57,13 @@ bool isManagedWindow(const QWidget* w)
     // size themselves and must not be touched.
     const Qt::WindowType type = w->windowType();
     return type == Qt::Window || type == Qt::Dialog;
+}
+
+// Maximized and full-screen windows are sized by the window manager, and their
+// size legitimately fills the screen.
+bool isWindowManagerSized(const QWidget* w)
+{
+    return w->windowState() & (Qt::WindowMaximized | Qt::WindowFullScreen);
 }
 
 } // namespace
@@ -103,6 +115,18 @@ void WindowSizing::fitToScreen(QWidget* w)
             w->setMinimumHeight(qMin(needed.height(), avail.height()));
     }
 
+    // Everything below moves the window itself, which is only ever right for a
+    // window that sizes itself. A maximized or full-screen window fills the
+    // screen by design, so it is always "too big" by the frame slack: resizing
+    // it here fights the window manager, which configures it straight back, and
+    // in between Qt lays out and damages the window for a size the compositor
+    // is not showing. That desync is what turns into half-repainted rows, a
+    // trailing hover highlight and a stale row header in whatever the window
+    // holds - and a status-bar spinner is enough to retrigger it several times
+    // a second.
+    if (isWindowManagerSized(w))
+        return;
+
     const QSize bounded = w->size().boundedTo(avail);
     if (bounded != w->size())
         w->resize(bounded);
@@ -119,28 +143,77 @@ void WindowSizing::fitToScreen(QWidget* w)
         pos.setX(qMax(area.left(), area.right() - frame.width() + 1));
     if (frame.bottom() > area.bottom())
         pos.setY(qMax(area.top(), area.bottom() - frame.height() + 1));
-    if (pos != frame.topLeft())
+    // Wayland ignores client-side positioning of top-levels, so frameGeometry()
+    // never catches up and the same move would be reissued on every pass.
+    // Remembering the last target keeps it at one attempt per position.
+    static const char* kMovedTo = "astraScreenGuardMovedTo";
+    if (pos != frame.topLeft() && w->property(kMovedTo).toPoint() != pos) {
+        w->setProperty(kMovedTo, pos);
         w->move(pos);
+    }
 }
 
 namespace {
 
+// A window publishes a LayoutRequest whenever anything inside it invalidates a
+// layout - a status-bar spinner relabelling itself does so every 80 ms for as
+// long as a background task runs. The guard only has to catch up with the
+// layout, not follow every invalidation, so requests are collected and applied
+// once per interval.
+constexpr int kCoalesceMs = 100;
+
 class ScreenGuard : public QObject
 {
 public:
-    using QObject::QObject;
+    explicit ScreenGuard(QObject* parent = nullptr) : QObject(parent)
+    {
+        _flush.setSingleShot(true);
+        _flush.setInterval(kCoalesceMs);
+        connect(&_flush, &QTimer::timeout, this, &ScreenGuard::flush);
+    }
 
 protected:
     bool eventFilter(QObject* obj, QEvent* event) override
     {
         // LayoutRequest is the moment a layout is about to publish a new
         // minimum; Show catches the size a window was built with.
-        if (event->type() != QEvent::LayoutRequest && event->type() != QEvent::Show)
+        const QEvent::Type type = event->type();
+        if (type != QEvent::LayoutRequest && type != QEvent::Show)
             return false;
-        if (obj->isWidgetType())
-            WindowSizing::fitToScreen(static_cast<QWidget*>(obj));
+        if (!obj->isWidgetType())
+            return false;
+
+        QWidget* w = static_cast<QWidget*>(obj);
+        if (!w->isWindow())
+            return false;
+
+        // A window has to be inside the screen by the time it is on it, so the
+        // size it was built with is checked straight away.
+        if (type == QEvent::Show) {
+            WindowSizing::fitToScreen(w);
+            return false;
+        }
+
+        const QPointer<QWidget> p(w);
+        if (!_pending.contains(p))
+            _pending.append(p);
+        if (!_flush.isActive())
+            _flush.start();
         return false;
     }
+
+private:
+    void flush()
+    {
+        const QList<QPointer<QWidget>> due = std::move(_pending);
+        _pending.clear();
+        for (const QPointer<QWidget>& w : due)
+            if (w)
+                WindowSizing::fitToScreen(w);
+    }
+
+    QList<QPointer<QWidget>> _pending;
+    QTimer                   _flush;
 };
 
 } // namespace

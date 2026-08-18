@@ -804,6 +804,263 @@
                     }
                 }
             ]
+        },
+        {
+            "name": "ASAS-SN",
+            "full_name": "All-Sky Automated Survey for Supernovae (global network; Haleakala unit)",
+            "latitude": 20.7082,
+            "longitude": -156.2568,
+            "altitude": 3055.0,
+            "modes": [
+                {
+                    "key": "V",
+                    "display_name": "ASAS-SN V-band Survey (2013 to 2018)",
+                    "data_type": "photometry",
+                    "photometric": {
+                        "cadence": 90.0,
+                        "fov": 20.25,
+                        "pixel_scale": 8.0,
+                        "filters": ["V"],
+                        "period_aliases": [
+                            [0.2495, 0.252],  [0.33,  0.338], [0.4975, 0.5035],
+                            [0.995,  1.005],  [1.99,  2.01],  [29.3,   29.8]
+                        ]
+                    }
+                },
+                {
+                    "key": "g",
+                    "display_name": "ASAS-SN g-band Survey (2017 onwards)",
+                    "data_type": "photometry",
+                    "photometric": {
+                        "cadence": 90.0,
+                        "fov": 20.25,
+                        "pixel_scale": 8.0,
+                        "filters": ["g"],
+                        "period_aliases": [
+                            [0.2495, 0.252],  [0.33,  0.338], [0.4975, 0.5035],
+                            [0.995,  1.005],  [1.99,  2.01],  [29.3,   29.8]
+                        ]
+                    }
+                }
+            ]
+        },
+        {
+            "name": "HST",
+            "full_name": "Hubble Space Telescope (NASA/ESA)",
+            "latitude": 0.0,
+            "longitude": 0.0,
+            "altitude": 0.0,
+            "space_based": true,
+            "modes": [
+                {
+                    "key": "COS_G130M",
+                    "display_name": "COS G130M (medium resolution FUV)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "COS_G130M",
+                        "resolution_coefficients": [16000.0],
+                        "wavelength_min": 900.0,
+                        "wavelength_max": 1450.0
+                    }
+                },
+                {
+                    "key": "COS_G160M",
+                    "display_name": "COS G160M (medium resolution FUV)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "COS_G160M",
+                        "resolution_coefficients": [16000.0],
+                        "wavelength_min": 1405.0,
+                        "wavelength_max": 1775.0
+                    }
+                },
+                {
+                    "key": "COS_G140L",
+                    "display_name": "COS G140L (low resolution FUV)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "COS_G140L",
+                        "resolution_coefficients": [2000.0],
+                        "wavelength_min": 900.0,
+                        "wavelength_max": 2150.0
+                    }
+                },
+                {
+                    "key": "COS_G185M",
+                    "display_name": "COS G185M (medium resolution NUV)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "COS_G185M",
+                        "resolution_coefficients": [20000.0],
+                        "wavelength_min": 1700.0,
+                        "wavelength_max": 2100.0
+                    }
+                },
+                {
+                    "key": "COS_G230L",
+                    "display_name": "COS G230L (low resolution NUV)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "COS_G230L",
+                        "resolution_coefficients": [2500.0],
+                        "wavelength_min": 1650.0,
+                        "wavelength_max": 3200.0
+                    }
+                },
+                {
+                    "key": "STIS_G140L",
+                    "display_name": "STIS G140L (low resolution FUV)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "STIS_G140L",
+                        "resolution_coefficients": [1000.0],
+                        "wavelength_min": 1150.0,
+                        "wavelength_max": 1730.0
+                    }
+                },
+                {
+                    "key": "STIS_G230L",
+                    "display_name": "STIS G230L (low resolution NUV)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "STIS_G230L",
+                        "resolution_coefficients": [500.0],
+                        "wavelength_min": 1570.0,
+                        "wavelength_max": 3180.0
+                    }
+                },
+                {
+                    "key": "STIS_G430L",
+                    "display_name": "STIS G430L (low resolution blue)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "STIS_G430L",
+                        "resolution_coefficients": [530.0],
+                        "wavelength_min": 2900.0,
+                        "wavelength_max": 5700.0
+                    }
+                },
+                {
+                    "key": "STIS_G750L",
+                    "display_name": "STIS G750L (low resolution red)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "STIS_G750L",
+                        "resolution_coefficients": [560.0],
+                        "wavelength_min": 5240.0,
+                        "wavelength_max": 10270.0
+                    }
+                },
+                {
+                    "key": "STIS_G140M",
+                    "display_name": "STIS G140M (medium resolution FUV)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "STIS_G140M",
+                        "resolution_coefficients": [11400.0],
+                        "wavelength_min": 1140.0,
+                        "wavelength_max": 1740.0
+                    }
+                },
+                {
+                    "key": "STIS_G230M",
+                    "display_name": "STIS G230M (medium resolution NUV)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "STIS_G230M",
+                        "resolution_coefficients": [10000.0],
+                        "wavelength_min": 1640.0,
+                        "wavelength_max": 3100.0
+                    }
+                },
+                {
+                    "key": "STIS_E140M",
+                    "display_name": "STIS E140M (FUV echelle)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "STIS_E140M",
+                        "resolution_coefficients": [45800.0],
+                        "wavelength_min": 1144.0,
+                        "wavelength_max": 1710.0
+                    }
+                },
+                {
+                    "key": "STIS_E230M",
+                    "display_name": "STIS E230M (NUV echelle)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "STIS_E230M",
+                        "resolution_coefficients": [30000.0],
+                        "wavelength_min": 1605.0,
+                        "wavelength_max": 3110.0
+                    }
+                },
+                {
+                    "key": "STIS_E140H",
+                    "display_name": "STIS E140H (high resolution FUV echelle)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "STIS_E140H",
+                        "resolution_coefficients": [114000.0],
+                        "wavelength_min": 1140.0,
+                        "wavelength_max": 1700.0
+                    }
+                },
+                {
+                    "key": "STIS_E230H",
+                    "display_name": "STIS E230H (high resolution NUV echelle)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "STIS_E230H",
+                        "resolution_coefficients": [114000.0],
+                        "wavelength_min": 1620.0,
+                        "wavelength_max": 3150.0
+                    }
+                },
+                {
+                    "key": "WFC3_UVIS",
+                    "display_name": "WFC3/UVIS Imaging",
+                    "data_type": "photometry",
+                    "photometric": {
+                        "fov": 2.7,
+                        "pixel_scale": 0.0396,
+                        "filters": ["F218W", "F225W", "F275W", "F336W", "F438W",
+                                    "F475W", "F555W", "F606W", "F625W", "F775W",
+                                    "F814W"]
+                    }
+                },
+                {
+                    "key": "WFC3_IR",
+                    "display_name": "WFC3/IR Imaging",
+                    "data_type": "photometry",
+                    "photometric": {
+                        "fov": 2.1,
+                        "pixel_scale": 0.13,
+                        "filters": ["F105W", "F110W", "F125W", "F140W", "F160W"]
+                    }
+                },
+                {
+                    "key": "ACS_WFC",
+                    "display_name": "ACS/WFC Imaging",
+                    "data_type": "photometry",
+                    "photometric": {
+                        "fov": 3.4,
+                        "pixel_scale": 0.05,
+                        "filters": ["F435W", "F475W", "F555W", "F606W", "F625W",
+                                    "F775W", "F814W", "F850LP"]
+                    }
+                },
+                {
+                    "key": "ACS_SBC",
+                    "display_name": "ACS/SBC FUV Imaging",
+                    "data_type": "photometry",
+                    "photometric": {
+                        "fov": 0.6,
+                        "pixel_scale": 0.034,
+                        "filters": ["F115LP", "F125LP", "F140LP", "F150LP", "F165LP"]
+                    }
+                }
+            ]
         }
     ]
 }
