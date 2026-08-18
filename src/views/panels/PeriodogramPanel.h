@@ -39,6 +39,7 @@ public:
         int     nPoints  = 0;
         bool    eligible = false;   // passes the min-points threshold
         bool    enabled  = true;    // user check state
+        bool    prewhiten = false;  // pre-whitening toggled on for this series
     };
 
     /// One detected/added period peak.
@@ -48,6 +49,9 @@ public:
         double  power       = 0.0;
         double  periodError = 0.0;   // 1-σ (days)
         QString sourceLabel;         // periodogram label it was estimated from
+        QString aliasNote;           // non-empty if the peak looks like a
+                                     // sampling-comb line or an alias of a
+                                     // stronger peak
     };
 
     enum class XAxis { Frequency, Period };
@@ -72,6 +76,15 @@ public:
 
     void setSeriesEnabled(const QString& key, bool on);
     bool isSeriesEnabled(const QString& key) const;
+
+    // ── Pre-whitening ────────────────────────────────────────────────
+    /// Shared options (cycles / mode / harmonics); the per-series toggle
+    /// below decides where they apply. `cfg.enabled` is ignored here.
+    void setPreWhitenConfig(const Periodogram::PreWhitenConfig& cfg);
+    Periodogram::PreWhitenConfig preWhitenConfig() const { return _pwConfig; }
+
+    void setSeriesPreWhitened(const QString& key, bool on);
+    bool isSeriesPreWhitened(const QString& key) const;
 
     void setMinPointsThreshold(int n);
     int  minPointsThreshold() const { return _minPts; }
@@ -116,7 +129,17 @@ public:
                                   int maxPeaks = 5,
                                   double minRelSep = 0.05) const;
 
-    static PeriodPeak estimatePeakAt(const Periodogram::Result &res, double periodGuess, double relWindow = 0.05); 
+    static PeriodPeak estimatePeakAt(const Periodogram::Result &res, double periodGuess, double relWindow = 0.05);
+
+    /// Frequency tolerance (1/d) used for alias matching: a few Rayleigh
+    /// resolutions of the enabled series' time span. 0 if no data.
+    double aliasFrequencyTolerance() const;
+
+    /// Note if `frequency` sits on the daily sampling comb (or the lunar /
+    /// yearly lines), or relates to one of `stronger` by |f0 ± k·f_day|
+    /// or a yearly sidelobe. Empty if none match within `tolFreq`.
+    static QString aliasNoteFor(double frequency, double tolFreq,
+                                const QList<PeriodPeak>& stronger = {});
 
     // ── Display ─────────────────────────────────────────────────────
     void  setXAxis(XAxis ax);
@@ -280,4 +303,13 @@ private:
 
     int _minPts = 50;
     QHash<QString, bool> _userEnabled;
+
+    // Pre-whitening: shared options + per-series opt-in (default off).
+    Periodogram::PreWhitenConfig _pwConfig;
+    QHash<QString, bool>         _pwEnabled;
+
+    /// _pwConfig with `enabled` resolved from the series' toggle.
+    Periodogram::PreWhitenConfig seriesPreWhitenConfig(const QString& key) const;
+    /// Warn (status + log) if the active comb overlaps a marked peak.
+    void warnPreWhitenOverlaps();
 };

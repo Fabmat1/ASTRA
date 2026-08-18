@@ -1,6 +1,7 @@
 #include "BackgroundTaskManager.h"
 #include "../importWizard/ImportStagingArea.h"
 #include "../importWizard/SpectralFitImportPage.h"
+#include "CdsTapClient.h"
 #include "Logger.h"
 #include "SpectrumReader.h"
 #include "controllers/ApplicationController.h"
@@ -477,103 +478,62 @@ void GaiaQueryTask::execute() {
 }
 
 QString GaiaQueryTask::sendSyncQuery(const QString &adql, QString &error) {
-    QUrl            url("http://tapvizier.u-strasbg.fr/TAPVizieR/tap/sync");
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader,
-                      "application/x-www-form-urlencoded");
-    request.setRawHeader("User-Agent", "ASTRA/1.0");
-
     QUrlQuery postParams;
     postParams.addQueryItem("REQUEST", "doQuery");
     postParams.addQueryItem("LANG", "ADQL");
     postParams.addQueryItem("FORMAT", "csv");
     postParams.addQueryItem("QUERY", adql);
 
-    QNetworkReply *reply = _networkManager->post(
-        request, postParams.toString(QUrl::FullyEncoded).toUtf8());
-
-    QEventLoop loop;
-    QTimer     timeoutTimer;
-    timeoutTimer.setSingleShot(true);
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    timeoutTimer.start(300000);
-    loop.exec();
-
-    if (!timeoutTimer.isActive()) {
-        reply->abort();
-        error = "Query timed out";
-        reply->deleteLater();
+    const CdsTap::Response resp =
+        CdsTap::postVizierForm(_networkManager, postParams, 300000);
+    if (!resp.ok()) {
+        error = resp.error;
         return QString();
     }
-    if (reply->error() != QNetworkReply::NoError) {
-        error = QString("Network error - %1").arg(reply->errorString());
-        reply->deleteLater();
-        return QString();
-    }
-    QString response = QString::fromUtf8(reply->readAll());
-    reply->deleteLater();
-    return response;
+    return QString::fromUtf8(resp.body);
 }
 
 QString GaiaQueryTask::sendUploadQuery(const QString    &adql,
                                        const QByteArray &votable,
                                        QString          &error) {
-    QUrl            url("http://tapvizier.u-strasbg.fr/TAPVizieR/tap/sync");
-    QNetworkRequest request(url);
-    request.setRawHeader("User-Agent", "ASTRA/1.0");
+    // Rebuilt per attempt: a QHttpMultiPart is consumed by the reply that
+    // sends it and cannot be replayed on a retry.
+    auto makeBody = [&adql, &votable]() {
+        QHttpMultiPart *multiPart =
+            new QHttpMultiPart(QHttpMultiPart::FormDataType);
 
-    QHttpMultiPart *multiPart =
-        new QHttpMultiPart(QHttpMultiPart::FormDataType);
+        auto addField = [multiPart](const QString &name, const QString &value) {
+            QHttpPart part;
+            part.setHeader(QNetworkRequest::ContentDispositionHeader,
+                           QVariant(QString("form-data; name=\"%1\"").arg(name)));
+            part.setBody(value.toUtf8());
+            multiPart->append(part);
+        };
 
-    auto addField = [multiPart](const QString &name, const QString &value) {
-        QHttpPart part;
-        part.setHeader(QNetworkRequest::ContentDispositionHeader,
-                       QVariant(QString("form-data; name=\"%1\"").arg(name)));
-        part.setBody(value.toUtf8());
-        multiPart->append(part);
+        addField("REQUEST", "doQuery");
+        addField("LANG", "ADQL");
+        addField("FORMAT", "csv");
+        addField("UPLOAD", "stars,param:upltable");
+        addField("QUERY", adql);
+
+        QHttpPart tablePart;
+        tablePart.setHeader(QNetworkRequest::ContentTypeHeader,
+                            QVariant("application/x-votable+xml"));
+        tablePart.setHeader(
+            QNetworkRequest::ContentDispositionHeader,
+            QVariant("form-data; name=\"upltable\"; filename=\"upltable.xml\""));
+        tablePart.setBody(votable);
+        multiPart->append(tablePart);
+        return multiPart;
     };
 
-    addField("REQUEST", "doQuery");
-    addField("LANG", "ADQL");
-    addField("FORMAT", "csv");
-    addField("UPLOAD", "stars,param:upltable");
-    addField("QUERY", adql);
-
-    QHttpPart tablePart;
-    tablePart.setHeader(QNetworkRequest::ContentTypeHeader,
-                        QVariant("application/x-votable+xml"));
-    tablePart.setHeader(
-        QNetworkRequest::ContentDispositionHeader,
-        QVariant("form-data; name=\"upltable\"; filename=\"upltable.xml\""));
-    tablePart.setBody(votable);
-    multiPart->append(tablePart);
-
-    QNetworkReply *reply = _networkManager->post(request, multiPart);
-    multiPart->setParent(reply);
-
-    QEventLoop loop;
-    QTimer     timeoutTimer;
-    timeoutTimer.setSingleShot(true);
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    timeoutTimer.start(300000);
-    loop.exec();
-
-    if (!timeoutTimer.isActive()) {
-        reply->abort();
-        error = "Cross-match query timed out";
-        reply->deleteLater();
+    const CdsTap::Response resp =
+        CdsTap::postVizierMultipart(_networkManager, makeBody, 300000);
+    if (!resp.ok()) {
+        error = resp.error;
         return QString();
     }
-    if (reply->error() != QNetworkReply::NoError) {
-        error = QString("Network error - %1").arg(reply->errorString());
-        reply->deleteLater();
-        return QString();
-    }
-    QString response = QString::fromUtf8(reply->readAll());
-    reply->deleteLater();
-    return response;
+    return QString::fromUtf8(resp.body);
 }
 
 QString GaiaQueryTask::buildSourceIdQuery(
@@ -958,7 +918,7 @@ void SimbadQueryTask::execute()
     
     emit progress(QString("SIMBAD: Querying bibliography for %1 stars...").arg(_stars.size()));
     
-    QNetworkRequest request(QUrl("http://simbad.u-strasbg.fr/simbad/sim-script"));
+    QNetworkRequest request{QUrl(CdsTap::simbadScriptUrl())};
     request.setRawHeader("User-Agent", "ASTRA/1.0");
     
     QHttpMultiPart* multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);

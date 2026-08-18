@@ -310,6 +310,7 @@ set(SOURCES
     src/utils/QuantityFormat.cpp
     src/utils/BackgroundTaskManager.cpp
     src/utils/CatalogQueryWorkers.cpp
+    src/utils/CdsTapClient.cpp
     src/utils/CoastlineData.cpp
     src/utils/CrossRefResolver.cpp
     src/utils/DataStore.cpp

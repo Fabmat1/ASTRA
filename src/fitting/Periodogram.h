@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QString>
+#include <QStringList>
 #include <QVector>
 #include <QList>
 
@@ -45,6 +46,71 @@ inline constexpr int kFPWDefaultBins = 10;
 /// cannot produce an absurdly fine grid. A minimum period the user typed in is
 /// never clamped - asking for a 0.005 d search is legitimate.
 inline constexpr double kAutoMinPeriodFloor = 0.01;
+
+// ── Pre-whitening ────────────────────────────────────────────────────
+
+/// Nuisance cycles whose *real* power in the data (diurnal systematics,
+/// moonlight, seasonal trends) pre-whitening removes - and with it that
+/// power's window-function sidelobes. Aliases of a genuine stellar signal
+/// mirrored around the sampling comb are a different beast; those are only
+/// flagged (see PeriodogramPanel alias notes), never subtracted.
+enum Cycle : quint32 {
+    CycleSolarDay     = 1u << 0,
+    CycleSiderealDay  = 1u << 1,
+    CycleSynodicMonth = 1u << 2,
+    CycleYear         = 1u << 3,
+};
+
+/// Fundamental periods of the nuisance cycles, in days.
+inline constexpr double kSolarDayPeriod     = 1.0;
+inline constexpr double kSiderealDayPeriod  = 0.99726957;
+inline constexpr double kSynodicMonthPeriod = 29.530589;
+inline constexpr double kYearPeriod         = 365.25636;
+
+struct PreWhitenConfig {
+    /// Harmonic: one weighted linear least-squares fit of a truncated Fourier
+    /// series (`harmonics` sin/cos pairs per selected cycle) plus a constant,
+    /// subtracted in a single pass. Only removes power exactly on the comb.
+    ///
+    /// Template: for each selected cycle, fold at its fundamental period and
+    /// subtract the inverse-variance-weighted per-bin mean profile
+    /// (`templateBins` uniform phase bins). Captures strongly non-sinusoidal
+    /// systematics (airmass curves) including all their harmonics at once.
+    enum class Mode { Harmonic = 0, Template = 1 };
+
+    bool    enabled      = false;
+    quint32 cycles       = CycleSolarDay | CycleSiderealDay;
+    int     harmonics    = 2;    ///< per cycle; Harmonic mode only
+    Mode    mode         = Mode::Harmonic;
+    int     templateBins = 10;   ///< Template mode only
+
+    /// Also whiten integer multiples of the *daily* periods, up to
+    /// `subharmonics` x P (1 = fundamentals only). Phase-fold statistics (FPW)
+    /// respond to a daily systematic at every fold period k·P_day - the 2 d,
+    /// 3 d, 4 d... folds all contain the repeated daily profile - so removing
+    /// the 1 d line alone leaves its residual scatter standing there. Month /
+    /// year cycles are not multiplied.
+    int     subharmonics = 1;
+};
+
+/// The frequency comb (1/day) the config would try to remove: fundamentals of
+/// the selected cycles, expanded to `harmonics` multiples in Harmonic mode.
+/// Data-independent - prewhiten() may still drop unresolvable lines.
+QVector<double> preWhitenFrequencies(const PreWhitenConfig& cfg);
+
+/// Subtract the configured nuisance model from `y` and return the residuals.
+/// Returns `y` unchanged when disabled or when the fit is impossible (short
+/// baseline, degenerate comb, ...). Comb lines the time baseline cannot
+/// resolve are dropped rather than fitted; every such decision is appended to
+/// `notes` if given. Pure and thread-safe.
+QVector<double> prewhiten(const QVector<double>& t,
+                          const QVector<double>& y,
+                          const QVector<double>& e,
+                          const PreWhitenConfig& cfg,
+                          QStringList* notes = nullptr);
+
+/// Hash of everything in a PreWhitenConfig that changes prewhiten()'s output.
+quint64 hashPreWhiten(const PreWhitenConfig& cfg);
 
 struct Result {
     QVector<double> frequency;   ///< 1/day if t is in days

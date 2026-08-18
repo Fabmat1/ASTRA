@@ -1040,14 +1040,117 @@ QWidget* LightcurveFetchDialog::buildPeriodogramControls()
     topRow->addWidget(noneBtn);
     sLay->addLayout(topRow);
 
-    _seriesList = new QListWidget;
-    _seriesList->setAlternatingRowColors(true);
-    _seriesList->setMinimumHeight(110);
-    connect(_seriesList, &QListWidget::itemChanged,
+    _seriesTree = new QTreeWidget;
+    _seriesTree->setColumnCount(2);
+    _seriesTree->setHeaderLabels({tr("Series"), tr("PW")});
+    _seriesTree->setRootIsDecorated(false);
+    _seriesTree->setAlternatingRowColors(true);
+    _seriesTree->setMinimumHeight(110);
+    _seriesTree->header()->setStretchLastSection(false);
+    _seriesTree->header()->setSectionResizeMode(0, QHeaderView::Stretch);
+    _seriesTree->header()->setSectionResizeMode(1, QHeaderView::ResizeToContents);
+    _seriesTree->headerItem()->setToolTip(1,
+        tr("Pre-whiten this series before computing its periodogram\n"
+           "(see the Pre-whitening options below)."));
+    connect(_seriesTree, &QTreeWidget::itemChanged,
             this, &LightcurveFetchDialog::onSeriesItemChanged);
-    sLay->addWidget(_seriesList);
+    sLay->addWidget(_seriesTree);
 
     vlay->addWidget(seriesBox);
+
+    // ── Pre-whitening group ──
+    auto* pwBox  = new QGroupBox("Pre-whitening");
+    pwBox->setToolTip(
+        "Subtracts the fitted contribution of the selected nuisance cycles\n"
+        "(diurnal systematics, moonlight, seasonal trends) from a series before\n"
+        "its periodogram is computed, so those lines and their window-function\n"
+        "sidelobes disappear from the spectrum.\n\n"
+        "Applies only to series with PW checked in the list above. Note that\n"
+        "this cannot remove aliases of a genuine stellar signal - those are\n"
+        "flagged in the peaks table instead.");
+    auto* pwForm = new QFormLayout(pwBox);
+    pwForm->setLabelAlignment(Qt::AlignRight);
+    _pwForm = pwForm;
+
+    _pwModeCombo = new QComboBox;
+    _pwModeCombo->addItem("Harmonic fit",
+        static_cast<int>(Periodogram::PreWhitenConfig::Mode::Harmonic));
+    _pwModeCombo->addItem("Folded template",
+        static_cast<int>(Periodogram::PreWhitenConfig::Mode::Template));
+    _pwModeCombo->setToolTip(
+        "Harmonic fit: one weighted least-squares fit of sin/cos terms\n"
+        "(N harmonics per cycle) subtracted in a single pass. Safe default -\n"
+        "it only removes power exactly on the selected frequency comb.\n\n"
+        "Folded template: folds at each cycle's period and subtracts the\n"
+        "weighted per-bin mean profile. Better for strongly non-sinusoidal\n"
+        "systematics (airmass curves), at a slightly higher risk of absorbing\n"
+        "real signal when bins are sparsely populated.");
+    pwForm->addRow("Mode:", _pwModeCombo);
+
+    auto* cycHost = new QWidget;
+    auto* cycGrid = new QGridLayout(cycHost);
+    cycGrid->setContentsMargins(0, 0, 0, 0);
+    cycGrid->setHorizontalSpacing(12);
+    cycGrid->setVerticalSpacing(2);
+    _pwSolarCheck    = new QCheckBox("Solar day");
+    _pwSiderealCheck = new QCheckBox("Sidereal day");
+    _pwMonthCheck    = new QCheckBox("Synodic month");
+    _pwYearCheck     = new QCheckBox("Year");
+    _pwSolarCheck->setToolTip(QString("P = %1 d").arg(Periodogram::kSolarDayPeriod));
+    _pwSiderealCheck->setToolTip(QString("P = %1 d").arg(Periodogram::kSiderealDayPeriod));
+    _pwMonthCheck->setToolTip(QString("P = %1 d (moonlight)").arg(Periodogram::kSynodicMonthPeriod));
+    _pwYearCheck->setToolTip(QString("P = %1 d (seasonal window)").arg(Periodogram::kYearPeriod));
+    _pwSolarCheck->setChecked(true);
+    _pwSiderealCheck->setChecked(true);
+    cycGrid->addWidget(_pwSolarCheck,    0, 0);
+    cycGrid->addWidget(_pwSiderealCheck, 0, 1);
+    cycGrid->addWidget(_pwMonthCheck,    1, 0);
+    cycGrid->addWidget(_pwYearCheck,     1, 1);
+    pwForm->addRow("Cycles:", cycHost);
+
+    _pwMultiplesSpin = new QSpinBox;
+    _pwMultiplesSpin->setRange(1, 10);
+    _pwMultiplesSpin->setValue(4);
+    _pwMultiplesSpin->setToolTip(
+        "Also whiten integer multiples of the daily periods, up to this many\n"
+        "(1 = fundamentals only). FPW responds to a daily systematic at every\n"
+        "fold period k x 1 d, piling peaks up near 2 d, 3 d, 4 d... - whitening\n"
+        "those multiples removes that scatter. Beware: a genuine period near an\n"
+        "integer number of days will be attenuated too (a warning is shown if a\n"
+        "marked peak overlaps the comb).");
+    pwForm->addRow("Day multiples:", _pwMultiplesSpin);
+
+    _pwHarmonicsSpin = new QSpinBox;
+    _pwHarmonicsSpin->setRange(1, 8);
+    _pwHarmonicsSpin->setValue(2);
+    _pwHarmonicsSpin->setToolTip(
+        "Sin/cos pairs fitted per cycle. 1 = fundamental only;\n"
+        "2-3 covers most diurnal systematics.");
+    pwForm->addRow("Harmonics:", _pwHarmonicsSpin);
+
+    _pwBinsSpin = new QSpinBox;
+    _pwBinsSpin->setRange(2, 100);
+    _pwBinsSpin->setValue(10);
+    _pwBinsSpin->setToolTip(
+        "Uniform phase bins of the subtracted folded profile. Keep modest\n"
+        "(~10): sparse bins start absorbing real signal.");
+    pwForm->addRow("Phase bins:", _pwBinsSpin);
+
+    connect(_pwModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &LightcurveFetchDialog::onPreWhitenChanged);
+    connect(_pwHarmonicsSpin, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &LightcurveFetchDialog::onPreWhitenChanged);
+    connect(_pwMultiplesSpin, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &LightcurveFetchDialog::onPreWhitenChanged);
+    connect(_pwBinsSpin, QOverload<int>::of(&QSpinBox::valueChanged),
+            this, &LightcurveFetchDialog::onPreWhitenChanged);
+    for (auto* cb : {_pwSolarCheck, _pwSiderealCheck, _pwMonthCheck, _pwYearCheck})
+        connect(cb, &QCheckBox::toggled,
+                this, &LightcurveFetchDialog::onPreWhitenChanged);
+
+    onPreWhitenChanged();   // initial row visibility + push defaults
+
+    vlay->addWidget(pwBox);
 
     // ── Peaks group ──
     auto *peakBox = new QGroupBox("Period detection");
@@ -1125,8 +1228,8 @@ QWidget* LightcurveFetchDialog::buildPeriodogramControls()
     quickRow->addStretch();
     pLay->addLayout(quickRow);
 
-    _peaksTable = new QTableWidget(0, 4);
-    _peaksTable->setHorizontalHeaderLabels({"Period [d]", "± [d]", "Power", "Source"});
+    _peaksTable = new QTableWidget(0, 5);
+    _peaksTable->setHorizontalHeaderLabels({"Period [d]", "± [d]", "Power", "Source", "Note"});
     _peaksTable->horizontalHeader()->setSectionResizeMode(QHeaderView::ResizeToContents);
     _peaksTable->horizontalHeader()->setStretchLastSection(true);
     _peaksTable->verticalHeader()->setVisible(false);
@@ -1218,9 +1321,9 @@ void LightcurveFetchDialog::refreshPeakSourceCombo()
 
 void LightcurveFetchDialog::refreshSeriesListFromPanel()
 {
-    if (!_seriesList || !_periodogramPanel) return;
-    QSignalBlocker block(_seriesList);
-    _seriesList->clear();
+    if (!_seriesTree || !_periodogramPanel) return;
+    QSignalBlocker block(_seriesTree);
+    _seriesTree->clear();
 
     const auto info = _periodogramPanel->seriesInfo();
     for (const auto& si : info) {
@@ -1230,22 +1333,56 @@ void LightcurveFetchDialog::refreshSeriesListFromPanel()
         if (!si.eligible)
             label += QString("  - skipped (<%1)").arg(_periodogramPanel->minPointsThreshold());
 
-        auto* it = new QListWidgetItem(label);
-        it->setData(Qt::UserRole, si.key);
+        auto* it = new QTreeWidgetItem(_seriesTree);
+        it->setText(0, label);
+        it->setData(0, Qt::UserRole, si.key);
         it->setFlags(si.eligible
             ? (Qt::ItemIsUserCheckable | Qt::ItemIsEnabled | Qt::ItemIsSelectable)
             : (Qt::ItemIsSelectable));
-        it->setCheckState(si.enabled ? Qt::Checked : Qt::Unchecked);
-        _seriesList->addItem(it);
+        it->setCheckState(0, si.enabled ? Qt::Checked : Qt::Unchecked);
+        it->setCheckState(1, si.prewhiten ? Qt::Checked : Qt::Unchecked);
+        it->setToolTip(1, tr("Pre-whiten this series before computing."));
     }
     refreshPeakSourceCombo();
 }
 
-void LightcurveFetchDialog::onSeriesItemChanged(QListWidgetItem* it)
+void LightcurveFetchDialog::onSeriesItemChanged(QTreeWidgetItem* it, int col)
 {
     if (!it || !_periodogramPanel) return;
-    const QString key = it->data(Qt::UserRole).toString();
-    _periodogramPanel->setSeriesEnabled(key, it->checkState() == Qt::Checked);
+    const QString key = it->data(0, Qt::UserRole).toString();
+    if (col == 0)
+        _periodogramPanel->setSeriesEnabled(key, it->checkState(0) == Qt::Checked);
+    else if (col == 1)
+        _periodogramPanel->setSeriesPreWhitened(key, it->checkState(1) == Qt::Checked);
+}
+
+void LightcurveFetchDialog::onPreWhitenChanged()
+{
+    if (!_pwModeCombo) return;
+    const auto mode = static_cast<Periodogram::PreWhitenConfig::Mode>(
+        _pwModeCombo->currentData().toInt());
+    const bool harmonic = (mode == Periodogram::PreWhitenConfig::Mode::Harmonic);
+    if (_pwForm) {
+        if (_pwHarmonicsSpin) _pwForm->setRowVisible(_pwHarmonicsSpin, harmonic);
+        if (_pwBinsSpin)      _pwForm->setRowVisible(_pwBinsSpin, !harmonic);
+    }
+
+    Periodogram::PreWhitenConfig cfg;
+    cfg.mode         = mode;
+    cfg.harmonics    = _pwHarmonicsSpin ? _pwHarmonicsSpin->value() : 2;
+    cfg.templateBins = _pwBinsSpin ? _pwBinsSpin->value() : 10;
+    cfg.subharmonics = _pwMultiplesSpin ? _pwMultiplesSpin->value() : 1;
+    cfg.cycles       = 0;
+    if (_pwSolarCheck && _pwSolarCheck->isChecked())
+        cfg.cycles |= Periodogram::CycleSolarDay;
+    if (_pwSiderealCheck && _pwSiderealCheck->isChecked())
+        cfg.cycles |= Periodogram::CycleSiderealDay;
+    if (_pwMonthCheck && _pwMonthCheck->isChecked())
+        cfg.cycles |= Periodogram::CycleSynodicMonth;
+    if (_pwYearCheck && _pwYearCheck->isChecked())
+        cfg.cycles |= Periodogram::CycleYear;
+
+    if (_periodogramPanel) _periodogramPanel->setPreWhitenConfig(cfg);
 }
 
 void LightcurveFetchDialog::onMinPtsChanged(int v)
@@ -1255,16 +1392,16 @@ void LightcurveFetchDialog::onMinPtsChanged(int v)
 
 void LightcurveFetchDialog::onAllClicked()
 {
-    for (int i = 0; i < _seriesList->count(); ++i) {
-        auto* it = _seriesList->item(i);
-        if (it->flags() & Qt::ItemIsEnabled) it->setCheckState(Qt::Checked);
+    for (int i = 0; i < _seriesTree->topLevelItemCount(); ++i) {
+        auto* it = _seriesTree->topLevelItem(i);
+        if (it->flags() & Qt::ItemIsEnabled) it->setCheckState(0, Qt::Checked);
     }
 }
 
 void LightcurveFetchDialog::onNoneClicked()
 {
-    for (int i = 0; i < _seriesList->count(); ++i)
-        _seriesList->item(i)->setCheckState(Qt::Unchecked);
+    for (int i = 0; i < _seriesTree->topLevelItemCount(); ++i)
+        _seriesTree->topLevelItem(i)->setCheckState(0, Qt::Unchecked);
 }
 
 void LightcurveFetchDialog::onOptimalClicked()
@@ -1322,6 +1459,7 @@ void LightcurveFetchDialog::onComputeClicked()
 {
     if (!_periodogramPanel) return;
     onBackendChanged();
+    onPreWhitenChanged();
     _periodogramPanel->setGridParameters(_minPSpin->value(),
                                          _maxPSpin->value(),
                                          _nSampSpin->value(),
@@ -1435,6 +1573,7 @@ void LightcurveFetchDialog::onDoublePeriodClicked()
     pk.periodError = pk.periodError * 2.0;
     pk.sourceLabel = QString("2×%1")
                          .arg(QString::number(orig, 'g', 6));
+    pk.aliasNote.clear();   // the copied note applied to the original period
     addPeak(pk);
 }
 
@@ -1443,7 +1582,14 @@ void LightcurveFetchDialog::addPeak(const PeriodogramPanel::PeriodPeak& pk)
     if (pk.period <= 0) return;
     for (const auto& existing : _peaks)
         if (std::abs(existing.period - pk.period) / pk.period < 0.01) return;
-    _peaks.append(pk);
+    PeriodogramPanel::PeriodPeak annotated = pk;
+    if (annotated.aliasNote.isEmpty() && _periodogramPanel) {
+        const double f = annotated.frequency > 0 ? annotated.frequency
+                                                 : 1.0 / annotated.period;
+        annotated.aliasNote = PeriodogramPanel::aliasNoteFor(
+            f, _periodogramPanel->aliasFrequencyTolerance(), _peaks);
+    }
+    _peaks.append(annotated);
     std::sort(_peaks.begin(), _peaks.end(),
               [](const auto& a, const auto& b){ return a.period < b.period; });
     commitPeaks();
@@ -1508,6 +1654,15 @@ void LightcurveFetchDialog::rebuildPeaksTable()
                      : QString("-"));
         setItem(2, QString::number(pk.power, 'g', 3));
         setItem(3, pk.sourceLabel);
+        setItem(4, pk.aliasNote);
+        if (!pk.aliasNote.isEmpty()) {
+            // Suspected aliases stay in the list (the user decides) but are
+            // visually set apart.
+            auto* note = _peaksTable->item(i, 4);
+            note->setForeground(QColor(220, 60, 60));
+            note->setToolTip(tr("This peak matches a known sampling-alias "
+                                "relation - treat with suspicion."));
+        }
     }
     const bool any = !_peaks.isEmpty();
     _foldBtn->setEnabled(any);

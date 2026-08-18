@@ -218,6 +218,7 @@ QList<PeriodogramPanel::SeriesInfo> PeriodogramPanel::seriesInfo() const
         si.nPoints  = s.t.size();
         si.eligible = si.nPoints >= _minPts;
         si.enabled  = si.eligible && _userEnabled.value(si.key, true);
+        si.prewhiten = _pwEnabled.value(si.key, false);
         out.append(si);
     }
     return out;
@@ -232,6 +233,77 @@ void PeriodogramPanel::setSeriesEnabled(const QString& key, bool on)
 bool PeriodogramPanel::isSeriesEnabled(const QString& key) const
 {
     return _userEnabled.value(key, true);
+}
+
+void PeriodogramPanel::setPreWhitenConfig(const Periodogram::PreWhitenConfig& cfg)
+{
+    _pwConfig = cfg;
+}
+
+void PeriodogramPanel::setSeriesPreWhitened(const QString& key, bool on)
+{
+    _pwEnabled[key] = on;
+}
+
+bool PeriodogramPanel::isSeriesPreWhitened(const QString& key) const
+{
+    return _pwEnabled.value(key, false);
+}
+
+Periodogram::PreWhitenConfig
+PeriodogramPanel::seriesPreWhitenConfig(const QString& key) const
+{
+    Periodogram::PreWhitenConfig cfg = _pwConfig;
+    cfg.enabled = isSeriesPreWhitened(key);
+    return cfg;
+}
+
+// Fold the pre-whitening config into a grid hash. A disabled config returns
+// the base hash untouched, so caches from before this feature stay valid.
+static quint64 effectiveGridHash(quint64 base,
+                                 const Periodogram::PreWhitenConfig& cfg)
+{
+    if (!cfg.enabled) return base;
+    const quint64 h = Periodogram::hashPreWhiten(cfg);
+    return base ^ (h + 0x9e3779b97f4a7c15ULL + (base << 6) + (base >> 2));
+}
+
+void PeriodogramPanel::warnPreWhitenOverlaps()
+{
+    if (_markedPeaks.isEmpty()) return;
+
+    // Union span of the series pre-whitening will actually touch.
+    double tMin = 0, tMax = 0;
+    bool any = false;
+    for (const auto& s : _series) {
+        const QString k = makeKey(s.source, s.filter);
+        if (s.t.size() < _minPts || !isSeriesEnabled(k)
+            || !isSeriesPreWhitened(k) || s.t.isEmpty()) continue;
+        const auto [mn, mx] = std::minmax_element(s.t.constBegin(), s.t.constEnd());
+        if (!any) { tMin = *mn; tMax = *mx; any = true; }
+        else      { tMin = std::min(tMin, *mn); tMax = std::max(tMax, *mx); }
+    }
+    if (!any || !(tMax > tMin)) return;
+    const double tol = 1.5 / (tMax - tMin);
+
+    Periodogram::PreWhitenConfig cfg = _pwConfig;
+    cfg.enabled = true;
+    const QVector<double> comb = Periodogram::preWhitenFrequencies(cfg);
+
+    for (const auto& pk : _markedPeaks) {
+        if (pk.period <= 0) continue;
+        const double f = 1.0 / pk.period;
+        for (double fc : comb) {
+            if (std::abs(f - fc) >= tol) continue;
+            const QString msg = QString(
+                "Pre-whitening comb line at %1 1/d overlaps marked period "
+                "P = %2 d - that signal will be attenuated")
+                    .arg(fc, 0, 'g', 6).arg(pk.period, 0, 'g', 6);
+            LOG_WARNING("Periodogram", msg);
+            emit statusMessage(msg);
+            return;   // one warning is enough
+        }
+    }
 }
 
 void PeriodogramPanel::setMinPointsThreshold(int n)
@@ -401,7 +473,7 @@ void PeriodogramPanel::computeAll(bool force)
         LOG_WARNING("Periodogram", "Grid invalid; aborting compute");
         return;
     }
-    const quint64 gh = Periodogram::hashGrid(grid, _backend, _fpwBins);
+    const quint64 ghBase = Periodogram::hashGrid(grid, _backend, _fpwBins);
 
     if (force) {
         _perSeries.clear();
@@ -418,6 +490,7 @@ void PeriodogramPanel::computeAll(bool force)
         if (!isSeriesEnabled(k)) continue;
 
         const quint64 dh = Periodogram::hashData(s.t, s.y, s.e);
+        const quint64 gh = effectiveGridHash(ghBase, seriesPreWhitenConfig(k));
         const auto tag   = _cachedTags.constFind(k);
         const bool ok = _perSeries.contains(k)
                      && tag != _cachedTags.constEnd()
@@ -460,14 +533,21 @@ void PeriodogramPanel::computeAll(bool force)
         _progressPoll->stop();
     }
 
-    const QString msg = QString("Computing %1 series (%2)…")
-                            .arg(todo.size())
-                            .arg(_backend == Periodogram::Backend::FPW
-                                     ? QString("FPW, %1 bins").arg(_fpwBins)
-                                     : QStringLiteral("Lomb-Scargle"));
+    int nPw = 0;
+    for (int idx : todo)
+        if (isSeriesPreWhitened(makeKey(_series[idx].source, _series[idx].filter)))
+            ++nPw;
+
+    QString msg = QString("Computing %1 series (%2)…")
+                      .arg(todo.size())
+                      .arg(_backend == Periodogram::Backend::FPW
+                               ? QString("FPW, %1 bins").arg(_fpwBins)
+                               : QStringLiteral("Lomb-Scargle"));
+    if (nPw > 0) msg += QString(" · %1 pre-whitened").arg(nPw);
     _statusLabel->setText(msg);
     emit statusMessage(msg);
     emit computeStarted(todo.size());
+    if (nPw > 0) warnPreWhitenOverlaps();
 
     _jobs.clear();
     _jobs.reserve(todo.size());
@@ -487,14 +567,23 @@ void PeriodogramPanel::computeAll(bool force)
 
         QVector<double> t = s.t, y = s.y, e = s.e;
         const quint64 dh = Periodogram::hashData(t, y, e);
-        _cachedTags.insert(key, { dh, gh });
+        const auto    cfg = seriesPreWhitenConfig(key);
+        _cachedTags.insert(key, { dh, effectiveGridHash(ghBase, cfg) });
 
         const auto backend  = _backend;
         const int  bins     = _fpwBins;
         const auto progress = _progressCh;   // keeps the channel alive
         job.watcher->setFuture(QtConcurrent::run(
-            [t, y, e, grid, key, backend, bins, progress]() {
-                auto r = Periodogram::compute(backend, t, y, e, grid, bins,
+            [t, y, e, grid, key, backend, bins, cfg, progress]() {
+                QVector<double> yUse = y;
+                if (cfg.enabled) {
+                    QStringList notes;
+                    yUse = Periodogram::prewhiten(t, y, e, cfg, &notes);
+                    for (const QString& n : notes)
+                        LOG_INFO("Periodogram",
+                                 QString("prewhiten[%1]: %2").arg(key, n));
+                }
+                auto r = Periodogram::compute(backend, t, yUse, e, grid, bins,
                                               progress.get());
                 r.label = key;
                 return r;
@@ -995,6 +1084,81 @@ PeriodogramPanel::estimatePeakAt(const Periodogram::Result &res, double period,
     return pk;
 }
 
+double PeriodogramPanel::aliasFrequencyTolerance() const
+{
+    double tMin = 0, tMax = 0;
+    bool any = false;
+    for (const auto& s : _series) {
+        if (s.t.size() < _minPts || s.t.isEmpty()) continue;
+        if (!isSeriesEnabled(makeKey(s.source, s.filter))) continue;
+        const auto [mn, mx] = std::minmax_element(s.t.constBegin(), s.t.constEnd());
+        if (!any) { tMin = *mn; tMax = *mx; any = true; }
+        else      { tMin = std::min(tMin, *mn); tMax = std::max(tMax, *mx); }
+    }
+    if (!any || !(tMax > tMin)) return 0.0;
+    // ~2.5 Rayleigh resolutions: wide enough to catch a real alias whose peak
+    // sits a bin or two off the exact relation, narrow enough not to smear
+    // distinct periods together on multi-year baselines.
+    return 2.5 / (tMax - tMin);
+}
+
+QString PeriodogramPanel::aliasNoteFor(double frequency, double tolFreq,
+                                       const QList<PeriodPeak>& stronger)
+{
+    if (frequency <= 0 || tolFreq <= 0) return {};
+
+    // The daily-family responses in real data are broad and sit slightly off
+    // the exact relation (drifting systematics, yearly window structure), so
+    // a pure Rayleigh tolerance misses e.g. a 1.99 d subharmonic on a long
+    // baseline. Flagging is only a note, so a floor of 0.5% relative in
+    // frequency is the better trade-off.
+    constexpr double kAliasRelTol = 0.005;
+    const double tol = std::max(tolFreq, kAliasRelTol * frequency);
+
+    static const double kDaily[2] = { 1.0 / Periodogram::kSolarDayPeriod,
+                                      1.0 / Periodogram::kSiderealDayPeriod };
+
+    // On the sampling comb itself: diurnal harmonics, lunar and yearly lines.
+    // Solar vs sidereal day is rarely resolvable within tol, so the note
+    // doesn't distinguish them.
+    for (int k = 1; k <= 4; ++k)
+        for (double fd : kDaily)
+            if (std::abs(frequency - k * fd) <= tol)
+                return QString("near %1 c/d sampling comb").arg(k);
+
+    // Subharmonics of the daily comb: phase-fold statistics (FPW) respond to
+    // a daily systematic at every integer multiple of its period, so peaks
+    // pile up near 2 d, 3 d, ... as well.
+    for (int k = 2; k <= 10; ++k)
+        for (double fd : kDaily)
+            if (std::abs(frequency - fd / k) <= tol)
+                return QString("near %1 d sampling subharmonic").arg(k);
+
+    if (std::abs(frequency - 1.0 / Periodogram::kSynodicMonthPeriod) <= tol)
+        return QStringLiteral("near lunar synodic frequency");
+    if (std::abs(frequency - 1.0 / Periodogram::kYearPeriod) <= tol)
+        return QStringLiteral("near yearly frequency");
+
+    // Mirrored around the daily sampling frequency, or a yearly sidelobe, of a
+    // stronger peak.
+    for (const auto& sp : stronger) {
+        if (sp.frequency <= 0) continue;
+        for (double fd : kDaily) {
+            for (int k = 1; k <= 2; ++k) {
+                if (std::abs(frequency - (sp.frequency + k * fd)) <= tol ||
+                    std::abs(frequency - std::abs(sp.frequency - k * fd)) <= tol)
+                    return QString("%1 c/d alias of P = %2 d")
+                        .arg(k).arg(sp.period, 0, 'g', 6);
+            }
+        }
+        if (std::abs(std::abs(frequency - sp.frequency)
+                     - 1.0 / Periodogram::kYearPeriod) <= tol)
+            return QString("yearly sidelobe of P = %1 d")
+                .arg(sp.period, 0, 'g', 6);
+    }
+    return {};
+}
+
 QList<PeriodogramPanel::PeriodPeak>
 PeriodogramPanel::detectPeaks(const QString& resultLabel,
                               int maxPeaks, double minRelSep) const
@@ -1024,10 +1188,16 @@ PeriodogramPanel::detectPeaks(const QString& resultLabel,
         }
         if (!close) chosen.append(i);
     }
+    // `chosen` is strongest-first, so each peak is only tested against the
+    // peaks that outrank it - an alias note always points at a stronger peak.
+    const double tol = std::max(aliasFrequencyTolerance(), 3.0 * res.grid.df);
     for (int idx : chosen) {
         const double f = res.frequency[idx];
         if (f <= 0) continue;
-        peaks.append(estimatePeakAt(res, 1.0 / f));
+        PeriodPeak pk = estimatePeakAt(res, 1.0 / f);
+        pk.aliasNote = aliasNoteFor(pk.frequency > 0 ? pk.frequency : f,
+                                    tol, peaks);
+        peaks.append(pk);
     }
     std::sort(peaks.begin(), peaks.end(),
               [](const PeriodPeak& a, const PeriodPeak& b){ return a.period < b.period; });
@@ -1249,7 +1419,9 @@ void PeriodogramPanel::persistToCache()
         r->filter     = s.filter;
         r->result     = *it;
         r->dataHash   = Periodogram::hashData(s.t, s.y, s.e);
-        r->gridHash   = Periodogram::hashGrid(it->grid, _backend, _fpwBins);
+        r->gridHash   = effectiveGridHash(
+            Periodogram::hashGrid(it->grid, _backend, _fpwBins),
+            seriesPreWhitenConfig(k));
         r->computedAt = QDateTime::currentDateTime();
         recs.push_back(r);
         _cachedTags.insert(k, { r->dataHash, r->gridHash });
@@ -1270,6 +1442,14 @@ void PeriodogramPanel::persistToCacheAsync()
     const QHash<QString,Periodogram::Result> perSeries = _perSeries;
     const Periodogram::Backend               backend   = _backend;
     const int                                bins      = _fpwBins;
+    const Periodogram::PreWhitenConfig       pwCfg     = _pwConfig;
+    const QHash<QString,bool>                pwEnabled = _pwEnabled;
+
+    auto cfgFor = [pwCfg, pwEnabled](const QString& key) {
+        Periodogram::PreWhitenConfig c = pwCfg;
+        c.enabled = pwEnabled.value(key, false);
+        return c;
+    };
 
     // Refresh the in-memory cache tags synchronously so a subsequent compute can
     // tell its results are already cached without waiting for the disk write.
@@ -1278,10 +1458,12 @@ void PeriodogramPanel::persistToCacheAsync()
         auto it = _perSeries.constFind(k);
         if (it == _perSeries.constEnd() || !it->isValid()) continue;
         _cachedTags.insert(k, { Periodogram::hashData(s.t, s.y, s.e),
-                                Periodogram::hashGrid(it->grid, backend, bins) });
+                                effectiveGridHash(
+                                    Periodogram::hashGrid(it->grid, backend, bins),
+                                    cfgFor(k)) });
     }
 
-    auto future = QtConcurrent::run([dbm, starId, series, perSeries, backend, bins]() {
+    auto future = QtConcurrent::run([dbm, starId, series, perSeries, backend, bins, cfgFor]() {
         std::vector<std::shared_ptr<PeriodogramRecord>> recs;
         recs.reserve(perSeries.size());
         for (const auto& s : series) {
@@ -1293,7 +1475,8 @@ void PeriodogramPanel::persistToCacheAsync()
             r->filter     = s.filter;
             r->result     = *it;
             r->dataHash   = Periodogram::hashData(s.t, s.y, s.e);
-            r->gridHash   = Periodogram::hashGrid(it->grid, backend, bins);
+            r->gridHash   = effectiveGridHash(
+                Periodogram::hashGrid(it->grid, backend, bins), cfgFor(k));
             r->computedAt = QDateTime::currentDateTime();
             recs.push_back(r);
         }
@@ -1324,6 +1507,7 @@ QString PeriodogramPanel::peaksToJson(const QList<PeriodPeak>& peaks)
         o["power"]       = pk.power;
         o["periodError"] = pk.periodError;
         o["source"]      = pk.sourceLabel;
+        if (!pk.aliasNote.isEmpty()) o["aliasNote"] = pk.aliasNote;
         arr.append(o);
     }
     return QString::fromUtf8(QJsonDocument(arr).toJson(QJsonDocument::Compact));
@@ -1348,6 +1532,7 @@ PeriodogramPanel::peaksFromJson(const QString& json)
         pk.power       = o.value("power").toDouble();
         pk.periodError = o.value("periodError").toDouble();
         pk.sourceLabel = o.value("source").toString();
+        pk.aliasNote   = o.value("aliasNote").toString();
         if (pk.period > 0) out.append(pk);
     }
     return out;

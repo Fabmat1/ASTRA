@@ -2,6 +2,7 @@
 
 #include "CatalogQueryWorkers.h"
 #include "models/Star.h"
+#include "utils/CdsTapClient.h"
 
 #include <QNetworkAccessManager>
 #include <QNetworkRequest>
@@ -50,7 +51,7 @@ void SimbadWorker::process()
     
     emit progress(0, _stars.size(), "Sending query to SIMBAD...");
     
-    QNetworkRequest request(QUrl("http://simbad.u-strasbg.fr/simbad/sim-script"));
+    QNetworkRequest request{QUrl(CdsTap::simbadScriptUrl())};
     request.setRawHeader("User-Agent", "ASTRA/1.0");
     
     QHttpMultiPart* multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
@@ -291,61 +292,29 @@ void GaiaWorker::process()
     
     emit progress(10, 100, "Sending query to VizieR TAP...");
     
-    QUrl url("http://tapvizier.u-strasbg.fr/TAPVizieR/tap/sync");
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/x-www-form-urlencoded");
-    request.setRawHeader("User-Agent", "ASTRA/1.0");
-    
     QUrlQuery postParams;
     postParams.addQueryItem("REQUEST", "doQuery");
     postParams.addQueryItem("LANG", "ADQL");
     postParams.addQueryItem("FORMAT", "csv");
     postParams.addQueryItem("QUERY", adqlQuery);
-    
-    QByteArray postData = postParams.toString(QUrl::FullyEncoded).toUtf8();
-    
-    QNetworkReply* reply = _networkManager->post(request, postData);
-    
-    connect(reply, &QNetworkReply::downloadProgress, this, 
-            [this](qint64 received, qint64 total) {
-        if (total > 0) {
-            int pct = 10 + (received * 40 / total);
-            emit progress(pct, 100, QString("Downloading... %1 KB").arg(received / 1024));
-        }
-    });
-    
-    QEventLoop loop;
-    QTimer timeoutTimer;
-    timeoutTimer.setSingleShot(true);
-    
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    
-    timeoutTimer.start(300000);
-    loop.exec();
-    
-    if (!timeoutTimer.isActive()) {
-        reply->abort();
-        emit error("Gaia query timed out after 5 minutes");
-        reply->deleteLater();
-        return;
-    }
-    
-    if (reply->error() != QNetworkReply::NoError) {
-        QString errorDetails = reply->errorString();
-        QByteArray responseData = reply->readAll();
-        if (!responseData.isEmpty()) {
-            errorDetails += "\nResponse: " + QString::fromUtf8(responseData.left(500));
-        }
-        emit error(QString("VizieR error: %1").arg(errorDetails));
-        reply->deleteLater();
+
+    const CdsTap::Response tapResponse = CdsTap::postVizierForm(
+        _networkManager, postParams, 300000,
+        [this](qint64 received, qint64 total) {
+            if (total > 0) {
+                int pct = 10 + (received * 40 / total);
+                emit progress(pct, 100, QString("Downloading... %1 KB").arg(received / 1024));
+            }
+        });
+
+    if (!tapResponse.ok()) {
+        emit error(QString("VizieR error: %1").arg(tapResponse.error));
         return;
     }
     
     emit progress(50, 100, "Parsing Gaia response...");
     
-    QString response = QString::fromUtf8(reply->readAll());
-    reply->deleteLater();
+    QString response = QString::fromUtf8(tapResponse.body);
     
     qDebug() << "Gaia response size:" << response.size() << "bytes";
     

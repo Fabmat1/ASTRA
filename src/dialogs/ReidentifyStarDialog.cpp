@@ -2,6 +2,7 @@
 
 #include "db/DatabaseManager.h" // adjust include path to your DatabaseManager
 #include "models/Star.h"
+#include "utils/CdsTapClient.h"
 #include "utils/Logger.h"
 
 #include <QApplication>
@@ -531,42 +532,19 @@ bool ReidentifyStarDialog::coneSearchGaia(double ra, double dec,
 
     LOG_DEBUG("ReidentifyStarDialog", QString("Cone ADQL: %1").arg(adql));
 
-    QNetworkRequest req(
-        QUrl("http://tapvizier.u-strasbg.fr/TAPVizieR/tap/sync"));
-    req.setHeader(QNetworkRequest::ContentTypeHeader,
-                  "application/x-www-form-urlencoded");
-    req.setRawHeader("User-Agent", "ASTRA/1.0");
-
     QUrlQuery post;
     post.addQueryItem("REQUEST", "doQuery");
     post.addQueryItem("LANG", "ADQL");
     post.addQueryItem("FORMAT", "csv");
     post.addQueryItem("QUERY", adql);
 
-    QNetworkReply *reply =
-        _network->post(req, post.toString(QUrl::FullyEncoded).toUtf8());
-    QEventLoop loop;
-    QTimer     timeout;
-    timeout.setSingleShot(true);
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
-    timeout.start(30000);
-    loop.exec();
-
-    if (!timeout.isActive()) {
-        reply->abort();
-        reply->deleteLater();
-        err = "VizieR timed out";
-        return false;
-    }
-    if (reply->error() != QNetworkReply::NoError) {
-        err = reply->errorString();
-        reply->deleteLater();
+    const CdsTap::Response resp = CdsTap::postVizierForm(_network, post, 30000);
+    if (!resp.ok()) {
+        err = resp.error;
         return false;
     }
 
-    const QString body = QString::fromUtf8(reply->readAll());
-    reply->deleteLater();
+    const QString body = QString::fromUtf8(resp.body);
 
     const Csv csv = parseCsv(body);
     for (const QStringList &row : csv.rows) {
@@ -723,42 +701,19 @@ bool ReidentifyStarDialog::fetchGaiaFull(const QString &sourceId, GaiaData &out,
         "FROM \"I/355/gaiadr3\" WHERE Source=" +
         sourceId;
 
-    QNetworkRequest req(
-        QUrl("http://tapvizier.u-strasbg.fr/TAPVizieR/tap/sync"));
-    req.setHeader(QNetworkRequest::ContentTypeHeader,
-                  "application/x-www-form-urlencoded");
-    req.setRawHeader("User-Agent", "ASTRA/1.0");
-
     QUrlQuery post;
     post.addQueryItem("REQUEST", "doQuery");
     post.addQueryItem("LANG", "ADQL");
     post.addQueryItem("FORMAT", "csv");
     post.addQueryItem("QUERY", adql);
 
-    QNetworkReply *reply =
-        _network->post(req, post.toString(QUrl::FullyEncoded).toUtf8());
-    QEventLoop loop;
-    QTimer     timeout;
-    timeout.setSingleShot(true);
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
-    timeout.start(30000);
-    loop.exec();
-
-    if (!timeout.isActive()) {
-        reply->abort();
-        reply->deleteLater();
-        err = "VizieR timed out";
-        return false;
-    }
-    if (reply->error() != QNetworkReply::NoError) {
-        err = reply->errorString();
-        reply->deleteLater();
+    const CdsTap::Response resp = CdsTap::postVizierForm(_network, post, 30000);
+    if (!resp.ok()) {
+        err = resp.error;
         return false;
     }
 
-    const QString body = QString::fromUtf8(reply->readAll());
-    reply->deleteLater();
+    const QString body = QString::fromUtf8(resp.body);
 
     const Csv csv = parseCsv(body);
     if (csv.empty()) {

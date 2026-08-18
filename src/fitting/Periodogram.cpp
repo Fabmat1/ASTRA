@@ -964,4 +964,274 @@ quint64 hashGrid(const Grid& g, Backend backend, int nBins)
     return fnv1a64(buf, sizeof(buf));
 }
 
+// ── Pre-whitening ────────────────────────────────────────────────────
+
+// One period pre-whitening will operate at. `binScale` carries the
+// day-multiple factor so Template mode can keep its per-day phase resolution
+// when folding at k x P_day (bins scale with k); it is 1 for fundamentals and
+// for the month / year cycles.
+struct WhitenLine { double freq = 0.0; int binScale = 1; };
+
+// Fundamentals of the selected cycles, with the daily periods expanded to
+// their integer multiples up to cfg.subharmonics (see the header for why).
+static QVector<WhitenLine> cycleFundamentals(const PreWhitenConfig& cfg)
+{
+    const int S = std::clamp(cfg.subharmonics, 1, 10);
+    QVector<WhitenLine> out;
+    auto addDaily = [&](double P) {
+        for (int k = 1; k <= S; ++k) out.append({1.0 / (k * P), k});
+    };
+    if (cfg.cycles & CycleSolarDay)     addDaily(kSolarDayPeriod);
+    if (cfg.cycles & CycleSiderealDay)  addDaily(kSiderealDayPeriod);
+    if (cfg.cycles & CycleSynodicMonth) out.append({1.0 / kSynodicMonthPeriod, 1});
+    if (cfg.cycles & CycleYear)         out.append({1.0 / kYearPeriod, 1});
+    return out;
+}
+
+QVector<double> preWhitenFrequencies(const PreWhitenConfig& cfg)
+{
+    const QVector<WhitenLine> fund = cycleFundamentals(cfg);
+    QVector<double> out;
+
+    if (cfg.mode == PreWhitenConfig::Mode::Template) {
+        out.reserve(fund.size());
+        for (const auto& l : fund) out.append(l.freq);
+        std::sort(out.begin(), out.end());
+        return out;
+    }
+
+    const int H = std::clamp(cfg.harmonics, 1, 8);
+    out.reserve(fund.size() * H);
+    for (const auto& l : fund)
+        for (int k = 1; k <= H; ++k) out.append(k * l.freq);
+    std::sort(out.begin(), out.end());
+    return out;
+}
+
+// Drop comb lines the baseline cannot support: anything with less than one
+// full cycle over the time span, and the later of any pair closer than the
+// Rayleigh resolution 1/T (fitting both would be near-degenerate and the
+// normal equations would subtract arbitrary amounts of signal at the pair).
+static QVector<double> resolvableComb(QVector<double> comb, double span,
+                                      QStringList* notes)
+{
+    std::sort(comb.begin(), comb.end());
+    QVector<double> kept;
+    kept.reserve(comb.size());
+    const double fRes = 1.0 / span;
+    for (double f : comb) {
+        if (f * span < 1.0) {
+            if (notes) notes->append(
+                QString("dropped %1 1/d: less than one cycle over the %2 d baseline")
+                    .arg(f, 0, 'g', 6).arg(span, 0, 'g', 4));
+            continue;
+        }
+        // Exact duplicates (harmonic expansion of day multiples produces
+        // them, e.g. 2/d = 2 x 1 d = 4 x 2 d) go silently.
+        if (!kept.isEmpty() && (f - kept.last()) < 1e-9 * f) continue;
+        if (!kept.isEmpty() && (f - kept.last()) < 0.9 * fRes) {
+            if (notes) notes->append(
+                QString("dropped %1 1/d: unresolvable from %2 1/d over %3 d")
+                    .arg(f, 0, 'g', 8).arg(kept.last(), 0, 'g', 8)
+                    .arg(span, 0, 'g', 4));
+            continue;
+        }
+        kept.append(f);
+    }
+    return kept;
+}
+
+// Mode A: constant + sin/cos at every comb line, one weighted linear
+// least-squares solve, sinusoid part subtracted. Normal equations are
+// accumulated point-by-point so no N x K design matrix is ever materialised.
+static QVector<double> prewhitenHarmonic(const QVector<double>& t,
+                                         const QVector<double>& y,
+                                         const std::vector<double>& w,
+                                         const QVector<double>& comb,
+                                         QStringList* notes)
+{
+    const int n = t.size();
+    const int K = 1 + 2 * comb.size();
+
+    Eigen::MatrixXd A = Eigen::MatrixXd::Zero(K, K);
+    Eigen::VectorXd b = Eigen::VectorXd::Zero(K);
+    Eigen::VectorXd x(K);
+
+    const double t0 = *std::min_element(t.constBegin(), t.constEnd());
+    for (int i = 0; i < n; ++i) {
+        x(0) = 1.0;
+        const double ti = t[i] - t0;
+        for (int c = 0; c < comb.size(); ++c) {
+            const double ph = 2.0 * M_PI * comb[c] * ti;
+            x(1 + 2 * c)     = std::sin(ph);
+            x(1 + 2 * c + 1) = std::cos(ph);
+        }
+        A.selfadjointView<Eigen::Lower>().rankUpdate(x, w[i]);
+        b += (w[i] * y[i]) * x;
+    }
+
+    const Eigen::VectorXd coef =
+        A.selfadjointView<Eigen::Lower>().ldlt().solve(b);
+    if (!coef.allFinite()) {
+        if (notes) notes->append("harmonic fit degenerate; series left untouched");
+        return y;
+    }
+
+    // Subtract the sinusoids only - the fitted constant stays so the series
+    // keeps its flux level.
+    QVector<double> out(n);
+    for (int i = 0; i < n; ++i) {
+        const double ti = t[i] - t0;
+        double model = 0.0;
+        for (int c = 0; c < comb.size(); ++c) {
+            const double ph = 2.0 * M_PI * comb[c] * ti;
+            model += coef(1 + 2 * c)     * std::sin(ph)
+                   + coef(1 + 2 * c + 1) * std::cos(ph);
+        }
+        out[i] = y[i] - model;
+    }
+    return out;
+}
+
+// Same resolvability rules as resolvableComb, but keeping each line's
+// binScale. Exact duplicates cannot occur here (fundamentals only).
+static QVector<WhitenLine> resolvableLines(QVector<WhitenLine> lines,
+                                           double span, QStringList* notes)
+{
+    std::sort(lines.begin(), lines.end(),
+              [](const WhitenLine& a, const WhitenLine& b){ return a.freq < b.freq; });
+    QVector<WhitenLine> kept;
+    kept.reserve(lines.size());
+    const double fRes = 1.0 / span;
+    for (const auto& l : lines) {
+        if (l.freq * span < 1.0) {
+            if (notes) notes->append(
+                QString("dropped %1 1/d: less than one cycle over the %2 d baseline")
+                    .arg(l.freq, 0, 'g', 6).arg(span, 0, 'g', 4));
+            continue;
+        }
+        if (!kept.isEmpty() && (l.freq - kept.last().freq) < 0.9 * fRes) {
+            if (notes) notes->append(
+                QString("dropped %1 1/d: unresolvable from %2 1/d over %3 d")
+                    .arg(l.freq, 0, 'g', 8).arg(kept.last().freq, 0, 'g', 8)
+                    .arg(span, 0, 'g', 4));
+            continue;
+        }
+        kept.append(l);
+    }
+    return kept;
+}
+
+// Mode B: sequentially fold at each line's period and subtract the weighted
+// per-bin mean profile (relative to the global weighted mean). Subtraction
+// runs shortest period first, so the dominant daily profile is gone before
+// its multiples mop up the residual scatter. Day-multiple folds use
+// binScale x nBins bins to keep per-day phase resolution. Bins holding fewer
+// than kMinPtsPerBin points are left untouched - zeroing a one-point bin
+// would delete that point's signal outright.
+static QVector<double> prewhitenTemplate(const QVector<double>& t,
+                                         QVector<double> y,
+                                         const std::vector<double>& w,
+                                         QVector<WhitenLine> lines,
+                                         int nBins, double span,
+                                         QStringList* notes)
+{
+    constexpr int kMinPtsPerBin = 3;
+    const int n = t.size();
+    const double t0 = *std::min_element(t.constBegin(), t.constEnd());
+
+    std::sort(lines.begin(), lines.end(),
+              [](const WhitenLine& a, const WhitenLine& b){ return a.freq > b.freq; });
+
+    std::vector<int>    binOf(n);
+    std::vector<double> sumWY, sumW;
+    std::vector<int>    cnt;
+
+    for (const auto& line : lines) {
+        const double f = line.freq;
+        const double P = 1.0 / f;
+        const int M = std::clamp(nBins, 2, 1000 / std::max(1, line.binScale))
+                    * std::max(1, line.binScale);
+
+        sumWY.assign(M, 0.0);
+        sumW.assign(M, 0.0);
+        cnt.assign(M, 0);
+
+        double gW = 0.0, gWY = 0.0;
+        for (int i = 0; i < n; ++i) {
+            const double ph = (t[i] - t0) * f;
+            int b = static_cast<int>((ph - std::floor(ph)) * M);
+            if (b >= M) b = M - 1;   // guard against frac() rounding to 1.0
+            binOf[i] = b;
+            sumWY[b] += w[i] * y[i];
+            sumW[b]  += w[i];
+            ++cnt[b];
+            gW  += w[i];
+            gWY += w[i] * y[i];
+        }
+        if (!(gW > 0.0)) continue;
+        const double mean = gWY / gW;
+
+        int used = 0;
+        for (int b = 0; b < M; ++b)
+            if (cnt[b] >= kMinPtsPerBin && sumW[b] > 0.0) ++used;
+        if (used < 2) {
+            if (notes) notes->append(
+                QString("template at P=%1 d skipped: fewer than 2 usable phase bins")
+                    .arg(P, 0, 'g', 6));
+            continue;
+        }
+
+        for (int i = 0; i < n; ++i) {
+            const int b = binOf[i];
+            if (cnt[b] < kMinPtsPerBin || !(sumW[b] > 0.0)) continue;
+            y[i] -= sumWY[b] / sumW[b] - mean;
+        }
+    }
+    return y;
+}
+
+QVector<double> prewhiten(const QVector<double>& t,
+                          const QVector<double>& y,
+                          const QVector<double>& e,
+                          const PreWhitenConfig& cfg,
+                          QStringList* notes)
+{
+    if (!cfg.enabled || t.size() < 8 || t.size() != y.size()) return y;
+
+    const auto [mnIt, mxIt] = std::minmax_element(t.constBegin(), t.constEnd());
+    const double span = *mxIt - *mnIt;
+    if (!(span > 0.0)) return y;
+
+    // sigma <= 0 or missing errors fall back to unit weight, as in the
+    // periodogram backends.
+    std::vector<double> w(t.size(), 1.0);
+    if (e.size() == t.size())
+        for (int i = 0; i < t.size(); ++i)
+            if (e[i] > 0.0) w[i] = 1.0 / (e[i] * e[i]);
+
+    if (cfg.mode == PreWhitenConfig::Mode::Template) {
+        const QVector<WhitenLine> lines =
+            resolvableLines(cycleFundamentals(cfg), span, notes);
+        if (lines.isEmpty()) return y;
+        return prewhitenTemplate(t, y, w, lines, cfg.templateBins, span, notes);
+    }
+
+    const QVector<double> comb =
+        resolvableComb(preWhitenFrequencies(cfg), span, notes);
+    if (comb.isEmpty()) return y;
+    return prewhitenHarmonic(t, y, w, comb, notes);
+}
+
+quint64 hashPreWhiten(const PreWhitenConfig& cfg)
+{
+    const double buf[6] = { cfg.enabled ? 1.0 : 0.0,
+                            static_cast<double>(cfg.cycles),
+                            static_cast<double>(std::clamp(cfg.harmonics, 1, 8)),
+                            static_cast<double>(static_cast<int>(cfg.mode)),
+                            static_cast<double>(cfg.templateBins),
+                            static_cast<double>(std::clamp(cfg.subharmonics, 1, 10)) };
+    return fnv1a64(buf, sizeof(buf));
+}
+
 } // namespace Periodogram

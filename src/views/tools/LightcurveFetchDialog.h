@@ -77,8 +77,11 @@ private slots:
     // Periodogram tab
     void onPeriodogramTabActivated();
     void refreshSeriesListFromPanel();
-    void onSeriesItemChanged(QListWidgetItem* it);
+    void onSeriesItemChanged(QTreeWidgetItem* it, int col);
     void onMinPtsChanged(int v);
+    /// Push the pre-whitening options (mode / cycles / harmonics / bins) into
+    /// the panel and show or hide the mode-specific rows.
+    void onPreWhitenChanged();
     void onAllClicked();
     void onNoneClicked();
     void onOptimalClicked();
@@ -203,7 +206,18 @@ private slots:
 
     // Series selection controls
     QSpinBox*    _minPtsSpin = nullptr;
-    QListWidget* _seriesList = nullptr;
+    QTreeWidget* _seriesTree = nullptr;   // col 0 = enabled, col 1 = pre-whiten
+
+    // Pre-whitening options (shared; the per-series PW column opts in)
+    QFormLayout* _pwForm          = nullptr;
+    QComboBox*   _pwModeCombo     = nullptr;
+    QSpinBox*    _pwHarmonicsSpin = nullptr;
+    QSpinBox*    _pwBinsSpin      = nullptr;
+    QSpinBox*    _pwMultiplesSpin = nullptr;
+    QCheckBox*   _pwSolarCheck    = nullptr;
+    QCheckBox*   _pwSiderealCheck = nullptr;
+    QCheckBox*   _pwMonthCheck    = nullptr;
+    QCheckBox*   _pwYearCheck     = nullptr;
 
     // Peak detection
     QComboBox*    _peakSourceCombo  = nullptr;
