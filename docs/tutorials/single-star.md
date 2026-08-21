@@ -44,7 +44,7 @@ panel already shows the catalog data; everything else is still empty.
 
 !!! tip
     If an instrument is not recognized, define it first under
-    **Analysis → Instruments…**, then use **Re-detect instruments/modes**.
+    **Data → Instruments…**, then use **Re-detect instruments/modes**.
 
 ## Step 3: Fit the spectra
 

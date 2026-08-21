@@ -21,6 +21,7 @@ class ProjectSelectionView;
 class InstrumentConfigView;
 class ProjectView;
 class LightcurveFetchSessionsDialog;
+class SpectrumFetchSessionsDialog;
 class UpdateManager;
 struct UpdateInfo;
 struct ThemeInfo;
@@ -46,6 +47,7 @@ private slots:
     void onThemeChanged(const QString& themeId);
     void onShowInstrumentConfig();
     void onShowLcFetchSessions();
+    void onShowSpectrumFetchSessions();
 
 private:
     void setupUi();
@@ -71,6 +73,7 @@ private:
     QMenu* _viewMenu;
     QMenu* _themeMenu;
     QMenu* _starsMenu;
+    QMenu* _dataMenu = nullptr;
     QMenu* _analysisMenu;
     QMenu* _helpMenu;
 
@@ -104,9 +107,12 @@ private:
     QString _pendingImportPath;
     // Analysis menu actions
     QAction* _createPlotAction;
-    QAction* _fetchLightcurvesAction = nullptr;
     QAction* _computeKinematicsAction = nullptr;
     QAction* _rvDetectabilityAction = nullptr;
+
+    // Data menu actions
+    QAction* _fetchLightcurvesAction = nullptr;
+    QAction* _fetchSpectraAction = nullptr;
 
     QAction* _instrumentConfigAction = nullptr;
     InstrumentConfigView* _instrumentConfigView = nullptr;
@@ -117,6 +123,13 @@ private:
     QToolButton*  _lcFetchBtn      = nullptr;
     QProgressBar* _lcFetchProgress = nullptr;
     LightcurveFetchSessionsDialog* _lcSessionsDialog = nullptr;
+
+    // Spectrum fetch status-bar widget
+    void setupSpecFetchStatusWidget();
+    QWidget*      _specFetchWidget   = nullptr;
+    QToolButton*  _specFetchBtn      = nullptr;
+    QProgressBar* _specFetchProgress = nullptr;
+    SpectrumFetchSessionsDialog* _specSessionsDialog = nullptr;
 };
 
 #endif // MAINWINDOW_H

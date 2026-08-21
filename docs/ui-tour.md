@@ -27,7 +27,7 @@ Opening a project switches the main window to the project view:
   filters, and a collapsible **Observability filter** (observatory, date,
   minimum altitude, twilight definition). The observability filter becomes
   available once a ground-based instrument is configured under
-  **Analysis → Instruments…**.
+  **Data → Instruments…**.
 - **Star table** - the heart of ASTRA. Sortable, multi-selectable, with
   right-click context menus for copying, sharing, moving stars between
   projects, and opening the detail view. Dropping a `.astra` file onto the
@@ -61,9 +61,10 @@ presets (`Default`, `Radial Velocity`, `Atmospheric`, `SED`, `Photometric`,
 - **Stars** *(project open)* - add, import, export (FITS/CSV/clipboard),
   share/receive `.astra` packages, copy/move to other projects, remove, and
   the detail window.
-- **Analysis** *(project open)* - **Create Plot…**, **Fetch Lightcurves…**,
-  **Compute Galactic Kinematics**, **RV Detectability…**, and
-  **Instruments…**.
+- **Data** *(project open)* - **Fetch Lightcurves…**, **Fetch Spectra…**,
+  and **Instruments…**.
+- **Analysis** *(project open)* - **Create Plot…**,
+  **Compute Galactic Kinematics**, and **RV Detectability…**.
 - **Help** - What's New, update check, About.
 
 ## The Star Detail window

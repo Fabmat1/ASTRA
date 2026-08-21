@@ -105,11 +105,13 @@ bool SpectrumRepository::saveSpectrum(const QString            &starId,
         INSERT OR REPLACE INTO spectra (
             id, star_id, file, instrument, instrument_id, mode_key,
             mjd, bjd, exposure_time,
-            data_file, barycentric_corrected, is_flagged
+            data_file, barycentric_corrected, is_flagged,
+            origin, origin_id, is_coadd, origin_meta
         ) VALUES (
             :id, :star_id, :file, :instrument, :instrument_id, :mode_key,
             :mjd, :bjd, :exposure_time,
-            :data_file, :barycentric_corrected, :is_flagged
+            :data_file, :barycentric_corrected, :is_flagged,
+            :origin, :origin_id, :is_coadd, :origin_meta
         )
     )");
     
@@ -133,6 +135,19 @@ bool SpectrumRepository::saveSpectrum(const QString            &starId,
                     spectrum->isBarycentricallyCorrected() ? 1 : 0);
     query.bindValue(":is_flagged",
                     spectrum->isFlagged() ? 1 : 0);
+    query.bindValue(":origin",
+                    spectrum->getOrigin().isEmpty()
+                        ? QVariant(QMetaType(QMetaType::QString))
+                        : QVariant(spectrum->getOrigin()));
+    query.bindValue(":origin_id",
+                    spectrum->getOriginId().isEmpty()
+                        ? QVariant(QMetaType(QMetaType::QString))
+                        : QVariant(spectrum->getOriginId()));
+    query.bindValue(":is_coadd", spectrum->isCoadd() ? 1 : 0);
+    query.bindValue(":origin_meta",
+                    spectrum->getOriginMeta().isEmpty()
+                        ? QVariant(QMetaType(QMetaType::QString))
+                        : QVariant(spectrum->getOriginMeta()));
 
     if (!query.exec()) {
         qDebug() << "Failed to save spectrum:" << query.lastError();
@@ -330,6 +345,11 @@ std::vector<std::shared_ptr<Spectrum>> SpectrumRepository::loadSpectra(const QSt
         spectrum->setDataFile(query.value("data_file").toString());
         spectrum->setBarycentricallyCorrected(query.value("barycentric_corrected").toInt() != 0);
         spectrum->setFlagged(query.value("is_flagged").toInt() != 0);
+        spectrum->setOrigin(query.value("origin").toString());
+        spectrum->setOriginId(query.value("origin_id").toString());
+        spectrum->setIsCoadd(query.value("is_coadd").isNull()
+                                 || query.value("is_coadd").toInt() != 0);
+        spectrum->setOriginMeta(query.value("origin_meta").toString());
 
         // Load spectral fits
         auto fits = loadSpectralFits(spectrum->getId());
@@ -564,6 +584,63 @@ bool SpectrumRepository::deleteSpectrum(const QString& spectrumId)
         QFile::remove(dataFile);
 
     return true;
+}
+
+QSet<QString> SpectrumRepository::originIdsForProject(const QString& projectId)
+{
+    QSet<QString> ids;
+
+    QSqlQuery query(_db.threadConnection());
+    query.prepare(R"(
+        SELECT s.origin_id
+        FROM spectra s
+        JOIN stars st ON st.id = s.star_id
+        WHERE st.project_id = :project_id AND s.origin_id IS NOT NULL
+    )");
+    query.bindValue(":project_id", projectId);
+
+    if (!query.exec()) {
+        qDebug() << "Failed to load spectrum origin ids:" << query.lastError();
+        return ids;
+    }
+
+    while (query.next()) {
+        const QString id = query.value(0).toString();
+        if (!id.isEmpty()) ids.insert(id);
+    }
+    return ids;
+}
+
+bool SpectrumRepository::deleteSpectraByOriginId(const QString& starId,
+                                                 const QString& originId)
+{
+    if (originId.isEmpty()) return false;
+
+    // Exposures carry the parent's origin_id with a "#expN" suffix; a forced
+    // re-download of a product must clear those too.
+    QSqlQuery query(_db.threadConnection());
+    query.prepare(R"(
+        SELECT id FROM spectra
+        WHERE star_id = :star_id
+          AND (origin_id = :origin_id OR origin_id LIKE :origin_prefix)
+    )");
+    query.bindValue(":star_id", starId);
+    query.bindValue(":origin_id", originId);
+    query.bindValue(":origin_prefix", originId + "#%");
+
+    if (!query.exec()) {
+        qDebug() << "Failed to look up spectra by origin:" << query.lastError();
+        return false;
+    }
+
+    QStringList spectrumIds;
+    while (query.next())
+        spectrumIds << query.value(0).toString();
+
+    bool ok = true;
+    for (const QString& id : spectrumIds)
+        ok = deleteSpectrum(id) && ok;
+    return ok;
 }
 
 bool SpectrumRepository::deleteSpectralFit(const QString& fitId)

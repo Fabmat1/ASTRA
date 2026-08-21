@@ -26,75 +26,11 @@
 #include <QApplication>
 #include <QStyle>
 #include <QLayout>
+#include "views/widgets/FlowLayout.h"
 #include <QHash>
 #include <QRandomGenerator>
 #include <random>
 #include <cmath>
-
-// =============================================================================
-//                              FlowLayout (Qt example, trimmed)
-// =============================================================================
-class FlowLayout : public QLayout
-{
-public:
-    FlowLayout(QWidget* parent, int margin = 0, int hSpacing = -1, int vSpacing = -1)
-        : QLayout(parent), m_hSpace(hSpacing), m_vSpace(vSpacing) {
-        setContentsMargins(margin, margin, margin, margin);
-    }
-    ~FlowLayout() override { QLayoutItem* it; while ((it = takeAt(0))) delete it; }
-
-    void addItem(QLayoutItem* item) override { itemList.append(item); }
-    int count() const override { return itemList.size(); }
-    QLayoutItem* itemAt(int i) const override { return itemList.value(i); }
-    QLayoutItem* takeAt(int i) override { return (i >= 0 && i < itemList.size()) ? itemList.takeAt(i) : nullptr; }
-    Qt::Orientations expandingDirections() const override { return {}; }
-    bool hasHeightForWidth() const override { return true; }
-    int heightForWidth(int w) const override { return doLayout(QRect(0,0,w,0), true); }
-    void setGeometry(const QRect& r) override { QLayout::setGeometry(r); doLayout(r, false); }
-    QSize sizeHint() const override { return minimumSize(); }
-    QSize minimumSize() const override {
-        QSize s;
-        for (auto* it : itemList) s = s.expandedTo(it->minimumSize());
-        const QMargins m = contentsMargins();
-        return s + QSize(m.left()+m.right(), m.top()+m.bottom());
-    }
-private:
-    int doLayout(const QRect& rect, bool testOnly) const {
-        QMargins m = contentsMargins();
-        QRect eff = rect.adjusted(m.left(), m.top(), -m.right(), -m.bottom());
-        int hs = m_hSpace >= 0 ? m_hSpace : 16;
-        int vs = m_vSpace >= 0 ? m_vSpace : 16;
-
-        int y = eff.y();
-        int i = 0;
-        while (i < itemList.size()) {
-            // ---- pass 1: gather items that fit on this row ----
-            int rowW = 0;
-            int rowH = 0;
-            int j = i;
-            for (; j < itemList.size(); ++j) {
-                QSize sh = itemList[j]->sizeHint();
-                int needed = (j == i) ? sh.width() : (rowW + hs + sh.width());
-                if (j > i && needed > eff.width()) break;
-                rowW = needed;
-                rowH = qMax(rowH, sh.height());
-            }
-            // ---- pass 2: place them centered horizontally ----
-            int xStart = eff.x() + qMax(0, (eff.width() - rowW) / 2);
-            int x = xStart;
-            for (int k = i; k < j; ++k) {
-                QSize sh = itemList[k]->sizeHint();
-                if (!testOnly) itemList[k]->setGeometry(QRect(QPoint(x, y), sh));
-                x += sh.width() + hs;
-            }
-            y += rowH + vs;
-            i = j;
-        }
-        return y - vs - rect.y() + m.bottom();
-    }
-    QList<QLayoutItem*> itemList;
-    int m_hSpace, m_vSpace;
-};
 
 // =============================================================================
 //                              Constants
@@ -193,7 +129,7 @@ void ProjectSelectionView::setupUi()
     _flowContainer = new QWidget;
     _flowContainer->setObjectName("flowContainer");
     _flowContainer->setStyleSheet("#flowContainer { background: transparent; }");
-    _flowLayout = new FlowLayout(_flowContainer, 0, 20, 20);
+    _flowLayout = new FlowLayout(_flowContainer, 0, 20, 20, /*centerRows=*/true);
 
     _flowLayout->setContentsMargins(0, 10, 0, 36);
 

@@ -1,0 +1,70 @@
+// src/utils/spectrafetch/SpectrumArchiveClient.h
+//
+// Abstract interface for one online spectrum archive. Discovery and parsing
+// run synchronously on QtConcurrent worker threads (driven by
+// SpectrumFetchService); downloads are handled by the service itself.
+
+#ifndef SPECTRUMARCHIVECLIENT_H
+#define SPECTRUMARCHIVECLIENT_H
+
+#include "SpectrumArchiveTypes.h"
+
+#include <QList>
+
+#include <atomic>
+#include <functional>
+#include <vector>
+
+class QNetworkAccessManager;
+
+class SpectrumArchiveClient {
+public:
+    virtual ~SpectrumArchiveClient() = default;
+
+    virtual SpecFetch::Archive archive() const = 0;
+    virtual QString displayName() const = 0;
+
+    // Throttle bucket for downloads, e.g. "data.sdss.org". Downloads whose
+    // URL host differs still count against this bucket so one archive never
+    // hogs the queue.
+    virtual QString hostKey() const = 0;
+
+    // Batched discovery: find every matching product for the given stars.
+    // Runs on a worker thread and may make several chunked synchronous HTTP
+    // calls; implementations must poll `cancel` between chunks and report
+    // progress(starsDone, starsTotal). On failure returns what it has and
+    // sets *error.
+    virtual QList<SpecFetch::RemoteSpectrum> discover(
+        const std::vector<SpecFetch::StarQuery>& stars,
+        const SpecFetch::ArchiveOptions& opt,
+        QNetworkAccessManager* nam,
+        const std::function<void(int, int)>& progress,
+        const std::atomic<bool>& cancel,
+        QString* error) = 0;
+
+    // Resolve download indirection (ESO DataLink). Called on a worker thread
+    // right before the download is queued. Default: r.downloadUrl unchanged.
+    virtual QUrl resolveDownloadUrl(const SpecFetch::RemoteSpectrum& r,
+                                    QNetworkAccessManager* nam,
+                                    QString* error);
+
+    // Parse one downloaded file into 1..N spectra (coadd, exposures, arms).
+    // Runs on a worker thread; uses cfitsio. On failure returns empty and
+    // sets *error.
+    virtual std::vector<SpecFetch::ParsedSpectrum> parse(
+        const QString& localPath,
+        const SpecFetch::RemoteSpectrum& r,
+        const SpecFetch::ArchiveOptions& opt,
+        QString* error) = 0;
+
+    // Whether the archive delivers wavelengths in vacuum (candidates for the
+    // vacuum-to-air conversion) and whether its products are already
+    // barycentrically/heliocentrically corrected.
+    virtual bool deliversVacuumWavelengths() const { return false; }
+    virtual bool deliversBarycentric(const SpecFetch::RemoteSpectrum& r) const {
+        Q_UNUSED(r);
+        return false;
+    }
+};
+
+#endif   // SPECTRUMARCHIVECLIENT_H

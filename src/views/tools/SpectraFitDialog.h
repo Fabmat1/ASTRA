@@ -20,6 +20,8 @@ class QTreeWidgetItem;
 class QSplitter;
 class FitSetupWidget;
 class CoAddWidget;
+class ArchiveFetchWidget;
+class ApplicationController;
 class QTabWidget;
 class QPushButton;
 class CheckStateDragger;
@@ -31,7 +33,8 @@ public:
     SpectraFitDialog(std::shared_ptr<Star> star,
                      DatabaseManager* dbm,
                      const QString& projectId,
-                     QWidget* parent = nullptr);
+                     QWidget* parent = nullptr,
+                     ApplicationController* controller = nullptr);
     ~SpectraFitDialog() override;
 
 signals:
@@ -58,6 +61,9 @@ private:
     void defineInstrumentManually(const QStringList& spectrumIds);
 
     void setupUi();
+    /// Reload the star's spectra from the DB and refresh every view (after a
+    /// fit completed or archive spectra were imported).
+    void reloadStarSpectra();
     void rebuildTree();
     void refreshTreeStyling();
     void styleFlagRow(QTreeWidgetItem* item);
@@ -79,6 +85,7 @@ private:
     std::shared_ptr<Star>  _star;
     DatabaseManager*       _dbm = nullptr;
     QString                _projectId;
+    ApplicationController* _controller = nullptr;
 
     std::vector<std::shared_ptr<Spectrum>> _spectra;
 
@@ -88,6 +95,7 @@ private:
     QTabWidget*    _rightTabs  = nullptr;
     FitSetupWidget* _setup     = nullptr;
     CoAddWidget*    _coadd     = nullptr;
+    ArchiveFetchWidget* _archives = nullptr;
 
     QPushButton*  _addSpectraBtn = nullptr;
     QPushButton*  _addFitBtn     = nullptr;

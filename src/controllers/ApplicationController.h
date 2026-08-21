@@ -14,6 +14,7 @@ struct ThemeInfo;
 class BackgroundTaskManager;
 class AppSettings;
 class LightcurveFetchService;
+class SpectrumFetchService;
 
 
 class ApplicationController : public QObject
@@ -50,6 +51,9 @@ public:
     /// Lazily created app-wide manager for background lightcurve fetching.
     LightcurveFetchService* lightcurveFetchService();
 
+    /// Lazily created app-wide manager for online spectrum archive fetching.
+    SpectrumFetchService* spectrumFetchService();
+
 signals:
     void projectCreated(const QString& projectId);
     void projectOpened(const QString& projectId);
@@ -64,6 +68,7 @@ private:
     std::unique_ptr<BackgroundTaskManager> _backgroundTaskManager;
     std::unique_ptr<AppSettings> _settings;
     std::unique_ptr<LightcurveFetchService> _lightcurveFetchService;
+    std::unique_ptr<SpectrumFetchService> _spectrumFetchService;
 
     void loadProjects();
 };

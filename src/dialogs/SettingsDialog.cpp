@@ -23,6 +23,7 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPushButton>
+#include <QDoubleSpinBox>
 #include <QSpinBox>
 #include <QComboBox>
 #include <QFileDialog>
@@ -190,6 +191,7 @@ void SettingsDialog::setupUi()
     _topicList->addItem("Grid Paths");
     _topicList->addItem("Lightcurve Fetching");
     _topicList->addItem("Lightcurve Fitting");
+    _topicList->addItem("Spectra Fetching");
     _topicList->addItem("Updates");
 
     _pages = new QStackedWidget;
@@ -199,6 +201,7 @@ void SettingsDialog::setupUi()
     _pages->addWidget(createGridPathsPage());
     _pages->addWidget(createLightcurveFetchPage());
     _pages->addWidget(createLightcurveFitPage());
+    _pages->addWidget(createSpectraFetchPage());
     _pages->addWidget(createUpdatesPage());
 
     connect(_topicList, &QListWidget::currentRowChanged,
@@ -573,6 +576,65 @@ QWidget* SettingsDialog::createLightcurveFetchPage()
     return page;
 }
 
+QWidget* SettingsDialog::createSpectraFetchPage()
+{
+    auto* page = new QWidget;
+    auto* outer = new QVBoxLayout(page);
+    outer->setContentsMargins(16, 16, 16, 16);
+
+    auto* intro = new QLabel(
+        "Defaults for fetching spectra from the online archives "
+        "(ESO Phase 3, LAMOST, SDSS, MAST, APOGEE) via the Data menu or the "
+        "Archives tab of the spectral analysis dialog.");
+    intro->setWordWrap(true);
+    outer->addWidget(intro);
+
+    auto* form = new QFormLayout;
+    form->setLabelAlignment(Qt::AlignRight);
+    form->setRowWrapPolicy(QFormLayout::DontWrapRows);
+
+    _specRadiusSpin = new QDoubleSpinBox;
+    _specRadiusSpin->setRange(0.5, 120.0);
+    _specRadiusSpin->setDecimals(1);
+    _specRadiusSpin->setSuffix(" arcsec");
+    _specRadiusSpin->setValue(_settings->specFetchRadiusArcsec());
+    form->addRow("Default search radius:", _specRadiusSpin);
+
+    _specParallelSpin = new QSpinBox;
+    _specParallelSpin->setRange(1, 4);
+    _specParallelSpin->setValue(_settings->specFetchMaxParallel());
+    _specParallelSpin->setToolTip(
+        "Capped at 4 to avoid hammering the remote archives.");
+    form->addRow("Parallel downloads:", _specParallelSpin);
+
+    {
+        auto* row = new QHBoxLayout;
+        _specDirEdit = new QLineEdit(_settings->specFetchDir());
+        _specDirEdit->setPlaceholderText("Default: <app data>/specquery");
+        auto* browse = new QPushButton("Browse…");
+        row->addWidget(_specDirEdit, 1);
+        row->addWidget(browse);
+        connect(browse, &QPushButton::clicked, this, [this] {
+            QString start = _specDirEdit->text().isEmpty()
+                                ? QDir::homePath()
+                                : _specDirEdit->text();
+            QString d = QFileDialog::getExistingDirectory(
+                this, "Download directory", start);
+            if (!d.isEmpty()) _specDirEdit->setText(d);
+        });
+        form->addRow("Download directory:", row);
+    }
+
+    _specLamostTokenEdit = new QLineEdit(_settings->specFetchLamostToken());
+    _specLamostTokenEdit->setPlaceholderText(
+        "Optional - all data releases currently answer anonymously");
+    form->addRow("LAMOST token:", _specLamostTokenEdit);
+
+    outer->addLayout(form);
+    outer->addStretch(1);
+    return page;
+}
+
 void SettingsDialog::apply()
 {
     _settings->setIsisBinaryPath(_isisEdit->text().trimmed());
@@ -590,6 +652,15 @@ void SettingsDialog::apply()
     _settings->setAtlasToken    (_atlasTokenEdit->text().trimmed());
     _settings->setBlackgemScript(_blackgemEdit->text().trimmed());
     _settings->setLcurveDir(_lcurveDirEdit->text().trimmed());
+
+    // Spectra fetching
+    if (_specRadiusSpin) {
+        _settings->setSpecFetchRadiusArcsec(_specRadiusSpin->value());
+        _settings->setSpecFetchMaxParallel(_specParallelSpin->value());
+        _settings->setSpecFetchDir(_specDirEdit->text().trimmed());
+        _settings->setSpecFetchLamostToken(
+            _specLamostTokenEdit->text().trimmed());
+    }
 
     if (_fitWorkersSpin)
         _settings->setFitWorkerThreads(_fitWorkersSpin->value());

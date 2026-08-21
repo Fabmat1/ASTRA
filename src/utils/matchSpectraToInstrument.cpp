@@ -1,5 +1,7 @@
 #include "utils/matchSpectraToInstrument.h"
 
+#include <QRegularExpression>
+
 #include <algorithm>
 #include <cmath>
 
@@ -15,6 +17,22 @@ struct ModeRange {
 static bool modeIsSpectroscopic(const InstrumentMode &m) {
     return m.dataType() == InstrumentMode::Spectroscopy &&
            m.hasSpectralProperties();
+}
+
+// The hint may be longer than the instrument name ("LAMOST/LRS" for the
+// "LAMOST" entry) or shorter ("UVES" against "FLAMES-UVES"), so containment
+// has to work in both directions. The hint-contains-name direction requires
+// word boundaries, so a hint like "reduced" cannot claim the "red" mode.
+static bool hintOverlaps(const QString &hint, const QString &candidate) {
+    const QString c = candidate.trimmed().toLower();
+    if (hint.isEmpty() || c.isEmpty())
+        return false;
+    if (c.contains(hint))
+        return true;
+    const QRegularExpression word(
+        QStringLiteral("\\b%1\\b").arg(QRegularExpression::escape(c)),
+        QRegularExpression::CaseInsensitiveOption);
+    return word.match(hint).hasMatch();
 }
 
 static QList<ModeRange> modeCandidateRanges(const InstrumentMode &m) {
@@ -151,11 +169,11 @@ InstrumentMatch matchSpectrumToInstrument(
         // The header hint may name the spectrograph rather than the
         // telescope/observatory the instrument entry is keyed on (e.g. hint
         // "PMAS" for the CAHA entry), so also accept a match on a mode.
-        bool hintMatches = !hint.isEmpty() && instName.toLower().contains(hint);
+        bool hintMatches = hintOverlaps(hint, instName);
         if (!hintMatches && !hint.isEmpty()) {
             for (const InstrumentMode &mode : instModes) {
-                if (mode.key().toLower().contains(hint) ||
-                    mode.displayName().toLower().contains(hint)) {
+                if (hintOverlaps(hint, mode.key()) ||
+                    hintOverlaps(hint, mode.displayName())) {
                     hintMatches = true;
                     break;
                 }
@@ -210,12 +228,20 @@ InstrumentMatch matchSpectrumToInstrument(
                 const double spanScore = recall * precision;
 
                 // Resolution agreement from the actual per-segment sampling.
+                // Sampling only bounds the resolution: real products run from
+                // ~2 px per resolution element (Nyquist) up to ~10 (ESO
+                // Phase-3 echelle stacks, resampled exports), so accept the
+                // whole implied band and fall off in log space outside it.
                 double       resScore = 0.5;
                 const double R        = c.mode->resolutionAt(segCtr);
                 if (R > 0.0 && obsDisp > 0.0) {
-                    const double expDisp = segCtr / (R * 2.5);
-                    const double logr =
-                        std::log(std::max(expDisp / obsDisp, 1e-6));
+                    const double rLo = segCtr / (obsDisp * 10.0);
+                    const double rHi = segCtr / (obsDisp * 2.0);
+                    double logr = 0.0;
+                    if (R < rLo)
+                        logr = std::log(rLo / std::max(R, 1e-6));
+                    else if (R > rHi)
+                        logr = std::log(R / std::max(rHi, 1e-6));
                     resScore = std::exp(-(logr * logr) / (2.0 * 0.35 * 0.35));
                 }
 

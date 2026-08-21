@@ -4,6 +4,7 @@
 #include <QObject>
 #include <memory>
 #include <vector>
+#include <QSet>
 #include <QString>
 #include "models/Instrument.h"
 #include "models/InstrumentMode.h"
@@ -73,6 +74,8 @@ public:
                                   const QString& modeKey);
     bool updateSpectralFitFlag(const QString& fitId, bool flagged);
     bool updateBestFit(const QString& spectrumId, const QString& bestFitId);
+    QSet<QString> spectrumOriginIdsForProject(const QString& projectId);
+    bool deleteSpectraByOriginId(const QString& starId, const QString& originId);
     bool saveRadialVelocityCurve(std::shared_ptr<RadialVelocityCurve> curve, const QString& starId);
     bool saveRadialVelocityPoint(std::shared_ptr<RadialVelocityPoint> point, const QString& curveId);
     bool saveRVFit(std::shared_ptr<RVFit> fit, const QString& curveId);

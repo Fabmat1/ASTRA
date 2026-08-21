@@ -15,6 +15,7 @@ class QLabel;
 class QCheckBox;
 class QPushButton;
 class QSpinBox;
+class QDoubleSpinBox;
 class QComboBox;
 class QuantityLabel;
 
@@ -36,6 +37,7 @@ private:
     QWidget* createGridPathsPage();
     QWidget* createLightcurveFetchPage();
     QWidget *createLightcurveFitPage();
+    QWidget* createSpectraFetchPage();
     QWidget* createUpdatesPage();
 
     QLineEdit *_lcurveDirEdit = nullptr;
@@ -71,6 +73,12 @@ private:
     QSpinBox*        _fitWorkersSpin   = nullptr;
     QLineEdit*       _blackgemEdit     = nullptr;
     QLabel*          _lcqTestResult    = nullptr;
+
+    // Spectra fetching page
+    QDoubleSpinBox*  _specRadiusSpin      = nullptr;
+    QSpinBox*        _specParallelSpin    = nullptr;
+    QLineEdit*       _specDirEdit         = nullptr;
+    QLineEdit*       _specLamostTokenEdit = nullptr;
 
     // Updates page
     QCheckBox*       _updateOnStartup  = nullptr;

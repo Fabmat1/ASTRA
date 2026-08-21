@@ -141,8 +141,8 @@ Attempt runAttempt(const QUrl &url,
     return result;
 }
 
-CdsTap::Response postWithFailover(
-    QNetworkAccessManager *nam,
+CdsTap::Response postWithFailoverTo(
+    QNetworkAccessManager *nam, const QStringList &urls,
     const std::function<QNetworkReply *(const QNetworkRequest &)> &send,
     int timeoutMs, const CdsTap::ProgressFn &onProgress) {
     CdsTap::Response response;
@@ -150,11 +150,13 @@ CdsTap::Response postWithFailover(
         response.error = QStringLiteral("no network access manager");
         return response;
     }
-
-    const QStringList &mirrors = CdsTap::vizierMirrors();
+    if (urls.isEmpty()) {
+        response.error = QStringLiteral("no endpoint url");
+        return response;
+    }
 
     for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
-        const QString url = mirrors.at(attempt % mirrors.size());
+        const QString url = urls.at(attempt % urls.size());
         response.url      = url;
         response.attempts = attempt + 1;
 
@@ -162,7 +164,7 @@ CdsTap::Response postWithFailover(
             runAttempt(QUrl(url), send, timeoutMs, onProgress);
         if (a.error.isEmpty()) {
             if (attempt > 0) {
-                LOG_INFO("CdsTap", QString("VizieR query succeeded on attempt %1 (%2)")
+                LOG_INFO("CdsTap", QString("Query succeeded on attempt %1 (%2)")
                                        .arg(attempt + 1)
                                        .arg(url));
             }
@@ -174,13 +176,13 @@ CdsTap::Response postWithFailover(
         response.error = a.error;
 
         if (!a.retryable) {
-            LOG_WARNING("CdsTap", QString("VizieR query rejected by %1: %2")
+            LOG_WARNING("CdsTap", QString("Query rejected by %1: %2")
                                       .arg(url, a.error));
             return response;
         }
 
         LOG_WARNING("CdsTap",
-                    QString("VizieR attempt %1/%2 on %3 failed: %4")
+                    QString("Attempt %1/%2 on %3 failed: %4")
                         .arg(attempt + 1)
                         .arg(kMaxAttempts)
                         .arg(url, a.error));
@@ -189,10 +191,18 @@ CdsTap::Response postWithFailover(
             waitMs(backoffMs(attempt));
     }
 
-    response.error = QString("VizieR unavailable after %1 attempts (%2)")
+    response.error = QString("Service unavailable after %1 attempts (%2)")
                          .arg(kMaxAttempts)
                          .arg(response.error);
     return response;
+}
+
+CdsTap::Response postWithFailover(
+    QNetworkAccessManager *nam,
+    const std::function<QNetworkReply *(const QNetworkRequest &)> &send,
+    int timeoutMs, const CdsTap::ProgressFn &onProgress) {
+    return postWithFailoverTo(nam, CdsTap::vizierMirrors(), send, timeoutMs,
+                              onProgress);
 }
 
 }   // namespace
@@ -244,6 +254,47 @@ Response postVizierMultipart(QNetworkAccessManager                     *nam,
             body->setParent(reply);
             return reply;
         },
+        timeoutMs, onProgress);
+}
+
+Response postForm(QNetworkAccessManager *nam, const QString &url,
+                  const QUrlQuery &form, int timeoutMs,
+                  const ProgressFn &onProgress) {
+    const QByteArray payload = form.toString(QUrl::FullyEncoded).toUtf8();
+
+    return postWithFailoverTo(
+        nam, {url},
+        [nam, &payload](const QNetworkRequest &base) {
+            QNetworkRequest req(base);
+            req.setHeader(QNetworkRequest::ContentTypeHeader,
+                          "application/x-www-form-urlencoded");
+            return nam->post(req, payload);
+        },
+        timeoutMs, onProgress);
+}
+
+Response postMultipart(QNetworkAccessManager                     *nam,
+                       const QString                             &url,
+                       const std::function<QHttpMultiPart *()> &makeBody,
+                       int timeoutMs, const ProgressFn &onProgress) {
+    return postWithFailoverTo(
+        nam, {url},
+        [nam, &makeBody](const QNetworkRequest &base) -> QNetworkReply * {
+            QHttpMultiPart *body = makeBody();
+            if (!body)
+                return nullptr;
+            QNetworkReply *reply = nam->post(base, body);
+            body->setParent(reply);
+            return reply;
+        },
+        timeoutMs, onProgress);
+}
+
+Response get(QNetworkAccessManager *nam, const QString &url, int timeoutMs,
+             const ProgressFn &onProgress) {
+    return postWithFailoverTo(
+        nam, {url},
+        [nam](const QNetworkRequest &base) { return nam->get(base); },
         timeoutMs, onProgress);
 }
 

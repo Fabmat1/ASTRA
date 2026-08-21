@@ -59,6 +59,16 @@ void InstrumentRepository::mergeNewDefaultInstruments()
             PRIMARY KEY (instrument_name, mode_key)
         )
     )"));
+    // Finer-grained bookkeeping for common_setups added to a mode that
+    // already exists (the mode-level marker above would block them forever).
+    create.exec(QStringLiteral(R"(
+        CREATE TABLE IF NOT EXISTS applied_default_setups (
+            instrument_name TEXT NOT NULL,
+            mode_key        TEXT NOT NULL,
+            setup_label     TEXT NOT NULL,
+            PRIMARY KEY (instrument_name, mode_key, setup_label)
+        )
+    )"));
 
     QSet<QString> applied;
     QSqlQuery sel(db);
@@ -67,6 +77,15 @@ void InstrumentRepository::mergeNewDefaultInstruments()
     while (sel.next())
         applied.insert(sel.value(0).toString() + '\x1f' +
                        sel.value(1).toString());
+
+    QSet<QString> appliedSetups;
+    QSqlQuery selSetups(db);
+    selSetups.exec(QStringLiteral("SELECT instrument_name, mode_key, "
+                                  "setup_label FROM applied_default_setups"));
+    while (selSetups.next())
+        appliedSetups.insert(selSetups.value(0).toString() + '\x1f' +
+                             selSetups.value(1).toString() + '\x1f' +
+                             selSetups.value(2).toString());
 
     // Databases created before this bookkeeping existed have an empty table:
     // treat every default that is currently in the JSON as "new" once. This
@@ -85,6 +104,22 @@ void InstrumentRepository::mergeNewDefaultInstruments()
     };
     auto isApplied = [&](const QString& name, const QString& key) {
         return applied.contains(name + '\x1f' + key);
+    };
+
+    QSqlQuery insSetup(db);
+    insSetup.prepare(QStringLiteral(
+        "INSERT OR IGNORE INTO applied_default_setups "
+        "(instrument_name, mode_key, setup_label) VALUES (:name, :key, :lbl)"));
+    auto markSetupApplied = [&](const QString& name, const QString& key,
+                                const QString& label) {
+        insSetup.bindValue(":name", name);
+        insSetup.bindValue(":key", key);
+        insSetup.bindValue(":lbl", label);
+        insSetup.exec();
+    };
+    auto isSetupApplied = [&](const QString& name, const QString& key,
+                              const QString& label) {
+        return appliedSetups.contains(name + '\x1f' + key + '\x1f' + label);
     };
 
     db.transaction();
@@ -114,6 +149,31 @@ void InstrumentRepository::mergeNewDefaultInstruments()
                     !isApplied(name, defMode.key())) {
                     updated->addMode(defMode);
                     changed = true;
+                    continue;
+                }
+
+                // The mode itself exists: merge in common_setups added to the
+                // defaults since (tracked per label, so a setup the user
+                // deletes stays deleted and user edits are never overwritten).
+                const InstrumentMode* curMode = updated->mode(defMode.key());
+                if (!curMode || !curMode->hasSpectralProperties() ||
+                    !defMode.hasSpectralProperties())
+                    continue;
+                InstrumentMode merged = *curMode;
+                SpectralProperties sp = merged.spectral();
+                bool modeChanged      = false;
+                for (const WavelengthSetup& defSetup :
+                     defMode.spectral().commonSetups) {
+                    if (merged.setup(defSetup.label) ||
+                        isSetupApplied(name, defMode.key(), defSetup.label))
+                        continue;
+                    sp.commonSetups.append(defSetup);
+                    modeChanged = true;
+                }
+                if (modeChanged) {
+                    merged.setSpectralProperties(sp);
+                    updated->addMode(merged);
+                    changed = true;
                 }
             }
             if (changed && writeModesToDb(updated->getId(), updated->modes()))
@@ -122,8 +182,12 @@ void InstrumentRepository::mergeNewDefaultInstruments()
 
         // Record every current default so it is never re-applied.
         markApplied(name, QString());
-        for (const InstrumentMode& defMode : defInst.modes())
+        for (const InstrumentMode& defMode : defInst.modes()) {
             markApplied(name, defMode.key());
+            if (defMode.hasSpectralProperties())
+                for (const WavelengthSetup& s : defMode.spectral().commonSetups)
+                    markSetupApplied(name, defMode.key(), s.label);
+        }
     }
 
     db.commit();

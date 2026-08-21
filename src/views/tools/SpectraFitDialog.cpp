@@ -12,6 +12,7 @@
 #include "AddSpectraDialog.h"
 #include "FitSetupWidget.h"
 #include "CoAddWidget.h"
+#include "ArchiveFetchWidget.h"
 #include "utils/CheckStateDragger.h"
 #include "utils/SpectrumReader.h"
 
@@ -113,11 +114,13 @@ QString formatFitLabel(const std::shared_ptr<SpectralFit>& f)
 SpectraFitDialog::SpectraFitDialog(std::shared_ptr<Star> star,
                                    DatabaseManager* dbm,
                                    const QString& projectId,
-                                   QWidget* parent)
+                                   QWidget* parent,
+                                   ApplicationController* controller)
     : QDialog(parent)
     , _star(std::move(star))
     , _dbm(dbm)
     , _projectId(projectId)
+    , _controller(controller)
 {
     setupUi();
     rebuildTree();
@@ -254,6 +257,21 @@ void SpectraFitDialog::setupUi()
     _coadd = new CoAddWidget(coaddCtx);
     _rightTabs->addTab(_coadd, "Co-Add");
 
+    // ── Archives tab (online spectrum fetching; needs the app controller) ──
+    if (_controller) {
+        ArchiveFetchWidget::Context archCtx;
+        archCtx.star       = _star;
+        archCtx.dbm        = _dbm;
+        archCtx.controller = _controller;
+        archCtx.projectId  = _projectId;
+
+        _archives = new ArchiveFetchWidget(archCtx);
+        _rightTabs->addTab(_archives, "Archives");
+
+        connect(_archives, &ArchiveFetchWidget::spectraImported, this,
+                &SpectraFitDialog::reloadStarSpectra);
+    }
+
     // Both the fit preview and the co-add draw into the one shared plot, so
     // each only takes it over while its own tab is the visible one.
     connect(_rightTabs, &QTabWidget::currentChanged, this, [this](int){
@@ -263,24 +281,8 @@ void SpectraFitDialog::setupUi()
     _setup->setPreviewActive(_rightTabs->currentWidget() == _setup);
     _coadd->setActive(_rightTabs->currentWidget() == _coadd);
 
-    connect(_setup, &FitSetupWidget::fitCompleted, this, [this]{
-        // Reload fits from DB for our star, then refresh everything
-        if (_dbm) {
-            auto freshSpectra = _dbm->loadSpectra(_star->getId());
-            _star->setSpectra(freshSpectra);
-        }
-        // The reload replaced the spectrum objects. Re-sync the RV curve with
-        // them: this creates/repairs the RV point for any newly fitted
-        // spectrum and notifies the RV panels, and the summary recompute
-        // picks up the new fit counts / atmospheric parameters.
-        _star->ensureRVCurveSynced();
-        _star->markSummaryDirty();
-        _setup->refreshSpectraList();   // drop stale spectrum pointers
-        _coadd->refreshSpectraList();
-        rebuildTree();
-        _panel->refresh();
-        emit spectraUpdated();
-    });
+    connect(_setup, &FitSetupWidget::fitCompleted, this,
+            &SpectraFitDialog::reloadStarSpectra);
 
     _splitter->addWidget(_rightTabs);
     _splitter->setStretchFactor(0, 3);
@@ -292,6 +294,26 @@ void SpectraFitDialog::setupUi()
     auto* btns = new QDialogButtonBox(QDialogButtonBox::Close);
     connect(btns, &QDialogButtonBox::rejected, this, &QDialog::reject);
     root->addWidget(btns);
+}
+
+void SpectraFitDialog::reloadStarSpectra()
+{
+    // Reload spectra/fits from the DB for our star, then refresh everything.
+    if (_dbm) {
+        auto freshSpectra = _dbm->loadSpectra(_star->getId());
+        _star->setSpectra(freshSpectra);
+    }
+    // The reload replaced the spectrum objects. Re-sync the RV curve with
+    // them: this creates/repairs the RV point for any newly fitted
+    // spectrum and notifies the RV panels, and the summary recompute
+    // picks up the new fit counts / atmospheric parameters.
+    _star->ensureRVCurveSynced();
+    _star->markSummaryDirty();
+    _setup->refreshSpectraList();   // drop stale spectrum pointers
+    _coadd->refreshSpectraList();
+    rebuildTree();
+    _panel->refresh();
+    emit spectraUpdated();
 }
 
 // ----------------------------------------------------------------------------
@@ -328,6 +350,15 @@ void SpectraFitDialog::rebuildTree()
             header += QString("MJD %1").arg(spec->getMJD(), 0, 'f', 4);
         }
         if (header.isEmpty()) header = QString("Spectrum #%1").arg(i + 1);
+        if (spec->isFetched()) {
+            // Archive provenance: origin key plus an exposure marker for
+            // non-coadded parts of a fetched product.
+            if (!spec->isCoadd())
+                header += QStringLiteral("  [exposure]");
+            specItem->setToolTip(kColName,
+                QStringLiteral("Fetched from %1 (%2)")
+                    .arg(spec->getOrigin(), spec->getOriginId()));
+        }
         specItem->setText(kColName, header);
         specItem->setData(kColName, kRoleKind, kKindSpectrum);
         specItem->setData(kColName, kRoleId,   spec->getId());
@@ -1146,7 +1177,11 @@ bool SpectraFitDialog::autodetectInstrument(
     auto wl = spec->getWavelengths();
     if (wl.size() < 2) return false;
 
-    const QString hint = spec->getInstrument();
+    // A previously matched spectrum carries our own display string as its
+    // instrument; feeding that back as a hint would only entrench a wrong
+    // tag, so re-detection of a tagged spectrum trusts the shape alone.
+    const QString hint =
+        spec->getInstrumentId().isEmpty() ? spec->getInstrument() : QString();
     const auto match = matchSpectrumToInstrument(instruments, hint, wl);
 
     static constexpr double kMinConfidence = 0.25;   // same as import wizard

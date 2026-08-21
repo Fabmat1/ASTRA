@@ -84,8 +84,10 @@ Back in the star table:
 
 With the catalog in place, the batch tools apply to any selection:
 
-- **Analysis → Fetch Lightcurves…** downloads photometry for all selected
+- **Data → Fetch Lightcurves…** downloads photometry for all selected
   stars in parallel background sessions.
+- **Data → Fetch Spectra…** searches the online spectrum archives (ESO,
+  LAMOST, SDSS, MAST, APOGEE) and imports what it finds.
 - **Analysis → Compute Galactic Kinematics** fills the galactic columns.
 - **Analysis → RV Detectability…** estimates binary detection probabilities
   across the sample.

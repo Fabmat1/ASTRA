@@ -34,7 +34,7 @@ sources (**TESS**, **ZTF**, **ATLAS**, **Gaia** are on by default;
 
 ### For many stars
 
-**Analysis → Fetch Lightcurves…** starts background fetches for the selected
+**Data → Fetch Lightcurves…** starts background fetches for the selected
 stars with a configurable number of parallel workers. Progress appears in the
 status bar; clicking it opens the **Lightcurve Fetch Sessions** overview with
 per-session terminals and cancel controls. Fetching continues while you keep

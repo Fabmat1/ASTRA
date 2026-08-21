@@ -19,8 +19,10 @@
 #include "views/panels/PanelUtils.h"
 #include "utils/LightcurveFetchService.h"
 #include "utils/Logger.h"
+#include "utils/SpectrumFetchService.h"
 #include "views/StarDetailView.h"
 #include "views/tools/LightcurveFetchSessionsDialog.h"
+#include "views/tools/SpectrumFetchSessionsDialog.h"
 #include "views/tools/ProjectPlotDialog.h"
 #include "views/tools/RVDetectabilityDialog.h"
 
@@ -1306,6 +1308,49 @@ void ProjectView::onFetchLightcurves()
     if (skipped > 0)
         msg += tr("  (%1 star(s) without Gaia ID skipped)").arg(skipped);
     updateStatusBar(msg);
+}
+
+QString ProjectView::onFetchSpectra()
+{
+    if (!_currentProject) {
+        QMessageBox::information(this, tr("Fetch Spectra"),
+                                 tr("No project loaded"));
+        return QString();
+    }
+
+    BatchSpectrumFetchSetupDialog dlg(_currentProject->getAllStars(),
+                                      getFilteredStars(), getSelectedStars(),
+                                      _controller->settings(), this);
+    if (dlg.exec() != QDialog::Accepted)
+        return QString();
+
+    const auto& stars = dlg.scopeStars();
+    if (stars.empty()) {
+        QMessageBox::information(this, tr("Fetch Spectra"),
+                                 tr("No stars in the chosen scope."));
+        return QString();
+    }
+
+    const SpectrumFetchService::Options opt = dlg.options();
+    if (opt.archives.isEmpty()) {
+        QMessageBox::information(this, tr("Fetch Spectra"),
+                                 tr("No archives enabled."));
+        return QString();
+    }
+
+    auto* service = _controller->spectrumFetchService();
+    const QString sessionId =
+        service->startSession(stars, _currentProject->getId(), opt);
+    if (sessionId.isEmpty()) {
+        QMessageBox::warning(
+            this, tr("Fetch Spectra"),
+            tr("None of the chosen stars has usable coordinates."));
+        return QString();
+    }
+
+    updateStatusBar(tr("Searching spectrum archives for %1 star(s)...")
+                        .arg(stars.size()));
+    return sessionId;
 }
 
 namespace {

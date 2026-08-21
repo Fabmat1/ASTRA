@@ -100,6 +100,27 @@ public:
     void setCopyIncludeName(bool on);
     void setCopyRoundErrors(bool on);
 
+    // ── Spectrum archive fetching ────────────────────────────────────────
+    /// Crossmatch radius for archive queries [arcsec].
+    double specFetchRadiusArcsec() const { return _specFetchRadiusArcsec; }
+    void   setSpecFetchRadiusArcsec(double r);
+
+    /// Parallel downloads (clamped to [1, 4] by the service).
+    int  specFetchMaxParallel() const { return _specFetchMaxParallel; }
+    void setSpecFetchMaxParallel(int n);
+
+    /// Download directory override ("" = <appdata>/specquery).
+    QString specFetchDir() const { return _specFetchDir; }
+    void    setSpecFetchDir(const QString& dir);
+
+    /// LAMOST access token (needed for the newest data releases).
+    QString specFetchLamostToken() const { return _specFetchLamostToken; }
+    void    setSpecFetchLamostToken(const QString& t);
+
+    /// Last-used state of the fetch setup dialog, as a JSON blob.
+    QString specFetchLastOptions() const { return _specFetchLastOptions; }
+    void    setSpecFetchLastOptions(const QString& json);
+
     // ── Updates ──────────────────────────────────────────────────────────
     bool checkUpdatesOnStartup() const { return _checkUpdatesOnStartup; }
     void setCheckUpdatesOnStartup(bool on);
@@ -116,6 +137,7 @@ signals:
     void gridBasePathsChanged();
     void lcquerySettingsChanged();
     void lcurveSettingsChanged();
+    void specFetchSettingsChanged();
     void adsApiTokenChanged();
     void updateSettingsChanged();
     void numberFormatChanged();
@@ -146,6 +168,12 @@ signals:
     QString _adsApiToken;
 
     QuantityFormat::Prefs _copy;
+
+    double  _specFetchRadiusArcsec = 3.0;
+    int     _specFetchMaxParallel  = 2;
+    QString _specFetchDir;
+    QString _specFetchLamostToken;
+    QString _specFetchLastOptions;
 
     bool    _checkUpdatesOnStartup = true;
     QString _skippedUpdateVersion;

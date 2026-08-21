@@ -69,6 +69,7 @@ nav:
       - Catalog Management: workflows/catalog-management.md
       - Radial Velocities: workflows/radial-velocity.md
       - Light Curves: workflows/light-curves.md
+      - Fetching Spectra: workflows/spectra-fetching.md
       - SED & Spectral Fitting: workflows/sed-spectral.md
   - Reference:
       - Database & Files: reference/database.md

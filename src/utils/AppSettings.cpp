@@ -32,6 +32,11 @@ constexpr const char* kCopyName      = "format/latexIncludeName";
 constexpr const char* kCopyRound     = "format/roundOnCopy";
 constexpr const char* kUpdateCheck   = "update/checkOnStartup";
 constexpr const char* kUpdateSkipped = "update/skippedVersion";
+constexpr const char* kSpecFetchRadius      = "specfetch/radiusArcsec";
+constexpr const char* kSpecFetchParallel    = "specfetch/maxParallel";
+constexpr const char* kSpecFetchDir         = "specfetch/downloadDir";
+constexpr const char* kSpecFetchLamostToken = "specfetch/lamostToken";
+constexpr const char* kSpecFetchLastOptions = "specfetch/lastOptions";
 }
 
 QString AppSettings::panelName(DetailPanel p)
@@ -154,6 +159,15 @@ void AppSettings::load()
     _copy.roundOnCopy      = s.value(kCopyRound,    _copy.roundOnCopy).toBool();
     _checkUpdatesOnStartup = s.value(kUpdateCheck,   _checkUpdatesOnStartup).toBool();
     _skippedUpdateVersion  = s.value(kUpdateSkipped, _skippedUpdateVersion ).toString();
+    _specFetchRadiusArcsec =
+        s.value(kSpecFetchRadius, _specFetchRadiusArcsec).toDouble();
+    _specFetchMaxParallel = std::clamp(
+        s.value(kSpecFetchParallel, _specFetchMaxParallel).toInt(), 1, 4);
+    _specFetchDir         = s.value(kSpecFetchDir, _specFetchDir).toString();
+    _specFetchLamostToken =
+        s.value(kSpecFetchLamostToken, _specFetchLamostToken).toString();
+    _specFetchLastOptions =
+        s.value(kSpecFetchLastOptions, _specFetchLastOptions).toString();
     s.endGroup();
 
     publishCopyPrefs();
@@ -203,6 +217,11 @@ void AppSettings::save() const
     s.setValue(kCopyRound,    _copy.roundOnCopy);
     s.setValue(kUpdateCheck,   _checkUpdatesOnStartup);
     s.setValue(kUpdateSkipped, _skippedUpdateVersion);
+    s.setValue(kSpecFetchRadius,      _specFetchRadiusArcsec);
+    s.setValue(kSpecFetchParallel,    _specFetchMaxParallel);
+    s.setValue(kSpecFetchDir,         _specFetchDir);
+    s.setValue(kSpecFetchLamostToken, _specFetchLamostToken);
+    s.setValue(kSpecFetchLastOptions, _specFetchLastOptions);
 
     s.endGroup();
     s.sync();
@@ -352,6 +371,41 @@ void AppSettings::setLcurveDir(const QString &dir) {
   _lcurveDir = dir;
   save();
   emit lcurveSettingsChanged();
+}
+
+void AppSettings::setSpecFetchRadiusArcsec(double r) {
+    if (qFuzzyCompare(_specFetchRadiusArcsec, r)) return;
+    _specFetchRadiusArcsec = r;
+    save();
+    emit specFetchSettingsChanged();
+}
+
+void AppSettings::setSpecFetchMaxParallel(int n) {
+    n = std::clamp(n, 1, 4);
+    if (_specFetchMaxParallel == n) return;
+    _specFetchMaxParallel = n;
+    save();
+    emit specFetchSettingsChanged();
+}
+
+void AppSettings::setSpecFetchDir(const QString& dir) {
+    if (_specFetchDir == dir) return;
+    _specFetchDir = dir;
+    save();
+    emit specFetchSettingsChanged();
+}
+
+void AppSettings::setSpecFetchLamostToken(const QString& t) {
+    if (_specFetchLamostToken == t) return;
+    _specFetchLamostToken = t;
+    save();
+    emit specFetchSettingsChanged();
+}
+
+void AppSettings::setSpecFetchLastOptions(const QString& json) {
+    if (_specFetchLastOptions == json) return;
+    _specFetchLastOptions = json;
+    save();
 }
 
 void AppSettings::setCheckUpdatesOnStartup(bool on) {

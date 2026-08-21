@@ -342,6 +342,17 @@ set(SOURCES
     src/utils/matchSpectraToInstrument.cpp
     src/utils/SpectrumCoadder.cpp
     src/utils/WheelGuard.cpp
+    src/utils/SpectrumFetchService.cpp
+    src/utils/spectrafetch/SpectrumArchiveClient.cpp
+    src/utils/spectrafetch/SpectrumArchiveRegistry.cpp
+    src/utils/spectrafetch/TapHelpers.cpp
+    src/utils/spectrafetch/VoTableReader.cpp
+    src/utils/spectrafetch/WavelengthConvert.cpp
+    src/utils/spectrafetch/EsoArchiveClient.cpp
+    src/utils/spectrafetch/LamostArchiveClient.cpp
+    src/utils/spectrafetch/SdssOpticalArchiveClient.cpp
+    src/utils/spectrafetch/MastArchiveClient.cpp
+    src/utils/spectrafetch/ApogeeArchiveClient.cpp
 
     # views
     src/views/ColumnConfigDialog.cpp
@@ -362,6 +373,8 @@ set(SOURCES
     src/views/tools/RVInspectorDialog.cpp
     src/views/tools/SEDFitDialog.cpp
     src/views/tools/SpectraFitDialog.cpp
+    src/views/tools/ArchiveFetchWidget.cpp
+    src/views/tools/SpectrumFetchSessionsDialog.cpp
     src/views/tools/AddSpectraDialog.cpp
     src/views/tools/FitSetupWidget.cpp
     src/views/tools/CoAddWidget.cpp
@@ -386,6 +399,7 @@ set(SOURCES
 
     # views/widgets
     src/views/widgets/CopyToast.cpp
+    src/views/widgets/FlowLayout.cpp
     src/views/widgets/QuantityRenderer.cpp
     src/views/widgets/QuantityLabel.cpp
     src/views/widgets/QuantityDelegate.cpp
@@ -495,6 +509,18 @@ set(HEADERS
     src/utils/ObservabilityCalculator.h
     src/utils/LightcurveFetcher.h
     src/utils/LightcurveFetchService.h
+    src/utils/SpectrumFetchService.h
+    src/utils/spectrafetch/SpectrumArchiveTypes.h
+    src/utils/spectrafetch/SpectrumArchiveClient.h
+    src/utils/spectrafetch/SpectrumArchiveRegistry.h
+    src/utils/spectrafetch/TapHelpers.h
+    src/utils/spectrafetch/VoTableReader.h
+    src/utils/spectrafetch/WavelengthConvert.h
+    src/utils/spectrafetch/EsoArchiveClient.h
+    src/utils/spectrafetch/LamostArchiveClient.h
+    src/utils/spectrafetch/SdssOpticalArchiveClient.h
+    src/utils/spectrafetch/MastArchiveClient.h
+    src/utils/spectrafetch/ApogeeArchiveClient.h
     src/utils/PlotPresetStore.h
     src/utils/LcqueryEnvironment.h
     src/utils/IsisEnvironment.h
@@ -534,6 +560,8 @@ set(HEADERS
     src/views/tools/RVInspectorDialog.h
     src/views/tools/SEDFitDialog.h
     src/views/tools/SpectraFitDialog.h
+    src/views/tools/ArchiveFetchWidget.h
+    src/views/tools/SpectrumFetchSessionsDialog.h
     src/views/tools/AddSpectraDialog.h
     src/views/tools/FitSetupWidget.h
     src/views/tools/CoAddWidget.h
@@ -556,6 +584,7 @@ set(HEADERS
 
     # views/widgets
     src/views/widgets/FitPreviewOverlay.h
+    src/views/widgets/FlowLayout.h
     src/views/widgets/GridSelectorWidget.h
     src/views/widgets/ShimmerWidget.h
     src/views/widgets/SquarePlotFrame.h
@@ -1031,6 +1060,114 @@ if(BUILD_TESTING)
     set_tests_properties(quantity_format PROPERTIES
         LABELS "utils;formatting"
         TIMEOUT 30
+    )
+
+    # ── Spectrum-fetch helper tests ──────────────────────────────────────
+    add_executable(test_wavelength_convert
+        tests/test_wavelength_convert.cpp
+        src/utils/spectrafetch/WavelengthConvert.cpp
+    )
+    target_include_directories(test_wavelength_convert PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    add_test(
+        NAME    wavelength_convert
+        COMMAND test_wavelength_convert
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(wavelength_convert PROPERTIES
+        LABELS "utils;spectrafetch"
+        TIMEOUT 30
+    )
+
+    add_executable(test_votable_reader
+        tests/test_votable_reader.cpp
+        src/utils/spectrafetch/VoTableReader.cpp
+    )
+    target_include_directories(test_votable_reader PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(test_votable_reader PRIVATE Qt6::Core)
+    add_test(
+        NAME    votable_reader
+        COMMAND test_votable_reader
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(votable_reader PROPERTIES
+        LABELS "utils;spectrafetch"
+        TIMEOUT 30
+    )
+
+    # Instrument shape-matcher regressions against the shipped defaults.
+    add_executable(test_instrument_match
+        tests/test_instrument_match.cpp
+        src/utils/matchSpectraToInstrument.cpp
+        src/models/Instrument.cpp
+        src/models/InstrumentMode.cpp
+        src/models/BarycentricCorrection.cpp
+    )
+    target_include_directories(test_instrument_match PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_compile_definitions(test_instrument_match PRIVATE
+        ASTRA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
+    )
+    target_link_libraries(test_instrument_match PRIVATE Qt6::Core)
+    add_test(
+        NAME    instrument_match
+        COMMAND test_instrument_match
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(instrument_match PROPERTIES
+        LABELS "utils"
+        TIMEOUT 30
+    )
+
+    # Archive FITS parsers, run against real product files whose paths come
+    # from ASTRA_TEST_* environment variables (skips cleanly when unset -
+    # the files are too large to commit as fixtures).
+    add_executable(test_spectrafetch_parsers
+        tests/test_spectrafetch_parsers.cpp
+        src/utils/spectrafetch/SpectrumArchiveClient.cpp
+        src/utils/spectrafetch/EsoArchiveClient.cpp
+        src/utils/spectrafetch/LamostArchiveClient.cpp
+        src/utils/spectrafetch/SdssOpticalArchiveClient.cpp
+        src/utils/spectrafetch/ApogeeArchiveClient.cpp
+        src/utils/spectrafetch/TapHelpers.cpp
+        src/utils/spectrafetch/VoTableReader.cpp
+        src/utils/spectrafetch/WavelengthConvert.cpp
+        src/utils/CdsTapClient.cpp
+        src/utils/SpectrumReader.cpp
+        src/utils/DataStore.cpp
+        src/utils/Logger.cpp
+        src/models/Spectrum.cpp
+        src/models/Time.cpp
+        src/models/Instrument.cpp
+        src/models/InstrumentMode.cpp
+        src/models/BarycentricCorrection.cpp
+    )
+    target_include_directories(test_spectrafetch_parsers PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_compile_definitions(test_spectrafetch_parsers PRIVATE
+        ASTRA_DATA_DIR="${ASTRA_DATA_DIR}"
+    )
+    if(CCFITS_FOUND)
+        target_include_directories(test_spectrafetch_parsers PRIVATE
+            ${CCFITS_INCLUDE_DIRS})
+        target_link_libraries(test_spectrafetch_parsers PRIVATE
+            ${CCFITS_LIBRARIES})
+    endif()
+    target_link_libraries(test_spectrafetch_parsers PRIVATE
+        Qt6::Core Qt6::Network)
+    add_test(
+        NAME    spectrafetch_parsers
+        COMMAND test_spectrafetch_parsers
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(spectrafetch_parsers PROPERTIES
+        LABELS "utils;spectrafetch"
+        TIMEOUT 120
     )
 
     add_test(

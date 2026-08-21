@@ -55,6 +55,21 @@ Response postVizierMultipart(QNetworkAccessManager                     *nam,
                              int                                       timeoutMs,
                              const ProgressFn &onProgress = {});
 
+// Generic-endpoint variants for non-CDS services (ESO TAP, SkyServer, SSAP,
+// ...): same retry/backoff loop and TAP error extraction, but against one
+// explicit URL instead of the VizieR mirror rotation.
+Response postForm(QNetworkAccessManager *nam, const QString &url,
+                  const QUrlQuery &form, int timeoutMs,
+                  const ProgressFn &onProgress = {});
+
+Response postMultipart(QNetworkAccessManager                     *nam,
+                       const QString                             &url,
+                       const std::function<QHttpMultiPart *()> &makeBody,
+                       int timeoutMs, const ProgressFn &onProgress = {});
+
+Response get(QNetworkAccessManager *nam, const QString &url, int timeoutMs,
+             const ProgressFn &onProgress = {});
+
 }   // namespace CdsTap
 
 #endif   // CDSTAPCLIENT_H

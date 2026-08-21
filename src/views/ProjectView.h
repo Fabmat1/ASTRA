@@ -194,6 +194,9 @@ public:
     void onConfigureColumns();
     void onCreatePlot();
     void onFetchLightcurves();
+    /// Batch "Fetch Spectra" setup; returns the started session id ("" if
+    /// nothing was started).
+    QString onFetchSpectra();
     void onExportTable();
     void onShareStars();
     void onReceiveStars();

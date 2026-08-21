@@ -447,6 +447,13 @@ QJsonObject spectrumToJson(Spectrum &s, BlobPool &bp,
     o["flagged"]      = s.isFlagged();
     o["baryCorr"]     = s.isBarycentricallyCorrected();
     o["time"]         = timeToJson(s.time());
+    if (s.isFetched()) {
+        o["origin"]     = s.getOrigin();
+        o["originId"]   = s.getOriginId();
+        o["isCoadd"]    = s.isCoadd();
+        if (!s.getOriginMeta().isEmpty())
+            o["originMeta"] = s.getOriginMeta();
+    }
 
     // Raw spectrum arrays are lazy too: loadSpectra only stores the data_file
     // path, so getWavelengths() is empty until something loads it. Pull it in
@@ -486,6 +493,10 @@ std::shared_ptr<Spectrum> spectrumFromJson(const QJsonObject &o,
     s->setFlagged(rB(o, "flagged"));
     s->setBarycentricallyCorrected(rB(o, "baryCorr"));
     s->setTime(timeFromJson(o.value("time").toObject()));
+    s->setOrigin(rS(o, "origin"));
+    s->setOriginId(rS(o, "originId"));
+    s->setIsCoadd(o.value("isCoadd").toBool(true));
+    s->setOriginMeta(rS(o, "originMeta"));
 
     s->setData(br.getDoubles(rI(o, "b_wl", -1)),
                br.getDoubles(rI(o, "b_flux", -1)),

@@ -435,6 +435,10 @@ bool DatabaseManager::createTables()
             data_file TEXT,
             barycentric_corrected INTEGER DEFAULT 0,
             created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            origin TEXT,
+            origin_id TEXT,
+            is_coadd INTEGER DEFAULT 1,
+            origin_meta TEXT,
             FOREIGN KEY(star_id) REFERENCES stars(id) ON DELETE CASCADE
         )
     )";
@@ -951,6 +955,13 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE spectral_fits ADD COLUMN telluric_pwv REAL",
         "ALTER TABLE spectral_fits ADD COLUMN telluric_pwv_error REAL",
         "ALTER TABLE spectral_fits ADD COLUMN telluric_barycorr REAL",
+
+        // Archive-fetched spectra provenance. NULL origin = local import;
+        // origin_id is the stable external id used for fetch de-duplication.
+        "ALTER TABLE spectra ADD COLUMN origin TEXT",
+        "ALTER TABLE spectra ADD COLUMN origin_id TEXT",
+        "ALTER TABLE spectra ADD COLUMN is_coadd INTEGER DEFAULT 1",
+        "ALTER TABLE spectra ADD COLUMN origin_meta TEXT",
     };
 
     // Per-element abundance columns on the star, generated from the element
@@ -1047,6 +1058,7 @@ bool DatabaseManager::createIndexes()
         "CREATE INDEX IF NOT EXISTS idx_stars_project_id ON stars(project_id)",
         "CREATE INDEX IF NOT EXISTS idx_photometry_star_id ON photometry(star_id)",
         "CREATE INDEX IF NOT EXISTS idx_spectra_star_id ON spectra(star_id)",
+        "CREATE INDEX IF NOT EXISTS idx_spectra_origin ON spectra(origin_id)",
         "CREATE INDEX IF NOT EXISTS idx_photometric_points_photometry_id ON photometric_points(photometry_id)",
         "CREATE INDEX IF NOT EXISTS idx_lightcurves_photometry_id ON lightcurves(photometry_id)",
         "CREATE INDEX IF NOT EXISTS idx_sed_models_photometry_id ON sed_models(photometry_id)",
@@ -1752,6 +1764,18 @@ bool DatabaseManager::updateBestFit(const QString& spectrumId, const QString& be
 {
     if (!_spectra) return false;
     return _spectra->updateBestFit(spectrumId, bestFitId);
+}
+
+QSet<QString> DatabaseManager::spectrumOriginIdsForProject(const QString& projectId)
+{
+    if (!_spectra) return {};
+    return _spectra->originIdsForProject(projectId);
+}
+
+bool DatabaseManager::deleteSpectraByOriginId(const QString& starId, const QString& originId)
+{
+    if (!_spectra) return false;
+    return _spectra->deleteSpectraByOriginId(starId, originId);
 }
 
 bool DatabaseManager::saveRadialVelocityCurve(std::shared_ptr<RadialVelocityCurve> curve, const QString& starId)

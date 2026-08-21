@@ -15,9 +15,11 @@
 #include "utils/AppSettings.h"
 #include "utils/BackgroundTaskManager.h"
 #include "utils/LightcurveFetchService.h"
+#include "utils/SpectrumFetchService.h"
 #include "utils/ThemeManager.h"
 #include "utils/UpdateManager.h"
 #include "views/tools/LightcurveFetchSessionsDialog.h"
+#include "views/tools/SpectrumFetchSessionsDialog.h"
 #include <QAction>
 #include <QActionGroup>
 #include <QHBoxLayout>
@@ -134,8 +136,85 @@ void MainWindow::setupUi()
     });
 
     setupLcFetchStatusWidget();
+    setupSpecFetchStatusWidget();
 
     statusBar()->showMessage("Ready");
+}
+
+void MainWindow::setupSpecFetchStatusWidget()
+{
+    auto* service = _controller->spectrumFetchService();
+
+    _specFetchWidget = new QWidget(this);
+    auto* lay = new QHBoxLayout(_specFetchWidget);
+    lay->setContentsMargins(0, 0, 0, 0);
+    lay->setSpacing(4);
+
+    _specFetchBtn = new QToolButton;
+    _specFetchBtn->setAutoRaise(true);
+    _specFetchBtn->setToolTip(tr("Open the spectrum fetch sessions overview "
+                                 "(logs, progress, cancel)"));
+    _specFetchProgress = new QProgressBar;
+    _specFetchProgress->setMaximumWidth(140);
+    _specFetchProgress->setMaximumHeight(14);
+    _specFetchProgress->setTextVisible(false);
+
+    lay->addWidget(_specFetchBtn);
+    lay->addWidget(_specFetchProgress);
+    statusBar()->addPermanentWidget(_specFetchWidget);
+    _specFetchWidget->setVisible(false);
+
+    connect(_specFetchBtn, &QToolButton::clicked,
+            this, &MainWindow::onShowSpectrumFetchSessions);
+
+    connect(service, &SpectrumFetchService::progressChanged,
+            this, [this](int done, int total, int running) {
+        if (total <= 0) {
+            _specFetchWidget->setVisible(false);
+            return;
+        }
+        _specFetchWidget->setVisible(true);
+        _specFetchProgress->setRange(0, total);
+        _specFetchProgress->setValue(done);
+        const bool active = done < total;
+        _specFetchProgress->setVisible(active);
+        _specFetchBtn->setText(active
+            ? tr("Fetching spectra %1/%2 (%3 running)")
+                  .arg(done).arg(total).arg(running)
+            : tr("Spectrum fetch done (%1/%2)").arg(done).arg(total));
+    });
+
+    connect(service, &SpectrumFetchService::allFinished,
+            this, [this](int done, int total) {
+        Q_UNUSED(done);
+        statusBar()->showMessage(
+            tr("Spectrum fetching finished (%1 file%2)")
+                .arg(total).arg(total == 1 ? "" : "s"), 8000);
+    });
+}
+
+void MainWindow::onShowSpectrumFetchSessions()
+{
+    if (!_specSessionsDialog) {
+        _specSessionsDialog = new SpectrumFetchSessionsDialog(
+            _controller->spectrumFetchService(), this);
+        _specSessionsDialog->setAttribute(Qt::WA_DeleteOnClose);
+        connect(_specSessionsDialog, &QObject::destroyed, this,
+                [this] { _specSessionsDialog = nullptr; });
+        // "New Fetch…" in the sessions overview launches the batch-fetch
+        // setup with the project view's current scope lists.
+        connect(_specSessionsDialog,
+                &SpectrumFetchSessionsDialog::newFetchRequested,
+                this, [this] {
+            if (!_projectView) return;
+            const QString sessionId = _projectView->onFetchSpectra();
+            if (!sessionId.isEmpty() && _specSessionsDialog)
+                _specSessionsDialog->watchSession(sessionId);
+        });
+    }
+    _specSessionsDialog->show();
+    _specSessionsDialog->raise();
+    _specSessionsDialog->activateWindow();
 }
 
 void MainWindow::setupLcFetchStatusWidget()
@@ -492,14 +571,37 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             menuBar->insertMenu(helpAction, _starsMenu);
         }
         
+        // Add Data menu if not exists (fetching from online archives and
+        // instrument definitions)
+        if (!_dataMenu) {
+            _dataMenu = new QMenu("&Data", this);
+            _fetchLightcurvesAction = _dataMenu->addAction("Fetch &Lightcurves...");
+            _fetchLightcurvesAction->setStatusTip(
+                tr("Start and monitor background lightcurve fetches for the "
+                   "selected stars"));
+            _fetchSpectraAction = _dataMenu->addAction("Fetch &Spectra...");
+            _fetchSpectraAction->setStatusTip(
+                tr("Search online archives (ESO, LAMOST, SDSS, ...) for "
+                   "spectra of the project's stars and import them"));
+            _dataMenu->addSeparator();
+            _instrumentConfigAction = _dataMenu->addAction("&Instruments...");
+
+            // A single entry point each: opens the sessions overview, which
+            // carries a "New Fetch…" button to launch a batch fetch.
+            connect(_fetchLightcurvesAction, &QAction::triggered,
+                    this, &MainWindow::onShowLcFetchSessions);
+            connect(_fetchSpectraAction, &QAction::triggered,
+                    this, &MainWindow::onShowSpectrumFetchSessions);
+            connect(_instrumentConfigAction, &QAction::triggered, this, &MainWindow::onShowInstrumentConfig);
+
+            QAction* helpAction = _helpMenu->menuAction();
+            menuBar->insertMenu(helpAction, _dataMenu);
+        }
+
         // Add Analysis menu if not exists
         if (!_analysisMenu) {
             _analysisMenu = new QMenu("&Analysis", this);
             _createPlotAction = _analysisMenu->addAction("Create &Plot...");
-            _fetchLightcurvesAction = _analysisMenu->addAction("Fetch &Lightcurves...");
-            _fetchLightcurvesAction->setStatusTip(
-                tr("Start and monitor background lightcurve fetches for the "
-                   "selected stars"));
             _computeKinematicsAction =
                 _analysisMenu->addAction("Compute Galactic &Kinematics");
             _computeKinematicsAction->setStatusTip(
@@ -511,20 +613,13 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             _rvDetectabilityAction->setStatusTip(
                 tr("Monte-Carlo the SB1 detection probability against orbital "
                    "period, using the stars' real RV epochs and uncertainties"));
-            _analysisMenu->addSeparator();
-            _instrumentConfigAction = _analysisMenu->addAction("&Instruments...");
 
             connect(_createPlotAction, &QAction::triggered, _projectView, &ProjectView::onCreatePlot);
             connect(_computeKinematicsAction, &QAction::triggered, _projectView,
                     &ProjectView::onComputeGalacticKinematics);
-            // A single entry point: opens the sessions overview, which carries a
-            // "New Fetch…" button to launch a batch fetch for the selection.
-            connect(_fetchLightcurvesAction, &QAction::triggered,
-                    this, &MainWindow::onShowLcFetchSessions);
             connect(_rvDetectabilityAction, &QAction::triggered, _projectView,
                     &ProjectView::onRVDetectability);
-            connect(_instrumentConfigAction, &QAction::triggered, this, &MainWindow::onShowInstrumentConfig);
-            
+
             QAction* helpAction = _helpMenu->menuAction();
             menuBar->insertMenu(helpAction, _analysisMenu);
         }
@@ -545,11 +640,19 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             _starsMenu = nullptr;
         }
         
+        if (_dataMenu) {
+            menuBar->removeAction(_dataMenu->menuAction());
+            delete _dataMenu;
+            _dataMenu = nullptr;
+            _fetchLightcurvesAction = nullptr;
+            _fetchSpectraAction = nullptr;
+            _instrumentConfigAction = nullptr;
+        }
+
         if (_analysisMenu) {
             menuBar->removeAction(_analysisMenu->menuAction());
             delete _analysisMenu;
             _analysisMenu = nullptr;
-            _fetchLightcurvesAction = nullptr;
             _computeKinematicsAction = nullptr;
             _rvDetectabilityAction = nullptr;
         }

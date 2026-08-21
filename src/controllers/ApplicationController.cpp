@@ -6,6 +6,7 @@
 #include "utils/ThemeManager.h"
 #include "utils/BackgroundTaskManager.h"
 #include "utils/LightcurveFetchService.h"
+#include "utils/SpectrumFetchService.h"
 #include <QApplication>
 #include <QFile>
 #include <QUuid>
@@ -45,6 +46,13 @@ LightcurveFetchService* ApplicationController::lightcurveFetchService()
     if (!_lightcurveFetchService)
         _lightcurveFetchService = std::make_unique<LightcurveFetchService>(this, this);
     return _lightcurveFetchService.get();
+}
+
+SpectrumFetchService* ApplicationController::spectrumFetchService()
+{
+    if (!_spectrumFetchService)
+        _spectrumFetchService = std::make_unique<SpectrumFetchService>(this, this);
+    return _spectrumFetchService.get();
 }
 
 std::vector<std::shared_ptr<Project>> ApplicationController::getProjects() const

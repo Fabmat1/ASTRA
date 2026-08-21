@@ -55,8 +55,8 @@
                     "spectral": {
                         "disperser": "LRS",
                         "resolution_coefficients": [1800.0],
-                        "wavelength_min": 3700.0,
-                        "wavelength_max": 9000.0
+                        "wavelength_min": 3690.0,
+                        "wavelength_max": 9100.0
                     }
                 },
                 {
@@ -577,7 +577,10 @@
                         "wavelength_max": 11000.0,
                         "common_setups": [
                             { "label": "520", "central_wavelength": 5200.0, "wavelength_min": 4140.0, "wavelength_max": 6210.0 },
+                            { "label": "564", "central_wavelength": 5640.0, "wavelength_min": 4580.0, "wavelength_max": 6690.0 },
                             { "label": "580", "central_wavelength": 5800.0, "wavelength_min": 4780.0, "wavelength_max": 6810.0 },
+                            { "label": "600", "central_wavelength": 6000.0, "wavelength_min": 4930.0, "wavelength_max": 7060.0 },
+                            { "label": "760", "central_wavelength": 7600.0, "wavelength_min": 5650.0, "wavelength_max": 9460.0 },
                             { "label": "860", "central_wavelength": 8600.0, "wavelength_min": 6600.0, "wavelength_max": 10600.0 }
                         ]
                     }
@@ -1058,6 +1061,146 @@
                         "fov": 0.6,
                         "pixel_scale": 0.034,
                         "filters": ["F115LP", "F125LP", "F140LP", "F150LP", "F165LP"]
+                    }
+                }
+            ]
+        },
+        {
+            "name": "HARPS",
+            "full_name": "High Accuracy Radial velocity Planet Searcher (ESO La Silla 3.6m)",
+            "latitude": -29.2584,
+            "longitude": -70.7345,
+            "altitude": 2400.0,
+            "modes": [
+                {
+                    "key": "echelle",
+                    "display_name": "HARPS Echelle",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "echelle",
+                        "resolution_coefficients": [115000.0],
+                        "wavelength_min": 3780.0,
+                        "wavelength_max": 6910.0
+                    }
+                }
+            ]
+        },
+        {
+            "name": "ESPRESSO",
+            "full_name": "Echelle SPectrograph for Rocky Exoplanets and Stable Spectroscopic Observations (ESO VLT)",
+            "latitude": -24.6272,
+            "longitude": -70.4048,
+            "altitude": 2635.0,
+            "modes": [
+                {
+                    "key": "singleHR",
+                    "display_name": "ESPRESSO 1-UT HR",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "echelle",
+                        "resolution_coefficients": [140000.0],
+                        "wavelength_min": 3800.0,
+                        "wavelength_max": 7880.0
+                    }
+                }
+            ]
+        },
+        {
+            "name": "GIRAFFE",
+            "full_name": "FLAMES/GIRAFFE Multi-Object Spectrograph (ESO VLT)",
+            "latitude": -24.6272,
+            "longitude": -70.4048,
+            "altitude": 2635.0,
+            "modes": [
+                {
+                    "key": "LR",
+                    "display_name": "Medusa Low Resolution",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "LR_grating",
+                        "resolution_coefficients": [7500.0],
+                        "wavelength_min": 3700.0,
+                        "wavelength_max": 9000.0
+                    }
+                },
+                {
+                    "key": "HR",
+                    "display_name": "Medusa High Resolution",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "HR_grating",
+                        "resolution_coefficients": [20000.0],
+                        "wavelength_min": 3700.0,
+                        "wavelength_max": 9000.0
+                    }
+                }
+            ]
+        },
+        {
+            "name": "IUE",
+            "full_name": "International Ultraviolet Explorer",
+            "space_based": true,
+            "modes": [
+                {
+                    "key": "SWP_low",
+                    "display_name": "SWP Low Dispersion",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "SWP",
+                        "resolution_coefficients": [300.0],
+                        "wavelength_min": 1150.0,
+                        "wavelength_max": 1980.0
+                    }
+                },
+                {
+                    "key": "LWP_low",
+                    "display_name": "LWP/LWR Low Dispersion",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "LWP",
+                        "resolution_coefficients": [300.0],
+                        "wavelength_min": 1850.0,
+                        "wavelength_max": 3350.0
+                    }
+                },
+                {
+                    "key": "SWP_high",
+                    "display_name": "SWP High Dispersion",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "SWP_echelle",
+                        "resolution_coefficients": [10000.0],
+                        "wavelength_min": 1150.0,
+                        "wavelength_max": 1980.0
+                    }
+                },
+                {
+                    "key": "LWP_high",
+                    "display_name": "LWP/LWR High Dispersion",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "LWP_echelle",
+                        "resolution_coefficients": [10000.0],
+                        "wavelength_min": 1850.0,
+                        "wavelength_max": 3350.0
+                    }
+                }
+            ]
+        },
+        {
+            "name": "FUSE",
+            "full_name": "Far Ultraviolet Spectroscopic Explorer",
+            "space_based": true,
+            "modes": [
+                {
+                    "key": "FUV",
+                    "display_name": "FUSE FUV Spectrograph",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "FUSE",
+                        "resolution_coefficients": [20000.0],
+                        "wavelength_min": 905.0,
+                        "wavelength_max": 1187.0
                     }
                 }
             ]

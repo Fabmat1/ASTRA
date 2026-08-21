@@ -1,6 +1,7 @@
 #ifndef SPECTRUMREPOSITORY_H
 #define SPECTRUMREPOSITORY_H
 
+#include <QSet>
 #include <QString>
 #include <memory>
 #include <vector>
@@ -37,6 +38,12 @@ class SpectrumRepository {
                                   const QString &modeKey);
     bool updateSpectralFitFlag(const QString &fitId, bool flagged);
     bool updateBestFit(const QString &spectrumId, const QString &bestFitId);
+
+    // Archive-fetch support: all non-null origin_ids in a project (for
+    // de-duplication), and removal of previously fetched rows before a
+    // forced re-download.
+    QSet<QString> originIdsForProject(const QString &projectId);
+    bool deleteSpectraByOriginId(const QString &starId, const QString &originId);
 
   private:
     DBAccess &_db;

@@ -239,6 +239,26 @@ public:
     bool isBarycentricallyCorrected() const { return _isBarycentricallyCorrected; }
     void setBarycentricallyCorrected(bool corrected) { _isBarycentricallyCorrected = corrected; }
 
+    // ── Archive origin (empty for locally imported spectra) ────────────────
+    QString getOrigin() const               { return _origin; }
+    void    setOrigin(const QString& o)     { _origin = o; }
+
+    // Stable external identifier for de-duplication across fetches
+    // (e.g. "eso:<dp_id>", "lamost-dr8-lrs:<obsid>", with a "#expN" suffix
+    // for individual exposures extracted from a multi-exposure product).
+    QString getOriginId() const             { return _originId; }
+    void    setOriginId(const QString& id)  { _originId = id; }
+
+    // False only for products that are a single exposure of a coadd
+    bool isCoadd() const                    { return _isCoadd; }
+    void setIsCoadd(bool c)                 { _isCoadd = c; }
+
+    // Small JSON blob with archive metadata (url, snr, R, collection)
+    QString getOriginMeta() const           { return _originMeta; }
+    void    setOriginMeta(const QString& m) { _originMeta = m; }
+
+    bool isFetched() const                  { return !_origin.isEmpty(); }
+
     // ── Spectral data ───────────────────────────────────────────────────────
     void setData(const std::vector<double>& wavelengths,
                  const std::vector<double>& fluxes,
@@ -287,8 +307,14 @@ private:
     Time _time;  
 
     bool _flagged = false;
-    
+
     bool _isBarycentricallyCorrected;
+
+    // Archive origin metadata (empty/default for local imports)
+    QString _origin;
+    QString _originId;
+    bool    _isCoadd = true;
+    QString _originMeta;
 
     // Spectral data
     std::vector<double> _wavelengths;  // in Angstroms
