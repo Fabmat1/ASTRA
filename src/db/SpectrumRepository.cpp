@@ -150,7 +150,7 @@ bool SpectrumRepository::saveSpectrum(const QString            &starId,
                         : QVariant(spectrum->getOriginMeta()));
 
     if (!query.exec()) {
-        qDebug() << "Failed to save spectrum:" << query.lastError();
+        LOG_ERROR("Spectra", QString("Failed to save spectrum: %1").arg(query.lastError().text()));
         return false;
     }
 
@@ -326,7 +326,7 @@ std::vector<std::shared_ptr<Spectrum>> SpectrumRepository::loadSpectra(const QSt
     query.bindValue(":star_id", starId);
 
     if (!query.exec()) {
-        qDebug() << "Failed to load spectra:" << query.lastError();
+        LOG_ERROR("Spectra", QString("Failed to load spectra: %1").arg(query.lastError().text()));
         return spectra;
     }
 
@@ -377,7 +377,7 @@ SpectrumRepository::loadSpectraIndex(const QString &projectId) {
     query.bindValue(":project_id", projectId);
 
     if (!query.exec()) {
-        qDebug() << "Failed to load spectra index:" << query.lastError();
+        LOG_ERROR("Spectra", QString("Failed to load spectra index: %1").arg(query.lastError().text()));
         return rows;
     }
 
@@ -556,7 +556,7 @@ bool SpectrumRepository::deleteSpectrum(const QString& spectrumId)
     query.prepare("DELETE FROM spectral_fits WHERE spectrum_id = :spectrum_id");
     query.bindValue(":spectrum_id", spectrumId);
     if (!query.exec()) {
-        qDebug() << "Failed to delete spectral fits:" << query.lastError();
+        LOG_ERROR("Spectra", QString("Failed to delete spectral fits: %1").arg(query.lastError().text()));
         return false;
     }
     for (const auto& fit : fits) {
@@ -568,7 +568,7 @@ bool SpectrumRepository::deleteSpectrum(const QString& spectrumId)
     query.prepare("SELECT data_file FROM spectra WHERE id = :id");
     query.bindValue(":id", spectrumId);
     if (!query.exec() || !query.next()) {
-        qDebug() << "Failed to fetch spectrum for deletion:" << query.lastError();
+        LOG_ERROR("Spectra", QString("Failed to fetch spectrum for deletion: %1").arg(query.lastError().text()));
         return false;
     }
     QString dataFile = query.value("data_file").toString();
@@ -576,7 +576,7 @@ bool SpectrumRepository::deleteSpectrum(const QString& spectrumId)
     query.prepare("DELETE FROM spectra WHERE id = :id");
     query.bindValue(":id", spectrumId);
     if (!query.exec()) {
-        qDebug() << "Failed to delete spectrum:" << query.lastError();
+        LOG_ERROR("Spectra", QString("Failed to delete spectrum: %1").arg(query.lastError().text()));
         return false;
     }
 
@@ -600,7 +600,7 @@ QSet<QString> SpectrumRepository::originIdsForProject(const QString& projectId)
     query.bindValue(":project_id", projectId);
 
     if (!query.exec()) {
-        qDebug() << "Failed to load spectrum origin ids:" << query.lastError();
+        LOG_ERROR("Spectra", QString("Failed to load spectrum origin ids: %1").arg(query.lastError().text()));
         return ids;
     }
 
@@ -629,7 +629,7 @@ bool SpectrumRepository::deleteSpectraByOriginId(const QString& starId,
     query.bindValue(":origin_prefix", originId + "#%");
 
     if (!query.exec()) {
-        qDebug() << "Failed to look up spectra by origin:" << query.lastError();
+        LOG_ERROR("Spectra", QString("Failed to look up spectra by origin: %1").arg(query.lastError().text()));
         return false;
     }
 
@@ -650,7 +650,7 @@ bool SpectrumRepository::deleteSpectralFit(const QString& fitId)
     query.prepare("SELECT model_data_file FROM spectral_fits WHERE id = :id");
     query.bindValue(":id", fitId);
     if (!query.exec() || !query.next()) {
-        qDebug() << "Failed to fetch spectral fit for deletion:" << query.lastError();
+        LOG_ERROR("Spectra", QString("Failed to fetch spectral fit for deletion: %1").arg(query.lastError().text()));
         return false;
     }
     QString modelFile = query.value("model_data_file").toString();
@@ -658,7 +658,7 @@ bool SpectrumRepository::deleteSpectralFit(const QString& fitId)
     query.prepare("DELETE FROM spectral_fits WHERE id = :id");
     query.bindValue(":id", fitId);
     if (!query.exec()) {
-        qDebug() << "Failed to delete spectral fit:" << query.lastError();
+        LOG_ERROR("Spectra", QString("Failed to delete spectral fit: %1").arg(query.lastError().text()));
         return false;
     }
 

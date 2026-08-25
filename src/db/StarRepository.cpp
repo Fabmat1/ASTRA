@@ -130,7 +130,7 @@ size_t StarRepository::getStarCountForProject(const QString& projectId)
     query.bindValue(":project_id", projectId);
     
     if (!query.exec() || !query.next()) {
-        qDebug() << "Failed to get star count:" << query.lastError();
+        LOG_ERROR("Stars", QString("Failed to get star count: %1").arg(query.lastError().text()));
         return 0;
     }
     
@@ -428,7 +428,7 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
     query.bindValue(":bibcodes", QJsonDocument(bibcodesArray).toJson(QJsonDocument::Compact));
 
     if (!query.exec()) {
-        qDebug() << "Failed to save star:" << query.lastError();
+        LOG_ERROR("Stars", QString("Failed to save star: %1").arg(query.lastError().text()));
         return false;
     }
 
@@ -737,7 +737,7 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
     query.bindValue(":bibcodes", QJsonDocument(bibcodesArray).toJson(QJsonDocument::Compact));
 
     if (!query.exec()) {
-        qDebug() << "Failed to update star row:" << query.lastError();
+        LOG_ERROR("Stars", QString("Failed to update star row: %1").arg(query.lastError().text()));
         return false;
     }
 
@@ -749,7 +749,8 @@ QString StarRepository::findMatchingStarId(const QString& projectId,
                                              const QString& alias,
                                              const QString& tic,
                                              const QString& jname,
-                                             double ra, double dec)
+                                             double ra, double dec,
+                                             double toleranceArcsec)
 {
     QSqlDatabase db = _db.threadConnection();
 
@@ -829,11 +830,12 @@ QString StarRepository::findMatchingStarId(const QString& projectId,
             return q.value(0).toString();
     }
 
-    // ── 5. Positional match (ra/dec within 2 arcsec) ────────────
+    // ── 5. Positional match (ra/dec within the caller's radius) ─
     //    Only if we have valid coordinates.
     if (!std::isnan(ra) && !std::isnan(dec)) {
-        // 2 arcsec in degrees
-        static constexpr double TOLERANCE_DEG = 2.0 / 3600.0;
+        if (toleranceArcsec <= 0.0)
+            return QString();
+        const double TOLERANCE_DEG = toleranceArcsec / 3600.0;
 
         // Use a bounding box for the SQL filter (fast), then refine with
         // proper spherical distance. The cos(dec) factor for RA is applied

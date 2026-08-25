@@ -18,6 +18,34 @@ RV points enter ASTRA in several ways:
   column mapping and automatic barycentric time conversion), or
 - entered manually (**Add manual point…**).
 
+## Importing an RV table
+
+The wizard's **From a single RV table** mode reads one table holding all
+epochs for many stars and attaches each row to a star already in the project.
+Columns (identifier, timestamp, RV, RV error, systematic error) are detected
+from the header and can be overridden.
+
+Rows are matched to stars in one of three ways, chosen with the drop-down next
+to the identifier column:
+
+- **Gaia Source ID** - exact match, with or without the `Gaia DR3` prefix.
+- **Alias/Name** - matched after normalisation, so `* alf Lac`, `Alf Lac` and
+  `HD   1185` find the same star as `alf Lac` and `HD 1185`.
+- **Coordinates (RA + Dec)** - a cone search around each row's position, using
+  a separate RA and Dec column (decimal degrees) and a configurable match
+  radius. The default 3 arcsec covers tables whose coordinates are rounded to
+  whole seconds of time, which can sit ~2 arcsec from the Gaia position of the
+  same star.
+
+Coordinate matching is the most reliable option for observing logs, where the
+same star often appears under several spellings, or none at all. Rows that
+resolve to the same star are merged into one RV curve regardless of the label
+they carry, and epochs already present from an earlier import of the same
+table are not duplicated. Rows that match no star are skipped and listed in
+the preview under **Unmatched rows**, together with the identifiers that
+failed - usually a sign that the star table has not been imported yet or that
+the match radius is too tight.
+
 ## The RV Inspector
 
 Open a star's detail window and click **View / Adjust RV**. The

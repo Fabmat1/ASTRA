@@ -24,7 +24,7 @@ public:
     size_t getStarCountForProject(const QString& projectId);
     bool importCSV(const QString& filepath, std::shared_ptr<Project> project);
     bool updateStarRow(const QString& projectId, std::shared_ptr<Star> star);
-    QString findMatchingStarId(const QString& projectId, const QString& sourceId, const QString& alias, const QString& tic, const QString& jname, double ra, double dec);
+    QString findMatchingStarId(const QString& projectId, const QString& sourceId, const QString& alias, const QString& tic, const QString& jname, double ra, double dec, double toleranceArcsec = 2.0);
 
 private:
     DBAccess& _db;

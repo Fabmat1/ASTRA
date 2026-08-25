@@ -10,6 +10,7 @@
 #include "../db/DatabaseManager.h"
 #include <QUuid>
 #include "../utils/Logger.h"
+#include "../utils/StarMatching.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -36,6 +37,7 @@
 #include <QApplication>
 #include <QEventLoop>
 #include <QSet>
+#include <QDoubleSpinBox>
 
 #include <algorithm>
 #include <limits>
@@ -115,6 +117,22 @@ GeneralImportPage::GeneralImportPage(QWidget* parent)
     connect(_hasHeaderCheckBox, &QCheckBox::toggled, 
             [this]() { if (!_filePathEdit->text().isEmpty()) onFilePathChanged(_filePathEdit->text()); });
     parseLayout->addWidget(_hasHeaderCheckBox, 2, 0, 1, 2);
+
+    // Positional matching radius against stars already in the project. Tables
+    // that store coordinates rounded to whole seconds of time can sit ~2
+    // arcsec away from the Gaia position of the same star.
+    QLabel* tolLabel = new QLabel("Match existing stars within:");
+    _matchToleranceSpin = new QDoubleSpinBox;
+    _matchToleranceSpin->setRange(0.1, 3600.0);
+    _matchToleranceSpin->setDecimals(1);
+    _matchToleranceSpin->setSingleStep(0.5);
+    _matchToleranceSpin->setValue(3.0);
+    _matchToleranceSpin->setSuffix(" arcsec");
+    _matchToleranceSpin->setToolTip(
+        "Radius used when a row has no matching identifier and has to be "
+        "matched to an existing star by position.");
+    parseLayout->addWidget(tolLabel, 3, 0);
+    parseLayout->addWidget(_matchToleranceSpin, 3, 1);
     
     parseOptionsGroup->setLayout(parseLayout);
     layout->addWidget(parseOptionsGroup);
@@ -180,8 +198,8 @@ void GeneralImportPage::updateSimbadWarning()
 void GeneralImportPage::setupColumnAliases()
 {
     // Define common aliases for each field (case-insensitive)
-    _columnAliases["source_id"] = {"source_id", "gaia_id", "gaia_source_id", "id", "gaia dr3", "gaiaid", "gaia"}; //, "gaiaedr3"};
-    _columnAliases["alias"] = {"alias", "name", "star_name", "identifier", "star", "object"};
+    _columnAliases["source_id"] = {"source_id", "gaia_id", "gaia_source_id", "id", "gaia dr3", "gaiaid", "gaia", "designation", "gaia_designation", "dr3_source_id", "dr3name"}; //, "gaiaedr3"};
+    _columnAliases["alias"] = {"alias", "name", "star_name", "identifier", "star", "object", "main_id", "simbad_id", "simbad", "target", "obj_name", "objname"};
     _columnAliases["tic"] = {"tic", "tic_id", "tess_id", "tessid"};
     _columnAliases["jname"] = {"jname", "2mass", "2mass_id", "j2000_name", "2massid", "twomass"};
     _columnAliases["ra"] = {"ra", "raj2000", "ra_j2000", "right_ascension", "alpha", "_ra"};
@@ -199,7 +217,7 @@ void GeneralImportPage::setupColumnAliases()
     _columnAliases["rp"] = {"rp", "rp_mag", "phot_rp_mean_mag", "gaia_rp", "rpmag", "mag_rp"};
     _columnAliases["e_rp"] = {"e_rp", "rp_error", "phot_rp_mean_mag_error", "u_rp", "erp", "rp_e"};
     _columnAliases["bp_rp"] = {"bp_rp", "bp-rp", "color", "bprp", "bp_rp_color"};
-    _columnAliases["teff"] = {"teff", "t_eff", "temperature", "effective_temperature", "temp"};
+    _columnAliases["teff"] = {"teff", "t_eff", "temperature", "effective_temperature", "temp", "teff_gspphot", "teff_gspspec", "teff_val"};
     _columnAliases["e_teff"] = {"e_teff", "teff_error", "teff_err", "u_teff", "eteff", "teff_e"};
     _columnAliases["logg"] = {"logg", "log_g", "surface_gravity", "grav"};
     _columnAliases["e_logg"] = {"e_logg", "logg_error", "logg_err", "u_logg", "elogg", "logg_e"};
@@ -207,11 +225,11 @@ void GeneralImportPage::setupColumnAliases()
     _columnAliases["e_he"] = {"e_he", "he_error", "he_err", "u_he", "ehe", "he_e"};
     _columnAliases["rv_med"] = {"rv_med", "medrv", "median_rv", "rv_median", "rvmed"};
     _columnAliases["e_rv_med"] = {"e_rv_med", "medrv_err", "rv_med_err", "u_rv_med", "ervmed", "rvmed_e"};
-    _columnAliases["rv_avg"] = {"rv_avg", "rv_mean", "mean_rv", "avgvr", "rvavg", "rv"};
-    _columnAliases["e_rv_avg"] = {"e_rv_avg", "rv_avg_err", "rv_mean_err", "u_rv_avg", "ervavg", "rv_e", "erv"};
+    _columnAliases["rv_avg"] = {"rv_avg", "rv_mean", "mean_rv", "avgvr", "rvavg", "rv", "radial_velocity", "radvel", "vrad"};
+    _columnAliases["e_rv_avg"] = {"e_rv_avg", "rv_avg_err", "rv_mean_err", "u_rv_avg", "ervavg", "rv_e", "erv", "radial_velocity_error", "radvel_err", "vrad_err"};
     _columnAliases["deltaRV"] = {"deltarv", "delta_rv", "rv_amplitude", "rv_amp", "dRV"};
     _columnAliases["e_deltaRV"] = {"e_deltarv", "deltarv_err", "delta_rv_err", "u_deltarv", "edeltarv"};
-    _columnAliases["logp"] = {"logp", "log_p"};
+    _columnAliases["logp"] = {"logp", "log_p", "log_pvalue", "logpval"};
     _columnAliases["spec_class"] = {"spec_class", "spectral_type", "sp_type", "spectral_class", "sptype", "spectype"};
     _columnAliases["pmra_pmdec_corr"] = {"pmra_pmdec_corr", "pmra_pmdec_correlation", "corr_pmra_pmdec"};
     _columnAliases["plx_pmdec_corr"] = {"plx_pmdec_corr", "parallax_pmdec_corr", "corr_plx_pmdec"};
@@ -821,12 +839,30 @@ bool GeneralImportPage::readCSV(const QString& filePath)
         return false;
     }
     
+    // Headers that were blank in the file (usually trailing separators). They
+    // are dropped again below unless they actually carry data.
+    QSet<QString> unnamedColumns;
+
     int startRow = 0;
     if (_hasHeaderCheckBox->isChecked()) {
         _columnNames.clear();
         QStringList headers = parseCSVLine(lines[0], delimiter);
-        for (const QString& header : headers) {
-            _columnNames.push_back(header.trimmed());
+        // Trailing separators and repeated headers are common in exported
+        // tables; every column needs a unique, non-empty key because rows are
+        // stored keyed by column name.
+        QSet<QString> seen;
+        for (int i = 0; i < headers.size(); ++i) {
+            QString name = headers[i].trimmed();
+            if (name.isEmpty()) {
+                name = QString("Column_%1").arg(i + 1);
+                unnamedColumns.insert(name);
+            }
+            QString unique = name;
+            int suffix = 2;
+            while (seen.contains(unique))
+                unique = QString("%1_%2").arg(name).arg(suffix++);
+            seen.insert(unique);
+            _columnNames.push_back(unique);
         }
         startRow = 1;
     } else {
@@ -847,7 +883,30 @@ bool GeneralImportPage::readCSV(const QString& filePath)
         }
         _dataRows.push_back(row);
     }
-    
+
+    // A blank header whose column is empty in every row is an artefact of a
+    // trailing separator, not data - drop it so it does not show up as an
+    // unmapped column.
+    if (!unnamedColumns.isEmpty()) {
+        for (const QString& col : unnamedColumns) {
+            bool hasData = false;
+            for (const DataRow& row : _dataRows) {
+                auto it = row.values.find(col);
+                if (it != row.values.end() && !normalizeValue(it->second).isEmpty()) {
+                    hasData = true;
+                    break;
+                }
+            }
+            if (hasData) continue;
+
+            _columnNames.erase(
+                std::remove(_columnNames.begin(), _columnNames.end(), col),
+                _columnNames.end());
+            for (DataRow& row : _dataRows)
+                row.values.erase(col);
+        }
+    }
+
     return true;
 }
 
@@ -1034,27 +1093,46 @@ void GeneralImportPage::mapColumns()
 {
     _columnMappings.clear();
     _unmappedColumns.clear();
-    
+
+    // Best candidate per field. A table can offer several columns for one
+    // field (Gaia's "radial_velocity" next to a measured "radvel"); the alias
+    // listed first wins and the runner-up is left unmapped so the user can
+    // decide in the mapping dialog instead of getting an arbitrary winner.
+    struct Candidate { QString column; int aliasRank; };
+    std::unordered_map<QString, Candidate> bestPerField;
+
     for (const QString& columnName : _columnNames) {
         QString lowerCol = columnName.toLower();
         lowerCol.remove(QRegularExpression("^_+|_+$"));
-        
-        bool mapped = false;
-        
+
+        QString matchedField;
+        int matchedRank = -1;
+
         for (const auto& [field, aliases] : _columnAliases) {
-            for (const QString& alias : aliases) {
-                if (lowerCol == alias.toLower()) {
-                    _columnMappings[columnName] = field;
-                    mapped = true;
+            for (int i = 0; i < static_cast<int>(aliases.size()); ++i) {
+                if (lowerCol == aliases[i].toLower()) {
+                    matchedField = field;
+                    matchedRank = i;
                     break;
                 }
             }
-            if (mapped) break;
+            if (matchedRank >= 0) break;
         }
-        
-        if (!mapped) {
+
+        if (matchedRank < 0)
+            continue;   // unmapped columns are collected below, in column order
+
+        auto it = bestPerField.find(matchedField);
+        if (it == bestPerField.end() || matchedRank < it->second.aliasRank)
+            bestPerField[matchedField] = {columnName, matchedRank};
+    }
+
+    for (const auto& [field, candidate] : bestPerField)
+        _columnMappings[candidate.column] = field;
+
+    for (const QString& columnName : _columnNames) {
+        if (_columnMappings.find(columnName) == _columnMappings.end())
             _unmappedColumns.push_back(columnName);
-        }
     }
 }
 
@@ -1114,7 +1192,9 @@ void GeneralImportPage::applyValueToStar(std::shared_ptr<Star> star, const QStri
     
     // String fields
     if (field == "alias") star->setAlias(value.toString());
-    else if (field == "source_id") star->setSourceId(value.toString());
+    // Gaia ids arrive both as "Gaia DR3 385485619900166400" and bare; store the
+    // bare number so table imports and catalogue queries agree.
+    else if (field == "source_id") star->setSourceId(StarMatching::normalizeSourceId(value.toString()));
     else if (field == "tic") star->setTic(value.toString());
     else if (field == "jname") star->setJName(value.toString());
     else if (field == "spec_class") star->setSpecClass(value.toString());
@@ -1305,16 +1385,24 @@ bool GeneralImportPage::validatePage()
     int matchedCount = 0;
     int newCount = 0;
 
+    const double matchTolerance = _matchToleranceSpin->value();
+    // An empty project has nothing to match against: skip the per-star lookups.
+    const bool projectHasStars = (dbm->getStarCountForProject(projectId) > 0);
+
     for (const auto& star : parsedStars) {
-        QString existingId = dbm->findMatchingStarId(
-            projectId,
-            star->getSourceId(),
-            star->getAlias(),
-            star->getTic(),
-            star->getJName(),
-            star->getRa(),
-            star->getDec());
-    
+        QString existingId;
+        if (projectHasStars) {
+            existingId = dbm->findMatchingStarId(
+                projectId,
+                star->getSourceId(),
+                star->getAlias(),
+                star->getTic(),
+                star->getJName(),
+                star->getRa(),
+                star->getDec(),
+                matchTolerance);
+        }
+
         if (!existingId.isEmpty()) {
             if (!staging->hasStar(existingId)) {
                 staging->pullStarsFromDB(dbm, projectId, {existingId});
@@ -1322,9 +1410,11 @@ bool GeneralImportPage::validatePage()
             auto existing = staging->getStar(existingId);
             updateStarFromParsed(existing, star);
             staging->markStarDirty(existingId);
+            matchedCount++;
         } else {
             star->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
             staging->addStar(star, /*isNew=*/true);
+            newCount++;
         }
     }
 

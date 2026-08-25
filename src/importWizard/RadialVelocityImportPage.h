@@ -43,6 +43,7 @@ private slots:
     void onScanFolders();
     void onBrowseTableFile();
     void onProcessTable();
+    void onTableIdTypeChanged();
     void onFitParamsToggled(bool checked);
     void onBrowseFitParamsFile();
     void onPopulateInstrumentSys();
@@ -69,6 +70,7 @@ private:
                      std::vector<QStringList>& outRows);
     void populateColumnCombos(const QStringList& columns,
                               const QList<QPair<QComboBox*, QStringList>>& comboPatterns);
+    void autoDetectTableColumns();
 
     // Folder detection
     void detectFolderColumns();
@@ -79,6 +81,7 @@ private:
 
     // Preview
     void updatePreviewFromProject();          // ← NEW (replaces old updatePreviewTree)
+    void showTableMatchReport();
 
     // Helpers
     bool isBackgroundBusy() const;
@@ -111,6 +114,11 @@ private:
 
     // Folder column detection cache
     QStringList _folderDetectedColumns;
+
+    // Last table-import match report (filled from the background task)
+    int _tableMatchedRows = 0;
+    int _tableUnmatchedRows = 0;
+    QStringList _tableUnmatchedExamples;
 
     // ── UI widgets ──────────────────────────────────
     // Mode selection
@@ -161,6 +169,11 @@ private:
     QCheckBox* _tableHeaderCheck = nullptr;
     QComboBox* _tableIdColCombo = nullptr;
     QComboBox* _tableIdTypeCombo = nullptr;
+    QLabel* _tableIdColLabel = nullptr;
+    QLabel* _tableDecColLabel = nullptr;
+    QComboBox* _tableDecColCombo = nullptr;
+    QLabel* _tableToleranceLabel = nullptr;
+    QDoubleSpinBox* _tableToleranceSpin = nullptr;
     QComboBox* _tableTimeColCombo = nullptr;
     QComboBox* _tableTimeTypeCombo = nullptr;
     QComboBox* _tableRVColCombo = nullptr;

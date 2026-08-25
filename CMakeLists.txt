@@ -1062,6 +1062,25 @@ if(BUILD_TESTING)
         TIMEOUT 30
     )
 
+    # ── Import star-matching helpers ─────────────────────────────────────
+    add_executable(test_star_matching
+        tests/test_star_matching.cpp
+    )
+    target_include_directories(test_star_matching PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(test_star_matching PRIVATE Qt6::Core)
+
+    add_test(
+        NAME    star_matching
+        COMMAND test_star_matching
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(star_matching PROPERTIES
+        LABELS "utils;import"
+        TIMEOUT 30
+    )
+
     # ── Spectrum-fetch helper tests ──────────────────────────────────────
     add_executable(test_wavelength_convert
         tests/test_wavelength_convert.cpp

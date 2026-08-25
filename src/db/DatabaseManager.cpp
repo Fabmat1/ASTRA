@@ -70,7 +70,9 @@ bool DatabaseManager::openDatabase(const QString& path)
     _db->database().setDatabaseName(_db->databasePath());
 
     if (!_db->database().open()) {
-        qDebug() << "Error: Could not open database" << _db->database().lastError();
+        LOG_ERROR("Database", QString("Could not open database %1: %2")
+                                  .arg(_db->databasePath(),
+                                       _db->database().lastError().text()));
         return false;
     }
 
@@ -79,6 +81,8 @@ bool DatabaseManager::openDatabase(const QString& path)
     walQuery.exec("PRAGMA journal_mode=WAL");
     walQuery.exec("PRAGMA synchronous=NORMAL");
     walQuery.exec("PRAGMA cache_size=10000");
+
+    checkIntegrity();
 
     if (!createTables()) {
         return false;
@@ -96,9 +100,51 @@ bool DatabaseManager::openDatabase(const QString& path)
     return true;
 }
 
+// A damaged file still opens and still answers most reads, but every write
+// fails and the transaction is rolled back - which looks like "the import did
+// nothing" unless someone reads the log. Find out at startup instead.
+void DatabaseManager::checkIntegrity()
+{
+    _integrityError.clear();
+
+    QSqlQuery query(_db->threadConnection());
+    if (query.exec("PRAGMA quick_check(1)") && query.next()) {
+        const QString result = query.value(0).toString().trimmed();
+        if (result.compare("ok", Qt::CaseInsensitive) != 0)
+            _integrityError = result;
+    } else {
+        _integrityError = query.lastError().text().trimmed();
+        if (_integrityError.isEmpty())
+            _integrityError = "integrity check could not be run";
+    }
+
+    if (_integrityError.isEmpty()) {
+        LOG_INFO("Database", "Integrity check passed");
+        return;
+    }
+
+    LOG_ERROR("Database",
+              QString("Database integrity check FAILED: %1. The file at %2 is "
+                      "damaged - reads may return partial data and every write "
+                      "will be rolled back until it is repaired or restored "
+                      "from a backup.")
+                  .arg(_integrityError, _db->databasePath()));
+}
+
 void DatabaseManager::closeDatabase()
 {
     if (_db->database().isOpen()) {
+        // Fold the WAL back into the database file and delete it. A leftover
+        // -wal/-shm pair is only meaningful together with the exact .db it
+        // belongs to, so anything that copies the three files independently
+        // (backup scripts, file sync) can otherwise reassemble a mismatched
+        // set and corrupt the database.
+        QSqlQuery checkpoint(_db->threadConnection());
+        if (!checkpoint.exec("PRAGMA wal_checkpoint(TRUNCATE)")) {
+            LOG_WARNING("Database",
+                        QString("WAL checkpoint on close failed: %1")
+                            .arg(checkpoint.lastError().text()));
+        }
         _db->database().close();
     }
 }
@@ -1103,7 +1149,7 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
     query.bindValue(":project_id", projectId);
 
     if (!query.exec()) {
-        qDebug() << "Failed to load stars:" << query.lastError();
+        LOG_ERROR("Database", QString("Failed to load stars: %1").arg(query.lastError().text()));
         return stars;
     }
 
@@ -1500,7 +1546,7 @@ bool DatabaseManager::beginTransaction()
 {
     QSqlDatabase db = _db->threadConnection();
     if (!db.transaction()) {
-        qDebug() << "Failed to begin transaction:" << db.lastError();
+        LOG_ERROR("Database", QString("Failed to begin transaction: %1").arg(db.lastError().text()));
         return false;
     }
     return true;
@@ -1510,7 +1556,7 @@ bool DatabaseManager::commitTransaction()
 {
     QSqlDatabase db = _db->threadConnection();
     if (!db.commit()) {
-        qDebug() << "Failed to commit transaction:" << db.lastError();
+        LOG_ERROR("Database", QString("Failed to commit transaction: %1").arg(db.lastError().text()));
         return false;
     }
     return true;
@@ -1520,7 +1566,7 @@ bool DatabaseManager::rollbackTransaction()
 {
     QSqlDatabase db = _db->threadConnection();
     if (!db.rollback()) {
-        qDebug() << "Failed to rollback transaction:" << db.lastError();
+        LOG_ERROR("Database", QString("Failed to rollback transaction: %1").arg(db.lastError().text()));
         return false;
     }
     return true;
@@ -1828,9 +1874,9 @@ bool DatabaseManager::updateStarRow(const QString& projectId, std::shared_ptr<St
     return _stars->updateStarRow(projectId, star);
 }
 
-QString DatabaseManager::findMatchingStarId(const QString& projectId, const QString& sourceId, const QString& alias, const QString& tic, const QString& jname, double ra, double dec)
+QString DatabaseManager::findMatchingStarId(const QString& projectId, const QString& sourceId, const QString& alias, const QString& tic, const QString& jname, double ra, double dec, double toleranceArcsec)
 {
-    return _stars->findMatchingStarId(projectId, sourceId, alias, tic, jname, ra, dec);
+    return _stars->findMatchingStarId(projectId, sourceId, alias, tic, jname, ra, dec, toleranceArcsec);
 }
 
 bool DatabaseManager::saveSEDModelForStar(const QString& starId, std::shared_ptr<SEDModel> model)

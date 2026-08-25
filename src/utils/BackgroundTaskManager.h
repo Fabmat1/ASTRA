@@ -6,6 +6,7 @@
 #include "controllers/ApplicationController.h"
 #include "importWizard/ImportStagingArea.h"
 #include "utils/Logger.h"
+#include "utils/StarMatching.h"
 
 #include <QObject>
 #include <QThread>
@@ -421,8 +422,12 @@ public:
     struct TableConfig {
         QStringList columns;
         std::vector<QStringList> rows;
+        // "source_id", "alias" or "coord". For "coord", idCol holds the RA
+        // column and decCol the Dec column.
         QString idType;
         int idCol;
+        int decCol = -1;
+        double matchToleranceArcsec = 3.0;
         int timeCol;
         int rvCol;
         int rvErrCol;
@@ -448,6 +453,10 @@ public slots:
 
 signals:
     void extractionComplete(int numCurves, int numPoints);
+    // Table mode: how many rows found a star, how many did not, plus a few
+    // examples of the identifiers that failed to match.
+    void matchReport(int matchedRows, int unmatchedRows,
+                     const QStringList& unmatchedExamples);
 
 private:
     enum Mode { FromFits, FromFolders, FromTable };
@@ -477,6 +486,7 @@ private:
     // Star lookup
     QHash<QString, std::shared_ptr<Star>> _sourceIdIndex;
     QHash<QString, std::shared_ptr<Star>> _aliasIndex;
+    StarMatching::CoordinateIndex         _coordIndex;
 
     // Mode-specific config
     bool _bestFitOnly = true;

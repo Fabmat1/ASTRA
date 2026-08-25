@@ -443,6 +443,9 @@ public:
     QVariant getFieldValue(const QString& fieldName) const;
 
     std::shared_ptr<RadialVelocityCurve> getRVCurve();
+    // Curve already in memory, without triggering the lazy DB load. Lets bulk
+    // callers decide for themselves whether a load is worth it.
+    std::shared_ptr<RadialVelocityCurve> rvCurveIfLoaded() const { return _rvCurve; }
     void setRVCurve(std::shared_ptr<RadialVelocityCurve> curve);
     void updateRVMetricsFromCurve();
     // In Star.h, public section:

@@ -19,6 +19,7 @@ class QTableWidget;
 class QComboBox;
 class QLabel;
 class SimbadWorker;
+class QDoubleSpinBox;
 class GaiaWorker;
 class QThread;
 
@@ -50,6 +51,7 @@ private:
     QLineEdit* _customDelimiterEdit;
     QLineEdit* _commentCharEdit;
     QCheckBox* _hasHeaderCheckBox;
+    QDoubleSpinBox* _matchToleranceSpin;
     QCheckBox* _gaiaCheckBox;
     QCheckBox* _simbadCheckBox;
     QTableWidget* _previewTable;

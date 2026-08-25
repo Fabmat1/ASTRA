@@ -23,10 +23,12 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRegularExpression>
+#include <QSet>
 #include <QStatusBar>
 #include <QTextStream>
 #include <QTimer>
 #include <QUrlQuery>
+#include <QUuid>
 #include <QtConcurrent>
 #include <cmath>
 #include <limits>
@@ -1618,25 +1620,24 @@ void RVExtractionTask::buildStarLookupIndex()
 {
     _sourceIdIndex.clear();
     _aliasIndex.clear();
-
-    QRegularExpression numRe("(\\d{10,})");
+    _coordIndex.clear();
 
     for (const auto& star : _stars) {
-        QString sid = star->getSourceId();
+        QString sid = star->getSourceId().trimmed();
         if (!sid.isEmpty()) {
             _sourceIdIndex[sid] = star;
-            _sourceIdIndex[sid.trimmed()] = star;
-            QRegularExpressionMatch m = numRe.match(sid);
-            if (m.hasMatch())
-                _sourceIdIndex[m.captured(1)] = star;
+            _sourceIdIndex[StarMatching::normalizeSourceId(sid)] = star;
         }
         QString alias = star->getAlias();
         if (!alias.isEmpty()) {
             _aliasIndex[alias.trimmed().toLower()] = star;
-            QString crushed = alias.toUpper().remove(' ').remove('-').remove('_');
-            _aliasIndex[crushed.toLower()] = star;
+            _aliasIndex[StarMatching::normalizeAlias(alias)] = star;
         }
     }
+
+    // Only table mode matches on coordinates; skip the sort otherwise.
+    if (_mode == FromTable && _tableConfig.idType == "coord")
+        _coordIndex.build(_stars);
 }
 
 std::shared_ptr<Star> RVExtractionTask::findStarByIdentifier(
@@ -1657,8 +1658,7 @@ std::shared_ptr<Star> RVExtractionTask::findStarByIdentifier(
     } else if (idType == "alias" || idType == "Alias/Name") {
         auto it = _aliasIndex.find(clean.toLower());
         if (it != _aliasIndex.end()) return it.value();
-        QString crushed = clean.toUpper().remove(' ').remove('-').remove('_').toLower();
-        it = _aliasIndex.find(crushed);
+        it = _aliasIndex.find(StarMatching::normalizeAlias(clean));
         if (it != _aliasIndex.end()) return it.value();
     } else if (idType == "ra_dec" || idType.startsWith("RA")) {
         QRegularExpression coordRe("([\\d.]+)[_+\\-\\s]([+\\-]?[\\d.]+)");
@@ -1986,33 +1986,134 @@ void RVExtractionTask::executeFromFolders()
 void RVExtractionTask::executeFromTable()
 {
     const auto& cfg = _tableConfig;
+    const bool  byCoord = (cfg.idType == "coord");
+    const int   nRows   = static_cast<int>(cfg.rows.size());
 
-    // Group rows by star identifier
-    QHash<QString, std::vector<int>> groupedRows;
-    for (int i = 0; i < static_cast<int>(cfg.rows.size()); ++i) {
-        const QStringList& row = cfg.rows[i];
-        if (cfg.idCol >= row.size()) continue;
-        QString key = row[cfg.idCol].trimmed();
-        if (!key.isEmpty())
-            groupedRows[key].push_back(i);
-    }
+    DatabaseManager* dbm = _controller ? _controller->databaseManager() : nullptr;
 
-    int matched = 0, unmatched = 0, totalPoints = 0;
-    int total = groupedRows.size();
-    int processed = 0;
+    // ── Pass 1: resolve every row to a star ─────────────────────
+    // Resolve first and group by star afterwards: one table can label the same
+    // object several ways (an observing log with both "Alf Lac" and "unknown"
+    // rows), and a star must end up with exactly one curve.
+    QHash<QString, std::vector<int>>      rowsByStar;
+    QHash<QString, std::shared_ptr<Star>> starById;
+    QHash<QString, std::shared_ptr<Star>> resolveCache;  // row key → star (null = known miss)
 
-    for (auto it = groupedRows.cbegin(); it != groupedRows.cend(); ++it) {
-        if (++processed % 200 == 0) {
-            emit progress(QString("RV Extraction: %1/%2 identifiers...")
-                .arg(processed).arg(total));
+    int           matchedRows = 0;
+    int           unmatchedRows = 0;
+    QStringList   unmatchedExamples;
+    QSet<QString> unmatchedSeen;
+
+    auto recordUnmatched = [&](const QString& label) {
+        unmatchedRows++;
+        if (label.isEmpty() || unmatchedSeen.contains(label)) return;
+        unmatchedSeen.insert(label);
+        if (unmatchedExamples.size() < 10)
+            unmatchedExamples << label;
+    };
+
+    for (int i = 0; i < nRows; ++i) {
+        if ((i + 1) % 500 == 0) {
+            emit progress(QString("RV Extraction: matching row %1/%2...")
+                .arg(i + 1).arg(nRows));
         }
 
-        auto star = findStarByIdentifier(it.key(), cfg.idType);
-        if (!star) { unmatched++; continue; }
+        const QStringList& row = cfg.rows[i];
+        QString            label;
+        double             ra = 0.0, dec = 0.0;
 
-        auto curve = std::make_shared<RadialVelocityCurve>();
-        curve->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        if (byCoord) {
+            if (cfg.idCol < 0 || cfg.idCol >= row.size() ||
+                cfg.decCol < 0 || cfg.decCol >= row.size()) {
+                unmatchedRows++;
+                continue;
+            }
+            bool okRa = false, okDec = false;
+            ra  = row[cfg.idCol].trimmed().toDouble(&okRa);
+            dec = row[cfg.decCol].trimmed().toDouble(&okDec);
+            if (!okRa || !okDec) {
+                recordUnmatched(QString("%1 / %2")
+                    .arg(row[cfg.idCol].trimmed(), row[cfg.decCol].trimmed()));
+                continue;
+            }
+            label = QString("%1 %2").arg(ra, 0, 'f', 6).arg(dec, 0, 'f', 6);
+        } else {
+            if (cfg.idCol < 0 || cfg.idCol >= row.size()) {
+                unmatchedRows++;
+                continue;
+            }
+            label = row[cfg.idCol].trimmed();
+            if (label.isEmpty()) {
+                unmatchedRows++;
+                continue;
+            }
+        }
 
+        std::shared_ptr<Star> star;
+        auto cached = resolveCache.constFind(label);
+        if (cached != resolveCache.constEnd()) {
+            star = cached.value();
+        } else {
+            star = byCoord
+                 ? _coordIndex.nearest(ra, dec, cfg.matchToleranceArcsec)
+                 : findStarByIdentifier(label, cfg.idType);
+            resolveCache.insert(label, star);
+        }
+
+        if (!star) {
+            recordUnmatched(label);
+            continue;
+        }
+
+        matchedRows++;
+        rowsByStar[star->getId()].push_back(i);
+        starById[star->getId()] = star;
+    }
+
+    // ── Pass 2: build (or extend) one curve per star ────────────
+    // An epoch already present with the same source is a re-import of the same
+    // measurement, not a new one.
+    auto epochKey = [](const QString& source, double time) {
+        return QString("%1@%2").arg(source).arg(qRound64(time * 1e6));
+    };
+
+    int matched = 0, totalPoints = 0, duplicateRows = 0;
+    int processed = 0;
+    const int totalStars = rowsByStar.size();
+
+    for (auto it = rowsByStar.cbegin(); it != rowsByStar.cend(); ++it) {
+        if (++processed % 200 == 0) {
+            emit progress(QString("RV Extraction: %1/%2 stars...")
+                .arg(processed).arg(totalStars));
+        }
+
+        const auto& star = starById[it.key()];
+        if (!star) continue;
+
+        // Existing curve: whatever is already in memory (staged earlier in
+        // this wizard run), otherwise a single load for the stars the DB says
+        // actually have points. Stars without RV data cost no query at all.
+        auto curve = star->rvCurveIfLoaded();
+        if (!curve && star->getRVNPoints() > 0) {
+            curve = star->getRVCurve();
+            if (!curve && dbm)
+                curve = dbm->loadRadialVelocityCurve(star->getId());
+        }
+
+        const bool isNewCurve = !curve;
+        if (isNewCurve) {
+            curve = std::make_shared<RadialVelocityCurve>();
+            curve->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        }
+
+        QSet<QString> existingEpochs;
+        for (const auto& pt : curve->getRVPoints()) {
+            if (!pt) continue;
+            existingEpochs.insert(epochKey(
+                pt->getSource(), cfg.isBJD ? pt->getBJD() : pt->getMJD()));
+        }
+
+        int added = 0;
         for (int ri : it.value()) {
             const QStringList& row = cfg.rows[ri];
             if (cfg.timeCol >= row.size() || cfg.rvCol >= row.size())
@@ -2022,6 +2123,14 @@ void RVExtractionTask::executeFromTable()
             double time = row[cfg.timeCol].toDouble(&okTime);
             double rv   = row[cfg.rvCol].toDouble(&okRV);
             if (!okTime || !okRV) continue;
+
+            const QString source = "table_import";
+            const QString key    = epochKey(source, time);
+            if (existingEpochs.contains(key)) {
+                duplicateRows++;
+                continue;
+            }
+            existingEpochs.insert(key);
 
             double rvErr = 0.0;
             if (cfg.rvErrCol >= 0 && cfg.rvErrCol < row.size()) {
@@ -2050,27 +2159,37 @@ void RVExtractionTask::executeFromTable()
             } else {
                 rvPt->setRVError(rvErr);
             }
-            rvPt->setSource("table_import");
+            rvPt->setSource(source);
 
             curve->addRVPoint(rvPt);
+            added++;
         }
 
-        if (curve->getNumPoints() > 0) {
-            RVExtractionResult result;
-            result.starId = star->getId();
-            result.curve = curve;
-            _results.push_back(result);
-            totalPoints += static_cast<int>(curve->getNumPoints());
-            matched++;
-        }
+        if (added == 0)
+            continue;   // nothing new for this star - leave its curve untouched
+
+        RVExtractionResult result;
+        result.starId = star->getId();
+        result.curve  = curve;
+        _results.push_back(result);
+        totalPoints += added;
+        matched++;
     }
 
     emit progress(QString("RV Extraction: Saving %1 curves...").arg(matched));
     saveResultsToDatabase();
 
+    LOG_INFO("RVExtract",
+        QString("Table import: %1 rows matched, %2 unmatched, %3 duplicate "
+                "epochs skipped, %4 stars updated (%5 new points)")
+            .arg(matchedRows).arg(unmatchedRows).arg(duplicateRows)
+            .arg(matched).arg(totalPoints));
+
+    emit matchReport(matchedRows, unmatchedRows, unmatchedExamples);
     emit extractionComplete(matched, totalPoints);
-    emit finished(true, QString("RV Extraction: %1 stars (%2 points), %3 unmatched")
-        .arg(matched).arg(totalPoints).arg(unmatched));
+    emit finished(true, QString("RV Extraction: %1 stars (%2 points), "
+                                "%3 rows unmatched, %4 duplicate epochs skipped")
+        .arg(matched).arg(totalPoints).arg(unmatchedRows).arg(duplicateRows));
 }
 
 

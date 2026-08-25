@@ -1,4 +1,5 @@
 #include "ProjectRepository.h"
+#include "utils/Logger.h"
 #include "DBAccess.h"
 #include "models/Project.h"
 #include <QSqlQuery>
@@ -72,7 +73,7 @@ bool ProjectRepository::saveProject(std::shared_ptr<Project> project)
     query.bindValue(":columns", columns.join(","));
 
     if (!query.exec()) {
-        qDebug() << "Failed to save project:" << query.lastError();
+        LOG_ERROR("Projects", QString("Failed to save project: %1").arg(query.lastError().text()));
         return false;
     }
 

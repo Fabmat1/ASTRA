@@ -3,6 +3,8 @@
 #include "controllers/ApplicationController.h"
 #include "utils/Logger.h"
 #include "utils/AppPaths.h"
+#include "db/DatabaseManager.h"
+#include <QMessageBox>
 #include "utils/UiIcons.h"
 #include "utils/WindowSizing.h"
 #include "fitting/FitTypes.h"
@@ -64,6 +66,21 @@ int main(int argc, char *argv[])
     ApplicationController controller;
     MainWindow            window(&controller);
     window.show();
+
+    // A damaged database file opens fine and reads most rows, but silently
+    // rolls back every write - say so up front instead of letting imports
+    // fail one by one.
+    if (auto* dbm = controller.databaseManager(); dbm && !dbm->isHealthy()) {
+        QMessageBox::critical(
+            &window, "Database Damaged",
+            QString("The database at\n%1\nfailed its integrity check:\n\n%2\n\n"
+                    "Reads may return partial data and nothing can be saved - "
+                    "imports will roll back. Repair it with:\n\n"
+                    "  sqlite3 astra.db \".recover\" | sqlite3 astra_fixed.db\n\n"
+                    "then replace the file with the repaired copy. Keep the "
+                    "damaged file until you have checked the result.")
+                .arg(AppPaths::database(), dbm->integrityError()));
+    }
 
     const QStringList args = app.arguments();
     for (int i = 1; i < args.size(); ++i) {

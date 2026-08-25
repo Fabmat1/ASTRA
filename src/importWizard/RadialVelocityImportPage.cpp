@@ -7,6 +7,7 @@
 #include "../db/DatabaseManager.h"
 #include "../utils/Logger.h"
 #include "../utils/BackgroundTaskManager.h"
+#include "../utils/StarMatching.h"
 #include "../importWizard/StarImportWizard.h"
 
 #include <QVBoxLayout>
@@ -425,14 +426,39 @@ void RadialVelocityImportPage::setupFromTablePage()
     QGridLayout* colLayout = new QGridLayout;
     int row = 0;
 
-    colLayout->addWidget(new QLabel("Star identifier column:"), row, 0);
+    _tableIdColLabel = new QLabel("Star identifier column:");
+    colLayout->addWidget(_tableIdColLabel, row, 0);
     _tableIdColCombo = new QComboBox;
     colLayout->addWidget(_tableIdColCombo, row, 1);
     _tableIdTypeCombo = new QComboBox;
     _tableIdTypeCombo->addItems({
-        "Gaia Source ID", "Alias/Name", "RA (pair with Dec)", "Dec (pair with RA)"
+        "Gaia Source ID", "Alias/Name", "Coordinates (RA + Dec)"
     });
     colLayout->addWidget(_tableIdTypeCombo, row++, 2);
+    connect(_tableIdTypeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, &RadialVelocityImportPage::onTableIdTypeChanged);
+
+    // Second coordinate column - only relevant when matching on position.
+    _tableDecColLabel = new QLabel("Dec column:");
+    colLayout->addWidget(_tableDecColLabel, row, 0);
+    _tableDecColCombo = new QComboBox;
+    colLayout->addWidget(_tableDecColCombo, row, 1);
+    _tableToleranceLabel = new QLabel("Match radius:");
+    _tableToleranceSpin = new QDoubleSpinBox;
+    _tableToleranceSpin->setRange(0.1, 3600.0);
+    _tableToleranceSpin->setDecimals(1);
+    _tableToleranceSpin->setSingleStep(0.5);
+    _tableToleranceSpin->setValue(3.0);
+    _tableToleranceSpin->setSuffix(" arcsec");
+    _tableToleranceSpin->setToolTip(
+        "Radius of the cone search around each row's coordinates. Catalogue "
+        "positions rounded to whole seconds of time can sit ~2 arcsec from the "
+        "Gaia position of the same star.");
+    QHBoxLayout* tolLayout = new QHBoxLayout;
+    tolLayout->setContentsMargins(0, 0, 0, 0);
+    tolLayout->addWidget(_tableToleranceLabel);
+    tolLayout->addWidget(_tableToleranceSpin);
+    colLayout->addLayout(tolLayout, row++, 2);
 
     colLayout->addWidget(new QLabel("Timestamp column:"), row, 0);
     _tableTimeColCombo = new QComboBox;
@@ -462,6 +488,19 @@ void RadialVelocityImportPage::setupFromTablePage()
             this, &RadialVelocityImportPage::onProcessTable);
     layout->addWidget(_processTableBtn);
     layout->addStretch();
+
+    onTableIdTypeChanged();
+}
+
+void RadialVelocityImportPage::onTableIdTypeChanged()
+{
+    const bool byCoord = (_tableIdTypeCombo->currentIndex() == 2);
+
+    _tableIdColLabel->setText(byCoord ? "RA column:" : "Star identifier column:");
+    _tableDecColLabel->setVisible(byCoord);
+    _tableDecColCombo->setVisible(byCoord);
+    _tableToleranceLabel->setVisible(byCoord);
+    _tableToleranceSpin->setVisible(byCoord);
 }
 
 void RadialVelocityImportPage::setupFitParamsGroup(QVBoxLayout* parentLayout)
@@ -635,23 +674,16 @@ void RadialVelocityImportPage::buildStarLookupIndex()
     _sourceIdIndex.clear();
     _aliasIndex.clear();
 
-    QRegularExpression numRe("(\\d{10,})");
-
     for (const auto& star : _importedStars) {
-        QString sid = star->getSourceId();
+        QString sid = star->getSourceId().trimmed();
         if (!sid.isEmpty()) {
             _sourceIdIndex[sid] = star;
-            _sourceIdIndex[sid.trimmed()] = star;
-            QRegularExpressionMatch m = numRe.match(sid);
-            if (m.hasMatch())
-                _sourceIdIndex[m.captured(1)] = star;
+            _sourceIdIndex[StarMatching::normalizeSourceId(sid)] = star;
         }
         QString alias = star->getAlias();
         if (!alias.isEmpty()) {
             _aliasIndex[alias.trimmed().toLower()] = star;
-            // Also store without spaces/dashes for fuzzy matching
-            QString crushed = alias.toUpper().remove(' ').remove('-').remove('_');
-            _aliasIndex[crushed.toLower()] = star;
+            _aliasIndex[StarMatching::normalizeAlias(alias)] = star;
         }
     }
     _indexBuilt = true;
@@ -676,8 +708,7 @@ std::shared_ptr<Star> RadialVelocityImportPage::findStarByIdentifier(
     } else if (idType == "alias" || idType == "Alias/Name") {
         auto it = _aliasIndex.find(clean.toLower());
         if (it != _aliasIndex.end()) return it.value();
-        QString crushed = clean.toUpper().remove(' ').remove('-').remove('_').toLower();
-        it = _aliasIndex.find(crushed);
+        it = _aliasIndex.find(StarMatching::normalizeAlias(clean));
         if (it != _aliasIndex.end()) return it.value();
     } else if (idType == "ra_dec" || idType.startsWith("RA")) {
         // Parse "RA_DEC" or "RA+DEC" from folder name
@@ -805,6 +836,91 @@ bool RadialVelocityImportPage::loadCSVFile(
         outRows.push_back(parseLine(lines[i], delim));
 
     return true;
+}
+
+// Pick sensible column/mode defaults for the loaded RV table. Coordinates win
+// over names because catalogue name spellings rarely agree ("* alf Lac" vs
+// "Alf Lac"), but an explicit Gaia source id wins over both.
+void RadialVelocityImportPage::autoDetectTableColumns()
+{
+    const QStringList& cols = _tableColumns;
+
+    auto setCombo = [](QComboBox* combo, int colIdx) {
+        combo->setCurrentIndex(colIdx >= 0 ? colIdx + 1 : 0);  // +1 for "(none)"
+    };
+
+    static const QStringList errWords = {"err", "error", "sigma", "uncert", "e_"};
+
+    const int srcIdx  = StarMatching::bestColumnFor(cols,
+        {"source_id", "gaia_source_id", "gaia_id", "gaiaid", "designation",
+         "gaia", "source"}, errWords);
+    const int raIdx   = StarMatching::bestColumnFor(cols,
+        {"ra", "_ra", "ra_deg", "radeg", "raj2000", "ra_j2000", "ra_icrs",
+         "right_ascension"}, errWords, /*exactOnly=*/true);
+    const int decIdx  = StarMatching::bestColumnFor(cols,
+        {"dec", "de", "_dec", "dec_deg", "decdeg", "decj2000", "dec_j2000",
+         "de_icrs", "declination"}, errWords, /*exactOnly=*/true);
+    const int nameIdx = StarMatching::bestColumnFor(cols,
+        {"star", "star_name", "name", "main_id", "object", "target",
+         "identifier", "id"}, errWords);
+
+    const int timeIdx = StarMatching::bestColumnFor(cols,
+        {"bjd", "mjd", "hjd", "jd", "time", "epoch"}, errWords);
+    const int rvIdx   = StarMatching::bestColumnFor(cols,
+        {"vrad", "rv", "radial_velocity", "v_rad", "radvel", "velocity"},
+        errWords);
+    int rvErrIdx = StarMatching::bestColumnFor(cols,
+        {"rv_err", "rv_error", "e_rv", "vrad_err", "vrad_error", "e_vrad",
+         "sigma_rv", "rverr"});
+    if (rvErrIdx < 0 && rvIdx >= 0) {
+        // Fall back to the error column named after the RV column itself
+        // ("vrad_rel" → "vrad_rel_err"). Deliberately not a bare "err" search:
+        // that would happily pick up "pmra_error".
+        const QString stem = cols[rvIdx].trimmed().toLower();
+        rvErrIdx = StarMatching::bestColumnFor(cols,
+            {stem + "_err", stem + "_error", stem + "err", stem + "_sigma",
+             "e_" + stem, stem + "_e"}, {}, /*exactOnly=*/true);
+    }
+    const int sysIdx  = StarMatching::bestColumnFor(cols,
+        {"sys_err", "sys_error", "rv_sys", "sigma_sys", "systematic"});
+
+    setCombo(_tableTimeColCombo,   timeIdx);
+    setCombo(_tableRVColCombo,     rvIdx);
+    setCombo(_tableRVErrColCombo,  rvErrIdx == rvIdx ? -1 : rvErrIdx);
+    setCombo(_tableSysErrColCombo, sysIdx);
+    setCombo(_tableDecColCombo,    decIdx);
+
+    if (srcIdx >= 0) {
+        _tableIdTypeCombo->setCurrentIndex(0);
+        setCombo(_tableIdColCombo, srcIdx);
+    } else if (raIdx >= 0 && decIdx >= 0) {
+        _tableIdTypeCombo->setCurrentIndex(2);
+        setCombo(_tableIdColCombo, raIdx);
+    } else {
+        _tableIdTypeCombo->setCurrentIndex(1);
+        setCombo(_tableIdColCombo, nameIdx);
+    }
+    onTableIdTypeChanged();
+
+    // Time scale: trust the column name, fall back to the magnitude of the
+    // first value (JD-like numbers are ~2.4e6, MJD ~6e4).
+    int scale = -1;
+    if (timeIdx >= 0 && timeIdx < cols.size()) {
+        const QString tn = cols[timeIdx].toLower();
+        if (tn.contains("mjd"))                            scale = 0;
+        else if (tn.contains("bjd") || tn.contains("hjd")) scale = 1;
+    }
+    if (scale < 0 && timeIdx >= 0) {
+        for (const QStringList& r : _tableRows) {
+            if (timeIdx >= r.size()) continue;
+            bool ok = false;
+            const double v = r[timeIdx].toDouble(&ok);
+            if (!ok) continue;
+            scale = (v > 2.4e6) ? 1 : 0;
+            break;
+        }
+    }
+    _tableTimeTypeCombo->setCurrentIndex(scale == 1 ? 1 : 0);
 }
 
 void RadialVelocityImportPage::populateColumnCombos(
@@ -982,13 +1098,22 @@ void RadialVelocityImportPage::onProcessTable()
     if (!project) return;
 
     int idCol    = _tableIdColCombo->currentIndex() - 1;
+    int decCol   = _tableDecColCombo->currentIndex() - 1;
     int timeCol  = _tableTimeColCombo->currentIndex() - 1;
     int rvCol    = _tableRVColCombo->currentIndex() - 1;
     int rvErrCol = _tableRVErrColCombo->currentIndex() - 1;
 
+    const bool byCoord = (_tableIdTypeCombo->currentIndex() == 2);
+
     if (idCol < 0 || timeCol < 0 || rvCol < 0) {
         QMessageBox::warning(this, "Missing Columns",
-            "Please select the star identifier, timestamp, and RV columns.");
+            byCoord ? "Please select the RA, timestamp, and RV columns."
+                    : "Please select the star identifier, timestamp, and RV columns.");
+        return;
+    }
+    if (byCoord && decCol < 0) {
+        QMessageBox::warning(this, "Missing Columns",
+            "Matching on coordinates needs both an RA and a Dec column.");
         return;
     }
 
@@ -996,8 +1121,7 @@ void RadialVelocityImportPage::onProcessTable()
     switch (_tableIdTypeCombo->currentIndex()) {
         case 0: idType = "source_id"; break;
         case 1: idType = "alias"; break;
-        case 2: idType = "ra"; break;
-        case 3: idType = "dec"; break;
+        case 2: idType = "coord"; break;
         default: idType = "source_id"; break;
     }
 
@@ -1006,6 +1130,8 @@ void RadialVelocityImportPage::onProcessTable()
     cfg.rows     = _tableRows;
     cfg.idType   = idType;
     cfg.idCol    = idCol;
+    cfg.decCol   = byCoord ? decCol : -1;
+    cfg.matchToleranceArcsec = _tableToleranceSpin->value();
     cfg.timeCol  = timeCol;
     cfg.rvCol    = rvCol;
     cfg.rvErrCol = rvErrCol;
@@ -1022,17 +1148,57 @@ void RadialVelocityImportPage::onProcessTable()
 
     task->setStagingArea(wiz->stagingArea());
 
+    connect(task, &RVExtractionTask::matchReport,
+            this, [this](int matchedRows, int unmatchedRows,
+                         const QStringList& examples) {
+        _tableMatchedRows   = matchedRows;
+        _tableUnmatchedRows = unmatchedRows;
+        _tableUnmatchedExamples = examples;
+    }, Qt::QueuedConnection);
+
     connect(task, &RVExtractionTask::extractionComplete,
             this, [this](int numCurves, int numPoints) {
         _resultsReady = (numCurves > 0);
         _processTableBtn->setEnabled(true);
         _statusLabel->setText(
-            QString("Processed: %1 stars (%2 RV points).")
-            .arg(numCurves).arg(numPoints));
+            QString("Processed: %1 stars (%2 new RV points). "
+                    "%3 of %4 rows matched a star.")
+            .arg(numCurves).arg(numPoints)
+            .arg(_tableMatchedRows)
+            .arg(_tableMatchedRows + _tableUnmatchedRows));
         updatePreviewFromProject();
+        showTableMatchReport();
     }, Qt::QueuedConnection);
 
     wiz->controller()->backgroundTaskManager()->queueTask(task);
+}
+
+// Unmatched rows are the usual reason a table import looks empty, so they get
+// their own entry at the top of the preview instead of a silent counter.
+void RadialVelocityImportPage::showTableMatchReport()
+{
+    if (_tableUnmatchedRows <= 0)
+        return;
+
+    auto* item = new QTreeWidgetItem;
+    item->setText(0, "Unmatched rows");
+    item->setText(1, QString::number(_tableUnmatchedRows));
+    item->setText(2, _tableIdTypeCombo->currentIndex() == 2
+        ? QString("No project star within %1 arcsec")
+              .arg(_tableToleranceSpin->value(), 0, 'f', 1)
+        : "No project star with this identifier");
+    item->setText(3, "Skipped");
+
+    for (const QString& ex : _tableUnmatchedExamples) {
+        auto* child = new QTreeWidgetItem(item);
+        child->setText(0, "  " + ex);
+        child->setText(3, "No match");
+    }
+
+    _previewTree->insertTopLevelItem(0, item);
+    item->setExpanded(true);
+    for (int i = 0; i < _previewTree->columnCount(); ++i)
+        _previewTree->resizeColumnToContents(i);
 }
 
 void RadialVelocityImportPage::updatePreviewFromProject() {
@@ -1285,37 +1451,18 @@ void RadialVelocityImportPage::onBrowseTableFile()
     // Load & detect columns
     if (loadCSVFile(file, _tableDelimCombo, _tableHeaderCheck,
                     _tableColumns, _tableRows)) {
-        populateColumnCombos(_tableColumns, {
-            {_tableIdColCombo,      {"source_id", "star_id", "id", "name",
-                                     "target", "object", "gaia"}},
-            {_tableTimeColCombo,    {"mjd", "bjd", "time", "jd", "timestamp",
-                                     "epoch"}},
-            {_tableRVColCombo,      {"rv", "vrad", "radial_velocity", "v_rad",
-                                     "radvel", "velocity"}},
-            {_tableRVErrColCombo,   {"rv_err", "rv_error", "e_rv", "vrad_err",
-                                     "vrad_error", "e_vrad", "sigma_rv",
-                                     "err"}},
-            {_tableSysErrColCombo,  {"sys", "systematic", "sys_err", "sys_error",
-                                     "rv_sys", "sigma_sys"}},
-        });
-
-        // Auto-detect time type from column name
-        int timeIdx = _tableTimeColCombo->currentIndex() - 1;
-        if (timeIdx >= 0 && timeIdx < _tableColumns.size()) {
-            QString tn = _tableColumns[timeIdx].toLower();
-            _tableTimeTypeCombo->setCurrentIndex(
-                tn.contains("bjd") ? 1 : 0);
+        for (QComboBox* combo : {_tableIdColCombo, _tableDecColCombo,
+                                 _tableTimeColCombo, _tableRVColCombo,
+                                 _tableRVErrColCombo, _tableSysErrColCombo}) {
+            combo->blockSignals(true);
+            combo->clear();
+            combo->addItem("(none)");
+            combo->addItems(_tableColumns);
+            combo->setCurrentIndex(0);
+            combo->blockSignals(false);
         }
 
-        // Auto-detect ID type from column name
-        int idIdx = _tableIdColCombo->currentIndex() - 1;
-        if (idIdx >= 0 && idIdx < _tableColumns.size()) {
-            QString cn = _tableColumns[idIdx].toLower();
-            if (cn.contains("source_id") || cn.contains("gaia"))
-                _tableIdTypeCombo->setCurrentIndex(0);
-            else
-                _tableIdTypeCombo->setCurrentIndex(1);
-        }
+        autoDetectTableColumns();
 
         _processTableBtn->setEnabled(true);
         _statusLabel->setText(

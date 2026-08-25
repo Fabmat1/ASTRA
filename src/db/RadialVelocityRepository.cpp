@@ -1,4 +1,5 @@
 #include "RadialVelocityRepository.h"
+#include "utils/Logger.h"
 #include "DBAccess.h"
 #include "SqlValue.h"
 #include "models/Star.h"
@@ -34,7 +35,7 @@ bool RadialVelocityRepository::saveRadialVelocityCurve(
     query.bindValue(":log_p", curve->getLogP());
 
     if (!query.exec()) {
-        qDebug() << "Failed to save RV curve:" << query.lastError();
+        LOG_ERROR("RV", QString("Failed to save RV curve: %1").arg(query.lastError().text()));
         return false;
     }
     return true;
@@ -85,7 +86,7 @@ bool RadialVelocityRepository::saveRadialVelocityPoint(
     query.bindValue(":rv_source",                   static_cast<int>(point->getRVSource()));
 
     if (!query.exec()) {
-        qDebug() << "Failed to save RV point:" << query.lastError();
+        LOG_ERROR("RV", QString("Failed to save RV point: %1").arg(query.lastError().text()));
         return false;
     }
     return true;
@@ -155,7 +156,7 @@ bool RadialVelocityRepository::saveRVFit(
     query.bindValue(":rms", fit->getRms());
 
     if (!query.exec()) {
-        qDebug() << "Failed to save RV fit:" << query.lastError();
+        LOG_ERROR("RV", QString("Failed to save RV fit: %1").arg(query.lastError().text()));
         return false;
     }
     return true;
@@ -326,7 +327,7 @@ bool RadialVelocityRepository::deleteRVFit(const QString& fitId)
     query.prepare("DELETE FROM rv_fits WHERE id = :id");
     query.bindValue(":id", fitId);
     if (!query.exec()) {
-        qDebug() << "Failed to delete RV fit:" << query.lastError();
+        LOG_ERROR("RV", QString("Failed to delete RV fit: %1").arg(query.lastError().text()));
         return false;
     }
     return true;
@@ -339,7 +340,7 @@ bool RadialVelocityRepository::deleteRadialVelocityPoint(const QString& pointId)
     query.prepare("DELETE FROM rv_points WHERE id = :id");
     query.bindValue(":id", pointId);
     if (!query.exec()) {
-        qDebug() << "Failed to delete RV point:" << query.lastError();
+        LOG_ERROR("RV", QString("Failed to delete RV point: %1").arg(query.lastError().text()));
         return false;
     }
     return true;

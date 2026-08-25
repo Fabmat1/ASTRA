@@ -41,7 +41,7 @@ bool PhotometryRepository::savePhotometry(const QString& starId,
     query.bindValue(":points_file", pointsFile);
 
     if (!query.exec()) {
-        qDebug() << "Failed to save photometry:" << query.lastError();
+        LOG_ERROR("Photometry", QString("Failed to save photometry: %1").arg(query.lastError().text()));
         return false;
     }
 
@@ -83,7 +83,7 @@ bool PhotometryRepository::savePhotometry(const QString& starId,
         pointQuery.bindValue(":wavelength", point.wavelength);
 
         if (!pointQuery.exec()) {
-            qDebug() << "Failed to save photometric point:" << pointQuery.lastError();
+            LOG_ERROR("Photometry", QString("Failed to save photometric point: %1").arg(pointQuery.lastError().text()));
         }
     }
 
@@ -106,7 +106,7 @@ bool PhotometryRepository::savePhotometry(const QString& starId,
         lcQuery.bindValue(":data_file", lcFile);
 
         if (!lcQuery.exec()) {
-            qDebug() << "Failed to save lightcurve:" << lcQuery.lastError();
+            LOG_ERROR("Photometry", QString("Failed to save lightcurve: %1").arg(lcQuery.lastError().text()));
         }
 
         for (const auto& fit : photometry->getLCFits(source))
@@ -199,7 +199,7 @@ bool PhotometryRepository::saveSEDModel(const QString& starId,
     query.bindValue(":model_data_file",  modelFile);
 
     if (!query.exec()) {
-        qDebug() << "Failed to save SED model:" << query.lastError();
+        LOG_ERROR("Photometry", QString("Failed to save SED model: %1").arg(query.lastError().text()));
         return false;
     }
     return true;
@@ -233,7 +233,7 @@ bool PhotometryRepository::saveSEDModelForStar(const QString& starId,
         ins.bindValue(":id",      photometryId);
         ins.bindValue(":star_id", starId);
         if (!ins.exec()) {
-            qDebug() << "Failed to create photometry record:" << ins.lastError();
+            LOG_ERROR("Photometry", QString("Failed to create photometry record: %1").arg(ins.lastError().text()));
             return false;
         }
     }
@@ -269,7 +269,7 @@ bool PhotometryRepository::saveSedPhotometryPointsForStar(
         ins.bindValue(":id",      photometryId);
         ins.bindValue(":star_id", starId);
         if (!ins.exec()) {
-            qDebug() << "Failed to create photometry record:" << ins.lastError();
+            LOG_ERROR("Photometry", QString("Failed to create photometry record: %1").arg(ins.lastError().text()));
             return false;
         }
     }
@@ -290,7 +290,7 @@ bool PhotometryRepository::saveSedPhotometryPointsForStar(
     upd.bindValue(":f",  pointsFile);
     upd.bindValue(":id", photometryId);
     if (!upd.exec()) {
-        qDebug() << "Failed to update sed_points_file:" << upd.lastError();
+        LOG_ERROR("Photometry", QString("Failed to update sed_points_file: %1").arg(upd.lastError().text()));
         return false;
     }
     return true;
@@ -315,7 +315,7 @@ bool PhotometryRepository::deleteSEDModel(const QString& modelId)
     del.bindValue(":id", modelId);
 
     if (!del.exec()) {
-        qDebug() << "Failed to delete SED model:" << del.lastError();
+        LOG_ERROR("Photometry", QString("Failed to delete SED model: %1").arg(del.lastError().text()));
         return false;
     }
 
@@ -388,7 +388,7 @@ bool PhotometryRepository::saveLightcurveForStar(const QString& starId,
         ins.bindValue(":id", photometryId);
         ins.bindValue(":star_id", starId);
         if (!ins.exec()) {
-            qDebug() << "Failed to ensure photometry record:" << ins.lastError();
+            LOG_ERROR("Photometry", QString("Failed to ensure photometry record: %1").arg(ins.lastError().text()));
             return false;
         }
     }
@@ -437,7 +437,7 @@ bool PhotometryRepository::saveLightcurveForStar(const QString& starId,
     lcQuery.bindValue(":data_file", lcFile);
 
     if (!lcQuery.exec()) {
-        qDebug() << "Failed to save lightcurve record:" << lcQuery.lastError();
+        LOG_ERROR("Photometry", QString("Failed to save lightcurve record: %1").arg(lcQuery.lastError().text()));
         return false;
     }
 
@@ -584,7 +584,7 @@ bool PhotometryRepository::saveLCFit(const QString         &starId,
     q.bindValue(":df", dataFile);
 
     if (!q.exec()) {
-        qDebug() << "Failed to save LCFit:" << q.lastError();
+        LOG_ERROR("Photometry", QString("Failed to save LCFit: %1").arg(q.lastError().text()));
         return false;
     }
 
@@ -761,7 +761,7 @@ bool PhotometryRepository::deleteLCFit(const QString& fitId)
     del.prepare("DELETE FROM lc_fits WHERE id = :id");
     del.bindValue(":id", fitId);
     if (!del.exec()) {
-        qDebug() << "Failed to delete LCFit:" << del.lastError();
+        LOG_ERROR("Photometry", QString("Failed to delete LCFit: %1").arg(del.lastError().text()));
         return false;
     }
 
@@ -973,7 +973,7 @@ bool PhotometryRepository::removeLightcurve(const QString& starId,
         del.prepare("DELETE FROM lc_fits WHERE lightcurve_id = :lcid");
         del.bindValue(":lcid", lightcurveId);
         if (!del.exec()) {
-            qDebug() << "Failed to delete lc_fits:" << del.lastError();
+            LOG_ERROR("Photometry", QString("Failed to delete lc_fits: %1").arg(del.lastError().text()));
             return false;
         }
     }
@@ -984,7 +984,7 @@ bool PhotometryRepository::removeLightcurve(const QString& starId,
         del.prepare("DELETE FROM lightcurves WHERE id = :id");
         del.bindValue(":id", lightcurveId);
         if (!del.exec()) {
-            qDebug() << "Failed to delete lightcurve:" << del.lastError();
+            LOG_ERROR("Photometry", QString("Failed to delete lightcurve: %1").arg(del.lastError().text()));
             return false;
         }
     }

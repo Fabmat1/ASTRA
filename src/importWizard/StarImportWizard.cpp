@@ -172,12 +172,22 @@ void StarImportWizard::accept() {
                 }
 
                 if (!ok) {
+                    QString detail = "Please check the log for details.";
+                    // The usual cause of a whole commit rolling back.
+                    DatabaseManager* dbm = _controller
+                                               ? _controller->databaseManager()
+                                               : nullptr;
+                    if (dbm && !dbm->isHealthy()) {
+                        detail = QString(
+                            "The database file failed its integrity check:\n%1\n"
+                            "It has to be repaired or restored before anything "
+                            "can be saved.").arg(dbm->integrityError());
+                    }
                     QMessageBox::critical(
                         this, "Import Error",
                         "Failed to save imported data to the database.\n"
                         "Your in-memory changes have been preserved, but "
-                        "nothing was written to disk.\n"
-                        "Please check the log for details.");
+                        "nothing was written to disk.\n\n" + detail);
                     return;
                 }
 

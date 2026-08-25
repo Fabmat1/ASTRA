@@ -44,6 +44,12 @@ public:
     bool openDatabase(const QString& path = "");
     void closeDatabase();
     bool isOpen() const;
+
+    // Empty when the last integrity check passed; otherwise the SQLite
+    // complaint (e.g. "database disk image is malformed").
+    QString integrityError() const { return _integrityError; }
+    bool    isHealthy() const { return _integrityError.isEmpty(); }
+    void    checkIntegrity();
     QString getDataDirectory() const;
     std::vector<std::shared_ptr<Project>> loadProjects();
     bool saveProject(std::shared_ptr<Project> project);
@@ -88,7 +94,7 @@ public:
     bool commitTransaction();
     bool rollbackTransaction();
     bool updateStarRow(const QString& projectId, std::shared_ptr<Star> star);
-    QString findMatchingStarId(const QString& projectId, const QString& sourceId, const QString& alias, const QString& tic, const QString& jname, double ra, double dec);
+    QString findMatchingStarId(const QString& projectId, const QString& sourceId, const QString& alias, const QString& tic, const QString& jname, double ra, double dec, double toleranceArcsec = 2.0);
     bool saveSEDModelForStar(const QString& starId, std::shared_ptr<SEDModel> model);
     bool saveSedPhotometryPointsForStar(const QString& starId,
                                         std::shared_ptr<Photometry> photometry);
@@ -138,6 +144,8 @@ public:
     bool createTables();
     bool createIndexes();
     bool runMigrations();
+
+    QString _integrityError;
 
     std::unique_ptr<DBAccess> _db;
     std::unique_ptr<ProjectRepository> _projects;
