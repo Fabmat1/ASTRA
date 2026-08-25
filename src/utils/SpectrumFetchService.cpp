@@ -165,6 +165,8 @@ QString SpectrumFetchService::startSession(
 
 void SpectrumFetchService::startDiscovery(Session* s) {
     s->pendingDiscoveries = 0;
+    s->discovery.clear();
+    s->discoveryTimer.start();
 
     for (const SpecFetch::Archive archive : s->opt.archives) {
         SpectrumArchiveClient* client = clientFor(archive);
@@ -174,12 +176,27 @@ void SpectrumFetchService::startDiscovery(Session* s) {
             continue;
         }
         ++s->pendingDiscoveries;
+        // Seed at 0 so the archive shows up as pending from the first tick
+        // rather than appearing only once it reports its first star.
+        s->discovery.insert(client->displayName(),
+                            qMakePair(0, int(s->stars.size())));
 
         const QString sessionId = s->info.id;
         SpecFetch::ArchiveOptions aopt = s->opt.perArchive.value(archive);
         aopt.radiusArcsec              = s->opt.radiusArcsec;
         auto cancel                    = s->cancel;
         auto stars                     = s->stars;   // copy for the worker
+
+        // An archive may search wider than asked when its recorded positions
+        // are coarser than the catalogue's (MAST). Say so rather than let the
+        // match radius silently differ from the one in the setup dialog.
+        const double usedRadius = client->searchRadiusArcsec(aopt);
+        if (usedRadius > aopt.radiusArcsec)
+            appendLog(s, QStringLiteral("%1: searching at %2\" (archive "
+                                        "positions are coarser than %3\")")
+                             .arg(client->displayName())
+                             .arg(usedRadius, 0, 'g', 3)
+                             .arg(aopt.radiusArcsec, 0, 'g', 3));
 
         (void)QtConcurrent::run([this, sessionId, archive, client, aopt,
                                  cancel, stars]() {
@@ -190,7 +207,7 @@ void SpectrumFetchService::startDiscovery(Session* s) {
                 QMetaObject::invokeMethod(
                     this,
                     [this, sessionId, label, done, total]() {
-                        emit discoveryProgress(sessionId, label, done, total);
+                        onDiscoveryProgress(sessionId, label, done, total);
                     },
                     Qt::QueuedConnection);
             };
@@ -212,6 +229,57 @@ void SpectrumFetchService::startDiscovery(Session* s) {
         finishDiscovery(s);
 }
 
+void SpectrumFetchService::onDiscoveryProgress(const QString& sessionId,
+                                               const QString& archiveLabel,
+                                               int starsDone, int starsTotal) {
+    Session* s = find(sessionId);
+    if (!s) return;
+
+    s->discovery.insert(archiveLabel, qMakePair(starsDone, starsTotal));
+    recomputeDiscoveryInfo(s);
+
+    emit discoveryProgress(sessionId, archiveLabel, starsDone, starsTotal);
+    emit sessionsChanged();
+    emitDiscoveryAggregate();
+}
+
+void SpectrumFetchService::recomputeDiscoveryInfo(Session* s) {
+    int done = 0, total = 0;
+    QStringList parts;
+    for (auto it = s->discovery.constBegin(); it != s->discovery.constEnd();
+         ++it) {
+        done  += it.value().first;
+        total += it.value().second;
+        parts << QStringLiteral("%1 %2/%3")
+                     .arg(it.key())
+                     .arg(it.value().first)
+                     .arg(it.value().second);
+    }
+    s->info.discoveryDone   = done;
+    s->info.discoveryTotal  = total;
+    s->info.discoveryDetail = parts.join(QStringLiteral(", "));
+
+    // Star-queries differ wildly in cost between archives, so this is a
+    // rolling extrapolation of the whole phase, not a per-archive estimate.
+    const qint64 elapsed = s->discoveryTimer.isValid()
+                               ? s->discoveryTimer.elapsed() : 0;
+    s->info.discoveryEtaMs =
+        (done > 0 && total > done && elapsed > 0)
+            ? qint64(double(elapsed) / double(done) * double(total - done))
+            : -1;
+}
+
+void SpectrumFetchService::emitDiscoveryAggregate() {
+    int done = 0, total = 0;
+    for (const auto& up : _sessions) {
+        if (!up) continue;
+        if (up->info.state != State::Discovering) continue;
+        done  += up->info.discoveryDone;
+        total += up->info.discoveryTotal;
+    }
+    emit discoveryProgressChanged(done, total);
+}
+
 void SpectrumFetchService::onArchiveDiscovered(
     const QString& sessionId, SpecFetch::Archive archive,
     const QList<SpecFetch::RemoteSpectrum>& results, const QString& error) {
@@ -219,6 +287,13 @@ void SpectrumFetchService::onArchiveDiscovered(
     if (!s) return;
 
     --s->pendingDiscoveries;
+
+    // Mark this archive complete so the breakdown does not sit at N-1/N.
+    if (auto it = s->discovery.find(SpecFetch::archiveDisplayName(archive));
+        it != s->discovery.end())
+        it.value().first = it.value().second;
+    recomputeDiscoveryInfo(s);
+    emitDiscoveryAggregate();
 
     const QString name = SpecFetch::archiveDisplayName(archive);
     if (!error.isEmpty()) {

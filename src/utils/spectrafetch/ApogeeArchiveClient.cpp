@@ -16,7 +16,12 @@
 
 namespace {
 
-constexpr int kChunkSize    = 40;
+// fGetNearbyApogeeStarEq costs roughly 5 s per star (1 star ~8 s, 5 ~29 s,
+// 21 ~109 s), so the old chunk of 40 ran ~200 s and blew the timeout below -
+// which then cost five retries of a full timeout before failing. 15 keeps a
+// chunk near 75 s, comfortably inside the budget. The sibling optical query
+// (fGetNearbySpecObjEq) is far cheaper and needs no such limit.
+constexpr int kChunkSize    = 15;
 constexpr int kSqlTimeoutMs = 120000;
 constexpr char kSkyServerUrl[] =
     "https://skyserver.sdss.org/dr17/SkyServerWS/SearchTools/SqlSearch";

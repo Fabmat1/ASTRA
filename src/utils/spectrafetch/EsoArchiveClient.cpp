@@ -14,6 +14,8 @@
 #include <fitsio.h>
 
 #include <cmath>
+#include <utility>
+#include <vector>
 
 namespace {
 
@@ -22,9 +24,15 @@ constexpr char kDataPortalFileUrl[] =
     "https://dataportal.eso.org/dataPortal/file/";
 // The anonymous ESO TAP endpoint offers no uploadMethod (verified against
 // /tap_obs/capabilities), so the batched crossmatch is an OR-chain of
-// CONTAINS circles instead of a TAP_UPLOAD join. 40 stars keep the query
-// well under any URL/POST limit.
-constexpr int kChunkSize     = 40;
+// CONTAINS circles instead of a TAP_UPLOAD join.
+//
+// The binding limit is not the request size but ESO's 120 s server-side query
+// budget: each extra circle costs roughly 12 s (one circle ~19 s, two ~31 s,
+// 21 time out), and the cost varies with how crowded the fields are. So this
+// is a starting size, not a safe size - a chunk that comes back "The request
+// timed out" is halved and retried, down to a single star, which keeps a
+// dense field from stalling the whole run.
+constexpr int kInitialChunk  = 5;
 constexpr int kTapTimeoutMs  = 300000;
 constexpr int kLinkTimeoutMs = 60000;
 
@@ -103,23 +111,39 @@ QList<SpecFetch::RemoteSpectrum> EsoArchiveClient::discover(
         QStringList quoted;
         for (const QString& c : opt.collections)
             quoted << QStringLiteral("'%1'").arg(QString(c).replace('\'', ""));
-        collectionFilter = QStringLiteral(" AND o.obs_collection IN (%1)")
+        // No table alias in the FROM clause below, so the column must be
+        // named bare: "o.obs_collection" is rejected as an unknown column.
+        collectionFilter = QStringLiteral(" AND obs_collection IN (%1)")
                                .arg(quoted.join(','));
     }
 
-    const auto chunks = SpecFetch::chunked(stars, kChunkSize);
+    // Ranges of `stars` still to query, as a stack so a chunk that has to be
+    // split is retried before the run moves on. Pushed back-to-front so the
+    // first chunk pops first.
+    std::vector<std::pair<size_t, size_t>> pending;
+    for (size_t end = stars.size(); end > 0;) {
+        const size_t begin =
+            end > size_t(kInitialChunk) ? end - size_t(kInitialChunk) : 0;
+        pending.emplace_back(begin, end);
+        end = begin;
+    }
+
     int starsDone = 0;
 
-    for (const auto& chunk : chunks) {
+    while (!pending.empty()) {
         if (cancel.load()) break;
 
+        const auto [chunkBegin, chunkEnd] = pending.back();
+        pending.pop_back();
+        const size_t chunkSize = chunkEnd - chunkBegin;
+
         QStringList circles;
-        for (const auto& q : chunk)
+        for (size_t k = chunkBegin; k < chunkEnd; ++k)
             circles << QStringLiteral(
                            "1=CONTAINS(POINT('ICRS', s_ra, s_dec), "
                            "CIRCLE('ICRS', %1, %2, %3))")
-                           .arg(q.ra, 0, 'f', 8)
-                           .arg(q.dec, 0, 'f', 8)
+                           .arg(stars[k].ra, 0, 'f', 8)
+                           .arg(stars[k].dec, 0, 'f', 8)
                            .arg(radiusDeg, 0, 'f', 8);
 
         const QString adql =
@@ -140,6 +164,19 @@ QList<SpecFetch::RemoteSpectrum> EsoArchiveClient::discover(
                                 &chunkError);
 
         if (!chunkError.isEmpty()) {
+            // ESO answers an over-budget query with QUERY_STATUS=ERROR
+            // "The request timed out". Half the stars usually fit.
+            if (chunkSize > 1 &&
+                chunkError.contains(QStringLiteral("timed out"),
+                                    Qt::CaseInsensitive)) {
+                const size_t mid = chunkBegin + chunkSize / 2;
+                pending.emplace_back(mid, chunkEnd);
+                pending.emplace_back(chunkBegin, mid);
+                LOG_INFO("SpecFetch",
+                         QStringLiteral("ESO TAP chunk of %1 timed out, "
+                                        "splitting").arg(chunkSize));
+                continue;
+            }
             if (error) *error = chunkError;
             LOG_WARNING("SpecFetch",
                         QStringLiteral("ESO TAP chunk failed: %1").arg(chunkError));
@@ -157,24 +194,24 @@ QList<SpecFetch::RemoteSpectrum> EsoArchiveClient::discover(
                 toDoubleOr(csv.value(i, QStringLiteral("s_ra")), NAN);
             const double rowDec =
                 toDoubleOr(csv.value(i, QStringLiteral("s_dec")), NAN);
-            int    idx     = -1;
+            size_t idx     = chunkEnd;
             double bestSep = 2.0 * radiusDeg;
             if (!std::isnan(rowRa) && !std::isnan(rowDec)) {
-                for (int k = 0; k < int(chunk.size()); ++k) {
+                for (size_t k = chunkBegin; k < chunkEnd; ++k) {
                     const double sep = angularSepDeg(rowRa, rowDec,
-                                                     chunk[k].ra, chunk[k].dec);
+                                                     stars[k].ra, stars[k].dec);
                     if (sep < bestSep) { bestSep = sep; idx = k; }
                 }
-            } else if (chunk.size() == 1) {
-                idx = 0;
+            } else if (chunkSize == 1) {
+                idx = chunkBegin;
             }
-            if (idx < 0) continue;
+            if (idx >= chunkEnd) continue;
 
             SpecFetch::RemoteSpectrum r;
             r.archive        = SpecFetch::Archive::EsoPhase3;
             r.archiveLabel   = displayName();
             r.originId       = QStringLiteral("eso:") + dpId;
-            r.starId         = chunk[idx].starId;
+            r.starId         = stars[idx].starId;
             r.collection     = csv.value(i, QStringLiteral("obs_collection"));
             r.instrumentHint = csv.value(i, QStringLiteral("instrument_name"));
             if (r.instrumentHint.isEmpty()) r.instrumentHint = r.collection;
@@ -200,7 +237,7 @@ QList<SpecFetch::RemoteSpectrum> EsoArchiveClient::discover(
             out.append(r);
         }
 
-        starsDone += int(chunk.size());
+        starsDone += int(chunkSize);
         if (progress) progress(starsDone, int(stars.size()));
     }
 

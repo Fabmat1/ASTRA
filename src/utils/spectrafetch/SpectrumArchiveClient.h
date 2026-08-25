@@ -57,6 +57,13 @@ public:
         const SpecFetch::ArchiveOptions& opt,
         QString* error) = 0;
 
+    // Positional match radius this archive actually searches with. Defaults
+    // to the radius the user asked for; an archive whose recorded positions
+    // are coarser than modern astrometry may widen it (see MAST).
+    virtual double searchRadiusArcsec(const SpecFetch::ArchiveOptions& opt) const {
+        return opt.radiusArcsec;
+    }
+
     // Whether the archive delivers wavelengths in vacuum (candidates for the
     // vacuum-to-air conversion) and whether its products are already
     // barycentrically/heliocentrically corrected.

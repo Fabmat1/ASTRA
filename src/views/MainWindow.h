@@ -129,6 +129,9 @@ private:
     QWidget*      _specFetchWidget   = nullptr;
     QToolButton*  _specFetchBtn      = nullptr;
     QProgressBar* _specFetchProgress = nullptr;
+    // True while the status widget is showing the archive-search phase, so a
+    // download update does not fight it for the same widget.
+    bool          _specFetchDiscovering = false;
     SpectrumFetchSessionsDialog* _specSessionsDialog = nullptr;
 };
 

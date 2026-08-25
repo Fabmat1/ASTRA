@@ -52,24 +52,33 @@ QString votableError(const QByteArray &body) {
 }
 
 // Worth another mirror / another go, as opposed to a query that will never
-// work anywhere.
-bool shouldRetry(const QString &tapMessage) {
+// work anywhere. `mirrors` is how many distinct endpoints the caller can fail
+// over to, which decides whether a rejected query is worth repeating.
+bool shouldRetry(const QString &tapMessage, int mirrors) {
     // No TAP document came back at all: the failure is at the transport or
     // HTTP level (timeout, 404 from a mirror whose path moved, 503 from a
     // busy front end), so the next mirror may well answer.
     if (tapMessage.isEmpty())
         return true;
 
-    // The service did parse the query and rejected it. That verdict is the
-    // same on every mirror - except when a backend's catalogue metadata is
-    // stale, which surfaces as "1 unresolved identifiers", or when it is
-    // simply out of database connections.
+    // The service is up but momentarily out of capacity: the same endpoint
+    // will answer once it drains.
+    if (tapMessage.contains(QStringLiteral("too busy"), Qt::CaseInsensitive)
+        || tapMessage.contains(QStringLiteral("No connection available"),
+                               Qt::CaseInsensitive))
+        return true;
+
+    // The service parsed the query and rejected it. That verdict is the same
+    // every time on a single-endpoint service, so repeating it only buys
+    // backoff delay and buries the real message under "Service unavailable".
+    // Across mirrors it is still worth another go, because one backend's
+    // catalogue metadata may be stale ("1 unresolved identifiers").
+    if (mirrors < 2)
+        return false;
+
     return tapMessage.contains(QStringLiteral("unresolved identifier"),
                                Qt::CaseInsensitive)
            || tapMessage.contains(QStringLiteral("Unable to check the ADQL query"),
-                                  Qt::CaseInsensitive)
-           || tapMessage.contains(QStringLiteral("too busy"), Qt::CaseInsensitive)
-           || tapMessage.contains(QStringLiteral("No connection available"),
                                   Qt::CaseInsensitive);
 }
 
@@ -81,7 +90,8 @@ struct Attempt {
 
 Attempt runAttempt(const QUrl &url,
                    const std::function<QNetworkReply *(const QNetworkRequest &)> &send,
-                   int timeoutMs, const CdsTap::ProgressFn &onProgress) {
+                   int timeoutMs, const CdsTap::ProgressFn &onProgress,
+                   int mirrors) {
     Attempt result;
 
     QNetworkRequest request(url);
@@ -137,7 +147,7 @@ Attempt runAttempt(const QUrl &url,
     }
 
     result.error     = tapMessage.isEmpty() ? netMsg : tapMessage;
-    result.retryable = shouldRetry(tapMessage);
+    result.retryable = shouldRetry(tapMessage, mirrors);
     return result;
 }
 
@@ -161,7 +171,8 @@ CdsTap::Response postWithFailoverTo(
         response.attempts = attempt + 1;
 
         const Attempt a =
-            runAttempt(QUrl(url), send, timeoutMs, onProgress);
+            runAttempt(QUrl(url), send, timeoutMs, onProgress,
+                       int(urls.size()));
         if (a.error.isEmpty()) {
             if (attempt > 0) {
                 LOG_INFO("CdsTap", QString("Query succeeded on attempt %1 (%2)")

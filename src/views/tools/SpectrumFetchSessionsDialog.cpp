@@ -121,6 +121,8 @@ SpectrumFetchSessionsDialog::SpectrumFetchSessionsDialog(
             &SpectrumFetchSessionsDialog::onDiscoveryFinished);
     connect(_service, &SpectrumFetchService::progressChanged, this,
             [this](int, int, int) { refreshProgressLabel(); });
+    connect(_service, &SpectrumFetchService::discoveryProgressChanged, this,
+            [this](int, int) { refreshProgressLabel(); });
 
     _ticker = new QTimer(this);
     _ticker->setInterval(1000);
@@ -227,6 +229,33 @@ void SpectrumFetchSessionsDialog::refreshProgressLabel() {
         done += info.downloadsDone;
         total += info.downloadsTotal;
     }
+
+    // Discovery runs before any download exists, so the download counters are
+    // still 0/0 here and would read as "nothing happening" for what can be
+    // several minutes of archive queries.
+    int    discDone = 0, discTotal = 0;
+    qint64 discEta  = -1;
+    QStringList discDetail;
+    for (const auto& info : _service->sessions()) {
+        if (info.state != SpectrumFetchService::State::Discovering) continue;
+        discDone  += info.discoveryDone;
+        discTotal += info.discoveryTotal;
+        if (info.discoveryEtaMs > discEta) discEta = info.discoveryEtaMs;
+        if (!info.discoveryDetail.isEmpty()) discDetail << info.discoveryDetail;
+    }
+    if (discTotal > 0) {
+        QString text = tr("Searching archives: %1 of %2 star quer%3 done")
+                           .arg(discDone)
+                           .arg(discTotal)
+                           .arg(discTotal == 1 ? "y" : "ies");
+        const QString eta = formatEta(discEta);
+        if (!eta.isEmpty()) text += QStringLiteral("  ·  ") + eta;
+        if (!discDetail.isEmpty())
+            text += QStringLiteral("\n") + discDetail.join(QStringLiteral(" | "));
+        _summary->setText(text);
+        return;
+    }
+
     if (total == 0 && !_service->hasActiveSessions()) {
         _summary->setText(tr("No active downloads"));
         return;

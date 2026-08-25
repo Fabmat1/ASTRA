@@ -5,6 +5,8 @@
 #include <QHash>
 #include <QList>
 #include <QObject>
+#include <QElapsedTimer>
+#include <QMap>
 #include <QSet>
 #include <QString>
 
@@ -76,6 +78,14 @@ public:
         int       skippedItems   = 0;   // dedup skips
         int       importedSpectra = 0;  // Spectrum rows written
         QString   summary;              // human-readable result line
+        // Discovery phase: star-queries completed across all archives, and a
+        // per-archive breakdown ("MAST 7/21, ESO 20/21"). Downloads have not
+        // started yet at this point, so the download counters are all zero
+        // and cannot stand in for progress.
+        int       discoveryDone  = 0;
+        int       discoveryTotal = 0;
+        QString   discoveryDetail;
+        qint64    discoveryEtaMs = -1;
     };
 
     explicit SpectrumFetchService(ApplicationController* controller,
@@ -124,6 +134,9 @@ signals:
     void sessionLogUpdated(const QString& id);
     void discoveryProgress(const QString& id, const QString& archiveLabel,
                            int starsDone, int starsTotal);
+    /// Aggregate discovery progress across all active sessions, for the
+    /// status bar. total == 0 means no discovery is running.
+    void discoveryProgressChanged(int done, int total);
     /// Discovery of every enabled archive completed (results carry all
     /// archives merged). For autoQueueAll sessions downloads start right
     /// after this.
@@ -163,6 +176,9 @@ private:
         std::vector<SpecFetch::StarQuery> stars;
         std::shared_ptr<std::atomic<bool>> cancel;
         int pendingDiscoveries = 0;
+        // archiveLabel -> (starsDone, starsTotal) for the discovery phase.
+        QMap<QString, QPair<int, int>> discovery;
+        QElapsedTimer discoveryTimer;
         QList<SpecFetch::RemoteSpectrum> discovered;
         std::vector<std::unique_ptr<DownloadItem>> items;
         QByteArray buffer;               // plain-text session log
@@ -180,6 +196,11 @@ private:
     const Session* find(const QString& id) const;
 
     void startDiscovery(Session* s);
+    void onDiscoveryProgress(const QString& sessionId,
+                             const QString& archiveLabel,
+                             int starsDone, int starsTotal);
+    void recomputeDiscoveryInfo(Session* s);
+    void emitDiscoveryAggregate();
     void onArchiveDiscovered(const QString& sessionId,
                              SpecFetch::Archive archive,
                              const QList<SpecFetch::RemoteSpectrum>& results,

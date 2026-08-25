@@ -167,12 +167,32 @@ void MainWindow::setupSpecFetchStatusWidget()
     connect(_specFetchBtn, &QToolButton::clicked,
             this, &MainWindow::onShowSpectrumFetchSessions);
 
+    // Discovery has no download counters yet, so without this the status bar
+    // stays hidden for the whole archive-search phase.
+    connect(service, &SpectrumFetchService::discoveryProgressChanged,
+            this, [this](int done, int total) {
+        if (total <= 0) {
+            if (_specFetchDiscovering) {
+                _specFetchDiscovering = false;
+                _specFetchWidget->setVisible(false);
+            }
+            return;
+        }
+        _specFetchDiscovering = true;
+        _specFetchWidget->setVisible(true);
+        _specFetchProgress->setVisible(true);
+        _specFetchProgress->setRange(0, total);
+        _specFetchProgress->setValue(done);
+        _specFetchBtn->setText(tr("Searching archives %1/%2").arg(done).arg(total));
+    });
+
     connect(service, &SpectrumFetchService::progressChanged,
             this, [this](int done, int total, int running) {
         if (total <= 0) {
-            _specFetchWidget->setVisible(false);
+            if (!_specFetchDiscovering) _specFetchWidget->setVisible(false);
             return;
         }
+        _specFetchDiscovering = false;
         _specFetchWidget->setVisible(true);
         _specFetchProgress->setRange(0, total);
         _specFetchProgress->setValue(done);

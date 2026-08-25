@@ -53,6 +53,7 @@ struct RemoteSpectrum {
     double   mjd        = std::nan("");
     double   ra         = std::nan("");
     double   dec        = std::nan("");
+    double   sepArcsec  = std::nan("");   // match distance from the star
     double   resolution = std::nan("");
     double   snr        = std::nan("");
     qint64   sizeBytes  = -1;    // -1 = unknown

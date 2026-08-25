@@ -41,11 +41,34 @@ The *individual exposures* option is an either/or: when checked, the single
 exposures are fetched **instead of** the coadded product wherever the archive
 provides them; products without exposures fall back to the coadd.
 
-The discovery phase batches stars into bundled queries (one TAP/SQL request
-per few dozen stars) so large projects do not hammer the servers. After the
-search a **review step** shows what was found per archive with counts and
-estimated download volume; archives can be deselected and a per-star cap
-applied before any file is downloaded.
+The discovery phase bundles stars into as few queries as each service will
+accept, so large projects do not hammer the servers. How few varies by
+archive: SDSS takes the whole batch in one statement, LAMOST does a quick cone
+search per star, ESO is bounded by its 120 s query budget (chunks start at
+five stars and are split further if one times out), and MAST accepts only a
+single positional term per query, so it is searched one star at a time and is
+by far the slowest archive to discover.
+
+MAST needs care with the match radius. Its IUE, FUSE, HUT and EUVE pointings
+record the aperture position, which sits well off the catalogue position of
+the same star: usually under 5 arcsec, but with a long tail (alf Lac has IUE
+spectra 14.6 and 34.2 arcsec away). Those missions are therefore searched out
+to 40 arcsec, while HST and the other modern missions get exactly the radius
+set here.
+
+A wide cone in a crowded field would otherwise be a disaster: at the core of
+47 Tuc, going from 3 to 60 arcsec takes HST from 189 to 772 spectra and pulls
+in 513 legacy-mission products belonging to other targets. So anything past
+the radius set here is only accepted when that mission found nothing closer
+**and** every distant candidate names the same target, which distinguishes a
+badly recorded pointing of your star from a field full of other people's.
+Ambiguous ones are dropped and counted in the log. Calibration exposures
+(WAVECAL, TFLOOD, flats and the like) are dropped at any separation, and each
+match records how far from the star it sat.
+
+After the search a **review step** shows what was found per archive with
+counts and estimated download volume; archives can be deselected and a
+per-star cap applied before any file is downloaded.
 
 Downloads run in the background with per-host rate limiting; progress and a
 rough ETA show in the status bar and in the sessions overview, where fetches
