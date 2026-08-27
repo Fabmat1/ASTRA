@@ -21,6 +21,76 @@
     implemented.
 -->
 
+## v0.7.0 (2026-08-27)
+
+### Added
+- Spectra can now be fetched straight from the online archives: ESO Phase 3,
+  LAMOST (both low and medium resolution), SDSS, MAST and APOGEE. ASTRA
+  searches around the star's position, shows you what each archive has, and
+  downloads only the products you pick. Spectra you already have are
+  recognised and not downloaded twice.
+- Fetching runs in the background with its own status-bar indicator, and the
+  new "Spectrum Fetch Sessions" window (Data menu, or click the indicator)
+  shows per-session progress with a rough ETA, the log, and cancel controls.
+  A session that finished searching and is waiting for you to review its
+  results can be picked up again from there.
+- A new Data menu collects the lightcurve and spectrum fetching entries, which
+  used to sit under Analysis.
+- Periodogram pre-whitening: the daily, sidereal, lunar and yearly cycles that
+  observing schedules imprint on a time series can be removed before the
+  period search, per series and with a choice between fitting harmonics or
+  subtracting a folded template profile. Peaks that look like sampling aliases
+  rather than real signals are now flagged as such.
+- The RV chi2 landscape sweep has an eccentric mode: scan with a full
+  Keplerian orbit instead of a circular one, with your own bounds on the
+  eccentricity, and re-fit the minimum the same way.
+- Lightcurve fitting lets you free any model parameter lcurve can fit, not
+  just the usual handful. Added parameters bring their own starting value and
+  search range, and ASTRA warns you about ones the current model setup would
+  ignore anyway.
+- A "Numbers & Copying" settings page controls how measured values are shown
+  and what lands on the clipboard: value only, with error, with unit, as LaTeX
+  or plain text, wrapped in math delimiters, prefixed with the parameter name,
+  and whether errors are rounded on copy. A live preview shows the result.
+  Copying a value anywhere in the app now confirms with a short toast.
+- A "Spectra Fetching" settings page for the crossmatch radius, the number of
+  parallel downloads, the download folder, and your LAMOST access token
+  (needed for the newest data releases).
+- Importing a radial velocity table can match rows to stars by coordinates
+  with an adjustable tolerance, instead of relying on identifiers alone, and
+  reports afterwards which rows found no star. The general import page gained
+  the same tolerance setting.
+- New instruments out of the box: ASAS-SN, HST, HARPS, ESPRESSO, GIRAFFE, IUE
+  and FUSE.
+- ASTRA checks the database file when it starts and tells you up front if it
+  is damaged, with the command to repair it. A damaged file used to open
+  normally and then silently roll back every import.
+- An online documentation site with a getting-started guide, a tour of the
+  interface, workflow guides for lightcurves, radial velocities, spectra and
+  SED fitting, tutorials and reference pages.
+
+### Changed
+- Queries to SIMBAD and VizieR retry across the CDS mirrors before giving up.
+  Those servers fail perhaps one request in five for reasons that have nothing
+  to do with your query, which used to surface as a bare "server replied: 400".
+  When something does go wrong, you now see what the server actually said.
+- Fit results are rendered through one shared value-and-error layer, so
+  asymmetric errors, units and precision look the same in the SED fit panel,
+  the summary panel and the result tables.
+- The SED fit result panel was rebuilt around it and is now selectable and
+  copyable value by value.
+- Icons are consistent across the app, including the arrows and the Ok /
+  Cancel / Close buttons in dialogs, which used to be pulled from the desktop
+  icon theme and matched nothing else.
+- Windows and dialogs stay inside your screen even when their content grows
+  after they open. On smaller screens the lower half of a dialog could end up
+  below the desktop edge and out of reach.
+
+### Fixed
+- The Galactic Orbit window no longer flickers or fights itself while
+  resizing, and its plots keep their aspect ratio.
+- The periodogram tab in the lightcurve fetch window redraws cleanly.
+
 ## v0.6.0 (2026-08-17)
 
 ### Added
