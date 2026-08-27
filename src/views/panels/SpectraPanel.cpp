@@ -38,8 +38,7 @@ QColor telluricColor()
 
 QColor mutedTextColor()
 {
-    return PanelUtils::isDarkTheme() ? QColor(170, 170, 175)
-                                     : QColor(120, 120, 125);
+    return PanelUtils::plotAnnotationColor();
 }
 
 /// Widen `range` so the overlay curves fit inside it.
@@ -679,7 +678,7 @@ void SpectraPanel::updateCoaddDisplay()
         lo->setPen(Qt::NoPen);
         lo->removeFromLegend();
 
-        up->setBrush(QBrush(QColor(180, 180, 180, 50)));
+        up->setBrush(QBrush(PanelUtils::errorBandFor(PanelUtils::dataLineColor())));
         up->setChannelFillGraph(lo);
     }
 
@@ -693,8 +692,12 @@ void SpectraPanel::updateCoaddDisplay()
     QColor dataColor = PanelUtils::dataLineColor();
 
     if (hasCounts && maxCount > 1) {
-        QColor shallowColor = dataColor;
-        shallowColor.setAlpha(110);
+        // Regions with no co-add depth are dimmed by mixing toward the plot
+        // background rather than by dropping alpha. Alpha compounds with the
+        // now-dimmer data colour and made these stretches nearly invisible on
+        // dark themes; a background mix keeps the same relative step on both
+        // polarities.
+        QColor shallowColor = PanelUtils::towardBg(dataColor, 0.45);
 
         QVector<double> deepFl(wlVec.size()), shallowFl(wlVec.size());
         for (int i = 0; i < wlVec.size(); ++i) {
@@ -822,7 +825,7 @@ void SpectraPanel::updateSpectrumDisplay()
         lowerGraph->removeFromLegend();
 
         // Fill the region between upper and lower
-        upperGraph->setBrush(QBrush(QColor(180, 180, 180, 50)));
+        upperGraph->setBrush(QBrush(PanelUtils::errorBandFor(PanelUtils::dataLineColor())));
         upperGraph->setChannelFillGraph(lowerGraph);
     }
 
@@ -954,7 +957,7 @@ void SpectraPanel::updateSpectrumDisplay()
                 lower->setPen(Qt::NoPen);
                 lower->removeFromLegend();
 
-                upper->setBrush(QBrush(QColor(180, 180, 180, 50)));
+                upper->setBrush(QBrush(PanelUtils::errorBandFor(PanelUtils::dataLineColor())));
                 upper->setChannelFillGraph(lower);
             }
 
@@ -1225,12 +1228,16 @@ void SpectraPanel::updateSpectrumDisplay()
         QVector<double> rValVec = PanelUtils::toQVec(residualVal);
 
         QCPGraph* resGraph = _residualPlot->addGraph();
-        resGraph->setPen(QPen(dataColor, 1.0));
+        // The residual is a diagnostic, not the primary trace, and it is packed
+        // into a strip a fraction of the main plot's height - so the same ink
+        // that reads as a line up there reads as a solid block down here. Take
+        // it a step back toward the background to restore the ranking.
+        resGraph->setPen(QPen(PanelUtils::towardBg(dataColor, 0.30), 1.0));
         resGraph->setData(rWlVec, rValVec);
 
         // Zero line
         QCPGraph* zeroLine = _residualPlot->addGraph();
-        zeroLine->setPen(QPen(QColor(120, 120, 120), 1.0, Qt::DashLine));
+        zeroLine->setPen(QPen(PanelUtils::plotAnnotationColor(), 1.0, Qt::DashLine));
         zeroLine->setData(QVector<double>{xLo, xHi}, QVector<double>{0.0, 0.0});
 
         // X axis - match the (possibly zoomed) main plot range so the residual
@@ -1518,7 +1525,7 @@ void SpectraPanel::updateAbundanceDisplay()
     // ── Solar reference line ──
     if (solarRel) {
         QCPGraph* zero = _abundancePlot->addGraph();
-        zero->setPen(QPen(QColor(120, 120, 120), 1.0, Qt::DashLine));
+        zero->setPen(QPen(PanelUtils::plotAnnotationColor(), 1.0, Qt::DashLine));
         zero->setData(QVector<double>{xLo, xHi}, QVector<double>{0.0, 0.0});
         zero->removeFromLegend();
     }
@@ -1549,7 +1556,7 @@ void SpectraPanel::updateAbundanceDisplay()
                                          _abundancePlot->yAxis);
             err->setDataPlottable(meas);
             err->setErrorType(QCPErrorBars::etValueError);
-            err->setPen(QPen(col.darker(115), 1.0));
+            err->setPen(QPen(PanelUtils::errorBarFor(col), 1.0));
             err->setSymbolGap(2);
             err->setData(me);
             err->setLayer("errbars");

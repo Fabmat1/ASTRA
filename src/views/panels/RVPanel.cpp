@@ -162,7 +162,6 @@ QPair<double, double> addRVDataToPlot(
     const std::vector<double>& errs,
     double xMin, double xMax,
     const QColor& ptCol,
-    const QColor& errCol,
     const QString& name = QString())
 {
     double yLo =  std::numeric_limits<double>::max();
@@ -214,7 +213,8 @@ QPair<double, double> addRVDataToPlot(
     errorBars->setLayer("errorbars");
     errorBars->removeFromLegend();
     errorBars->setErrorType(QCPErrorBars::etValueError);
-    errorBars->setPen(QPen(errCol, 1.0));
+    errorBars->setPen(PanelUtils::errorBarPenFor(ptCol, px.size()));
+    errorBars->setWhiskerWidth(PanelUtils::errorBarWhiskerWidth(px.size()));
     errorBars->setSymbolGap(1);
 
     // Scatter on the default "main" layer (paints on top)
@@ -255,7 +255,7 @@ CompSeries filterComp(const std::vector<double>& xs,
 // Dashed model overlay pen for the secondary component.
 QPen secondaryModelPen()
 {
-    QPen pen(PanelUtils::secondaryPointColor().darker(140), 2.0);
+    QPen pen(PanelUtils::modelCurveFor(PanelUtils::secondaryPointColor()), 2.0);
     pen.setStyle(Qt::DashLine);
     return pen;
 }
@@ -484,14 +484,12 @@ void RVPanel::populate()
 
         auto yRange = addRVDataToPlot(plot, phases, rvs, errs, kPhaseLo,
                                       kPhaseHi, PanelUtils::pointColor(),
-                                      PanelUtils::errorBarColor(),
                                       hasComp2 ? QStringLiteral("Primary")
                                                : QString());
         if (hasComp2) {
             auto yRange2 = addRVDataToPlot(plot, phases2, rvs2, errs2,
                                            kPhaseLo, kPhaseHi,
                                            PanelUtils::secondaryPointColor(),
-                                           PanelUtils::secondaryErrorBarColor(),
                                            QStringLiteral("Secondary"));
             yRange.first  = std::min(yRange.first,  yRange2.first);
             yRange.second = std::max(yRange.second, yRange2.second);
@@ -651,17 +649,15 @@ void RVPanel::populate()
 
             if (!hasComp2) {
                 addRVDataToPlot(plot, times, rvs, errs, clipLo, clipHi,
-                                PanelUtils::pointColor(), PanelUtils::errorBarColor());
+                                PanelUtils::pointColor());
             } else {
                 const auto s1 = filterComp(times, rvs, errs, comps, 1);
                 const auto s2 = filterComp(times, rvs, errs, comps, 2);
                 addRVDataToPlot(plot, s1.x, s1.y, s1.e, clipLo, clipHi,
                                 PanelUtils::pointColor(),
-                                PanelUtils::errorBarColor(),
                                 QStringLiteral("Primary"));
                 addRVDataToPlot(plot, s2.x, s2.y, s2.e, clipLo, clipHi,
                                 PanelUtils::secondaryPointColor(),
-                                PanelUtils::secondaryErrorBarColor(),
                                 QStringLiteral("Secondary"));
             }
 
@@ -755,19 +751,16 @@ void RVPanel::populate()
 
                 if (!hasComp2) {
                     addRVDataToPlot(plot, segTimes, segRV, segErr,
-                                    xMin, xMax, PanelUtils::pointColor(),
-                                    PanelUtils::errorBarColor());
+                                    xMin, xMax, PanelUtils::pointColor());
                 } else {
                     const auto s1 = filterComp(segTimes, segRV, segErr, segComp, 1);
                     const auto s2 = filterComp(segTimes, segRV, segErr, segComp, 2);
                     addRVDataToPlot(plot, s1.x, s1.y, s1.e, xMin, xMax,
                                     PanelUtils::pointColor(),
-                                    PanelUtils::errorBarColor(),
                                     seg == 0 ? QStringLiteral("Primary")
                                              : QString());
                     addRVDataToPlot(plot, s2.x, s2.y, s2.e, xMin, xMax,
                                     PanelUtils::secondaryPointColor(),
-                                    PanelUtils::secondaryErrorBarColor(),
                                     seg == 0 ? QStringLiteral("Secondary")
                                              : QString());
                 }

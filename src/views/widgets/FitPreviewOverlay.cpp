@@ -1,5 +1,7 @@
 #include "FitPreviewOverlay.h"
 
+#include "views/panels/PanelUtils.h"
+
 #include <QMouseEvent>
 #include <QEvent>
 #include <algorithm>
@@ -142,11 +144,17 @@ void FitPreviewOverlay::rebuild()
         T->position->setCoords(wl, 0.02);
         T->setPositionAlignment(Qt::AlignTop | Qt::AlignHCenter);
         T->setText(text);
-        T->setColor(col.darker(150));
+        // Label chip: a hard-coded white plate with darkened text is a
+        // light-theme assumption - on a dark plot it punched a bright hole in
+        // the spectrum. Sit the chip on the theme's own plot background and
+        // take the text toward the foreground instead.
+        T->setColor(PanelUtils::towardFg(col, 0.30));
         QFont f = T->font(); f.setPointSize(8); f.setBold(true);
         T->setFont(f);
         T->setPadding(QMargins(3, 1, 3, 1));
-        T->setBrush(QBrush(QColor(255, 255, 255, 210)));
+        QColor chip = PanelUtils::themeBg();
+        chip.setAlpha(210);
+        T->setBrush(QBrush(chip));
         T->setPen(Qt::NoPen);
         return T;
     };

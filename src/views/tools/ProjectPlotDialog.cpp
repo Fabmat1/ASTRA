@@ -2079,7 +2079,7 @@ void ProjectPlotDialog::plotScatter()
             trend->setData(tx, ty, true);
             trend->setLineStyle(QCPGraph::lsLine);
             trend->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssNone));
-            trend->setPen(QPen(multi ? d.cfg->color.darker(140)
+            trend->setPen(QPen(multi ? PanelUtils::modelCurveFor(d.cfg->color)
                                      : PanelUtils::fitCurveColor(), 2.0));
         }
     }
@@ -2297,7 +2297,7 @@ void ProjectPlotDialog::plotHistogram()
         QColor fill = cfg->color;
         fill.setAlpha(multi ? 110 : 170);   // more transparent when overlaid
         graph->setBrush(fill);
-        graph->setPen(QPen(cfg->color.darker(130), 1.2));
+        graph->setPen(QPen(PanelUtils::modelCurveFor(cfg->color), 1.2));
         graph->setName(cfg->label);
         if (multi)
             graph->addToLegend();

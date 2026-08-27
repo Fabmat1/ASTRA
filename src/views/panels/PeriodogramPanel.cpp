@@ -809,7 +809,13 @@ void PeriodogramPanel::drawOverlays(QCustomPlot* plot)
             rect->bottomRight->setTypeY(QCPItemPosition::ptAxisRectRatio);
             rect->topLeft->setCoords(x1, 0.0);
             rect->bottomRight->setCoords(x2, 1.0);
-            rect->setBrush(QBrush(QColor(220, 60, 60, 45)));
+            {   // Peak band: the marker red, alpha-matted onto the plot background.
+            // A fixed mid-red at low alpha turned muddy over a dark field
+            // because it was darker than the background it sat on.
+            QColor band = PanelUtils::fitCurveColor();
+            band.setAlpha(PanelUtils::isDarkTheme() ? 60 : 45);
+            rect->setBrush(QBrush(band));
+        }
             rect->setPen(Qt::NoPen);
         }
 
@@ -820,7 +826,9 @@ void PeriodogramPanel::drawOverlays(QCustomPlot* plot)
         line->setLayer("grid");
         line->point1->setCoords(xc, 0);
         line->point2->setCoords(xc, 1);
-        QPen pen(QColor(220, 60, 60, 130));
+        QColor centreCol = PanelUtils::fitCurveColor();
+        centreCol.setAlpha(130);
+        QPen pen(centreCol);
         pen.setWidthF(0.8);
         line->setPen(pen);
     }
@@ -832,7 +840,7 @@ void PeriodogramPanel::drawOverlays(QCustomPlot* plot)
         line->setProperty("phHighlight", true);
         line->point1->setCoords(xc, 0);
         line->point2->setCoords(xc, 1);
-        QPen pen(QColor(220, 60, 60));
+        QPen pen(PanelUtils::fitCurveColor());
         pen.setStyle(Qt::DashLine);
         pen.setWidthF(1.5);
         line->setPen(pen);

@@ -30,6 +30,7 @@ from pathlib import Path
 #   surface0  #f4ede8  Surface0 / hover & alternate-row background
 #   surface1  #dfdad9  Surface1 / default border
 #   surface2  #cecacd  Surface2 / strong border, pressed
+#   grid      #f5eee9  Table gridlines / intra-table separators
 #   overlay   #9893a5  Overlay / muted & disabled text
 #   subtext   #797593  Subtext
 #   muted     #6e6a86  Muted text variant
@@ -48,7 +49,7 @@ from pathlib import Path
 #   sel_str   #cadbe3  Selection background, stronger
 
 ROLE_ORDER = [
-    "base", "elevated", "crust", "surface0", "surface1", "surface2",
+    "base", "elevated", "crust", "surface0", "surface1", "surface2", "grid",
     "overlay", "subtext", "muted", "text", "text_hi",
     "accent", "accent_h", "accent_p", "iris",
     "love", "love_h", "love_p", "gold", "foam",
@@ -62,6 +63,7 @@ SOURCE = {
     "surface0": "#f4ede8",
     "surface1": "#dfdad9",
     "surface2": "#cecacd",
+    "grid":     "#f5eee9",
     "overlay":  "#9893a5",
     "subtext":  "#797593",
     "muted":    "#6e6a86",
@@ -103,13 +105,35 @@ def palette(name, display, is_dark, **roles):
 
 
 # =============================================================================
+# THE `grid` ROLE
+# =============================================================================
+# Table gridlines used to reuse `surface0`, which is an *elevation* step: a
+# colour deliberately offset from the background so hovered rows and alternate
+# rows are visible. Reusing it for hairlines works on light themes and fails on
+# dark ones, because the eye does not treat the two directions symmetrically.
+# An equal RGB offset that DARKENS a light background is a small relative
+# change, while the same offset LIGHTENING a dark background is a large one -
+# additive light on a dark field is far more salient than subtracted light on a
+# bright field.
+#
+# Measured as WCAG contrast ratio against each theme's own table background,
+# the light themes averaged 1.118 while the dark themes ran 1.15 to 1.31
+# (Catppuccin Mocha was 1.305, nearly 3x the perceived step). The dark `grid`
+# values below are each solved to land on that same 1.118 reference by blending
+# the theme's own base toward its own text colour, so every theme now shows a
+# gridline of equal perceived weight in its own hue.
+#
+# Light themes keep their existing surface0 value: they were already the
+# reference the dark themes are being matched to.
+
+# =============================================================================
 # LIGHT THEMES
 # =============================================================================
 
 CATPPUCCIN_LATTE = palette(
     "catppuccin_latte", "Catppuccin Latte", False,
     base="#eff1f5", elevated="#e6e9ef", crust="#dce0e8",
-    surface0="#ccd0da", surface1="#bcc0cc", surface2="#acb0be",
+    surface0="#ccd0da", surface1="#bcc0cc", surface2="#acb0be", grid="#ccd0da",
     overlay="#9ca0b0", subtext="#6c6f85", muted="#5c5f77",
     text="#4c4f69", text_hi="#3a3c52",
     accent="#1e66f5", accent_h="#3a7af7", accent_p="#0b53d6",
@@ -122,7 +146,7 @@ CATPPUCCIN_LATTE = palette(
 GITHUB_LIGHT = palette(
     "github_light", "GitHub Light", False,
     base="#ffffff", elevated="#f6f8fa", crust="#eaeef2",
-    surface0="#f0f3f6", surface1="#d0d7de", surface2="#afb8c1",
+    surface0="#f0f3f6", surface1="#d0d7de", surface2="#afb8c1", grid="#f0f3f6",
     overlay="#8c959f", subtext="#57606a", muted="#6e7781",
     text="#1f2328", text_hi="#0b0f14",
     accent="#0969da", accent_h="#1f7ae8", accent_p="#0550ae",
@@ -135,7 +159,7 @@ GITHUB_LIGHT = palette(
 SOLARIZED_LIGHT = palette(
     "solarized_light", "Solarized Light", False,
     base="#fdf6e3", elevated="#fefbf0", crust="#eee8d5",
-    surface0="#f3eddb", surface1="#e3dcc4", surface2="#d4ccb0",
+    surface0="#f3eddb", surface1="#e3dcc4", surface2="#d4ccb0", grid="#f3eddb",
     overlay="#93a1a1", subtext="#657b83", muted="#586e75",
     text="#586e75", text_hi="#073642",
     accent="#268bd2", accent_h="#3a9ce0", accent_p="#1a6fb0",
@@ -148,7 +172,7 @@ SOLARIZED_LIGHT = palette(
 GRUVBOX_LIGHT = palette(
     "gruvbox_light", "Gruvbox Light", False,
     base="#fbf1c7", elevated="#fcf6da", crust="#f2e5bc",
-    surface0="#f4ecc8", surface1="#ebdbb2", surface2="#d5c4a1",
+    surface0="#f4ecc8", surface1="#ebdbb2", surface2="#d5c4a1", grid="#f4ecc8",
     overlay="#a89984", subtext="#665c54", muted="#7c6f64",
     text="#3c3836", text_hi="#282828",
     accent="#458588", accent_h="#5a9a9d", accent_p="#356a6c",
@@ -161,7 +185,7 @@ GRUVBOX_LIGHT = palette(
 NORD_LIGHT = palette(
     "nord_light", "Nord Light", False,
     base="#eceff4", elevated="#f4f6fa", crust="#e5e9f0",
-    surface0="#e1e7f0", surface1="#d8dee9", surface2="#c2cbdb",
+    surface0="#e1e7f0", surface1="#d8dee9", surface2="#c2cbdb", grid="#e1e7f0",
     overlay="#9aa5b8", subtext="#4c566a", muted="#5b667d",
     text="#3b4252", text_hi="#2e3440",
     accent="#5e81ac", accent_h="#7193bd", accent_p="#4c6f9a",
@@ -174,7 +198,7 @@ NORD_LIGHT = palette(
 ONE_LIGHT = palette(
     "one_light", "One Light", False,
     base="#fafafa", elevated="#ffffff", crust="#f0f0f0",
-    surface0="#f2f2f2", surface1="#e5e5e6", surface2="#c8c8c9",
+    surface0="#f2f2f2", surface1="#e5e5e6", surface2="#c8c8c9", grid="#f2f2f2",
     overlay="#a0a1a7", subtext="#696c77", muted="#8b8b8d",
     text="#383a42", text_hi="#202227",
     accent="#4078f2", accent_h="#588cf5", accent_p="#2a62d6",
@@ -195,7 +219,7 @@ ONE_LIGHT = palette(
 CATPPUCCIN_MOCHA = palette(
     "catppuccin_mocha", "Catppuccin Mocha", True,
     base="#1e1e2e", elevated="#181825", crust="#11111b",
-    surface0="#313244", surface1="#45475a", surface2="#585b70",
+    surface0="#313244", surface1="#45475a", surface2="#585b70", grid="#262738",
     overlay="#6c7086", subtext="#a6adc8", muted="#9399b2",
     text="#cdd6f4", text_hi="#f5f5fa",
     accent="#89b4fa", accent_h="#9cc0fb", accent_p="#6fa0f0",
@@ -209,7 +233,7 @@ CATPPUCCIN_MOCHA = palette(
 DRACULA = palette(
     "dracula", "Dracula", True,
     base="#282a36", elevated="#2e303e", crust="#21222c",
-    surface0="#343746", surface1="#44475a", surface2="#565a73",
+    surface0="#343746", surface1="#44475a", surface2="#565a73", grid="#30323d",
     overlay="#6272a4", subtext="#bcc2de", muted="#9aa3cf",
     text="#f8f8f2", text_hi="#ffffff",
     accent="#bd93f9", accent_h="#cba6fb", accent_p="#a87ef0",
@@ -223,7 +247,7 @@ DRACULA = palette(
 NORD = palette(
     "nord", "Nord", True,
     base="#2e3440", elevated="#343c4a", crust="#272c36",
-    surface0="#3b4252", surface1="#434c5e", surface2="#4c566a",
+    surface0="#3b4252", surface1="#434c5e", surface2="#4c566a", grid="#363b47",
     overlay="#6b7689", subtext="#d8dee9", muted="#aab2c0",
     text="#e5e9f0", text_hi="#eceff4",
     accent="#88c0d0", accent_h="#99cdda", accent_p="#6fa8ba",
@@ -237,7 +261,7 @@ NORD = palette(
 GRUVBOX_DARK = palette(
     "gruvbox_dark", "Gruvbox Dark", True,
     base="#282828", elevated="#32302f", crust="#1d2021",
-    surface0="#3c3836", surface1="#504945", surface2="#665c54",
+    surface0="#3c3836", surface1="#504945", surface2="#665c54", grid="#31302e",
     overlay="#928374", subtext="#d5c4a1", muted="#a89984",
     text="#ebdbb2", text_hi="#fbf1c7",
     accent="#83a598", accent_h="#94b4a7", accent_p="#6d8e82",
@@ -251,7 +275,7 @@ GRUVBOX_DARK = palette(
 TOKYO_NIGHT = palette(
     "tokyo_night", "Tokyo Night", True,
     base="#1a1b26", elevated="#1f2335", crust="#16161e",
-    surface0="#24283b", surface1="#2f334d", surface2="#414868",
+    surface0="#24283b", surface1="#2f334d", surface2="#414868", grid="#232431",
     overlay="#565f89", subtext="#a9b1d6", muted="#787c99",
     text="#c0caf5", text_hi="#d5dcff",
     accent="#7aa2f7", accent_h="#8db3f9", accent_p="#5e8ae8",
@@ -265,7 +289,7 @@ TOKYO_NIGHT = palette(
 SOLARIZED_DARK = palette(
     "solarized_dark", "Solarized Dark", True,
     base="#002b36", elevated="#073642", crust="#00212b",
-    surface0="#0a3d49", surface1="#0f4956", surface2="#1a5a68",
+    surface0="#0a3d49", surface1="#0f4956", surface2="#1a5a68", grid="#0b333e",
     overlay="#586e75", subtext="#93a1a1", muted="#657b83",
     text="#839496", text_hi="#eee8d5",
     accent="#268bd2", accent_h="#3a9ce0", accent_p="#1a6fb0",
@@ -279,7 +303,7 @@ SOLARIZED_DARK = palette(
 ONE_DARK = palette(
     "one_dark", "One Dark", True,
     base="#282c34", elevated="#2f343f", crust="#21252b",
-    surface0="#31363f", surface1="#3b4048", surface2="#4b5263",
+    surface0="#31363f", surface1="#3b4048", surface2="#4b5263", grid="#2f343c",
     overlay="#5c6370", subtext="#abb2bf", muted="#828997",
     text="#abb2bf", text_hi="#dcdfe4",
     accent="#61afef", accent_h="#76bcf2", accent_p="#4a98da",

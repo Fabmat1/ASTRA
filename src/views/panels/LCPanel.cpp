@@ -903,7 +903,14 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
             err->removeFromLegend();
             err->setDataPlottable(g);
             err->setErrorType(QCPErrorBars::etValueError);
-            err->setPen(QPen(col.lighter(150), 0.8));
+            // lighter() on an already-pastel dark-theme series colour lands
+            // at near-white, and a dense light curve draws one bar per point -
+            // the result buried the data under a white forest. Derive toward
+            // the background instead so the bars recede on any theme, and let
+            // the pen and the end caps taper with density: bx is phase-wrapped
+            // (duplicated), so its size is the count actually drawn.
+            err->setPen(PanelUtils::errorBarPenFor(col, bx.size()));
+            err->setWhiskerWidth(PanelUtils::errorBarWhiskerWidth(bx.size()));
             err->setSymbolGap(0);
             err->setData(be);
             err->setLayer("errbars"); 
@@ -991,7 +998,11 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
                     mg->setName(label + " (best fit)");
                     mg->setLineStyle(QCPGraph::lsLine);
                     mg->setScatterStyle(QCPScatterStyle::ssNone);
-                    QPen mpen(col.darker(140));
+                    // darker() lifts the curve over its points on light
+                    // themes and exactly inverts that on dark ones, sinking it
+                    // into the background. modelCurveFor() is polarity-correct
+                    // and keeps the series hue.
+                    QPen mpen(PanelUtils::modelCurveFor(col));
                     mpen.setWidthF(2.0);
                     mpen.setCosmetic(true);
                     mg->setPen(mpen);

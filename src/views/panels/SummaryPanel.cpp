@@ -628,7 +628,6 @@ QWidget* SummaryPanel::createNameHeader()
 }
 
 QWidget *SummaryPanel::createSpecClassBadge() {
-    const bool    dark      = PanelUtils::isDarkTheme();
     const QString specClass = _ctx.star->getSpecClass();
     const bool    empty     = specClass.isEmpty();
 
@@ -637,11 +636,13 @@ QWidget *SummaryPanel::createSpecClassBadge() {
     l->setContentsMargins(0, 0, 0, 0);
     l->setSpacing(0);
 
+    // The empty-badge chrome is derived from the theme's own surface/foreground
+    // instead of a fixed grey pair, so it matches whatever theme is active.
     QColor badgeColor =
-        empty ? (dark ? QColor(70, 70, 75) : QColor(225, 225, 230))
+        empty ? PanelUtils::mix(PanelUtils::themeSurface(), PanelUtils::themeFg(), 0.12)
               : specClassColor(specClass);
     QColor badgeText =
-        empty ? (dark ? QColor(160, 160, 165) : QColor(110, 110, 115))
+        empty ? PanelUtils::mix(PanelUtils::themeBg(), PanelUtils::themeFg(), 0.60)
               : accentTextColor(badgeColor);
 
     // --- display badge (a flat button so it's natively clickable) ---
@@ -669,8 +670,10 @@ QWidget *SummaryPanel::createSpecClassBadge() {
             "QLineEdit { font-size: 13px; font-weight: 700; border-radius: 6px;"
             " padding: 2px 8px; border: 1px solid %1; background: %2; color: "
             "%3; }")
-            .arg(dark ? "#5a5a5f" : "#bbbbbb", dark ? "#3a3a3f" : "#ffffff",
-                 dark ? "#eeeeee" : "#222222"));
+            .arg(PanelUtils::mix(PanelUtils::themeSurface(),
+                                 PanelUtils::themeFg(), 0.28).name(),
+                 PanelUtils::themeSurface().name(),
+                 PanelUtils::themeFg().name()));
 
     l->addWidget(badge);
     l->addWidget(editor);
@@ -723,9 +726,7 @@ QWidget *SummaryPanel::createMetricCardsRow() {
     auto has = [](double v) { return std::isfinite(v) && v != 0.0; };
 
     Star        &S    = *_ctx.star;
-    const bool   dark = PanelUtils::isDarkTheme();
-    const QColor inactive =
-        dark ? QColor(100, 100, 100) : QColor(180, 180, 180);
+    const QColor inactive = PanelUtils::plotAnnotationColor();
 
     // ── log(p)
     {
@@ -2008,48 +2009,81 @@ QWidget *SummaryPanel::createCompanionSection() {
     return createSectionFrame("Companion", grid);
 }
 
+// Four-step significance ramp, one variant per theme polarity.
+//
+// The light variants are mid-tone and saturated, which is what reads on a white
+// card. Reusing them on a dark card fails twice: they are too dark to be
+// legible as 22px card text against a dark surface, and at full chroma the red
+// end reads as an error state rather than as the top of a ranked scale. The
+// dark variants therefore lift lightness and pull chroma back, while keeping
+// the same hue order (red > orange > yellow > green) so the encoding is
+// unchanged and a user switching themes reads the same ranking.
+QColor SummaryPanel::significanceColor(int step) const
+{
+    static const QColor kLight[4] = {
+        QColor(200,  45,  45),   // 0 - extremely significant
+        QColor(206, 133,  25),   // 1 - significant
+        QColor(160, 150,  35),   // 2 - marginal
+        QColor( 62, 150,  75),   // 3 - consistent with constant
+    };
+    static const QColor kDark[4] = {
+        QColor(232, 120,  95),
+        QColor(224, 168,  92),
+        QColor(214, 200, 118),
+        QColor(126, 195, 130),
+    };
+    const int i = std::clamp(step, 0, 3);
+    return PanelUtils::isDarkTheme() ? kDark[i] : kLight[i];
+}
+
 QColor SummaryPanel::logPColor(double logP) const
 {
     // Very negative = highly variable = important
     if (std::isnan(logP) || logP == 0.0)
-        return PanelUtils::isDarkTheme() ? QColor(100, 100, 100) : QColor(180, 180, 180);
-    if (logP < -10.0)
-        return QColor(220, 50, 50);    // Red - extremely significant
-    if (logP < -5.0)
-        return QColor(230, 150, 30);   // Orange - significant
-    if (logP < -2.0)
-        return QColor(200, 200, 50);   // Yellow - marginal
-    return QColor(80, 180, 80);        // Green - consistent with constant
+        return PanelUtils::plotAnnotationColor();
+    if (logP < -10.0) return significanceColor(0);
+    if (logP <  -5.0) return significanceColor(1);
+    if (logP <  -2.0) return significanceColor(2);
+    return significanceColor(3);
 }
 
 QColor SummaryPanel::deltaRVColor(double deltaRV) const
 {
     if (std::isnan(deltaRV) || deltaRV == 0.0)
-        return PanelUtils::isDarkTheme() ? QColor(100, 100, 100) : QColor(180, 180, 180);
-    if (deltaRV > 100.0)
-        return QColor(220, 50, 50);
-    if (deltaRV > 30.0)
-        return QColor(230, 150, 30);
-    if (deltaRV > 10.0)
-        return QColor(200, 200, 50);
-    return QColor(80, 180, 80);
+        return PanelUtils::plotAnnotationColor();
+    if (deltaRV > 100.0) return significanceColor(0);
+    if (deltaRV >  30.0) return significanceColor(1);
+    if (deltaRV >  10.0) return significanceColor(2);
+    return significanceColor(3);
 }
 
 QColor SummaryPanel::specClassColor(const QString& specClass) const
 {
-    if (specClass.isEmpty()) return PanelUtils::isDarkTheme() ? QColor(140, 140, 140) : QColor(120, 120, 120);
+    // Spectral-type colours mimic the star's actual colour, so the hue is not
+    // ours to change. The lightness is: these were tuned for a dark card, which
+    // makes the A/F/G end (near-white, pale yellow) effectively unreadable as
+    // text on a light theme. On light themes the same hue is therefore taken
+    // down in lightness and up in chroma, preserving the O-through-M ordering
+    // while staying legible.
+    const bool dark = PanelUtils::isDarkTheme();
+
+    if (specClass.isEmpty())
+        return PanelUtils::plotAnnotationColor();
+
+    auto pick = [dark](const QColor& d, const QColor& l) { return dark ? d : l; };
+
     QChar first = specClass.at(0).toUpper();
-    if (first == 'O') return QColor(100, 140, 255);
-    if (first == 'B') return QColor(130, 170, 255);
-    if (first == 'A') return QColor(180, 200, 255);
-    if (first == 'F') return QColor(255, 255, 200);
-    if (first == 'G') return QColor(255, 230, 140);
-    if (first == 'K') return QColor(255, 180, 100);
-    if (first == 'M') return QColor(255, 120, 80);
+    if (first == 'O') return pick(QColor(100, 140, 255), QColor( 48,  86, 200));
+    if (first == 'B') return pick(QColor(130, 170, 255), QColor( 62, 108, 205));
+    if (first == 'A') return pick(QColor(180, 200, 255), QColor( 88, 122, 190));
+    if (first == 'F') return pick(QColor(232, 232, 190), QColor(126, 118,  66));
+    if (first == 'G') return pick(QColor(255, 230, 140), QColor(154, 122,  30));
+    if (first == 'K') return pick(QColor(255, 180, 100), QColor(176,  98,  28));
+    if (first == 'M') return pick(QColor(255, 120,  80), QColor(184,  60,  36));
     // Subdwarf / white dwarf prefixes
     if (specClass.startsWith("sd", Qt::CaseInsensitive))
-        return QColor(130, 170, 255);
-    return PanelUtils::isDarkTheme() ? QColor(170, 170, 170) : QColor(100, 100, 100);
+        return pick(QColor(130, 170, 255), QColor(62, 108, 205));
+    return PanelUtils::plotAnnotationColor();
 }
 
 QColor SummaryPanel::accentTextColor(const QColor& accent) const

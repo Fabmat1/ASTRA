@@ -107,6 +107,10 @@ class SummaryPanel : public DetailPanel {
     bool       _cachedMassTrueInconsistent = false;
     bool       _hasMassCache = false;
 
+    // Shared 4-step significance ramp (0 = most significant) behind
+    // logPColor()/deltaRVColor(), so both encode rank identically and both
+    // follow the theme polarity.
+    QColor significanceColor(int step) const;
     QColor logPColor(double logP) const;
     QColor deltaRVColor(double deltaRV) const;
     QColor specClassColor(const QString &specClass) const;

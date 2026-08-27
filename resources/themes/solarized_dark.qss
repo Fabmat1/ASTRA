@@ -26,6 +26,7 @@
  *   Surface2:   #1a5a68
  *   Surface1:   #0f4956
  *   Surface0:   #0a3d49
+ *   Grid:       #0b333e
  * 
  * BASE COLORS (backgrounds):
  *   Base:       #002b36    (main background)
@@ -775,7 +776,7 @@ QTableWidget {
     background-color: #002b36;
     alternate-background-color: #073642;
     color: #eee8d5;
-    gridline-color: #0a3d49;
+    gridline-color: #0b333e;
     border: 1px solid #0a3d49;
     border-radius: 6px;
     selection-background-color: #0d4a5a;
@@ -811,7 +812,7 @@ QTableView QTableCornerButton::section,
 QTableWidget QTableCornerButton::section {
     background-color: #073642;
     border: none;
-    border-right: 1px solid #0a3d49;
+    border-right: 1px solid #0b333e;
     border-bottom: 1px solid #0a3d49;
 }
 
@@ -866,7 +867,7 @@ QHeaderView::section {
     color: #839496;
     padding: 4px 6px;
     border: none;
-    border-right: 1px solid #0a3d49;
+    border-right: 1px solid #0b333e;
     border-bottom: 1px solid #0a3d49;
     font-weight: 600;
 }
