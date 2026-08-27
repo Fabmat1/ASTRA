@@ -78,7 +78,8 @@ private:
     QComboBox*      _lamostDr     = nullptr;
     QCheckBox*      _exposuresCb  = nullptr;
     QCheckBox*      _redownloadCb = nullptr;
-    QPushButton*    _searchBtn    = nullptr;
+    QPushButton*    _searchBtn    = nullptr;   // "Search" / "Stop"
+    bool            _searching    = false;
     QTableWidget*   _table        = nullptr;
     QPushButton*    _downloadBtn  = nullptr;
     QPushButton*    _downloadAllBtn = nullptr;

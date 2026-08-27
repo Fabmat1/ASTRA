@@ -21,6 +21,7 @@
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QRegularExpression>
+#include <QThreadPool>
 #include <QTimer>
 #include <QUuid>
 #include <QtConcurrent/QtConcurrent>
@@ -47,7 +48,12 @@ SpectrumFetchService::SpectrumFetchService(ApplicationController* controller,
                                            QObject*               parent)
     : QObject(parent)
     , _controller(controller)
-    , _nam(new QNetworkAccessManager(this)) {}
+    , _nam(new QNetworkAccessManager(this))
+    , _discoveryPool(new QThreadPool(this)) {
+    // One thread per archive so no enabled archive waits for another to
+    // finish; the registry currently offers six.
+    _discoveryPool->setMaxThreadCount(8);
+}
 
 SpectrumFetchService::~SpectrumFetchService() {
     for (auto& s : _sessions) {
@@ -64,6 +70,14 @@ SpectrumFetchService::~SpectrumFetchService() {
             }
         }
     }
+
+    // The workers hold a raw `this` and post results back to it, so they have
+    // to be gone before the object is. They poll the cancel flags set above,
+    // including from inside a request, so this returns promptly.
+    if (_discoveryPool) {
+        _discoveryPool->clear();
+        _discoveryPool->waitForDone();
+    }
 }
 
 QString SpectrumFetchService::downloadDir() const {
@@ -78,6 +92,7 @@ QString SpectrumFetchService::downloadDir() const {
 QString SpectrumFetchService::stateLabel(State s) {
     switch (s) {
     case State::Discovering:       return QStringLiteral("Searching");
+    case State::Stopping:          return QStringLiteral("Stopping search");
     case State::AwaitingSelection: return QStringLiteral("Awaiting selection");
     case State::Downloading:       return QStringLiteral("Downloading");
     case State::Finished:          return QStringLiteral("Finished");
@@ -198,8 +213,9 @@ void SpectrumFetchService::startDiscovery(Session* s) {
                              .arg(usedRadius, 0, 'g', 3)
                              .arg(aopt.radiusArcsec, 0, 'g', 3));
 
-        (void)QtConcurrent::run([this, sessionId, archive, client, aopt,
-                                 cancel, stars]() {
+        (void)QtConcurrent::run(_discoveryPool, [this, sessionId, archive,
+                                                 client, aopt, cancel,
+                                                 stars]() {
             QNetworkAccessManager nam;   // thread-local
 
             const QString label = client->displayName();
@@ -273,7 +289,9 @@ void SpectrumFetchService::emitDiscoveryAggregate() {
     int done = 0, total = 0;
     for (const auto& up : _sessions) {
         if (!up) continue;
-        if (up->info.state != State::Discovering) continue;
+        if (up->info.state != State::Discovering &&
+            up->info.state != State::Stopping)
+            continue;
         done  += up->info.discoveryDone;
         total += up->info.discoveryTotal;
     }
@@ -289,8 +307,10 @@ void SpectrumFetchService::onArchiveDiscovered(
     --s->pendingDiscoveries;
 
     // Mark this archive complete so the breakdown does not sit at N-1/N.
+    // A stopped search really did leave stars unqueried, so its counters stay
+    // where they were.
     if (auto it = s->discovery.find(SpecFetch::archiveDisplayName(archive));
-        it != s->discovery.end())
+        it != s->discovery.end() && !s->discoveryStopped)
         it.value().first = it.value().second;
     recomputeDiscoveryInfo(s);
     emitDiscoveryAggregate();
@@ -314,35 +334,73 @@ void SpectrumFetchService::onArchiveDiscovered(
 }
 
 void SpectrumFetchService::finishDiscovery(Session* s) {
-    if (s->cancel->load()) {
-        s->info.state = State::Cancelled;
+    if (s->discarded) {
+        s->info.state   = State::Cancelled;
         s->info.summary = QStringLiteral("Cancelled during search");
+        s->discovered.clear();
+        s->info.discovered = 0;
         appendLog(s, s->info.summary);
         emit sessionsChanged();
         emitProgress();
         return;
     }
 
-    appendLog(s, QStringLiteral("Search finished: %1 spectra available")
-                     .arg(s->discovered.size()));
+    const bool stopped = s->discoveryStopped || s->cancel->load();
 
-    emit discoveryFinished(s->info.id, s->discovered);
+    appendLog(s, stopped
+                     ? QStringLiteral("Search stopped early: %1 spectra found "
+                                      "so far")
+                           .arg(s->discovered.size())
+                     : QStringLiteral("Search finished: %1 spectra available")
+                           .arg(s->discovered.size()));
+
+    // discoveryFinished is emitted last in every branch, once the session's
+    // state already reflects the outcome: the sessions dialog answers it by
+    // opening the review list, which is only offered in AwaitingSelection.
+    // A listener may run a modal dialog and queue downloads from inside the
+    // emit, so nothing may touch the session afterwards.
 
     if (s->discovered.isEmpty()) {
-        s->info.state   = State::Finished;
-        s->info.summary = QStringLiteral("No spectra found");
+        s->info.state   = stopped ? State::Cancelled : State::Finished;
+        s->info.summary = stopped ? QStringLiteral("Stopped, nothing found")
+                                  : QStringLiteral("No spectra found");
         emit sessionsChanged();
         emitProgress();
         maybeFinishSession(s);
+        emit discoveryFinished(s->info.id, s->discovered);
+        return;
+    }
+
+    if (stopped) {
+        // The search is over but its products are not lost: the session parks
+        // in review so they can still be imported. Every worker is back by
+        // now, so the flag they were watching can be replaced with a fresh
+        // one - the download phase reads the same flag and would otherwise
+        // fail every item as "cancelled".
+        s->cancel       = std::make_shared<std::atomic<bool>>(false);
+        s->info.state   = State::AwaitingSelection;
+        s->info.summary =
+            QStringLiteral("Search stopped: %1 spectra ready to import")
+                .arg(s->discovered.size());
+        appendLog(s, QStringLiteral("Review & Download imports them; Cancel "
+                                    "discards them"));
+        emit sessionsChanged();
+        emitProgress();
+        emit discoveryFinished(s->info.id, s->discovered);
         return;
     }
 
     if (s->opt.autoQueueAll) {
-        queueDownloads(s->info.id, s->discovered);
-    } else {
-        s->info.state = State::AwaitingSelection;
-        emit sessionsChanged();
+        const QString id = s->info.id;
+        const QList<SpecFetch::RemoteSpectrum> results = s->discovered;
+        emit discoveryFinished(id, results);
+        queueDownloads(id, results);   // no-ops if a listener already did
+        return;
     }
+
+    s->info.state = State::AwaitingSelection;
+    emit sessionsChanged();
+    emit discoveryFinished(s->info.id, s->discovered);
 }
 
 void SpectrumFetchService::queueDownloads(
@@ -352,6 +410,7 @@ void SpectrumFetchService::queueDownloads(
     if (s->info.state != State::Discovering &&
         s->info.state != State::AwaitingSelection)
         return;
+    if (s->cancel->load()) return;   // a fully cancelled session stays dead
 
     // A fresh wave when everything was idle.
     if (!hasActiveSessions() || (_waveDone == _waveTotal && activeItemCount() == 0)) {
@@ -416,6 +475,21 @@ void SpectrumFetchService::cancelSession(const QString& id) {
     Session* s = find(id);
     if (!s) return;
 
+    // Stopping a running search is not the same as discarding it. The
+    // archives are told to stop and the session stays alive until they are
+    // back; finishDiscovery() then offers whatever they found for review.
+    if (s->info.state == State::Discovering) {
+        s->discoveryStopped = true;
+        s->cancel->store(true);
+        s->info.state = State::Stopping;
+        appendLog(s, QStringLiteral("Stopping search; keeping the %1 spectra "
+                                    "found so far")
+                         .arg(s->discovered.size()));
+        emit sessionsChanged();
+        emitProgress();
+        return;
+    }
+
     s->cancel->store(true);
 
     for (auto& item : s->items) {
@@ -427,8 +501,11 @@ void SpectrumFetchService::cancelSession(const QString& id) {
         }
     }
 
-    if (s->info.state == State::Discovering ||
+    if (s->info.state == State::Stopping ||
         s->info.state == State::AwaitingSelection) {
+        // Cancelling a search that is already stopping is the escalation:
+        // drop what it found instead of parking it for review.
+        s->discarded    = true;
         s->info.state   = State::Cancelled;
         s->info.summary = QStringLiteral("Cancelled");
         appendLog(s, s->info.summary);
@@ -440,6 +517,7 @@ void SpectrumFetchService::cancelSession(const QString& id) {
 void SpectrumFetchService::cancelAll() {
     for (auto& s : _sessions) {
         if (s->info.state == State::Discovering ||
+            s->info.state == State::Stopping ||
             s->info.state == State::AwaitingSelection ||
             s->info.state == State::Downloading)
             cancelSession(s->info.id);
@@ -982,6 +1060,7 @@ bool SpectrumFetchService::isSessionActive(const QString& id) const {
     const Session* s = find(id);
     if (!s) return false;
     return s->info.state == State::Discovering ||
+           s->info.state == State::Stopping ||
            s->info.state == State::AwaitingSelection ||
            s->info.state == State::Downloading;
 }
@@ -989,6 +1068,7 @@ bool SpectrumFetchService::isSessionActive(const QString& id) const {
 bool SpectrumFetchService::hasActiveSessions() const {
     for (const auto& s : _sessions)
         if (s->info.state == State::Discovering ||
+            s->info.state == State::Stopping ||
             s->info.state == State::Downloading)
             return true;
     return false;

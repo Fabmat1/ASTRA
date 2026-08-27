@@ -9,7 +9,9 @@
 #include <QTextStream>
 #include <QRegularExpression>
 #include <QTimeZone>
+#include <algorithm>
 #include <cmath>
+#include <numeric>
 
 // ============================================================================
 // DefaultFitsSpectrumReader Implementation
@@ -24,7 +26,12 @@ const QStringList DefaultFitsSpectrumReader::DEC_KEYWORDS = {
 };
 
 const QStringList DefaultFitsSpectrumReader::MJD_KEYWORDS = {
-    "MJD-OBS", "MJD", "MJD_OBS", "MJDOBS", "MJD-MID", "MJD_MID"
+    // Mid- and observation-time cards first; the exposure-start cards after
+    // them cover the archives that file no other epoch: EXPSTART on HST
+    // products, MJD-BEG on the HASP coadds, OBSSTART on FUSE.
+    "MJD-OBS", "MJD", "MJD_OBS", "MJDOBS", "MJD-MID", "MJD_MID",
+    "EXPSTART", "MJD-BEG", "MJDBEG", "MJD_BEG", "MJD-START", "MJDSTART",
+    "OBSSTART"
 };
 
 const QStringList DefaultFitsSpectrumReader::BJD_KEYWORDS = {
@@ -284,6 +291,35 @@ SpectrumMetadata DefaultFitsSpectrumReader::readMetadata(const QString& filepath
     return metadata;
 }
 
+namespace {
+// A spectral column has to hold numbers. Without this check the positional
+// fallback below would take the string columns of an HST association table
+// (MEMNAME/MEMTYPE) for wavelength and flux.
+bool isNumericColumn(fitsfile* fits, int col)
+{
+    int  typecode = 0;
+    long repeat = 0, width = 0;
+    int  status = 0;
+    if (fits_get_coltype(fits, col, &typecode, &repeat, &width, &status) != 0)
+        return false;
+    switch (std::abs(typecode)) {
+    case TBYTE:
+    case TSHORT:
+    case TUSHORT:
+    case TINT:
+    case TUINT:
+    case TLONG:
+    case TULONG:
+    case TLONGLONG:
+    case TFLOAT:
+    case TDOUBLE:
+        return true;
+    default:
+        return false;
+    }
+}
+}   // namespace
+
 bool DefaultFitsSpectrumReader::findDataTable(void* fptr, int& wavelengthCol, int& fluxCol, int& errorCol) const
 {
     fitsfile* fits = static_cast<fitsfile*>(fptr);
@@ -305,48 +341,67 @@ bool DefaultFitsSpectrumReader::findDataTable(void* fptr, int& wavelengthCol, in
     QStringList fluxNames = {"FLUX", "COUNTS", "INTENSITY", "SPEC", "DATA", "F_LAMBDA"};
     QStringList errorNames = {"ERROR", "ERR", "SIGMA", "FLUX_ERR", "ERR_FLUX", "IVAR", "UNCERTAINTY"};
     
+    // Best match wins, not the last one: a STIS sx1 table carries both ERROR
+    // and NET_ERROR, and an exact hit on the name is what tells them apart.
+    auto rank = [](const QString& name, const QStringList& candidates) {
+        int best = 0;
+        for (const QString& c : candidates) {
+            if (name == c)                 best = std::max(best, 3);
+            else if (name.startsWith(c))   best = std::max(best, 2);
+            else if (name.contains(c))     best = std::max(best, 1);
+        }
+        return best;
+    };
+
+    int wavelengthRank = 0, fluxRank = 0, errorRank = 0;
+
     for (int col = 1; col <= ncols; ++col) {
-        char colname[FLEN_VALUE];
         status = 0;
-        
+
         // Get column name using TTYPEn keyword
         char keyword[FLEN_KEYWORD];
         snprintf(keyword, sizeof(keyword), "TTYPE%d", col);
-        
+
         char value[FLEN_VALUE];
         if (fits_read_key(fits, TSTRING, keyword, value, nullptr, &status) == 0) {
-            QString name = QString(value).toUpper().trimmed();
-            
-            for (const QString& wn : wavelengthNames) {
-                if (name.contains(wn)) {
-                    wavelengthCol = col;
-                    break;
+            const QString name = QString(value).toUpper().trimmed();
+
+            if (const int r = rank(name, wavelengthNames); r > wavelengthRank) {
+                wavelengthRank = r;
+                wavelengthCol  = col;
+            }
+            if (!name.contains("ERR")) {
+                if (const int r = rank(name, fluxNames); r > fluxRank) {
+                    fluxRank = r;
+                    fluxCol  = col;
                 }
             }
-            for (const QString& fn : fluxNames) {
-                if (name.contains(fn) && !name.contains("ERR")) {
-                    fluxCol = col;
-                    break;
-                }
-            }
-            for (const QString& en : errorNames) {
-                if (name.contains(en)) {
-                    errorCol = col;
-                    break;
-                }
+            if (const int r = rank(name, errorNames); r > errorRank) {
+                errorRank = r;
+                errorCol  = col;
             }
         }
     }
     
     // If no named columns found, assume column order: wavelength, flux, [error]
-    if (wavelengthCol < 0 && ncols >= 2) {
+    if (wavelengthCol < 0 && ncols >= 2 && isNumericColumn(fits, 1) &&
+        isNumericColumn(fits, 2)) {
         wavelengthCol = 1;
         fluxCol = 2;
-        if (ncols >= 3) {
+        if (ncols >= 3 && isNumericColumn(fits, 3)) {
             errorCol = 3;
         }
     }
-    
+
+    // A table whose named columns are text (association tables, provenance
+    // extensions) is not the spectrum; let the caller keep looking.
+    if (wavelengthCol > 0 && !isNumericColumn(fits, wavelengthCol))
+        wavelengthCol = -1;
+    if (fluxCol > 0 && !isNumericColumn(fits, fluxCol))
+        fluxCol = -1;
+    if (errorCol > 0 && !isNumericColumn(fits, errorCol))
+        errorCol = -1;
+
     return wavelengthCol > 0 && fluxCol > 0;
 }
 
@@ -381,9 +436,11 @@ SpectrumReadResult DefaultFitsSpectrumReader::readSpectrum(const QString& filepa
     int wavelengthCol, fluxCol, errorCol;
     
     for (int hdu = 1; hdu <= numHdus && !foundData; ++hdu) {
-        int hduType;
+        int hduType = ANY_HDU;
+        status = 0;   // one unreadable HDU must not poison the rest
         fits_movabs_hdu(fptr, hdu, &hduType, &status);
-        
+        if (status != 0) continue;
+
         if (hduType == BINARY_TBL || hduType == ASCII_TBL) {
             if (findDataTable(fptr, wavelengthCol, fluxCol, errorCol)) {
                 foundData = true;
@@ -522,27 +579,97 @@ SpectrumReadResult DefaultFitsSpectrumReader::readSpectrum(const QString& filepa
             foundData = true;
         }
     } else {
-        // Read from table
-        long nrows;
+        // Read from table. A spectral bintable holds its points either as one
+        // row per point (scalar columns) or as a single row whose columns are
+        // N-element vectors - the shape used by the MAST/HASP coadds, the FUSE
+        // NVO products and most VO "spectral container" files. Taking nrows
+        // values would leave those with one point, so the element count comes
+        // from the column's repeat, not from the row count.
+        long nrows = 0;
+        status = 0;
         fits_get_num_rows(fptr, &nrows, &status);
-        
-        if (status == 0 && nrows > 0) {
-            std::vector<double> wavelengths(nrows);
-            std::vector<double> fluxes(nrows);
-            std::vector<double> errors(nrows, 0.0);
-            
-            int anynul;
-            fits_read_col(fptr, TDOUBLE, wavelengthCol, 1, 1, nrows, nullptr,
-                         wavelengths.data(), &anynul, &status);
-            fits_read_col(fptr, TDOUBLE, fluxCol, 1, 1, nrows, nullptr,
-                         fluxes.data(), &anynul, &status);
-            
-            if (errorCol > 0) {
-                fits_read_col(fptr, TDOUBLE, errorCol, 1, 1, nrows, nullptr,
-                             errors.data(), &anynul, &status);
+
+        auto readColumn = [&](int col, std::vector<double>& out) -> bool {
+            out.clear();
+            if (col <= 0 || nrows <= 0) return false;
+
+            int  typecode = 0;
+            long repeat = 0, width = 0;
+            int  st = 0;
+            if (fits_get_coltype(fptr, col, &typecode, &repeat, &width, &st) != 0)
+                return false;
+
+            // Variable-length column ('1PE(...)'): each row carries its own
+            // element count, so the rows are read one at a time.
+            if (typecode < 0) {
+                for (long row = 1; row <= nrows; ++row) {
+                    long len = 0, offset = 0;
+                    st = 0;
+                    if (fits_read_descript(fptr, col, row, &len, &offset, &st) != 0
+                        || len <= 0)
+                        continue;
+                    const size_t at = out.size();
+                    out.resize(at + size_t(len));
+                    int anynul = 0;
+                    if (fits_read_col(fptr, TDOUBLE, col, row, 1, len, nullptr,
+                                      out.data() + at, &anynul, &st) != 0) {
+                        out.resize(at);
+                        return false;
+                    }
+                }
+                return !out.empty();
             }
-            
-            if (status == 0) {
+
+            if (repeat < 1) repeat = 1;
+            const long nelem = nrows * repeat;
+            if (nelem <= 0) return false;
+            out.assign(size_t(nelem), 0.0);
+            int anynul = 0;
+            st = 0;
+            // One read spanning every row: cfitsio walks a fixed-length vector
+            // column as one continuous array.
+            return fits_read_col(fptr, TDOUBLE, col, 1, 1, nelem, nullptr,
+                                 out.data(), &anynul, &st) == 0;
+        };
+
+        std::vector<double> wavelengths, fluxes, errors;
+        if (status == 0 && readColumn(wavelengthCol, wavelengths) &&
+            readColumn(fluxCol, fluxes)) {
+            // Mismatched lengths would pair unrelated points; keep the overlap.
+            const size_t n = std::min(wavelengths.size(), fluxes.size());
+            wavelengths.resize(n);
+            fluxes.resize(n);
+
+            if (!(errorCol > 0 && readColumn(errorCol, errors) &&
+                  errors.size() >= n))
+                errors.assign(n, 0.0);
+            errors.resize(n);
+
+            // Echelle products (STIS x1d, UVES) file one order per row, so the
+            // concatenation above runs order by order rather than in
+            // wavelength order. Everything downstream assumes a rising axis.
+            bool ascending = true;
+            for (size_t i = 1; i < n && ascending; ++i)
+                if (wavelengths[i] < wavelengths[i - 1]) ascending = false;
+            if (!ascending) {
+                std::vector<size_t> order(n);
+                std::iota(order.begin(), order.end(), size_t(0));
+                std::stable_sort(order.begin(), order.end(),
+                                 [&wavelengths](size_t a, size_t b) {
+                                     return wavelengths[a] < wavelengths[b];
+                                 });
+                std::vector<double> w(n), f(n), e(n);
+                for (size_t i = 0; i < n; ++i) {
+                    w[i] = wavelengths[order[i]];
+                    f[i] = fluxes[order[i]];
+                    e[i] = errors[order[i]];
+                }
+                wavelengths.swap(w);
+                fluxes.swap(f);
+                errors.swap(e);
+            }
+
+            if (n > 0) {
                 result.spectrum = std::make_shared<Spectrum>();
                 result.spectrum->setData(wavelengths, fluxes, errors);
                 result.spectrum->setFile(filepath);

@@ -11,6 +11,8 @@
 //                           to also cover the coadd-anchored calibration
 //   ASTRA_TEST_LAMOST_MRS   a LAMOST MRS FITS (.fits.gz is fine)
 //   ASTRA_TEST_APSTAR       an APOGEE apStar/asStar file
+//   ASTRA_TEST_MAST_HST     an HST coadd (hst_*_cspec.fits or an x1d)
+//   ASTRA_TEST_MAST_FUSE    a FUSE NVO spectrum (*nvo4histfcal_vo.fits)
 //
 // Checks per file: parse succeeds, wavelengths are ascending Angstroms in a
 // plausible range, exposures/arms split as expected, originId suffixes.
@@ -19,6 +21,7 @@
 #include "utils/spectrafetch/ApogeeArchiveClient.h"
 #include "utils/spectrafetch/EsoArchiveClient.h"
 #include "utils/spectrafetch/LamostArchiveClient.h"
+#include "utils/spectrafetch/MastArchiveClient.h"
 #include "utils/spectrafetch/SdssOpticalArchiveClient.h"
 
 #include <QCoreApplication>
@@ -230,6 +233,52 @@ int main(int argc, char** argv) {
                                std::to_string(visits) + ")");
         if (!parsed.empty())
             plausibleSpectrum(parsed[0], 15000.0, 17100.0, "APOGEE coadd");
+    }
+
+    // ── MAST (HST / FUSE) ────────────────────────────────────────────────
+    // Both product families store the spectrum as a single table row of
+    // N-element vector columns, which the generic FITS reader used to read as
+    // one point - the spectra imported empty.
+    struct MastCase {
+        const char* var;
+        const char* label;
+        const char* collection;
+        const char* instrument;
+        double      wlMin, wlMax;
+    };
+    for (const MastCase& c :
+         {MastCase{"ASTRA_TEST_MAST_HST", "MAST HST", "HST", "STIS", 900.0,
+                   12000.0},
+          MastCase{"ASTRA_TEST_MAST_FUSE", "MAST FUSE", "FUSE", "FUV", 890.0,
+                   1200.0}}) {
+        const QString path = envPath(c.var);
+        if (path.isEmpty()) continue;
+        ++gRun;
+        MastArchiveClient client;
+        SpecFetch::RemoteSpectrum r;
+        r.archive    = SpecFetch::Archive::MastSSAP;
+        r.collection = QString::fromLatin1(c.collection);
+        r.originId   = QStringLiteral("mast-%1:TEST")
+                           .arg(r.collection.toLower());
+        r.instrumentHint = QStringLiteral("%1/%2").arg(
+            QString::fromLatin1(c.collection), QString::fromLatin1(c.instrument));
+        SpecFetch::ArchiveOptions opt;
+        QString err;
+        const auto parsed = client.parse(path, r, opt, &err);
+        check(err.isEmpty(),
+              std::string(c.label) + ": no error (" + err.toStdString() + ")");
+        check(parsed.size() == 1, std::string(c.label) + ": one spectrum");
+        if (!parsed.empty()) {
+            plausibleSpectrum(parsed[0], c.wlMin, c.wlMax, c.label);
+            // The mission-qualified name from the archive, not the bare
+            // "FUV"/"STIS" the file header carries.
+            check(parsed[0].spectrum &&
+                      parsed[0].spectrum->getInstrument() == r.instrumentHint,
+                  std::string(c.label) + ": instrument " +
+                      (parsed[0].spectrum
+                           ? parsed[0].spectrum->getInstrument().toStdString()
+                           : std::string("(none)")));
+        }
     }
 
     if (gRun == 0) {

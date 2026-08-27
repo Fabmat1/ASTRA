@@ -44,10 +44,32 @@ provides them; products without exposures fall back to the coadd.
 The discovery phase bundles stars into as few queries as each service will
 accept, so large projects do not hammer the servers. How few varies by
 archive: SDSS takes the whole batch in one statement, LAMOST does a quick cone
-search per star, ESO is bounded by its 120 s query budget (chunks start at
-five stars and are split further if one times out), and MAST accepts only a
-single positional term per query, so it is searched one star at a time and is
-by far the slowest archive to discover.
+search per star, ESO takes a hundred stars per query, and MAST takes twenty.
+
+ESO is queried through its asynchronous (UWS) endpoint rather than the
+synchronous one. A synchronous ESO query is given 120 s and no more, which a
+positional crossmatch against ObsCore does not fit into even for a handful of
+stars, so a project-sized search used to return nothing at all; a job may be
+given the service's full 3600 s instead. The positional term is an OR of
+RA/Dec boxes rather than of `CONTAINS` circles, because ESO's optimiser does
+not use its index for a chain of geometry calls - the same 20 stars take 20 s
+as boxes and cannot finish in 120 s as circles. Boxes are slightly larger than
+the circles they contain, so the corners are trimmed locally and the effective
+match radius is still exactly the one set here. Together this takes a 300-star
+project from "times out" to about 20 s.
+
+A query that still will not run is retried on half its stars, and a chunk that
+fails outright is skipped rather than abandoning the stars behind it: the
+search reports how many stars it could not query and keeps everything it did
+find.
+
+MAST uses the same box trick, for the same reason, on its ordinary
+synchronous endpoint. Its CAOM TAP will not plan a `CONTAINS(POINT, CIRCLE)`
+against its spatial index either, and does not say so: a single 40 arcsec cone runs until the gateway gives up, which the
+search sees as a 504 after 65 seconds. Written as boxes, the same search
+answers in about a second, and twenty stars in one query cost barely more than
+one. That takes a single-star MAST search from "two minutes, nothing found" to
+about a second, and a 65-star project to roughly 25 seconds.
 
 MAST needs care with the match radius. Its IUE, FUSE, HUT and EUVE pointings
 record the aperture position, which sits well off the catalogue position of
@@ -66,9 +88,32 @@ Ambiguous ones are dropped and counted in the log. Calibration exposures
 (WAVECAL, TFLOOD, flats and the like) are dropped at any separation, and each
 match records how far from the star it sat.
 
+Not every product an observation lists is a spectrum. MAST in particular
+offers previews, trailers, raw frames, the HST association tables that only
+name the exposures, and the GHRS/FOS families that split one observation into
+separate wavelength, flux, error and quality files. ASTRA queues only the
+calibrated 1-D products (the VO spectra, the HASP/HSLA coadds, x1d/sx1
+extractions, IUE mxlo and the FUSE calibrated spectra) and skips an
+observation entirely when it offers nothing else; the count of skipped
+observations goes to the log.
+
+A MAST query that fails costs only the stars in that chunk: the search moves
+on to the next chunk and reports how many star queries failed. It gives up on
+the archive only after three chunks fail in a row, which is what a service
+outage looks like. A chunk whose answer the service truncates at its row limit
+is split in half and asked again, so a wide cone landing in a crowded field
+cannot lose products silently.
+
+**Stopping a search keeps its results.** *Stop Search* in the sessions
+overview (or *Stop* on the star's Archives tab) tells the archives to stop
+where they are, and whatever they already found is offered for review and
+import instead of being discarded. Pressing *Cancel Selected* on a session
+that is already stopping discards it for good.
+
 After the search a **review step** shows what was found per archive with
 counts and estimated download volume; archives can be deselected and a
-per-star cap applied before any file is downloaded.
+per-star cap applied before any file is downloaded. Dismissing that list
+leaves the session in review, so it can be reopened with *Review & Download*.
 
 Downloads run in the background with per-host rate limiting; progress and a
 rough ETA show in the status bar and in the sessions overview, where fetches

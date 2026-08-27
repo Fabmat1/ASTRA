@@ -18,6 +18,7 @@
 
 class ApplicationController;
 class QNetworkAccessManager;
+class QThreadPool;
 class QNetworkReply;
 class QFile;
 class SpectrumArchiveClient;
@@ -50,6 +51,7 @@ class SpectrumFetchService : public QObject
 public:
     enum class State {
         Discovering,
+        Stopping,            // stop requested; archive workers winding down
         AwaitingSelection,
         Downloading,
         Finished,
@@ -106,6 +108,9 @@ public:
     void queueDownloads(const QString&                          sessionId,
                         const QList<SpecFetch::RemoteSpectrum>& picks);
 
+    /// Stops a session. During discovery this is a *stop*, not a discard:
+    /// the archives wind down and whatever they already found is offered for
+    /// review instead of being thrown away. Later phases abort as before.
     void cancelSession(const QString& id);
     void cancelAll();
 
@@ -174,7 +179,12 @@ private:
         QString     projectId;
         Options     opt;
         std::vector<SpecFetch::StarQuery> stars;
+        // Set to stop the archive workers. Downloads read the same flag, so a
+        // session that keeps its partial results after a stopped search is
+        // given a fresh one in finishDiscovery().
         std::shared_ptr<std::atomic<bool>> cancel;
+        bool discoveryStopped = false;   // the search ended early, by request
+        bool discarded        = false;   // cancelled again while stopping
         int pendingDiscoveries = 0;
         // archiveLabel -> (starsDone, starsTotal) for the discovery phase.
         QMap<QString, QPair<int, int>> discovery;
@@ -238,6 +248,10 @@ private:
 
     ApplicationController* _controller = nullptr;
     QNetworkAccessManager* _nam        = nullptr;
+    // Discovery workers block on synchronous HTTP for minutes at a time. On
+    // their own pool they cannot fill the global one and starve the
+    // resolve/parse tasks (or the rest of the application) behind them.
+    QThreadPool*           _discoveryPool = nullptr;
 
     std::vector<std::unique_ptr<Session>> _sessions;
     QHash<QString, HostState> _hosts;

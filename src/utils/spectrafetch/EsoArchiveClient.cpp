@@ -13,28 +13,110 @@
 
 #include <fitsio.h>
 
+#include <algorithm>
 #include <cmath>
 #include <utility>
 #include <vector>
 
 namespace {
 
-constexpr char kTapSyncUrl[] = "https://archive.eso.org/tap_obs/sync";
+constexpr char kTapAsyncUrl[] = "https://archive.eso.org/tap_obs/async";
 constexpr char kDataPortalFileUrl[] =
     "https://dataportal.eso.org/dataPortal/file/";
 // The anonymous ESO TAP endpoint offers no uploadMethod (verified against
 // /tap_obs/capabilities), so the batched crossmatch is an OR-chain of
-// CONTAINS circles instead of a TAP_UPLOAD join.
+// per-star predicates instead of a TAP_UPLOAD join.
 //
-// The binding limit is not the request size but ESO's 120 s server-side query
-// budget: each extra circle costs roughly 12 s (one circle ~19 s, two ~31 s,
-// 21 time out), and the cost varies with how crowded the fields are. So this
-// is a starting size, not a safe size - a chunk that comes back "The request
-// timed out" is halved and retried, down to a single star, which keeps a
-// dense field from stalling the whole run.
-constexpr int kInitialChunk  = 5;
-constexpr int kTapTimeoutMs  = 300000;
+// Those predicates are RA/Dec boxes, not CONTAINS circles, because ESO's
+// optimiser does not use its index for an OR-chain of geometry calls: measured
+// 2026-08-25 on the same 20 Ondrejov stars, an OR of 20 CONTAINS circles could
+// not finish inside the 120 s /sync budget (nor could five of them), while an
+// OR of 20 boxes answered in 20 s. A box is a superset of its circle, so the
+// corners are trimmed below against the true angular separation and the
+// effective match radius is still exactly the one the caller asked for.
+//
+// Discovery goes through /async rather than /sync. Not for the convenience:
+// /sync hands a query 120 s and nothing more, and an ObsCore crossmatch does
+// not fit in that even for a handful of stars (measured 2026-08-25 against
+// the Ondrejov list: 5, 20 and 50 circles all died on the wall, the first two
+// as QUERY_STATUS=ERROR "The request timed out", the third as a 502 from the
+// front end). A UWS job can be given the service's hard executionDuration
+// instead, which ESO advertises as 3600 s, so the same crossmatch that cannot
+// finish synchronously at any batch size completes comfortably as a job.
+constexpr int kAsyncDurationSec = 3000;
+
+// Rows per job. ESO's default MAXREC is 20000 and it truncates silently, which
+// on a bulk run would look like "these stars have no spectra".
+constexpr int kAsyncMaxRec = 500000;
+
+// Stars per job. With boxes the whole 302-star Ondrejov list runs as a single
+// job in 21 s, so this is not a performance ceiling - it is there so that one
+// chunk that will not run is not the whole run, so the progress bar has
+// something to move on, and so the ADQL stays a sane size (a star costs about
+// 95 characters of predicate).
+constexpr int kInitialChunk = 100;
+
+// Client-side patience per job, comfortably above the server's own budget so
+// that a job which is going to be killed is killed by ESO, with ESO's message,
+// rather than abandoned by us first.
+constexpr int kJobBudgetMs = 3300000;
+
+// A run where every chunk fails is a broken service or a broken query, not a
+// crowded field; stop rather than work through 280 stars of the same error.
+constexpr int kMaxConsecutiveFailures = 3;
+
 constexpr int kLinkTimeoutMs = 60000;
+
+// Distinguishes "this chunk was too much work" from "this query is wrong".
+// The first is worth retrying on half the stars, the second never is.
+bool looksLikeBudgetError(const QString& msg) {
+    static const char* kNeedles[] = {"timed out", "time out", "ABORTED",
+                                     "execution duration", "still EXECUTING",
+                                     "too long", "502", "Proxy Error"};
+    for (const char* needle : kNeedles)
+        if (msg.contains(QLatin1String(needle), Qt::CaseInsensitive))
+            return true;
+    return false;
+}
+
+// ADQL for "s_ra/s_dec lies in the box of half-height `radiusDeg` around this
+// star". The RA half-width is inflated by 1/cos(dec) so the box still contains
+// the whole circle, clamped near the poles where that blows up, and split in
+// two when it straddles the RA origin - `s_ra BETWEEN 359.9 AND 0.1` is empty,
+// not wrapped.
+QString boxPredicate(double ra, double dec, double radiusDeg) {
+    const double cosDec = std::cos(dec * M_PI / 180.0);
+    const double halfRa =
+        std::min(180.0, radiusDeg / std::max(std::abs(cosDec), 1.0e-3));
+
+    const QString decTerm = QStringLiteral("s_dec BETWEEN %1 AND %2")
+                                .arg(dec - radiusDeg, 0, 'f', 8)
+                                .arg(dec + radiusDeg, 0, 'f', 8);
+
+    const double lo = ra - halfRa;
+    const double hi = ra + halfRa;
+
+    QString raTerm;
+    if (halfRa >= 180.0) {
+        raTerm = QStringLiteral("s_ra BETWEEN 0 AND 360");
+    } else if (lo < 0.0) {
+        raTerm = QStringLiteral("(s_ra BETWEEN %1 AND 360 OR s_ra BETWEEN 0 "
+                                "AND %2)")
+                     .arg(lo + 360.0, 0, 'f', 8)
+                     .arg(hi, 0, 'f', 8);
+    } else if (hi > 360.0) {
+        raTerm = QStringLiteral("(s_ra BETWEEN %1 AND 360 OR s_ra BETWEEN 0 "
+                                "AND %2)")
+                     .arg(lo, 0, 'f', 8)
+                     .arg(hi - 360.0, 0, 'f', 8);
+    } else {
+        raTerm = QStringLiteral("s_ra BETWEEN %1 AND %2")
+                     .arg(lo, 0, 'f', 8)
+                     .arg(hi, 0, 'f', 8);
+    }
+
+    return QStringLiteral("(%1 AND %2)").arg(decTerm, raTerm);
+}
 
 // Small-angle separation in degrees; plenty for arcsecond-scale radii.
 double angularSepDeg(double ra1, double dec1, double ra2, double dec2) {
@@ -128,7 +210,10 @@ QList<SpecFetch::RemoteSpectrum> EsoArchiveClient::discover(
         end = begin;
     }
 
-    int starsDone = 0;
+    int     starsDone           = 0;
+    int     failedStars         = 0;
+    int     consecutiveFailures = 0;
+    QString lastError;
 
     while (!pending.empty()) {
         if (cancel.load()) break;
@@ -137,14 +222,9 @@ QList<SpecFetch::RemoteSpectrum> EsoArchiveClient::discover(
         pending.pop_back();
         const size_t chunkSize = chunkEnd - chunkBegin;
 
-        QStringList circles;
+        QStringList boxes;
         for (size_t k = chunkBegin; k < chunkEnd; ++k)
-            circles << QStringLiteral(
-                           "1=CONTAINS(POINT('ICRS', s_ra, s_dec), "
-                           "CIRCLE('ICRS', %1, %2, %3))")
-                           .arg(stars[k].ra, 0, 'f', 8)
-                           .arg(stars[k].dec, 0, 'f', 8)
-                           .arg(radiusDeg, 0, 'f', 8);
+            boxes << boxPredicate(stars[k].ra, stars[k].dec, radiusDeg);
 
         const QString adql =
             QStringLiteral(
@@ -154,36 +234,69 @@ QList<SpecFetch::RemoteSpectrum> EsoArchiveClient::discover(
                 "FROM ivoa.ObsCore "
                 "WHERE dataproduct_type = 'spectrum' "
                 "AND (%1)%2")
-                .arg(circles.join(QStringLiteral(" OR ")))
+                .arg(boxes.join(QStringLiteral(" OR ")))
                 .arg(collectionFilter);
 
-        QString    chunkError;
-        const QByteArray body =
-            SpecFetch::tapQuery(nam, QString::fromLatin1(kTapSyncUrl), adql,
-                                QStringLiteral("csv"), kTapTimeoutMs,
-                                &chunkError);
+        QString         chunkError;
+        CdsTap::Request request(kJobBudgetMs);
+        request.cancel = &cancel;
+        const QByteArray body = SpecFetch::tapAsyncQuery(
+            nam, QString::fromLatin1(kTapAsyncUrl), adql,
+            QStringLiteral("csv"), kAsyncDurationSec, kAsyncMaxRec, request,
+            &chunkError);
 
         if (!chunkError.isEmpty()) {
-            // ESO answers an over-budget query with QUERY_STATUS=ERROR
-            // "The request timed out". Half the stars usually fit.
-            if (chunkSize > 1 &&
-                chunkError.contains(QStringLiteral("timed out"),
-                                    Qt::CaseInsensitive)) {
+            if (cancel.load()) break;
+
+            // The chunk was more work than ESO would do in one go. Half the
+            // stars is half the sky to sweep, so the split is worth a retry.
+            if (chunkSize > 1 && looksLikeBudgetError(chunkError)) {
                 const size_t mid = chunkBegin + chunkSize / 2;
                 pending.emplace_back(mid, chunkEnd);
                 pending.emplace_back(chunkBegin, mid);
                 LOG_INFO("SpecFetch",
-                         QStringLiteral("ESO TAP chunk of %1 timed out, "
-                                        "splitting").arg(chunkSize));
+                         QStringLiteral("ESO TAP chunk of %1 did not finish "
+                                        "(%2), splitting")
+                             .arg(chunkSize)
+                             .arg(chunkError));
                 continue;
             }
-            if (error) *error = chunkError;
+
+            // One chunk that will not run is not a reason to throw away the
+            // stars behind it: skip it and carry on, and only give up once
+            // the failures stop looking incidental.
+            ++consecutiveFailures;
+            lastError = chunkError;
+            failedStars += int(chunkSize);
             LOG_WARNING("SpecFetch",
-                        QStringLiteral("ESO TAP chunk failed: %1").arg(chunkError));
-            break;
+                        QStringLiteral("ESO TAP chunk of %1 star(s) failed: %2")
+                            .arg(chunkSize)
+                            .arg(chunkError));
+
+            if (consecutiveFailures >= kMaxConsecutiveFailures) {
+                if (error)
+                    *error = QStringLiteral("gave up after %1 failed queries "
+                                            "(%2)")
+                                 .arg(consecutiveFailures)
+                                 .arg(chunkError);
+                break;
+            }
+
+            starsDone += int(chunkSize);
+            if (progress) progress(starsDone, int(stars.size()));
+            continue;
         }
+        consecutiveFailures = 0;
 
         const SpecFetch::Csv csv = SpecFetch::parseCsv(body);
+        // MAXREC truncation is silent in CSV output, so a full result set is
+        // the only warning we get that rows were dropped.
+        if (csv.rows.size() >= kAsyncMaxRec)
+            LOG_WARNING("SpecFetch",
+                        QStringLiteral("ESO TAP chunk hit the %1-row limit; "
+                                       "some products were dropped")
+                            .arg(kAsyncMaxRec));
+
         for (int i = 0; i < csv.rows.size(); ++i) {
             const QString dpId = csv.value(i, QStringLiteral("dp_id"));
             if (dpId.isEmpty()) continue;
@@ -194,8 +307,11 @@ QList<SpecFetch::RemoteSpectrum> EsoArchiveClient::discover(
                 toDoubleOr(csv.value(i, QStringLiteral("s_ra")), NAN);
             const double rowDec =
                 toDoubleOr(csv.value(i, QStringLiteral("s_dec")), NAN);
+            // The box corners reach past the radius, so this is where the
+            // circle is actually cut - and, as before, where a product is
+            // attributed to the nearest of the chunk's stars.
             size_t idx     = chunkEnd;
-            double bestSep = 2.0 * radiusDeg;
+            double bestSep = radiusDeg;
             if (!std::isnan(rowRa) && !std::isnan(rowDec)) {
                 for (size_t k = chunkBegin; k < chunkEnd; ++k) {
                     const double sep = angularSepDeg(rowRa, rowDec,
@@ -240,6 +356,15 @@ QList<SpecFetch::RemoteSpectrum> EsoArchiveClient::discover(
         starsDone += int(chunkSize);
         if (progress) progress(starsDone, int(stars.size()));
     }
+
+    // Skipped stars are reported even when the run otherwise succeeded: a
+    // silently short result set is indistinguishable from "no spectra there".
+    // A stop is not a failure, though - the session reports that itself.
+    if (error && error->isEmpty() && failedStars > 0 && !cancel.load())
+        *error = QStringLiteral("%1 of %2 star(s) could not be queried (%3)")
+                     .arg(failedStars)
+                     .arg(stars.size())
+                     .arg(lastError);
 
     return out;
 }

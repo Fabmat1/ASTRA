@@ -29,9 +29,23 @@ int backoffMs(int retry) {
     return kDelays[retry < n ? retry : n - 1];
 }
 
-void waitMs(int ms) {
+// Driven by an event loop rather than a sleep, and cut short when the caller
+// gives up: a stopped batch should not sit out the backoff of a request it no
+// longer wants.
+void waitMs(int ms, const std::atomic<bool> *cancel) {
     QEventLoop loop;
+    QTimer     poll;
     QTimer::singleShot(ms, &loop, &QEventLoop::quit);
+    if (cancel) {
+        if (cancel->load())
+            return;
+        poll.setInterval(100);
+        QObject::connect(&poll, &QTimer::timeout, &loop, [&loop, cancel]() {
+            if (cancel->load())
+                loop.quit();
+        });
+        poll.start();
+    }
     loop.exec();
 }
 
@@ -86,18 +100,27 @@ struct Attempt {
     QByteArray body;
     QString    error;       // empty on success
     bool       retryable = false;
+    bool       cancelled = false;
+    QString    redirectUrl; // 3xx target, only when redirects are manual
 };
 
 Attempt runAttempt(const QUrl &url,
                    const std::function<QNetworkReply *(const QNetworkRequest &)> &send,
-                   int timeoutMs, const CdsTap::ProgressFn &onProgress,
-                   int mirrors) {
+                   const CdsTap::Request &req, int mirrors) {
     Attempt result;
+
+    if (req.cancel && req.cancel->load()) {
+        result.error     = QStringLiteral("cancelled");
+        result.cancelled = true;
+        return result;
+    }
 
     QNetworkRequest request(url);
     request.setRawHeader("User-Agent", "ASTRA/1.0");
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                         QNetworkRequest::NoLessSafeRedirectPolicy);
+                         req.followRedirects
+                             ? QNetworkRequest::NoLessSafeRedirectPolicy
+                             : QNetworkRequest::ManualRedirectPolicy);
     // The legacy front end pins a client to one backend with a SERVER cookie.
     // Keeping it would send every retry straight back to the backend that just
     // failed, so cookies are neither sent nor stored for TAP requests.
@@ -117,14 +140,41 @@ Attempt runAttempt(const QUrl &url,
     timer.setSingleShot(true);
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    if (onProgress) {
+    if (req.onProgress) {
+        const CdsTap::ProgressFn &onProgress = req.onProgress;
         QObject::connect(reply, &QNetworkReply::downloadProgress, &loop,
                          [&onProgress](qint64 received, qint64 total) {
                              onProgress(received, total);
                          });
     }
-    timer.start(timeoutMs);
+
+    // The caller's flag is polled rather than waited on: a service that takes
+    // minutes to answer (MAST) would otherwise hold the whole batch hostage
+    // long after the user stopped it.
+    bool   cancelled = false;
+    QTimer cancelPoll;
+    if (req.cancel) {
+        cancelPoll.setInterval(100);
+        QObject::connect(&cancelPoll, &QTimer::timeout, &loop,
+                         [&loop, &cancelled, &req]() {
+                             if (req.cancel->load()) {
+                                 cancelled = true;
+                                 loop.quit();
+                             }
+                         });
+        cancelPoll.start();
+    }
+
+    timer.start(req.timeoutMs);
     loop.exec();
+
+    if (cancelled) {
+        reply->abort();
+        reply->deleteLater();
+        result.error     = QStringLiteral("cancelled");
+        result.cancelled = true;
+        return result;
+    }
 
     if (!timer.isActive()) {
         reply->abort();
@@ -137,7 +187,16 @@ Attempt runAttempt(const QUrl &url,
     const QByteArray                  body   = reply->readAll();
     const QNetworkReply::NetworkError  netErr = reply->error();
     const QString                      netMsg = reply->errorString();
+    const QVariant target =
+        reply->attribute(QNetworkRequest::RedirectionTargetAttribute);
     reply->deleteLater();
+
+    // Relative Location headers are legal, so resolve against the request.
+    if (!req.followRedirects && target.isValid()) {
+        const QUrl to = url.resolved(target.toUrl());
+        if (to.isValid())
+            result.redirectUrl = to.toString();
+    }
 
     const QString tapMessage = votableError(body);
 
@@ -154,7 +213,7 @@ Attempt runAttempt(const QUrl &url,
 CdsTap::Response postWithFailoverTo(
     QNetworkAccessManager *nam, const QStringList &urls,
     const std::function<QNetworkReply *(const QNetworkRequest &)> &send,
-    int timeoutMs, const CdsTap::ProgressFn &onProgress) {
+    const CdsTap::Request &req) {
     CdsTap::Response response;
     if (!nam) {
         response.error = QStringLiteral("no network access manager");
@@ -165,14 +224,16 @@ CdsTap::Response postWithFailoverTo(
         return response;
     }
 
-    for (int attempt = 0; attempt < kMaxAttempts; ++attempt) {
+    const int maxAttempts =
+        req.maxAttempts > 0 ? req.maxAttempts : kMaxAttempts;
+
+    for (int attempt = 0; attempt < maxAttempts; ++attempt) {
         const QString url = urls.at(attempt % urls.size());
         response.url      = url;
         response.attempts = attempt + 1;
 
-        const Attempt a =
-            runAttempt(QUrl(url), send, timeoutMs, onProgress,
-                       int(urls.size()));
+        const Attempt a = runAttempt(QUrl(url), send, req, int(urls.size()));
+        response.redirectUrl = a.redirectUrl;
         if (a.error.isEmpty()) {
             if (attempt > 0) {
                 LOG_INFO("CdsTap", QString("Query succeeded on attempt %1 (%2)")
@@ -186,6 +247,11 @@ CdsTap::Response postWithFailoverTo(
 
         response.error = a.error;
 
+        if (a.cancelled) {
+            response.cancelled = true;
+            return response;
+        }
+
         if (!a.retryable) {
             LOG_WARNING("CdsTap", QString("Query rejected by %1: %2")
                                       .arg(url, a.error));
@@ -195,15 +261,21 @@ CdsTap::Response postWithFailoverTo(
         LOG_WARNING("CdsTap",
                     QString("Attempt %1/%2 on %3 failed: %4")
                         .arg(attempt + 1)
-                        .arg(kMaxAttempts)
+                        .arg(maxAttempts)
                         .arg(url, a.error));
 
-        if (attempt + 1 < kMaxAttempts)
-            waitMs(backoffMs(attempt));
+        if (attempt + 1 < maxAttempts)
+            waitMs(backoffMs(attempt), req.cancel);
+
+        if (req.cancel && req.cancel->load()) {
+            response.cancelled = true;
+            response.error     = QStringLiteral("cancelled");
+            return response;
+        }
     }
 
     response.error = QString("Service unavailable after %1 attempts (%2)")
-                         .arg(kMaxAttempts)
+                         .arg(maxAttempts)
                          .arg(response.error);
     return response;
 }
@@ -211,9 +283,8 @@ CdsTap::Response postWithFailoverTo(
 CdsTap::Response postWithFailover(
     QNetworkAccessManager *nam,
     const std::function<QNetworkReply *(const QNetworkRequest &)> &send,
-    int timeoutMs, const CdsTap::ProgressFn &onProgress) {
-    return postWithFailoverTo(nam, CdsTap::vizierMirrors(), send, timeoutMs,
-                              onProgress);
+    const CdsTap::Request &req) {
+    return postWithFailoverTo(nam, CdsTap::vizierMirrors(), send, req);
 }
 
 }   // namespace
@@ -237,24 +308,23 @@ const QStringList &vizierMirrors() {
 }
 
 Response postVizierForm(QNetworkAccessManager *nam, const QUrlQuery &form,
-                        int timeoutMs, const ProgressFn &onProgress) {
+                        const Request &req) {
     const QByteArray payload = form.toString(QUrl::FullyEncoded).toUtf8();
 
     return postWithFailover(
         nam,
         [nam, &payload](const QNetworkRequest &base) {
-            QNetworkRequest req(base);
-            req.setHeader(QNetworkRequest::ContentTypeHeader,
-                          "application/x-www-form-urlencoded");
-            return nam->post(req, payload);
+            QNetworkRequest post(base);
+            post.setHeader(QNetworkRequest::ContentTypeHeader,
+                           "application/x-www-form-urlencoded");
+            return nam->post(post, payload);
         },
-        timeoutMs, onProgress);
+        req);
 }
 
 Response postVizierMultipart(QNetworkAccessManager                     *nam,
                              const std::function<QHttpMultiPart *()> &makeBody,
-                             int                                       timeoutMs,
-                             const ProgressFn &onProgress) {
+                             const Request                            &req) {
     return postWithFailover(
         nam,
         [nam, &makeBody](const QNetworkRequest &base) -> QNetworkReply * {
@@ -265,29 +335,28 @@ Response postVizierMultipart(QNetworkAccessManager                     *nam,
             body->setParent(reply);
             return reply;
         },
-        timeoutMs, onProgress);
+        req);
 }
 
 Response postForm(QNetworkAccessManager *nam, const QString &url,
-                  const QUrlQuery &form, int timeoutMs,
-                  const ProgressFn &onProgress) {
+                  const QUrlQuery &form, const Request &req) {
     const QByteArray payload = form.toString(QUrl::FullyEncoded).toUtf8();
 
     return postWithFailoverTo(
         nam, {url},
         [nam, &payload](const QNetworkRequest &base) {
-            QNetworkRequest req(base);
-            req.setHeader(QNetworkRequest::ContentTypeHeader,
-                          "application/x-www-form-urlencoded");
-            return nam->post(req, payload);
+            QNetworkRequest post(base);
+            post.setHeader(QNetworkRequest::ContentTypeHeader,
+                           "application/x-www-form-urlencoded");
+            return nam->post(post, payload);
         },
-        timeoutMs, onProgress);
+        req);
 }
 
 Response postMultipart(QNetworkAccessManager                     *nam,
                        const QString                             &url,
                        const std::function<QHttpMultiPart *()> &makeBody,
-                       int timeoutMs, const ProgressFn &onProgress) {
+                       const Request                            &req) {
     return postWithFailoverTo(
         nam, {url},
         [nam, &makeBody](const QNetworkRequest &base) -> QNetworkReply * {
@@ -298,15 +367,14 @@ Response postMultipart(QNetworkAccessManager                     *nam,
             body->setParent(reply);
             return reply;
         },
-        timeoutMs, onProgress);
+        req);
 }
 
-Response get(QNetworkAccessManager *nam, const QString &url, int timeoutMs,
-             const ProgressFn &onProgress) {
+Response get(QNetworkAccessManager *nam, const QString &url,
+             const Request &req) {
     return postWithFailoverTo(
         nam, {url},
-        [nam](const QNetworkRequest &base) { return nam->get(base); },
-        timeoutMs, onProgress);
+        [nam](const QNetworkRequest &base) { return nam->get(base); }, req);
 }
 
 }   // namespace CdsTap

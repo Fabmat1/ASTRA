@@ -298,14 +298,15 @@ void GaiaWorker::process()
     postParams.addQueryItem("FORMAT", "csv");
     postParams.addQueryItem("QUERY", adqlQuery);
 
-    const CdsTap::Response tapResponse = CdsTap::postVizierForm(
-        _networkManager, postParams, 300000,
-        [this](qint64 received, qint64 total) {
-            if (total > 0) {
-                int pct = 10 + (received * 40 / total);
-                emit progress(pct, 100, QString("Downloading... %1 KB").arg(received / 1024));
-            }
-        });
+    CdsTap::Request tapRequest(300000);
+    tapRequest.onProgress = [this](qint64 received, qint64 total) {
+        if (total > 0) {
+            int pct = 10 + (received * 40 / total);
+            emit progress(pct, 100, QString("Downloading... %1 KB").arg(received / 1024));
+        }
+    };
+    const CdsTap::Response tapResponse =
+        CdsTap::postVizierForm(_networkManager, postParams, tapRequest);
 
     if (!tapResponse.ok()) {
         emit error(QString("VizieR error: %1").arg(tapResponse.error));

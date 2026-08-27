@@ -74,8 +74,10 @@ QList<SpecFetch::RemoteSpectrum> ApogeeArchiveClient::discover(
         QUrl url{QString::fromLatin1(kSkyServerUrl)};
         url.setQuery(q);
 
+        CdsTap::Request request(kSqlTimeoutMs);
+        request.cancel = &cancel;
         const CdsTap::Response resp =
-            CdsTap::get(nam, url.toString(QUrl::FullyEncoded), kSqlTimeoutMs);
+            CdsTap::get(nam, url.toString(QUrl::FullyEncoded), request);
         if (!resp.ok()) {
             if (error) *error = resp.error;
             break;

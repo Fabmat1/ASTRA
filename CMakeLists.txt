@@ -1152,6 +1152,7 @@ if(BUILD_TESTING)
         src/utils/spectrafetch/LamostArchiveClient.cpp
         src/utils/spectrafetch/SdssOpticalArchiveClient.cpp
         src/utils/spectrafetch/ApogeeArchiveClient.cpp
+        src/utils/spectrafetch/MastArchiveClient.cpp
         src/utils/spectrafetch/TapHelpers.cpp
         src/utils/spectrafetch/VoTableReader.cpp
         src/utils/spectrafetch/WavelengthConvert.cpp
@@ -1187,6 +1188,92 @@ if(BUILD_TESTING)
     set_tests_properties(spectrafetch_parsers PROPERTIES
         LABELS "utils;spectrafetch"
         TIMEOUT 120
+    )
+
+    # Bulk ESO discovery against the live TAP service. Off unless
+    # ASTRA_TEST_ESO_LIVE=1 is set (see the file header); guards the
+    # project-sized query that the 120 s /sync budget used to kill.
+    add_executable(test_eso_bulk_discovery
+        tests/test_eso_bulk_discovery.cpp
+        src/utils/spectrafetch/SpectrumArchiveClient.cpp
+        src/utils/spectrafetch/EsoArchiveClient.cpp
+        src/utils/spectrafetch/TapHelpers.cpp
+        src/utils/spectrafetch/VoTableReader.cpp
+        src/utils/CdsTapClient.cpp
+        src/utils/SpectrumReader.cpp
+        src/utils/DataStore.cpp
+        src/utils/Logger.cpp
+        src/models/Spectrum.cpp
+        src/models/Time.cpp
+        src/models/Instrument.cpp
+        src/models/InstrumentMode.cpp
+        src/models/BarycentricCorrection.cpp
+    )
+    target_include_directories(test_eso_bulk_discovery PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_compile_definitions(test_eso_bulk_discovery PRIVATE
+        ASTRA_DATA_DIR="${ASTRA_DATA_DIR}"
+    )
+    if(CCFITS_FOUND)
+        target_include_directories(test_eso_bulk_discovery PRIVATE
+            ${CCFITS_INCLUDE_DIRS})
+        target_link_libraries(test_eso_bulk_discovery PRIVATE
+            ${CCFITS_LIBRARIES})
+    endif()
+    target_link_libraries(test_eso_bulk_discovery PRIVATE
+        Qt6::Core Qt6::Network)
+    add_test(
+        NAME    eso_bulk_discovery
+        COMMAND test_eso_bulk_discovery
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(eso_bulk_discovery PROPERTIES
+        LABELS "utils;spectrafetch;network"
+        TIMEOUT 900
+    )
+
+    # Bulk MAST discovery against the live TAP service. Off unless
+    # ASTRA_TEST_MAST_LIVE=1 is set (see the file header); guards the cone
+    # query that the CAOM TAP answers with a 504 instead of a plan.
+    add_executable(test_mast_bulk_discovery
+        tests/test_mast_bulk_discovery.cpp
+        src/utils/spectrafetch/SpectrumArchiveClient.cpp
+        src/utils/spectrafetch/MastArchiveClient.cpp
+        src/utils/spectrafetch/TapHelpers.cpp
+        src/utils/spectrafetch/VoTableReader.cpp
+        src/utils/CdsTapClient.cpp
+        src/utils/SpectrumReader.cpp
+        src/utils/DataStore.cpp
+        src/utils/Logger.cpp
+        src/models/Spectrum.cpp
+        src/models/Time.cpp
+        src/models/Instrument.cpp
+        src/models/InstrumentMode.cpp
+        src/models/BarycentricCorrection.cpp
+    )
+    target_include_directories(test_mast_bulk_discovery PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_compile_definitions(test_mast_bulk_discovery PRIVATE
+        ASTRA_DATA_DIR="${ASTRA_DATA_DIR}"
+    )
+    if(CCFITS_FOUND)
+        target_include_directories(test_mast_bulk_discovery PRIVATE
+            ${CCFITS_INCLUDE_DIRS})
+        target_link_libraries(test_mast_bulk_discovery PRIVATE
+            ${CCFITS_LIBRARIES})
+    endif()
+    target_link_libraries(test_mast_bulk_discovery PRIVATE
+        Qt6::Core Qt6::Network)
+    add_test(
+        NAME    mast_bulk_discovery
+        COMMAND test_mast_bulk_discovery
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(mast_bulk_discovery PROPERTIES
+        LABELS "utils;spectrafetch;network"
+        TIMEOUT 900
     )
 
     add_test(

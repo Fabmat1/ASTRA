@@ -222,13 +222,26 @@ QList<SpecFetch::Archive> ArchiveFetchWidget::checkedArchives() const {
 }
 
 void ArchiveFetchWidget::setBusy(bool busy) {
-    _searchBtn->setEnabled(!busy);
+    // The search button doubles as the stop button: an archive can take
+    // minutes, and stopping keeps whatever the others already found.
+    _searching = busy;
+    _searchBtn->setText(busy ? QStringLiteral("Stop") : QStringLiteral("Search"));
+    _searchBtn->setEnabled(true);
     _downloadBtn->setEnabled(!busy && !_results.isEmpty());
     _downloadAllBtn->setEnabled(!busy && !_results.isEmpty());
 }
 
 void ArchiveFetchWidget::onSearch() {
     if (!_ctx.star || !service()) return;
+
+    if (_searching) {
+        if (!_sessionId.isEmpty()) {
+            service()->cancelSession(_sessionId);
+            _statusLabel->setText(
+                QStringLiteral("Stopping search; keeping what was found..."));
+        }
+        return;
+    }
 
     const QList<SpecFetch::Archive> archives = checkedArchives();
     if (archives.isEmpty()) {

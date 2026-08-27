@@ -242,7 +242,9 @@ QList<SpecFetch::RemoteSpectrum> LamostArchiveClient::discover(
         if (!opt.token.isEmpty())
             url += QStringLiteral("&token=%1").arg(opt.token);
 
-        const CdsTap::Response resp = CdsTap::get(nam, url, kConeTimeoutMs);
+        CdsTap::Request request(kConeTimeoutMs);
+        request.cancel = &cancel;
+        const CdsTap::Response resp = CdsTap::get(nam, url, request);
         ++starsDone;
         if (progress) progress(starsDone, int(stars.size()));
 

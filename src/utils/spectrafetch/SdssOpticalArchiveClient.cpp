@@ -136,8 +136,10 @@ QList<SpecFetch::RemoteSpectrum> SdssOpticalArchiveClient::discover(
         QUrl url{skyServerUrl(dr)};
         url.setQuery(q);
 
+        CdsTap::Request request(kSqlTimeoutMs);
+        request.cancel = &cancel;
         const CdsTap::Response resp =
-            CdsTap::get(nam, url.toString(QUrl::FullyEncoded), kSqlTimeoutMs);
+            CdsTap::get(nam, url.toString(QUrl::FullyEncoded), request);
         if (!resp.ok()) {
             if (error) *error = resp.error;
             LOG_WARNING("SpecFetch", QStringLiteral("SkyServer chunk failed: %1")

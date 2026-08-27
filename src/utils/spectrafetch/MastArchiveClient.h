@@ -1,11 +1,12 @@
 // src/utils/spectrafetch/MastArchiveClient.h
 //
 // MAST reduced spectra (HST, IUE, FUSE, ...). Discovery via the MAST CAOM
-// TAP service (ivoa.obscore), one cone query per star (the service takes only
-// a single CONTAINS predicate, so there is nothing to batch; the classic
-// archive.stsci.edu SSAP endpoint no longer returns rows). Downloads are the
-// archive's calibrated FITS products, preferring the VO-normalized
-// "*_vo.fits" spectra where offered.
+// TAP service (ivoa.obscore), in chunks of stars per query: the service will
+// not plan CONTAINS(POINT, CIRCLE) against its spatial index and 504s on a
+// single cone, so the query asks for OR-ed s_ra/s_dec boxes and the circles
+// are cut out client-side (the classic archive.stsci.edu SSAP endpoint no
+// longer returns rows). Downloads are the archive's calibrated FITS products,
+// preferring the VO-normalized "*_vo.fits" spectra where offered.
 
 #ifndef MASTARCHIVECLIENT_H
 #define MASTARCHIVECLIENT_H

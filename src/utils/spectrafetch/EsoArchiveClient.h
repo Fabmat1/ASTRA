@@ -1,8 +1,10 @@
 // src/utils/spectrafetch/EsoArchiveClient.h
 //
 // ESO Science Archive Phase-3 reduced 1D spectra (XSHOOTER, UVES, HARPS,
-// FEROS, GIRAFFE, ...). Discovery via the ESO TAP service (ivoa.ObsCore)
-// with a TAP_UPLOAD positional crossmatch; download via the archive's
+// FEROS, GIRAFFE, ...). Discovery via the ESO TAP service (ivoa.ObsCore):
+// the anonymous endpoint offers no TAP_UPLOAD, so the crossmatch is an
+// OR-chain of per-star RA/Dec boxes submitted as an asynchronous job, for
+// the reasons set out at the top of the .cpp. Download via the archive's
 // DataLink / dataportal endpoints.
 
 #ifndef ESOARCHIVECLIENT_H

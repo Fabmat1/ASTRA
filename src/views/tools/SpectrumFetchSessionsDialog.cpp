@@ -41,6 +41,7 @@ QString stateGlyph(SpectrumFetchService::State s) {
     using State = SpectrumFetchService::State;
     switch (s) {
     case State::Discovering:       return QStringLiteral("?");
+    case State::Stopping:          return QStringLiteral("-");
     case State::AwaitingSelection: return QStringLiteral("!");
     case State::Downloading:       return QStringLiteral(">");
     case State::Finished:          return QStringLiteral("+");
@@ -177,6 +178,16 @@ void SpectrumFetchSessionsDialog::onSelectionChanged() {
     _reviewBtn->setEnabled(
         found && info.state == SpectrumFetchService::State::AwaitingSelection);
     _cancelBtn->setEnabled(found && _service->isSessionActive(id));
+
+    // Stopping a running search keeps what the archives already found, so the
+    // button says so rather than implying the work is thrown away.
+    const bool searching =
+        found && info.state == SpectrumFetchService::State::Discovering;
+    _cancelBtn->setText(searching ? tr("Stop Search") : tr("Cancel Selected"));
+    _cancelBtn->setToolTip(
+        searching ? tr("Stop querying the archives and review the spectra "
+                       "found so far")
+                  : QString());
 }
 
 void SpectrumFetchSessionsDialog::onLogUpdated(const QString& id) {
@@ -205,11 +216,11 @@ void SpectrumFetchSessionsDialog::reviewSession(const QString& sessionId) {
     if (results.isEmpty()) return;
 
     SpectrumFetchReviewDialog dlg(results, this);
-    if (dlg.exec() == QDialog::Accepted) {
+    // Dismissing the list is "not now", not "throw the search away": the
+    // session stays in review and the button reopens it. Cancel Selected is
+    // how a session is discarded.
+    if (dlg.exec() == QDialog::Accepted)
         _service->queueDownloads(sessionId, dlg.picks());
-    } else {
-        _service->cancelSession(sessionId);
-    }
 }
 
 void SpectrumFetchSessionsDialog::onReviewSelected() {
@@ -237,7 +248,9 @@ void SpectrumFetchSessionsDialog::refreshProgressLabel() {
     qint64 discEta  = -1;
     QStringList discDetail;
     for (const auto& info : _service->sessions()) {
-        if (info.state != SpectrumFetchService::State::Discovering) continue;
+        if (info.state != SpectrumFetchService::State::Discovering &&
+            info.state != SpectrumFetchService::State::Stopping)
+            continue;
         discDone  += info.discoveryDone;
         discTotal += info.discoveryTotal;
         if (info.discoveryEtaMs > discEta) discEta = info.discoveryEtaMs;
