@@ -1008,6 +1008,13 @@ LMResult fitCircularLM(const std::vector<double>& t,
 }
 
 // ── Bounded per-cell fit for the χ² landscape ──────────────────────────
+// Solution of one grid cell's circular fit. Kept so the eccentric cell fit can
+// be seeded from it instead of repeating the circular solve.
+struct CellFit {
+    double Kc = 0, Ks = 0, gamma = 0, P = 0;
+    double chi2 = std::numeric_limits<double>::infinity();
+};
+
 // Fits Kc, Ks, γ and P with P projected onto [Pmin, Pmax] (no period prior),
 // seeded at P0. Returns the pure data χ² = Σ ((y-model)/σ)² at the solution.
 // Kept lightweight (capped iterations) since it runs once per grid cell.
@@ -1015,7 +1022,8 @@ double fitCellChi2(const std::vector<double>& t,
                    const std::vector<double>& y,
                    const std::vector<double>& sigma,
                    double P0, double Pmin, double Pmax,
-                   double Kmin, double Kmax, double gMin, double gMax)
+                   double Kmin, double Kmax, double gMin, double gMax,
+                   CellFit* out = nullptr)
 {
     const int N = int(t.size());
     if (N < 4 || !(P0 > 0)) return std::numeric_limits<double>::infinity();
@@ -1115,7 +1123,153 @@ double fitCellChi2(const std::vector<double>& t,
             lambda*=4.0; if (lambda>1e12) break;
         }
     }
+    if (out) *out = CellFit{Kc, Ks, gamma, P, chi2};
     return chi2;
+}
+
+// Defined with the eccentric LM fit further down; used by the per-cell
+// Keplerian solve below.
+bool solveLinearN(int n, std::vector<double>& A, std::vector<double>& b,
+                  std::vector<double>& x);
+
+// Phase seed for an eccentric fit started from a circular solution.
+//
+// The circular model is K·sin(2πθ + 2πφ_c) with φ_c = atan2(Kc,Ks)/2π; the
+// Keplerian model at e = 0 is K·cos(2π(θ − φ) + ω). Equating the two,
+//     −2πφ + ω = 2πφ_c − π/2   ⇒   φ = ω/360° + 1/4 − φ_c,
+// so the seed depends on the ω the fit starts at. Getting this wrong by the
+// half cycle a bare −φ_c gives puts the seed in antiphase with the data, and
+// LM answers that by collapsing K to zero instead of finding the orbit.
+double eccPhaseSeed(double phiCirc, double omegaDegSeed)
+{
+    double phi = omegaDegSeed / 360.0 + 0.25 - phiCirc;
+    return phi - std::floor(phi);     // φ ∈ [0,1)
+}
+
+// ── Bounded per-cell Keplerian fit for the χ² landscape ────────────────
+// Eccentric counterpart of fitCellChi2. The cell's circular solution is solved
+// first and used as the seed, then the full model [P, K, γ, φ, e, ω] is refined
+// with P projected onto [Pmin, Pmax] and e onto [eMin, eMax] (no period prior).
+// φ follows the RVFit eccentric convention, M = 2π(t/P − φ), matching keplerLM.
+//
+// The circular model is the e = 0 special case of this one, so its χ² is an
+// upper bound: the smaller of the two is returned, which keeps a stalled or
+// diverged cell from punching a spurious bump into the landscape.
+double fitCellChi2Kepler(const std::vector<double>& t,
+                         const std::vector<double>& y,
+                         const std::vector<double>& sigma,
+                         double P0, double Pmin, double Pmax,
+                         double Kmin, double Kmax, double gMin, double gMax,
+                         double eMin, double eMax)
+{
+    const int N = int(t.size());
+    if (N < 6 || !(P0 > 0)) return std::numeric_limits<double>::infinity();
+
+    CellFit c;
+    const double chi2Circ = fitCellChi2(t, y, sigma, P0, Pmin, Pmax,
+                                        Kmin, Kmax, gMin, gMax, &c);
+    if (!std::isfinite(chi2Circ) || !(c.P > 0.0)) return chi2Circ;
+
+    eMax = std::min(eMax, 0.95);
+    if (eMin < 0.0) eMin = 0.0;
+    if (eMin > eMax) std::swap(eMin, eMax);
+
+    constexpr int NP = 6;             // [P, K, γ, φ, e, ω]
+    constexpr double omegaSeed = 90.0;
+    const double phiCirc = std::atan2(c.Kc, c.Ks) / (2.0 * M_PI);
+    double phiEcc = eccPhaseSeed(phiCirc, omegaSeed);
+
+    double p[NP] = {
+        c.P, std::hypot(c.Kc, c.Ks), c.gamma, phiEcc,
+        std::clamp(0.1, eMin, eMax), omegaSeed
+    };
+
+    auto project = [&](double* q) {
+        q[0] = std::clamp(q[0], Pmin, Pmax);
+        if (Kmax > 0.0) q[1] = std::min(q[1], Kmax);
+        q[1] = std::max(q[1], Kmin);
+        q[2] = std::clamp(q[2], gMin, gMax);
+        q[3] -= std::floor(q[3]);                                   // φ ∈ [0,1)
+        q[4] = std::clamp(q[4], eMin, eMax);
+        q[5] = std::fmod(q[5], 360.0); if (q[5] < 0) q[5] += 360.0; // ω ∈ [0,360)
+    };
+
+    auto model = [&](const double* q, double ti) -> double {
+        const double M = 2.0 * M_PI * (ti / q[0] - q[3]);
+        const double e = q[4];
+        const double E = RVFit::solveKepler(M, e);
+        const double nu = 2.0 * std::atan2(std::sqrt(1.0 + e) * std::sin(E * 0.5),
+                                           std::sqrt(1.0 - e) * std::cos(E * 0.5));
+        const double w = q[5] * M_PI / 180.0;
+        return q[2] + q[1] * (std::cos(nu + w) + e * std::cos(w));
+    };
+
+    auto computeRes = [&](const double* q, std::vector<double>& r) {
+        r.resize(N);
+        for (int i = 0; i < N; ++i) r[i] = (y[i] - model(q, t[i])) / sigma[i];
+    };
+
+    project(p);
+    std::vector<double> r; computeRes(p, r);
+    double chi2 = 0; for (double v : r) chi2 += v * v;
+    double lambda = 1e-3;
+
+    std::vector<double> J(size_t(N) * NP), rr, rn;
+    // Capped harder than keplerLM (which runs once, not once per grid cell):
+    // the seed already sits in the right basin, so this only has to settle it.
+    for (int iter = 0; iter < 40; ++iter) {
+        for (int a = 0; a < NP; ++a) {
+            double step = std::max(std::abs(p[a]) * 1e-6, 1e-7);
+            if (a == 3) step = 1e-6;       // φ
+            if (a == 4) step = 1e-5;       // e
+            if (a == 5) step = 1e-3;       // ω
+            double pp[NP]; for (int k = 0; k < NP; ++k) pp[k] = p[k];
+            pp[a] += step; project(pp);
+            double used = pp[a] - p[a];
+            if (used == 0.0) {             // parked on a bound: step inward
+                for (int k = 0; k < NP; ++k) pp[k] = p[k];
+                pp[a] -= step; project(pp);
+                used = pp[a] - p[a];
+            }
+            if (used == 0.0) { for (int i = 0; i < N; ++i) J[size_t(i)*NP + a] = 0.0; continue; }
+            computeRes(pp, rr);
+            for (int i = 0; i < N; ++i) J[size_t(i)*NP + a] = (rr[i] - r[i]) / used;
+        }
+
+        std::vector<double> JTJ(NP * NP, 0.0), JTr(NP, 0.0);
+        for (int i = 0; i < N; ++i)
+            for (int a = 0; a < NP; ++a) {
+                JTr[a] += J[size_t(i)*NP + a] * r[i];
+                for (int b = 0; b < NP; ++b)
+                    JTJ[a*NP + b] += J[size_t(i)*NP + a] * J[size_t(i)*NP + b];
+            }
+
+        std::vector<double> A = JTJ, bvec(NP), delta;
+        for (int a = 0; a < NP; ++a) { A[a*NP + a] *= (1.0 + lambda); bvec[a] = -JTr[a]; }
+        if (!solveLinearN(NP, A, bvec, delta)) {
+            lambda *= 10.0;
+            if (lambda > 1e12) break;
+            continue;
+        }
+
+        double pn[NP]; for (int k = 0; k < NP; ++k) pn[k] = p[k] + delta[k];
+        project(pn);
+        computeRes(pn, rn);
+        double chi2New = 0; for (double v : rn) chi2New += v * v;
+
+        if (chi2New < chi2) {
+            const double rel = (chi2 - chi2New) / std::max(chi2, 1e-30);
+            for (int k = 0; k < NP; ++k) p[k] = pn[k];
+            chi2 = chi2New; r.swap(rn);
+            lambda = std::max(lambda * 0.5, 1e-10);
+            if (rel < 1e-9) break;
+        } else {
+            lambda *= 4.0;
+            if (lambda > 1e12) break;
+        }
+    }
+
+    return std::isfinite(chi2) ? std::min(chi2, chi2Circ) : chi2Circ;
 }
 
 // 4×4 matrix inverse via Gauss-Jordan. Returns false if singular.
@@ -1278,13 +1432,12 @@ KeplerLMResult keplerLM(const std::vector<double>& t,
     }
 
     constexpr int NP = 6;             // [P, K, γ, φ, e, ω]
-    // Circular φ is in the +φ convention; the eccentric model uses −φ, so the
-    // equivalent low-eccentricity phase seed is the negated circular phase.
+    const double omegaSeed = std::clamp(90.0, omegaMin, omegaMax);
     double p[NP] = {
         P, K, gamma,
-        std::fmod(-phiCirc, 1.0) + (phiCirc > 0 ? 1.0 : 0.0),
+        eccPhaseSeed(phiCirc, omegaSeed),   // matches the ω the fit starts at
         std::clamp(0.1, eMin, eMax),
-        std::clamp(90.0, omegaMin, omegaMax)
+        omegaSeed
     };
 
     auto project = [&](double* q) {
@@ -1778,6 +1931,59 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidLMFull(
     applyCircularMCErrors(*fit, t, y, s, R.K, R.gamma, R.phi, R.P,
                           pSeed, pSigma);
     fit->setEccentric(false);
+    fit->setBestFit(false);
+    return fit;
+}
+
+// ───────────────────────────────────────────────────────────────────
+std::shared_ptr<RVFit> RVAddFitDialog::fitKeplerianLMFull(
+    double pSeed, double pSigma, double pErrLandscape, double prob,
+    double eMin, double eMax, QString* errOut) const
+{
+    auto data = buildRVData();
+    if (data.bjd.size() < 6) {
+        if (errOut)
+            *errOut = "Need ≥ 6 unflagged RV points with BJD for an eccentric fit.";
+        return nullptr;
+    }
+
+    // Same reference epoch handling as fitSinusoidLMFull (keep phase consistent).
+    double t0   = data.bjd.front();
+    double mjd0 = 0.0;
+    if (_curve) {
+        double refBjd = 0.0, refMjd = 0.0;
+        if (_curve->computeReferenceEpoch(refBjd, refMjd) && refBjd > 0.0) {
+            t0 = refBjd; mjd0 = refMjd;
+        }
+    }
+
+    std::vector<double> t(data.bjd.size()), y = data.rv, s = data.rv_err;
+    for (size_t i = 0; i < data.bjd.size(); ++i) t[i] = data.bjd[i] - t0;
+
+    auto R = keplerLM(t, y, s, pSeed, pSigma, eMin, eMax,
+                      /*omegaMin=*/0.0, /*omegaMax=*/360.0);
+    if (!R.ok) { if (errOut) *errOut = R.msg; return nullptr; }
+
+    auto fit = std::make_shared<RVFit>();
+    fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    fit->setCurveId(_curve ? _curve->getId() : QString());
+    fit->setCreationDate(QDateTime::currentDateTime());
+    fit->setFitMethod(QString("χ² bootstrap, eccentric (p=%1)")
+                          .arg(prob, 0, 'f', 3));
+    fit->setPeriod(R.P);
+    fit->setK(R.K);
+    fit->setGamma(R.gamma);
+    fit->setPhi(R.phi);              // stored in RVFit's eccentric (−φ) convention
+    fit->setReferenceTime(t0, mjd0);
+    fit->setEccentric(true);
+    fit->setEccentricity(R.e);
+    fit->setOmega(R.omega);
+    fit->setChi2(R.chi2);
+    // The Keplerian LM has no covariance estimate, so the landscape curvature
+    // is the baseline period error; the MC pass below overwrites it (and fills
+    // in the other parameters) whenever it succeeds.
+    fit->setPeriodError(std::max(0.0, pErrLandscape));
+    applyKeplerianMCErrors(*fit, t, y, s, R, pSeed, pSigma, eMin, eMax);
     fit->setBestFit(false);
     return fit;
 }
@@ -2561,6 +2767,44 @@ void RVAddFitDialog::buildBootstrapTab(QWidget* parent)
     auto* gRow = new QHBoxLayout;
     gRow->addWidget(_bsGammaMin); gRow->addWidget(new QLabel("…")); gRow->addWidget(_bsGammaMax);
     boundForm->addRow("γ range:", gRow);
+
+    // Eccentric mode: every cell of the scan (and the re-fit of the selected
+    // minima) uses the full Keplerian model instead of the circular sinusoid.
+    // The circular solution seeds each cell, so the landscape can only get
+    // deeper - at the cost of two extra free parameters and a much slower scan.
+    _bsEccentric = new QCheckBox("Eccentric (Keplerian) model");
+    _bsEccentric->setToolTip(
+        "Fit K, γ, φ, e and ω in every grid cell instead of a circular "
+        "sinusoid, and re-fit the selected minima as Keplerian orbits.\n"
+        "Needs ≥ 6 RV points, costs two degrees of freedom, and makes the scan "
+        "several times slower.");
+    boundForm->addRow(_bsEccentric);
+
+    _bsEccMin = new QDoubleSpinBox;
+    _bsEccMin->setRange(0.0, 0.95);
+    _bsEccMin->setDecimals(3);
+    _bsEccMin->setSingleStep(0.05);
+    _bsEccMin->setValue(0.0);
+    _bsEccMax = new QDoubleSpinBox;
+    _bsEccMax->setRange(0.0, 0.95);
+    _bsEccMax->setDecimals(3);
+    _bsEccMax->setSingleStep(0.05);
+    _bsEccMax->setValue(0.9);
+    _bsEccMin->setToolTip("Lower bound on the eccentricity e.");
+    _bsEccMax->setToolTip("Upper bound on the eccentricity e (hard cap 0.95).");
+    auto* eRow = new QHBoxLayout;
+    eRow->addWidget(_bsEccMin); eRow->addWidget(new QLabel("…")); eRow->addWidget(_bsEccMax);
+    auto* eLabel = new QLabel("e range:");
+    boundForm->addRow(eLabel, eRow);
+    _bsEccMin->setEnabled(false);
+    _bsEccMax->setEnabled(false);
+    eLabel->setEnabled(false);
+    connect(_bsEccentric, &QCheckBox::toggled, this, [this, eLabel](bool on){
+        _bsEccMin->setEnabled(on);
+        _bsEccMax->setEnabled(on);
+        eLabel->setEnabled(on);
+    });
+
     ctlLay->addWidget(boundBox);
 
     bsInitParamBounds();
@@ -2703,10 +2947,15 @@ void RVAddFitDialog::onBsOptimal()
 // ───────────────────────────────────────────────────────────────────
 void RVAddFitDialog::onBsRun()
 {
+    const bool ecc = _bsEccentric && _bsEccentric->isChecked();
+    const size_t minPts = ecc ? 6 : 4;
+
     auto data = buildRVData();
-    if (data.bjd.size() < 4) {
+    if (data.bjd.size() < minPts) {
         QMessageBox::warning(this, "χ² Landscape",
-            "Need ≥ 4 unflagged RV points with BJD.");
+            QString("Need ≥ %1 unflagged RV points with BJD%2.")
+                .arg(minPts)
+                .arg(ecc ? " for an eccentric scan" : ""));
         return;
     }
 
@@ -2727,21 +2976,39 @@ void RVAddFitDialog::onBsRun()
     for (size_t i = 0; i < data.bjd.size(); ++i) (*t)[i] = data.bjd[i] - t0;
     auto y = std::make_shared<std::vector<double>>(data.rv);
     auto s = std::make_shared<std::vector<double>>(data.rv_err);
-    const int dof = std::max(1, int(data.bjd.size()) - 4);
+    // Two extra free parameters (e, ω) in eccentric mode.
+    const int dof = std::max(1, int(data.bjd.size()) - (ecc ? 6 : 4));
 
-    // K / γ bounds applied in every per-cell fit (read once, off the GUI thread).
+    // Parameter bounds applied in every per-cell fit (read once, off the GUI
+    // thread).
     const double Kmin = _bsKMin ? _bsKMin->value() : 0.0;
     const double Kmax = _bsKMax ? _bsKMax->value() : 0.0;
     const double gMin = _bsGammaMin ? _bsGammaMin->value() : -1e30;
     const double gMax = _bsGammaMax ? _bsGammaMax->value() :  1e30;
+    const double eMin = (ecc && _bsEccMin) ? _bsEccMin->value() : 0.0;
+    const double eMax = (ecc && _bsEccMax) ? _bsEccMax->value() : 0.0;
 
     const int Nf = grid.Nf;
+
+    // Each eccentric cell solves the circular problem first and then refines a
+    // six-parameter model with a numerical Jacobian, so a grid sized for the
+    // circular scan can turn into a very long run. Say so before starting it.
+    constexpr int kEccWarnCells = 200'000;
+    if (ecc && Nf > kEccWarnCells) {
+        const auto ans = QMessageBox::question(this, "χ² Landscape",
+            QString("An eccentric scan of %1 cells will take substantially "
+                    "longer than the circular one (each cell fits six "
+                    "parameters).\n\nRun it anyway?").arg(Nf),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (ans != QMessageBox::Yes) return;
+    }
     auto chi2 = std::make_shared<std::vector<double>>(Nf,
                     std::numeric_limits<double>::infinity());
     auto progress = std::make_shared<std::atomic<int>>(0);
 
     auto* dlg = new QProgressDialog(
-        QString("Scanning %1 period cells…").arg(Nf),
+        QString("Scanning %1 period cells (%2)…")
+            .arg(Nf).arg(ecc ? "eccentric" : "circular"),
         QString("Cancel"), 0, Nf, this);
     dlg->setWindowModality(Qt::WindowModal);
     dlg->setMinimumDuration(0);
@@ -2766,7 +3033,7 @@ void RVAddFitDialog::onBsRun()
 
     std::thread driver([self, pd, grid, Nf, dof, t, y, s,
                         chi2, progress, cancelled,
-                        Kmin, Kmax, gMin, gMax]() mutable
+                        Kmin, Kmax, gMin, gMax, ecc, eMin, eMax]() mutable
     {
         const double f0 = grid.f0, df = grid.df;
         auto cellWork = [&](int lo, int hi){
@@ -2782,8 +3049,11 @@ void RVAddFitDialog::onBsRun()
                 }
                 const double Pmin = (fHi > 0.0) ? 1.0 / fHi : 1.0 / fi;
                 const double Pmax = (fLo > 0.0) ? 1.0 / fLo : 1.0 / (0.5 * fi);
-                (*chi2)[i] = fitCellChi2(*t, *y, *s, 1.0 / fi, Pmin, Pmax,
-                                         Kmin, Kmax, gMin, gMax);
+                (*chi2)[i] = ecc
+                    ? fitCellChi2Kepler(*t, *y, *s, 1.0 / fi, Pmin, Pmax,
+                                        Kmin, Kmax, gMin, gMax, eMin, eMax)
+                    : fitCellChi2(*t, *y, *s, 1.0 / fi, Pmin, Pmax,
+                                  Kmin, Kmax, gMin, gMax);
                 progress->fetch_add(1);
             }
         };
@@ -2801,7 +3071,7 @@ void RVAddFitDialog::onBsRun()
         }
         for (auto& th : pool) th.join();
 
-        QMetaObject::invokeMethod(qApp, [self, pd, grid, dof, chi2, cancelled]() mutable {
+        QMetaObject::invokeMethod(qApp, [self, pd, grid, dof, chi2, cancelled, ecc]() mutable {
             // Read the cancel state BEFORE closing: QProgressDialog::close()
             // emits canceled() synchronously, which would otherwise flip the
             // flag and make a normal finish look cancelled.
@@ -2826,8 +3096,9 @@ void RVAddFitDialog::onBsRun()
             self->bsReplot();
             if (self->_bsInfoLabel)
                 self->_bsInfoLabel->setText(
-                    QString("Scanned %1 cells · χ²_min = %2 · reduced χ² = %3")
+                    QString("Scanned %1 %2 cells · χ²_min = %3 · reduced χ² = %4")
                         .arg(grid.Nf)
+                        .arg(ecc ? "eccentric" : "circular")
                         .arg(self->_bsChi2Min, 0, 'f', 2)
                         .arg(self->_bsScale,   0, 'f', 3));
             // Immediately surface the candidate minima so the result is visible.
@@ -3191,6 +3462,9 @@ void RVAddFitDialog::onBsFitPeaks()
         return;
     }
     const double tolMul = _bsPeriodTol->value();
+    const bool   ecc    = _bsEccentric && _bsEccentric->isChecked();
+    const double eMin   = (ecc && _bsEccMin) ? _bsEccMin->value() : 0.0;
+    const double eMax   = (ecc && _bsEccMax) ? _bsEccMax->value() : 0.0;
 
     QStringList failed;
     QList<std::shared_ptr<RVFit>> fits;
@@ -3202,7 +3476,9 @@ void RVAddFitDialog::onBsFitPeaks()
         const double priorW = sigma * std::max(1e-3, tolMul);
 
         QString err;
-        auto fit = fitSinusoidLMFull(P, priorW, sigma, prob, &err);
+        auto fit = ecc
+            ? fitKeplerianLMFull(P, priorW, sigma, prob, eMin, eMax, &err)
+            : fitSinusoidLMFull(P, priorW, sigma, prob, &err);
         if (!fit) { failed << QString("P=%1 d: %2").arg(P).arg(err); continue; }
         fits.append(fit);
     }

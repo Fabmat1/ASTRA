@@ -121,6 +121,18 @@ private:
     // associate a photometric peak with an LC fit for phase locking.
     std::shared_ptr<LCFit> findLcFitForPeriod(double period) const;
 
+    // Eccentric counterpart of fitSinusoidLMFull: the full Keplerian LM around
+    // a landscape minimum, with e confined to [eMin, eMax]. The period error
+    // falls back to the landscape curvature when the MC pass cannot refine it.
+    // nullptr on failure (needs ≥ 6 points).
+    std::shared_ptr<RVFit> fitKeplerianLMFull(double pSeed,
+                                              double pSigma,
+                                              double pErrLandscape,
+                                              double prob,
+                                              double eMin,
+                                              double eMax,
+                                              QString* errOut = nullptr) const;
+
     // Like fitSinusoidLM but also stamps the fitted χ² and 1σ parameter errors
     // (K, γ, φ, P) derived from the covariance at the solution. pErrLandscape is
     // a fallback period uncertainty (e.g. from the χ² landscape curvature) used
@@ -215,6 +227,9 @@ private:
     PreciseDoubleSpinBox* _bsKMax   = nullptr;   // per grid cell during the scan
     PreciseDoubleSpinBox* _bsGammaMin = nullptr; // systemic γ bounds
     PreciseDoubleSpinBox* _bsGammaMax = nullptr;
+    QCheckBox*      _bsEccentric    = nullptr;   // Keplerian instead of circular
+    QDoubleSpinBox* _bsEccMin       = nullptr;   // e bounds for the scan + re-fit
+    QDoubleSpinBox* _bsEccMax       = nullptr;
     QToolButton*    _bsOptimalBtn   = nullptr;
     QPushButton*    _bsRunBtn       = nullptr;
     QLabel*         _bsInfoLabel    = nullptr;
