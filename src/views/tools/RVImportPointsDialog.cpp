@@ -7,6 +7,7 @@
 #include "models/Time.h"
 #include "db/DatabaseManager.h"
 
+#include <algorithm>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QGridLayout>

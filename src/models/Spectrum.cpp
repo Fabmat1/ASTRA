@@ -1,6 +1,7 @@
 #include "Spectrum.h"
 #include "utils/DataStore.h"
 
+#include <algorithm>
 #include <QFile>
 #include <QTextStream>
 #include <QRegularExpression>

@@ -20,6 +20,7 @@
 #include "views/widgets/PreciseDoubleSpinBox.h"
 #include "utils/UiIcons.h"
 
+#include <algorithm>
 #include <QButtonGroup>
 #include <QCheckBox>
 #include <QComboBox>

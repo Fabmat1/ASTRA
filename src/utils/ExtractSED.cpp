@@ -1,6 +1,7 @@
 #include "ExtractSED.h"
 #include "models/Photometry.h"
 
+#include <algorithm>
 #include <QDebug>
 #include <QDir>
 #include <QFile>

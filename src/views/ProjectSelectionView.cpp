@@ -4,6 +4,7 @@
 #include "dialogs/NewProjectDialog.h"
 #include "dialogs/EditProjectDialog.h"
 
+#include <algorithm>
 #include <QLabel>
 #include <QPushButton>
 #include <QVBoxLayout>

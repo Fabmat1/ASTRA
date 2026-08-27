@@ -7,6 +7,7 @@
 #include "utils/BackgroundTaskManager.h"
 #include "utils/LightcurveFetchService.h"
 #include "utils/SpectrumFetchService.h"
+#include <algorithm>
 #include <QApplication>
 #include <QFile>
 #include <QUuid>

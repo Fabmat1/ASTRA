@@ -3,6 +3,7 @@
 #include "utils/AppSettings.h"
 #include "utils/IsisEnvironment.h"
 
+#include <algorithm>
 #include <QByteArray>
 #include <QDir>
 #include <QFile>

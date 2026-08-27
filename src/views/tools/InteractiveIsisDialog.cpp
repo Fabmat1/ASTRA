@@ -6,6 +6,7 @@
 #include "utils/IsisEnvironment.h"
 #include "utils/UiIcons.h"
 
+#include <algorithm>
 #include <QCloseEvent>
 #include <QDir>
 #include <QFile>

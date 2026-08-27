@@ -3,6 +3,7 @@
 #include "QuantityRenderer.h"
 #include "utils/QuantityFormat.h"
 
+#include <algorithm>
 #include <QApplication>
 #include <QPainter>
 

@@ -3,6 +3,7 @@
 #include "Logger.h"
 #include "astra_version.h"
 
+#include <algorithm>
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDesktopServices>

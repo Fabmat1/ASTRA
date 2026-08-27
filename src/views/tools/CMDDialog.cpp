@@ -5,6 +5,7 @@
 #include "utils/Logger.h"
 #include "plotting/qcustomplot.h"
 
+#include <algorithm>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QRadioButton>

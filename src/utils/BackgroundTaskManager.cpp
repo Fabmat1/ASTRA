@@ -13,6 +13,7 @@
 #include "models/Star.h"
 #include "models/Time.h"
 #include "utils/matchSpectraToInstrument.h"
+#include <algorithm>
 #include <QDebug>
 #include <QEventLoop>
 #include <QFutureSynchronizer>

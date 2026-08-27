@@ -4,6 +4,7 @@
 #include "Spectrum.h"
 #include "RadialVelocity.h"
 #include "../utils/Logger.h"
+#include <algorithm>
 #include <QVariant>
 #include <limits>
 #include <cmath>

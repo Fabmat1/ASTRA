@@ -7,6 +7,7 @@
 #include "models/Spectrum.h"
 #include "utils/CdsTapClient.h"
 
+#include <algorithm>
 #include <QUrl>
 #include <QUrlQuery>
 

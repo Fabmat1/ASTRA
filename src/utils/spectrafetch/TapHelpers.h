@@ -11,6 +11,7 @@
 
 #include "utils/CdsTapClient.h"
 
+#include <algorithm>
 #include <QByteArray>
 #include <QMap>
 #include <QString>

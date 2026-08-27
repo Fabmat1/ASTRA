@@ -1,5 +1,6 @@
 #include "ClaretTables.h"
 
+#include <algorithm>
 #include <QFile>
 #include <QFileInfo>
 #include <QHash>

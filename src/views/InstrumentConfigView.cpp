@@ -3,6 +3,7 @@
 #include "utils/CoastlineData.h"
 #include "utils/UiIcons.h"
 
+#include <algorithm>
 #include <QPainter>
 #include <QPaintEvent>
 #include <QMouseEvent>

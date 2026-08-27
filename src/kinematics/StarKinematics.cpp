@@ -4,6 +4,7 @@
 #include "models/RadialVelocity.h"
 #include "models/Star.h"
 
+#include <algorithm>
 #include <QString>
 
 #include <cmath>

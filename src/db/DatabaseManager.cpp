@@ -17,6 +17,7 @@
 #include "models/PeriodogramRecord.h"
 #include "utils/DataStore.h"
 
+#include <algorithm>
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QDebug>

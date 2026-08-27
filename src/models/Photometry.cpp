@@ -1,6 +1,7 @@
 #include "Photometry.h"
 #include "utils/DataStore.h"
 #include "utils/Logger.h"
+#include <algorithm>
 #include <QFile>
 #include <QDataStream>
 #include <QDebug>

@@ -6,6 +6,7 @@
 #include "models/InstrumentMode.h"
 #include "utils/Logger.h"
 
+#include <algorithm>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
