@@ -60,6 +60,22 @@ QColor errorBarColor()
                          : QColor(200, 120, 120);
 }
 
+QColor secondaryPointColor()
+{
+    // Fixed identity color for the secondary RV component (SB2): warm amber,
+    // clearly separated from the sky-blue primary and the coral fit curve.
+    return isDarkTheme() ? QColor(240, 184, 120)
+                         : QColor(214, 143,  60);
+}
+
+QColor secondaryErrorBarColor()
+{
+    // Desaturated companion of secondaryPointColor(), receding like
+    // errorBarColor() does for the primary.
+    return isDarkTheme() ? QColor(180, 150, 110)
+                         : QColor(190, 150, 100);
+}
+
 QColor fitCurveColor()
 {
     // Warm coral on dark (pure red is harsh there); strong red on light.

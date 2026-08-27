@@ -1,5 +1,6 @@
 #pragma once
 
+#include <limits>
 #include <vector>
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -33,27 +34,38 @@ struct Options {
 struct CircularErrors {
     bool ok = false;
     ParamErr K, gamma, phi, P;
+    ParamErr K2;   // SB2 only; zeros otherwise
 };
 
 // Circular model y = γ + K·sin(2π(t/P + φ)), sampled internally in
 // (Kc, Ks, γ, P) so K ≥ 0 and the φ wrap need no special treatment.
 // sigP ≤ 0 (or NaN) disables the period prior.
+//
+// SB2: pass `comp` (per-point component, 1/2, same length as t) and a finite
+// K2best to add a fifth dimension K2 ≥ 0; secondary points follow the
+// antiphase model γ − K2·sin(2π(t/P + φ)). A null comp, an all-primary comp
+// or a non-finite K2best runs the unchanged 4-dim chain.
 CircularErrors sampleCircular(const std::vector<double>& t,
                               const std::vector<double>& y,
                               const std::vector<double>& sigma,
                               double Kbest, double gammaBest,
                               double phiBest, double Pbest,
                               double P0, double sigP,
-                              const Options& opt = {});
+                              const Options& opt = {},
+                              const std::vector<int>* comp = nullptr,
+                              double K2best =
+                                  std::numeric_limits<double>::quiet_NaN());
 
 struct KeplerianErrors {
     bool ok = false;
     ParamErr K, gamma, phi, P, e, omega;
+    ParamErr K2;   // SB2 only; zeros otherwise
 };
 
 // Full Keplerian model in the RVFit eccentric convention: mean anomaly
 // M = 2π(t/P − φ), RV = γ + K·(cos(ν+ω) + e·cos ω). Proposals outside
 // K ≥ 0 or e ∈ [eMin, eMax] are rejected (truncated priors); φ and ω wrap.
+// SB2 handling matches sampleCircular: RV2 = γ − K2·(cos(ν+ω) + e·cos ω).
 KeplerianErrors sampleKeplerian(const std::vector<double>& t,
                                 const std::vector<double>& y,
                                 const std::vector<double>& sigma,
@@ -61,6 +73,9 @@ KeplerianErrors sampleKeplerian(const std::vector<double>& t,
                                 double phiBest, double eBest, double omegaBest,
                                 double P0, double sigP,
                                 double eMin, double eMax,
-                                const Options& opt = {});
+                                const Options& opt = {},
+                                const std::vector<int>* comp = nullptr,
+                                double K2best =
+                                    std::numeric_limits<double>::quiet_NaN());
 
 } // namespace RVErrorMC

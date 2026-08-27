@@ -169,6 +169,16 @@ public:
     void   setRVEKUp(double v)     { _rvEKUp = v; }
     double getRVEKDown() const     { return _rvEKDown; }
     void   setRVEKDown(double v)   { _rvEKDown = v; }
+
+    // Secondary semi-amplitude of the best SB2 fit; NaN for a single-lined one.
+    double getRVK2() const          { return _rvK2; }
+    void   setRVK2(double v)        { _rvK2 = v; }
+    double getRVEK2() const         { return _rvEK2; }
+    void   setRVEK2(double v)       { _rvEK2 = v; }
+    double getRVEK2Up() const       { return _rvEK2Up; }
+    void   setRVEK2Up(double v)     { _rvEK2Up = v; }
+    double getRVEK2Down() const     { return _rvEK2Down; }
+    void   setRVEK2Down(double v)   { _rvEK2Down = v; }
     double getRVPeriod() const     { return _rvPeriod; }
     void   setRVPeriod(double v)   { _rvPeriod = v; }
     double getRVEPeriod() const    { return _rvEPeriod; }
@@ -585,6 +595,10 @@ private:
     double _rvEK       = std::numeric_limits<double>::quiet_NaN();
     double _rvEKUp     = AsymErr::unset;
     double _rvEKDown   = AsymErr::unset;
+    double _rvK2       = AsymErr::unset;   // NaN = single-lined best fit
+    double _rvEK2      = AsymErr::unset;
+    double _rvEK2Up    = AsymErr::unset;
+    double _rvEK2Down  = AsymErr::unset;
     double _rvPeriod   = std::numeric_limits<double>::quiet_NaN();
     double _rvEPeriod  = std::numeric_limits<double>::quiet_NaN();
     double _rvEPeriodUp   = AsymErr::unset;

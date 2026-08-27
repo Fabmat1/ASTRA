@@ -88,6 +88,10 @@ private:
 
     RVMCMC::Config collectMCMCConfig() const;
     RVMCMC::Data   buildRVData()       const;
+    /// True when the curve has unflagged component-2 points with a BJD.
+    bool curveHasComponent2() const;
+    /// True when the joint SB2 fit is both possible and switched on.
+    bool sb2Enabled() const;
     std::shared_ptr<RVFit> buildManualFit() const;
 
     // LM least-squares (circular sinusoid) around a fixed/constrained period
@@ -148,6 +152,9 @@ private:
     DatabaseManager* _dbm;
 
     QTabWidget*       _tabs    = nullptr;
+    // SB2: joint fit of both components around the common gamma. Only shown
+    // when the curve actually carries unflagged secondary points.
+    QCheckBox*        _sb2Check = nullptr;
     QDialogButtonBox* _buttons = nullptr;
     QPushButton*      _runMCMCBtn = nullptr;
     QPushButton*      _runPhotBtn = nullptr;
@@ -155,6 +162,7 @@ private:
 
     // ── Manual tab
     QDoubleSpinBox *_mPeriod, *_mK, *_mGamma, *_mPhi;
+    QDoubleSpinBox *_mK2 = nullptr;   // SB2 secondary semi-amplitude
     QCheckBox      *_mEccCheck;
     QDoubleSpinBox *_mEcc, *_mOmega;
     QCheckBox *_mUseT0   = nullptr; 

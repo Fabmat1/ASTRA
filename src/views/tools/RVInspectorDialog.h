@@ -5,6 +5,7 @@
 #include <QAbstractTableModel>
 #include <QHash>
 #include <QList>
+#include <limits>
 #include <memory>
 #include <vector>
 
@@ -31,7 +32,7 @@ class RVPointsTableModel : public QAbstractTableModel
     Q_OBJECT
 public:
     enum Column {
-        ColMJD = 0, ColBJD,
+        ColMJD = 0, ColBJD, ColComp,
         ColRV, ColErrFormal, ColErrSystematic,
         ColInstrument, ColSource, ColFlagged,
         ColCount
@@ -75,6 +76,11 @@ public:
     std::shared_ptr<RadialVelocityPoint> pointAt(int row) const;
     void appendPoint(std::shared_ptr<RadialVelocityPoint> p);
     void appendPoints(const std::vector<std::shared_ptr<RadialVelocityPoint>>& pts);
+
+    /// Move every row of `rows` to the given component (1 or 2), persisting in
+    /// one batch. Manual fix for SB2 fitter component swaps at crossing
+    /// epochs. Returns how many points actually changed.
+    int setComponentForRows(const QList<int>& rows, int component);
 
 signals:
     void pointEdited(const QModelIndex& row);
@@ -157,8 +163,11 @@ private slots:
     QPushButton*    _revertBtn = nullptr;
 
     QCheckBox*      _eccCheck    = nullptr;
+    QCheckBox*      _sb2Check    = nullptr;
     QDoubleSpinBox* _periodSpin  = nullptr;
     QDoubleSpinBox* _kSpin       = nullptr;
+    QDoubleSpinBox* _k2Spin      = nullptr;
+    QLabel*         _qLabel      = nullptr;   // derived q = K1/K2
     QDoubleSpinBox* _gammaSpin   = nullptr;
     QDoubleSpinBox* _phiSpin     = nullptr;     // phase ∈ [0,1]
     QDoubleSpinBox* _eccSpin     = nullptr;
@@ -173,6 +182,7 @@ private slots:
     struct Snapshot {
         QString id;
         double P=0, K=0, gamma=0, phi=0, e=0, omega=0;
+        double K2 = std::numeric_limits<double>::quiet_NaN();
         bool ecc = false;
     } _snapshot;
 };

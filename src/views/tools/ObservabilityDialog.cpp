@@ -513,6 +513,27 @@ void ObservabilityDialog::plotRVPrediction()
     gMed->setPen(mp);
     gMed->setName("Median");
 
+    // SB2: central predicted curve of the secondary (no MC bands, to keep
+    // the plot readable).
+    if (bestFit->hasK2()) {
+        tmp.setK(K0);
+        tmp.setK2(bestFit->getK2());
+        tmp.setGamma(gamma0);
+        if (ecc) { tmp.setEccentricity(e0); tmp.setOmega(omega0); }
+        QVector<double> med2(Nt);
+        for (int i = 0; i < Nt; ++i) {
+            double phase = std::fmod((bjdGrid[i] - T0_bjd) / period0, 1.0);
+            if (phase < 0.0) phase += 1.0;
+            med2[i] = tmp.calculateRVAtPhase(phase, 2);
+        }
+        auto* gMed2 = _rvPlot->addGraph();
+        gMed2->setData(ts, med2);
+        QPen mp2(QColor(214, 143, 60)); mp2.setWidth(2);
+        mp2.setStyle(Qt::DashLine);
+        gMed2->setPen(mp2);
+        gMed2->setName("Secondary");
+    }
+
     auto ticker = QSharedPointer<QCPAxisTickerDateTime>::create();
     ticker->setDateTimeFormat("HH:mm");
     ticker->setDateTimeSpec(Qt::UTC);

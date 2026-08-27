@@ -32,6 +32,7 @@ private:
     QDoubleSpinBox*   _rvSpin    = nullptr;
     QDoubleSpinBox*   _errFormal = nullptr;
     QDoubleSpinBox*   _errSyst   = nullptr;
+    QComboBox*        _compCombo = nullptr;
     QComboBox*        _instCombo = nullptr;
     QDialogButtonBox* _buttons   = nullptr;
 };

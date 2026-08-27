@@ -205,14 +205,22 @@ RadialVelocityPoint::~RadialVelocityPoint()
 std::shared_ptr<RadialVelocityPoint> RadialVelocityPoint::createFromSpectralFit(
     std::shared_ptr<SpectralFit> fit,
     std::shared_ptr<Spectrum> spectrum,
-    std::shared_ptr<Instrument> instrument)
+    std::shared_ptr<Instrument> instrument,
+    int component)
 {
     if (!fit || !spectrum) return nullptr;
+    if (component >= 2 && !fit->hasSecondRV()) return nullptr;
 
     auto rvPoint = std::make_shared<RadialVelocityPoint>();
+    rvPoint->setComponent(component);
 
-    rvPoint->setRV(fit->radialVelocity);
-    rvPoint->setRVErrorFormal(fit->radialVelocityError);
+    if (component >= 2) {
+        rvPoint->setRV(fit->radialVelocity2);
+        rvPoint->setRVErrorFormal(fit->radialVelocity2Error);
+    } else {
+        rvPoint->setRV(fit->radialVelocity);
+        rvPoint->setRVErrorFormal(fit->radialVelocityError);
+    }
     rvPoint->setRVErrorSystematic(0.0);
 
     rvPoint->setMJD(spectrum->getMJD());
@@ -259,16 +267,33 @@ RVFit::~RVFit()
 {
 }
 
-double RVFit::calculateRV(const Time& t) const
+double RVFit::calculateRV(const Time& t, int component) const
 {
     if (_period <= 0.0) return _gamma;
-    return calculateRVAtPhase(computePhase(t));
+    return calculateRVAtPhase(computePhase(t), component);
 }
 
-double RVFit::calculateRV(double bjd) const
+double RVFit::calculateRV(double bjd, int component) const
 {
     Time t; t.setBJD(bjd);
-    return calculateRV(t);
+    return calculateRV(t, component);
+}
+
+double RVFit::massRatio() const
+{
+    if (!hasK2() || !(_K > 0.0)) return std::numeric_limits<double>::quiet_NaN();
+    return _K / _K2;
+}
+
+double RVFit::massRatioError() const
+{
+    const double q = massRatio();
+    if (std::isnan(q)) return std::numeric_limits<double>::quiet_NaN();
+
+    const double sK  = AsymErr::symmetrized(_KError,  _KErrorUp,  _KErrorDown);
+    const double sK2 = AsymErr::symmetrized(_K2Error, _K2ErrorUp, _K2ErrorDown);
+    if (!(sK >= 0.0) || !(sK2 >= 0.0)) return std::numeric_limits<double>::quiet_NaN();
+    return q * std::sqrt((sK / _K) * (sK / _K) + (sK2 / _K2) * (sK2 / _K2));
 }
 
 double RVFit::getT0BJD() const
@@ -311,12 +336,13 @@ void RadialVelocityCurve::addRVPoint(std::shared_ptr<RadialVelocityPoint> point)
     if (!point) { notifyChanged(); return; }
 
     // ── Unique-spectrum constraint ──────────────────────────────────────────
-    // If a point already exists for this spectrum, update it in place rather
-    // than appending a duplicate. Keeps the existing DB row id.
+    // If a point already exists for this spectrum AND component, update it in
+    // place rather than appending a duplicate. Keeps the existing DB row id.
     const QString sid = point->getSpectrumId();
     if (!sid.isEmpty()) {
         for (auto& existing : _rvPoints) {
             if (!existing || existing->getSpectrumId() != sid) continue;
+            if (existing->getComponent() != point->getComponent()) continue;
 
             existing->setSpectralFitId(point->getSpectralFitId());
             existing->setRV(point->getRV());
@@ -369,8 +395,37 @@ std::shared_ptr<RadialVelocityPoint> RadialVelocityCurve::getRVPoint(const QStri
         [&pointId](const std::shared_ptr<RadialVelocityPoint>& point) {
             return point->getId() == pointId;
         });
-    
+
     return (it != _rvPoints.end()) ? *it : nullptr;
+}
+
+std::shared_ptr<RadialVelocityPoint> RadialVelocityCurve::findPoint(
+    const QString& spectrumId, int component) const
+{
+    if (spectrumId.isEmpty()) return nullptr;
+    for (const auto& p : _rvPoints) {
+        if (p && p->getSpectrumId() == spectrumId
+              && p->getComponent() == component)
+            return p;
+    }
+    return nullptr;
+}
+
+std::vector<std::shared_ptr<RadialVelocityPoint>> RadialVelocityCurve::findPoints(
+    const QString& spectrumId) const
+{
+    std::vector<std::shared_ptr<RadialVelocityPoint>> out;
+    if (spectrumId.isEmpty()) return out;
+    for (const auto& p : _rvPoints)
+        if (p && p->getSpectrumId() == spectrumId) out.push_back(p);
+    return out;
+}
+
+bool RadialVelocityCurve::hasComponent2() const
+{
+    for (const auto& p : _rvPoints)
+        if (p && p->getComponent() >= 2) return true;
+    return false;
 }
 
 void RadialVelocityCurve::populateFromSpectra(const std::vector<std::shared_ptr<Spectrum>>& spectra)
@@ -380,9 +435,12 @@ void RadialVelocityCurve::populateFromSpectra(const std::vector<std::shared_ptr<
     for (const auto& spectrum : spectra) {
         auto bestFit = spectrum->getBestFit();
         if (bestFit) {
-            auto rvPoint = RadialVelocityPoint::createFromSpectralFit(bestFit, spectrum);
-            if (rvPoint) {
-                addRVPoint(rvPoint);
+            for (int component = 1; component <= 2; ++component) {
+                auto rvPoint = RadialVelocityPoint::createFromSpectralFit(
+                    bestFit, spectrum, nullptr, component);
+                if (rvPoint) {
+                    addRVPoint(rvPoint);
+                }
             }
         }
     }
@@ -399,30 +457,41 @@ void RadialVelocityCurve::updateFromSpectra(const std::vector<std::shared_ptr<Sp
         _rvPoints.end()
     );
     
-    // Update or add RV points from spectra
+    // Update or add RV points from spectra, per component
     for (const auto& spectrum : spectra) {
         auto bestFit = spectrum->getBestFit();
         if (!bestFit) continue;
-        
-        // Check if we already have an RV point for this spectrum/fit
-        bool found = false;
-        for (auto& rvPoint : _rvPoints) {
-            auto srcSpec = rvPoint->getSourceSpectrum().lock();
-            auto srcFit = rvPoint->getSourceFit().lock();
-            if (srcSpec == spectrum && srcFit == bestFit) {
-                // Update existing point
-                rvPoint->setRV(bestFit->radialVelocity);
-                rvPoint->setRVError(bestFit->radialVelocityError);
-                found = true;
-                break;
+
+        for (int component = 1; component <= 2; ++component) {
+            if (component >= 2 && !bestFit->hasSecondRV()) continue;
+
+            // Check if we already have an RV point for this spectrum/fit
+            bool found = false;
+            for (auto& rvPoint : _rvPoints) {
+                if (rvPoint->getComponent() != component) continue;
+                auto srcSpec = rvPoint->getSourceSpectrum().lock();
+                auto srcFit = rvPoint->getSourceFit().lock();
+                if (srcSpec == spectrum && srcFit == bestFit) {
+                    // Update existing point
+                    if (component >= 2) {
+                        rvPoint->setRV(bestFit->radialVelocity2);
+                        rvPoint->setRVError(bestFit->radialVelocity2Error);
+                    } else {
+                        rvPoint->setRV(bestFit->radialVelocity);
+                        rvPoint->setRVError(bestFit->radialVelocityError);
+                    }
+                    found = true;
+                    break;
+                }
             }
-        }
-        
-        // Add new point if not found
-        if (!found) {
-            auto rvPoint = RadialVelocityPoint::createFromSpectralFit(bestFit, spectrum);
-            if (rvPoint) {
-                addRVPoint(rvPoint);
+
+            // Add new point if not found
+            if (!found) {
+                auto rvPoint = RadialVelocityPoint::createFromSpectralFit(
+                    bestFit, spectrum, nullptr, component);
+                if (rvPoint) {
+                    addRVPoint(rvPoint);
+                }
             }
         }
     }
@@ -521,7 +590,7 @@ void RadialVelocityCurve::setBestFit(const QString& fitId)
 
 double RadialVelocityCurve::getMinRV() const
 {
-    auto pts = getActiveRVPoints();
+    auto pts = activePrimaryPoints();
     if (pts.empty()) return 0.0;
 
     auto minIt = std::min_element(pts.begin(), pts.end(),
@@ -534,7 +603,7 @@ double RadialVelocityCurve::getMinRV() const
 
 double RadialVelocityCurve::getMaxRV() const
 {
-    auto pts = getActiveRVPoints();
+    auto pts = activePrimaryPoints();
     if (pts.empty()) return 0.0;
 
     auto maxIt = std::max_element(pts.begin(), pts.end(),
@@ -547,7 +616,7 @@ double RadialVelocityCurve::getMaxRV() const
 
 double RadialVelocityCurve::getMeanRV() const
 {
-    auto pts = getActiveRVPoints();
+    auto pts = activePrimaryPoints();
     if (pts.empty()) return 0.0;
 
     double sum = std::accumulate(pts.begin(), pts.end(), 0.0,
@@ -559,7 +628,7 @@ double RadialVelocityCurve::getMeanRV() const
 
 double RadialVelocityCurve::getMedianRV() const
 {
-    auto pts = getActiveRVPoints();
+    auto pts = activePrimaryPoints();
     if (pts.empty()) return 0.0;
 
     std::vector<double> values;
@@ -571,7 +640,7 @@ double RadialVelocityCurve::getMedianRV() const
 
 double RadialVelocityCurve::getStdDevRV() const
 {
-    auto pts = getActiveRVPoints();
+    auto pts = activePrimaryPoints();
     if (pts.size() < 2) return 0.0;
 
     double mean = getMeanRV();
@@ -585,13 +654,13 @@ double RadialVelocityCurve::getStdDevRV() const
 
 double RadialVelocityCurve::getRVAmplitude() const
 {
-    if (getActiveRVPoints().empty()) return 0.0;
+    if (activePrimaryPoints().empty()) return 0.0;
     return getMaxRV() - getMinRV();
 }
 
 double RadialVelocityCurve::getWeightedMeanRV() const
 {
-    auto pts = getActiveRVPoints();
+    auto pts = activePrimaryPoints();
     if (pts.empty()) return 0.0;
 
     double sumWeightedRV = 0.0;
@@ -608,7 +677,7 @@ double RadialVelocityCurve::getWeightedMeanRV() const
 
 double RadialVelocityCurve::getWeightedStdDevRV() const
 {
-    auto pts = getActiveRVPoints();
+    auto pts = activePrimaryPoints();
     if (pts.size() < 2) return 0.0;
 
     double weightedMean = getWeightedMeanRV();
@@ -687,7 +756,7 @@ double RadialVelocityCurve::computeLogP() const
     //   pval = chi2.sf(chisq_sum, dof)
     //   logp = log10(pval)
 
-    int ndata = static_cast<int>(getActiveRVPoints().size());
+    int ndata = static_cast<int>(activePrimaryPoints().size());
     if (ndata < 2) return 0.0;
 
     // Gather RV and errors, skipping points with zero/negative error
@@ -696,7 +765,7 @@ double RadialVelocityCurve::computeLogP() const
     rv.reserve(ndata);
     err.reserve(ndata);
 
-    for (const auto& pt : getActiveRVPoints()) {
+    for (const auto& pt : activePrimaryPoints()) {
         double e = pt->getRVError();
         if (e > 0.0) {
             rv.push_back(pt->getRV());
@@ -710,7 +779,7 @@ double RadialVelocityCurve::computeLogP() const
         // Use equal weights (error = 1)
         rv.clear();
         err.clear();
-        for (const auto& pt : getActiveRVPoints()) {
+        for (const auto& pt : activePrimaryPoints()) {
             rv.push_back(pt->getRV());
             err.push_back(1.0);
         }
@@ -758,12 +827,17 @@ void RadialVelocityPoint::captureAsManual()
 void RadialVelocityPoint::applyFromFit(const SpectralFit& fit)
 {
     setSpectralFitId(fit.getId());
-    setFlagged(fit.isFlagged);            
+    setFlagged(fit.isFlagged);
 
     if (_rvSource == RVSource::FromFit) {
-        _rv             = fit.radialVelocity;
-        _rvErrorFormal  = fit.radialVelocityError;
-        _rvErrorDirty   = true;
+        if (_component >= 2) {
+            _rv            = fit.radialVelocity2;
+            _rvErrorFormal = fit.radialVelocity2Error;
+        } else {
+            _rv            = fit.radialVelocity;
+            _rvErrorFormal = fit.radialVelocityError;
+        }
+        _rvErrorDirty = true;
     }
 }
 
@@ -792,56 +866,81 @@ void RadialVelocityCurve::onLinkedFitMetadataChanged(
 {
     if (!fit) return;
 
-    std::shared_ptr<RadialVelocityPoint> point;
-    for (auto& p : _rvPoints) {
-        if (p->getSpectrumId() == spec->getId()) { point = p; break; }
+    // Mirror metadata to every component's point linked to this fit.
+    bool changed = false;
+    for (const auto& point : findPoints(spec->getId())) {
+        if (point->getSpectralFitId() != fit->getId()) continue;
+        point->mirrorFlagFromFit(*fit);
+        if (_pointPersistCb) _pointPersistCb(point);
+        changed = true;
     }
-    if (!point) return;
-
-    // Only mirror metadata if this fit is the one the RV point is linked to.
-    if (point->getSpectralFitId() != fit->getId()) return;
-
-    point->mirrorFlagFromFit(*fit);
-
-    if (_pointPersistCb) _pointPersistCb(point);
-    notifyChanged();
+    if (changed) notifyChanged();
 }
 
 void RadialVelocityCurve::onBestFitChanged(
     const std::shared_ptr<Spectrum>& spec,
     const std::shared_ptr<SpectralFit>& newBest)
 {
-    std::shared_ptr<RadialVelocityPoint> point;
-    for (auto& p : _rvPoints) {
-        if (p->getSpectrumId() == spec->getId()) { point = p; break; }
-    }
+    auto p1 = findPoint(spec->getId(), 1);
+    auto p2 = findPoint(spec->getId(), 2);
 
     if (!newBest) {
-        if (point) {
+        // Best cleared: keep both points but unlink them from the fit.
+        for (const auto& point : {p1, p2}) {
+            if (!point) continue;
             point->setSpectralFitId(QString());
             point->setSourceFit({});
+            if (_pointPersistCb) _pointPersistCb(point);
         }
-        if (_pointPersistCb && point) _pointPersistCb(point);
         notifyChanged();
         return;
     }
 
-    if (!point) {
-        point = RadialVelocityPoint::createFromSpectralFit(newBest, spec);
-        if (point) {
-            point->setRVSource(RadialVelocityPoint::RVSource::FromFit);
-            addRVPoint(point);
+    if (!p1) {
+        p1 = RadialVelocityPoint::createFromSpectralFit(newBest, spec);
+        if (p1) {
+            p1->setRVSource(RadialVelocityPoint::RVSource::FromFit);
+            addRVPoint(p1);
         }
     } else {
-        point->setSourceFit(newBest);
-        point->applyFromFit(*newBest);
+        p1->setSourceFit(newBest);
+        p1->applyFromFit(*newBest);
     }
 
-    if (point) {
+    // Secondary component: created/updated while the best fit carries a
+    // secondary RV; when it stops doing so, a FromFit point is dropped (DB
+    // row included) and a manually pinned one is kept but unlinked.
+    if (newBest->hasSecondRV()) {
+        if (!p2) {
+            p2 = RadialVelocityPoint::createFromSpectralFit(newBest, spec, nullptr, 2);
+            if (p2) {
+                p2->setRVSource(RadialVelocityPoint::RVSource::FromFit);
+                addRVPoint(p2);
+            }
+        } else {
+            p2->setSourceFit(newBest);
+            p2->applyFromFit(*newBest);
+        }
+    } else if (p2) {
+        if (p2->getRVSource() == RadialVelocityPoint::RVSource::FromFit) {
+            const QString droppedId = p2->getId();
+            _rvPoints.erase(std::remove(_rvPoints.begin(), _rvPoints.end(), p2),
+                            _rvPoints.end());
+            deletePointRow(droppedId);
+            updateFitReferences();
+            p2 = nullptr;
+        } else {
+            p2->setSpectralFitId(QString());
+            p2->setSourceFit({});
+        }
+    }
+
+    for (const auto& point : {p1, p2}) {
+        if (!point) continue;
         const double bjd = point->getBJD();
         if (!(bjd > 0.0) || std::isnan(bjd)) resolveBjd(point);
+        if (_pointPersistCb) _pointPersistCb(point);
     }
-    if (_pointPersistCb && point) _pointPersistCb(point);
     notifyChanged();
 }
 
@@ -853,6 +952,23 @@ RadialVelocityCurve::getActiveRVPoints() const
     for (const auto& p : _rvPoints)
         if (p && !p->isFlagged()) out.push_back(p);
     return out;
+}
+
+std::vector<std::shared_ptr<RadialVelocityPoint>>
+RadialVelocityCurve::getActiveRVPoints(int component) const
+{
+    std::vector<std::shared_ptr<RadialVelocityPoint>> out;
+    out.reserve(_rvPoints.size());
+    for (const auto& p : _rvPoints)
+        if (p && !p->isFlagged() && p->getComponent() == component)
+            out.push_back(p);
+    return out;
+}
+
+std::vector<std::shared_ptr<RadialVelocityPoint>>
+RadialVelocityCurve::activePrimaryPoints() const
+{
+    return getActiveRVPoints(1);
 }
 
 void RadialVelocityPoint::mirrorFlagFromFit(const SpectralFit& fit)
@@ -901,10 +1017,13 @@ double RVFit::computePhase(const Time& t) const
 }
 
 
-double RVFit::calculateRVAtPhase(double phase) const
+double RVFit::calculateRVAtPhase(double phase, int component) const
 {
     const double M = 2.0 * M_PI * phase;
 
+    // Both components share the phase; the secondary is the same unit orbit
+    // function with a negated amplitude (equivalent to omega + 180 deg).
+    double unitTerm;
     if (_isEccentric && _eccentricity > 0.0 && _eccentricity < 1.0) {
         const double e = _eccentricity;
         const double E = solveKepler(M, e);
@@ -912,10 +1031,13 @@ double RVFit::calculateRVAtPhase(double phase) const
             std::sqrt(1.0 + e) * std::sin(E * 0.5),
             std::sqrt(1.0 - e) * std::cos(E * 0.5));
         const double w = _omega * M_PI / 180.0;
-        return _gamma + _K * (std::cos(nu + w) + e * std::cos(w));
+        unitTerm = std::cos(nu + w) + e * std::cos(w);
+    } else {
+        // Circular: keep historical convention (max RV at phase 0.25)
+        unitTerm = std::sin(M);
     }
-    // Circular: keep historical convention (max RV at phase 0.25)
-    return _gamma + _K * std::sin(M);
+    const double amp = (component >= 2) ? -_K2 : _K;
+    return _gamma + amp * unitTerm;
 }
 
 
@@ -926,7 +1048,10 @@ void RVFit::updateStatistics(
     double sumSq = 0.0, chi2 = 0.0;
     for (const auto& p : points) {
         if (!p || p->isFlagged()) continue;
-        const double model = calculateRV(p->time());
+        // An SB1 fit has no model for secondary points; including them would
+        // poison chi2/rms with the antiphase branch.
+        if (p->getComponent() >= 2 && !hasK2()) continue;
+        const double model = calculateRV(p->time(), p->getComponent());
         const double resid = p->getRV() - model;
         const double err   = p->getRVError();   // combined formal+systematic
         sumSq += resid * resid;
@@ -952,49 +1077,73 @@ void RadialVelocityCurve::reconcileWithSpectra(
         auto best = spec->getBestFit();
         if (!best) continue;
 
-        std::shared_ptr<RadialVelocityPoint> existing;
-        for (auto& p : _rvPoints) {
-            if (p && p->getSpectrumId() == spec->getId()) { existing = p; break; }
-        }
+        auto reconcileComponent = [&](int component) {
+            auto existing = findPoint(spec->getId(), component);
 
-        const bool needsCreate   = !existing;
-        const bool linkDrifted   = existing &&
-            existing->getSpectralFitId() != best->getId();
-        const bool bjdMissing    = existing &&
-            (!(existing->getBJD() > 0.0) || std::isnan(existing->getBJD()));
-
-        if (!needsCreate && !linkDrifted && !bjdMissing) continue;
-
-        if (needsCreate) {
-            auto pt = RadialVelocityPoint::createFromSpectralFit(best, spec);
-            if (!pt) continue;
-            addRVPoint(pt);                 // assigns id+curveId; dedup-safe
-            resolveBjd(pt);
-            if (_pointPersistCb) _pointPersistCb(pt);
-            changed = true;
-        } else {
-            bool localChanged = false;
-            if (linkDrifted) {
-                existing->setSourceFit(best);
-                existing->setSourceSpectrum(spec);
-                existing->applyFromFit(*best);
-                localChanged = true;
+            if (component >= 2 && !best->hasSecondRV()) {
+                // The best fit lost its secondary RV: drop a stale FromFit
+                // point (DB row included), keep a manual one but unlinked.
+                if (!existing) return;
+                if (existing->getRVSource() == RadialVelocityPoint::RVSource::FromFit) {
+                    const QString droppedId = existing->getId();
+                    _rvPoints.erase(
+                        std::remove(_rvPoints.begin(), _rvPoints.end(), existing),
+                        _rvPoints.end());
+                    deletePointRow(droppedId);
+                    updateFitReferences();
+                    changed = true;
+                } else if (!existing->getSpectralFitId().isEmpty()) {
+                    existing->setSpectralFitId(QString());
+                    existing->setSourceFit({});
+                    if (_pointPersistCb) _pointPersistCb(existing);
+                    changed = true;
+                }
+                return;
             }
-            if (bjdMissing) {
-                resolveBjd(existing);
-                // Only a real change if the BJD was actually resolved. When the
-                // instrument can't be resolved the BJD stays missing; reporting
-                // "changed" anyway makes every reconcile notify listeners, and a
-                // listener that re-syncs (e.g. RVPanel::populate) then recurses
-                // without end → stack overflow. A no-op must stay silent.
-                const double nb = existing->getBJD();
-                if (nb > 0.0 && !std::isnan(nb)) localChanged = true;
-            }
-            if (localChanged) {
-                if (_pointPersistCb) _pointPersistCb(existing);
+
+            const bool needsCreate   = !existing;
+            const bool linkDrifted   = existing &&
+                existing->getSpectralFitId() != best->getId();
+            const bool bjdMissing    = existing &&
+                (!(existing->getBJD() > 0.0) || std::isnan(existing->getBJD()));
+
+            if (!needsCreate && !linkDrifted && !bjdMissing) return;
+
+            if (needsCreate) {
+                auto pt = RadialVelocityPoint::createFromSpectralFit(
+                    best, spec, nullptr, component);
+                if (!pt) return;
+                addRVPoint(pt);                 // assigns id+curveId; dedup-safe
+                resolveBjd(pt);
+                if (_pointPersistCb) _pointPersistCb(pt);
                 changed = true;
+            } else {
+                bool localChanged = false;
+                if (linkDrifted) {
+                    existing->setSourceFit(best);
+                    existing->setSourceSpectrum(spec);
+                    existing->applyFromFit(*best);
+                    localChanged = true;
+                }
+                if (bjdMissing) {
+                    resolveBjd(existing);
+                    // Only a real change if the BJD was actually resolved. When the
+                    // instrument can't be resolved the BJD stays missing; reporting
+                    // "changed" anyway makes every reconcile notify listeners, and a
+                    // listener that re-syncs (e.g. RVPanel::populate) then recurses
+                    // without end → stack overflow. A no-op must stay silent.
+                    const double nb = existing->getBJD();
+                    if (nb > 0.0 && !std::isnan(nb)) localChanged = true;
+                }
+                if (localChanged) {
+                    if (_pointPersistCb) _pointPersistCb(existing);
+                    changed = true;
+                }
             }
-        }
+        };
+
+        reconcileComponent(1);
+        reconcileComponent(2);
     }
 
     if (changed) notifyChanged();

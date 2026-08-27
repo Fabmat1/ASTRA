@@ -53,6 +53,7 @@ bool RadialVelocityRepository::saveRadialVelocityPoint(
              radial_velocity, rv_error,
              rv_error_formal, rv_error_systematic,
              source, spectrum_id, spectral_fit_id,
+             component,
              is_flagged,
              rv_manual, rv_manual_error_formal, rv_manual_error_systematic,
              rv_source)
@@ -61,6 +62,7 @@ bool RadialVelocityRepository::saveRadialVelocityPoint(
              :rv, :rv_error,
              :rv_error_formal, :rv_error_systematic,
              :source, :spectrum_id, :fit_id,
+             :component,
              :is_flagged,
              :rv_manual, :rv_manual_error_formal, :rv_manual_error_systematic,
              :rv_source)
@@ -77,6 +79,7 @@ bool RadialVelocityRepository::saveRadialVelocityPoint(
     query.bindValue(":source",                      point->getSource());
     query.bindValue(":spectrum_id",                 point->getSpectrumId());
     query.bindValue(":fit_id",                      point->getSpectralFitId());
+    query.bindValue(":component",                   point->getComponent());
     query.bindValue(":is_flagged",                  point->isFlagged() ? 1 : 0);
     query.bindValue(":rv_manual",
         point->hasManualValue() ? QVariant(point->getRVManual())
@@ -100,19 +103,21 @@ bool RadialVelocityRepository::saveRVFit(
     QSqlQuery query(_db.threadConnection());
     query.prepare(R"(
         INSERT OR REPLACE INTO rv_fits
-        (id, curve_id, k, k_error, gamma, gamma_error,
+        (id, curve_id, k, k_error, k2, k2_error, gamma, gamma_error,
          period, period_error, phi, phi_error, t0, t0_error,
          eccentricity, eccentricity_error, omega, omega_error,
-         k_error_up, k_error_down, gamma_error_up, gamma_error_down,
+         k_error_up, k_error_down, k2_error_up, k2_error_down,
+         gamma_error_up, gamma_error_down,
          period_error_up, period_error_down, phi_error_up, phi_error_down,
          t0_error_up, t0_error_down,
          eccentricity_error_up, eccentricity_error_down,
          omega_error_up, omega_error_down,
          is_best_fit, fit_method, chi2, rms)
-        VALUES (:id, :curve_id, :k, :k_error, :gamma, :gamma_error,
+        VALUES (:id, :curve_id, :k, :k_error, :k2, :k2_error, :gamma, :gamma_error,
                 :period, :period_error, :phi, :phi_error, :t0, :t0_error,
                 :ecc, :ecc_error, :omega, :omega_error,
-                :k_error_up, :k_error_down, :gamma_error_up, :gamma_error_down,
+                :k_error_up, :k_error_down, :k2_error_up, :k2_error_down,
+                :gamma_error_up, :gamma_error_down,
                 :period_error_up, :period_error_down, :phi_error_up, :phi_error_down,
                 :t0_error_up, :t0_error_down,
                 :ecc_error_up, :ecc_error_down,
@@ -124,6 +129,9 @@ bool RadialVelocityRepository::saveRVFit(
     query.bindValue(":curve_id", curveId);
     query.bindValue(":k", fit->getK());
     query.bindValue(":k_error", fit->getKError());
+    query.bindValue(":k2", SqlValue::fromDouble(fit->getK2()));
+    query.bindValue(":k2_error", fit->hasK2() ? QVariant(fit->getK2Error())
+                                              : SqlValue::fromDouble(AsymErr::unset));
     query.bindValue(":gamma", fit->getGamma());
     query.bindValue(":gamma_error", fit->getGammaError());
     query.bindValue(":period", fit->getPeriod());
@@ -138,6 +146,8 @@ bool RadialVelocityRepository::saveRVFit(
     query.bindValue(":omega_error", fit->getOmegaError());
     query.bindValue(":k_error_up", SqlValue::fromDouble(fit->getKErrorUp()));
     query.bindValue(":k_error_down", SqlValue::fromDouble(fit->getKErrorDown()));
+    query.bindValue(":k2_error_up", SqlValue::fromDouble(fit->getK2ErrorUp()));
+    query.bindValue(":k2_error_down", SqlValue::fromDouble(fit->getK2ErrorDown()));
     query.bindValue(":gamma_error_up", SqlValue::fromDouble(fit->getGammaErrorUp()));
     query.bindValue(":gamma_error_down", SqlValue::fromDouble(fit->getGammaErrorDown()));
     query.bindValue(":period_error_up", SqlValue::fromDouble(fit->getPeriodErrorUp()));
@@ -218,6 +228,8 @@ RadialVelocityRepository::loadRadialVelocityPoints(const QString& curveId)
         pt->setSource(query.value("source").toString());
         pt->setSpectrumId(query.value("spectrum_id").toString());
         pt->setSpectralFitId(query.value("spectral_fit_id").toString());
+        // NULL/0 reads as primary (legacy rows predate the column)
+        pt->setComponent(std::max(1, query.value("component").toInt()));
         pt->setFlagged(query.value("is_flagged").toInt() != 0);
         if (!query.value("rv_manual").isNull())
         pt->setRVManual(query.value("rv_manual").toDouble());
@@ -249,6 +261,9 @@ std::vector<std::shared_ptr<RVFit>> RadialVelocityRepository::loadRVFits(
         fit->setCurveId(curveId);
         fit->setK(query.value("k").toDouble());
         fit->setKError(query.value("k_error").toDouble());
+        fit->setK2(SqlValue::toDoubleOrNaN(query, "k2"));
+        const double k2Err = SqlValue::toDoubleOrNaN(query, "k2_error");
+        fit->setK2Error(std::isfinite(k2Err) ? k2Err : 0.0);
         fit->setGamma(query.value("gamma").toDouble());
         fit->setGammaError(query.value("gamma_error").toDouble());
         fit->setPeriod(query.value("period").toDouble());
@@ -264,6 +279,8 @@ std::vector<std::shared_ptr<RVFit>> RadialVelocityRepository::loadRVFits(
         fit->setOmegaError(query.value("omega_error").toDouble());
         fit->setKErrorUp(SqlValue::toDoubleOrNaN(query, "k_error_up"));
         fit->setKErrorDown(SqlValue::toDoubleOrNaN(query, "k_error_down"));
+        fit->setK2ErrorUp(SqlValue::toDoubleOrNaN(query, "k2_error_up"));
+        fit->setK2ErrorDown(SqlValue::toDoubleOrNaN(query, "k2_error_down"));
         fit->setGammaErrorUp(SqlValue::toDoubleOrNaN(query, "gamma_error_up"));
         fit->setGammaErrorDown(SqlValue::toDoubleOrNaN(query, "gamma_error_down"));
         fit->setPeriodErrorUp(SqlValue::toDoubleOrNaN(query, "period_error_up"));

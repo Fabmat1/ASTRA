@@ -180,6 +180,7 @@ private:
     QComboBox* _tableRVErrColCombo = nullptr;
     QPushButton* _processTableBtn = nullptr;
     QComboBox* _tableSysErrColCombo = nullptr;
+    QComboBox* _tableCompColCombo = nullptr;
 
     // Fit params group
     QGroupBox* _fitParamsGroup = nullptr;
@@ -190,6 +191,7 @@ private:
     QComboBox* _fitIdColCombo = nullptr;
     QComboBox* _fitIdTypeCombo = nullptr;
     QComboBox* _fitKColCombo = nullptr;
+    QComboBox* _fitK2ColCombo = nullptr;
     QComboBox* _fitGammaColCombo = nullptr;
     QComboBox* _fitPeriodColCombo = nullptr;
     QComboBox* _fitT0ColCombo = nullptr;

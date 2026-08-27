@@ -622,7 +622,15 @@ void LCFitDialog::populateFromStar() {
         _iOverride->setValue(s.getPhotIncl());
 
     setSym(_K1, s.getRVK(), s.getRVEK());
-    setSym(_qObs, s.getPhotQ(), s.getPhotEQ());
+    // K1 and K2 from an SB2 orbit already fix q, so the photometric q is not
+    // auto-filled on top of them: that trio is an over-determined prior group
+    // (see priorClashes) and would open the dialog already in conflict. It can
+    // still be entered by hand when the user wants to weigh it in.
+    const bool haveK2 = Star::isSet(s.getRVK2()) && s.getRVK2() > 0.0;
+    if (haveK2)
+        setSym(_K2, s.getRVK2(), s.getRVEK2());
+    else
+        setSym(_qObs, s.getPhotQ(), s.getPhotEQ());
 
     if (_t0 && Star::isSet(s.getRVT0()) && _t0->value() == _t0->minimum())
         _t0->setValue(s.getRVT0());
@@ -817,14 +825,27 @@ QGroupBox *LCFitDialog::buildConstraintsBox() {
   addRow(tr("M_total [M☉]:"), _Mtot);
   g->setColumnStretch(1, 1);
 
-  // Auto-fill K1 from stored RV best fit when available
+  // Auto-fill K1 (and K2 for an SB2 solution) from the stored RV best fit.
   if (_in.star) {
     if (auto rv = _in.star->getRVCurve()) {
       if (auto bf = rv->getBestFit()) {
-        const double k = bf->getK();
-        const double e = bf->getKError();
-        if (k > 0)
-          setMeas(_K1, LCFitPhysics::AsymMeasurement{k, e, e});
+        // Keep the asymmetric interval when the RV fit stored one; up/down
+        // fall back to the symmetric error individually (AsymErr convention).
+        auto measOf = [](double v, double sym, double up, double down) {
+          LCFitPhysics::AsymMeasurement m;
+          m.value = v;
+          m.errLo = AsymErr::downOr(down, sym);
+          m.errHi = AsymErr::upOr(up, sym);
+          return m;
+        };
+        if (bf->getK() > 0)
+          setMeas(_K1, measOf(bf->getK(), bf->getKError(),
+                              bf->getKErrorUp(), bf->getKErrorDown()));
+        // A double-lined solution measures the secondary semi-amplitude, which
+        // constrains the mass ratio directly (q = K1/K2).
+        if (bf->hasK2())
+          setMeas(_K2, measOf(bf->getK2(), bf->getK2Error(),
+                              bf->getK2ErrorUp(), bf->getK2ErrorDown()));
       }
     }
   }

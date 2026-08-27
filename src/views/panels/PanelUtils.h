@@ -16,9 +16,11 @@ bool    isDarkTheme();
 // Shared data-plot palette. These are theme-aware: each returns a colour tuned
 // for the active light/dark theme so the data reads well against the (now
 // theme-coloured) plot background instead of clashing on dark themes.
-QColor  pointColor();      // RV data points
-QColor  errorBarColor();   // RV error bars
+QColor  pointColor();      // RV data points (primary component)
+QColor  errorBarColor();   // RV error bars (primary component)
 QColor  fitCurveColor();   // fit curves, model overlays, highlight markers
+QColor  secondaryPointColor();     // RV data points, secondary component (SB2)
+QColor  secondaryErrorBarColor();  // RV error bars, secondary component
 QColor  lcColor(int index);// cycling palette for LC / instrument / periodogram series
 int     lcColorCount();    // number of distinct entries before the palette repeats
 

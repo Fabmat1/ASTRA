@@ -105,6 +105,13 @@ void RVImportPointsDialog::setupUi()
     _instColCombo = new QComboBox;
     colGrid->addWidget(_instColCombo, row++, 1);
 
+    colGrid->addWidget(new QLabel("Component column (1/2):"), row, 0);
+    _compColCombo = new QComboBox;
+    _compColCombo->setToolTip(
+        "Optional stellar component per row for SB2 systems: "
+        "1 = primary, 2 = secondary. Rows without a value are primary.");
+    colGrid->addWidget(_compColCombo, row++, 1);
+
     colGroup->setLayout(colGrid);
     outer->addWidget(colGroup);
 
@@ -112,7 +119,8 @@ void RVImportPointsDialog::setupUi()
             this, [this](int) { refreshPreview(); });
     connect(_timeTypeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { refreshPreview(); });
-    for (auto* c : {_rvColCombo, _errColCombo, _sysErrColCombo, _instColCombo})
+    for (auto* c : {_rvColCombo, _errColCombo, _sysErrColCombo, _instColCombo,
+                    _compColCombo})
         connect(c, QOverload<int>::of(&QComboBox::currentIndexChanged),
                 this, [this](int) { refreshPreview(); });
 
@@ -384,6 +392,8 @@ void RVImportPointsDialog::onReloadFile()
         {"sys", "systematic", "sys_err", "sys_error", "rv_sys", "sigma_sys"});
     populateColumnCombo(_instColCombo,
         {"instrument", "inst", "telescope", "spectrograph", "detector"});
+    populateColumnCombo(_compColCombo,
+        {"component", "comp", "star_component"});
 
     // Auto-detect the time scale from the chosen column's name.
     int timeIdx = _timeColCombo->currentIndex() - 1;
@@ -519,6 +529,7 @@ void RVImportPointsDialog::onAccept()
     }
 
     const int instCol = _instColCombo->currentIndex() - 1;
+    const int compCol = _compColCombo->currentIndex() - 1;
     const TimeScale scale = selectedScale();
 
     const double ra  = _star ? _star->getRa()  : std::numeric_limits<double>::quiet_NaN();
@@ -539,6 +550,10 @@ void RVImportPointsDialog::onAccept()
         p->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
         p->setSource("csv_import");
         p->setRVSource(RadialVelocityPoint::RVSource::Manual);
+        if (compCol >= 0 && compCol < row.size()) {
+            bool okC; const int c = row[compCol].trimmed().toInt(&okC);
+            if (okC && c == 2) p->setComponent(2);
+        }
 
         // Build the timestamp; the Time ctor handles fixed-offset scales
         // (JD↔MJD, BTJD/BKJD/Gaia TCB → BJD). MJD/JD still need a

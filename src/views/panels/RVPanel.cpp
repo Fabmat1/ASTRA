@@ -162,7 +162,8 @@ QPair<double, double> addRVDataToPlot(
     const std::vector<double>& errs,
     double xMin, double xMax,
     const QColor& ptCol,
-    const QColor& errCol)
+    const QColor& errCol,
+    const QString& name = QString())
 {
     double yLo =  std::numeric_limits<double>::max();
     double yHi =  std::numeric_limits<double>::lowest();
@@ -221,12 +222,42 @@ QPair<double, double> addRVDataToPlot(
     scatter->setLineStyle(QCPGraph::lsNone);
     scatter->setScatterStyle(QCPScatterStyle(QCPScatterStyle::ssCircle, ptCol, ptCol, 7));
     scatter->setData(px, py, /*alreadySorted=*/true);
-    scatter->removeFromLegend();
+    if (name.isEmpty())
+        scatter->removeFromLegend();
+    else
+        scatter->setName(name);
 
     errorBars->setDataPlottable(scatter);
     errorBars->setData(pe);
 
     return {yLo, yHi};
+}
+
+// Parallel (x, y, e) triples of one stellar component.
+struct CompSeries { std::vector<double> x, y, e; };
+
+CompSeries filterComp(const std::vector<double>& xs,
+                      const std::vector<double>& ys,
+                      const std::vector<double>& es,
+                      const std::vector<int>& comps,
+                      int comp)
+{
+    CompSeries out;
+    for (size_t i = 0; i < xs.size(); ++i) {
+        if (comps[i] != comp) continue;
+        out.x.push_back(xs[i]);
+        out.y.push_back(ys[i]);
+        out.e.push_back(es[i]);
+    }
+    return out;
+}
+
+// Dashed model overlay pen for the secondary component.
+QPen secondaryModelPen()
+{
+    QPen pen(PanelUtils::secondaryPointColor().darker(140), 2.0);
+    pen.setStyle(Qt::DashLine);
+    return pen;
 }
 
 // Create the dedicated, empty highlight graph for a plot. It is a subtle hollow
@@ -365,7 +396,7 @@ void RVPanel::populate()
         .arg(points.size()));
 
     struct RVDatum {
-        double time; double rv; double err; Time tobj; QString specId;
+        double time; double rv; double err; Time tobj; QString specId; int comp;
     };
     std::vector<RVDatum> data;
     data.reserve(points.size());
@@ -390,8 +421,11 @@ void RVPanel::populate()
         // spectrum↔point matching happens later in applyHighlight() so the
         // highlight can change without rebuilding the plot.
         data.push_back({tm.sortValue(), pt->getRV(), pt->getRVError(), tm,
-                        pt->getSpectrumId()});
+                        pt->getSpectrumId(), pt->getComponent()});
     }
+
+    const bool hasComp2 = std::any_of(data.begin(), data.end(),
+        [](const RVDatum& d) { return d.comp >= 2; });
 
     LOG_INFO(CAT, QString("Star %1 - %2 skipped, %3/%4 accepted")
         .arg(_ctx.star->getSourceId())
@@ -415,7 +449,8 @@ void RVPanel::populate()
         double P   = bestFit->getPeriod();
         double phi = bestFit->getPhi();
 
-        std::vector<double> phases, rvs, errs;
+        std::vector<double> phases, rvs, errs;      // component 1
+        std::vector<double> phases2, rvs2, errs2;   // component 2
         phases.reserve(data.size() * 2);
         rvs.reserve(data.size() * 2);
         errs.reserve(data.size() * 2);
@@ -424,12 +459,15 @@ void RVPanel::populate()
         tgt.xMin = -1.05;      // kPhaseLo (set again below as constexpr)
         for (auto &d : data) {
             double ph = bestFit->computePhase(d.tobj);
-            phases.push_back(ph - 1.0);
-            rvs.push_back(d.rv);
-            errs.push_back(d.err);
-            phases.push_back(ph);
-            rvs.push_back(d.rv);
-            errs.push_back(d.err);
+            auto& phaseVec = (d.comp >= 2) ? phases2 : phases;
+            auto& rvVec    = (d.comp >= 2) ? rvs2    : rvs;
+            auto& errVec   = (d.comp >= 2) ? errs2   : errs;
+            phaseVec.push_back(ph - 1.0);
+            rvVec.push_back(d.rv);
+            errVec.push_back(d.err);
+            phaseVec.push_back(ph);
+            rvVec.push_back(d.rv);
+            errVec.push_back(d.err);
             tgt.xs.push_back(ph - 1.0); tgt.ys.push_back(d.rv);
             tgt.specIds.push_back(d.specId); tgt.epochs.push_back(d.time);
             tgt.xs.push_back(ph);       tgt.ys.push_back(d.rv);
@@ -439,14 +477,25 @@ void RVPanel::populate()
         QCustomPlot *plot = new QCustomPlot;
         PanelUtils::stylePlot(plot);
         plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
-        plot->legend->setVisible(false);
+        plot->legend->setVisible(hasComp2);
 
         constexpr double kPhaseLo = -1.05;
         constexpr double kPhaseHi = 1.05;
 
         auto yRange = addRVDataToPlot(plot, phases, rvs, errs, kPhaseLo,
                                       kPhaseHi, PanelUtils::pointColor(),
-                                      PanelUtils::errorBarColor());
+                                      PanelUtils::errorBarColor(),
+                                      hasComp2 ? QStringLiteral("Primary")
+                                               : QString());
+        if (hasComp2) {
+            auto yRange2 = addRVDataToPlot(plot, phases2, rvs2, errs2,
+                                           kPhaseLo, kPhaseHi,
+                                           PanelUtils::secondaryPointColor(),
+                                           PanelUtils::secondaryErrorBarColor(),
+                                           QStringLiteral("Secondary"));
+            yRange.first  = std::min(yRange.first,  yRange2.first);
+            yRange.second = std::max(yRange.second, yRange2.second);
+        }
 
         // Model curve spans the full visible range (two phases). Track its
         // extent too, so the Y range frames both the points and the model.
@@ -465,6 +514,19 @@ void RVPanel::populate()
         fitGraph->setPen(QPen(PanelUtils::fitCurveColor(), 2.0));
         fitGraph->setData(fitX, fitY);
         fitGraph->removeFromLegend();
+
+        if (bestFit->hasK2()) {
+            QVector<double> fit2Y(N + 1);
+            for (int i = 0; i <= N; ++i) {
+                fit2Y[i] = bestFit->calculateRVAtPhase(fitX[i], 2);
+                mLo = std::min(mLo, fit2Y[i]);
+                mHi = std::max(mHi, fit2Y[i]);
+            }
+            QCPGraph *fit2Graph = plot->addGraph();
+            fit2Graph->setPen(secondaryModelPen());
+            fit2Graph->setData(fitX, fit2Y);
+            fit2Graph->removeFromLegend();
+        }
 
         double yLo = std::min(yRange.first,  mLo);
         double yHi = std::max(yRange.second, mHi);
@@ -506,12 +568,14 @@ void RVPanel::populate()
         double t0 = data.front().time;
         std::vector<double>  times, rvs, errs, epochs;
         std::vector<QString> specIds;            // all parallel to times
+        std::vector<int>     comps;
         for (auto& d : data) {
             times.push_back(d.time - t0);
             rvs.push_back(d.rv);
             errs.push_back(d.err);
             epochs.push_back(d.time);
             specIds.push_back(d.specId);
+            comps.push_back(d.comp);
         }
 
         std::vector<int> gapIdx = findGapIndices(times);
@@ -555,6 +619,12 @@ void RVPanel::populate()
                 const double y = bestFit->calculateRV(Time(t + t0, TimeScale::BJD));
                 yLo = std::min(yLo, y);
                 yHi = std::max(yHi, y);
+                if (bestFit->hasK2()) {
+                    const double y2 =
+                        bestFit->calculateRV(Time(t + t0, TimeScale::BJD), 2);
+                    yLo = std::min(yLo, y2);
+                    yHi = std::max(yHi, y2);
+                }
             }
         }
         double yMargin = (yHi - yLo) * 0.1;
@@ -569,7 +639,7 @@ void RVPanel::populate()
             QCustomPlot* plot = new QCustomPlot;
             PanelUtils::stylePlot(plot);
             plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
-            plot->legend->setVisible(false);
+            plot->legend->setVisible(hasComp2);
 
             double xMin = times.front();
             double xMax = times.back();
@@ -579,8 +649,21 @@ void RVPanel::populate()
             double clipLo = xMin - span * 0.05;
             double clipHi = xMax + span * 0.05;
 
-            addRVDataToPlot(plot, times, rvs, errs, clipLo, clipHi,
-                            PanelUtils::pointColor(), PanelUtils::errorBarColor());
+            if (!hasComp2) {
+                addRVDataToPlot(plot, times, rvs, errs, clipLo, clipHi,
+                                PanelUtils::pointColor(), PanelUtils::errorBarColor());
+            } else {
+                const auto s1 = filterComp(times, rvs, errs, comps, 1);
+                const auto s2 = filterComp(times, rvs, errs, comps, 2);
+                addRVDataToPlot(plot, s1.x, s1.y, s1.e, clipLo, clipHi,
+                                PanelUtils::pointColor(),
+                                PanelUtils::errorBarColor(),
+                                QStringLiteral("Primary"));
+                addRVDataToPlot(plot, s2.x, s2.y, s2.e, clipLo, clipHi,
+                                PanelUtils::secondaryPointColor(),
+                                PanelUtils::secondaryErrorBarColor(),
+                                QStringLiteral("Secondary"));
+            }
 
             if (bestFit && bestFit->getPeriod() > 0) {
                 QVector<double> fitX(501), fitY(501);
@@ -593,6 +676,17 @@ void RVPanel::populate()
                 fitGraph->setPen(QPen(PanelUtils::fitCurveColor(), 2.0));
                 fitGraph->setData(fitX, fitY);
                 fitGraph->removeFromLegend();
+
+                if (bestFit->hasK2()) {
+                    QVector<double> fit2Y(501);
+                    for (int i = 0; i <= 500; ++i)
+                        fit2Y[i] = bestFit->calculateRV(
+                            Time(fitX[i] + t0, TimeScale::BJD), 2);
+                    QCPGraph* fit2Graph = plot->addGraph();
+                    fit2Graph->setPen(secondaryModelPen());
+                    fit2Graph->setData(fitX, fit2Y);
+                    fit2Graph->removeFromLegend();
+                }
             }
 
             // Highlight graph on top.
@@ -630,6 +724,7 @@ void RVPanel::populate()
             auto splitErr   = splitAt(errs,    gapIdx);
             auto splitSpec  = splitAt(specIds, gapIdx);
             auto splitEpoch = splitAt(epochs,  gapIdx);
+            auto splitComp  = splitAt(comps,   gapIdx);
 
             for (int seg = 0; seg < nSeg; ++seg) {
                 auto& segTimes = splitTimes[seg];
@@ -637,6 +732,7 @@ void RVPanel::populate()
                 auto& segErr   = splitErr[seg];
                 auto& segSpec  = splitSpec[seg];
                 auto& segEpoch = splitEpoch[seg];
+                auto& segComp  = splitComp[seg];
 
                 double segStart = segTimes.front();
                 double segEnd   = segTimes.back();
@@ -654,10 +750,27 @@ void RVPanel::populate()
                 QCustomPlot* plot = brokenAxis->addSegment(stretches[seg]);
                 PanelUtils::stylePlot(plot);
                 plot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
-                plot->legend->setVisible(false);
+                // One legend for the whole broken axis, on the first segment.
+                plot->legend->setVisible(hasComp2 && seg == 0);
 
-                addRVDataToPlot(plot, segTimes, segRV, segErr,
-                                xMin, xMax, PanelUtils::pointColor(), PanelUtils::errorBarColor());
+                if (!hasComp2) {
+                    addRVDataToPlot(plot, segTimes, segRV, segErr,
+                                    xMin, xMax, PanelUtils::pointColor(),
+                                    PanelUtils::errorBarColor());
+                } else {
+                    const auto s1 = filterComp(segTimes, segRV, segErr, segComp, 1);
+                    const auto s2 = filterComp(segTimes, segRV, segErr, segComp, 2);
+                    addRVDataToPlot(plot, s1.x, s1.y, s1.e, xMin, xMax,
+                                    PanelUtils::pointColor(),
+                                    PanelUtils::errorBarColor(),
+                                    seg == 0 ? QStringLiteral("Primary")
+                                             : QString());
+                    addRVDataToPlot(plot, s2.x, s2.y, s2.e, xMin, xMax,
+                                    PanelUtils::secondaryPointColor(),
+                                    PanelUtils::secondaryErrorBarColor(),
+                                    seg == 0 ? QStringLiteral("Secondary")
+                                             : QString());
+                }
 
                 // Fit overlay
                 if (bestFit && bestFit->getPeriod() > 0) {
@@ -671,6 +784,17 @@ void RVPanel::populate()
                     fitGraph->setPen(QPen(PanelUtils::fitCurveColor(), 2.0));
                     fitGraph->setData(fitX, fitY);
                     fitGraph->removeFromLegend();
+
+                    if (bestFit->hasK2()) {
+                        QVector<double> fit2Y(201);
+                        for (int i = 0; i <= 200; ++i)
+                            fit2Y[i] = bestFit->calculateRV(
+                                Time(fitX[i] + t0, TimeScale::BJD), 2);
+                        QCPGraph* fit2Graph = plot->addGraph();
+                        fit2Graph->setPen(secondaryModelPen());
+                        fit2Graph->setData(fitX, fit2Y);
+                        fit2Graph->removeFromLegend();
+                    }
                 }
 
                 // Highlight graph on top, scoped to this segment's points.

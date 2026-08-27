@@ -36,7 +36,7 @@ constexpr double kDeg2Rad = kPi / 180.0;
 constexpr double kLn10    = 2.302585092994045684017991454684;
 constexpr double kInf     = std::numeric_limits<double>::infinity();
 
-constexpr int kMaxDim = 6;
+constexpr int kMaxDim = 7;
 
 // Parameter slots of the *sampled* vector. Column 0 is log10 P while sampling
 // and plain P once written to the output chain.
@@ -295,16 +295,22 @@ struct Dataset {
     const double* w = nullptr;   ///< 1/σ²
     int           n = 0;
     double        tMax = 0.0;    ///< max |t|, used to bound the sine argument
+    const double* c2 = nullptr;  ///< 1.0 for secondary-component points, else 0
+    bool          sb2 = false;   ///< any secondary points → K2 is sampled
 };
 
 /// `Fast` selects the inline sine; the caller falls back to libm when the phase
 /// argument could exceed the range the quadrant index is valid over, which no
 /// realistic period/baseline combination reaches.
-template <bool Fast>
+template <bool Fast, bool SB2>
 inline double chi2CircularImpl(const Dataset& d, double invP, double K,
-                               double gamma, double phase, double bail)
+                               double K2, double gamma, double phase,
+                               double bail)
 {
     const double twoPiPhase = kTwoPi * phase;
+    // Per-point amplitude: K for the primary, -K2 for the secondary
+    // (antiphase), selected branch-free so the loop still vectorises.
+    const double dK = K + K2;
     double sum = 0.0;
     for (int i = 0; i < d.n; ) {
         // Chunked so the early bail-out costs one check per 16 points and the
@@ -314,7 +320,8 @@ inline double chi2CircularImpl(const Dataset& d, double invP, double K,
         #pragma omp simd reduction(+ : part)
         for (int k = i; k < end; ++k) {
             const double a = kTwoPi * d.t[k] * invP + twoPiPhase;
-            const double m = gamma + K * (Fast ? fastSin(a) : std::sin(a));
+            const double amp = SB2 ? (K - d.c2[k] * dK) : K;
+            const double m = gamma + amp * (Fast ? fastSin(a) : std::sin(a));
             const double r = d.y[k] - m;
             part += r * r * d.w[k];
         }
@@ -326,21 +333,27 @@ inline double chi2CircularImpl(const Dataset& d, double invP, double K,
 }
 
 inline double chi2Circular(const Dataset& d, double invP, double K,
-                           double gamma, double phase, double bail)
+                           double K2, double gamma, double phase, double bail)
 {
     const bool safe = kTwoPi * (d.tMax * invP + 1.0) < 1e9;
-    return safe ? chi2CircularImpl<true> (d, invP, K, gamma, phase, bail)
-                : chi2CircularImpl<false>(d, invP, K, gamma, phase, bail);
+    if (d.sb2)
+        return safe ? chi2CircularImpl<true,  true>(d, invP, K, K2, gamma, phase, bail)
+                    : chi2CircularImpl<false, true>(d, invP, K, K2, gamma, phase, bail);
+    return safe ? chi2CircularImpl<true,  false>(d, invP, K, 0.0, gamma, phase, bail)
+                : chi2CircularImpl<false, false>(d, invP, K, 0.0, gamma, phase, bail);
 }
 
-inline double chi2Keplerian(const Dataset& d, double invP, double K,
-                            double gamma, double phase, double ecc,
-                            double omegaDeg, double bail)
+template <bool SB2>
+inline double chi2KeplerianImpl(const Dataset& d, double invP, double K,
+                                double K2, double gamma, double phase,
+                                double ecc, double omegaDeg, double bail)
 {
     double sinw, cosw;
     fastSinCos(reduceTwoPi(omegaDeg * kDeg2Rad), sinw, cosw);
     const double sq   = std::sqrt(std::max(0.0, 1.0 - ecc * ecc));
     const double base = gamma + K * ecc * cosw;
+    // Note the e·cos ω offset flips sign with the amplitude for the secondary.
+    const double ecw  = ecc * cosw;
 
     // Scalar: the Kepler iteration keeps the vectoriser out regardless of how
     // the loop is shaped (tried), so this stays in the form that reads best.
@@ -356,7 +369,13 @@ inline double chi2Keplerian(const Dataset& d, double invP, double K,
         const double sinNu = sq * sinE / den;
         const double cosNu = (cosE - ecc) / den;
 
-        const double m = base + K * (cosNu * cosw - sinNu * sinw);
+        double m;
+        if constexpr (SB2) {
+            const double amp = d.c2[i] > 0.0 ? -K2 : K;
+            m = gamma + amp * (cosNu * cosw - sinNu * sinw + ecw);
+        } else {
+            m = base + K * (cosNu * cosw - sinNu * sinw);
+        }
         const double r = d.y[i] - m;
         sum += r * r * d.w[i];
         if (sum > bail) return sum;
@@ -364,12 +383,21 @@ inline double chi2Keplerian(const Dataset& d, double invP, double K,
     return sum;
 }
 
+inline double chi2Keplerian(const Dataset& d, double invP, double K,
+                            double K2, double gamma, double phase, double ecc,
+                            double omegaDeg, double bail)
+{
+    return d.sb2
+        ? chi2KeplerianImpl<true> (d, invP, K, K2,  gamma, phase, ecc, omegaDeg, bail)
+        : chi2KeplerianImpl<false>(d, invP, K, 0.0, gamma, phase, ecc, omegaDeg, bail);
+}
+
 // ═════════════════════════════════════════════════════════════════════════════
 //  Sampler
 // ═════════════════════════════════════════════════════════════════════════════
 
 struct alignas(64) ChainState {
-    double x[kMaxDim] = {0, 0, 0, 0, 0, 0};
+    double x[kMaxDim] = {};
     double lp = -kInf;
 };
 
@@ -387,7 +415,11 @@ public:
         : _cfg(cfg), _d(data), _prior(prior)
     {
         _ecc = cfg.eccentric;
-        _dim = _ecc ? 6 : 4;
+        _sb2 = data.sb2;
+        // K2 is appended LAST so the fixed slots (phase wrap, omega wrap,
+        // log-period) keep their enum indices in every mode.
+        _iK2 = _sb2 ? (_ecc ? 6 : 4) : -1;
+        _dim = (_ecc ? 6 : 4) + (_sb2 ? 1 : 0);
         setupBounds();
         setupStart(seedPeriods);
         setupProposal();
@@ -414,10 +446,11 @@ private:
             if (pw <= 0.0) return -kInf;
             lp += std::log(pw);
         }
+        const double K2 = _sb2 ? x[_iK2] : 0.0;
         const double c2 = _ecc
-            ? chi2Keplerian(_d, 1.0 / P, x[iAMP], x[iOFF], x[iPH],
+            ? chi2Keplerian(_d, 1.0 / P, x[iAMP], K2, x[iOFF], x[iPH],
                             x[iECC], x[iOMG], kInf)
-            : chi2Circular (_d, 1.0 / P, x[iAMP], x[iOFF], x[iPH], kInf);
+            : chi2Circular (_d, 1.0 / P, x[iAMP], K2, x[iOFF], x[iPH], kInf);
         return lp - 0.5 * c2;
     }
 
@@ -463,10 +496,11 @@ private:
         if (!(chi2Max > 0.0)) return false;
 
         const double invP = 1.0 / P;
+        const double K2 = _sb2 ? prop[_iK2] : 0.0;
         const double c2 = _ecc
-            ? chi2Keplerian(_d, invP, prop[iAMP], prop[iOFF], prop[iPH],
+            ? chi2Keplerian(_d, invP, prop[iAMP], K2, prop[iOFF], prop[iPH],
                             prop[iECC], prop[iOMG], chi2Max)
-            : chi2Circular (_d, invP, prop[iAMP], prop[iOFF], prop[iPH], chi2Max);
+            : chi2Circular (_d, invP, prop[iAMP], K2, prop[iOFF], prop[iPH], chi2Max);
         if (!(c2 < chi2Max)) return false;
 
         std::copy(prop, prop + _dim, st.x);
@@ -523,10 +557,12 @@ private:
 
     bool _ecc = false;
     int  _dim = 4;
+    bool _sb2 = false;
+    int  _iK2 = -1;
 
-    double _lo[kMaxDim] = {0, 0, 0, 0, 0, 0};
-    double _hi[kMaxDim] = {0, 0, 0, 0, 0, 0};
-    double _initSigma[kMaxDim] = {0, 0, 0, 0, 0, 0};
+    double _lo[kMaxDim] = {};
+    double _hi[kMaxDim] = {};
+    double _initSigma[kMaxDim] = {};
 
     std::vector<ChainState> _state;
     std::vector<Rng>        _rng;
@@ -538,7 +574,7 @@ private:
     double _sqrtScale = 1.0;
 
     long long _welfordN = 0;
-    double    _mean[kMaxDim] = {0, 0, 0, 0, 0, 0};
+    double    _mean[kMaxDim] = {};
     double    _M2[kMaxDim * kMaxDim] = {0};
     long long _adaptCount = 0;
 };
@@ -558,6 +594,11 @@ void Sampler::setupBounds()
         _hi[iECC] = _cfg.ecc_max;
         _lo[iOMG] = _cfg.omega_min;
         _hi[iOMG] = _cfg.omega_max;
+    }
+    if (_sb2) {
+        // K2 shares K's amplitude bounds.
+        _lo[_iK2] = _cfg.amp_min;
+        _hi[_iK2] = _cfg.amp_max > 0.0 ? _cfg.amp_max : _cfg.amp_lim;
     }
 }
 
@@ -607,6 +648,7 @@ void Sampler::setupStart(const std::vector<double>& seedPeriods)
         x[iOFF] = startOff;
         x[iPH]  = _cfg.phase_0;
         if (_ecc) { x[iECC] = startEcc; x[iOMG] = startOmg; }
+        if (_sb2) x[_iK2] = startAmp;
         // Spread the rungs over the strongest periodogram peaks so the ensemble
         // starts near every candidate period instead of all in one place.
         x[iLPER] = (t < (int)seedPeriods.size()) ? std::log10(seedPeriods[t])
@@ -625,6 +667,8 @@ void Sampler::setupProposal()
         _initSigma[iECC] = _cfg.eccentricity_step > 0.0 ? _cfg.eccentricity_step : 0.01;
         _initSigma[iOMG] = _cfg.omega_step        > 0.0 ? _cfg.omega_step        : 5.0;
     }
+    if (_sb2)
+        _initSigma[_iK2] = _cfg.amp_step > 0.0 ? _cfg.amp_step : 0.5;
 
     std::fill(std::begin(_C), std::end(_C), 0.0);
     for (int i = 0; i < _dim; ++i)
@@ -1220,6 +1264,10 @@ Result run(const Data& data, Config cfg, const LCPrior* lcPrior, Progress* progr
         R.error_message = "Need >= 4 points and matching vector sizes";
         return R;
     }
+    if (!data.comp.empty() && data.comp.size() != n) {
+        R.error_message = "Component vector size does not match data";
+        return R;
+    }
     if (!(cfg.min_period > 0.0) || !(cfg.max_period > cfg.min_period)) {
         R.error_message = "Invalid period range";
         return R;
@@ -1237,9 +1285,32 @@ Result run(const Data& data, Config cfg, const LCPrior* lcPrior, Progress* progr
         w[i] = 1.0 / (e * e);
     }
 
+    // SB2 detection up front: the seed periodogram must not see the mixed
+    // series (see below), and the sampler needs the 0/1 selector later.
+    bool sb2 = false;
+    if (!data.comp.empty())
+        for (int c : data.comp) { if (c >= 2) { sb2 = true; break; } }
+
     // ── periodogram: chain seeding, and handed back for display ──
+    // Primary component only. The two components are in antiphase, so a
+    // periodogram of the merged SB2 series partly cancels itself at the true
+    // period - which is exactly where the chain seeds need to land, and a
+    // suppressed peak there sends every rung to an alias instead.
+    std::vector<double> tPri, yPri;
+    if (sb2) {
+        tPri.reserve(n); yPri.reserve(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            if (data.comp[i] >= 2) continue;
+            tPri.push_back(t[i]);
+            yPri.push_back(y[i]);
+        }
+    }
+    const std::vector<double>& tSeed = sb2 ? tPri : t;
+    const std::vector<double>& ySeed = sb2 ? yPri : y;
+
     std::vector<double> pgPeriods, pgPower;
-    if (computeSeedPeriodogram(t, y, cfg.min_period, cfg.max_period,
+    if (tSeed.size() >= 4 &&
+        computeSeedPeriodogram(tSeed, ySeed, cfg.min_period, cfg.max_period,
                                pgPeriods, pgPower)) {
         R.periodogram_periods = pgPeriods;
         R.periodogram_power   = pgPower;
@@ -1269,6 +1340,17 @@ Result run(const Data& data, Config cfg, const LCPrior* lcPrior, Progress* progr
     for (double v : t) tMax = std::max(tMax, std::fabs(v));
     Dataset ds{t.data(), y.data(), w.data(), (int)n, tMax};
 
+    // SB2: per-point 0/1 secondary selector; active only when a secondary
+    // point actually exists, so all-primary inputs run the SB1 code path.
+    std::vector<double> c2v;
+    if (sb2) {
+        c2v.resize(n);
+        for (std::size_t i = 0; i < n; ++i)
+            c2v[i] = (data.comp[i] >= 2) ? 1.0 : 0.0;
+        ds.c2  = c2v.data();
+        ds.sb2 = true;
+    }
+
     const int Ntemp = std::max(cfg.n_temperatures, 1);
     const auto seeds = seedPeriodsFrom(pgPeriods, pgPower,
                                        cfg.min_period, cfg.max_period, Ntemp * 2);
@@ -1292,6 +1374,7 @@ Result run(const Data& data, Config cfg, const LCPrior* lcPrior, Progress* progr
         ? std::vector<std::string>{"period", "amplitude", "offset", "phase",
                                     "eccentricity", "omega"}
         : std::vector<std::string>{"period", "amplitude", "offset", "phase"};
+    if (sb2) R.param_names.push_back("amplitude2");
 
     const int n1d = cfg.n_param_bins  > 0 ? std::min(cfg.n_param_bins,  500) : 100;
     const int n2d = cfg.n_period_bins > 0 ? std::min(cfg.n_period_bins, 200) : 100;

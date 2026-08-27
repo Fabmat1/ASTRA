@@ -1760,6 +1760,22 @@ void RVExtractionTask::executeFromFits()
 
             totalFits += static_cast<int>(fits.size());
 
+            // Shared id + systematic-error assignment; the systematic depends
+            // only on the spectrum's instrument band, so it applies to both
+            // components alike.
+            auto finalizeRVPoint =
+                [&](const std::shared_ptr<RadialVelocityPoint>& rvPt) {
+                rvPt->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+                if (_systematicConfig.enabled) {
+                    double sys = determineSystematicForSpectrum(spectrum);
+                    if (sys > 0) {
+                        rvPt->setRVErrorFormal(rvPt->getRVError());
+                        rvPt->setRVErrorSystematic(sys);
+                    }
+                }
+                curve->addRVPoint(rvPt);
+            };
+
             if (_bestFitOnly) {
                 std::shared_ptr<SpectralFit> best = spectrum->getBestFit();
 
@@ -1784,17 +1800,15 @@ void RVExtractionTask::executeFromFits()
                 }
                 fitsWithNonZeroRV++;
 
-                auto rvPt = RadialVelocityPoint::createFromSpectralFit(best, spectrum);
-                if (rvPt) {
-                    rvPt->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
-                    if (_systematicConfig.enabled) {
-                        double sys = determineSystematicForSpectrum(spectrum);
-                        if (sys > 0) {
-                            rvPt->setRVErrorFormal(rvPt->getRVError());
-                            rvPt->setRVErrorSystematic(sys);
-                        }
+                for (int component = 1; component <= 2; ++component) {
+                    if (component >= 2) {
+                        if (!best->hasSecondRV()) break;
+                        if (_skipZeroRV &&
+                            std::abs(best->radialVelocity2) < 1e-10) break;
                     }
-                    curve->addRVPoint(rvPt);
+                    auto rvPt = RadialVelocityPoint::createFromSpectralFit(
+                        best, spectrum, nullptr, component);
+                    if (rvPt) finalizeRVPoint(rvPt);
                 }
             } else {
                 for (const auto& fit : fits) {
@@ -1804,17 +1818,15 @@ void RVExtractionTask::executeFromFits()
                     }
                     fitsWithNonZeroRV++;
 
-                    auto rvPt = RadialVelocityPoint::createFromSpectralFit(fit, spectrum);
-                    if (rvPt) {
-                        rvPt->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
-                        if (_systematicConfig.enabled) {
-                            double sys = determineSystematicForSpectrum(spectrum);
-                            if (sys > 0) {
-                                rvPt->setRVErrorFormal(rvPt->getRVError());
-                                rvPt->setRVErrorSystematic(sys);
-                            }
+                    for (int component = 1; component <= 2; ++component) {
+                        if (component >= 2) {
+                            if (!fit->hasSecondRV()) break;
+                            if (_skipZeroRV &&
+                                std::abs(fit->radialVelocity2) < 1e-10) break;
                         }
-                        curve->addRVPoint(rvPt);
+                        auto rvPt = RadialVelocityPoint::createFromSpectralFit(
+                            fit, spectrum, nullptr, component);
+                        if (rvPt) finalizeRVPoint(rvPt);
                     }
                 }
             }
@@ -2072,10 +2084,12 @@ void RVExtractionTask::executeFromTable()
     }
 
     // ── Pass 2: build (or extend) one curve per star ────────────
-    // An epoch already present with the same source is a re-import of the same
-    // measurement, not a new one.
-    auto epochKey = [](const QString& source, double time) {
-        return QString("%1@%2").arg(source).arg(qRound64(time * 1e6));
+    // An epoch already present with the same source and component is a
+    // re-import of the same measurement, not a new one. Without the component
+    // in the key an SB2 epoch (two rows, one per component) would collapse.
+    auto epochKey = [](const QString& source, double time, int component) {
+        return QString("%1@%2#%3")
+            .arg(source).arg(qRound64(time * 1e6)).arg(component);
     };
 
     int matched = 0, totalPoints = 0, duplicateRows = 0;
@@ -2111,7 +2125,8 @@ void RVExtractionTask::executeFromTable()
         for (const auto& pt : curve->getRVPoints()) {
             if (!pt) continue;
             existingEpochs.insert(epochKey(
-                pt->getSource(), cfg.isBJD ? pt->getBJD() : pt->getMJD()));
+                pt->getSource(), cfg.isBJD ? pt->getBJD() : pt->getMJD(),
+                pt->getComponent()));
         }
 
         int added = 0;
@@ -2125,8 +2140,15 @@ void RVExtractionTask::executeFromTable()
             double rv   = row[cfg.rvCol].toDouble(&okRV);
             if (!okTime || !okRV) continue;
 
+            int component = 1;
+            if (cfg.compCol >= 0 && cfg.compCol < row.size()) {
+                bool okComp;
+                const int c = row[cfg.compCol].trimmed().toInt(&okComp);
+                if (okComp && c == 2) component = 2;
+            }
+
             const QString source = "table_import";
-            const QString key    = epochKey(source, time);
+            const QString key    = epochKey(source, time, component);
             if (existingEpochs.contains(key)) {
                 duplicateRows++;
                 continue;
@@ -2161,6 +2183,7 @@ void RVExtractionTask::executeFromTable()
                 rvPt->setRVError(rvErr);
             }
             rvPt->setSource(source);
+            rvPt->setComponent(component);
 
             curve->addRVPoint(rvPt);
             added++;

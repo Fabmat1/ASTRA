@@ -205,6 +205,7 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
             rv_period, rv_e_period, rv_gamma, rv_e_gamma,
             rv_e_k_up, rv_e_k_down, rv_e_period_up, rv_e_period_down,
             rv_e_gamma_up, rv_e_gamma_down,
+            rv_k2, rv_e_k2, rv_e_k2_up, rv_e_k2_down,
             rv_ecc, rv_phi, rv_t0, rv_chi2, rv_rms,
             sed_mass1, sed_e_mass1, sed_radius1, sed_e_radius1,
             sed_lum1, sed_e_lum1,
@@ -251,6 +252,7 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
             :rv_period, :rv_e_period, :rv_gamma, :rv_e_gamma,
             :rv_e_k_up, :rv_e_k_down, :rv_e_period_up, :rv_e_period_down,
             :rv_e_gamma_up, :rv_e_gamma_down,
+            :rv_k2, :rv_e_k2, :rv_e_k2_up, :rv_e_k2_down,
             :rv_ecc, :rv_phi, :rv_t0, :rv_chi2, :rv_rms,
             :sed_mass1, :sed_e_mass1, :sed_radius1, :sed_e_radius1,
             :sed_lum1, :sed_e_lum1,
@@ -349,6 +351,10 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
     query.bindValue(":rv_e_gamma", star->getRVEGamma());
     query.bindValue(":rv_e_k_up", SqlValue::fromDouble(star->getRVEKUp()));
     query.bindValue(":rv_e_k_down", SqlValue::fromDouble(star->getRVEKDown()));
+    query.bindValue(":rv_k2", SqlValue::fromDouble(star->getRVK2()));
+    query.bindValue(":rv_e_k2", SqlValue::fromDouble(star->getRVEK2()));
+    query.bindValue(":rv_e_k2_up", SqlValue::fromDouble(star->getRVEK2Up()));
+    query.bindValue(":rv_e_k2_down", SqlValue::fromDouble(star->getRVEK2Down()));
     query.bindValue(":rv_e_period_up", SqlValue::fromDouble(star->getRVEPeriodUp()));
     query.bindValue(":rv_e_period_down", SqlValue::fromDouble(star->getRVEPeriodDown()));
     query.bindValue(":rv_e_gamma_up", SqlValue::fromDouble(star->getRVEGammaUp()));
@@ -548,6 +554,8 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
             rv_period = :rv_period, rv_e_period = :rv_e_period,
             rv_gamma = :rv_gamma, rv_e_gamma = :rv_e_gamma,
             rv_e_k_up = :rv_e_k_up, rv_e_k_down = :rv_e_k_down,
+            rv_k2 = :rv_k2, rv_e_k2 = :rv_e_k2,
+            rv_e_k2_up = :rv_e_k2_up, rv_e_k2_down = :rv_e_k2_down,
             rv_e_period_up = :rv_e_period_up, rv_e_period_down = :rv_e_period_down,
             rv_e_gamma_up = :rv_e_gamma_up, rv_e_gamma_down = :rv_e_gamma_down,
             rv_ecc = :rv_ecc, rv_phi = :rv_phi, rv_t0 = :rv_t0,
@@ -664,6 +672,10 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
     query.bindValue(":rv_e_gamma", star->getRVEGamma());
     query.bindValue(":rv_e_k_up", SqlValue::fromDouble(star->getRVEKUp()));
     query.bindValue(":rv_e_k_down", SqlValue::fromDouble(star->getRVEKDown()));
+    query.bindValue(":rv_k2", SqlValue::fromDouble(star->getRVK2()));
+    query.bindValue(":rv_e_k2", SqlValue::fromDouble(star->getRVEK2()));
+    query.bindValue(":rv_e_k2_up", SqlValue::fromDouble(star->getRVEK2Up()));
+    query.bindValue(":rv_e_k2_down", SqlValue::fromDouble(star->getRVEK2Down()));
     query.bindValue(":rv_e_period_up", SqlValue::fromDouble(star->getRVEPeriodUp()));
     query.bindValue(":rv_e_period_down", SqlValue::fromDouble(star->getRVEPeriodDown()));
     query.bindValue(":rv_e_gamma_up", SqlValue::fromDouble(star->getRVEGammaUp()));

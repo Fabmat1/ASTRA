@@ -64,6 +64,20 @@ RVAddFitDialog::RVAddFitDialog(std::shared_ptr<Star> star,
     resize(1180, 760);
 
     auto* outer = new QVBoxLayout(this);
+
+    // SB2 toggle, above the tabs: it governs every fitter in the dialog.
+    _sb2Check = new QCheckBox(
+        "Include secondary component (joint SB2 fit around a common γ)", this);
+    _sb2Check->setToolTip(
+        "Fit both stellar components simultaneously: shared P, e, ω, φ and γ, "
+        "with separate semi-amplitudes K and K₂ (the secondary in antiphase).\n"
+        "Unchecked, only component-1 points are fitted.");
+    const bool haveComp2 = curveHasComponent2();
+    _sb2Check->setChecked(haveComp2);
+    _sb2Check->setEnabled(haveComp2);
+    _sb2Check->setVisible(haveComp2);
+    outer->addWidget(_sb2Check);
+
     _tabs = new QTabWidget(this);
 
     auto* mcmcTab   = new QWidget;
@@ -135,6 +149,7 @@ void RVAddFitDialog::buildManualTab(QWidget *parent) {
     // High precision for period, RV (K, γ) and phase.
     _mPeriod = mkPrecise(1e-6, 1.0e9, 0.0001);
     _mK      = mkPrecise(-1.0e4, 1.0e4, 0.1);
+    _mK2     = mkPrecise(0.0, 1.0e4, 0.1);
     _mGamma  = mkPrecise(-1.0e4, 1.0e4, 0.1);
     _mPhi    = mkPrecise(0.0, 1.0, 0.001);
     _mT0     = mkPrecise(0.0, 1.0e9, 0.001); // T0 in BJD
@@ -156,6 +171,14 @@ void RVAddFitDialog::buildManualTab(QWidget *parent) {
 
     form->addRow("Period [d]", _mPeriod);
     form->addRow("K [km/s]", _mK);
+    // Secondary amplitude, offered only for a curve that has secondary points.
+    // 0 leaves the solution single-lined.
+    QLabel* k2Label = new QLabel("K₂ [km/s]");
+    _mK2->setToolTip("Secondary semi-amplitude for an SB2 solution "
+                     "(0 = single-lined). The secondary shares P, e, ω, φ and "
+                     "γ and moves in antiphase.");
+    form->addRow(k2Label, _mK2);
+    if (!curveHasComponent2()) { k2Label->hide(); _mK2->hide(); }
     form->addRow("γ [km/s]", _mGamma);
     form->addRow(_mUseT0);
     form->addRow("φ (phase)", _mPhi);
@@ -564,6 +587,9 @@ std::shared_ptr<RVFit> RVAddFitDialog::buildManualFit() const {
     }
     fit->setPhi(phi);
 
+    if (_mK2 && curveHasComponent2() && _mK2->value() > 0.0)
+        fit->setK2(_mK2->value());
+
     const bool ecc = _mEccCheck->isChecked();
     fit->setEccentric(ecc);
     if (ecc) {
@@ -575,15 +601,67 @@ std::shared_ptr<RVFit> RVAddFitDialog::buildManualFit() const {
 }
 
 // ───────────────────────────────────────────────────────────────────
+namespace {
+
+/// Per-point component vector of `d`, or nullptr when it holds only primary
+/// points - the form every fitter takes to select its SB1 code path.
+const std::vector<int>* compOf(const RVMCMC::Data& d)
+{
+    if (d.comp.size() != d.bjd.size()) return nullptr;
+    for (int c : d.comp)
+        if (c >= 2) return &d.comp;
+    return nullptr;
+}
+
+/// Component-1 subset of `d`. A periodogram over a mixed SB2 series would
+/// partly cancel itself out, the two components being in antiphase, so the
+/// frequency search always runs on the primary alone.
+RVMCMC::Data primaryOnly(const RVMCMC::Data& d)
+{
+    if (compOf(d) == nullptr) return d;   // already all-primary
+    RVMCMC::Data out;
+    for (size_t i = 0; i < d.bjd.size(); ++i) {
+        if (d.comp[i] >= 2) continue;
+        out.bjd   .push_back(d.bjd[i]);
+        out.rv    .push_back(d.rv[i]);
+        out.rv_err.push_back(d.rv_err[i]);
+    }
+    return out;
+}
+
+} // namespace
+
+bool RVAddFitDialog::curveHasComponent2() const
+{
+    if (!_curve) return false;
+    for (const auto& p : _curve->getRVPoints()) {
+        if (!p || p->isFlagged() || p->getComponent() < 2) continue;
+        const double bjd = p->getBJD();
+        if (bjd > 0.0 && !std::isnan(bjd)) return true;
+    }
+    return false;
+}
+
+bool RVAddFitDialog::sb2Enabled() const
+{
+    return _sb2Check && _sb2Check->isChecked() && curveHasComponent2();
+}
+
 RVMCMC::Data RVAddFitDialog::buildRVData() const
 {
     RVMCMC::Data d;
     if (!_curve) return d;
 
+    // With the SB2 toggle off, secondary points are dropped entirely and the
+    // component vector is left empty, so every fitter runs its SB1 path.
+    const bool sb2 = sb2Enabled();
+
     for (const auto& p : _curve->getRVPoints()) {
         if (!p || p->isFlagged()) continue;
         const double bjd = p->getBJD();
         if (!(bjd > 0.0) || std::isnan(bjd)) continue;
+        const int comp = p->getComponent();
+        if (!sb2 && comp >= 2) continue;
 
         const double sf = p->getRVErrorFormal();
         const double ss = p->getRVErrorSystematic();
@@ -593,6 +671,7 @@ RVMCMC::Data RVAddFitDialog::buildRVData() const
         d.bjd   .push_back(bjd);
         d.rv    .push_back(p->getRV());
         d.rv_err.push_back(err);
+        if (sb2) d.comp.push_back(comp);
     }
     return d;
 }
@@ -884,13 +963,27 @@ namespace {
 
 struct LMResult {
     double K=0, gamma=0, phi=0, P=0, chi2=0;
+    double K2 = AsymErr::unset;      // SB2 only; NaN for a single-lined fit
+    double alpha = AsymErr::unset;   // K2/K, the parameter actually fitted
     bool ok=false; QString msg;
 };
 
+// Defined further down with the eccentric fit; used by the LM solves here.
+bool solveLinearN(int n, std::vector<double>& A, std::vector<double>& b,
+                  std::vector<double>& x);
+
+// Circular LM fit with a soft period prior.
+//
+// SB2: with `fitK2` and a per-point component vector, alpha = K2/K becomes a
+// fifth free parameter and secondary points follow the antiphase model
+// γ − alpha·(Kc·cos w + Ks·sin w). Both components share γ, P and the phase.
+// With fitK2 off the normal equations reduce to exactly the previous 4×4 system.
 LMResult fitCircularLM(const std::vector<double>& t,
                        const std::vector<double>& y,
                        const std::vector<double>& sigma,
-                       double P0, double sigP)
+                       double P0, double sigP,
+                       const std::vector<int>* comp = nullptr,
+                       bool fitK2 = false)
 {
     LMResult R;
     const int N = int(t.size());
@@ -898,7 +991,11 @@ LMResult fitCircularLM(const std::vector<double>& t,
     if (!(P0 > 0))  { R.msg = "Invalid period seed."; return R; }
     if (!(sigP > 0) || std::isnan(sigP)) sigP = std::max(1e-6, 0.05 * P0);
 
-    double Kc=0.0, Ks=0.0, gamma=0.0, P=P0;
+    const bool sb2 = fitK2 && comp && int(comp->size()) == N;
+    const int  np  = sb2 ? 5 : 4;
+    auto isSec = [&](int i) { return sb2 && (*comp)[i] >= 2; };
+
+    double Kc=0.0, Ks=0.0, gamma=0.0, P=P0, alpha=1.0;
     {
         double sumW=0, sumY=0;
         for (int i=0;i<N;++i){ double w=1.0/(sigma[i]*sigma[i]); sumW+=w; sumY+=w*y[i]; }
@@ -909,21 +1006,25 @@ LMResult fitCircularLM(const std::vector<double>& t,
     }
 
     auto residuals = [&](double Kc, double Ks, double gamma, double P,
-                         std::vector<double>& r){
+                         double alpha, std::vector<double>& r){
         r.resize(N+1);
         for (int i=0;i<N;++i){
             const double w = 2.0*M_PI*t[i]/P;
-            r[i] = (y[i] - (Kc*std::cos(w) + Ks*std::sin(w) + gamma)) / sigma[i];
+            const double A = Kc*std::cos(w) + Ks*std::sin(w);
+            const double m = isSec(i) ? (gamma - alpha*A) : (gamma + A);
+            r[i] = (y[i] - m) / sigma[i];
         }
         r[N] = (P0 - P) / sigP;
     };
 
-    std::vector<double> r; residuals(Kc,Ks,gamma,P,r);
+    std::vector<double> r; residuals(Kc,Ks,gamma,P,alpha,r);
     double chi2=0; for (double v:r) chi2+=v*v;
     double lambda = 1e-3;
 
+    std::vector<double> JTJ, JTr, A, bvec, delta;
     for (int iter=0; iter<200; ++iter){
-        double JTJ[4][4]={{0}}, JTr[4]={0};
+        JTJ.assign(size_t(np)*np, 0.0);
+        JTr.assign(np, 0.0);
         for (int i=0;i<N;++i){
             const double w  = 2.0*M_PI*t[i]/P;
             const double cw = std::cos(w), sw = std::sin(w);
@@ -932,63 +1033,46 @@ LMResult fitCircularLM(const std::vector<double>& t,
             // w = 2π t/P, so ∂M/∂P = (2π t/P²)(Kc·sin w − Ks·cos w). The previous
             // code dropped the leading minus sign, which steered the period step
             // in the wrong direction and stalled the fit.
-            const double Ji[4] = {
-                -cw/s,
-                -sw/s,
-                -1.0/s,
-                (2.0*M_PI*t[i]/(P*P)) * (Ks*cw - Kc*sw) / s
-            };
-            for (int a=0;a<4;++a){
+            const double dP = (2.0*M_PI*t[i]/(P*P)) * (Ks*cw - Kc*sw) / s;
+            double Ji[5] = { -cw/s, -sw/s, -1.0/s, dP, 0.0 };
+            if (isSec(i)) {
+                // Secondary: amplitude −alpha·A, so the amplitude and period
+                // entries flip sign and scale by alpha while γ stays shared.
+                Ji[0] = alpha*cw/s;
+                Ji[1] = alpha*sw/s;
+                Ji[3] = -alpha*dP;
+                Ji[4] = (Kc*cw + Ks*sw)/s;
+            }
+            for (int a=0;a<np;++a){
                 JTr[a] += Ji[a]*r[i];
-                for (int b=0;b<4;++b) JTJ[a][b] += Ji[a]*Ji[b];
+                for (int b=0;b<np;++b) JTJ[size_t(a)*np+b] += Ji[a]*Ji[b];
             }
         }
-        const double Jp[4] = {0,0,0,-1.0/sigP};
-        for (int a=0;a<4;++a){
+        const double Jp[5] = {0,0,0,-1.0/sigP,0};
+        for (int a=0;a<np;++a){
             JTr[a] += Jp[a]*r[N];
-            for (int b=0;b<4;++b) JTJ[a][b] += Jp[a]*Jp[b];
+            for (int b=0;b<np;++b) JTJ[size_t(a)*np+b] += Jp[a]*Jp[b];
         }
-        double A[4][4]; double bvec[4];
-        for (int a=0;a<4;++a){
-            for (int b=0;b<4;++b) A[a][b]=JTJ[a][b];
-            A[a][a]*=(1.0+lambda);
-            bvec[a]=-JTr[a];
+        A = JTJ; bvec.assign(np, 0.0);
+        for (int a=0;a<np;++a){
+            A[size_t(a)*np+a] *= (1.0+lambda);
+            bvec[a] = -JTr[a];
         }
-        double delta[4]={0};
-        {
-            double M[4][5];
-            for (int i=0;i<4;++i){ for (int j=0;j<4;++j) M[i][j]=A[i][j]; M[i][4]=bvec[i]; }
-            bool singular=false;
-            for (int i=0;i<4 && !singular;++i){
-                int piv=i;
-                for (int k=i+1;k<4;++k) if (std::abs(M[k][i])>std::abs(M[piv][i])) piv=k;
-                if (std::abs(M[piv][i])<1e-30){ singular=true; break; }
-                if (piv!=i) std::swap(M[piv],M[i]);
-                for (int k=i+1;k<4;++k){
-                    double f=M[k][i]/M[i][i];
-                    for (int j=i;j<5;++j) M[k][j]-=f*M[i][j];
-                }
-            }
-            if (singular){
-                lambda*=10;
-                if (lambda>1e12){ R.msg="Singular Jacobian."; return R; }
-                continue;
-            }
-            for (int i=3;i>=0;--i){
-                double s=M[i][4];
-                for (int j=i+1;j<4;++j) s-=M[i][j]*delta[j];
-                delta[i]=s/M[i][i];
-            }
+        if (!solveLinearN(np, A, bvec, delta)){
+            lambda*=10;
+            if (lambda>1e12){ R.msg="Singular Jacobian."; return R; }
+            continue;
         }
         double Kc2=Kc+delta[0], Ks2=Ks+delta[1], g2=gamma+delta[2], P2=P+delta[3];
+        double a2 = sb2 ? std::max(0.0, alpha+delta[4]) : alpha;
         if (P2<=0) P2=std::max(1e-6,0.5*P);
 
-        std::vector<double> r2; residuals(Kc2,Ks2,g2,P2,r2);
+        std::vector<double> r2; residuals(Kc2,Ks2,g2,P2,a2,r2);
         double chi2New=0; for (double v:r2) chi2New+=v*v;
 
         if (chi2New<chi2){
             const double rel=(chi2-chi2New)/std::max(chi2,1e-30);
-            Kc=Kc2; Ks=Ks2; gamma=g2; P=P2;
+            Kc=Kc2; Ks=Ks2; gamma=g2; P=P2; alpha=a2;
             chi2=chi2New; r.swap(r2);
             lambda=std::max(lambda*0.5,1e-10);
             if (rel<1e-8) break;
@@ -1004,6 +1088,7 @@ LMResult fitCircularLM(const std::vector<double>& t,
     if (phi0<0) phi0 += 2.0*M_PI;
     R.phi = phi0 / (2.0*M_PI);
     R.P = P; R.chi2=chi2; R.ok=true;
+    if (sb2) { R.alpha = alpha; R.K2 = alpha * R.K; }
     return R;
 }
 
@@ -1012,21 +1097,30 @@ LMResult fitCircularLM(const std::vector<double>& t,
 // be seeded from it instead of repeating the circular solve.
 struct CellFit {
     double Kc = 0, Ks = 0, gamma = 0, P = 0;
+    double alpha = 0;     // K2/K, only meaningful for an SB2 cell fit
     double chi2 = std::numeric_limits<double>::infinity();
 };
 
 // Fits Kc, Ks, γ and P with P projected onto [Pmin, Pmax] (no period prior),
 // seeded at P0. Returns the pure data χ² = Σ ((y-model)/σ)² at the solution.
 // Kept lightweight (capped iterations) since it runs once per grid cell.
+// SB2 (fitK2 + per-point components) adds alpha = K2/K exactly as
+// fitCircularLM does; without it the system is the previous 4×4 one.
 double fitCellChi2(const std::vector<double>& t,
                    const std::vector<double>& y,
                    const std::vector<double>& sigma,
                    double P0, double Pmin, double Pmax,
                    double Kmin, double Kmax, double gMin, double gMax,
-                   CellFit* out = nullptr)
+                   CellFit* out = nullptr,
+                   const std::vector<int>* comp = nullptr,
+                   bool fitK2 = false)
 {
     const int N = int(t.size());
     if (N < 4 || !(P0 > 0)) return std::numeric_limits<double>::infinity();
+
+    const bool sb2 = fitK2 && comp && int(comp->size()) == N;
+    const int  np  = sb2 ? 5 : 4;
+    auto isSec = [&](int i) { return sb2 && (*comp)[i] >= 2; };
 
     // Clamp γ and the semi-amplitude K=√(Kc²+Ks²) into their bounds while
     // preserving the phase (scale Kc,Ks together). Two compares + a hypot per
@@ -1041,7 +1135,7 @@ double fitCellChi2(const std::vector<double>& t,
         }
     };
 
-    double Kc=0.0, Ks=0.0, gamma=0.0, P=std::clamp(P0, Pmin, Pmax);
+    double Kc=0.0, Ks=0.0, gamma=0.0, P=std::clamp(P0, Pmin, Pmax), alpha=1.0;
     {
         double sumW=0, sumY=0;
         for (int i=0;i<N;++i){ double w=1.0/(sigma[i]*sigma[i]); sumW+=w; sumY+=w*y[i]; }
@@ -1052,78 +1146,67 @@ double fitCellChi2(const std::vector<double>& t,
     }
 
     auto residuals = [&](double Kc, double Ks, double gamma, double P,
-                         std::vector<double>& r){
+                         double alpha, std::vector<double>& r){
         r.resize(N);
         for (int i=0;i<N;++i){
             const double w = 2.0*M_PI*t[i]/P;
-            r[i] = (y[i] - (Kc*std::cos(w) + Ks*std::sin(w) + gamma)) / sigma[i];
+            const double A = Kc*std::cos(w) + Ks*std::sin(w);
+            const double m = isSec(i) ? (gamma - alpha*A) : (gamma + A);
+            r[i] = (y[i] - m) / sigma[i];
         }
     };
 
-    std::vector<double> r; residuals(Kc,Ks,gamma,P,r);
+    std::vector<double> r; residuals(Kc,Ks,gamma,P,alpha,r);
     double chi2=0; for (double v:r) chi2+=v*v;
     double lambda = 1e-3;
 
+    std::vector<double> JTJ, JTr, A, bvec, delta;
     for (int iter=0; iter<60; ++iter){
-        double JTJ[4][4]={{0}}, JTr[4]={0};
+        JTJ.assign(size_t(np)*np, 0.0);
+        JTr.assign(np, 0.0);
         for (int i=0;i<N;++i){
             const double w  = 2.0*M_PI*t[i]/P;
             const double cw = std::cos(w), sw = std::sin(w);
             const double s  = sigma[i];
-            const double Ji[4] = {
-                -cw/s, -sw/s, -1.0/s,
-                (2.0*M_PI*t[i]/(P*P)) * (Ks*cw - Kc*sw) / s
-            };
-            for (int a=0;a<4;++a){
+            const double dP = (2.0*M_PI*t[i]/(P*P)) * (Ks*cw - Kc*sw) / s;
+            double Ji[5] = { -cw/s, -sw/s, -1.0/s, dP, 0.0 };
+            if (isSec(i)) {
+                Ji[0] = alpha*cw/s;
+                Ji[1] = alpha*sw/s;
+                Ji[3] = -alpha*dP;
+                Ji[4] = (Kc*cw + Ks*sw)/s;
+            }
+            for (int a=0;a<np;++a){
                 JTr[a] += Ji[a]*r[i];
-                for (int b=0;b<4;++b) JTJ[a][b] += Ji[a]*Ji[b];
+                for (int b=0;b<np;++b) JTJ[size_t(a)*np+b] += Ji[a]*Ji[b];
             }
         }
-        double A[4][4]; double bvec[4];
-        for (int a=0;a<4;++a){
-            for (int b=0;b<4;++b) A[a][b]=JTJ[a][b];
-            A[a][a]*=(1.0+lambda);
-            bvec[a]=-JTr[a];
+        A = JTJ; bvec.assign(np, 0.0);
+        for (int a=0;a<np;++a){
+            A[size_t(a)*np+a] *= (1.0+lambda);
+            bvec[a] = -JTr[a];
         }
-        double delta[4]={0};
-        {
-            double M[4][5];
-            for (int i=0;i<4;++i){ for (int j=0;j<4;++j) M[i][j]=A[i][j]; M[i][4]=bvec[i]; }
-            bool singular=false;
-            for (int i=0;i<4 && !singular;++i){
-                int piv=i;
-                for (int k=i+1;k<4;++k) if (std::abs(M[k][i])>std::abs(M[piv][i])) piv=k;
-                if (std::abs(M[piv][i])<1e-30){ singular=true; break; }
-                if (piv!=i) std::swap(M[piv],M[i]);
-                for (int k=i+1;k<4;++k){
-                    double f=M[k][i]/M[i][i];
-                    for (int j=i;j<5;++j) M[k][j]-=f*M[i][j];
-                }
-            }
-            if (singular){ lambda*=10; if (lambda>1e12) break; continue; }
-            for (int i=3;i>=0;--i){
-                double s=M[i][4];
-                for (int j=i+1;j<4;++j) s-=M[i][j]*delta[j];
-                delta[i]=s/M[i][i];
-            }
+        if (!solveLinearN(np, A, bvec, delta)){
+            lambda*=10; if (lambda>1e12) break; continue;
         }
         double Kc2=Kc+delta[0], Ks2=Ks+delta[1], g2=gamma+delta[2];
         double P2=std::clamp(P+delta[3], Pmin, Pmax);
+        double a2 = sb2 ? std::max(0.0, alpha+delta[4]) : alpha;
         clampParams(Kc2, Ks2, g2);
 
-        std::vector<double> r2; residuals(Kc2,Ks2,g2,P2,r2);
+        std::vector<double> r2; residuals(Kc2,Ks2,g2,P2,a2,r2);
         double chi2New=0; for (double v:r2) chi2New+=v*v;
 
         if (chi2New<chi2){
             const double rel=(chi2-chi2New)/std::max(chi2,1e-30);
-            Kc=Kc2; Ks=Ks2; gamma=g2; P=P2; chi2=chi2New; r.swap(r2);
+            Kc=Kc2; Ks=Ks2; gamma=g2; P=P2; alpha=a2; chi2=chi2New; r.swap(r2);
             lambda=std::max(lambda*0.5,1e-10);
             if (rel<1e-9) break;
         } else {
             lambda*=4.0; if (lambda>1e12) break;
         }
     }
-    if (out) *out = CellFit{Kc, Ks, gamma, P, chi2};
+    if (out) *out = CellFit{Kc, Ks, gamma, P, sb2 ? alpha : 0.0, chi2};
     return chi2;
 }
 
@@ -1160,28 +1243,37 @@ double fitCellChi2Kepler(const std::vector<double>& t,
                          const std::vector<double>& sigma,
                          double P0, double Pmin, double Pmax,
                          double Kmin, double Kmax, double gMin, double gMax,
-                         double eMin, double eMax)
+                         double eMin, double eMax,
+                         const std::vector<int>* comp = nullptr,
+                         bool fitK2 = false)
 {
     const int N = int(t.size());
-    if (N < 6 || !(P0 > 0)) return std::numeric_limits<double>::infinity();
+    const bool sb2 = fitK2 && comp && int(comp->size()) == N;
+    const int  np  = sb2 ? 7 : 6;     // [P, K, γ, φ, e, ω(, K2)]
+    if (N < np || !(P0 > 0)) return std::numeric_limits<double>::infinity();
+
+    auto isSec = [&](int i) { return sb2 && (*comp)[i] >= 2; };
 
     CellFit c;
     const double chi2Circ = fitCellChi2(t, y, sigma, P0, Pmin, Pmax,
-                                        Kmin, Kmax, gMin, gMax, &c);
+                                        Kmin, Kmax, gMin, gMax, &c,
+                                        comp, fitK2);
     if (!std::isfinite(chi2Circ) || !(c.P > 0.0)) return chi2Circ;
 
     eMax = std::min(eMax, 0.95);
     if (eMin < 0.0) eMin = 0.0;
     if (eMin > eMax) std::swap(eMin, eMax);
 
-    constexpr int NP = 6;             // [P, K, γ, φ, e, ω]
+    constexpr int NPMAX = 7;
     constexpr double omegaSeed = 90.0;
     const double phiCirc = std::atan2(c.Kc, c.Ks) / (2.0 * M_PI);
     double phiEcc = eccPhaseSeed(phiCirc, omegaSeed);
+    const double Kcirc = std::hypot(c.Kc, c.Ks);
 
-    double p[NP] = {
-        c.P, std::hypot(c.Kc, c.Ks), c.gamma, phiEcc,
-        std::clamp(0.1, eMin, eMax), omegaSeed
+    double p[NPMAX] = {
+        c.P, Kcirc, c.gamma, phiEcc,
+        std::clamp(0.1, eMin, eMax), omegaSeed,
+        sb2 ? std::max(0.0, c.alpha) * Kcirc : 0.0
     };
 
     auto project = [&](double* q) {
@@ -1192,21 +1284,27 @@ double fitCellChi2Kepler(const std::vector<double>& t,
         q[3] -= std::floor(q[3]);                                   // φ ∈ [0,1)
         q[4] = std::clamp(q[4], eMin, eMax);
         q[5] = std::fmod(q[5], 360.0); if (q[5] < 0) q[5] += 360.0; // ω ∈ [0,360)
+        if (sb2) {
+            if (Kmax > 0.0) q[6] = std::min(q[6], Kmax);
+            q[6] = std::max(q[6], std::max(0.0, Kmin));
+        }
     };
 
-    auto model = [&](const double* q, double ti) -> double {
+    auto model = [&](const double* q, double ti, bool secondary) -> double {
         const double M = 2.0 * M_PI * (ti / q[0] - q[3]);
         const double e = q[4];
         const double E = RVFit::solveKepler(M, e);
         const double nu = 2.0 * std::atan2(std::sqrt(1.0 + e) * std::sin(E * 0.5),
                                            std::sqrt(1.0 - e) * std::cos(E * 0.5));
         const double w = q[5] * M_PI / 180.0;
-        return q[2] + q[1] * (std::cos(nu + w) + e * std::cos(w));
+        const double amp = secondary ? -q[6] : q[1];
+        return q[2] + amp * (std::cos(nu + w) + e * std::cos(w));
     };
 
     auto computeRes = [&](const double* q, std::vector<double>& r) {
         r.resize(N);
-        for (int i = 0; i < N; ++i) r[i] = (y[i] - model(q, t[i])) / sigma[i];
+        for (int i = 0; i < N; ++i)
+            r[i] = (y[i] - model(q, t[i], isSec(i))) / sigma[i];
     };
 
     project(p);
@@ -1214,52 +1312,52 @@ double fitCellChi2Kepler(const std::vector<double>& t,
     double chi2 = 0; for (double v : r) chi2 += v * v;
     double lambda = 1e-3;
 
-    std::vector<double> J(size_t(N) * NP), rr, rn;
+    std::vector<double> J(size_t(N) * np), rr, rn;
     // Capped harder than keplerLM (which runs once, not once per grid cell):
     // the seed already sits in the right basin, so this only has to settle it.
     for (int iter = 0; iter < 40; ++iter) {
-        for (int a = 0; a < NP; ++a) {
+        for (int a = 0; a < np; ++a) {
             double step = std::max(std::abs(p[a]) * 1e-6, 1e-7);
             if (a == 3) step = 1e-6;       // φ
             if (a == 4) step = 1e-5;       // e
             if (a == 5) step = 1e-3;       // ω
-            double pp[NP]; for (int k = 0; k < NP; ++k) pp[k] = p[k];
+            double pp[NPMAX]; for (int k = 0; k < np; ++k) pp[k] = p[k];
             pp[a] += step; project(pp);
             double used = pp[a] - p[a];
             if (used == 0.0) {             // parked on a bound: step inward
-                for (int k = 0; k < NP; ++k) pp[k] = p[k];
+                for (int k = 0; k < np; ++k) pp[k] = p[k];
                 pp[a] -= step; project(pp);
                 used = pp[a] - p[a];
             }
-            if (used == 0.0) { for (int i = 0; i < N; ++i) J[size_t(i)*NP + a] = 0.0; continue; }
+            if (used == 0.0) { for (int i = 0; i < N; ++i) J[size_t(i)*np + a] = 0.0; continue; }
             computeRes(pp, rr);
-            for (int i = 0; i < N; ++i) J[size_t(i)*NP + a] = (rr[i] - r[i]) / used;
+            for (int i = 0; i < N; ++i) J[size_t(i)*np + a] = (rr[i] - r[i]) / used;
         }
 
-        std::vector<double> JTJ(NP * NP, 0.0), JTr(NP, 0.0);
+        std::vector<double> JTJ(size_t(np) * np, 0.0), JTr(np, 0.0);
         for (int i = 0; i < N; ++i)
-            for (int a = 0; a < NP; ++a) {
-                JTr[a] += J[size_t(i)*NP + a] * r[i];
-                for (int b = 0; b < NP; ++b)
-                    JTJ[a*NP + b] += J[size_t(i)*NP + a] * J[size_t(i)*NP + b];
+            for (int a = 0; a < np; ++a) {
+                JTr[a] += J[size_t(i)*np + a] * r[i];
+                for (int b = 0; b < np; ++b)
+                    JTJ[size_t(a)*np + b] += J[size_t(i)*np + a] * J[size_t(i)*np + b];
             }
 
-        std::vector<double> A = JTJ, bvec(NP), delta;
-        for (int a = 0; a < NP; ++a) { A[a*NP + a] *= (1.0 + lambda); bvec[a] = -JTr[a]; }
-        if (!solveLinearN(NP, A, bvec, delta)) {
+        std::vector<double> A = JTJ, bvec(np), delta;
+        for (int a = 0; a < np; ++a) { A[size_t(a)*np + a] *= (1.0 + lambda); bvec[a] = -JTr[a]; }
+        if (!solveLinearN(np, A, bvec, delta)) {
             lambda *= 10.0;
             if (lambda > 1e12) break;
             continue;
         }
 
-        double pn[NP]; for (int k = 0; k < NP; ++k) pn[k] = p[k] + delta[k];
+        double pn[NPMAX]; for (int k = 0; k < np; ++k) pn[k] = p[k] + delta[k];
         project(pn);
         computeRes(pn, rn);
         double chi2New = 0; for (double v : rn) chi2New += v * v;
 
         if (chi2New < chi2) {
             const double rel = (chi2 - chi2New) / std::max(chi2, 1e-30);
-            for (int k = 0; k < NP; ++k) p[k] = pn[k];
+            for (int k = 0; k < np; ++k) p[k] = pn[k];
             chi2 = chi2New; r.swap(rn);
             lambda = std::max(lambda * 0.5, 1e-10);
             if (rel < 1e-9) break;
@@ -1296,64 +1394,119 @@ bool invert4x4(const double A[4][4], double inv[4][4])
     return true;
 }
 
+// n×n Gauss-Jordan inverse (row-major). false if singular. Used for the SB2
+// covariance, where the fixed 4×4 path above no longer fits.
+bool invertNxN(int n, std::vector<double> A, std::vector<double>& inv)
+{
+    inv.assign(size_t(n)*n, 0.0);
+    for (int i=0;i<n;++i) inv[size_t(i)*n+i] = 1.0;
+    auto a = [&](int r, int c) -> double& { return A  [size_t(r)*n+c]; };
+    auto b = [&](int r, int c) -> double& { return inv[size_t(r)*n+c]; };
+    for (int i=0;i<n;++i){
+        int piv=i;
+        for (int k=i+1;k<n;++k) if (std::abs(a(k,i))>std::abs(a(piv,i))) piv=k;
+        if (std::abs(a(piv,i))<1e-30) return false;
+        if (piv!=i)
+            for (int j=0;j<n;++j){ std::swap(a(piv,j),a(i,j)); std::swap(b(piv,j),b(i,j)); }
+        const double d=a(i,i);
+        for (int j=0;j<n;++j){ a(i,j)/=d; b(i,j)/=d; }
+        for (int k=0;k<n;++k){
+            if (k==i) continue;
+            const double f=a(k,i);
+            if (f==0.0) continue;
+            for (int j=0;j<n;++j){ a(k,j)-=f*a(i,j); b(k,j)-=f*b(i,j); }
+        }
+    }
+    return true;
+}
+
 struct LMResultFull {
     double K=0, gamma=0, phi=0, P=0, chi2=0;
     double Kerr=0, gammaErr=0, phiErr=0, Perr=0;
+    double K2 = AsymErr::unset, K2err = 0.0;   // SB2 only
     bool ok=false; QString msg;
 };
 
 // Full fit (soft period prior, free P) that also returns 1σ parameter errors
-// from the data-only covariance C = s²·(JᵀJ)⁻¹, with s² = χ²_data/(N−4).
+// from the data-only covariance C = s²·(JᵀJ)⁻¹, with s² = χ²_data/(N−np).
+// SB2 (see fitCircularLM) adds alpha = K2/K as a fifth parameter.
 LMResultFull fitCircularLMFull(const std::vector<double>& t,
                                const std::vector<double>& y,
                                const std::vector<double>& sigma,
-                               double P0, double sigP)
+                               double P0, double sigP,
+                               const std::vector<int>* comp = nullptr,
+                               bool fitK2 = false)
 {
     LMResultFull R;
-    LMResult base = fitCircularLM(t, y, sigma, P0, sigP);
+    LMResult base = fitCircularLM(t, y, sigma, P0, sigP, comp, fitK2);
     if (!base.ok) { R.msg = base.msg; return R; }
     R.K=base.K; R.gamma=base.gamma; R.phi=base.phi; R.P=base.P;
+    R.K2 = base.K2;
 
     const int N = int(t.size());
+    const bool sb2 = fitK2 && comp && int(comp->size()) == N
+                     && std::isfinite(base.alpha);
+    const int  np  = sb2 ? 5 : 4;
+    auto isSec = [&](int i) { return sb2 && (*comp)[i] >= 2; };
+    const double alpha = sb2 ? base.alpha : 0.0;
+
     // Recover Kc, Ks from K and φ (φ = atan2(Kc,Ks)/2π).
     const double ph = base.phi * 2.0*M_PI;
     double Kc = base.K*std::sin(ph), Ks = base.K*std::cos(ph);
     const double P = base.P, gamma = base.gamma;
 
     // Data-only χ² and Jacobian at the solution.
-    double JTJ[4][4]={{0}}; double chi2=0.0;
+    std::vector<double> JTJ(size_t(np)*np, 0.0);
+    double chi2=0.0;
     for (int i=0;i<N;++i){
         const double w  = 2.0*M_PI*t[i]/P;
         const double cw = std::cos(w), sw = std::sin(w);
         const double s  = sigma[i];
-        const double res = (y[i] - (Kc*cw + Ks*sw + gamma)) / s;
+        const double A  = Kc*cw + Ks*sw;
+        const double model = isSec(i) ? (gamma - alpha*A) : (gamma + A);
+        const double res = (y[i] - model) / s;
         chi2 += res*res;
-        const double Ji[4] = {
-            -cw/s, -sw/s, -1.0/s,
-            (2.0*M_PI*t[i]/(P*P)) * (Ks*cw - Kc*sw) / s
-        };
-        for (int a=0;a<4;++a) for (int b=0;b<4;++b) JTJ[a][b]+=Ji[a]*Ji[b];
+        const double dP = (2.0*M_PI*t[i]/(P*P)) * (Ks*cw - Kc*sw) / s;
+        double Ji[5] = { -cw/s, -sw/s, -1.0/s, dP, 0.0 };
+        if (isSec(i)) {
+            Ji[0] = alpha*cw/s;
+            Ji[1] = alpha*sw/s;
+            Ji[3] = -alpha*dP;
+            Ji[4] = A/s;
+        }
+        for (int a=0;a<np;++a)
+            for (int b=0;b<np;++b) JTJ[size_t(a)*np+b]+=Ji[a]*Ji[b];
     }
     R.chi2 = chi2;
 
-    double cov[4][4];
-    const int dof = std::max(1, N-4);
+    std::vector<double> cov;
+    const int dof = std::max(1, N-np);
     const double s2 = chi2 / dof;          // reduce-χ² error rescaling
-    if (invert4x4(JTJ, cov)) {
-        for (int a=0;a<4;++a) for (int b=0;b<4;++b) cov[a][b]*=s2;
-        const double vKc=std::max(0.0,cov[0][0]), vKs=std::max(0.0,cov[1][1]);
-        const double cKcKs=cov[0][1];
-        R.gammaErr = std::sqrt(std::max(0.0, cov[2][2]));
-        R.Perr     = std::sqrt(std::max(0.0, cov[3][3]));
-        const double K2 = Kc*Kc + Ks*Ks;
-        if (K2 > 0) {
+    if (invertNxN(np, JTJ, cov)) {
+        for (auto& v : cov) v *= s2;
+        auto C = [&](int a, int b) { return cov[size_t(a)*np+b]; };
+        const double vKc=std::max(0.0,C(0,0)), vKs=std::max(0.0,C(1,1));
+        const double cKcKs=C(0,1);
+        R.gammaErr = std::sqrt(std::max(0.0, C(2,2)));
+        R.Perr     = std::sqrt(std::max(0.0, C(3,3)));
+        const double Ksq = Kc*Kc + Ks*Ks;
+        if (Ksq > 0) {
             // K = √(Kc²+Ks²);  φ = atan2(Kc,Ks)/2π
-            const double dKc=Kc/std::sqrt(K2), dKs=Ks/std::sqrt(K2);
+            const double K = std::sqrt(Ksq);
+            const double dKc=Kc/K, dKs=Ks/K;
             R.Kerr = std::sqrt(std::max(0.0,
                 dKc*dKc*vKc + dKs*dKs*vKs + 2.0*dKc*dKs*cKcKs));
-            const double pKc= Ks/K2/(2.0*M_PI), pKs=-Kc/K2/(2.0*M_PI);
+            const double pKc= Ks/Ksq/(2.0*M_PI), pKs=-Kc/Ksq/(2.0*M_PI);
             R.phiErr = std::sqrt(std::max(0.0,
                 pKc*pKc*vKc + pKs*pKs*vKs + 2.0*pKc*pKs*cKcKs));
+            if (sb2) {
+                // K2 = alpha·√(Kc²+Ks²): propagate through all three.
+                const double gKc = alpha*dKc, gKs = alpha*dKs, gA = K;
+                R.K2err = std::sqrt(std::max(0.0,
+                    gKc*gKc*vKc + gKs*gKs*vKs + gA*gA*std::max(0.0,C(4,4))
+                    + 2.0*gKc*gKs*cKcKs
+                    + 2.0*gKc*gA*C(0,4) + 2.0*gKs*gA*C(1,4)));
+            }
         }
     }
     R.ok = true;
@@ -1363,6 +1516,7 @@ LMResultFull fitCircularLMFull(const std::vector<double>& t,
 // ── Eccentric (Keplerian) LM fit ───────────────────────────────────────
 struct KeplerLMResult {
     double K=0, gamma=0, phi=0, P=0, e=0, omega=0, chi2=0;
+    double K2 = AsymErr::unset;      // SB2 only
     bool ok=false; QString msg;
 };
 
@@ -1407,11 +1561,15 @@ KeplerLMResult keplerLM(const std::vector<double>& t,
                         const std::vector<double>& sigma,
                         double P0, double sigP,
                         double eMin, double eMax,
-                        double omegaMin, double omegaMax)
+                        double omegaMin, double omegaMax,
+                        const std::vector<int>* comp = nullptr,
+                        bool fitK2 = false)
 {
     KeplerLMResult R;
     const int N = int(t.size());
-    if (N < 6) { R.msg = "Need ≥ 6 points for an eccentric fit."; return R; }
+    const bool sb2 = fitK2 && comp && int(comp->size()) == N;
+    const int  np  = sb2 ? 7 : 6;     // [P, K, γ, φ, e, ω(, K2)]
+    if (N < np) { R.msg = "Need ≥ 6 points for an eccentric fit."; return R; }
     if (!(P0 > 0)) { R.msg = "Invalid period seed."; return R; }
     if (!(sigP > 0) || std::isnan(sigP)) sigP = std::max(1e-6, 0.05 * P0);
 
@@ -1419,25 +1577,30 @@ KeplerLMResult keplerLM(const std::vector<double>& t,
     if (eMin < 0.0) eMin = 0.0;
     if (eMin > eMax) std::swap(eMin, eMax);
 
-    // Seed P, K, γ, φ from a circular LM fit (good starting point).
-    double P = P0, K, gamma, phiCirc;
-    LMResult c = fitCircularLM(t, y, sigma, P0, sigP);
-    if (c.ok) { P = c.P; K = c.K; gamma = c.gamma; phiCirc = c.phi; }
-    else {
+    auto isSec = [&](int i) { return sb2 && (*comp)[i] >= 2; };
+
+    // Seed P, K, γ, φ (and K2) from a circular LM fit (good starting point).
+    double P = P0, K, gamma, phiCirc, K2seed = 0.0;
+    LMResult c = fitCircularLM(t, y, sigma, P0, sigP, comp, fitK2);
+    if (c.ok) {
+        P = c.P; K = c.K; gamma = c.gamma; phiCirc = c.phi;
+        if (sb2) K2seed = std::isfinite(c.K2) ? c.K2 : c.K;
+    } else {
         double sumW = 0, sumY = 0;
         for (int i = 0; i < N; ++i) { double w = 1.0/(sigma[i]*sigma[i]); sumW += w; sumY += w*y[i]; }
         gamma = sumW > 0 ? sumY/sumW : 0.0;
         double m = 0; for (int i = 0; i < N; ++i) m = std::max(m, std::abs(y[i]-gamma));
-        K = m; phiCirc = 0.0;
+        K = m; phiCirc = 0.0; K2seed = m;
     }
 
-    constexpr int NP = 6;             // [P, K, γ, φ, e, ω]
+    constexpr int NPMAX = 7;
     const double omegaSeed = std::clamp(90.0, omegaMin, omegaMax);
-    double p[NP] = {
+    double p[NPMAX] = {
         P, K, gamma,
         eccPhaseSeed(phiCirc, omegaSeed),   // matches the ω the fit starts at
         std::clamp(0.1, eMin, eMax),
-        omegaSeed
+        omegaSeed,
+        K2seed
     };
 
     auto project = [&](double* q) {
@@ -1445,9 +1608,16 @@ KeplerLMResult keplerLM(const std::vector<double>& t,
         q[3] = std::fmod(q[3], 1.0); if (q[3] < 0) q[3] += 1.0;     // φ ∈ [0,1)
         q[4] = std::clamp(q[4], eMin, eMax);                // e bounds
         q[5] = std::fmod(q[5], 360.0); if (q[5] < 0) q[5] += 360.0; // ω ∈ [0,360)
+        if (sb2) {
+            // Both amplitudes are bounded non-negative here: the ω+180°
+            // canonicalisation used for a single-lined fit would swap the two
+            // components against their per-point assignment.
+            if (q[1] < 0.0) q[1] = 0.0;
+            if (q[6] < 0.0) q[6] = 0.0;
+        }
     };
 
-    auto model = [&](const double* q, double ti) -> double {
+    auto model = [&](const double* q, double ti, bool secondary) -> double {
         const double theta = ti / q[0];
         const double M = 2.0 * M_PI * (theta - q[3]);
         const double e = q[4];
@@ -1455,12 +1625,14 @@ KeplerLMResult keplerLM(const std::vector<double>& t,
         const double nu = 2.0 * std::atan2(std::sqrt(1.0 + e) * std::sin(E * 0.5),
                                            std::sqrt(1.0 - e) * std::cos(E * 0.5));
         const double w = q[5] * M_PI / 180.0;
-        return q[2] + q[1] * (std::cos(nu + w) + e * std::cos(w));
+        const double amp = secondary ? -q[6] : q[1];
+        return q[2] + amp * (std::cos(nu + w) + e * std::cos(w));
     };
 
     auto computeRes = [&](const double* q, std::vector<double>& r) {
         r.resize(N + 1);
-        for (int i = 0; i < N; ++i) r[i] = (y[i] - model(q, t[i])) / sigma[i];
+        for (int i = 0; i < N; ++i)
+            r[i] = (y[i] - model(q, t[i], isSec(i))) / sigma[i];
         r[N] = (P0 - q[0]) / sigP;    // soft period prior
     };
 
@@ -1469,48 +1641,49 @@ KeplerLMResult keplerLM(const std::vector<double>& t,
     double chi2 = 0; for (double v : r) chi2 += v * v;
     double lambda = 1e-3;
 
-    std::vector<double> J((N + 1) * NP);   // numerical Jacobian, row-major
+    std::vector<double> J(size_t(N + 1) * np);   // numerical Jacobian, row-major
     for (int iter = 0; iter < 300; ++iter) {
         // Forward-difference Jacobian.
-        for (int a = 0; a < NP; ++a) {
+        for (int a = 0; a < np; ++a) {
             double step = std::max(std::abs(p[a]) * 1e-6, 1e-7);
             if (a == 3) step = 1e-6;       // φ
             if (a == 4) step = 1e-5;       // e
             if (a == 5) step = 1e-3;       // ω
-            double pp[NP]; for (int k = 0; k < NP; ++k) pp[k] = p[k];
+            double pp[NPMAX]; for (int k = 0; k < np; ++k) pp[k] = p[k];
             pp[a] += step; project(pp);
             double used = pp[a] - p[a];
-            if (used == 0.0) { for (int k = 0; k < NP; ++k) pp[k] = p[k]; pp[a] -= step; project(pp); used = pp[a] - p[a]; }
-            if (used == 0.0) { for (int i = 0; i <= N; ++i) J[i*NP + a] = 0.0; continue; }
+            if (used == 0.0) { for (int k = 0; k < np; ++k) pp[k] = p[k]; pp[a] -= step; project(pp); used = pp[a] - p[a]; }
+            if (used == 0.0) { for (int i = 0; i <= N; ++i) J[size_t(i)*np + a] = 0.0; continue; }
             std::vector<double> rr; computeRes(pp, rr);
-            for (int i = 0; i <= N; ++i) J[i*NP + a] = (rr[i] - r[i]) / used;
+            for (int i = 0; i <= N; ++i) J[size_t(i)*np + a] = (rr[i] - r[i]) / used;
         }
 
         // Normal equations JᵀJ and Jᵀr.
-        std::vector<double> JTJ(NP * NP, 0.0), JTr(NP, 0.0);
+        std::vector<double> JTJ(size_t(np) * np, 0.0), JTr(np, 0.0);
         for (int i = 0; i <= N; ++i)
-            for (int a = 0; a < NP; ++a) {
-                JTr[a] += J[i*NP + a] * r[i];
-                for (int b = 0; b < NP; ++b) JTJ[a*NP + b] += J[i*NP + a] * J[i*NP + b];
+            for (int a = 0; a < np; ++a) {
+                JTr[a] += J[size_t(i)*np + a] * r[i];
+                for (int b = 0; b < np; ++b)
+                    JTJ[size_t(a)*np + b] += J[size_t(i)*np + a] * J[size_t(i)*np + b];
             }
 
         // Damped solve (LM): (JᵀJ + λ·diag)·δ = −Jᵀr.
-        std::vector<double> A = JTJ, bvec(NP), delta;
-        for (int a = 0; a < NP; ++a) { A[a*NP + a] *= (1.0 + lambda); bvec[a] = -JTr[a]; }
-        if (!solveLinearN(NP, A, bvec, delta)) {
+        std::vector<double> A = JTJ, bvec(np), delta;
+        for (int a = 0; a < np; ++a) { A[size_t(a)*np + a] *= (1.0 + lambda); bvec[a] = -JTr[a]; }
+        if (!solveLinearN(np, A, bvec, delta)) {
             lambda *= 10.0;
             if (lambda > 1e12) break;
             continue;
         }
 
-        double pn[NP]; for (int k = 0; k < NP; ++k) pn[k] = p[k] + delta[k];
+        double pn[NPMAX]; for (int k = 0; k < np; ++k) pn[k] = p[k] + delta[k];
         project(pn);
         std::vector<double> rn; computeRes(pn, rn);
         double chi2New = 0; for (double v : rn) chi2New += v * v;
 
         if (chi2New < chi2) {
             const double rel = (chi2 - chi2New) / std::max(chi2, 1e-30);
-            for (int k = 0; k < NP; ++k) p[k] = pn[k];
+            for (int k = 0; k < np; ++k) p[k] = pn[k];
             chi2 = chi2New; r.swap(rn);
             lambda = std::max(lambda * 0.5, 1e-10);
             if (rel < 1e-9) break;
@@ -1522,10 +1695,13 @@ KeplerLMResult keplerLM(const std::vector<double>& t,
 
     R.P = p[0]; R.K = p[1]; R.gamma = p[2];
     R.phi = p[3]; R.e = p[4]; R.omega = p[5];
+    if (sb2) R.K2 = p[6];
 
     // Canonicalise a negative amplitude: −K·(cos(ν+ω)+e·cos ω) is identical to
-    // +K with ω shifted by 180°.
-    if (R.K < 0.0) { R.K = -R.K; R.omega = std::fmod(R.omega + 180.0, 360.0); }
+    // +K with ω shifted by 180°. Not applicable to an SB2 fit, where both
+    // amplitudes are already bounded non-negative and the ω shift would move
+    // the secondary onto the primary's branch.
+    if (!sb2 && R.K < 0.0) { R.K = -R.K; R.omega = std::fmod(R.omega + 180.0, 360.0); }
     R.phi = std::fmod(R.phi, 1.0); if (R.phi < 0) R.phi += 1.0;
 
     R.chi2 = chi2; R.ok = true;
@@ -1555,11 +1731,18 @@ void applyCircularMCErrors(RVFit& fit,
                            const std::vector<double>& y,
                            const std::vector<double>& s,
                            double K, double gamma, double phi, double P,
-                           double P0, double sigP)
+                           double P0, double sigP,
+                           const std::vector<int>* comp = nullptr,
+                           double K2best = AsymErr::unset)
 {
     const auto mc = RVErrorMC::sampleCircular(t, y, s, K, gamma, phi, P,
-                                              P0, sigP);
+                                              P0, sigP, {}, comp, K2best);
     if (!mc.ok) return;
+    if (std::isfinite(K2best)) {
+        const auto k2 = mergeSides(mc.K2);
+        fit.setK2Error(k2.sym);
+        fit.setK2ErrorUp(k2.up);      fit.setK2ErrorDown(k2.down);
+    }
     const auto k = mergeSides(mc.K);
     fit.setKError(k.sym);
     fit.setKErrorUp(k.up);            fit.setKErrorDown(k.down);
@@ -1580,13 +1763,20 @@ void applyKeplerianMCErrors(RVFit& fit,
                             const std::vector<double>& s,
                             const KeplerLMResult& R,
                             double P0, double sigP,
-                            double eMin, double eMax)
+                            double eMin, double eMax,
+                            const std::vector<int>* comp = nullptr)
 {
     const auto mc = RVErrorMC::sampleKeplerian(t, y, s,
                                                R.P, R.K, R.gamma, R.phi,
                                                R.e, R.omega,
-                                               P0, sigP, eMin, eMax);
+                                               P0, sigP, eMin, eMax,
+                                               {}, comp, R.K2);
     if (!mc.ok) return;
+    if (std::isfinite(R.K2)) {
+        const auto k2 = mergeSides(mc.K2);
+        fit.setK2Error(k2.sym);
+        fit.setK2ErrorUp(k2.up);      fit.setK2ErrorDown(k2.down);
+    }
     const auto p = mergeSides(mc.P);
     fit.setPeriodError(p.sym);
     fit.setPeriodErrorUp(p.up);       fit.setPeriodErrorDown(p.down);
@@ -1638,7 +1828,8 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidLM(
     for (size_t i = 0; i < data.bjd.size(); ++i)
         t[i] = data.bjd[i] - t0;
 
-    auto R = fitCircularLMFull(t, y, s, pSeed, pSigma);
+    const std::vector<int>* comp = compOf(data);
+    auto R = fitCircularLMFull(t, y, s, pSeed, pSigma, comp, comp != nullptr);
     if (!R.ok) {
         if (errOut)
             *errOut = R.msg;
@@ -1663,8 +1854,12 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidLM(
     fit->setGammaError(R.gammaErr);
     fit->setPhiError(R.phiErr);
     fit->setPeriodError(R.Perr);
+    if (std::isfinite(R.K2) && R.K2 > 0.0) {
+        fit->setK2(R.K2);
+        fit->setK2Error(R.K2err);
+    }
     applyCircularMCErrors(*fit, t, y, s, R.K, R.gamma, R.phi, R.P,
-                          pSeed, pSigma);
+                          pSeed, pSigma, comp, R.K2);
     fit->setEccentric(false);
     fit->setBestFit(false);
     return fit;
@@ -1697,9 +1892,11 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitKeplerianLM(
     for (size_t i = 0; i < data.bjd.size(); ++i)
         t[i] = data.bjd[i] - t0;
 
+    const std::vector<int>* comp = compOf(data);
     auto R = keplerLM(t, y, s, pSeed, pSigma,
                       /*eMin=*/0.0, /*eMax=*/0.9,
-                      /*omegaMin=*/0.0, /*omegaMax=*/360.0);
+                      /*omegaMin=*/0.0, /*omegaMax=*/360.0,
+                      comp, comp != nullptr);
     if (!R.ok) {
         if (errOut)
             *errOut = R.msg;
@@ -1722,8 +1919,9 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitKeplerianLM(
     fit->setEccentricity(R.e);
     fit->setOmega(R.omega);
     fit->setChi2(R.chi2);
+    if (std::isfinite(R.K2) && R.K2 > 0.0) fit->setK2(R.K2);
     applyKeplerianMCErrors(*fit, t, y, s, R, pSeed, pSigma,
-                           /*eMin=*/0.0, /*eMax=*/0.9);
+                           /*eMin=*/0.0, /*eMax=*/0.9, comp);
     fit->setBestFit(false);
     return fit;
 }
@@ -1785,48 +1983,97 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidFixedPhase(
     double phi = -((t0LcBJD - t0) / period);
     phi -= std::floor(phi);
 
-    // With φ and P fixed the circular model RV_i = γ + K·c_i is linear in
-    // (γ, K), where c_i = sin(2π((bjd_i − tRef)/P + φ)). Solve the weighted 2×2
-    // normal equations.
-    double Sw = 0, Sc = 0, Scc = 0, Sy = 0, Scy = 0;
-    for (size_t i = 0; i < data.bjd.size(); ++i) {
-        const double theta = (data.bjd[i] - t0) / period;
-        const double c = std::sin(2.0 * M_PI * (theta + phi));
-        const double s = (data.rv_err[i] > 0) ? data.rv_err[i] : 1.0;
-        const double w = 1.0 / (s * s);
-        const double y = data.rv[i];
-        Sw += w; Sc += w * c; Scc += w * c * c; Sy += w * y; Scy += w * c * y;
+    // With φ and P fixed the circular model is linear in the amplitudes:
+    //   primary    RV_i = γ + K·c_i
+    //   secondary  RV_i = γ − K2·c_i          (antiphase, SB2 only)
+    // with c_i = sin(2π((bjd_i − tRef)/P + φ)). Solve the weighted normal
+    // equations - 2×2 for a single-lined fit, 3×3 when a secondary is present.
+    const size_t nPts = data.bjd.size();
+    const bool sb2 = !data.comp.empty() &&
+        std::any_of(data.comp.begin(), data.comp.end(),
+                    [](int c) { return c >= 2; });
+    const int nPar = sb2 ? 3 : 2;
+
+    double gamma = 0.0, K = 0.0, K2 = 0.0;
+    double gammaErr = 0.0, KErr = 0.0, K2Err = 0.0;
+    double Sw = 0, Sc = 0, Scc = 0, Sy = 0, Scy = 0;   // SB1 path
+    double det = 0.0;
+    std::vector<double> covN;                          // SB2 path
+    {
+        // Design basis per point: (1, c, 0) primary, (1, 0, −c) secondary.
+        std::vector<double> A(size_t(nPar) * nPar, 0.0), b(nPar, 0.0);
+        for (size_t i = 0; i < nPts; ++i) {
+            const double theta = (data.bjd[i] - t0) / period;
+            const double c = std::sin(2.0 * M_PI * (theta + phi));
+            const double s = (data.rv_err[i] > 0) ? data.rv_err[i] : 1.0;
+            const double w = 1.0 / (s * s);
+            const double y = data.rv[i];
+            const bool sec = sb2 && data.comp[i] >= 2;
+            double g[3] = { 1.0, sec ? 0.0 : c, sec ? -c : 0.0 };
+            for (int a = 0; a < nPar; ++a) {
+                b[a] += w * g[a] * y;
+                for (int bb = 0; bb < nPar; ++bb)
+                    A[size_t(a) * nPar + bb] += w * g[a] * g[bb];
+            }
+            if (!sb2) { Sw += w; Sc += w * c; Scc += w * c * c; Sy += w * y; Scy += w * c * y; }
+        }
+
+        if (!sb2) {
+            det = Sw * Scc - Sc * Sc;
+            if (!(std::abs(det) > 1e-30)) {
+                if (errOut)
+                    *errOut = "Phase-locked design is singular (RV points cover too "
+                              "little phase).";
+                return nullptr;
+            }
+            gamma = (Sy * Scc - Scy * Sc) / det;
+            K     = (Sw * Scy - Sc  * Sy) / det;
+        } else {
+            std::vector<double> Asolve = A, bsolve = b, x;
+            if (!solveLinearN(nPar, Asolve, bsolve, x) || !invertNxN(nPar, A, covN)) {
+                if (errOut)
+                    *errOut = "Phase-locked design is singular (RV points cover too "
+                              "little phase).";
+                return nullptr;
+            }
+            gamma = x[0]; K = x[1]; K2 = x[2];
+        }
     }
-    const double det = Sw * Scc - Sc * Sc;
-    if (!(std::abs(det) > 1e-30)) {
-        if (errOut)
-            *errOut = "Phase-locked design is singular (RV points cover too "
-                      "little phase).";
-        return nullptr;
-    }
-    double gamma = (Sy * Scc - Scy * Sc) / det;
-    double K     = (Sw * Scy - Sc  * Sy) / det;
 
     // Canonicalise a negative amplitude: −K·sin(x) = K·sin(x + π) ⇒ φ += 0.5.
-    if (K < 0.0) { K = -K; phi += 0.5; }
+    // For SB2 the shift negates the sinusoid for BOTH components, so K2 flips
+    // with K; a secondary left negative means the data disagree with the
+    // component assignment, and clamping keeps the stored fit physical.
+    if (K < 0.0) {
+        K = -K; phi += 0.5;
+        if (sb2) K2 = -K2;
+    }
+    if (sb2 && K2 < 0.0) K2 = 0.0;
     phi -= std::floor(phi);
 
-    // The model is linear in (γ, K), so the posterior is exactly Gaussian:
-    // cov = s²·A⁻¹ with A = [[Sw, Sc],[Sc, Scc]] and s² = χ²/(n−2) (the same
-    // reduced-χ² error rescaling the free LM fits use). No MC pass or
-    // asymmetric bounds are needed here.
+    // The model is linear in the amplitudes, so the posterior is exactly
+    // Gaussian: cov = s²·A⁻¹ with s² = χ²/(n−nPar) (the same reduced-χ² error
+    // rescaling the free LM fits use). No MC pass or asymmetric bounds needed.
     double chi2 = 0.0;
-    for (size_t i = 0; i < data.bjd.size(); ++i) {
+    for (size_t i = 0; i < nPts; ++i) {
         const double theta = (data.bjd[i] - t0) / period;
-        const double m = gamma + K * std::sin(2.0 * M_PI * (theta + phi));
+        const double c = std::sin(2.0 * M_PI * (theta + phi));
+        const double m = (sb2 && data.comp[i] >= 2) ? (gamma - K2 * c)
+                                                    : (gamma + K * c);
         const double s = (data.rv_err[i] > 0) ? data.rv_err[i] : 1.0;
         const double r = (data.rv[i] - m) / s;
         chi2 += r * r;
     }
-    const int dofFp = std::max(1, int(data.bjd.size()) - 2);
+    const int dofFp = std::max(1, int(nPts) - nPar);
     const double s2 = chi2 / dofFp;
-    const double gammaErr = std::sqrt(std::max(0.0, s2 * Scc / det));
-    const double KErr     = std::sqrt(std::max(0.0, s2 * Sw  / det));
+    if (!sb2) {
+        gammaErr = std::sqrt(std::max(0.0, s2 * Scc / det));
+        KErr     = std::sqrt(std::max(0.0, s2 * Sw  / det));
+    } else {
+        gammaErr = std::sqrt(std::max(0.0, s2 * covN[0]));
+        KErr     = std::sqrt(std::max(0.0, s2 * covN[size_t(1) * nPar + 1]));
+        K2Err    = std::sqrt(std::max(0.0, s2 * covN[size_t(2) * nPar + 2]));
+    }
 
     auto fit = std::make_shared<RVFit>();
     fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
@@ -1843,6 +2090,7 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidFixedPhase(
     fit->setChi2(chi2);
     fit->setKError(KErr);
     fit->setGammaError(gammaErr);
+    if (sb2 && K2 > 0.0) { fit->setK2(K2); fit->setK2Error(K2Err); }
 
     // P and φ are hard-fixed to the LC ephemeris, so their uncertainty is the
     // ephemeris' own, propagated. φ = −(T₀ − tRef)/P gives
@@ -1906,7 +2154,8 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidLMFull(
     std::vector<double> t(data.bjd.size()), y = data.rv, s = data.rv_err;
     for (size_t i = 0; i < data.bjd.size(); ++i) t[i] = data.bjd[i] - t0;
 
-    auto R = fitCircularLMFull(t, y, s, pSeed, pSigma);
+    const std::vector<int>* comp = compOf(data);
+    auto R = fitCircularLMFull(t, y, s, pSeed, pSigma, comp, comp != nullptr);
     if (!R.ok) { if (errOut) *errOut = R.msg; return nullptr; }
 
     auto fit = std::make_shared<RVFit>();
@@ -1928,8 +2177,12 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidLMFull(
     // curvature estimate when the covariance is degenerate (Perr ≈ 0).
     fit->setPeriodError((R.Perr > 0 && std::isfinite(R.Perr))
                             ? R.Perr : std::max(0.0, pErrLandscape));
+    if (std::isfinite(R.K2) && R.K2 > 0.0) {
+        fit->setK2(R.K2);
+        fit->setK2Error(R.K2err);
+    }
     applyCircularMCErrors(*fit, t, y, s, R.K, R.gamma, R.phi, R.P,
-                          pSeed, pSigma);
+                          pSeed, pSigma, comp, R.K2);
     fit->setEccentric(false);
     fit->setBestFit(false);
     return fit;
@@ -1960,8 +2213,10 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitKeplerianLMFull(
     std::vector<double> t(data.bjd.size()), y = data.rv, s = data.rv_err;
     for (size_t i = 0; i < data.bjd.size(); ++i) t[i] = data.bjd[i] - t0;
 
+    const std::vector<int>* comp = compOf(data);
     auto R = keplerLM(t, y, s, pSeed, pSigma, eMin, eMax,
-                      /*omegaMin=*/0.0, /*omegaMax=*/360.0);
+                      /*omegaMin=*/0.0, /*omegaMax=*/360.0,
+                      comp, comp != nullptr);
     if (!R.ok) { if (errOut) *errOut = R.msg; return nullptr; }
 
     auto fit = std::make_shared<RVFit>();
@@ -1983,7 +2238,8 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitKeplerianLMFull(
     // is the baseline period error; the MC pass below overwrites it (and fills
     // in the other parameters) whenever it succeeds.
     fit->setPeriodError(std::max(0.0, pErrLandscape));
-    applyKeplerianMCErrors(*fit, t, y, s, R, pSeed, pSigma, eMin, eMax);
+    if (std::isfinite(R.K2) && R.K2 > 0.0) fit->setK2(R.K2);
+    applyKeplerianMCErrors(*fit, t, y, s, R, pSeed, pSigma, eMin, eMax, comp);
     fit->setBestFit(false);
     return fit;
 }
@@ -2500,7 +2756,7 @@ void RVAddFitDialog::pgAddPeakItem(double period, double sigma, double power,
 // ───────────────────────────────────────────────────────────────────
 void RVAddFitDialog::onPgOptimal()
 {
-    auto data = buildRVData();
+    auto data = primaryOnly(buildRVData());
     if (data.bjd.size() < 4) {
         QMessageBox::warning(this, "RV Periodogram",
             "Need ≥ 4 unflagged RV points with BJD.");
@@ -2525,7 +2781,7 @@ void RVAddFitDialog::onPgOptimal()
 
 void RVAddFitDialog::onPgCompute()
 {
-    auto data = buildRVData();
+    auto data = primaryOnly(buildRVData());
     if (data.bjd.size() < 4) {
         QMessageBox::warning(this, "RV Periodogram",
             "Need ≥ 4 unflagged RV points with BJD.");
@@ -2911,8 +3167,35 @@ void RVAddFitDialog::bsInitParamBounds()
     const double dRV = maxRV - minRV;
     if (!(dRV > 0.0)) return;
 
-    _bsKMin->setValue(dRV * 0.5);
-    _bsKMax->setValue(dRV * 1.5);
+    // K bounds bracket the per-component estimate K ≈ ΔRV/2. In a joint SB2
+    // scan the SAME bracket clamps both K and K₂, so it has to span the two
+    // components' spans: taking ΔRV over the merged series would put the
+    // weaker component's amplitude below the lower bound and bias its cells.
+    double kLo = dRV * 0.5, kHi = dRV * 1.5;
+    if (compOf(data) != nullptr) {
+        double lo1 = 0, hi1 = 0, lo2 = 0, hi2 = 0;
+        bool have1 = false, have2 = false;
+        for (size_t i = 0; i < data.rv.size(); ++i) {
+            const double v = data.rv[i];
+            if (data.comp[i] >= 2) {
+                if (!have2) { lo2 = hi2 = v; have2 = true; }
+                else { lo2 = std::min(lo2, v); hi2 = std::max(hi2, v); }
+            } else {
+                if (!have1) { lo1 = hi1 = v; have1 = true; }
+                else { lo1 = std::min(lo1, v); hi1 = std::max(hi1, v); }
+            }
+        }
+        if (have1 && have2) {
+            const double d1 = hi1 - lo1, d2 = hi2 - lo2;
+            if (d1 > 0.0 && d2 > 0.0) {
+                kLo = std::min(d1, d2) * 0.5;
+                kHi = std::max(d1, d2) * 1.5;
+            }
+        }
+    }
+
+    _bsKMin->setValue(kLo);
+    _bsKMax->setValue(kHi);
     _bsGammaMin->setValue(minRV - dRV * 0.25);
     _bsGammaMax->setValue(maxRV + dRV * 0.25);
 }
@@ -2948,9 +3231,11 @@ void RVAddFitDialog::onBsOptimal()
 void RVAddFitDialog::onBsRun()
 {
     const bool ecc = _bsEccentric && _bsEccentric->isChecked();
-    const size_t minPts = ecc ? 6 : 4;
-
     auto data = buildRVData();
+    // A joint SB2 scan fits one extra amplitude per cell.
+    const bool sb2 = compOf(data) != nullptr;
+    const size_t minPts = (ecc ? 6 : 4) + (sb2 ? 1 : 0);
+
     if (data.bjd.size() < minPts) {
         QMessageBox::warning(this, "χ² Landscape",
             QString("Need ≥ %1 unflagged RV points with BJD%2.")
@@ -2976,8 +3261,12 @@ void RVAddFitDialog::onBsRun()
     for (size_t i = 0; i < data.bjd.size(); ++i) (*t)[i] = data.bjd[i] - t0;
     auto y = std::make_shared<std::vector<double>>(data.rv);
     auto s = std::make_shared<std::vector<double>>(data.rv_err);
-    // Two extra free parameters (e, ω) in eccentric mode.
-    const int dof = std::max(1, int(data.bjd.size()) - (ecc ? 6 : 4));
+    // Per-point components; empty (and never dereferenced) for an SB1 scan.
+    auto cmp = std::make_shared<std::vector<int>>(sb2 ? data.comp
+                                                      : std::vector<int>{});
+    // Two extra free parameters (e, ω) in eccentric mode, one more (K2) for SB2.
+    const int dof = std::max(1, int(data.bjd.size())
+                                - (ecc ? 6 : 4) - (sb2 ? 1 : 0));
 
     // Parameter bounds applied in every per-cell fit (read once, off the GUI
     // thread).
@@ -3031,7 +3320,7 @@ void RVAddFitDialog::onBsRun()
     QPointer<RVAddFitDialog>  self = this;
     QPointer<QProgressDialog> pd   = dlg;
 
-    std::thread driver([self, pd, grid, Nf, dof, t, y, s,
+    std::thread driver([self, pd, grid, Nf, dof, t, y, s, cmp, sb2,
                         chi2, progress, cancelled,
                         Kmin, Kmax, gMin, gMax, ecc, eMin, eMax]() mutable
     {
@@ -3049,11 +3338,13 @@ void RVAddFitDialog::onBsRun()
                 }
                 const double Pmin = (fHi > 0.0) ? 1.0 / fHi : 1.0 / fi;
                 const double Pmax = (fLo > 0.0) ? 1.0 / fLo : 1.0 / (0.5 * fi);
+                const std::vector<int>* cp = sb2 ? cmp.get() : nullptr;
                 (*chi2)[i] = ecc
                     ? fitCellChi2Kepler(*t, *y, *s, 1.0 / fi, Pmin, Pmax,
-                                        Kmin, Kmax, gMin, gMax, eMin, eMax)
+                                        Kmin, Kmax, gMin, gMax, eMin, eMax,
+                                        cp, sb2)
                     : fitCellChi2(*t, *y, *s, 1.0 / fi, Pmin, Pmax,
-                                  Kmin, Kmax, gMin, gMax);
+                                  Kmin, Kmax, gMin, gMax, nullptr, cp, sb2);
                 progress->fetch_add(1);
             }
         };

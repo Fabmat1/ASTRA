@@ -192,6 +192,43 @@ double unwrapNear(double v, double centre, double wrap)
     return centre + d;
 }
 
+// True when the caller supplied a usable SB2 dataset: a matching per-point
+// component vector with at least one secondary point, and a finite K2.
+bool sb2Active(const std::vector<int>* comp, std::size_t n, double K2best)
+{
+    if (!comp || comp->size() != n || !std::isfinite(K2best)) return false;
+    for (int c : *comp)
+        if (c >= 2) return true;
+    return false;
+}
+
+// Numerical (forward-difference) JᵀJ of a generic residual model, used for
+// the SB2 proposal shapes where the analytic Jacobian is not worth the ink.
+std::vector<double> numericJTJ(
+    int np, const std::vector<double>& x,
+    const std::vector<double>& steps,
+    const std::function<double(const double*, int)>& resid,
+    int nRes)
+{
+    std::vector<double> JTJ(size_t(np) * np, 0.0);
+    std::vector<double> r0(nRes), Ji(size_t(nRes) * np);
+    for (int i = 0; i < nRes; ++i) r0[i] = resid(x.data(), i);
+    for (int a = 0; a < np; ++a) {
+        std::vector<double> xp = x;
+        xp[a] += steps[a];
+        for (int i = 0; i < nRes; ++i) {
+            const double ri = resid(xp.data(), i);
+            Ji[size_t(i) * np + a] = (ri - r0[i]) / steps[a];
+        }
+    }
+    for (int i = 0; i < nRes; ++i)
+        for (int a = 0; a < np; ++a)
+            for (int b = 0; b < np; ++b)
+                JTJ[size_t(a) * np + b] +=
+                    Ji[size_t(i) * np + a] * Ji[size_t(i) * np + b];
+    return JTJ;
+}
+
 } // namespace
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -201,31 +238,42 @@ CircularErrors sampleCircular(const std::vector<double>& t,
                               double Kbest, double gammaBest,
                               double phiBest, double Pbest,
                               double P0, double sigP,
-                              const Options& opt)
+                              const Options& opt,
+                              const std::vector<int>* comp,
+                              double K2best)
 {
     CircularErrors out;
     const int N = int(t.size());
     if (N < 4 || !(Pbest > 0.0) || !(Kbest >= 0.0)) return out;
     const bool usePrior = (sigP > 0.0) && std::isfinite(sigP) && (P0 > 0.0);
+    const bool sb2 = sb2Active(comp, t.size(), K2best);
+    const int  np  = sb2 ? 5 : 4;
 
-    // Sampling coordinates x = (Kc, Ks, γ, P) with
+    // Sampling coordinates x = (Kc, Ks, γ, P[, K2]) with
     // K·sin(2π(θ+φ)) = Kc·cos(2πθ) + Ks·sin(2πθ), φ = atan2(Kc, Ks)/2π.
+    // Secondary points (SB2) follow γ − (K2/K)·(Kc·cos + Ks·sin), i.e. the
+    // same phase with amplitude −K2.
     const double ph = phiBest * 2.0 * M_PI;
     std::vector<double> x = { Kbest * std::sin(ph), Kbest * std::cos(ph),
                               gammaBest, Pbest };
+    if (sb2) x.push_back(std::max(0.0, K2best));
 
     auto chi2Data = [&](const double* q, const std::vector<double>& sig) {
         double c = 0.0;
+        const double Kq = sb2 ? std::hypot(q[0], q[1]) : 1.0;
         for (int i = 0; i < N; ++i) {
             const double w = 2.0 * M_PI * t[i] / q[3];
-            const double r = (y[i] - (q[0] * std::cos(w) + q[1] * std::sin(w) + q[2]))
-                             / sig[i];
+            const double A = q[0] * std::cos(w) + q[1] * std::sin(w);
+            const double m = (sb2 && (*comp)[i] >= 2)
+                ? q[2] - q[4] * A / std::max(Kq, 1e-12)
+                : q[2] + A;
+            const double r = (y[i] - m) / sig[i];
             c += r * r;
         }
         return c;
     };
 
-    const auto sig = rescaledSigmas(sigma, chi2Data(x.data(), sigma), 4);
+    const auto sig = rescaledSigmas(sigma, chi2Data(x.data(), sigma), np);
 
     auto logPost = [&](const double* q) {
         double lp = -0.5 * chi2Data(q, sig);
@@ -235,45 +283,71 @@ CircularErrors sampleCircular(const std::vector<double>& t,
         }
         return lp;
     };
-    auto constrain = [](double* q) { return q[3] > 1e-9; };
+    auto constrain = [&](double* q) {
+        if (!(q[3] > 1e-9)) return false;
+        if (sb2 && (q[4] < 0.0 || std::hypot(q[0], q[1]) < 1e-12)) return false;
+        return true;
+    };
 
-    // Proposal shape from the analytic Jacobian at the optimum.
-    std::vector<double> JTJ(16, 0.0);
-    for (int i = 0; i < N; ++i) {
-        const double w  = 2.0 * M_PI * t[i] / x[3];
-        const double cw = std::cos(w), sw = std::sin(w);
-        const double s  = sig[i];
-        const double Ji[4] = {
-            -cw / s, -sw / s, -1.0 / s,
-            (2.0 * M_PI * t[i] / (x[3] * x[3])) * (x[1] * cw - x[0] * sw) / s
+    std::vector<double> JTJ;
+    if (!sb2) {
+        // Proposal shape from the analytic Jacobian at the optimum.
+        JTJ.assign(16, 0.0);
+        for (int i = 0; i < N; ++i) {
+            const double w  = 2.0 * M_PI * t[i] / x[3];
+            const double cw = std::cos(w), sw = std::sin(w);
+            const double s  = sig[i];
+            const double Ji[4] = {
+                -cw / s, -sw / s, -1.0 / s,
+                (2.0 * M_PI * t[i] / (x[3] * x[3])) * (x[1] * cw - x[0] * sw) / s
+            };
+            for (int a = 0; a < 4; ++a)
+                for (int b = 0; b < 4; ++b) JTJ[size_t(a) * 4 + b] += Ji[a] * Ji[b];
+        }
+        if (usePrior) JTJ[15] += 1.0 / (sigP * sigP);
+    } else {
+        // SB2 proposal shape from a forward-difference Jacobian.
+        std::vector<double> steps(np);
+        for (int a = 0; a < np; ++a)
+            steps[a] = std::max(std::abs(x[a]) * 1e-6, 1e-7);
+        auto resid = [&](const double* q, int i) {
+            const double w = 2.0 * M_PI * t[i] / q[3];
+            const double A = q[0] * std::cos(w) + q[1] * std::sin(w);
+            const double Kq = std::max(std::hypot(q[0], q[1]), 1e-12);
+            const double m = ((*comp)[i] >= 2) ? q[2] - q[4] * A / Kq
+                                               : q[2] + A;
+            return (y[i] - m) / sig[i];
         };
-        for (int a = 0; a < 4; ++a)
-            for (int b = 0; b < 4; ++b) JTJ[size_t(a) * 4 + b] += Ji[a] * Ji[b];
+        JTJ = numericJTJ(np, x, steps, resid, N);
+        if (usePrior) JTJ[size_t(3) * np + 3] += 1.0 / (sigP * sigP);
     }
-    if (usePrior) JTJ[15] += 1.0 / (sigP * sigP);
 
     std::vector<double> L;
-    if (!proposalCholFromJTJ(4, std::move(JTJ), L)) return out;
+    if (!proposalCholFromJTJ(np, std::move(JTJ), L)) return out;
 
-    std::vector<double> sK, sG, sPhi, sP;
+    std::vector<double> sK, sG, sPhi, sP, sK2;
     sK.reserve(opt.nSamples); sG.reserve(opt.nSamples);
     sPhi.reserve(opt.nSamples); sP.reserve(opt.nSamples);
+    if (sb2) sK2.reserve(opt.nSamples);
     auto record = [&](const double* q) {
         sK.push_back(std::hypot(q[0], q[1]));
         sG.push_back(q[2]);
         double phi = std::atan2(q[0], q[1]) / (2.0 * M_PI);
         sPhi.push_back(unwrapNear(phi, phiBest, 1.0));
         sP.push_back(q[3]);
+        if (sb2) sK2.push_back(q[4]);
     };
 
-    if (!runMH(4, x, L, constrain, logPost, record, opt)) return out;
+    if (!runMH(np, x, L, constrain, logPost, record, opt)) return out;
 
     out.K     = percentileErr(sK,   Kbest);
     out.gamma = percentileErr(sG,   gammaBest);
     out.phi   = percentileErr(sPhi, phiBest);
     out.P     = percentileErr(sP,   Pbest);
+    if (sb2) out.K2 = percentileErr(sK2, std::max(0.0, K2best));
     out.ok    = std::isfinite(out.K.sym) && std::isfinite(out.gamma.sym) &&
-                std::isfinite(out.phi.sym) && std::isfinite(out.P.sym);
+                std::isfinite(out.phi.sym) && std::isfinite(out.P.sym) &&
+                (!sb2 || std::isfinite(out.K2.sym));
     return out;
 }
 
@@ -285,12 +359,16 @@ KeplerianErrors sampleKeplerian(const std::vector<double>& t,
                                 double phiBest, double eBest, double omegaBest,
                                 double P0, double sigP,
                                 double eMin, double eMax,
-                                const Options& opt)
+                                const Options& opt,
+                                const std::vector<int>* comp,
+                                double K2best)
 {
     KeplerianErrors out;
     const int N = int(t.size());
-    constexpr int NP = 6;   // x = (P, K, γ, φ, e, ω) - keplerLM's ordering
-    if (N < NP || !(Pbest > 0.0) || !(Kbest >= 0.0)) return out;
+    // x = (P, K, γ, φ, e, ω[, K2]) - keplerLM's ordering, K2 appended last.
+    const bool sb2 = sb2Active(comp, t.size(), K2best);
+    const int  np  = sb2 ? 7 : 6;
+    if (N < np || !(Pbest > 0.0) || !(Kbest >= 0.0)) return out;
     const bool usePrior = (sigP > 0.0) && std::isfinite(sigP) && (P0 > 0.0);
     if (eMin < 0.0) eMin = 0.0;
     if (eMax > 0.9999) eMax = 0.9999;
@@ -298,26 +376,31 @@ KeplerianErrors sampleKeplerian(const std::vector<double>& t,
 
     std::vector<double> x = { Pbest, Kbest, gammaBest, phiBest,
                               std::clamp(eBest, eMin, eMax), omegaBest };
+    if (sb2) x.push_back(std::max(0.0, K2best));
 
-    auto model = [](const double* q, double ti) {
+    // The secondary shares the orbit and moves in antiphase, so it is the same
+    // unit term with amplitude -K2 (identical to omega + 180 deg).
+    auto model = [sb2](const double* q, double ti, bool secondary) {
         const double M  = 2.0 * M_PI * (ti / q[0] - q[3]);
         const double e  = q[4];
         const double E  = RVFit::solveKepler(M, e);
         const double nu = 2.0 * std::atan2(std::sqrt(1.0 + e) * std::sin(E * 0.5),
                                            std::sqrt(1.0 - e) * std::cos(E * 0.5));
         const double w  = q[5] * M_PI / 180.0;
-        return q[2] + q[1] * (std::cos(nu + w) + e * std::cos(w));
+        const double amp = (sb2 && secondary) ? -q[6] : q[1];
+        return q[2] + amp * (std::cos(nu + w) + e * std::cos(w));
     };
+    auto isSecondary = [&](int i) { return sb2 && (*comp)[i] >= 2; };
     auto chi2Data = [&](const double* q, const std::vector<double>& sig) {
         double c = 0.0;
         for (int i = 0; i < N; ++i) {
-            const double r = (y[i] - model(q, t[i])) / sig[i];
+            const double r = (y[i] - model(q, t[i], isSecondary(i))) / sig[i];
             c += r * r;
         }
         return c;
     };
 
-    const auto sig = rescaledSigmas(sigma, chi2Data(x.data(), sigma), NP);
+    const auto sig = rescaledSigmas(sigma, chi2Data(x.data(), sigma), np);
 
     auto logPost = [&](const double* q) {
         double lp = -0.5 * chi2Data(q, sig);
@@ -331,6 +414,7 @@ KeplerianErrors sampleKeplerian(const std::vector<double>& t,
         if (!(q[0] > 1e-9)) return false;                 // P > 0
         if (q[1] < 0.0) return false;                     // K ≥ 0 (truncated)
         if (q[4] < eMin || q[4] > eMax) return false;     // e bounds
+        if (sb2 && q[6] < 0.0) return false;              // K2 ≥ 0 (truncated)
         q[3] = std::fmod(q[3], 1.0);   if (q[3] < 0.0) q[3] += 1.0;    // φ
         q[5] = std::fmod(q[5], 360.0); if (q[5] < 0.0) q[5] += 360.0;  // ω
         return true;
@@ -338,11 +422,12 @@ KeplerianErrors sampleKeplerian(const std::vector<double>& t,
 
     // Proposal shape from a forward-difference Jacobian at the optimum
     // (same step choices as keplerLM).
-    std::vector<double> JTJ(NP * NP, 0.0);
+    std::vector<double> JTJ(size_t(np) * np, 0.0);
     {
-        std::vector<double> r0(N), Ji(size_t(N) * NP);
-        for (int i = 0; i < N; ++i) r0[i] = (y[i] - model(x.data(), t[i])) / sig[i];
-        for (int a = 0; a < NP; ++a) {
+        std::vector<double> r0(N), Ji(size_t(N) * np);
+        for (int i = 0; i < N; ++i)
+            r0[i] = (y[i] - model(x.data(), t[i], isSecondary(i))) / sig[i];
+        for (int a = 0; a < np; ++a) {
             double step = std::max(std::abs(x[a]) * 1e-6, 1e-7);
             if (a == 3) step = 1e-6;
             if (a == 4) step = 1e-5;
@@ -352,23 +437,25 @@ KeplerianErrors sampleKeplerian(const std::vector<double>& t,
             if (xp[4] > eMax) { xp[4] = x[4] - step; }    // keep e inside bounds
             const double used = xp[a] - x[a];
             for (int i = 0; i < N; ++i) {
-                const double ri = (y[i] - model(xp.data(), t[i])) / sig[i];
-                Ji[size_t(i) * NP + a] = used != 0.0 ? (ri - r0[i]) / used : 0.0;
+                const double ri =
+                    (y[i] - model(xp.data(), t[i], isSecondary(i))) / sig[i];
+                Ji[size_t(i) * np + a] = used != 0.0 ? (ri - r0[i]) / used : 0.0;
             }
         }
         for (int i = 0; i < N; ++i)
-            for (int a = 0; a < NP; ++a)
-                for (int b = 0; b < NP; ++b)
-                    JTJ[size_t(a) * NP + b] +=
-                        Ji[size_t(i) * NP + a] * Ji[size_t(i) * NP + b];
+            for (int a = 0; a < np; ++a)
+                for (int b = 0; b < np; ++b)
+                    JTJ[size_t(a) * np + b] +=
+                        Ji[size_t(i) * np + a] * Ji[size_t(i) * np + b];
         if (usePrior) JTJ[0] += 1.0 / (sigP * sigP);
     }
 
     std::vector<double> L;
-    if (!proposalCholFromJTJ(NP, std::move(JTJ), L)) return out;
+    if (!proposalCholFromJTJ(np, std::move(JTJ), L)) return out;
 
-    std::vector<double> sP, sK, sG, sPhi, sE, sW;
+    std::vector<double> sP, sK, sG, sPhi, sE, sW, sK2;
     for (auto* v : { &sP, &sK, &sG, &sPhi, &sE, &sW }) v->reserve(opt.nSamples);
+    if (sb2) sK2.reserve(opt.nSamples);
     auto record = [&](const double* q) {
         sP.push_back(q[0]);
         sK.push_back(q[1]);
@@ -376,9 +463,10 @@ KeplerianErrors sampleKeplerian(const std::vector<double>& t,
         sPhi.push_back(unwrapNear(q[3], phiBest, 1.0));
         sE.push_back(q[4]);
         sW.push_back(unwrapNear(q[5], omegaBest, 360.0));
+        if (sb2) sK2.push_back(q[6]);
     };
 
-    if (!runMH(NP, x, L, constrain, logPost, record, opt)) return out;
+    if (!runMH(np, x, L, constrain, logPost, record, opt)) return out;
 
     out.P     = percentileErr(sP,   Pbest);
     out.K     = percentileErr(sK,   Kbest);
@@ -386,9 +474,11 @@ KeplerianErrors sampleKeplerian(const std::vector<double>& t,
     out.phi   = percentileErr(sPhi, phiBest);
     out.e     = percentileErr(sE,   std::clamp(eBest, eMin, eMax));
     out.omega = percentileErr(sW,   omegaBest);
+    if (sb2) out.K2 = percentileErr(sK2, std::max(0.0, K2best));
     out.ok    = std::isfinite(out.P.sym) && std::isfinite(out.K.sym) &&
                 std::isfinite(out.gamma.sym) && std::isfinite(out.phi.sym) &&
-                std::isfinite(out.e.sym) && std::isfinite(out.omega.sym);
+                std::isfinite(out.e.sym) && std::isfinite(out.omega.sym) &&
+                (!sb2 || std::isfinite(out.K2.sym));
     return out;
 }
 

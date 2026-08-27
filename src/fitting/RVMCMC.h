@@ -21,6 +21,11 @@
 // the period. Chains are returned in *linear* period, i.e. the stored columns
 // are ["period", "amplitude", "offset", "phase", ("eccentricity", "omega")].
 //
+// SB2: when Data::comp marks secondary-component points, K2 is appended as the
+// LAST parameter ("amplitude2") and both components are fitted jointly around
+// the common γ, the secondary in antiphase: RV2 = γ − K2·f(t) where
+// RV1 = γ + K·f(t). K2 shares the amplitude bounds/steps of K.
+//
 // Model conventions match RVFit exactly:
 //     circular    RV = γ + K·sin(2π(t/P + φ))
 //     eccentric   M  = 2π(t/P − φ),  RV = γ + K·(cos(ν+ω) + e·cos ω)
@@ -87,7 +92,10 @@ struct Config {
 Config defaultConfig(bool eccentric = false);
 
 // ─────────────────────────────── Inputs ─────────────────────────────────────
-struct Data     { std::vector<double> bjd, rv, rv_err; };
+/// `comp` is the per-point stellar component (1 = primary, 2 = secondary).
+/// Empty means all primary; when non-empty it must match bjd's size. K2 is
+/// only sampled when at least one point is component 2.
+struct Data     { std::vector<double> bjd, rv, rv_err; std::vector<int> comp; };
 struct LCPrior  { std::vector<double> periods, powers; };
 
 /// Cooperative progress / cancellation channel, sampled by the UI on a timer.

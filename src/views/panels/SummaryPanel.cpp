@@ -249,6 +249,44 @@ inline double m2Of(double P, double K, double M1, double e, double sini) {
     return solveCompanionMass(massFunctionMsun(K, P, e), M1, sini);
 }
 
+// SB2 minimum component masses. With both semi-amplitudes measured the system
+// is fully determined up to the inclination:
+//   M₁·sin³i = C·P·(1−e²)^{3/2}·(K₁+K₂)²·K₂     (swap K₁↔K₂ for M₂)
+// using the same constant as massFunctionMsun, of which this is the general
+// case. `primary` selects which component's mass is returned.
+inline double sb2MassSin3i(double K1, double K2, double P_days, double e,
+                           bool primary) {
+    constexpr double C  = 1.0361e-7;
+    const double     ef = std::max(0.0, 1.0 - e * e);
+    const double     Ksum = K1 + K2;
+    return C * P_days * std::pow(ef, 1.5) * Ksum * Ksum * (primary ? K2 : K1);
+}
+
+// Linearised 1σ error on sb2MassSin3i from the (symmetric) input errors.
+inline double sb2MassSin3iError(double K1, double eK1, double K2, double eK2,
+                                double P, double eP, double e, double ee,
+                                bool primary) {
+    const double M = sb2MassSin3i(K1, K2, P, e, primary);
+    if (!std::isfinite(M) || M <= 0.0) return std::numeric_limits<double>::quiet_NaN();
+    const double Ksum = K1 + K2;
+    const double ef   = std::max(1e-12, 1.0 - e * e);
+    // d/dK of (K1+K2)²·Kother: the "other" amplitude carries the extra term.
+    const double Kself  = primary ? K1 : K2;      // appears only in the square
+    const double Kother = primary ? K2 : K1;      // also the linear factor
+    const double eSelf  = primary ? eK1 : eK2;
+    const double eOther = primary ? eK2 : eK1;
+    (void)Kself;
+    const double base   = M / (Ksum * Ksum * Kother);   // C·P·ef^{3/2}
+    const double dSelf  = base * 2.0 * Ksum * Kother;
+    const double dOther = base * Ksum * (Ksum + 2.0 * Kother);
+    double var = 0.0;
+    if (std::isfinite(eSelf)  && eSelf  > 0) var += dSelf * dSelf * eSelf * eSelf;
+    if (std::isfinite(eOther) && eOther > 0) var += dOther * dOther * eOther * eOther;
+    if (std::isfinite(eP) && eP > 0 && P > 0) { const double d = M / P; var += d * d * eP * eP; }
+    if (std::isfinite(ee) && ee > 0)          { const double d = -3.0 * e * M / ef; var += d * d * ee * ee; }
+    return std::sqrt(var);
+}
+
 // Linearised error propagation via central differences.
 // Roughly 10 solver calls - microseconds vs. milliseconds for the MC.
 double propagateM2Error(double P, double eP, double K, double eK, double M1,
@@ -1040,6 +1078,12 @@ QWidget *SummaryPanel::createOrbitalFitSection() {
           "d", bestFit->getPeriodErrorUp(), bestFit->getPeriodErrorDown(), "P");
     pushV(compact, "K", bestFit->getK(), bestFit->getKError(), 2, "km/s",
           bestFit->getKErrorUp(), bestFit->getKErrorDown(), "K");
+    // A double-lined solution also measures the secondary semi-amplitude. The
+    // mass ratio it implies is reported in the Companion section, next to the
+    // photometric q it can be compared against.
+    if (bestFit->hasK2())
+        pushV(compact, "K₂", bestFit->getK2(), bestFit->getK2Error(), 2, "km/s",
+              bestFit->getK2ErrorUp(), bestFit->getK2ErrorDown(), "K_2");
     pushV(compact, "γ", bestFit->getGamma(), bestFit->getGammaError(), 2,
           "km/s", bestFit->getGammaErrorUp(), bestFit->getGammaErrorDown(),
           "\\gamma");
@@ -1886,6 +1930,35 @@ QWidget *SummaryPanel::createCompanionSection() {
         const double f = massFunctionMsun(in.K, in.P, in.e);
         QString      n = QString::number(f, 'f', 5);
         rows.push_back({"f(M)", n + " M☉", n});
+    }
+
+    // SB2: both semi-amplitudes measured, so the mass ratio is direct and each
+    // component's M·sin³i follows without needing M₁ from the SED.
+    const double k2  = _ctx.star->getRVK2();
+    const double eK2 = _ctx.star->getRVEK2();
+    const bool   hasK2 = std::isfinite(k2) && k2 > 0.0 && in.valid
+                         && std::isfinite(in.K) && in.K > 0.0;
+    if (hasK2) {
+        const double q  = in.K / k2;
+        double eq = std::numeric_limits<double>::quiet_NaN();
+        if (std::isfinite(in.eK) && std::isfinite(eK2))
+            eq = q * std::sqrt((in.eK / in.K) * (in.eK / in.K)
+                               + (eK2 / k2) * (eK2 / k2));
+        rows.push_back(qRow("q (RV)", q, eq, 3, "",
+                            MassInputs::kUnset, MassInputs::kUnset, "q"));
+
+        const double m1s = sb2MassSin3i(in.K, k2, in.P, in.e, /*primary=*/true);
+        const double m2s = sb2MassSin3i(in.K, k2, in.P, in.e, /*primary=*/false);
+        const double em1s = sb2MassSin3iError(in.K, in.eK, k2, eK2,
+                                              in.P, in.eP, in.e, in.ee, true);
+        const double em2s = sb2MassSin3iError(in.K, in.eK, k2, eK2,
+                                              in.P, in.eP, in.e, in.ee, false);
+        rows.push_back(qRow("M₁·sin³i", m1s, em1s, 3, "M☉",
+                            MassInputs::kUnset, MassInputs::kUnset,
+                            "M_1 \\sin^3 i"));
+        rows.push_back(qRow("M₂·sin³i", m2s, em2s, 3, "M☉",
+                            MassInputs::kUnset, MassInputs::kUnset,
+                            "M_2 \\sin^3 i"));
     }
     if (hasSeparation) {
         const double M2    = hasTrue ? mTrue : (hasMin ? mMin : 0.0);

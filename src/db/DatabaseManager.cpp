@@ -227,6 +227,10 @@ bool DatabaseManager::createTables()
             rv_e_k REAL DEFAULT 0,
             rv_e_k_up REAL,
             rv_e_k_down REAL,
+            rv_k2 REAL,
+            rv_e_k2 REAL,
+            rv_e_k2_up REAL,
+            rv_e_k2_down REAL,
             rv_period REAL DEFAULT 0,
             rv_e_period REAL DEFAULT 0,
             rv_e_period_up REAL,
@@ -598,6 +602,7 @@ bool DatabaseManager::createTables()
           source TEXT,
           spectrum_id TEXT,
           spectral_fit_id TEXT,
+          component INTEGER DEFAULT 1,
           created_at TEXT DEFAULT (datetime('now')),
           FOREIGN KEY (curve_id) REFERENCES rv_curves(id) ON DELETE CASCADE
         )
@@ -610,6 +615,8 @@ bool DatabaseManager::createTables()
           curve_id TEXT NOT NULL,
           k REAL DEFAULT 0,
           k_error REAL DEFAULT 0,
+          k2 REAL,
+          k2_error REAL,
           gamma REAL DEFAULT 0,
           gamma_error REAL DEFAULT 0,
           period REAL DEFAULT 0,
@@ -624,6 +631,8 @@ bool DatabaseManager::createTables()
           omega_error REAL DEFAULT 0,
           k_error_up REAL,
           k_error_down REAL,
+          k2_error_up REAL,
+          k2_error_down REAL,
           gamma_error_up REAL,
           gamma_error_down REAL,
           period_error_up REAL,
@@ -869,6 +878,20 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE rv_fits ADD COLUMN eccentricity_error_down REAL",
         "ALTER TABLE rv_fits ADD COLUMN omega_error_up REAL",
         "ALTER TABLE rv_fits ADD COLUMN omega_error_down REAL",
+
+        // SB2: per-point stellar component and secondary semi-amplitude.
+        // component DEFAULT 1 makes every legacy point primary; k2 NULL means
+        // an SB1 fit (NaN sentinel via SqlValue).
+        "ALTER TABLE rv_points ADD COLUMN component INTEGER DEFAULT 1",
+        "ALTER TABLE rv_fits ADD COLUMN k2 REAL",
+        "ALTER TABLE rv_fits ADD COLUMN k2_error REAL",
+        "ALTER TABLE rv_fits ADD COLUMN k2_error_up REAL",
+        "ALTER TABLE rv_fits ADD COLUMN k2_error_down REAL",
+        // Denormalised copies of the best fit's K2 (NULL = single-lined).
+        "ALTER TABLE stars ADD COLUMN rv_k2 REAL",
+        "ALTER TABLE stars ADD COLUMN rv_e_k2 REAL",
+        "ALTER TABLE stars ADD COLUMN rv_e_k2_up REAL",
+        "ALTER TABLE stars ADD COLUMN rv_e_k2_down REAL",
 
         "ALTER TABLE lc_fits ADD COLUMN q_error_up REAL",
         "ALTER TABLE lc_fits ADD COLUMN q_error_down REAL",
@@ -1252,6 +1275,10 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
     const int idxEHeDown = rec.indexOf("e_he_down");
     const int idxRvEKUp = rec.indexOf("rv_e_k_up");
     const int idxRvEKDown = rec.indexOf("rv_e_k_down");
+    const int idxRvK2 = rec.indexOf("rv_k2");
+    const int idxRvEK2 = rec.indexOf("rv_e_k2");
+    const int idxRvEK2Up = rec.indexOf("rv_e_k2_up");
+    const int idxRvEK2Down = rec.indexOf("rv_e_k2_down");
     const int idxRvEPeriodUp = rec.indexOf("rv_e_period_up");
     const int idxRvEPeriodDown = rec.indexOf("rv_e_period_down");
     const int idxRvEGammaUp = rec.indexOf("rv_e_gamma_up");
@@ -1449,6 +1476,11 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
 
         star->setRVEKUp(SqlValue::toDoubleOrNaN(query, idxRvEKUp));
         star->setRVEKDown(SqlValue::toDoubleOrNaN(query, idxRvEKDown));
+        // NULL (single-lined fit, or a pre-SB2 row) reads back as NaN.
+        star->setRVK2(SqlValue::toDoubleOrNaN(query, idxRvK2));
+        star->setRVEK2(SqlValue::toDoubleOrNaN(query, idxRvEK2));
+        star->setRVEK2Up(SqlValue::toDoubleOrNaN(query, idxRvEK2Up));
+        star->setRVEK2Down(SqlValue::toDoubleOrNaN(query, idxRvEK2Down));
         star->setRVEPeriodUp(SqlValue::toDoubleOrNaN(query, idxRvEPeriodUp));
         star->setRVEPeriodDown(SqlValue::toDoubleOrNaN(query, idxRvEPeriodDown));
         star->setRVEGammaUp(SqlValue::toDoubleOrNaN(query, idxRvEGammaUp));

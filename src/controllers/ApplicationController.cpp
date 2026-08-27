@@ -133,6 +133,11 @@ std::shared_ptr<Project> ApplicationController::openProject(const QString& proje
                                 dbMgr->saveRadialVelocityPoint(p, p->getCurveId());
                             });
 
+                        curve->setPointDeleteCallback(
+                            [dbMgr](const QString& pointId) {
+                                dbMgr->deleteRadialVelocityPoint(pointId);
+                            });
+
                         curve->setBjdResolverCallback(
                             [dbMgr, wstar](const std::shared_ptr<RadialVelocityPoint>& p) {
                                 if (!p) return;
@@ -170,6 +175,11 @@ std::shared_ptr<Project> ApplicationController::openProject(const QString& proje
                         curve->setPointPersistCallback(
                             [dbMgr](const std::shared_ptr<RadialVelocityPoint>& p) {
                                 dbMgr->saveRadialVelocityPoint(p, p->getCurveId());
+                            });
+
+                        curve->setPointDeleteCallback(
+                            [dbMgr](const QString& pointId) {
+                                dbMgr->deleteRadialVelocityPoint(pointId);
                             });
 
                         curve->setBjdResolverCallback(

@@ -38,6 +38,10 @@ RVAddPointDialog::RVAddPointDialog(std::shared_ptr<Star> star,
     _errFormal = mk(0.0,    1.0e4, 4, 0.1);
     _errSyst   = mk(0.0,    1.0e4, 4, 0.1);
 
+    _compCombo = new QComboBox;
+    _compCombo->addItem("Primary", 1);
+    _compCombo->addItem("Secondary", 2);
+
     _instCombo = new QComboBox;
     _instCombo->addItem("(none)", QString());
     if (_dbm && _star) {
@@ -56,6 +60,7 @@ RVAddPointDialog::RVAddPointDialog(std::shared_ptr<Star> star,
     form->addRow("RV [km/s]",      _rvSpin);
     form->addRow("σ formal",       _errFormal);
     form->addRow("σ systematic",   _errSyst);
+    form->addRow("Component",      _compCombo);
     form->addRow("Instrument",     _instCombo);
 
     _buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
@@ -76,6 +81,7 @@ void RVAddPointDialog::onAccept()
     p->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
     p->setSource("manual");
     p->setRVSource(RadialVelocityPoint::RVSource::Manual);
+    p->setComponent(_compCombo->currentData().toInt());
 
     p->setMJD(_mjdSpin->value());
 

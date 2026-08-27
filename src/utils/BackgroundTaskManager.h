@@ -432,6 +432,7 @@ public:
         int rvCol;
         int rvErrCol;
         int sysErrCol = -1;
+        int compCol = -1;   // optional stellar component column (1 or 2)
         bool isBJD;
     };
 

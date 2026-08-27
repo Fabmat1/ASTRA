@@ -479,6 +479,13 @@ void RadialVelocityImportPage::setupFromTablePage()
     _tableSysErrColCombo = new QComboBox;
     colLayout->addWidget(_tableSysErrColCombo, row++, 1);
 
+    colLayout->addWidget(new QLabel("Component column (1/2):"), row, 0);
+    _tableCompColCombo = new QComboBox;
+    _tableCompColCombo->setToolTip(
+        "Optional stellar component per row for SB2 systems: "
+        "1 = primary, 2 = secondary. Rows without a value are primary.");
+    colLayout->addWidget(_tableCompColCombo, row++, 1);
+
     colGroup->setLayout(colLayout);
     layout->addWidget(colGroup);
 
@@ -563,6 +570,7 @@ void RadialVelocityImportPage::setupFitParamsGroup(QVBoxLayout* parentLayout)
     };
 
     addParamRow("Half-amplitude K:", _fitKColCombo);
+    addParamRow("Secondary half-amplitude K2 (SB2):", _fitK2ColCombo);
     addParamRow("Systemic velocity γ:", _fitGammaColCombo);
     addParamRow("Period P:", _fitPeriodColCombo);
     addParamRow("Phase zero T₀:", _fitT0ColCombo);
@@ -883,11 +891,14 @@ void RadialVelocityImportPage::autoDetectTableColumns()
     }
     const int sysIdx  = StarMatching::bestColumnFor(cols,
         {"sys_err", "sys_error", "rv_sys", "sigma_sys", "systematic"});
+    const int compIdx = StarMatching::bestColumnFor(cols,
+        {"component", "comp", "star_component"}, errWords, /*exactOnly=*/true);
 
     setCombo(_tableTimeColCombo,   timeIdx);
     setCombo(_tableRVColCombo,     rvIdx);
     setCombo(_tableRVErrColCombo,  rvErrIdx == rvIdx ? -1 : rvErrIdx);
     setCombo(_tableSysErrColCombo, sysIdx);
+    setCombo(_tableCompColCombo,   compIdx);
     setCombo(_tableDecColCombo,    decIdx);
 
     if (srcIdx >= 0) {
@@ -1136,6 +1147,7 @@ void RadialVelocityImportPage::onProcessTable()
     cfg.rvCol    = rvCol;
     cfg.rvErrCol = rvErrCol;
     cfg.sysErrCol = _tableSysErrColCombo->currentIndex() - 1;
+    cfg.compCol   = _tableCompColCombo->currentIndex() - 1;
     cfg.isBJD    = (_tableTimeTypeCombo->currentIndex() == 1);
 
     _processTableBtn->setEnabled(false);
@@ -1286,6 +1298,7 @@ void RadialVelocityImportPage::onFitParamsToggled(bool checked)
     _fitIdColCombo->setEnabled(checked);
     _fitIdTypeCombo->setEnabled(checked);
     _fitKColCombo->setEnabled(checked);
+    _fitK2ColCombo->setEnabled(checked);
     _fitGammaColCombo->setEnabled(checked);
     _fitPeriodColCombo->setEnabled(checked);
     _fitT0ColCombo->setEnabled(checked);
@@ -1322,6 +1335,8 @@ void RadialVelocityImportPage::parseFitParamsFile()
                               "target", "object", "gaia"}},
         {_fitKColCombo,      {"k", "k1", "half_amp", "amplitude",
                               "semi_amplitude"}},
+        {_fitK2ColCombo,     {"k2", "half_amp2", "amplitude2",
+                              "semi_amplitude2"}},
         {_fitGammaColCombo,  {"gamma", "v0", "systemic", "v_sys",
                               "vsys", "v_gamma"}},
         {_fitPeriodColCombo, {"period", "p", "per", "orbital_period"}},
@@ -1351,6 +1366,7 @@ void RadialVelocityImportPage::applyFitParamsToProject()
 
     int idCol     = _fitIdColCombo->currentIndex() - 1;
     int kCol      = _fitKColCombo->currentIndex() - 1;
+    int k2Col     = _fitK2ColCombo->currentIndex() - 1;
     int gammaCol  = _fitGammaColCombo->currentIndex() - 1;
     int periodCol = _fitPeriodColCombo->currentIndex() - 1;
     int t0Col     = _fitT0ColCombo->currentIndex() - 1;
@@ -1376,6 +1392,7 @@ void RadialVelocityImportPage::applyFitParamsToProject()
     };
 
     int kErrCol      = findErrCol(kCol);
+    int k2ErrCol     = findErrCol(k2Col);
     int gammaErrCol  = findErrCol(gammaCol);
     int periodErrCol = findErrCol(periodCol);
     int t0ErrCol     = findErrCol(t0Col);
@@ -1407,6 +1424,10 @@ void RadialVelocityImportPage::applyFitParamsToProject()
         fit->setBestFit(true);
 
         if (kCol >= 0)      { fit->setK(getDouble(row, kCol));              fit->setKError(getDouble(row, kErrCol)); }
+        if (k2Col >= 0) {
+            const double k2 = getDouble(row, k2Col);
+            if (k2 > 0.0) { fit->setK2(k2); fit->setK2Error(getDouble(row, k2ErrCol)); }
+        }
         if (gammaCol >= 0)  { fit->setGamma(getDouble(row, gammaCol));      fit->setGammaError(getDouble(row, gammaErrCol)); }
         if (periodCol >= 0) { fit->setPeriod(getDouble(row, periodCol));    fit->setPeriodError(getDouble(row, periodErrCol)); }
         if (t0Col >= 0)     { fit->setT0(getDouble(row, t0Col));            fit->setT0Error(getDouble(row, t0ErrCol)); }
@@ -1453,7 +1474,8 @@ void RadialVelocityImportPage::onBrowseTableFile()
                     _tableColumns, _tableRows)) {
         for (QComboBox* combo : {_tableIdColCombo, _tableDecColCombo,
                                  _tableTimeColCombo, _tableRVColCombo,
-                                 _tableRVErrColCombo, _tableSysErrColCombo}) {
+                                 _tableRVErrColCombo, _tableSysErrColCombo,
+                                 _tableCompColCombo}) {
             combo->blockSignals(true);
             combo->clear();
             combo->addItem("(none)");

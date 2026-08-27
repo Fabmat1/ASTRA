@@ -991,6 +991,10 @@ QJsonObject rvFitToJson(const RVFit &f) {
     o["created"]   = dtToIso(f.getCreationDate());
     pD(o, "K", f.getK());
     pD(o, "KErr", f.getKError());
+    pD(o, "K2", f.getK2());
+    pD(o, "K2Err", f.getK2Error());
+    pD(o, "K2ErrUp", f.getK2ErrorUp());
+    pD(o, "K2ErrDown", f.getK2ErrorDown());
     pD(o, "gamma", f.getGamma());
     pD(o, "gammaErr", f.getGammaError());
     pD(o, "period", f.getPeriod());
@@ -1030,6 +1034,11 @@ std::shared_ptr<RVFit> rvFitFromJson(const QJsonObject &o) {
     f->setCreationDate(dtFromIso(rS(o, "created")));
     f->setK(rD(o, "K", 0));
     f->setKError(rD(o, "KErr", 0));
+    f->setK2(rD(o, "K2"));                 // NaN default = SB1 (old packages)
+    const double k2e = rD(o, "K2Err");
+    f->setK2Error(std::isfinite(k2e) ? k2e : 0.0);
+    f->setK2ErrorUp(rD(o, "K2ErrUp"));
+    f->setK2ErrorDown(rD(o, "K2ErrDown"));
     f->setGamma(rD(o, "gamma", 0));
     f->setGammaError(rD(o, "gammaErr", 0));
     f->setPeriod(rD(o, "period", 0));
@@ -1072,6 +1081,7 @@ QJsonObject rvPointToJson(const RadialVelocityPoint &p) {
     o["spectrumId"]    = p.getSpectrumId();
     o["spectralFitId"] = p.getSpectralFitId();
     o["source"]        = p.getSource();
+    o["component"]     = p.getComponent();
     o["flagged"]       = p.isFlagged();
     o["rvSource"]      = int(p.getRVSource());
     pD(o, "rvManual", p.getRVManual());
@@ -1095,6 +1105,7 @@ std::shared_ptr<RadialVelocityPoint> rvPointFromJson(
     p->setSpectrumId(rS(o, "spectrumId"));
     p->setSpectralFitId(rS(o, "spectralFitId"));
     p->setSource(rS(o, "source"));
+    p->setComponent(std::max(1, rI(o, "component", 1)));
     p->setFlagged(rB(o, "flagged"));
     p->setRVSource(
         static_cast<RadialVelocityPoint::RVSource>(rI(o, "rvSource")));

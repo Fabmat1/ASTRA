@@ -138,6 +138,7 @@ void RVMCMCResultsDialog::renderCornerGrid()
     auto labelFor = [](const std::string& s) -> QString {
         if (s == "period")       return "P [d]";
         if (s == "amplitude")    return "K [km/s]";
+        if (s == "amplitude2")   return "K₂ [km/s]";
         if (s == "offset")       return "γ [km/s]";
         if (s == "phase")        return "φ";
         if (s == "eccentricity") return "e";
@@ -431,6 +432,8 @@ std::shared_ptr<RVFit> RVMCMCResultsDialog::fitFromSubChain(
                                                fit->setPeriodErrorUp(up);  fit->setPeriodErrorDown(down); }
         else if (names[k] == "amplitude")    { fit->setK(med);            fit->setKError(err);
                                                fit->setKErrorUp(up);      fit->setKErrorDown(down); }
+        else if (names[k] == "amplitude2")   { fit->setK2(med);           fit->setK2Error(err);
+                                               fit->setK2ErrorUp(up);     fit->setK2ErrorDown(down); }
         else if (names[k] == "offset")       { fit->setGamma(med);        fit->setGammaError(err);
                                                fit->setGammaErrorUp(up);  fit->setGammaErrorDown(down); }
         else if (names[k] == "phase")        { fit->setPhi(med);          fit->setPhiError(err);
@@ -441,7 +444,10 @@ std::shared_ptr<RVFit> RVMCMCResultsDialog::fitFromSubChain(
         else if (names[k] == "omega")        { fit->setOmega(med);        fit->setOmegaError(err);
                                                fit->setOmegaErrorUp(up);  fit->setOmegaErrorDown(down); }
     }
-    bool ecc = (dim == 6);
+    // Name-based: with the optional K2 the dims are 4/5/6/7, so a dim count
+    // no longer identifies the eccentric model.
+    const bool ecc = std::find(names.begin(), names.end(),
+                               std::string("eccentricity")) != names.end();
     fit->setEccentric(ecc);
     fit->setBestFit(false);
     return fit;

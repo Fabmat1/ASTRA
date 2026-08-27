@@ -93,11 +93,17 @@ public:
     QString getSource() const { return _source; }
     void setSource(const QString& source) { _source = source; }
 
-    // Create from spectral fit
+    // Stellar component this RV belongs to: 1 = primary, 2 = secondary.
+    int  getComponent() const { return _component; }
+    void setComponent(int c) { _component = (c >= 2 ? 2 : 1); }
+
+    // Create from spectral fit. component 2 reads the fit's radialVelocity2
+    // fields; returns nullptr when that component has no finite RV.
     static std::shared_ptr<RadialVelocityPoint> createFromSpectralFit(
         std::shared_ptr<SpectralFit> fit,
         std::shared_ptr<Spectrum> spectrum,
-        std::shared_ptr<Instrument> instrument = nullptr);
+        std::shared_ptr<Instrument> instrument = nullptr,
+        int component = 1);
 
     // Flagged: excluded from RV fits; auto-mirrored from source SpectralFit
     bool isFlagged() const { return _flagged; }
@@ -147,6 +153,7 @@ private:
     QString _spectrumId;
     QString _spectralFitId;
     QString _source;
+    int  _component = 1;
     bool _flagged = false;
     double   _rvManual              = std::numeric_limits<double>::quiet_NaN();
     double   _rvManualErrorFormal   = 0.0;
@@ -190,6 +197,19 @@ public:
     void setK(double k) { _K = k; }
     void setKError(double error) { _KError = error; }
 
+    // Secondary semi-amplitude (SB2). NaN = unset, i.e. an SB1 fit. The
+    // secondary shares P, e, omega, phi and gamma and moves in antiphase:
+    // RV2(t) = gamma - K2 * f(t) where RV1(t) = gamma + K * f(t).
+    double getK2() const { return _K2; }
+    double getK2Error() const { return _K2Error; }
+    void setK2(double k2) { _K2 = k2; }
+    void setK2Error(double error) { _K2Error = error; }
+    bool hasK2() const { return std::isfinite(_K2) && _K2 > 0.0; }
+
+    // Mass ratio q = M2/M1 = K1/K2; NaN unless hasK2().
+    double massRatio() const;
+    double massRatioError() const;
+
     double getGamma() const { return _gamma; }
     double getGammaError() const { return _gammaError; }
     void setGamma(double gamma) { _gamma = gamma; }
@@ -231,6 +251,11 @@ public:
     void setKErrorUp(double e)   { _KErrorUp = e; }
     void setKErrorDown(double e) { _KErrorDown = e; }
 
+    double getK2ErrorUp() const   { return _K2ErrorUp; }
+    double getK2ErrorDown() const { return _K2ErrorDown; }
+    void setK2ErrorUp(double e)   { _K2ErrorUp = e; }
+    void setK2ErrorDown(double e) { _K2ErrorDown = e; }
+
     double getGammaErrorUp() const   { return _gammaErrorUp; }
     double getGammaErrorDown() const { return _gammaErrorDown; }
     void setGammaErrorUp(double e)   { _gammaErrorUp = e; }
@@ -261,9 +286,9 @@ public:
     void setOmegaErrorUp(double e)   { _omegaErrorUp = e; }
     void setOmegaErrorDown(double e) { _omegaErrorDown = e; }
 
-    // Calculate RV at given time
-    double calculateRV(double bjd) const;
-    double calculateRV(const Time& t) const;      // convenience overload
+    // Calculate RV at given time (component 2 = secondary, antiphase)
+    double calculateRV(double bjd, int component = 1) const;
+    double calculateRV(const Time& t, int component = 1) const;
 
     // Fit quality metrics
     double getChi2() const { return _chi2; }
@@ -291,8 +316,8 @@ public:
     // circular and eccentric models.
     double foldEpochBJD() const;
 
-    // Model evaluation
-    double calculateRVAtPhase(double phase) const;   // phase 0 == periapsis
+    // Model evaluation (component 2 = secondary, antiphase)
+    double calculateRVAtPhase(double phase, int component = 1) const;
     double computePhase(const Time& t) const;        // [0,1)
 
     // Update _chi2 and _rms from the supplied points (flagged are skipped).
@@ -337,9 +362,15 @@ public:
     double _omega;
     double _omegaError;
 
+    // Secondary semi-amplitude; NaN = SB1 fit.
+    double _K2      = AsymErr::unset;
+    double _K2Error = 0.0;
+
     // Asymmetric errors; NaN = unset (fall back to the symmetric error).
     double _KErrorUp            = AsymErr::unset;
     double _KErrorDown          = AsymErr::unset;
+    double _K2ErrorUp           = AsymErr::unset;
+    double _K2ErrorDown         = AsymErr::unset;
     double _gammaErrorUp        = AsymErr::unset;
     double _gammaErrorDown      = AsymErr::unset;
     double _periodErrorUp       = AsymErr::unset;
@@ -386,6 +417,16 @@ public:
     std::vector<std::shared_ptr<RadialVelocityPoint>> getRVPoints() const { return _rvPoints; }
     std::shared_ptr<RadialVelocityPoint> getRVPoint(const QString& pointId) const;
 
+    // Lookup by originating spectrum. findPoint matches one component;
+    // findPoints returns every component's point for that spectrum.
+    std::shared_ptr<RadialVelocityPoint> findPoint(
+        const QString& spectrumId, int component) const;
+    std::vector<std::shared_ptr<RadialVelocityPoint>> findPoints(
+        const QString& spectrumId) const;
+
+    // True if any point belongs to the secondary component.
+    bool hasComponent2() const;
+
     // Populate from spectra
     void populateFromSpectra(const std::vector<std::shared_ptr<Spectrum>>& spectra);
     void updateFromSpectra(const std::vector<std::shared_ptr<Spectrum>>& spectra);
@@ -400,7 +441,10 @@ public:
     std::shared_ptr<RVFit> getBestFit() const;
     void setBestFit(const QString& fitId);
 
-    // Statistical metrics
+    // Statistical metrics. These describe the PRIMARY component only
+    // (component 1): deltaRV, rv_avg and logP are variability metrics of the
+    // star's reported solution, and mixing antiphase secondary points would
+    // inflate the amplitude and break the logP semantics.
     double getMinRV() const;
     double getMaxRV() const;
     double getMeanRV() const;
@@ -454,6 +498,7 @@ public:
     void attachToSpectra(const std::vector<std::shared_ptr<Spectrum>>& spectra);
 
     std::vector<std::shared_ptr<RadialVelocityPoint>> getActiveRVPoints() const;
+    std::vector<std::shared_ptr<RadialVelocityPoint>> getActiveRVPoints(int component) const;
 
     using PointPersistCallback =
         std::function<void(const std::shared_ptr<RadialVelocityPoint>&)>;
@@ -462,6 +507,14 @@ public:
 
     void persistPoint(const std::shared_ptr<RadialVelocityPoint>& p)
         { if (_pointPersistCb && p) _pointPersistCb(p); }
+
+    // DB-row deletion channel for points the curve drops on its own (e.g. a
+    // FromFit secondary point whose best fit lost its second component).
+    using PointDeleteCallback = std::function<void(const QString& pointId)>;
+    void setPointDeleteCallback(PointDeleteCallback cb)
+        { _pointDeleteCb = std::move(cb); }
+    void deletePointRow(const QString& pointId)
+        { if (_pointDeleteCb && !pointId.isEmpty()) _pointDeleteCb(pointId); }
 
     // Re-binds every fit's reference time to the earliest point's
     // BJD/MJD.  Called automatically by addRVPoint/addRVFit; call manually
@@ -518,8 +571,12 @@ private:
 
     BjdResolverCallback   _bjdResolverCb;
     PointPersistCallback  _pointPersistCb;
+    PointDeleteCallback   _pointDeleteCb;
 
     double calculateMedian(std::vector<double> values) const;
+
+    // Unflagged component-1 points; the statistics above run over these.
+    std::vector<std::shared_ptr<RadialVelocityPoint>> activePrimaryPoints() const;
 
     void onBestFitChanged(const std::shared_ptr<Spectrum>& spec,
                           const std::shared_ptr<SpectralFit>& newBest);

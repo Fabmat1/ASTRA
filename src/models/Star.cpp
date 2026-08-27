@@ -266,6 +266,17 @@ const std::unordered_map<QString, Star::FieldGetter>& Star::getFieldMap()
         { "rv_e_k",       [](const Star* s) { return dblVar(s->getRVEK()); } },
         { "rv_e_k_up",    [](const Star* s) { return dblVar(s->getRVEKUp()); } },
         { "rv_e_k_down",  [](const Star* s) { return dblVar(s->getRVEKDown()); } },
+        { "rv_k2",        [](const Star* s) { return dblVar(s->getRVK2()); } },
+        { "rv_e_k2",      [](const Star* s) { return dblVar(s->getRVEK2()); } },
+        { "rv_e_k2_up",   [](const Star* s) { return dblVar(s->getRVEK2Up()); } },
+        { "rv_e_k2_down", [](const Star* s) { return dblVar(s->getRVEK2Down()); } },
+        // Mass ratio q = M2/M1 = K1/K2, derived rather than stored.
+        { "rv_q",         [](const Star* s) {
+              const double k = s->getRVK(), k2 = s->getRVK2();
+              return dblVar((std::isfinite(k2) && k2 > 0.0 && std::isfinite(k))
+                                ? k / k2
+                                : std::numeric_limits<double>::quiet_NaN());
+          } },
         { "rv_period",    [](const Star* s) { return dblVar(s->getRVPeriod()); } },
         { "rv_e_period",  [](const Star* s) { return dblVar(s->getRVEPeriod()); } },
         { "rv_e_period_up",   [](const Star* s) { return dblVar(s->getRVEPeriodUp()); } },
@@ -530,6 +541,8 @@ void Star::recomputeRVMetrics()
     _rvPeriod = 0; _rvEPeriod = 0;
     _rvGamma = 0; _rvEGamma = 0;
     _rvEKUp = AsymErr::unset; _rvEKDown = AsymErr::unset;
+    _rvK2 = AsymErr::unset; _rvEK2 = AsymErr::unset;
+    _rvEK2Up = AsymErr::unset; _rvEK2Down = AsymErr::unset;
     _rvEPeriodUp = AsymErr::unset; _rvEPeriodDown = AsymErr::unset;
     _rvEGammaUp = AsymErr::unset; _rvEGammaDown = AsymErr::unset;
     _rvEcc = 0; _rvPhi = 0; _rvT0 = 0;
@@ -541,6 +554,12 @@ void Star::recomputeRVMetrics()
         _rvEK      = bestFit->getKError();
         _rvEKUp    = bestFit->getKErrorUp();
         _rvEKDown  = bestFit->getKErrorDown();
+        if (bestFit->hasK2()) {
+            _rvK2      = bestFit->getK2();
+            _rvEK2     = bestFit->getK2Error();
+            _rvEK2Up   = bestFit->getK2ErrorUp();
+            _rvEK2Down = bestFit->getK2ErrorDown();
+        }
         _rvPeriod  = bestFit->getPeriod();
         _rvEPeriod = bestFit->getPeriodError();
         _rvEPeriodUp   = bestFit->getPeriodErrorUp();

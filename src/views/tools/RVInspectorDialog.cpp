@@ -31,6 +31,7 @@
 #include <QLabel>
 #include <QListWidget>
 #include <QMenu>
+#include <QSet>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSplitter>
@@ -172,6 +173,7 @@ QVariant RVPointsTableModel::headerData(int section, Qt::Orientation o, int role
     switch (section) {
         case ColMJD:           return "MJD";
         case ColBJD:           return "BJD";
+        case ColComp:          return "Comp";
         case ColRV:            return "RV [km/s]";
         case ColErrFormal:     return "σ_formal";
         case ColErrSystematic: return "σ_systematic";
@@ -266,6 +268,7 @@ QVariant RVPointsTableModel::data(const QModelIndex& idx, int role) const
                     ? QString::number(b, 'f', 6)
                     : QString("Not calculated");
             }
+            case ColComp:          return QString::number(p->getComponent());
             case ColRV:            return QString::number(p->getRV(), 'f', 4);
             case ColErrFormal:     return QString::number(p->getRVErrorFormal(), 'f', 4);
             case ColErrSystematic: return QString::number(p->getRVErrorSystematic(), 'f', 4);
@@ -290,7 +293,7 @@ QVariant RVPointsTableModel::data(const QModelIndex& idx, int role) const
             case ColMJD: case ColBJD:
             case ColRV: case ColErrFormal: case ColErrSystematic:
                 return int(Qt::AlignRight | Qt::AlignVCenter);
-            case ColSource: case ColFlagged:
+            case ColComp: case ColSource: case ColFlagged:
                 return int(Qt::AlignCenter);
             default:
                 return int(Qt::AlignLeft | Qt::AlignVCenter);
@@ -529,6 +532,11 @@ void RVSolutionsWidget::buildUi()
 
     _periodSpin = mkPrecise(0.0, 1.0e7, 0.001);
     _kSpin      = mkPrecise(-1.0e4, 1.0e4, 0.1);
+    _sb2Check   = new QCheckBox("SB2 (fit secondary K2)");
+    _k2Spin     = mkPrecise(0.0, 1.0e4, 0.1);
+    _k2Spin->setEnabled(false);
+    _qLabel     = new QLabel("-");
+    _qLabel->setToolTip("Mass ratio q = M2/M1 = K1/K2");
     _gammaSpin  = mkPrecise(-1.0e4, 1.0e4, 0.1);
     _phiSpin    = mkPrecise(0.0, 1.0, 0.001);
     _t0Spin     = mkPrecise(0.0, 1.0e7, 0.001);
@@ -543,6 +551,9 @@ void RVSolutionsWidget::buildUi()
 
     form->addRow("Period [d]", _periodSpin);
     form->addRow("K [km/s]", _kSpin);
+    form->addRow(_sb2Check);
+    form->addRow("K₂ [km/s]", _k2Spin);
+    form->addRow("q = K₁/K₂", _qLabel);
     form->addRow("γ [km/s]", _gammaSpin);
     form->addRow(_useT0Check);
     form->addRow("φ (phase at first pt)", _phiSpin);
@@ -576,6 +587,11 @@ void RVSolutionsWidget::buildUi()
     connect(_applyBtn,  &QPushButton::clicked, this, &RVSolutionsWidget::onApply);
     connect(_revertBtn, &QPushButton::clicked, this, &RVSolutionsWidget::onRevert);
     connect(_eccCheck,  &QCheckBox::toggled,   this, &RVSolutionsWidget::onEccentricToggled);
+    connect(_sb2Check, &QCheckBox::toggled, this, [this](bool on) {
+        _k2Spin->setEnabled(on);
+        if (_suppressSignals) return;
+        onParamChanged();
+    });
     connect(_useT0Check, &QCheckBox::toggled, this, [this](bool on) {
         _t0Spin->setEnabled(on);
         _phiSpin->setEnabled(!on);
@@ -584,7 +600,7 @@ void RVSolutionsWidget::buildUi()
         onParamChanged(); 
     });
 
-    for (auto *s : {_periodSpin, _kSpin, _gammaSpin, _phiSpin, _t0Spin,
+    for (auto *s : {_periodSpin, _kSpin, _k2Spin, _gammaSpin, _phiSpin, _t0Spin,
                     _eccSpin, _omegaSpin}) {
         connect(s, qOverload<double>(&QDoubleSpinBox::valueChanged), this,
                 &RVSolutionsWidget::onParamChanged);
@@ -668,6 +684,9 @@ void RVSolutionsWidget::loadIntoEditor(std::shared_ptr<RVFit> fit)
     if (fit) {
         _periodSpin->setValue(fit->getPeriod());
         _kSpin     ->setValue(fit->getK());
+        _sb2Check  ->setChecked(fit->hasK2());
+        _k2Spin    ->setValue(fit->hasK2() ? fit->getK2() : 0.0);
+        _k2Spin    ->setEnabled(fit->hasK2());
         _gammaSpin ->setValue(fit->getGamma());
         _phiSpin->setValue(fit->getPhi());
         const double t0 = fit->getT0BJD();
@@ -728,6 +747,14 @@ void RVSolutionsWidget::writeBackToFit(std::shared_ptr<RVFit> fit) {
     const double P = _periodSpin->value();
     fit->setPeriod(P);
     fit->setK(_kSpin->value());
+    if (_sb2Check->isChecked() && _k2Spin->value() > 0.0) {
+        fit->setK2(_k2Spin->value());
+    } else {
+        fit->setK2(AsymErr::unset);
+        fit->setK2Error(0.0);
+        fit->setK2ErrorUp(AsymErr::unset);
+        fit->setK2ErrorDown(AsymErr::unset);
+    }
     fit->setGamma(_gammaSpin->value());
 
     if (_useT0Check && _useT0Check->isChecked()) {
@@ -776,6 +803,19 @@ void RVSolutionsWidget::updateStatsLabel(std::shared_ptr<RVFit> fit)
              fmt(fit->getChi2(),  3),
              fmt(fit->getRms(),   3),
              fit->getFitMethod().isEmpty() ? "-" : fit->getFitMethod()));
+
+    if (_qLabel) {
+        if (fit->hasK2()) {
+            const double q  = fit->massRatio();
+            const double qe = fit->massRatioError();
+            QString txt = QString::number(q, 'f', 3);
+            if (std::isfinite(qe) && qe > 0.0)
+                txt += QString(" ± %1").arg(qe, 0, 'f', 3);
+            _qLabel->setText(txt);
+        } else {
+            _qLabel->setText("-");
+        }
+    }
 }
 
 
@@ -785,6 +825,7 @@ void RVSolutionsWidget::takeSnapshot(std::shared_ptr<RVFit> fit)
     _snapshot.id    = fit->getId();
     _snapshot.P     = fit->getPeriod();
     _snapshot.K     = fit->getK();
+    _snapshot.K2    = fit->getK2();
     _snapshot.gamma = fit->getGamma();
     _snapshot.phi   = fit->getPhi();
     _snapshot.e     = fit->getEccentricity();
@@ -846,6 +887,7 @@ void RVSolutionsWidget::onRevert()
     if (!fit || fit->getId() != _snapshot.id) return;
     fit->setPeriod (_snapshot.P);
     fit->setK      (_snapshot.K);
+    fit->setK2     (_snapshot.K2);
     fit->setGamma  (_snapshot.gamma);
     fit->setPhi    (_snapshot.phi);
     fit->setEccentric(_snapshot.ecc);
@@ -1131,6 +1173,17 @@ void RVInspectorDialog::onTableContextMenu(const QPoint& pos)
                                         : "Remove point"));
     removeAct->setEnabled(!sel.removable.isEmpty());
 
+    // Component reassignment: the manual fix when the SB2 spectral fitter
+    // swapped the two stars at a crossing epoch. Label follows the clicked row.
+    const auto clickedPt = _pointsModel->pointAt(idx.row());
+    const int  targetComp = (clickedPt && clickedPt->getComponent() >= 2) ? 1 : 2;
+    QAction* compAct = menu.addAction(
+        targetComp == 2
+            ? (n > 1 ? QString("Move to secondary component (%1)").arg(n)
+                     : QString("Move to secondary component"))
+            : (n > 1 ? QString("Move to primary component (%1)").arg(n)
+                     : QString("Move to primary component")));
+
     QAction* chosen = menu.exec(_pointsTable->viewport()->mapToGlobal(pos));
     if (chosen == resetAct) {
         _pointsModel->resetRowsToFit(sel.resettable);
@@ -1140,6 +1193,9 @@ void RVInspectorDialog::onTableContextMenu(const QPoint& pos)
         if (!confirmRemoval(sel.removable.size(), 0)) return;
         _pointsModel->removePoints(sel.removable);
         if (_plotPanel) _plotPanel->refresh();
+        onPointSelectionChanged();
+    } else if (chosen == compAct) {
+        _pointsModel->setComponentForRows(rows, targetComp);
         onPointSelectionChanged();
     }
 }
@@ -1267,6 +1323,62 @@ int RVPointsTableModel::removePoints(const QList<int>& rows)
     if (_star) _star->markSummaryDirty();
     reload();
     return ids.size();
+}
+
+int RVPointsTableModel::setComponentForRows(const QList<int>& rows, int component)
+{
+    if (!_curve || (component != 1 && component != 2)) return 0;
+
+    std::vector<std::shared_ptr<RadialVelocityPoint>> targets;
+    for (int row : rows) {
+        if (row < 0 || row >= static_cast<int>(_points.size())) continue;
+        if (auto p = _points[row]; p && p->getComponent() != component)
+            targets.push_back(p);
+    }
+    if (targets.empty()) return 0;
+
+    // A spectrum-linked point trades places with its sibling (the other
+    // component's point of the same spectrum). Without the trade, the vacated
+    // component would be recreated from the spectral fit on the next
+    // reconcile and the occupied one would collide with the unique
+    // (spectrum, component) rule.
+    QSet<RadialVelocityPoint*> handled;
+    std::vector<std::shared_ptr<RadialVelocityPoint>> changed;
+    const int other = (component == 2) ? 1 : 2;
+    for (auto& p : targets) {
+        if (handled.contains(p.get())) continue;
+        handled.insert(p.get());
+
+        std::shared_ptr<RadialVelocityPoint> sibling;
+        if (!p->getSpectrumId().isEmpty())
+            sibling = _curve->findPoint(p->getSpectrumId(), component);
+
+        // Pin the value: a FromFit point would otherwise be overwritten with
+        // the fit's OTHER component RV on the next refresh, undoing the swap.
+        p->setComponent(component);
+        if (p->getRVSource() == RadialVelocityPoint::RVSource::FromFit)
+            p->captureAsManual();
+        changed.push_back(p);
+
+        if (sibling && !handled.contains(sibling.get())) {
+            handled.insert(sibling.get());
+            sibling->setComponent(other);
+            if (sibling->getRVSource() == RadialVelocityPoint::RVSource::FromFit)
+                sibling->captureAsManual();
+            changed.push_back(sibling);
+        }
+    }
+
+    const bool useTx = _dbm && _dbm->beginTransaction();
+    _curve->beginBatchUpdate();
+    for (auto& p : changed) _curve->persistPoint(p);
+    _curve->notifyChanged();
+    _curve->endBatchUpdate();
+    if (useTx) _dbm->commitTransaction();
+
+    if (_star) _star->markSummaryDirty();
+    reload();
+    return static_cast<int>(changed.size());
 }
 
 int RVPointsTableModel::resetRowsToFit(const QList<int>& rows)

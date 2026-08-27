@@ -86,6 +86,7 @@ private:
     QComboBox*  _errColCombo     = nullptr;
     QComboBox*  _sysErrColCombo  = nullptr;
     QComboBox*  _instColCombo     = nullptr;   // per-row instrument column
+    QComboBox*  _compColCombo     = nullptr;   // per-row stellar component (1/2)
     QComboBox*  _instCombo        = nullptr;   // default / fallback instrument
 
     QTableWidget* _preview    = nullptr;

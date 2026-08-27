@@ -175,6 +175,12 @@ public:
         return nComponents >= 2 && !std::isnan(teff2);
     }
 
+    /// True when this fit carries a usable secondary RV. Distinct from
+    /// hasSecondComponent(): imported c2 rows can have vrad2 without teff2.
+    bool hasSecondRV() const {
+        return nComponents >= 2 && std::isfinite(radialVelocity2);
+    }
+
 private:
     QString _id;
     QString _modelDataFile;

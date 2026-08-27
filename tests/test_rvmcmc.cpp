@@ -69,13 +69,20 @@ struct Truth {
     double P = 0.42315, K = 62.0, gamma = 17.5, phase = 0.21;
     double e = 0.0, omega = 105.0, sigma = 6.0;
     int    n = 45;
+    // SB2: 0 leaves the dataset single-lined. secFrac is the fraction of
+    // epochs at which the secondary is also measurable.
+    double K2 = 0.0;
+    double secFrac = 1.0;
 };
 
 RVMCMC::Data makeData(const Truth& tr, unsigned seed)
 {
     std::mt19937 rng(seed);
     std::uniform_real_distribution<> ut(0.0, 380.0);
+    std::uniform_real_distribution<> u01(0.0, 1.0);
     std::normal_distribution<>       noise(0.0, tr.sigma);
+
+    const bool sb2 = tr.K2 > 0.0;
 
     RVMCMC::Data d;
     for (int i = 0; i < tr.n; ++i) {
@@ -84,6 +91,17 @@ RVMCMC::Data makeData(const Truth& tr, unsigned seed)
         d.rv.push_back(keplerRV(t, tr.K, tr.gamma, tr.P, tr.phase,
                                 tr.omega, tr.e) + noise(rng));
         d.rv_err.push_back(tr.sigma);
+        if (sb2) d.comp.push_back(1);
+
+        // The secondary shares the orbit in antiphase: passing −K2 into the
+        // same model is exactly γ − K2·f(t).
+        if (sb2 && u01(rng) <= tr.secFrac) {
+            d.bjd.push_back(t);
+            d.rv.push_back(keplerRV(t, -tr.K2, tr.gamma, tr.P, tr.phase,
+                                    tr.omega, tr.e) + noise(rng));
+            d.rv_err.push_back(tr.sigma);
+            d.comp.push_back(2);
+        }
     }
     return d;
 }
@@ -311,6 +329,236 @@ void testLCPrior()
           std::to_string(width));
 }
 
+/// Exact Gaussian posterior of the SB2 circular model at a fixed period, with
+/// the two components' amplitude vectors left UNTIED: five unknowns
+/// (Kc₁, Ks₁, Kc₂, Ks₂, γ). The sampler ties them (shared phase, opposite
+/// sign), so this is a superset model - its medians are the reference values
+/// and its widths a slight over-estimate of the tied posterior's.
+struct LinearRefSB2 {
+    double K1, sigmaK1, K2, sigmaK2, gamma, sigmaGamma;
+    double phi1, phi2;       // phases of the two amplitude vectors, in cycles
+};
+
+bool invertSmall(int n, std::vector<double> A, std::vector<double>& inv)
+{
+    inv.assign(std::size_t(n) * n, 0.0);
+    for (int i = 0; i < n; ++i) inv[std::size_t(i) * n + i] = 1.0;
+    auto a = [&](int r, int c) -> double& { return A  [std::size_t(r) * n + c]; };
+    auto b = [&](int r, int c) -> double& { return inv[std::size_t(r) * n + c]; };
+    for (int i = 0; i < n; ++i) {
+        int piv = i;
+        for (int k = i + 1; k < n; ++k)
+            if (std::fabs(a(k, i)) > std::fabs(a(piv, i))) piv = k;
+        if (std::fabs(a(piv, i)) < 1e-30) return false;
+        if (piv != i)
+            for (int j = 0; j < n; ++j) {
+                std::swap(a(piv, j), a(i, j));
+                std::swap(b(piv, j), b(i, j));
+            }
+        const double dg = a(i, i);
+        for (int j = 0; j < n; ++j) { a(i, j) /= dg; b(i, j) /= dg; }
+        for (int k = 0; k < n; ++k) {
+            if (k == i) continue;
+            const double f = a(k, i);
+            if (f == 0.0) continue;
+            for (int j = 0; j < n; ++j) { a(k, j) -= f * a(i, j); b(k, j) -= f * b(i, j); }
+        }
+    }
+    return true;
+}
+
+LinearRefSB2 linearReferenceSB2(const RVMCMC::Data& d, double P)
+{
+    constexpr int NP = 5;
+    const std::size_t n = d.bjd.size();
+    const double t0 = *std::min_element(d.bjd.begin(), d.bjd.end());
+
+    std::vector<double> M(NP * NP, 0.0), b(NP, 0.0);
+    for (std::size_t i = 0; i < n; ++i) {
+        const double w  = 1.0 / (d.rv_err[i] * d.rv_err[i]);
+        const double ph = kTwoPi * (d.bjd[i] - t0) / P;
+        const bool sec = d.comp[i] >= 2;
+        const double A[NP] = { sec ? 0.0 : std::cos(ph), sec ? 0.0 : std::sin(ph),
+                               sec ? std::cos(ph) : 0.0, sec ? std::sin(ph) : 0.0,
+                               1.0 };
+        for (int a = 0; a < NP; ++a) {
+            b[a] += w * A[a] * d.rv[i];
+            for (int c = 0; c < NP; ++c) M[a * NP + c] += w * A[a] * A[c];
+        }
+    }
+
+    std::vector<double> C;
+    LinearRefSB2 r{};
+    if (!invertSmall(NP, M, C)) return r;
+
+    double p[NP] = {0, 0, 0, 0, 0};
+    for (int a = 0; a < NP; ++a)
+        for (int c = 0; c < NP; ++c) p[a] += C[a * NP + c] * b[c];
+
+    auto ampErr = [&](int i0, int i1, double K) {
+        if (!(K > 0)) return 0.0;
+        const double j0 = p[i0] / K, j1 = p[i1] / K;
+        return std::sqrt(j0 * j0 * C[i0 * NP + i0]
+                       + 2.0 * j0 * j1 * C[i0 * NP + i1]
+                       + j1 * j1 * C[i1 * NP + i1]);
+    };
+    auto phaseOf = [](double c, double sn) {
+        double x = std::atan2(c, sn) / kTwoPi;
+        return x - std::floor(x);
+    };
+
+    r.K1 = std::hypot(p[0], p[1]);
+    r.K2 = std::hypot(p[2], p[3]);
+    r.gamma = p[4];
+    r.sigmaK1 = ampErr(0, 1, r.K1);
+    r.sigmaK2 = ampErr(2, 3, r.K2);
+    r.sigmaGamma = std::sqrt(C[4 * NP + 4]);
+    r.phi1 = phaseOf(p[0], p[1]);
+    r.phi2 = phaseOf(p[2], p[3]);
+    return r;
+}
+
+void testCircularSB2()
+{
+    std::printf("\n── circular SB2 ────────────────────────────────────────\n");
+    Truth tr;
+    tr.K  = 62.0;
+    tr.K2 = 93.0;
+    const auto data = makeData(tr, 24680u);
+
+    check(data.comp.size() == data.bjd.size(),
+          "component vector matches the data length");
+    check(data.bjd.size() == std::size_t(2 * tr.n),
+          "every epoch carries both components",
+          std::to_string(data.bjd.size()));
+
+    const auto res = RVMCMC::run(data, baseConfig(false));
+    check(res.success, "sampler succeeded", res.error_message);
+    if (!res.success) return;
+
+    check(res.chain.dim() == 5, "chain has 5 columns (K₂ appended)",
+          std::to_string(res.chain.dim()));
+    check(!res.param_names.empty() && res.param_names.back() == "amplitude2",
+          "K₂ is the last parameter",
+          res.param_names.empty() ? "" : res.param_names.back());
+
+    const auto* sol = bestSolution(res);
+    check(sol != nullptr, "at least one candidate period was found");
+    if (!sol) return;
+
+    const double P  = sol->parameters.at("period").median;
+    const double K  = sol->parameters.at("amplitude").median;
+    const double K2 = sol->parameters.at("amplitude2").median;
+    const double g  = sol->parameters.at("offset").median;
+    auto band = [&](const char* name) {
+        const auto& q = sol->parameters.at(name);
+        return 0.5 * (q.q84 - q.q16);
+    };
+
+    checkNear(P, tr.P, 1e-4, "period recovers the injected value");
+
+    const LinearRefSB2 ref = linearReferenceSB2(data, P);
+    std::printf("       reference: K = %.3f ± %.3f   K₂ = %.3f ± %.3f   γ = %.3f ± %.3f\n",
+                ref.K1, ref.sigmaK1, ref.K2, ref.sigmaK2, ref.gamma, ref.sigmaGamma);
+    std::printf("       sampler  : K = %.3f ± %.3f   K₂ = %.3f ± %.3f   γ = %.3f ± %.3f\n",
+                K, band("amplitude"), K2, band("amplitude2"), g, band("offset"));
+
+    checkNear(K,  ref.K1,    std::max(0.6 * ref.sigmaK1, 0.5),
+              "K matches the untied linear reference");
+    checkNear(K2, ref.K2,    std::max(0.6 * ref.sigmaK2, 0.5),
+              "K₂ matches the untied linear reference");
+    checkNear(g,  ref.gamma, std::max(0.6 * ref.sigmaGamma, 0.5),
+              "γ matches the untied linear reference");
+
+    // The reference fits the two amplitude vectors independently; recovering
+    // them half a cycle apart is what confirms the antiphase model.
+    double dphi = std::fabs(ref.phi1 - ref.phi2);
+    if (dphi > 0.5) dphi = 1.0 - dphi;
+    checkNear(dphi, 0.5, 0.05, "the two components are recovered in antiphase");
+
+    const double q = K / K2;
+    checkNear(q, tr.K / tr.K2, 0.05, "mass ratio q = K/K₂ recovers the truth");
+}
+
+void testEccentricSB2()
+{
+    std::printf("\n── eccentric SB2 ───────────────────────────────────────\n");
+    Truth tr;
+    tr.e  = 0.35;
+    tr.K2 = 88.0;
+    tr.secFrac = 0.70;    // the secondary is not measurable at every epoch
+    tr.n  = 60;
+    const auto data = makeData(tr, 13579u);
+
+    check(data.bjd.size() > std::size_t(tr.n) &&
+          data.bjd.size() < std::size_t(2 * tr.n),
+          "only some epochs carry a secondary point",
+          std::to_string(data.bjd.size()));
+
+    auto cfg = baseConfig(true);
+    cfg.n_burn_in = 200000;
+    cfg.n_samples = 600000;
+
+    const auto res = RVMCMC::run(data, cfg);
+    check(res.success, "sampler succeeded", res.error_message);
+    if (!res.success) return;
+    check(res.chain.dim() == 7, "chain has 7 columns",
+          std::to_string(res.chain.dim()));
+
+    const auto* sol = bestSolution(res);
+    check(sol != nullptr, "at least one candidate period was found");
+    if (!sol) return;
+
+    auto band = [&](const char* name) {
+        const auto& p = sol->parameters.at(name);
+        return 0.5 * (p.q84 - p.q16);
+    };
+    const double P  = sol->parameters.at("period").median;
+    const double K  = sol->parameters.at("amplitude").median;
+    const double K2 = sol->parameters.at("amplitude2").median;
+    const double e  = sol->parameters.at("eccentricity").median;
+
+    std::printf("       P = %.6f   K = %.3f ± %.3f   K₂ = %.3f ± %.3f   e = %.3f ± %.3f\n",
+                P, K, band("amplitude"), K2, band("amplitude2"),
+                e, band("eccentricity"));
+
+    checkNear(P, tr.P, 1e-4, "period recovers the injected value");
+    check(std::fabs(K - tr.K) < 3.0 * band("amplitude") + 1.0,
+          "K agrees with the injected value within 3σ");
+    check(std::fabs(K2 - tr.K2) < 3.0 * band("amplitude2") + 1.0,
+          "K₂ agrees with the injected value within 3σ");
+    check(std::fabs(e - tr.e) < 3.0 * band("eccentricity") + 0.02,
+          "eccentricity agrees with the injected value within 3σ");
+}
+
+/// An all-primary component vector must take exactly the same code path as no
+/// component vector at all: same dimension, and - at a fixed seed - the same
+/// chain, bit for bit.
+void testSB1Regression()
+{
+    std::printf("\n── SB1 regression ──────────────────────────────────────\n");
+    const Truth tr;
+    auto plain = makeData(tr, 12345u);
+
+    auto tagged = plain;
+    tagged.comp.assign(tagged.bjd.size(), 1);
+
+    auto cfg = baseConfig(false);
+    cfg.n_burn_in = 20000;
+    cfg.n_samples = 60000;
+
+    const auto a = RVMCMC::run(plain,  cfg);
+    const auto b = RVMCMC::run(tagged, cfg);
+    check(a.success && b.success, "both runs succeeded");
+    if (!a.success || !b.success) return;
+
+    check(a.chain.dim() == 4 && b.chain.dim() == 4,
+          "an all-primary component vector keeps the 4-parameter model");
+    check(a.param_names == b.param_names, "parameter names are unchanged");
+    check(a.chain.flat() == b.chain.flat(),
+          "the chain is identical bit for bit");
+}
+
 void testCancellation()
 {
     std::printf("\n── cancellation ────────────────────────────────────────\n");
@@ -345,6 +593,11 @@ void testDegenerateInput()
     auto cfg  = baseConfig(false);
     cfg.max_period = cfg.min_period;
     check(!RVMCMC::run(data, cfg).success, "an empty period range is rejected");
+
+    auto badComp = makeData(tr, 5u);
+    badComp.comp.assign(badComp.bjd.size() - 1, 1);
+    check(!RVMCMC::run(badComp, baseConfig(false)).success,
+          "a component vector of the wrong length is rejected");
 }
 
 } // namespace
@@ -355,6 +608,9 @@ int main(int argc, char** argv)
 
     testCircular();
     testEccentric();
+    testCircularSB2();
+    testEccentricSB2();
+    testSB1Regression();
     testLCPrior();
     testCancellation();
     testDegenerateInput();
