@@ -11,10 +11,12 @@
 #include "utils/matchSpectraToInstrument.h"
 #include "utils/spectrafetch/SpectrumArchiveClient.h"
 #include "utils/spectrafetch/SpectrumArchiveRegistry.h"
+#include "utils/spectrafetch/SpectrumArmJoin.h"
 
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QNetworkAccessManager>
@@ -34,6 +36,44 @@ constexpr int  kRetryBackoffSec[]  = {2, 8};
 constexpr int  kTransferTimeoutMs  = 120000; // inactivity timeout per reply
 constexpr int  kMaxRecentDurations = 10;
 constexpr char kLogCat[]           = "SpecFetch";
+
+// ── Arm joining ─────────────────────────────────────────────────────────────
+// How far apart two epochs may be and still count as one exposure. Half the
+// exposure time is added on top per pair, which absorbs the archives that
+// stamp mid-exposure against those that stamp the start.
+constexpr double kArmJoinWindowSec = 300.0;
+// Staging only: products of one star and instrument chained by gaps no larger
+// than this are held together until the last of them is downloaded, because
+// any of them could turn out to be arms of one exposure. The window is wider
+// than the join window (a long NIR integration is stamped well away from its
+// blue counterpart) and the cluster is capped so that a night-long series of
+// exposures cannot pile up in memory.
+constexpr double kArmJoinClusterGapSec = 1800.0;
+constexpr int    kArmJoinClusterMax    = 24;
+
+SpecFetch::ArmJoinOptions armJoinOptions() {
+    SpecFetch::ArmJoinOptions o;
+    o.maxTimeSeparationSec = kArmJoinWindowSec;
+    return o;
+}
+
+/// Longest common prefix of the arms' instrument names, so a joined
+/// "LAMOST MRS blue" + "LAMOST MRS red" is labelled "LAMOST MRS". Falls back
+/// to the first name when they share nothing usable.
+QString commonInstrumentName(const QStringList& names) {
+    if (names.isEmpty()) return QString();
+    QString prefix = names.front();
+    for (const QString& n : names) {
+        int i = 0;
+        while (i < prefix.size() && i < n.size() && prefix.at(i) == n.at(i)) ++i;
+        prefix.truncate(i);
+    }
+    while (!prefix.isEmpty() &&
+           (prefix.back().isSpace() || prefix.back() == QLatin1Char('/') ||
+            prefix.back() == QLatin1Char('-') || prefix.back() == QLatin1Char('_')))
+        prefix.chop(1);
+    return prefix.size() >= 2 ? prefix : names.front();
+}
 
 QString sanitizeFileName(QString name) {
     static const QRegularExpression bad(QStringLiteral("[^A-Za-z0-9._+-]"));
@@ -422,13 +462,13 @@ void SpectrumFetchService::queueDownloads(
     int skippedDup = 0;
 
     // A multi-spectrum product (LAMOST MRS arms, SDSS exposures) imports its
-    // children under "<originId>#<part>", so "already imported" means the
-    // product's own id or any child of it exists.
+    // children under "<originId>#<part>" and a joined spectrum carries every
+    // product it was made of, so "already imported" means the product's own
+    // id, any child of it, or a joined id holding it exists.
     auto alreadyImported = [s](const QString& originId) {
         if (s->existingOriginIds.contains(originId)) return true;
-        const QString prefix = originId + QLatin1Char('#');
         for (const QString& id : s->existingOriginIds)
-            if (id.startsWith(prefix)) return true;
+            if (SpecFetch::originIdCovers(id, originId)) return true;
         return false;
     };
 
@@ -450,6 +490,8 @@ void SpectrumFetchService::queueDownloads(
         item->localPath  = localPathFor(s, r);
         s->items.push_back(std::move(item));
     }
+
+    if (s->opt.joinArms) assignJoinGroups(s);
 
     s->info.downloadsTotal = int(s->items.size());
     s->info.state          = State::Downloading;
@@ -521,6 +563,282 @@ void SpectrumFetchService::cancelAll() {
             s->info.state == State::AwaitingSelection ||
             s->info.state == State::Downloading)
             cancelSession(s->info.id);
+    }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Arm joining
+// ─────────────────────────────────────────────────────────────────────────────
+
+void SpectrumFetchService::assignJoinGroups(Session* s) {
+    // Bucket the queued products by star, archive and instrument, then chain
+    // each bucket into epoch clusters. A cluster is deliberately a superset
+    // of a real arm group: which spectra actually belong to one exposure is
+    // decided in flushJoinGroup(), once the files are parsed and their
+    // wavelength coverage is known. All this decides is how long a downloaded
+    // file is held in memory before it can be imported.
+    struct Entry {
+        DownloadItem* item;
+        QString       key;
+        double        mjd;
+    };
+
+    std::vector<Entry> entries;
+    entries.reserve(s->items.size());
+    for (auto& up : s->items) {
+        const SpecFetch::RemoteSpectrum& r = up->remote;
+        entries.push_back(
+            {up.get(),
+             QStringLiteral("%1|%2|%3")
+                 .arg(r.starId, SpecFetch::archiveKey(r.archive),
+                      SpecFetch::armInstrumentBase(r.instrumentHint)),
+             r.mjd});
+    }
+
+    std::sort(entries.begin(), entries.end(),
+              [](const Entry& a, const Entry& b) {
+                  if (a.key != b.key) return a.key < b.key;
+                  // Products without an epoch sort last; they each end up in
+                  // a cluster of their own.
+                  const bool na = std::isnan(a.mjd), nb = std::isnan(b.mjd);
+                  if (na != nb) return nb;
+                  if (na) return false;
+                  return a.mjd < b.mjd;
+              });
+
+    QString clusterId, currentKey;
+    double  lastMjd     = std::nan("");
+    int     clusterSize = 0;
+    int     seq         = 0;
+
+    for (const Entry& e : entries) {
+        const bool chains =
+            !clusterId.isEmpty() && e.key == currentKey &&
+            !std::isnan(e.mjd) && !std::isnan(lastMjd) &&
+            std::abs(e.mjd - lastMjd) * 86400.0 <= kArmJoinClusterGapSec &&
+            clusterSize < kArmJoinClusterMax;
+
+        if (!chains) {
+            clusterId   = QStringLiteral("%1#%2").arg(e.key).arg(++seq);
+            currentKey  = e.key;
+            clusterSize = 0;
+        }
+
+        e.item->joinGroup = clusterId;
+        lastMjd           = e.mjd;
+        ++clusterSize;
+        ++s->joinPending[clusterId];
+    }
+}
+
+void SpectrumFetchService::flushJoinGroup(Session* s, const QString& groupKey) {
+    // Take the group's files out of the staging area; whatever happens below,
+    // they are dealt with here.
+    std::vector<StagedSpectra> staged;
+    for (auto it = s->staged.begin(); it != s->staged.end();) {
+        if (it->groupKey == groupKey) {
+            staged.push_back(std::move(*it));
+            it = s->staged.erase(it);
+        } else {
+            ++it;
+        }
+    }
+    if (staged.empty()) return;
+
+    // One entry per parsed spectrum: a single file can already hold several
+    // arms (LAMOST MRS, the SDSS cameras), and those join exactly like arms
+    // that arrived in separate files.
+    struct Entry {
+        const StagedSpectra*      src;
+        SpecFetch::ParsedSpectrum parsed;
+        std::vector<double>       wl;
+    };
+    std::vector<Entry>              entries;
+    std::vector<SpecFetch::ArmMeta> metas;
+
+    for (const StagedSpectra& st : staged) {
+        for (const SpecFetch::ParsedSpectrum& p : st.parsed) {
+            if (!p.spectrum || !p.spectrum->hasData()) continue;
+
+            Entry e;
+            e.src    = &st;
+            e.parsed = p;
+            e.wl     = p.spectrum->getWavelengths();
+
+            const QString hint = !p.instrumentHint.isEmpty()
+                                     ? p.instrumentHint
+                                     : p.spectrum->getInstrument();
+            SpecFetch::ArmMeta m;
+            m.groupKey = QStringLiteral("%1|%2|%3")
+                             .arg(st.remote.starId,
+                                  SpecFetch::archiveKey(st.remote.archive),
+                                  SpecFetch::armInstrumentBase(hint));
+            m.mjd         = p.spectrum->getMJD();
+            m.exposureSec = p.spectrum->getExposureTime();
+            m.wlMin       = e.wl.front();
+            m.wlMax       = e.wl.back();
+            // A reader may hand back an unsorted grid (echelle orders); the
+            // range is all this needs, and the splice sorts anyway.
+            if (m.wlMin > m.wlMax) std::swap(m.wlMin, m.wlMax);
+
+            entries.push_back(std::move(e));
+            metas.push_back(m);
+        }
+    }
+    if (entries.empty()) return;
+
+    const std::vector<std::vector<int>> groups =
+        SpecFetch::groupArms(metas, armJoinOptions());
+
+    // The items of a joined group reported "held for arm joining" when their
+    // download ended; now that the group is resolved, their rows in the
+    // Archives tab get the real outcome.
+    auto reportProducts = [this, s, &entries](const std::vector<int>& g,
+                                              const QString& message) {
+        QSet<QString> seen;
+        for (const int i : g) {
+            const SpecFetch::RemoteSpectrum& r = entries[size_t(i)].src->remote;
+            if (seen.contains(r.originId)) continue;
+            seen.insert(r.originId);
+            emit itemFinished(s->info.id, r, true, false, message);
+        }
+    };
+
+    for (const std::vector<int>& g : groups) {
+        const Entry& first = entries[size_t(g.front())];
+
+        // Nothing to join: import the spectrum as it came.
+        if (g.size() < 2) {
+            QString err;
+            if (s->opt.redownloadExisting)
+                purgeExistingOrigins(s, first.src->remote.starId,
+                                     {first.parsed.originId});
+            const int written =
+                importParsed(s, first.src->remote, first.src->localPath,
+                             {first.parsed}, QJsonObject(), &err);
+            s->info.importedSpectra += written;
+            if (written == 0 && !err.isEmpty())
+                appendLog(s, QStringLiteral("%1: %2")
+                                 .arg(first.parsed.originId, err));
+            reportProducts(g, written > 0
+                                  ? QStringLiteral("imported, no arm to join")
+                                  : err.isEmpty()
+                                        ? QStringLiteral("already imported")
+                                        : QStringLiteral("failed: %1").arg(err));
+            continue;
+        }
+
+        std::vector<SpecFetch::ArmSegment> segments;
+        QStringList memberIds, instrumentNames;
+        QJsonArray  memberMeta;
+        double      mjdSum = 0.0;
+        int         mjdCount = 0;
+        double      maxExposure = 0.0;
+        bool        allCoadds = true;
+
+        for (const int i : g) {
+            const Entry& e = entries[size_t(i)];
+            SpecFetch::ArmSegment seg;
+            seg.wavelengths = e.wl;
+            seg.fluxes      = e.parsed.spectrum->getFluxes();
+            seg.errors      = e.parsed.spectrum->getFluxErrors();
+            segments.push_back(std::move(seg));
+
+            memberIds << e.parsed.originId;
+            memberMeta.append(e.parsed.originId);
+            instrumentNames << (!e.parsed.instrumentHint.isEmpty()
+                                    ? e.parsed.instrumentHint
+                                    : e.parsed.spectrum->getInstrument());
+            const double mjd = e.parsed.spectrum->getMJD();
+            if (mjd > 0.0) { mjdSum += mjd; ++mjdCount; }
+            maxExposure =
+                std::max(maxExposure, e.parsed.spectrum->getExposureTime());
+            allCoadds = allCoadds && e.parsed.isCoadd;
+        }
+
+        // Arms of one exposure are published on a common flux system, so the
+        // splice does not rescale anything. When they disagree anyway, say so
+        // rather than hand back a spectrum with a step in it unannounced.
+        for (size_t k = 1; k < segments.size(); ++k) {
+            const double ratio =
+                SpecFetch::armFluxRatioInOverlap(segments[k - 1], segments[k]);
+            if (std::isfinite(ratio) && (ratio < 0.8 || ratio > 1.25))
+                appendLog(s, QStringLiteral(
+                                 "%1: arms differ by a factor %2 where they "
+                                 "overlap; joined without rescaling")
+                                 .arg(memberIds.value(int(k)))
+                                 .arg(ratio, 0, 'g', 3));
+        }
+
+        SpecFetch::ArmSegment merged;
+        if (!SpecFetch::spliceArms(segments, &merged)) {
+            appendLog(s, QStringLiteral("%1: arms could not be joined, "
+                                        "importing them separately")
+                             .arg(memberIds.join(QLatin1Char(' '))));
+            for (const int i : g) {
+                const Entry& e = entries[size_t(i)];
+                QString err;
+                if (s->opt.redownloadExisting)
+                    purgeExistingOrigins(s, e.src->remote.starId,
+                                         {e.parsed.originId});
+                s->info.importedSpectra +=
+                    importParsed(s, e.src->remote, e.src->localPath,
+                                 {e.parsed}, QJsonObject(), &err);
+            }
+            reportProducts(g, QStringLiteral("imported unjoined"));
+            continue;
+        }
+
+        const QString instrument = commonInstrumentName(instrumentNames);
+
+        auto spec = std::make_shared<Spectrum>();
+        spec->setData(merged.wavelengths, merged.fluxes, merged.errors);
+        spec->setFile(first.src->localPath);
+        spec->setInstrument(instrument);
+        if (mjdCount > 0) spec->setMJD(mjdSum / mjdCount);
+        if (maxExposure > 0.0) spec->setExposureTime(maxExposure);
+
+        SpecFetch::ParsedSpectrum joined;
+        joined.spectrum       = spec;
+        joined.originId       = SpecFetch::joinedOriginId(memberIds);
+        joined.isCoadd        = allCoadds;
+        joined.instrumentHint = instrument;
+
+        // The row stands in for every product it was made of: its provenance
+        // is the first arm's, with the members recorded alongside.
+        SpecFetch::RemoteSpectrum remote = first.src->remote;
+        remote.originId       = joined.originId;
+        remote.instrumentHint = instrument;
+
+        QJsonObject extra;
+        extra["joinedArms"] = int(g.size());
+        extra["joinedFrom"] = memberMeta;
+
+        if (s->opt.redownloadExisting)
+            purgeExistingOrigins(s, remote.starId,
+                                 QStringList(memberIds) << joined.originId);
+
+        QString   err;
+        const int written = importParsed(s, remote, first.src->localPath,
+                                         {joined}, extra, &err);
+        s->info.importedSpectra += written;
+        reportProducts(g, written > 0
+                              ? QStringLiteral("joined into one spectrum "
+                                               "(%1 arms)")
+                                    .arg(g.size())
+                              : QStringLiteral("already imported"));
+        appendLog(s, written > 0
+                         ? QStringLiteral("joined %1 arms into one spectrum "
+                                          "(%2 - %3 A, %4)")
+                               .arg(g.size())
+                               .arg(merged.wavelengths.front(), 0, 'f', 1)
+                               .arg(merged.wavelengths.back(), 0, 'f', 1)
+                               .arg(instrument)
+                         : QStringLiteral("%1: not imported (%2)")
+                               .arg(joined.originId,
+                                    err.isEmpty()
+                                        ? QStringLiteral("already present")
+                                        : err));
     }
 }
 
@@ -830,8 +1148,28 @@ void SpectrumFetchService::onParsed(
         return;
     }
 
+    // Arm joining: the spectra wait for the rest of their group. finishItem()
+    // runs the join once the last item of the group is in.
+    if (!item->joinGroup.isEmpty()) {
+        StagedSpectra st;
+        st.groupKey  = item->joinGroup;
+        st.remote    = item->remote;
+        st.localPath = item->localPath;
+        st.parsed    = parsed;
+        s->staged.push_back(std::move(st));
+
+        recordDuration(QDateTime::currentMSecsSinceEpoch() - item->startedMs);
+        finishItem(s, item, DownloadItem::Phase::Done,
+                   QStringLiteral("%1 spectrum(a) parsed, held for arm joining")
+                       .arg(parsed.size()));
+        return;
+    }
+
     QString firstError;
-    const int written = importParsed(s, item, parsed, &firstError);
+    if (s->opt.redownloadExisting)
+        purgeExistingOrigins(s, item->remote.starId, {item->remote.originId});
+    const int written = importParsed(s, item->remote, item->localPath, parsed,
+                                     QJsonObject(), &firstError);
 
     if (written > 0) {
         s->info.importedSpectra += written;
@@ -887,6 +1225,19 @@ void SpectrumFetchService::finishItem(Session* s, DownloadItem* item,
                           message));
     emit itemFinished(s->info.id, item->remote, ok,
                       phase == DownloadItem::Phase::Skipped, message);
+
+    // The last item of an arm-join group, however it ended, releases the
+    // group: what was staged for it is joined and imported now.
+    if (!item->joinGroup.isEmpty()) {
+        const QString key = item->joinGroup;
+        item->joinGroup.clear();
+        auto it = s->joinPending.find(key);
+        if (it != s->joinPending.end() && --it.value() <= 0) {
+            s->joinPending.erase(it);
+            flushJoinGroup(s, key);
+        }
+    }
+
     emitProgress();
     maybeFinishSession(s);
     pumpDownloads();
@@ -924,37 +1275,66 @@ void SpectrumFetchService::maybeFinishSession(Session* s) {
 //  Import
 // ─────────────────────────────────────────────────────────────────────────────
 
+void SpectrumFetchService::purgeExistingOrigins(Session* s,
+                                                const QString& starId,
+                                                const QStringList& originIds) {
+    DatabaseManager* dbm = _controller ? _controller->databaseManager() : nullptr;
+    if (!dbm) return;
+
+    QSet<QString> targets;
+    for (const QString& id : originIds) {
+        if (id.isEmpty()) continue;
+        targets.insert(id);
+        // An earlier run may have filed this product inside a joined row, or
+        // as children of it; a re-download replaces all of that.
+        for (const QString& existing : s->existingOriginIds)
+            if (SpecFetch::originIdCovers(existing, id)) targets.insert(existing);
+    }
+
+    for (const QString& id : targets) {
+        dbm->deleteSpectraByOriginId(starId, id);
+        s->existingOriginIds.remove(id);
+        const QString childPrefix = id + QLatin1Char('#');
+        for (auto it = s->existingOriginIds.begin();
+             it != s->existingOriginIds.end();) {
+            it = it->startsWith(childPrefix) ? s->existingOriginIds.erase(it)
+                                             : std::next(it);
+        }
+    }
+}
+
 int SpectrumFetchService::importParsed(
-    Session* s, DownloadItem* item,
-    const std::vector<SpecFetch::ParsedSpectrum>& parsed, QString* firstError) {
+    Session* s, const SpecFetch::RemoteSpectrum& remote,
+    const QString& localPath,
+    const std::vector<SpecFetch::ParsedSpectrum>& parsed,
+    const QJsonObject& extraMeta, QString* firstError) {
     DatabaseManager* dbm = _controller ? _controller->databaseManager() : nullptr;
     if (!dbm) {
         if (firstError) *firstError = QStringLiteral("no database");
         return 0;
     }
 
-    SpectrumArchiveClient* client = clientFor(item->remote.archive);
-    const QString starId          = item->remote.starId;
-
-    if (s->opt.redownloadExisting)
-        dbm->deleteSpectraByOriginId(starId, item->remote.originId);
+    SpectrumArchiveClient* client = clientFor(remote.archive);
+    const QString starId          = remote.starId;
 
     const auto instruments = dbm->getAllInstruments();
 
     // Small provenance blob stored with each row.
     QJsonObject meta;
-    meta["archive"] = item->remote.archiveLabel;
-    if (!item->remote.collection.isEmpty())
-        meta["collection"] = item->remote.collection;
-    if (!std::isnan(item->remote.snr)) meta["snr"] = item->remote.snr;
-    if (!std::isnan(item->remote.resolution))
-        meta["R"] = item->remote.resolution;
-    if (item->remote.downloadUrl.isValid())
-        meta["url"] = item->remote.downloadUrl.toString();
+    meta["archive"] = remote.archiveLabel;
+    if (!remote.collection.isEmpty())
+        meta["collection"] = remote.collection;
+    if (!std::isnan(remote.snr)) meta["snr"] = remote.snr;
+    if (!std::isnan(remote.resolution))
+        meta["R"] = remote.resolution;
+    if (remote.downloadUrl.isValid())
+        meta["url"] = remote.downloadUrl.toString();
+    for (auto it = extraMeta.constBegin(); it != extraMeta.constEnd(); ++it)
+        meta[it.key()] = it.value();
     const QString metaJson = QString::fromUtf8(
         QJsonDocument(meta).toJson(QJsonDocument::Compact));
 
-    const QString origin = item->remote.originId.section(':', 0, 0);
+    const QString origin = remote.originId.section(':', 0, 0);
 
     int written = 0;
     for (const SpecFetch::ParsedSpectrum& p : parsed) {
@@ -968,7 +1348,7 @@ int SpectrumFetchService::importParsed(
         if (spec->getId().isEmpty())
             spec->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
         if (spec->getFile().isEmpty())
-            spec->setFile(item->localPath);
+            spec->setFile(localPath);
 
         spec->setOrigin(origin);
         spec->setOriginId(p.originId);
@@ -976,7 +1356,7 @@ int SpectrumFetchService::importParsed(
         spec->setOriginMeta(metaJson);
         if (client)
             spec->setBarycentricallyCorrected(
-                client->deliversBarycentric(item->remote));
+                client->deliversBarycentric(remote));
 
         // Tag with a configured instrument/mode: hint-guided shape match
         // first (same gate as manual import), plain string resolution as the

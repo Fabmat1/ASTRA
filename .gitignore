@@ -94,7 +94,8 @@ compile_commands.json
 CTestTestfile.cmake
 _deps
 *.cmake
-!cmake/GitVersion.cmake
+# Hand-written modules in cmake/ are project sources, not build output.
+!cmake/*.cmake
 
 # Visual Studio
 .vs/

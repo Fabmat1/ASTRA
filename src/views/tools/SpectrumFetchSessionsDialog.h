@@ -120,6 +120,7 @@ private:
     QSpinBox*       _parallelSpin = nullptr;
     QCheckBox*      _exposuresCb = nullptr;
     QCheckBox*      _vacToAirCb  = nullptr;
+    QCheckBox*      _joinArmsCb  = nullptr;
     QCheckBox*      _redownloadCb = nullptr;
 };
 

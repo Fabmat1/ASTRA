@@ -5,6 +5,7 @@
 #include <QAbstractTableModel>
 #include <QItemSelection>
 #include <QTimer>
+#include <QEvent>
 #include <QPainter>
 #include <memory>
 #include <functional>
@@ -38,8 +39,10 @@ public:
     {
         _font.setPixelSize(20);
         _font.setBold(true);
-        setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+        setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
         setFixedHeight(QFontMetrics(_font).height() + 8);
+        if (parent)
+            parent->installEventFilter(this);
 
         _scrollTimer = new QTimer(this);
         _scrollTimer->setInterval(30);
@@ -51,6 +54,7 @@ public:
         _scrollOffset = 0;
         _scrollDirection = 1;
         _pauseCounter = 0;
+        updateGeometry();
         checkScrollNeeded();
         update();
     }
@@ -59,19 +63,22 @@ public:
 
     void setMaxFraction(double fraction) {
         _maxFraction = fraction;
+        updateGeometry();
         checkScrollNeeded();
         update();
     }
 
+    // Ask for exactly as much room as the title needs, but never more than
+    // _maxFraction of the parent - the rest of the top bar (search) keeps it.
     QSize sizeHint() const override {
         QFontMetrics fm(_font);
-        int textWidth = fm.horizontalAdvance(_text) + 20;
-        return QSize(textWidth, fm.height() + 8);
+        int w = qMin(textWidth(), maxAllowedWidth());
+        return QSize(qMax(w, minimumSizeHint().width()), fm.height() + 8);
     }
 
     QSize minimumSizeHint() const override {
         QFontMetrics fm(_font);
-        return QSize(60, fm.height() + 8);
+        return QSize(qMin(textWidth(), 60), fm.height() + 8);
     }
 
 protected:
@@ -87,21 +94,28 @@ protected:
 
     void resizeEvent(QResizeEvent* event) override {
         QWidget::resizeEvent(event);
-        // Enforce max fraction of parent width
-        if (parentWidget()) {
-            int maxWidth = static_cast<int>(parentWidget()->width() * _maxFraction);
-            QFontMetrics fm(_font);
-            int textWidth = fm.horizontalAdvance(_text) + 20;
-            setMaximumWidth(qMin(textWidth, maxWidth));
-        }
         checkScrollNeeded();
+    }
+
+    // The width we may ask for depends on the parent's width, so recompute
+    // the hint whenever the parent is resized.
+    bool eventFilter(QObject* watched, QEvent* event) override {
+        if (watched == parentWidget() && event->type() == QEvent::Resize) {
+            updateGeometry();
+            checkScrollNeeded();
+        }
+        return QWidget::eventFilter(watched, event);
+    }
+
+    void changeEvent(QEvent* event) override {
+        if (event->type() == QEvent::ParentChange && parentWidget())
+            parentWidget()->installEventFilter(this);
+        QWidget::changeEvent(event);
     }
 
 private slots:
     void onScrollTick() {
-        QFontMetrics fm(_font);
-        int textWidth = fm.horizontalAdvance(_text) + 20;
-        int maxScroll = textWidth - width();
+        int maxScroll = textWidth() - width();
         if (maxScroll <= 0) {
             _scrollTimer->stop();
             _scrollOffset = 0;
@@ -130,10 +144,19 @@ private slots:
     }
 
 private:
+    int textWidth() const {
+        return QFontMetrics(_font).horizontalAdvance(_text) + 20;
+    }
+
+    int maxAllowedWidth() const {
+        const QWidget* p = parentWidget();
+        if (!p || p->width() <= 0)
+            return textWidth();
+        return static_cast<int>(p->width() * _maxFraction);
+    }
+
     void checkScrollNeeded() {
-        QFontMetrics fm(_font);
-        int textWidth = fm.horizontalAdvance(_text) + 20;
-        if (textWidth > width() && width() > 0) {
+        if (textWidth() > width() && width() > 0) {
             if (!_scrollTimer->isActive()) {
                 _scrollOffset = 0;
                 _scrollDirection = 1;
@@ -154,8 +177,6 @@ private:
     int _pauseCounter;
     double _maxFraction = 0.4;
 };
-
-#endif // PROJECTVIEW_H
 
 class ProjectView : public QWidget
 {
@@ -330,3 +351,5 @@ private:
     void applyColumns(const std::vector<QString>& columns);
     void updateBoolDelegate();
 };
+
+#endif // PROJECTVIEW_H

@@ -26,6 +26,10 @@ result table (archive, instrument, date, type, R, SNR, size), and click
 **Browse** tab immediately, tagged with their origin; already-imported
 products show an *imported* marker in the Status column.
 
+The options next to the archive list are *individual exposures*, *join
+instrument arms* (see [Joining instrument arms](#joining-instrument-arms))
+and *re-download existing*.
+
 ## For many stars
 
 **Data → Fetch Spectra…** opens the sessions overview; **New Fetch…** starts
@@ -35,7 +39,7 @@ the batch setup:
 - **Archives**: per-archive enables and options (ESO collections, LAMOST
   data release, SDSS data release, MAST missions, APOGEE).
 - **Options**: search radius, parallel downloads (capped at 4), individual
-  exposures, vacuum-to-air conversion, re-download.
+  exposures, joining instrument arms, vacuum-to-air conversion, re-download.
 
 The *individual exposures* option is an either/or: when checked, the single
 exposures are fetched **instead of** the coadded product wherever the archive
@@ -118,6 +122,39 @@ leaves the session in review, so it can be reopened with *Review & Download*.
 Downloads run in the background with per-host rate limiting; progress and a
 rough ETA show in the status bar and in the sessions overview, where fetches
 can be cancelled. Fetching continues if the dialog is closed.
+
+## Joining instrument arms
+
+Instruments that split one exposure over several arms publish one reduced
+product per arm, so a single X-Shooter exposure arrives as three spectra
+(UVB, VIS, NIR), a dichroic UVES exposure as two, and LAMOST MRS or the SDSS
+spectrograph deliver their blue and red halves side by side inside one file.
+With **join arms of the same exposure** enabled (both in the Archives tab and
+in the batch setup) they are put back together into one spectrum per exposure.
+
+What counts as one exposure is decided after the files are parsed, from the
+epoch and the wavelength coverage together: spectra of the same star,
+archive and instrument whose epochs agree to within 5 minutes (plus half the
+exposure time, which absorbs the archives stamping mid-exposure against those
+stamping the start) and whose ranges overlap by no more than half of the
+narrower one. Two exposures in the *same* arm cover the same wavelengths and
+are therefore never merged, however close in time they are.
+
+The arms are spliced, not resampled: every overlap is cut at its midpoint, so
+each arm keeps the half of the shared range that is its own and the joined
+grid stays strictly increasing. Fluxes are left exactly as published, since
+the arms of one exposure share a flux system; when they disagree by more than
+25% where they overlap, the session log says so instead of silently
+stretching one of them.
+
+The joined spectrum carries the mean epoch of its arms, the longest of their
+exposure times, and an `origin_id` built from all the products it replaces
+(`eso:A+eso:B`), so a later search still recognizes every one of them as
+already imported. Its provenance blob records `joinedArms` and `joinedFrom`.
+Groups that turn out to have nothing to join are imported unchanged, so the
+option is safe to leave on for a mixed batch. LAMOST LRS single exposures are
+an exception only in that their arms are already merged on their own flux
+system by the reader (see the notes below), before this step ever sees them.
 
 ## Notes
 

@@ -432,6 +432,16 @@ BatchSpectrumFetchSetupDialog::BatchSpectrumFetchSetupDialog(
     _vacToAirCb->setChecked(true);
     optLay->addRow(_vacToAirCb);
 
+    _joinArmsCb = new QCheckBox(
+        tr("Join arms of the same exposure into one spectrum"));
+    _joinArmsCb->setToolTip(
+        tr("Instruments that split one exposure over several arms publish "
+           "one product per arm (X-Shooter UVB/VIS/NIR, UVES blue/red, "
+           "LAMOST MRS, the SDSS cameras). With this on they are spliced "
+           "back into a single spectrum per exposure, cut at the middle of "
+           "each overlap and left on their published flux scale."));
+    optLay->addRow(_joinArmsCb);
+
     _redownloadCb = new QCheckBox(tr("Re-download already imported spectra"));
     optLay->addRow(_redownloadCb);
     root->addWidget(optBox);
@@ -467,6 +477,7 @@ SpectrumFetchService::Options BatchSpectrumFetchSetupDialog::options() const {
     opt.maxParallelDownloads = _parallelSpin->value();
     opt.autoQueueAll         = false;   // bulk flow always reviews
     opt.redownloadExisting   = _redownloadCb->isChecked();
+    opt.joinArms             = _joinArmsCb->isChecked();
 
     const QString token =
         _settings ? _settings->specFetchLamostToken() : QString();
@@ -543,6 +554,7 @@ QString BatchSpectrumFetchSetupDialog::stateToJson() const {
     o["parallel"] = _parallelSpin->value();
     o["exposures"] = _exposuresCb->isChecked();
     o["vacToAir"]  = _vacToAirCb->isChecked();
+    o["joinArms"]  = _joinArmsCb->isChecked();
     QJsonArray esoOff;   // store deselected collections, default stays "all"
     for (int i = 0; i < _esoCollections->count(); ++i)
         if (_esoCollections->item(i)->checkState() != Qt::Checked)
@@ -582,6 +594,7 @@ void BatchSpectrumFetchSetupDialog::restoreState() {
     _parallelSpin->setValue(o.value("parallel").toInt(_parallelSpin->value()));
     _exposuresCb->setChecked(o.value("exposures").toBool(false));
     _vacToAirCb->setChecked(o.value("vacToAir").toBool(true));
+    _joinArmsCb->setChecked(o.value("joinArms").toBool(false));
 
     QSet<QString> off;
     for (const QJsonValue& v : o.value("esoOff").toArray())

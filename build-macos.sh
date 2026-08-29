@@ -440,37 +440,68 @@ APP="$(find "${BUILD_DIR}" -maxdepth 2 -name 'ASTRA.app' -type d | head -1)"
 echo ">>> Built bundle: ${APP}"
 
 # ── 10. App icon (.icns) from the SVG/PNG ───────────────────────────────────
-ICON_SRC=""
-for cand in resources/linux/icons/astra.png resources/icons/astra.png resources/linux/icons/astra.svg; do
-  [[ -f "${SRC_DIR}/${cand}" ]] && { ICON_SRC="${SRC_DIR}/${cand}"; break; }
-done
-if [[ -n "${ICON_SRC}" ]]; then
-  echo ">>> Generating astra.icns from ${ICON_SRC##*/}"
-  ICONSET="${BUILD_DIR}/astra.iconset"
-  rm -rf "${ICONSET}"; mkdir -p "${ICONSET}"
-  # Rasterise to a big square PNG first (sips can read PNG; SVG needs rsvg/qlmanage).
-  BASE_PNG="${BUILD_DIR}/astra_1024.png"
-  if [[ "${ICON_SRC}" == *.svg ]]; then
-    if command -v rsvg-convert >/dev/null 2>&1; then
-      rsvg-convert -w 1024 -h 1024 "${ICON_SRC}" -o "${BASE_PNG}"
-    else
-      # qlmanage ships with macOS; fall back to it for SVG -> PNG.
-      qlmanage -t -s 1024 -o "${BUILD_DIR}" "${ICON_SRC}" >/dev/null 2>&1 || true
-      mv "${BUILD_DIR}/$(basename "${ICON_SRC}").png" "${BASE_PNG}" 2>/dev/null || cp "${ICON_SRC}" "${BASE_PNG}"
-    fi
-  else
-    sips -s format png -z 1024 1024 "${ICON_SRC}" --out "${BASE_PNG}" >/dev/null
-  fi
-  # iconutil only accepts the canonical iconset names; an unexpected file (e.g.
-  # icon_64x64.png) makes it reject the whole set. 64px is covered by 32@2x.
-  for sz in 16 32 128 256 512; do
-    sips -z "${sz}" "${sz}"           "${BASE_PNG}" --out "${ICONSET}/icon_${sz}x${sz}.png"     >/dev/null
-    sips -z "$((sz*2))" "$((sz*2))"   "${BASE_PNG}" --out "${ICONSET}/icon_${sz}x${sz}@2x.png"  >/dev/null
+# CMake generates Contents/Resources/astra.icns and points CFBundleIconFile at
+# it (see the APPLE branch of CMakeLists.txt). Everything below is a fallback
+# for bundles produced by an older/patched tree, plus a hard check that the
+# plist key is actually filled in: an empty CFBundleIconFile is exactly how the
+# icon went missing before, and it is invisible unless you look for it.
+ICNS="${APP}/Contents/Resources/astra.icns"
+if [[ ! -f "${ICNS}" ]]; then
+  ICON_SRC=""
+  for cand in resources/linux/icons/astra.png resources/icons/astra.png resources/linux/icons/astra.svg; do
+    [[ -f "${SRC_DIR}/${cand}" ]] && { ICON_SRC="${SRC_DIR}/${cand}"; break; }
   done
-  iconutil -c icns "${ICONSET}" -o "${APP}/Contents/Resources/astra.icns" || \
-    echo "!!! iconutil failed — bundle will use a default icon."
-else
-  echo "!!! No icon source found — bundle will use a default icon."
+  if [[ -n "${ICON_SRC}" ]]; then
+    echo ">>> Generating astra.icns from ${ICON_SRC##*/}"
+    ICONSET="${BUILD_DIR}/astra.iconset"
+    rm -rf "${ICONSET}"; mkdir -p "${ICONSET}"
+    # Rasterise to a big square PNG first (sips can read PNG; SVG needs rsvg/qlmanage).
+    BASE_PNG="${BUILD_DIR}/astra_1024.png"
+    if [[ "${ICON_SRC}" == *.svg ]]; then
+      if command -v rsvg-convert >/dev/null 2>&1; then
+        rsvg-convert -w 1024 -h 1024 "${ICON_SRC}" -o "${BASE_PNG}"
+      else
+        # qlmanage ships with macOS; fall back to it for SVG -> PNG.
+        qlmanage -t -s 1024 -o "${BUILD_DIR}" "${ICON_SRC}" >/dev/null 2>&1 || true
+        mv "${BUILD_DIR}/$(basename "${ICON_SRC}").png" "${BASE_PNG}" 2>/dev/null || cp "${ICON_SRC}" "${BASE_PNG}"
+      fi
+    else
+      sips -s format png -z 1024 1024 "${ICON_SRC}" --out "${BASE_PNG}" >/dev/null
+    fi
+    # iconutil only accepts the canonical iconset names; an unexpected file (e.g.
+    # icon_64x64.png) makes it reject the whole set. 64px is covered by 32@2x.
+    for sz in 16 32 128 256 512; do
+      sips -z "${sz}" "${sz}"           "${BASE_PNG}" --out "${ICONSET}/icon_${sz}x${sz}.png"     >/dev/null
+      sips -z "$((sz*2))" "$((sz*2))"   "${BASE_PNG}" --out "${ICONSET}/icon_${sz}x${sz}@2x.png"  >/dev/null
+    done
+    iconutil -c icns "${ICONSET}" -o "${ICNS}" || \
+      echo "!!! iconutil failed — bundle will use a default icon."
+  else
+    echo "!!! No icon source found — bundle will use a default icon."
+  fi
+fi
+
+# The .icns on disk means nothing to Finder unless Info.plist names it, and a
+# bundle with no CFBundleIdentifier does not register with Launch Services at
+# all. Repair both here rather than shipping a .dmg full of generic icons.
+PLIST="${APP}/Contents/Info.plist"
+PLISTBUDDY=/usr/libexec/PlistBuddy
+plist_get() { "${PLISTBUDDY}" -c "Print :$1" "${PLIST}" 2>/dev/null || true; }
+plist_set() {
+  "${PLISTBUDDY}" -c "Set :$1 $2" "${PLIST}" 2>/dev/null || \
+  "${PLISTBUDDY}" -c "Add :$1 string $2" "${PLIST}"
+}
+if [[ -f "${ICNS}" && -f "${PLIST}" ]]; then
+  if [[ -z "$(plist_get CFBundleIconFile)" ]]; then
+    echo "!!! CFBundleIconFile was empty; setting it to astra.icns"
+    plist_set CFBundleIconFile astra.icns
+  fi
+  if [[ -z "$(plist_get CFBundleIdentifier)" ]]; then
+    echo "!!! CFBundleIdentifier was empty; setting it to io.github.fabmat1.astra"
+    plist_set CFBundleIdentifier io.github.fabmat1.astra
+  fi
+  # Nudge Finder/Launch Services to re-read the bundle on this machine.
+  touch "${APP}"
 fi
 
 # ── 11. Bundle Qt + dylibs, sign, and package ───────────────────────────────
@@ -875,6 +906,20 @@ STAGE="${BUILD_DIR}/dmg-stage"
 rm -rf "${STAGE}" "${OUT_DMG}"; mkdir -p "${STAGE}"
 cp -R "${APP}" "${STAGE}/"
 ln -s /Applications "${STAGE}/Applications"     # drag-to-install affordance
+# Give the mounted volume the ASTRA icon too, instead of the white disk. The
+# custom-icon Finder flag has to be set on the staged root; hdiutil carries it
+# over to the volume. SetFile comes with the Xcode command line tools, so treat
+# a missing one as cosmetic and keep going.
+if [[ -f "${ICNS}" ]]; then
+  cp "${ICNS}" "${STAGE}/.VolumeIcon.icns"
+  if command -v SetFile >/dev/null 2>&1; then
+    SetFile -a C "${STAGE}" || echo ">>> SetFile failed; volume keeps the default icon"
+  elif [[ -x /usr/bin/SetFile ]]; then
+    /usr/bin/SetFile -a C "${STAGE}" || echo ">>> SetFile failed; volume keeps the default icon"
+  else
+    echo ">>> SetFile unavailable; volume keeps the default icon"
+  fi
+fi
 echo ">>> Creating ${OUT_DMG##*/}"
 # hdiutil images the staged tree while the OS may still be finishing with it —
 # the copy above, the ad-hoc signature, and Spotlight indexing 185 MB of newly

@@ -6,8 +6,42 @@
 #include "../utils/Logger.h"
 
 #include <QApplication>
+#include <QGuiApplication>
 #include <QProgressDialog>
+#include <QScreen>
+#include <QScrollArea>
+#include <QVBoxLayout>
 #include <QtConcurrent>
+
+namespace {
+
+// Every wizard page keeps its contents inside a scroll area, so no page can
+// push the wizard window past the screen and the window keeps one size while
+// stepping through the pages. Pages that already scroll are left alone.
+void makePageScrollable(QWizardPage* page)
+{
+    QLayout* content = page ? page->layout() : nullptr;
+    if (!content)
+        return;
+
+    if (content->count() == 1 &&
+        qobject_cast<QScrollArea*>(content->itemAt(0)->widget()))
+        return;
+
+    auto* contentWidget = new QWidget;
+    contentWidget->setLayout(content);   // steals the layout off the page
+
+    auto* scroll = new QScrollArea(page);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setWidget(contentWidget);
+
+    auto* outerLayout = new QVBoxLayout(page);
+    outerLayout->setContentsMargins(0, 0, 0, 0);
+    outerLayout->addWidget(scroll);
+}
+
+} // namespace
 
 StarImportWizard::StarImportWizard(ApplicationController* controller,
     std::shared_ptr<Project> project,
@@ -33,7 +67,19 @@ StarImportWizard::StarImportWizard(ApplicationController* controller,
     setOptions(QWizard::NoBackButtonOnStartPage |
                QWizard::NoCancelButtonOnLastPage);
 
-    resize(900, 700);
+    for (int id : pageIds())
+        makePageScrollable(page(id));
+
+    // One size for the whole wizard, clamped to what the screen can show.
+    QSize target(900, 700);
+    const QScreen* scr = screen() ? screen() : QGuiApplication::primaryScreen();
+    if (scr) {
+        const QRect avail = scr->availableGeometry();
+        target.setWidth(qMin(target.width(), avail.width() - 80));
+        target.setHeight(qMin(target.height(), avail.height() - 80));
+    }
+    setMinimumSize(qMin(640, target.width()), qMin(480, target.height()));
+    resize(target);
 }
 
 void StarImportWizard::waitForBackgroundTasks()

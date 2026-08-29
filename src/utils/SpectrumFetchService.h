@@ -2,6 +2,7 @@
 
 #include <QByteArray>
 #include <QDateTime>
+#include <QJsonObject>
 #include <QHash>
 #include <QList>
 #include <QObject>
@@ -66,6 +67,10 @@ public:
         int    maxParallelDownloads = 2;   // clamped to [1, 4]
         bool   autoQueueAll        = true;
         bool   redownloadExisting  = false;
+        // Merge the spectral arms of one exposure (X-Shooter UVB/VIS/NIR,
+        // LAMOST MRS B/R, the SDSS cameras, ...) into a single spectrum
+        // instead of importing one spectrum per arm.
+        bool   joinArms            = false;
     };
 
     struct SessionInfo {
@@ -172,6 +177,19 @@ private:
         // work ends (fast paths and failures release it early).
         QString hostKey;
         bool    holdsHostSlot = false;
+        // Arm-join bucket this item's spectra are held in, empty when the
+        // session does not join arms. The group is joined and imported once
+        // every item carrying the same key has finished.
+        QString joinGroup;
+    };
+
+    // Spectra parsed out of one product file, waiting for the rest of their
+    // arm-join group to arrive.
+    struct StagedSpectra {
+        QString                   groupKey;
+        SpecFetch::RemoteSpectrum remote;
+        QString                   localPath;
+        std::vector<SpecFetch::ParsedSpectrum> parsed;
     };
 
     struct Session {
@@ -193,6 +211,10 @@ private:
         std::vector<std::unique_ptr<DownloadItem>> items;
         QByteArray buffer;               // plain-text session log
         QSet<QString> existingOriginIds; // project-wide dedup set
+        // Arm joining: spectra held back until their group is complete, and
+        // the number of items each group is still waiting for.
+        std::vector<StagedSpectra> staged;
+        QHash<QString, int>        joinPending;
     };
 
     struct HostState {
@@ -216,6 +238,12 @@ private:
                              const QList<SpecFetch::RemoteSpectrum>& results,
                              const QString& error);
     void finishDiscovery(Session* s);
+
+    /// Assigns every queued item to an arm-join bucket (star, archive,
+    /// instrument, epoch cluster). Only called when Options::joinArms is set.
+    void assignJoinGroups(Session* s);
+    /// Joins and imports everything staged for one bucket.
+    void flushJoinGroup(Session* s, const QString& groupKey);
 
     void pumpDownloads();
     void releaseHostSlot(DownloadItem* item);
@@ -242,9 +270,17 @@ private:
     void recordDuration(qint64 ms);
 
     /// Imports parsed spectra on the GUI thread; returns spectra written.
-    int importParsed(Session* s, DownloadItem* item,
+    /// `remote` and `localPath` are the provenance written to the rows, which
+    /// for a joined spectrum is the group's representative product rather
+    /// than a single download item.
+    int importParsed(Session* s, const SpecFetch::RemoteSpectrum& remote,
+                     const QString& localPath,
                      const std::vector<SpecFetch::ParsedSpectrum>& parsed,
-                     QString* firstError);
+                     const QJsonObject& extraMeta, QString* firstError);
+    /// Removes rows of the given products, including the joined rows that
+    /// carry one of them as a member. Used for re-downloads.
+    void purgeExistingOrigins(Session* s, const QString& starId,
+                              const QStringList& originIds);
 
     ApplicationController* _controller = nullptr;
     QNetworkAccessManager* _nam        = nullptr;

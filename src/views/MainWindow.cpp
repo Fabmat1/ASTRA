@@ -544,13 +544,11 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             _starsMenu = new QMenu("&Stars", this);
             _addStarAction = _starsMenu->addAction("&Add Star...");
             _importStarsAction = _starsMenu->addAction("&Import Stars...");
-            _exportTableAction = _starsMenu->addAction("&Export Table...");
-            _exportTableAction->setStatusTip(
-                tr("Export the star table to FITS, CSV or the clipboard"));
             _starsMenu->addSeparator();
             _shareStarsAction  = new QAction(tr("Share Stars…"), this);
+            _shareStarsAction->setStatusTip(
+                tr("Export selected stars to a shareable .astra file"));
             _starsMenu->addAction(_shareStarsAction);
-                tr("Export selected stars to a shareable .astra file");
             _receiveStarsAction = new QAction(tr("Receive Stars…"), this);
             _receiveStarsAction->setStatusTip(tr("Import stars from a shared .astra file"));
             _starsMenu->addAction(_receiveStarsAction);
@@ -582,7 +580,6 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             // Connect to ProjectView slots
             connect(_addStarAction, &QAction::triggered, _projectView, &ProjectView::onAddStar);
             connect(_importStarsAction, &QAction::triggered, _projectView, &ProjectView::onImportStars);
-            connect(_exportTableAction, &QAction::triggered, _projectView, &ProjectView::onExportTable);
             connect(_removeStarAction, &QAction::triggered, _projectView, &ProjectView::onRemoveStar);
             connect(_detailWindowAction, &QAction::triggered, _projectView, &ProjectView::onShowDetailWindow);
             connect(_shareStarsAction, &QAction::triggered, _projectView, &ProjectView::onShareStars);
@@ -604,6 +601,10 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
                 tr("Search online archives (ESO, LAMOST, SDSS, ...) for "
                    "spectra of the project's stars and import them"));
             _dataMenu->addSeparator();
+            _exportTableAction = _dataMenu->addAction("&Export Table...");
+            _exportTableAction->setStatusTip(
+                tr("Export the star table to FITS, CSV or the clipboard"));
+            _dataMenu->addSeparator();
             _instrumentConfigAction = _dataMenu->addAction("&Instruments...");
 
             // A single entry point each: opens the sessions overview, which
@@ -612,6 +613,8 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
                     this, &MainWindow::onShowLcFetchSessions);
             connect(_fetchSpectraAction, &QAction::triggered,
                     this, &MainWindow::onShowSpectrumFetchSessions);
+            connect(_exportTableAction, &QAction::triggered, _projectView,
+                    &ProjectView::onExportTable);
             connect(_instrumentConfigAction, &QAction::triggered, this, &MainWindow::onShowInstrumentConfig);
 
             QAction* helpAction = _helpMenu->menuAction();
@@ -666,6 +669,7 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             _dataMenu = nullptr;
             _fetchLightcurvesAction = nullptr;
             _fetchSpectraAction = nullptr;
+            _exportTableAction = nullptr;
             _instrumentConfigAction = nullptr;
         }
 

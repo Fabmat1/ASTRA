@@ -345,6 +345,7 @@ set(SOURCES
     src/utils/SpectrumFetchService.cpp
     src/utils/spectrafetch/SpectrumArchiveClient.cpp
     src/utils/spectrafetch/SpectrumArchiveRegistry.cpp
+    src/utils/spectrafetch/SpectrumArmJoin.cpp
     src/utils/spectrafetch/TapHelpers.cpp
     src/utils/spectrafetch/VoTableReader.cpp
     src/utils/spectrafetch/WavelengthConvert.cpp
@@ -513,6 +514,7 @@ set(HEADERS
     src/utils/spectrafetch/SpectrumArchiveTypes.h
     src/utils/spectrafetch/SpectrumArchiveClient.h
     src/utils/spectrafetch/SpectrumArchiveRegistry.h
+    src/utils/spectrafetch/SpectrumArmJoin.h
     src/utils/spectrafetch/TapHelpers.h
     src/utils/spectrafetch/VoTableReader.h
     src/utils/spectrafetch/WavelengthConvert.h
@@ -770,10 +772,69 @@ if(WIN32)
         )
     endif()
 elseif(APPLE)
+    # --- App icon --------------------------------------------------------
+    # Info.plist.in fills CFBundleIconFile from MACOSX_BUNDLE_ICON_FILE, and
+    # Finder falls back to the blank generic app icon whenever that key is
+    # empty, even with a perfectly good .icns sitting in Contents/Resources.
+    # So the icns gets generated AND named here, in one place.
+    set(ASTRA_MACOS_ICON_SRC "")
+    foreach(_cand resources/linux/icons/astra.png
+                  resources/icons/astra.png
+                  resources/linux/icons/astra.svg)
+        if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/${_cand}")
+            set(ASTRA_MACOS_ICON_SRC "${CMAKE_CURRENT_SOURCE_DIR}/${_cand}")
+            break()
+        endif()
+    endforeach()
+
+    if(ASTRA_MACOS_ICON_SRC)
+        set(ASTRA_ICNS "${CMAKE_CURRENT_BINARY_DIR}/astra.icns")
+        add_custom_command(
+            OUTPUT  "${ASTRA_ICNS}"
+            COMMAND ${CMAKE_COMMAND}
+                    -DICON_SRC=${ASTRA_MACOS_ICON_SRC}
+                    -DOUT_ICNS=${ASTRA_ICNS}
+                    -DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/icon-work
+                    -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MakeMacIcns.cmake"
+            DEPENDS "${ASTRA_MACOS_ICON_SRC}"
+                    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/MakeMacIcns.cmake"
+            COMMENT "Generating astra.icns from ${ASTRA_MACOS_ICON_SRC}"
+            VERBATIM)
+        # GENERATED so the copy-into-bundle rule does not demand the file at
+        # configure time; the custom command above supplies it during the build.
+        set_source_files_properties("${ASTRA_ICNS}" PROPERTIES
+            GENERATED TRUE
+            MACOSX_PACKAGE_LOCATION Resources)
+        target_sources(ASTRA PRIVATE "${ASTRA_ICNS}")
+    else()
+        message(WARNING "No macOS icon source found; the .app will use the "
+                        "generic application icon.")
+    endif()
+
+    # An empty CFBundleIdentifier makes Launch Services treat the bundle as
+    # unregisterable, which is a second, independent way to lose the icon, so
+    # every placeholder in Info.plist.in gets a real value.
+    # Release pipelines pass the tag (v0.7.0) in ASTRA_VERSION_OVERRIDE. Only a
+    # plain dotted number belongs in CFBundleShortVersionString, so anything
+    # else (a dev stamp such as git-<hash>) falls back to the project version.
+    set(_astra_bundle_version "${PROJECT_VERSION}")
+    if(ASTRA_VERSION_OVERRIDE MATCHES "^v?([0-9]+(\\.[0-9]+)*)$")
+        set(_astra_bundle_version "${CMAKE_MATCH_1}")
+    endif()
+
     set_target_properties(ASTRA PROPERTIES
         MACOSX_BUNDLE TRUE
         MACOSX_BUNDLE_INFO_PLIST ${CMAKE_CURRENT_SOURCE_DIR}/Info.plist.in
+        MACOSX_BUNDLE_BUNDLE_NAME "ASTRA"
+        MACOSX_BUNDLE_GUI_IDENTIFIER "io.github.fabmat1.astra"
+        MACOSX_BUNDLE_BUNDLE_VERSION "${_astra_bundle_version}"
+        MACOSX_BUNDLE_SHORT_VERSION_STRING "${_astra_bundle_version}"
+        MACOSX_BUNDLE_COPYRIGHT "Fabian Mattig"
     )
+    if(ASTRA_MACOS_ICON_SRC)
+        set_target_properties(ASTRA PROPERTIES
+            MACOSX_BUNDLE_ICON_FILE "astra.icns")
+    endif()
     
     # On macOS, we might need to set the RPATH for CCfits
     if(CCFITS_FOUND)
@@ -1095,6 +1156,25 @@ if(BUILD_TESTING)
         WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
     )
     set_tests_properties(wavelength_convert PROPERTIES
+        LABELS "utils;spectrafetch"
+        TIMEOUT 30
+    )
+
+    # Arm joining: grouping one exposure's products and splicing them.
+    add_executable(test_arm_join
+        tests/test_arm_join.cpp
+        src/utils/spectrafetch/SpectrumArmJoin.cpp
+    )
+    target_include_directories(test_arm_join PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(test_arm_join PRIVATE Qt6::Core)
+    add_test(
+        NAME    arm_join
+        COMMAND test_arm_join
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(arm_join PROPERTIES
         LABELS "utils;spectrafetch"
         TIMEOUT 30
     )

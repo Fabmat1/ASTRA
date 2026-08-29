@@ -6,6 +6,7 @@
 #include "utils/spectrafetch/LamostArchiveClient.h"
 #include "utils/spectrafetch/SpectrumArchiveClient.h"
 #include "utils/spectrafetch/SpectrumArchiveRegistry.h"
+#include "utils/spectrafetch/SpectrumArmJoin.h"
 #include "views/widgets/FlowLayout.h"
 
 #include <QCheckBox>
@@ -151,6 +152,21 @@ void ArchiveFetchWidget::setupUi() {
                        "Products without exposures fall back to the coadd."));
     optRow->addWidget(_exposuresCb);
 
+    _joinArmsCb = new QCheckBox(QStringLiteral("Join instrument arms"));
+    _joinArmsCb->setToolTip(
+        QStringLiteral("Merge products that are different arms of the same "
+                       "exposure into one spectrum (X-Shooter UVB/VIS/NIR, "
+                       "UVES blue/red, LAMOST MRS, the SDSS cameras). The "
+                       "arms are spliced at the middle of their overlap and "
+                       "keep their published flux scale."));
+    // Follow the choice last made in the batch fetch dialog.
+    if (_ctx.controller && _ctx.controller->settings()) {
+        const QJsonDocument doc = QJsonDocument::fromJson(
+            _ctx.controller->settings()->specFetchLastOptions().toUtf8());
+        _joinArmsCb->setChecked(doc.object().value("joinArms").toBool(false));
+    }
+    optRow->addWidget(_joinArmsCb);
+
     _redownloadCb = new QCheckBox(QStringLiteral("Re-download existing"));
     _redownloadCb->setToolTip(
         QStringLiteral("Replace spectra that were already fetched from an "
@@ -203,13 +219,13 @@ void ArchiveFetchWidget::setupUi() {
 }
 
 // A multi-spectrum product (LAMOST exposures, SDSS cameras) imports its
-// children under "<originId>#<part>", so the product counts as imported when
-// its own id or any child of it exists.
+// children under "<originId>#<part>", and a joined spectrum carries the ids
+// of every arm it was made of, so the product counts as imported when its own
+// id, a child of it, or a join holding it exists.
 bool ArchiveFetchWidget::alreadyImported(const QString& originId) const {
     if (_importedOriginIds.contains(originId)) return true;
-    const QString prefix = originId + QLatin1Char('#');
     for (const QString& id : _importedOriginIds)
-        if (id.startsWith(prefix)) return true;
+        if (SpecFetch::originIdCovers(id, originId)) return true;
     return false;
 }
 
@@ -259,6 +275,7 @@ void ArchiveFetchWidget::onSearch() {
         settings ? settings->specFetchMaxParallel() : 2;
     opt.autoQueueAll       = false;
     opt.redownloadExisting = _redownloadCb->isChecked();
+    opt.joinArms           = _joinArmsCb->isChecked();
     for (const SpecFetch::Archive a : archives) {
         SpecFetch::ArchiveOptions aopt;
         aopt.fetchExposures = _exposuresCb->isChecked();

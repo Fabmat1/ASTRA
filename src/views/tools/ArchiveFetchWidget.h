@@ -77,6 +77,7 @@ private:
     QDoubleSpinBox* _radiusSpin   = nullptr;
     QComboBox*      _lamostDr     = nullptr;
     QCheckBox*      _exposuresCb  = nullptr;
+    QCheckBox*      _joinArmsCb   = nullptr;
     QCheckBox*      _redownloadCb = nullptr;
     QPushButton*    _searchBtn    = nullptr;   // "Search" / "Stop"
     bool            _searching    = false;
