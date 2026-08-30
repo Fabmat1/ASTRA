@@ -61,6 +61,11 @@ static QList<ModeRange> modeCandidateRanges(const InstrumentMode &m) {
 
 } // namespace
 
+QString instrumentNameKey(const QString &name) {
+    static const QRegularExpression decoration(QStringLiteral("[/\\-_\\s.]+"));
+    return QString(name).remove(decoration).toLower();
+}
+
 SpectrumShape analyzeWavelengthShape(const std::vector<double> &wavelengthsIn) {
     SpectrumShape shape;
     if (wavelengthsIn.empty())
@@ -127,14 +132,32 @@ SpectrumShape analyzeWavelengthShape(const std::vector<double> &wavelengthsIn) {
 InstrumentMatch matchSpectrumToInstrument(
     const std::vector<std::shared_ptr<Instrument>> &instruments,
     const QString &instrumentHint, const std::vector<double> &wavelengths) {
+    InstrumentPrior prior;
+    prior.hint = instrumentHint;
+    return matchSpectrumToInstrument(instruments, prior, wavelengths);
+}
+
+InstrumentMatch matchSpectrumToInstrument(
+    const std::vector<std::shared_ptr<Instrument>> &instruments,
+    const InstrumentPrior &prior, const std::vector<double> &wavelengths) {
 
     InstrumentMatch     best;
     const SpectrumShape shape = analyzeWavelengthShape(wavelengths);
     if (shape.nPoints < 2 || shape.coveredSpan <= 0.0)
         return best;
 
-    const QString hint = instrumentHint.trimmed().toLower();
-    const double  refWl =
+    const QString hint = prior.hint.trimmed().toLower();
+
+    // Sampling only bounds the resolution, so when the source states the
+    // resolving power outright that is the better evidence by a wide margin.
+    // Only for a single-arm spectrum, though: a joined X-Shooter product
+    // carries one arm's R and three arms' worth of coverage, and scoring the
+    // VIS arm against the UVB arm's R would be worse than not knowing.
+    const double reportedR = shape.segments.size() == 1 &&
+                                     prior.reportedResolution > 0.0
+                                 ? prior.reportedResolution
+                                 : 0.0;
+    const double refWl =
         0.5 * (shape.wlMin + shape.wlMax); // common probe point
 
     // A single contiguous range that spans a real interior gap in the data is
@@ -151,6 +174,11 @@ InstrumentMatch matchSpectrumToInstrument(
 
     for (const auto &instPtr : instruments) {
         if (!instPtr)
+            continue;
+        // The caller already knows which instrument this is; the only open
+        // question is which of its modes.
+        if (!prior.knownInstrumentId.isEmpty() &&
+            instPtr->getId() != prior.knownInstrumentId)
             continue;
         const Instrument &inst     = *instPtr;
         const QString     instName = inst.getName();
@@ -186,8 +214,18 @@ InstrumentMatch matchSpectrumToInstrument(
             for (const ModeRange &rng : modeCandidateRanges(mode))
                 cands.push_back({rng, &mode});
         }
-        if (cands.empty())
+        if (cands.empty()) {
+            // Same reasoning as the totalW <= 0 case below: a restricted
+            // search still names the instrument the source gave it, even when
+            // that instrument has no spectroscopic mode to place it in.
+            if (!prior.knownInstrumentId.isEmpty() && !best.instrument) {
+                best.instrument    = instPtr.get();
+                best.modeKey       = prior.knownModeKey;
+                best.displayString = instName;
+                best.confidence    = 0.0;
+            }
             continue;
+        }
 
         // Explain each data segment with the best single mode of this
         // instrument, then aggregate weighted by segment width.
@@ -234,7 +272,14 @@ InstrumentMatch matchSpectrumToInstrument(
                 // whole implied band and fall off in log space outside it.
                 double       resScore = 0.5;
                 const double R        = c.mode->resolutionAt(segCtr);
-                if (R > 0.0 && obsDisp > 0.0) {
+                if (R > 0.0 && reportedR > 0.0) {
+                    // Straight comparison against the stated value. The width
+                    // stays generous because a mode table lists the nominal
+                    // resolution for a nominal slit, and the real product can
+                    // sit well off it.
+                    const double logr = std::log(R / reportedR);
+                    resScore = std::exp(-(logr * logr) / (2.0 * 0.35 * 0.35));
+                } else if (R > 0.0 && obsDisp > 0.0) {
                     const double rLo = segCtr / (obsDisp * 10.0);
                     const double rHi = segCtr / (obsDisp * 2.0);
                     double logr = 0.0;
@@ -277,14 +322,31 @@ InstrumentMatch matchSpectrumToInstrument(
                 bestModeKey = bestKey;
         }
 
-        if (totalW <= 0.0 || !resConsistent)
+        const bool restricted = !prior.knownInstrumentId.isEmpty();
+
+        if (totalW <= 0.0 || !resConsistent) {
+            // Unrestricted, this instrument simply loses. Restricted, there is
+            // no other candidate to lose to: the source said what this is, so
+            // it is tagged with the instrument and left without a mode rather
+            // than handed to whichever spectrograph the shape flatters.
+            if (restricted && !best.instrument) {
+                best.instrument    = instPtr.get();
+                best.modeKey       = prior.knownModeKey;
+                best.displayString = instName;
+                best.confidence    = 0.0;
+            }
             continue;
+        }
 
         double instScore = accum / totalW;
         if (hintMatches)
             instScore = std::min(1.0, instScore + 0.10);
 
-        if (instScore > best.confidence) {
+        // A mode the source named outright is not up for revision.
+        if (restricted && !prior.knownModeKey.isEmpty())
+            bestModeKey = prior.knownModeKey;
+
+        if (restricted || instScore > best.confidence) {
             best.instrument    = instPtr.get();
             best.modeKey       = bestModeKey;
             best.displayString = usedLabels.isEmpty()

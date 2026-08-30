@@ -2,6 +2,7 @@
 
 #include "EsoArchiveClient.h"
 
+#include "EsoObsCoreIndex.h"
 #include "TapHelpers.h"
 #include "VoTableReader.h"
 #include "models/Spectrum.h"
@@ -9,7 +10,10 @@
 #include "utils/Logger.h"
 #include "utils/SpectrumReader.h"
 
+#include <QDateTime>
 #include <QFileInfo>
+#include <QHash>
+#include <QMutexLocker>
 
 #include <fitsio.h>
 
@@ -23,6 +27,17 @@ namespace {
 constexpr char kTapAsyncUrl[] = "https://archive.eso.org/tap_obs/async";
 constexpr char kDataPortalFileUrl[] =
     "https://dataportal.eso.org/dataPortal/file/";
+// The DataLink document for a Phase-3 product, which is exactly what
+// ObsCore's access_url holds for every row (checked against the live table on
+// 2026-08-30). Reconstructing it from dp_id keeps the mirrored path's
+// downloads byte-for-byte identical to the per-star path's, rather than
+// quietly routing them somewhere else.
+constexpr char kDataLinkUrlPrefix[] =
+    "http://archive.eso.org/datalink/links?ID=ivo://eso.org/ID?";
+// Everything from here to kMaxConsecutiveFailures configures the per-star box
+// path, which is what discovery uses for a short star list with no mirror on
+// disk. A project-sized list goes through EsoObsCoreIndex instead.
+//
 // The anonymous ESO TAP endpoint offers no uploadMethod (verified against
 // /tap_obs/capabilities), so the batched crossmatch is an OR-chain of
 // per-star predicates instead of a TAP_UPLOAD join.
@@ -159,13 +174,24 @@ bool nameMatches(const QString& name, const QStringList& candidates) {
 }   // namespace
 
 QStringList EsoArchiveClient::knownCollections() {
-    // obs_collection values of the spectroscopic Phase-3 streams.
+    // obs_collection values of the spectroscopic Phase-3 streams, checked
+    // against the live ivoa.ObsCore on 2026-08-30 (row counts in brackets).
+    //
+    // MUSE, SINFONI and KMOS used to be on this list and publish no 1D
+    // spectra at all - they are integral-field instruments, and what they
+    // release under dataproduct_type 'cube' never reaches a spectrum query.
+    // CRIRES was on it under a name the archive does not use: its Phase-3
+    // stream is published as CRIRESplus. All four returned zero rows for
+    // every star ever searched, and in the mirrored path each would cost an
+    // empty job on top.
     return {
-        QStringLiteral("XSHOOTER"), QStringLiteral("UVES"),
-        QStringLiteral("HARPS"),    QStringLiteral("FEROS"),
-        QStringLiteral("GIRAFFE"),  QStringLiteral("MUSE"),
-        QStringLiteral("ESPRESSO"), QStringLiteral("CRIRES"),
-        QStringLiteral("SINFONI"),  QStringLiteral("KMOS"),
+        QStringLiteral("XSHOOTER"),   // 187952
+        QStringLiteral("UVES"),       //  87551
+        QStringLiteral("HARPS"),      // 352229
+        QStringLiteral("FEROS"),      //  99053
+        QStringLiteral("GIRAFFE"),    // 1182296
+        QStringLiteral("ESPRESSO"),   //  27422
+        QStringLiteral("CRIRESplus"), //   4163
     };
 }
 
@@ -179,6 +205,174 @@ bool EsoArchiveClient::deliversBarycentric(
 }
 
 QList<SpecFetch::RemoteSpectrum> EsoArchiveClient::discover(
+    const std::vector<SpecFetch::StarQuery>& stars,
+    const SpecFetch::ArchiveOptions& opt, QNetworkAccessManager* nam,
+    const std::function<void(int, int)>& progress,
+    const std::atomic<bool>& cancel, QString* error) {
+    if (error) error->clear();
+
+    QStringList want = opt.collections;
+    want.removeDuplicates();
+    want.sort();
+
+    QMutexLocker lock(&_indexMutex);
+
+    // Two ways to answer this, and the star count decides. Mirroring ObsCore
+    // costs one job and a couple of hundred megabytes of transfer whatever the
+    // list looks like; the per-star boxes cost a job per hundred stars. So a
+    // short list is cheaper asked directly, and a long one is not remotely
+    // close - the 88000-star case was about 40 minutes of boxes against about
+    // two minutes of mirror.
+    //
+    // A mirror that is already on disk beats both at any size, so a short list
+    // uses one when it happens to be there and never builds one.
+    bool useIndex = stars.size() >= size_t(kIndexStarThreshold);
+    if (!useIndex) {
+        _index.loadCached();
+        useIndex = _index.covers(want);
+    }
+    if (!useIndex)
+        return discoverViaBoxes(stars, opt, nam, progress, cancel, error);
+
+    QString indexError;
+    if (!_index.ensure(want, nam, progress, int(stars.size()), cancel,
+                       &indexError)) {
+        if (cancel.load()) return {};
+
+        // Falling back rather than failing: the boxes are slow, but they are
+        // the path that has always worked, and a user with a project to search
+        // would rather wait than be told ESO is unavailable.
+        LOG_WARNING("SpecFetch",
+                    QStringLiteral("ESO index unavailable (%1); falling back "
+                                   "to the per-star crossmatch")
+                        .arg(indexError));
+        return discoverViaBoxes(stars, opt, nam, progress, cancel, error);
+    }
+
+    QList<SpecFetch::RemoteSpectrum> out =
+        discoverViaIndex(stars, opt, nam, progress, cancel, error);
+
+    // A mirror that is missing a collection would answer "no spectra" for it,
+    // which is indistinguishable from a real empty result.
+    if (error && error->isEmpty() && !indexError.isEmpty())
+        *error = indexError;
+    return out;
+}
+
+QList<SpecFetch::RemoteSpectrum> EsoArchiveClient::discoverViaIndex(
+    const std::vector<SpecFetch::StarQuery>& stars,
+    const SpecFetch::ArchiveOptions& opt, QNetworkAccessManager* nam,
+    const std::function<void(int, int)>& progress,
+    const std::atomic<bool>& cancel, QString* error) {
+    Q_UNUSED(nam);
+    Q_UNUSED(error);
+    // No progress reporting in here on purpose: ensure() has already driven
+    // the bar to full, because the mirror is where all the wall clock goes.
+    // The matching below is 0.6 s for 88000 stars against 2.4 million rows.
+    Q_UNUSED(progress);
+
+    QList<SpecFetch::RemoteSpectrum> out;
+    const double radiusDeg = opt.radiusArcsec / 3600.0;
+
+    QStringList want = opt.collections;
+    want.removeDuplicates();
+
+    // The service dedups queued downloads by originId and looks items up by
+    // it, so a product has to belong to exactly one star. Where two stars are
+    // both inside the match radius of the same spectrum, the nearer one takes
+    // it - the same rule the per-star path applies, just no longer limited to
+    // the stars that happened to share a chunk.
+    struct Claim {
+        size_t starIdx = 0;
+        double sepDeg  = 0.0;
+    };
+    QHash<int, Claim> claims;
+
+    // ASTRA authenticates with nobody at ESO, so a product still inside its
+    // proprietary period can only ever come back "Host requires
+    // authentication". Queueing those wastes the download budget and fills
+    // the session log with failures the user can do nothing about, so they
+    // are dropped here and counted.
+    const qint64 nowSec = QDateTime::currentSecsSinceEpoch();
+    int          proprietary = 0;
+
+    std::vector<std::pair<int, double>> hits;
+    for (size_t k = 0; k < stars.size(); ++k) {
+        if (cancel.load()) return out;
+        if (!stars[k].hasPosition()) continue;
+
+        hits.clear();
+        _index.matchNear(stars[k].ra, stars[k].dec, radiusDeg, hits);
+
+        for (const auto& [rowIdx, sepDeg] : hits) {
+            // The mirror may cover more collections than this session asked
+            // for, either because it was built unfiltered or because an
+            // earlier session wanted a wider set.
+            if (!want.isEmpty() &&
+                !want.contains(_index.collectionOf(rowIdx),
+                               Qt::CaseInsensitive))
+                continue;
+            if (!_index.isPublic(rowIdx, nowSec)) {
+                ++proprietary;
+                continue;
+            }
+
+            auto it = claims.find(rowIdx);
+            if (it == claims.end())
+                claims.insert(rowIdx, Claim{k, sepDeg});
+            else if (sepDeg < it->sepDeg)
+                *it = Claim{k, sepDeg};
+        }
+    }
+
+    out.reserve(claims.size());
+    for (auto it = claims.constBegin(); it != claims.constEnd(); ++it) {
+        const int                          rowIdx = it.key();
+        const SpecFetch::EsoObsCoreIndex::Row& row = _index.row(rowIdx);
+        const QString                      dpId   = _index.dpId(rowIdx);
+
+        SpecFetch::RemoteSpectrum r;
+        r.archive        = SpecFetch::Archive::EsoPhase3;
+        r.archiveLabel   = displayName();
+        r.originId       = QStringLiteral("eso:") + dpId;
+        r.starId         = stars[it->starIdx].starId;
+        r.collection     = _index.collectionOf(rowIdx);
+        r.instrumentHint = _index.instrumentOf(rowIdx);
+        if (r.instrumentHint.isEmpty()) r.instrumentHint = r.collection;
+        r.mjd        = row.tMin;
+        r.ra         = row.ra;
+        r.dec        = row.dec;
+        r.sepArcsec  = it->sepDeg * 3600.0;
+        r.resolution = double(row.resPower);
+        r.snr        = double(row.snr);
+        r.sizeBytes  = row.estSizeKb > 0 ? qint64(row.estSizeKb) * 1024 : -1;
+        r.isCoadd    = true;   // Phase-3 products are what they are
+
+        // access_url is not mirrored: for every Phase-3 product it is the
+        // DataLink document for the same dp_id, so storing it would cost 80
+        // bytes a row to repeat what the dp_id already says. Rebuilt here
+        // rather than short-circuited to the file endpoint so that the
+        // download path sees exactly what it saw before.
+        r.downloadUrl = QUrl(QString::fromLatin1(kDataLinkUrlPrefix) + dpId);
+        r.fileName    = dpId + QStringLiteral(".fits");
+
+        out.append(r);
+    }
+
+    LOG_INFO("SpecFetch",
+             QStringLiteral("ESO index: %1 product(s) for %2 star(s) at %3\"")
+                 .arg(out.size())
+                 .arg(stars.size())
+                 .arg(opt.radiusArcsec, 0, 'g', 3));
+    if (proprietary > 0)
+        LOG_INFO("SpecFetch",
+                 QStringLiteral("ESO index: %1 matched product(s) are still "
+                                "under proprietary period and were skipped")
+                     .arg(proprietary));
+    return out;
+}
+
+QList<SpecFetch::RemoteSpectrum> EsoArchiveClient::discoverViaBoxes(
     const std::vector<SpecFetch::StarQuery>& stars,
     const SpecFetch::ArchiveOptions& opt, QNetworkAccessManager* nam,
     const std::function<void(int, int)>& progress,
@@ -226,6 +420,15 @@ QList<SpecFetch::RemoteSpectrum> EsoArchiveClient::discover(
         for (size_t k = chunkBegin; k < chunkEnd; ++k)
             boxes << boxPredicate(stars[k].ra, stars[k].dec, radiusDeg);
 
+        // Public products only, for the reason given in discoverViaIndex():
+        // ASTRA has no ESO credentials, so anything still proprietary is a
+        // download that can only fail. Server-side here because this path
+        // does not keep the rows around to filter afterwards.
+        const QString publicOnly =
+            QStringLiteral(" AND obs_release_date <= '%1'")
+                .arg(QDateTime::currentDateTimeUtc().toString(
+                    QStringLiteral("yyyy-MM-ddTHH:mm:ss'Z'")));
+
         const QString adql =
             QStringLiteral(
                 "SELECT dp_id, obs_collection, instrument_name, "
@@ -233,9 +436,9 @@ QList<SpecFetch::RemoteSpectrum> EsoArchiveClient::discover(
                 "access_estsize, s_ra, s_dec "
                 "FROM ivoa.ObsCore "
                 "WHERE dataproduct_type = 'spectrum' "
-                "AND (%1)%2")
+                "AND (%1)%2%3")
                 .arg(boxes.join(QStringLiteral(" OR ")))
-                .arg(collectionFilter);
+                .arg(collectionFilter, publicOnly);
 
         QString         chunkError;
         CdsTap::Request request(kJobBudgetMs);

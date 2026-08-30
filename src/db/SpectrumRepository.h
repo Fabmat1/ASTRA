@@ -39,6 +39,14 @@ class SpectrumRepository {
     bool updateSpectralFitFlag(const QString &fitId, bool flagged);
     bool updateBestFit(const QString &spectrumId, const QString &bestFitId);
 
+    /// How many spectra a star has, and how many of them carry a best fit.
+    /// Two indexed COUNTs, so this is the cheap way to bring stars.n_spectra
+    /// back in line after rows are added without the Star object in hand -
+    /// loading the spectra themselves just to size the vector would pull
+    /// every wavelength array with them.
+    bool spectraCounts(const QString &starId, int *nSpectra,
+                       int *nFitSpectra) const;
+
     // Archive-fetch support: all non-null origin_ids in a project (for
     // de-duplication), and removal of previously fetched rows before a
     // forced re-download.

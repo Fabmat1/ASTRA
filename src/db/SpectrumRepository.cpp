@@ -586,6 +586,38 @@ bool SpectrumRepository::deleteSpectrum(const QString& spectrumId)
     return true;
 }
 
+bool SpectrumRepository::spectraCounts(const QString& starId, int* nSpectra,
+                                      int* nFitSpectra) const
+{
+    if (nSpectra)    *nSpectra    = 0;
+    if (nFitSpectra) *nFitSpectra = 0;
+    if (starId.isEmpty()) return false;
+
+    QSqlQuery query(_db.threadConnection());
+    // Both counts in one pass. idx_spectra_star_id and
+    // idx_spectral_fits_spectrum_id make the EXISTS cheap.
+    query.prepare(R"(
+        SELECT COUNT(*),
+               COUNT(CASE WHEN EXISTS (
+                   SELECT 1 FROM spectral_fits f
+                   WHERE f.spectrum_id = s.id AND f.is_best_fit = 1
+               ) THEN 1 END)
+        FROM spectra s
+        WHERE s.star_id = :star_id
+    )");
+    query.bindValue(":star_id", starId);
+
+    if (!query.exec() || !query.next()) {
+        LOG_ERROR("Spectra", QString("Failed to count spectra for star %1: %2")
+                                 .arg(starId, query.lastError().text()));
+        return false;
+    }
+
+    if (nSpectra)    *nSpectra    = query.value(0).toInt();
+    if (nFitSpectra) *nFitSpectra = query.value(1).toInt();
+    return true;
+}
+
 QSet<QString> SpectrumRepository::originIdsForProject(const QString& projectId)
 {
     QSet<QString> ids;

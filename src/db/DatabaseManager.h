@@ -82,6 +82,10 @@ public:
     bool updateBestFit(const QString& spectrumId, const QString& bestFitId);
     QSet<QString> spectrumOriginIdsForProject(const QString& projectId);
     bool deleteSpectraByOriginId(const QString& starId, const QString& originId);
+    /// Spectrum counts for one star, straight from the database. See
+    /// SpectrumRepository::spectraCounts.
+    bool spectraCounts(const QString& starId, int* nSpectra,
+                       int* nFitSpectra) const;
     bool saveRadialVelocityCurve(std::shared_ptr<RadialVelocityCurve> curve, const QString& starId);
     bool saveRadialVelocityPoint(std::shared_ptr<RadialVelocityPoint> point, const QString& curveId);
     bool saveRVFit(std::shared_ptr<RVFit> fit, const QString& curveId);
@@ -94,6 +98,10 @@ public:
     bool commitTransaction();
     bool rollbackTransaction();
     bool updateStarRow(const QString& projectId, std::shared_ptr<Star> star);
+    /// Writes only n_spectra / n_fit_spectra for one star. See
+    /// StarRepository::updateSpectraCounts.
+    bool updateSpectraCounts(const QString& starId, int nSpectra,
+                             int nFitSpectra);
     QString findMatchingStarId(const QString& projectId, const QString& sourceId, const QString& alias, const QString& tic, const QString& jname, double ra, double dec, double toleranceArcsec = 2.0);
     bool saveSEDModelForStar(const QString& starId, std::shared_ptr<SEDModel> model);
     bool saveSedPhotometryPointsForStar(const QString& starId,

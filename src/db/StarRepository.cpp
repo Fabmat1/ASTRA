@@ -526,6 +526,28 @@ bool StarRepository::importCSV(const QString& filepath, std::shared_ptr<Project>
     return true;
 }
 
+bool StarRepository::updateSpectraCounts(const QString& starId, int nSpectra,
+                                        int nFitSpectra)
+{
+    if (starId.isEmpty()) return false;
+
+    QSqlQuery query(_db.threadConnection());
+    query.prepare(QStringLiteral(
+        "UPDATE stars SET n_spectra = :n, n_fit_spectra = :nfit "
+        "WHERE id = :id"));
+    query.bindValue(":n", nSpectra);
+    query.bindValue(":nfit", nFitSpectra);
+    query.bindValue(":id", starId);
+
+    if (!query.exec()) {
+        LOG_ERROR("Stars", QString("Failed to update spectrum counts for star "
+                                   "%1: %2")
+                               .arg(starId, query.lastError().text()));
+        return false;
+    }
+    return true;
+}
+
 bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Star> star)
 {
     if (!star || star->getId().isEmpty()) return false;

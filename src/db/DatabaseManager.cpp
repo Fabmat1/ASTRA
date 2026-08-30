@@ -1797,6 +1797,18 @@ bool DatabaseManager::saveSpectrum(const QString            &starId,
     return _spectra->saveSpectrum(starId, spectrum);
 }
 
+bool DatabaseManager::updateSpectraCounts(const QString& starId, int nSpectra,
+                                          int nFitSpectra)
+{
+    return _stars->updateSpectraCounts(starId, nSpectra, nFitSpectra);
+}
+
+bool DatabaseManager::spectraCounts(const QString& starId, int* nSpectra,
+                                   int* nFitSpectra) const
+{
+    return _spectra->spectraCounts(starId, nSpectra, nFitSpectra);
+}
+
 bool DatabaseManager::saveSpectralFit(const QString& starId, const QString& spectrumId, std::shared_ptr<SpectralFit> fit)
 {
     return _spectra->saveSpectralFit(starId, spectrumId, fit);

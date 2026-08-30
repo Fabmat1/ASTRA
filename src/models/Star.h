@@ -444,6 +444,16 @@ public:
     void removeSpectrum(const QString& spectrumId);
     void setSpectra(const std::vector<std::shared_ptr<Spectrum>>& spectra);
 
+    /// Appends spectra that were written to the database elsewhere, keeping
+    /// the in-memory vector in step. Does NOT re-derive the summary metrics,
+    /// which is the whole point: recomputeSpectraMetrics() resets teff/logg/he
+    /// and the abundances and refills them from the first spectrum carrying a
+    /// best fit, so on a star whose spectra have no fits it zeroes atmospheric
+    /// parameters that came from a catalogue. Callers set the counts
+    /// themselves. No-op when the spectra are not loaded, since there is
+    /// nothing to keep in step.
+    void appendLoadedSpectra(const std::vector<std::shared_ptr<Spectrum>>& added);
+
 
     // Fast field access using function pointers
     using FieldGetter = std::function<QVariant(const Star*)>;
@@ -481,6 +491,11 @@ public:
 
     void setSummaryPersistCallback(SummaryPersistCallback cb)
         { _summaryPersistCb = std::move(cb); }
+    /// Tells the open views to redraw, without running the metrics pipeline.
+    /// The counterpart of persistSummary(), and for the same reason: some
+    /// values are set straight onto the Star (spectrum counts after an archive
+    /// fetch) and still have to reach an open detail view.
+    void notifySummaryChanged() { if (_summaryChangedCb) _summaryChangedCb(); }
     using SummaryChangedCallback = std::function<void()>;
     void setSummaryChangedCallback(SummaryChangedCallback cb)
         { _summaryChangedCb = std::move(cb); }

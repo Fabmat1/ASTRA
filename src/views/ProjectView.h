@@ -325,6 +325,13 @@ public:
     // Access to underlying data
     std::shared_ptr<Star> getStarAtRow(int row) const;
     int getRowForStar(const std::shared_ptr<Star>& star) const;
+    /// Row of the star with this id, or -1. Backed by a hash built with the
+    /// row cache, because the callers that need it fire once per imported
+    /// spectrum and a linear scan of a catalogue-sized project would not do.
+    int getRowForStarId(const QString& starId) const;
+    /// Repaint one star's row in place. Cheap next to refresh(), which resets
+    /// the whole model and takes the selection and scroll position with it.
+    void starDataChanged(const QString& starId);
     QString getColumnName(int column) const;
     
     // Removal support
@@ -338,6 +345,7 @@ private:
     
     // Cached data for fast access
     std::vector<std::shared_ptr<Star>> _cachedStars;
+    QHash<QString, int>                _starRowById;   // rebuilt in cacheData
     std::vector<QString> _cachedColumns;
     
     // Pre-resolved field getters for visible columns

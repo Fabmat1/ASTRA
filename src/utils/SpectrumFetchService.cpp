@@ -193,6 +193,7 @@ QString SpectrumFetchService::startSession(
             ++skippedNoPos;
             continue;
         }
+        s->starObjects.insert(q.starId, star);
         s->stars.push_back(std::move(q));
     }
 
@@ -534,14 +535,18 @@ void SpectrumFetchService::cancelSession(const QString& id) {
 
     s->cancel->store(true);
 
-    for (auto& item : s->items) {
-        if (item->phase == DownloadItem::Phase::Pending) {
-            finishItem(s, item.get(), DownloadItem::Phase::Failed,
-                       QStringLiteral("cancelled"));
-        } else if (item->reply) {
-            item->reply->abort();   // finishes through onDownloadFinished
-        }
-    }
+    // The queue goes in one pass, then the handful of transfers that are
+    // actually in flight are aborted and come back through
+    // onDownloadFinished, where reporting them one by one is worth it.
+    const int aborted = abortPendingItems(s);
+    for (auto& item : s->items)
+        if (item->reply) item->reply->abort();
+
+    if (aborted > 0)
+        appendLog(s, QStringLiteral("%1 queued file(s) cancelled")
+                         .arg(aborted));
+    emitProgress();
+    maybeFinishSession(s);
 
     if (s->info.state == State::Stopping ||
         s->info.state == State::AwaitingSelection) {
@@ -1207,6 +1212,44 @@ void SpectrumFetchService::retryOrFail(Session* s, DownloadItem* item,
                        &SpectrumFetchService::pumpDownloads);
 }
 
+int SpectrumFetchService::abortPendingItems(Session* s) {
+    // Cancelling a bulk wave used to run every queued item through
+    // finishItem(), which per item appends a log line, emits itemFinished,
+    // emits progress, scans the whole session for completion and re-runs the
+    // download pump. The log consumer redraws the entire session buffer on
+    // every line, so on a 6800-item wave "Stop" took about a minute of frozen
+    // UI to say the same thing 6800 times. None of that per-item work tells
+    // the user anything here: one summary line does.
+    int         aborted = 0;
+    QStringList completedGroups;
+
+    for (auto& item : s->items) {
+        if (item->phase != DownloadItem::Phase::Pending) continue;
+
+        releaseHostSlot(item.get());
+        item->phase = DownloadItem::Phase::Failed;
+        ++s->info.downloadsDone;
+        ++s->info.failedItems;
+        ++_waveDone;
+        ++aborted;
+
+        // Arm-join bookkeeping still has to happen: a group whose last member
+        // was cancelled still holds spectra that were downloaded and parsed
+        // before the stop, and those get imported rather than thrown away.
+        if (item->joinGroup.isEmpty()) continue;
+        const QString key = item->joinGroup;
+        item->joinGroup.clear();
+        auto it = s->joinPending.find(key);
+        if (it != s->joinPending.end() && --it.value() <= 0) {
+            s->joinPending.erase(it);
+            completedGroups << key;
+        }
+    }
+
+    for (const QString& key : completedGroups) flushJoinGroup(s, key);
+    return aborted;
+}
+
 void SpectrumFetchService::finishItem(Session* s, DownloadItem* item,
                                       DownloadItem::Phase phase,
                                       const QString&      message) {
@@ -1248,11 +1291,11 @@ void SpectrumFetchService::maybeFinishSession(Session* s) {
         s->info.state != State::Finished)
         return;
 
-    for (const auto& item : s->items)
-        if (item->phase != DownloadItem::Phase::Done &&
-            item->phase != DownloadItem::Phase::Failed &&
-            item->phase != DownloadItem::Phase::Skipped)
-            return;
+    // downloadsDone is incremented exactly once per item, by finishItem() or
+    // the bulk cancel, and items only ever grow, so this is the same test as
+    // scanning them all - but this one is not called once per finished item
+    // on a wave of several thousand.
+    if (s->info.downloadsDone < int(s->items.size())) return;
 
     if (s->info.state == State::Downloading) {
         s->info.state =
@@ -1337,6 +1380,8 @@ int SpectrumFetchService::importParsed(
     const QString origin = remote.originId.section(':', 0, 0);
 
     int written = 0;
+    std::vector<std::shared_ptr<Spectrum>> added;
+    added.reserve(parsed.size());
     for (const SpecFetch::ParsedSpectrum& p : parsed) {
         if (!p.spectrum || !p.spectrum->hasData()) continue;
 
@@ -1358,19 +1403,39 @@ int SpectrumFetchService::importParsed(
             spec->setBarycentricallyCorrected(
                 client->deliversBarycentric(remote));
 
-        // Tag with a configured instrument/mode: hint-guided shape match
-        // first (same gate as manual import), plain string resolution as the
-        // fallback.
+        // Tag with a configured instrument/mode. Unlike a manual import, this
+        // spectrum came from an archive that says what took it, so the shape
+        // matcher is not asked to decide that: whenever the archive's name
+        // resolves to a configured instrument, the search is restricted to it
+        // and the only open question is the mode. Shape alone gets this wrong
+        // often enough to matter - spectrographs overlap in coverage, and the
+        // name is first-hand information.
         const QString hint = !p.instrumentHint.isEmpty()
                                  ? p.instrumentHint
                                  : spec->getInstrument();
+
+        InstrumentPrior prior;
+        prior.hint = hint;
+        // ESO reports em_res_power per product, which pins the mode far
+        // better than the sampling can. Other archives leave it NaN.
+        if (!std::isnan(remote.resolution) && remote.resolution > 0.0)
+            prior.reportedResolution = remote.resolution;
+        if (auto known = dbm->resolveInstrumentString(hint,
+                                                      &prior.knownModeKey))
+            prior.knownInstrumentId = known->getId();
+
         const auto wl = spec->getWavelengths();
         bool tagged   = false;
         if (!instruments.empty() && wl.size() >= 2) {
             const auto match =
-                matchSpectrumToInstrument(instruments, hint, wl);
+                matchSpectrumToInstrument(instruments, prior, wl);
+            // The confidence gate exists to reject a bad guess. There is no
+            // guess to reject once the archive has named the instrument, so
+            // it applies only to the unrestricted search.
             static constexpr double kMinConfidence = 0.25;
-            if (match.instrument && match.confidence >= kMinConfidence) {
+            if (match.instrument &&
+                (!prior.knownInstrumentId.isEmpty() ||
+                 match.confidence >= kMinConfidence)) {
                 spec->setInstrument(match.displayString);
                 spec->setInstrumentId(match.instrument->getId());
                 spec->setModeKey(match.modeKey);
@@ -1395,12 +1460,60 @@ int SpectrumFetchService::importParsed(
         }
 
         s->existingOriginIds.insert(p.originId);
+        added.push_back(spec);
         ++written;
     }
 
-    if (written > 0)
+    if (written > 0) {
+        refreshStarMetrics(s, starId, added);
         emit starSpectraUpdated(starId);
+    }
     return written;
+}
+
+void SpectrumFetchService::refreshStarMetrics(
+    Session* s, const QString& starId,
+    const std::vector<std::shared_ptr<Spectrum>>& added) {
+    auto* dbm = _controller ? _controller->databaseManager() : nullptr;
+    if (!dbm) return;
+
+    const auto it = s->starObjects.constFind(starId);
+    if (it == s->starObjects.constEnd() || !it.value()) return;
+    const std::shared_ptr<Star>& star = it.value();
+
+    // Spectra are written straight to the database here, so nothing has told
+    // the Star about them: stars.n_spectra still holds whatever the catalogue
+    // import put there, and the project table shows that number until someone
+    // runs Reload Metrics by hand.
+    //
+    // The database is the one place that knows the answer, and two indexed
+    // COUNTs get it without loading a single wavelength array. Forcing the
+    // star's lazy load just to size a vector would pull every spectrum it
+    // owns.
+    int n = 0, nFit = 0;
+    if (!dbm->spectraCounts(starId, &n, &nFit)) return;
+
+    // Keep the in-memory vector in step when it is loaded, or the next
+    // recomputeSpectraMetrics() would put the stale size back.
+    star->appendLoadedSpectra(added);
+    star->setNSpectra(n);
+    star->setNFitSpectra(nFit);
+
+    // Only the two counts go to disk. updateStarRow() would rewrite teff,
+    // logg, he and every fitted quantity from this in-memory star, which is
+    // not a call an import of a few spectra gets to make.
+    if (!dbm->updateSpectraCounts(starId, n, nFit)) {
+        LOG_WARNING(kLogCat,
+                    QStringLiteral("could not write back spectrum counts for "
+                                   "star %1")
+                        .arg(starId));
+        return;
+    }
+
+    // The project table listens to the signal; an open detail view of this
+    // star listens through the star's own callback.
+    star->notifySummaryChanged();
+    emit starMetricsUpdated(s->projectId, starId);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

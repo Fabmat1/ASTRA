@@ -350,6 +350,7 @@ set(SOURCES
     src/utils/spectrafetch/VoTableReader.cpp
     src/utils/spectrafetch/WavelengthConvert.cpp
     src/utils/spectrafetch/EsoArchiveClient.cpp
+    src/utils/spectrafetch/EsoObsCoreIndex.cpp
     src/utils/spectrafetch/LamostArchiveClient.cpp
     src/utils/spectrafetch/SdssOpticalArchiveClient.cpp
     src/utils/spectrafetch/MastArchiveClient.cpp
@@ -519,6 +520,7 @@ set(HEADERS
     src/utils/spectrafetch/VoTableReader.h
     src/utils/spectrafetch/WavelengthConvert.h
     src/utils/spectrafetch/EsoArchiveClient.h
+    src/utils/spectrafetch/EsoObsCoreIndex.h
     src/utils/spectrafetch/LamostArchiveClient.h
     src/utils/spectrafetch/SdssOpticalArchiveClient.h
     src/utils/spectrafetch/MastArchiveClient.h
@@ -1229,6 +1231,7 @@ if(BUILD_TESTING)
         tests/test_spectrafetch_parsers.cpp
         src/utils/spectrafetch/SpectrumArchiveClient.cpp
         src/utils/spectrafetch/EsoArchiveClient.cpp
+        src/utils/spectrafetch/EsoObsCoreIndex.cpp
         src/utils/spectrafetch/LamostArchiveClient.cpp
         src/utils/spectrafetch/SdssOpticalArchiveClient.cpp
         src/utils/spectrafetch/ApogeeArchiveClient.cpp
@@ -1277,6 +1280,7 @@ if(BUILD_TESTING)
         tests/test_eso_bulk_discovery.cpp
         src/utils/spectrafetch/SpectrumArchiveClient.cpp
         src/utils/spectrafetch/EsoArchiveClient.cpp
+        src/utils/spectrafetch/EsoObsCoreIndex.cpp
         src/utils/spectrafetch/TapHelpers.cpp
         src/utils/spectrafetch/VoTableReader.cpp
         src/utils/CdsTapClient.cpp
@@ -1316,6 +1320,52 @@ if(BUILD_TESTING)
     # Bulk MAST discovery against the live TAP service. Off unless
     # ASTRA_TEST_MAST_LIVE=1 is set (see the file header); guards the cone
     # query that the CAOM TAP answers with a 504 instead of a plan.
+    # Local ESO ObsCore mirror: build, cache round trip, band search against a
+    # brute-force scan, and the mirrored discovery path end to end. Live, so it
+    # skips unless ASTRA_TEST_ESO_LIVE=1 is set (see the file header). Gets its
+    # own ASTRA_DATA_DIR so a run never replaces the user's real mirror with a
+    # single-collection one.
+    add_executable(test_eso_obscore_index
+        tests/test_eso_obscore_index.cpp
+        src/utils/spectrafetch/SpectrumArchiveClient.cpp
+        src/utils/spectrafetch/EsoArchiveClient.cpp
+        src/utils/spectrafetch/EsoObsCoreIndex.cpp
+        src/utils/spectrafetch/TapHelpers.cpp
+        src/utils/spectrafetch/VoTableReader.cpp
+        src/utils/CdsTapClient.cpp
+        src/utils/SpectrumReader.cpp
+        src/utils/DataStore.cpp
+        src/utils/Logger.cpp
+        src/models/Spectrum.cpp
+        src/models/Time.cpp
+        src/models/Instrument.cpp
+        src/models/InstrumentMode.cpp
+        src/models/BarycentricCorrection.cpp
+    )
+    target_include_directories(test_eso_obscore_index PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_compile_definitions(test_eso_obscore_index PRIVATE
+        ASTRA_DATA_DIR="${CMAKE_CURRENT_BINARY_DIR}/eso_index_test"
+    )
+    if(CCFITS_FOUND)
+        target_include_directories(test_eso_obscore_index PRIVATE
+            ${CCFITS_INCLUDE_DIRS})
+        target_link_libraries(test_eso_obscore_index PRIVATE
+            ${CCFITS_LIBRARIES})
+    endif()
+    target_link_libraries(test_eso_obscore_index PRIVATE
+        Qt6::Core Qt6::Network)
+    add_test(
+        NAME    eso_obscore_index
+        COMMAND test_eso_obscore_index
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(eso_obscore_index PROPERTIES
+        LABELS "utils;spectrafetch;network"
+        TIMEOUT 1800
+    )
+
     add_executable(test_mast_bulk_discovery
         tests/test_mast_bulk_discovery.cpp
         src/utils/spectrafetch/SpectrumArchiveClient.cpp

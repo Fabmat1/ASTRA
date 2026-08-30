@@ -483,6 +483,26 @@ void Star::removeSpectrum(const QString& spectrumId)
 }
 
 
+void Star::appendLoadedSpectra(
+    const std::vector<std::shared_ptr<Spectrum>>& added)
+{
+    if (!_spectraLoaded || added.empty()) return;
+
+    std::vector<std::shared_ptr<Spectrum>> attached;
+    attached.reserve(added.size());
+    for (const auto& sp : added) {
+        if (!sp) continue;
+        _spectra.push_back(sp);
+        attached.push_back(sp);
+    }
+
+    // Same courtesy addSpectrum() does: RV points reach their spectrum
+    // through these callbacks, and a spectrum nobody attached is invisible
+    // to the curve.
+    if (_rvCurve && !attached.empty())
+        _rvCurve->attachToSpectra(attached);
+}
+
 void Star::computeSummaryMetrics(const SummaryPersistCallback& onChanged)
 {
     auto before = captureSummaryValues(*this);

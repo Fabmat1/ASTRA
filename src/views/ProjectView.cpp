@@ -78,6 +78,21 @@ ProjectView::ProjectView(ApplicationController* controller, QWidget *parent)
     setupUi();
     setupContextMenus();
     setAcceptDrops(true);
+
+    // A fetch writes spectra straight to the database, so without this the
+    // "N Spectra" column keeps showing whatever the catalogue import put
+    // there until someone right-clicks Reload Metrics. One row is repainted
+    // per star, not the whole model: a bulk fetch touches thousands of them.
+    if (_controller) {
+        if (auto* service = _controller->spectrumFetchService()) {
+            connect(service, &SpectrumFetchService::starMetricsUpdated, this,
+                    [this](const QString& projectId, const QString& starId) {
+                        if (!_tableModel || !_currentProject) return;
+                        if (_currentProject->getId() != projectId) return;
+                        _tableModel->starDataChanged(starId);
+                    });
+        }
+    }
 }
 
 ProjectView::~ProjectView()
@@ -1685,6 +1700,26 @@ void StarTableModel::cacheData()
         _cachedColumns.clear();
         _columnGetters.clear();
     }
+
+    _starRowById.clear();
+    _starRowById.reserve(int(_cachedStars.size()));
+    for (size_t i = 0; i < _cachedStars.size(); ++i)
+        if (_cachedStars[i])
+            _starRowById.insert(_cachedStars[i]->getId(), int(i));
+}
+
+int StarTableModel::getRowForStarId(const QString& starId) const
+{
+    return _starRowById.value(starId, -1);
+}
+
+void StarTableModel::starDataChanged(const QString& starId)
+{
+    const int row = getRowForStarId(starId);
+    if (row < 0 || _cachedColumns.empty()) return;
+    emit dataChanged(index(row, 0),
+                     index(row, int(_cachedColumns.size()) - 1),
+                     {Qt::DisplayRole, Qt::EditRole});
 }
 
 void StarTableModel::buildColumnGetters()

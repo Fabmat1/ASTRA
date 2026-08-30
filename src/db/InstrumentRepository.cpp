@@ -3,6 +3,7 @@
 #include <QUuid>
 #include "models/Instrument.h"
 #include "models/InstrumentMode.h"
+#include "utils/matchSpectraToInstrument.h"
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QJsonDocument>
@@ -576,15 +577,23 @@ InstrumentRepository::resolveInstrumentString(const QString& input,
     {
         if (namePart.length() < 2) return nullptr;
 
-        // Case-insensitive name match: exact > prefix > contains
-        std::shared_ptr<Instrument> exact, prefix, contains;
+        // Separators are decoration, not identity: archives write "XSHOOTER"
+        // where this database says "X-Shooter", and no amount of
+        // exact/prefix/contains bridges that.
+        const QString squashedInput = instrumentNameKey(namePart);
+
+        // Case-insensitive name match: exact > prefix > contains > squashed
+        std::shared_ptr<Instrument> exact, prefix, contains, squashed;
         for (const auto& inst : _instrumentsById) {
             const QString n = inst->getName();
             if (n.compare(namePart, Qt::CaseInsensitive) == 0)          { exact = inst; break; }
             if (!prefix && n.startsWith(namePart, Qt::CaseInsensitive)) prefix = inst;
             if (!contains && n.contains(namePart, Qt::CaseInsensitive)) contains = inst;
+            if (!squashed && !squashedInput.isEmpty() &&
+                instrumentNameKey(n) == squashedInput)
+                squashed = inst;
         }
-        auto inst = exact ? exact : (prefix ? prefix : contains);
+        auto inst = exact ? exact : (prefix ? prefix : (contains ? contains : squashed));
         if (!inst) return nullptr;
 
         if (modeKey && !modePart.isEmpty()) {

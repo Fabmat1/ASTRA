@@ -24,6 +24,7 @@ class QNetworkReply;
 class QFile;
 class SpectrumArchiveClient;
 class Star;
+class Spectrum;
 
 /**
  * Application-level manager for online spectrum archive fetching.
@@ -158,6 +159,10 @@ signals:
     void allFinished(int done, int total);
     /// Emitted after fetched spectra were imported for a star.
     void starSpectraUpdated(const QString& starId);
+    /// A star's stored summary metrics (n_spectra, n_fit_spectra) were
+    /// recomputed and written back. The project table listens for this so a
+    /// fetch keeps the "N Spectra" column honest without a manual reload.
+    void starMetricsUpdated(const QString& projectId, const QString& starId);
 
 private:
     struct DownloadItem {
@@ -197,6 +202,10 @@ private:
         QString     projectId;
         Options     opt;
         std::vector<SpecFetch::StarQuery> stars;
+        // The Star objects behind those queries, by id. Kept so an import can
+        // bring a star's stored counts back in line without searching the
+        // project for it once per product.
+        QHash<QString, std::shared_ptr<Star>> starObjects;
         // Set to stop the archive workers. Downloads read the same flag, so a
         // session that keeps its partial results after a stopped search is
         // given a fresh one in finishDiscovery().
@@ -254,6 +263,10 @@ private:
     void onParsed(const QString& sessionId, DownloadItem* item,
                   const std::vector<SpecFetch::ParsedSpectrum>& parsed,
                   const QString& error);
+    /// Marks every not-yet-started item of a cancelled session as failed in
+    /// one pass, returning how many. Deliberately not finishItem() per item:
+    /// see the comment on the definition.
+    int  abortPendingItems(Session* s);
     void finishItem(Session* s, DownloadItem* item, DownloadItem::Phase phase,
                     const QString& message);
     void retryOrFail(Session* s, DownloadItem* item, const QString& reason,
@@ -268,6 +281,13 @@ private:
     SpectrumArchiveClient* clientFor(SpecFetch::Archive a) const;
     int  activeItemCount() const;
     void recordDuration(qint64 ms);
+
+    /// Brings one star's stored spectrum counts back in line after an import
+    /// and tells the UI. Spectra are written straight to the database, so
+    /// nothing else updates stars.n_spectra.
+    void refreshStarMetrics(
+        Session* s, const QString& starId,
+        const std::vector<std::shared_ptr<Spectrum>>& added);
 
     /// Imports parsed spectra on the GUI thread; returns spectra written.
     /// `remote` and `localPath` are the provenance written to the rows, which
