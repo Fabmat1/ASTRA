@@ -5,7 +5,7 @@
 #include <QUuid>
 #include <QThread>
 
-void DBAccess::setDatabase(const QSqlDatabase& db) { _database = db; }
+void DBAccess::setDatabase(const QSqlDatabase& db) { _database = db; ++_connectionEpoch; }
 void DBAccess::setDatabasePath(const QString& path) { _databasePath = path; }
 QSqlDatabase DBAccess::database() const { return _database; }
 QString DBAccess::databasePath() const { return _databasePath; }

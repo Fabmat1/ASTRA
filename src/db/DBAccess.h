@@ -17,10 +17,16 @@ public:
     QString generateUUID();
     bool executeQuery(const QString& query);
 
+    /// Bumped every time the main connection is replaced. Callers that cache a
+    /// prepared QSqlQuery key it on this, so a reopened database re-prepares
+    /// instead of running against a dead driver.
+    quint64 connectionEpoch() const { return _connectionEpoch; }
+
 private:
     QSqlDatabase _database;
     QString      _databasePath;
     QMutex       _connectionMutex;
+    quint64      _connectionEpoch = 1;
 };
 
 #endif // DBACCESS_H

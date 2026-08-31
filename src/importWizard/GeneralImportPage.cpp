@@ -284,21 +284,48 @@ QString GeneralImportPage::normalizeValue(const QVariant& value) const
     return str;
 }
 
+void GeneralImportPage::rebuildColumnLookups()
+{
+    _columnIndex.clear();
+    _columnIndex.reserve(_columnNames.size());
+    for (int i = 0; i < static_cast<int>(_columnNames.size()); ++i)
+        _columnIndex[_columnNames[i]] = i;
+
+    _mappedColumns.clear();
+    _fieldColumn.clear();
+    _mappedColumns.reserve(_columnMappings.size());
+    for (const auto& [column, field] : _columnMappings) {
+        auto it = _columnIndex.find(column);
+        if (it == _columnIndex.end())
+            continue;                      // mapping for a column that is gone
+        _mappedColumns.push_back({it->second, field});
+        _fieldColumn[field] = it->second;
+    }
+    // Stable order so merged rows and identity keys do not depend on the
+    // iteration order of the mapping hash.
+    std::sort(_mappedColumns.begin(), _mappedColumns.end(),
+              [](const MappedColumn& a, const MappedColumn& b) {
+                  return a.column < b.column;
+              });
+}
+
+int GeneralImportPage::columnIndexOf(const QString& name) const
+{
+    auto it = _columnIndex.find(name);
+    return it != _columnIndex.end() ? it->second : -1;
+}
+
 QString GeneralImportPage::generateRowKey(const DataRow& row) const
 {
     QStringList keyParts;
-    
-    for (const auto& [columnName, fieldName] : _columnMappings) {
-        auto it = row.values.find(columnName);
+
+    for (const auto& mc : _mappedColumns) {
         QString normalizedValue;
-        
-        if (it != row.values.end()) {
-            normalizedValue = normalizeValue(it->second);
-        }
-        
-        keyParts << QString("%1=%2").arg(fieldName, normalizedValue);
+        if (const QVariant* v = row.at(mc.column))
+            normalizedValue = normalizeValue(*v);
+        keyParts << QString("%1=%2").arg(mc.field, normalizedValue);
     }
-    
+
     keyParts.sort();
     return keyParts.join("|");
 }
@@ -411,16 +438,14 @@ QString GeneralImportPage::generateIdentityKey(const DataRow& row) const
     // Build a canonical identity from the best available identifier.
     // Priority: source_id > tic > jname > alias > (ra,dec)
 
+    // _fieldColumn resolves the field in one lookup. This used to scan every
+    // mapping for each of the five fields below, which on a 128-column table
+    // meant ~640 string comparisons per row.
     auto valueFor = [&](const QString& field) -> QString {
-        for (const auto& [col, f] : _columnMappings) {
-            if (f == field) {
-                auto it = row.values.find(col);
-                if (it != row.values.end()) {
-                    QString v = normalizeValue(it->second);
-                    if (!v.isEmpty()) return v;
-                }
-            }
-        }
+        auto it = _fieldColumn.find(field);
+        if (it == _fieldColumn.end()) return QString();
+        if (const QVariant* v = row.at(it->second))
+            return normalizeValue(*v);
         return QString();
     };
 
@@ -458,34 +483,32 @@ bool GeneralImportPage::areRowsCompatible(const DataRow& a, const DataRow& b) co
 {
     // Check that every mapped numeric field present in both rows
     // agrees within the rounding tolerance.
-    for (const auto& [col, field] : _columnMappings) {
-        // Skip identifier / string fields - already matched by identity key
-        static const QSet<QString> stringFields = {
-            "source_id", "alias", "tic", "jname", "spec_class"
-        };
-        if (stringFields.contains(field)) continue;
+    // Skip identifier / string fields - already matched by identity key
+    static const QSet<QString> stringFields = {
+        "source_id", "alias", "tic", "jname", "spec_class"
+    };
 
-        auto itA = a.values.find(col);
-        auto itB = b.values.find(col);
+    for (const auto& mc : _mappedColumns) {
+        if (stringFields.contains(mc.field)) continue;
 
-        bool hasA = (itA != a.values.end() && !normalizeValue(itA->second).isEmpty());
-        bool hasB = (itB != b.values.end() && !normalizeValue(itB->second).isEmpty());
+        const QVariant* va = a.at(mc.column);
+        const QVariant* vb = b.at(mc.column);
+        if (!va || !vb) continue;          // one side missing - no conflict
 
-        if (!hasA || !hasB) continue;  // one side missing - no conflict
+        const QString na = normalizeValue(*va);
+        const QString nb = normalizeValue(*vb);
+        if (na.isEmpty() || nb.isEmpty()) continue;
 
         bool okA, okB;
-        double vA = itA->second.toDouble(&okA);
-        double vB = itB->second.toDouble(&okB);
+        const double dA = va->toDouble(&okA);
+        const double dB = vb->toDouble(&okB);
 
         if (okA && okB) {
-            if (!areNumericValuesCompatible(vA, vB, field)) {
-                return false;  // genuinely different
-            }
-        } else {
+            if (!areNumericValuesCompatible(dA, dB, mc.field))
+                return false;              // genuinely different
+        } else if (na != nb) {
             // Both are strings - must match exactly
-            if (normalizeValue(itA->second) != normalizeValue(itB->second)) {
-                return false;
-            }
+            return false;
         }
     }
     return true;
@@ -495,33 +518,32 @@ DataRow GeneralImportPage::mergeRows(const DataRow& existing, const DataRow& inc
 {
     DataRow merged = existing;
 
-    for (const auto& [col, field] : _columnMappings) {
-        auto itE = existing.values.find(col);
-        auto itI = incoming.values.find(col);
+    for (const auto& mc : _mappedColumns) {
+        const QVariant* ve = existing.at(mc.column);
+        const QVariant* vi = incoming.at(mc.column);
 
-        bool hasE = (itE != existing.values.end() && !normalizeValue(itE->second).isEmpty());
-        bool hasI = (itI != incoming.values.end() && !normalizeValue(itI->second).isEmpty());
+        const bool hasE = ve && !normalizeValue(*ve).isEmpty();
+        const bool hasI = vi && !normalizeValue(*vi).isEmpty();
 
         if (!hasI) continue;           // incoming has nothing to offer
         if (!hasE) {                   // existing is missing - take incoming
-            merged.values[col] = itI->second;
+            merged.set(mc.column, *vi);
             continue;
         }
 
         // Both present - keep the one with higher precision
-        int precE = numericPrecision(itE->second);
-        int precI = numericPrecision(itI->second);
-        if (precI > precE) {
-            merged.values[col] = itI->second;
-        }
+        if (numericPrecision(*vi) > numericPrecision(*ve))
+            merged.set(mc.column, *vi);
         // else keep existing (same or better precision)
     }
 
-    // Also carry over any unmapped columns that existing lacks
-    for (const auto& [col, val] : incoming.values) {
-        if (merged.values.find(col) == merged.values.end()) {
-            merged.values[col] = val;
-        }
+    // Also carry over any unmapped columns that existing lacks. "Lacks" means
+    // the reader never wrote a cell there - a cell that was written but did
+    // not parse still counts as present, which is what the name-keyed map did.
+    for (int c = 0; c < static_cast<int>(incoming.values.size()); ++c) {
+        if (merged.wasRecorded(c)) continue;
+        if (const QVariant* v = incoming.at(c))
+            merged.set(c, *v);
     }
 
     return merged;
@@ -545,9 +567,9 @@ void GeneralImportPage::removeDuplicateRows()
     for (size_t i = 0; i < _dataRows.size(); ++i) {
         // Skip entirely empty rows
         bool hasAnyValue = false;
-        for (const auto& [col, field] : _columnMappings) {
-            auto it = _dataRows[i].values.find(col);
-            if (it != _dataRows[i].values.end() && !normalizeValue(it->second).isEmpty()) {
+        for (const auto& mc : _mappedColumns) {
+            const QVariant* v = _dataRows[i].at(mc.column);
+            if (v && !normalizeValue(*v).isEmpty()) {
                 hasAnyValue = true;
                 break;
             }
@@ -571,7 +593,7 @@ void GeneralImportPage::removeDuplicateRows()
         std::vector<DataRow> representatives;
 
         for (size_t idx : group.indices) {
-            const DataRow& row = _dataRows[idx];
+            DataRow& row = _dataRows[idx];
             bool mergedInto = false;
 
             for (DataRow& rep : representatives) {
@@ -582,8 +604,10 @@ void GeneralImportPage::removeDuplicateRows()
                 }
             }
 
+            // _dataRows is rebuilt from uniqueRows at the end of this function,
+            // so the source row is dead either way - move rather than copy it.
             if (!mergedInto) {
-                representatives.push_back(row);
+                representatives.push_back(std::move(row));
             }
         }
 
@@ -596,7 +620,7 @@ void GeneralImportPage::removeDuplicateRows()
     {
         std::vector<DataRow> unkeyedReps;
         for (size_t idx : unkeyed) {
-            const DataRow& row = _dataRows[idx];
+            DataRow& row = _dataRows[idx];
             bool mergedInto = false;
 
             for (DataRow& rep : unkeyedReps) {
@@ -607,7 +631,7 @@ void GeneralImportPage::removeDuplicateRows()
                 }
             }
             if (!mergedInto) {
-                unkeyedReps.push_back(row);
+                unkeyedReps.push_back(std::move(row));
             }
         }
         for (auto& rep : unkeyedReps) {
@@ -765,7 +789,12 @@ QStringList GeneralImportPage::parseCSVLine(const QString& line, QChar delimiter
 
 QVariant GeneralImportPage::convertValue(const QString& value) const
 {
-    if (value.isEmpty() || value.toLower() == "nan" || value.toLower() == "null" || value == "--") {
+    // compare() does not allocate; value.toLower() built a throwaway copy of
+    // every cell in the file, twice.
+    if (value.isEmpty()
+        || value.compare(QLatin1String("nan"), Qt::CaseInsensitive) == 0
+        || value.compare(QLatin1String("null"), Qt::CaseInsensitive) == 0
+        || value == "--") {
         return QVariant();
     }
     
@@ -878,37 +907,63 @@ bool GeneralImportPage::readCSV(const QString& filePath)
         QStringList values = parseCSVLine(lines[i], delimiter);
         
         DataRow row;
-        for (int j = 0; j < std::min(static_cast<int>(values.size()), static_cast<int>(_columnNames.size())); ++j) {
-            row.values[_columnNames[j]] = convertValue(values[j]);
-        }
-        _dataRows.push_back(row);
+        const int n = std::min(static_cast<int>(values.size()),
+                               static_cast<int>(_columnNames.size()));
+        row.values.resize(n);
+        row.recordedCells = n;      // old code inserted a key for each of these
+        for (int j = 0; j < n; ++j)
+            row.values[j] = convertValue(values[j]);
+        _dataRows.push_back(std::move(row));
     }
 
     // A blank header whose column is empty in every row is an artefact of a
     // trailing separator, not data - drop it so it does not show up as an
     // unmapped column.
     if (!unnamedColumns.isEmpty()) {
-        for (const QString& col : unnamedColumns) {
+        // Collect the positions to drop first, then compact every row once.
+        // Removing them one at a time would reshuffle each row per column.
+        std::vector<bool> drop(_columnNames.size(), false);
+        int dropCount = 0;
+        for (int c = 0; c < static_cast<int>(_columnNames.size()); ++c) {
+            if (!unnamedColumns.contains(_columnNames[c])) continue;
+
             bool hasData = false;
             for (const DataRow& row : _dataRows) {
-                auto it = row.values.find(col);
-                if (it != row.values.end() && !normalizeValue(it->second).isEmpty()) {
-                    hasData = true;
-                    break;
-                }
+                const QVariant* v = row.at(c);
+                if (v && !normalizeValue(*v).isEmpty()) { hasData = true; break; }
             }
-            if (hasData) continue;
+            if (!hasData) { drop[c] = true; ++dropCount; }
+        }
 
-            _columnNames.erase(
-                std::remove(_columnNames.begin(), _columnNames.end(), col),
-                _columnNames.end());
-            for (DataRow& row : _dataRows)
-                row.values.erase(col);
+        if (dropCount > 0) {
+            std::vector<QString> keptNames;
+            keptNames.reserve(_columnNames.size() - dropCount);
+            for (int c = 0; c < static_cast<int>(_columnNames.size()); ++c)
+                if (!drop[c]) keptNames.push_back(_columnNames[c]);
+
+            for (DataRow& row : _dataRows) {
+                std::vector<QVariant> kept;
+                kept.reserve(keptNames.size());
+                int recorded = 0;
+                for (int c = 0; c < static_cast<int>(row.values.size()); ++c) {
+                    if (c < static_cast<int>(drop.size()) && drop[c]) continue;
+                    if (c < row.recordedCells) ++recorded;
+                    kept.push_back(std::move(row.values[c]));
+                }
+                row.values = std::move(kept);
+                row.recordedCells = recorded;
+            }
+            _columnNames = std::move(keptNames);
         }
     }
 
+    rebuildColumnLookups();
     return true;
 }
+
+// Largest magnitude a double represents exactly; convertValue() keeps integers
+// beyond it as text rather than losing digits.
+static constexpr long long kExactDoubleLimit = 9007199254740991LL;
 
 bool GeneralImportPage::readFITS(const QString& filePath)
 {
@@ -922,7 +977,12 @@ bool GeneralImportPage::readFITS(const QString& filePath)
     _columnNames.clear();
     
     try {
-        std::unique_ptr<CCfits::FITS> pInfile(new CCfits::FITS(filePath.toStdString(), CCfits::Read, true));
+        // readDataFlag stays false: with it on, CCfits slurps every HDU's data
+        // into memory during construction, and the chunked column->read() calls
+        // below then fetch it all over again. On an 88 k x 128 table that
+        // eager pass alone cost 3.5 s of the 3.8 s this function took.
+        std::unique_ptr<CCfits::FITS> pInfile(
+            new CCfits::FITS(filePath.toStdString(), CCfits::Read, false));
         
         const CCfits::ExtMap& extMap = pInfile->extension();
         if (extMap.empty()) {
@@ -965,6 +1025,7 @@ bool GeneralImportPage::readFITS(const QString& filePath)
             columnInfos.push_back(info);
         }
         
+        rebuildColumnLookups();
         _dataRows.reserve(maxRows);
         
         struct ColumnData {
@@ -1023,6 +1084,7 @@ bool GeneralImportPage::readFITS(const QString& filePath)
             
             for (long i = 0; i < rowsInChunk; ++i) {
                 DataRow dataRow;
+                dataRow.values.resize(columnInfos.size());
                 
                 for (size_t colIdx = 0; colIdx < columnInfos.size(); ++colIdx) {
                     const auto& colInfo = columnInfos[colIdx];
@@ -1031,11 +1093,11 @@ bool GeneralImportPage::readFITS(const QString& filePath)
                     try {
                         if (colInfo.type == CCfits::Tdouble) {
                             if (i < static_cast<long>(buffer.doubleData.size()) && !std::isnan(buffer.doubleData[i])) {
-                                dataRow.values[colInfo.name] = buffer.doubleData[i];
+                                dataRow.values[colIdx] = buffer.doubleData[i];
                             }
                         } else if (colInfo.type == CCfits::Tfloat) {
                             if (i < static_cast<long>(buffer.floatData.size()) && !std::isnan(buffer.floatData[i])) {
-                                dataRow.values[colInfo.name] = static_cast<double>(buffer.floatData[i]);
+                                dataRow.values[colIdx] = static_cast<double>(buffer.floatData[i]);
                             }
                         } else if (colInfo.type == CCfits::Tint || 
                                 colInfo.type == CCfits::Tlong || 
@@ -1046,22 +1108,27 @@ bool GeneralImportPage::readFITS(const QString& filePath)
                                     val == std::numeric_limits<long>::min()) {
                                     continue;
                                 }
+                                // The value is already an integer, so go
+                                // straight to the QVariant convertValue() would
+                                // have produced. Formatting it and parsing the
+                                // text back cost about five allocations per
+                                // cell, on every integer cell in the table.
                                 if (colInfo.type == CCfits::Tlonglong && i < static_cast<long>(buffer.stringData.size())) {
                                     QVariant converted = convertValue(QString::fromStdString(buffer.stringData[i]));
                                     if (!converted.isNull()) {
-                                        dataRow.values[colInfo.name] = converted;
+                                        dataRow.values[colIdx] = converted;
                                     }
+                                } else if (val > kExactDoubleLimit || val < -kExactDoubleLimit) {
+                                    // Beyond 2^53 a double would lose digits;
+                                    // convertValue() keeps these as text.
+                                    dataRow.values[colIdx] = QString::number(val);
                                 } else {
-                                    QString strVal = QString::number(val);
-                                    QVariant converted = convertValue(strVal);
-                                    if (!converted.isNull()) {
-                                        dataRow.values[colInfo.name] = converted;
-                                    }
+                                    dataRow.values[colIdx] = static_cast<double>(val);
                                 }
                             }
                         } else if (colInfo.type == CCfits::Tstring) {
                             if (i < static_cast<long>(buffer.stringData.size())) {
-                                dataRow.values[colInfo.name] = QString::fromStdString(buffer.stringData[i]).trimmed();
+                                dataRow.values[colIdx] = QString::fromStdString(buffer.stringData[i]).trimmed();
                             }
                         }
                     } catch (...) {
@@ -1134,6 +1201,8 @@ void GeneralImportPage::mapColumns()
         if (_columnMappings.find(columnName) == _columnMappings.end())
             _unmappedColumns.push_back(columnName);
     }
+
+    rebuildColumnLookups();
 }
 
 void GeneralImportPage::updatePreview()
@@ -1157,15 +1226,14 @@ void GeneralImportPage::updatePreview()
     for (int i = 0; i < rowsToShow; ++i) {
         const DataRow& row = _dataRows[i];
         for (int j = 0; j < static_cast<int>(_columnNames.size()); ++j) {
-            QString colName = _columnNames[j];
+            const QString& colName = _columnNames[j];
             QString displayText;
-            
-            if (row.values.find(colName) != row.values.end()) {
-                QVariant value = row.values.at(colName);
-                if (value.typeId() == QMetaType::Double) {
-                    displayText = QString::number(value.toDouble(), 'g', 6);
+
+            if (const QVariant* value = row.at(j)) {
+                if (value->typeId() == QMetaType::Double) {
+                    displayText = QString::number(value->toDouble(), 'g', 6);
                 } else {
-                    displayText = value.toString();
+                    displayText = value->toString();
                 }
             }
             
@@ -1255,16 +1323,16 @@ std::vector<std::shared_ptr<Star>> GeneralImportPage::createStarsFromData()
 {
     std::vector<std::shared_ptr<Star>> stars;
     
+    stars.reserve(_dataRows.size());
     for (const DataRow& row : _dataRows) {
         auto star = std::make_shared<Star>();
-        
-        for (const auto& [columnName, fieldName] : _columnMappings) {
-            if (row.values.find(columnName) != row.values.end()) {
-                applyValueToStar(star, fieldName, row.values.at(columnName));
-            }
+
+        for (const auto& mc : _mappedColumns) {
+            if (const QVariant* v = row.at(mc.column))
+                applyValueToStar(star, mc.field, *v);
         }
-        
-        stars.push_back(star);
+
+        stars.push_back(std::move(star));
     }
     
     return stars;
@@ -1336,10 +1404,12 @@ bool GeneralImportPage::validatePage()
                 sampleData.push_back(_dataRows[i]);
             }
             
-            ColumnMappingDialog dialog(_unmappedColumns, _columnMappings, 
-                                       availableFields, sampleData, this);
+            ColumnMappingDialog dialog(_unmappedColumns, _columnMappings,
+                                       availableFields, _columnNames, sampleData,
+                                       this);
             if (dialog.exec() == QDialog::Accepted) {
                 _columnMappings = dialog.getMappings();
+                rebuildColumnLookups();
                 
                 // Re-deduplicate with new mappings - new mapped columns
                 // may reveal additional duplicates
@@ -1516,6 +1586,7 @@ int GeneralImportPage::nextId() const
 ColumnMappingDialog::ColumnMappingDialog(const std::vector<QString>& unmappedColumns,
                                        const std::unordered_map<QString, QString>& currentMappings,
                                        const std::vector<QString>& availableFields,
+                                       const std::vector<QString>& columnNames,
                                        const std::vector<DataRow>& sampleData,
                                        QWidget* parent)
     : QDialog(parent)
@@ -1523,6 +1594,11 @@ ColumnMappingDialog::ColumnMappingDialog(const std::vector<QString>& unmappedCol
     , _sampleData(sampleData)
     , _unmappedColumns(unmappedColumns)
 {
+    // Rows are positional, so the dialog needs the column list to look a
+    // column's samples up by name.
+    for (int i = 0; i < static_cast<int>(columnNames.size()); ++i)
+        _sampleColumnIndex[columnNames[i]] = i;
+
     setWindowTitle("Map Columns to Star Fields");
     setModal(true);
     resize(800, 600);
@@ -1544,9 +1620,11 @@ ColumnMappingDialog::ColumnMappingDialog(const std::vector<QString>& unmappedCol
         _mappingTable->setItem(i, 0, new QTableWidgetItem(colName));
         
         QStringList samples;
+        const auto idxIt = _sampleColumnIndex.find(colName);
+        const int colIdx = idxIt != _sampleColumnIndex.end() ? idxIt->second : -1;
         for (const auto& row : _sampleData) {
-            if (row.values.find(colName) != row.values.end()) {
-                QVariant val = row.values.at(colName);
+            if (const QVariant* v = row.at(colIdx)) {
+                const QVariant& val = *v;
                 if (!val.isNull()) {
                     if (val.typeId() == QMetaType::Double) {
                         samples << QString::number(val.toDouble(), 'g', 4);
@@ -1602,15 +1680,16 @@ void ColumnMappingDialog::updatePreview()
     
     for (size_t row = 0; row < _sampleData.size(); ++row) {
         for (size_t col = 0; col < _unmappedColumns.size(); ++col) {
-            QString colName = _unmappedColumns[col];
+            const QString& colName = _unmappedColumns[col];
             QString displayText;
-            
-            if (_sampleData[row].values.find(colName) != _sampleData[row].values.end()) {
-                QVariant value = _sampleData[row].values.at(colName);
-                if (value.typeId() == QMetaType::Double) {
-                    displayText = QString::number(value.toDouble(), 'g', 6);
+
+            const auto idxIt = _sampleColumnIndex.find(colName);
+            const int colIdx = idxIt != _sampleColumnIndex.end() ? idxIt->second : -1;
+            if (const QVariant* value = _sampleData[row].at(colIdx)) {
+                if (value->typeId() == QMetaType::Double) {
+                    displayText = QString::number(value->toDouble(), 'g', 6);
                 } else {
-                    displayText = value.toString();
+                    displayText = value->toString();
                 }
             }
             

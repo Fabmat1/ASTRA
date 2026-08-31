@@ -36,6 +36,7 @@
 #include <QJsonArray>
 
 #include "utils/Logger.h"
+#include "utils/StarMatching.h"
 #include "utils/AppPaths.h"
 #include "models/Time.h"
 #include "models/RadialVelocity.h"
@@ -178,6 +179,10 @@ bool DatabaseManager::createTables()
             project_id TEXT NOT NULL,
             alias TEXT,
             source_id TEXT,
+            -- Catalogue number extracted from source_id ("Gaia DR3 123..." →
+            -- "123..."), so identifier matching is an indexed equality rather
+            -- than a suffix LIKE that has to scan the table.
+            source_id_norm TEXT,
             tic TEXT,
             jname TEXT,
             ra REAL,
@@ -770,6 +775,9 @@ bool DatabaseManager::runMigrations()
         // Canonical SED photometry points (single source of truth per star)
         "ALTER TABLE photometry ADD COLUMN sed_points_file TEXT",
 
+        // Normalized identifier for indexed star matching
+        "ALTER TABLE stars ADD COLUMN source_id_norm TEXT",
+
         // Star summary field migrations
         "ALTER TABLE stars ADD COLUMN n_spectra INTEGER DEFAULT 0",
         "ALTER TABLE stars ADD COLUMN n_fit_spectra INTEGER DEFAULT 0",
@@ -1061,6 +1069,49 @@ bool DatabaseManager::runMigrations()
                 "WHERE rv_error_formal = 0 AND rv_error_systematic = 0");
     }
 
+    // Backfill source_id_norm for databases that predate the column. Only
+    // rows that still have no normalized value are touched, so this costs one
+    // indexed scan on subsequent starts. The extraction rule lives in
+    // StarMatching::normalizeSourceId and cannot be expressed in SQL, so the
+    // rows come back to C++ - but the overwhelming majority of source_ids are
+    // already bare catalogue numbers, and those are handled by the pure-SQL
+    // pass first so only the odd prefixed one makes the round trip.
+    {
+        QSqlQuery q(_db->threadConnection());
+        // GLOB is case-sensitive and anchored: "all digits, at least one".
+        q.exec("UPDATE stars SET source_id_norm = source_id "
+               "WHERE source_id_norm IS NULL "
+               "AND source_id IS NOT NULL AND source_id != '' "
+               "AND source_id NOT GLOB '*[^0-9]*'");
+
+        QSqlQuery rest(_db->threadConnection());
+        rest.setForwardOnly(true);
+        rest.exec("SELECT id, source_id FROM stars "
+                  "WHERE source_id_norm IS NULL "
+                  "AND source_id IS NOT NULL AND source_id != ''");
+
+        std::vector<std::pair<QString, QString>> pending;
+        while (rest.next())
+            pending.emplace_back(rest.value(0).toString(),
+                                 rest.value(1).toString());
+
+        if (!pending.empty()) {
+            QSqlDatabase db = _db->threadConnection();
+            db.transaction();
+            QSqlQuery upd(db);
+            upd.prepare("UPDATE stars SET source_id_norm = :n WHERE id = :id");
+            for (const auto& [id, raw] : pending) {
+                upd.bindValue(":n", StarMatching::normalizeSourceId(raw));
+                upd.bindValue(":id", id);
+                upd.exec();
+            }
+            db.commit();
+            LOG_INFO("Database",
+                     QString("Normalized %1 star identifier(s) for indexed "
+                             "matching").arg(pending.size()));
+        }
+    }
+
     // One-time cleanup of galactic kinematics that were computed from a
     // placeholder radial velocity. Bulk catalog imports store a missing RV as
     // a literal 0.0 ± 0.0 (not NULL), which an earlier version of
@@ -1138,6 +1189,18 @@ bool DatabaseManager::createIndexes()
         "CREATE INDEX IF NOT EXISTS idx_rv_points_mjd ON rv_points(mjd)",
         "CREATE INDEX IF NOT EXISTS idx_rv_fits_curve ON rv_fits(curve_id)",
         "CREATE INDEX IF NOT EXISTS idx_stars_source_id ON stars(project_id, source_id)",
+        "CREATE INDEX IF NOT EXISTS idx_stars_source_id_norm ON stars(project_id, source_id_norm)",
+        // Partial index over exactly the rows the source_id_norm backfill still
+        // has to visit. It is empty once the backfill has run, which turns the
+        // check on every later start from a full table scan into a no-op - it
+        // stays O(rows still pending) rather than O(table). Built after the
+        // migration, so the first start pays one scan and no more.
+        "CREATE INDEX IF NOT EXISTS idx_stars_source_id_norm_pending "
+        "ON stars(id) WHERE source_id_norm IS NULL "
+        "AND source_id IS NOT NULL AND source_id != ''",
+        // Matching by alias is case-insensitive. The collation has to be on the
+        // index too, otherwise the lookup falls back to a full table scan.
+        "CREATE INDEX IF NOT EXISTS idx_stars_alias_nocase ON stars(project_id, alias COLLATE NOCASE)",
         "CREATE INDEX IF NOT EXISTS idx_stars_tic ON stars(project_id, tic)",
         "CREATE INDEX IF NOT EXISTS idx_stars_jname ON stars(project_id, jname)",
         "CREATE INDEX IF NOT EXISTS idx_stars_alias ON stars(project_id, alias)",
@@ -1169,6 +1232,11 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
     std::vector<std::shared_ptr<Star>> stars;
 
     QSqlQuery query(_db->threadConnection());
+    // Qt's SQLite result caches every row it has walked unless the query is
+    // forward-only, and this one is 231 columns wide. On an 88 k-star project
+    // that cache alone peaked at 686 MB; forward-only holds one row at a time
+    // and peaks at 22 MB. The loop below only ever moves forward.
+    query.setForwardOnly(true);
     query.prepare("SELECT * FROM stars WHERE project_id = :project_id");
     query.bindValue(":project_id", projectId);
 

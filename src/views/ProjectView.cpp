@@ -503,20 +503,23 @@ void ProjectView::onSelectionChanged(const QItemSelection& selected, const QItem
     if (!_starTable->selectionModel())
         return;
     
-    int selectedCells = _starTable->selectionModel()->selectedIndexes().size();
-    
-    // Get unique rows
-    QSet<int> selectedRows;
-    for (const QModelIndex& index : _starTable->selectionModel()->selectedIndexes()) {
-        selectedRows.insert(index.row());
+    // This used to build the full per-cell index list twice per selection
+    // change. The ranges carry the same information: cells are the summed area
+    // of the ranges, stars are the distinct rows they cover.
+    qint64 selectedCells = 0;
+    for (const QItemSelectionRange& range : _starTable->selectionModel()->selection()) {
+        if (range.isValid())
+            selectedCells += qint64(range.height()) * range.width();
     }
-    
+    const size_t selectedStarCount =
+        selectedCells > 0 ? selectedSourceRows().size() : 0;
+
     if (selectedCells > 0) {
         updateStatusBar(QString("%1 cell%2 selected (%3 star%4)")
                         .arg(selectedCells)
                         .arg(selectedCells != 1 ? "s" : "")
-                        .arg(selectedRows.size())
-                        .arg(selectedRows.size() != 1 ? "s" : ""));
+                        .arg(selectedStarCount)
+                        .arg(selectedStarCount != 1 ? "s" : ""));
     } else {
         updateStatusBar(QString("Loaded %1 stars").arg(_currentProject ? _currentProject->getStarCount() : 0));
     }
@@ -531,8 +534,8 @@ void ProjectView::onTableContextMenu(const QPoint& pos)
     _rightClickedIndex = index;
     
     // Enable/disable actions based on selection
-    bool hasSelection = _starTable->selectionModel() && 
-                        !_starTable->selectionModel()->selectedIndexes().isEmpty();
+    bool hasSelection = _starTable->selectionModel() &&
+                        _starTable->selectionModel()->hasSelection();
     
     // "Open Detail View" should only be enabled if we right-clicked on an actual row
     _copyAction->setEnabled(hasSelection);
@@ -559,28 +562,42 @@ QModelIndex ProjectView::mapToSource(const QModelIndex& proxyIndex) const
     return proxyIndex;
 }
 
+std::vector<int> ProjectView::selectedSourceRows() const
+{
+    std::vector<int> rows;
+    if (!_starTable->selectionModel() || !_tableModel)
+        return rows;
+
+    // One entry per selected *range* rather than per selected cell. A range
+    // covering the whole table costs one row-mapping per row instead of one
+    // QModelIndex per cell.
+    const QItemSelection ranges = _starTable->selectionModel()->selection();
+    for (const QItemSelectionRange& range : ranges) {
+        if (!range.isValid()) continue;
+        for (int r = range.top(); r <= range.bottom(); ++r)
+            rows.push_back(mapToSource(_proxyModel ? _proxyModel->index(r, range.left())
+                                                   : range.model()->index(r, range.left())).row());
+    }
+
+    std::sort(rows.begin(), rows.end());
+    rows.erase(std::unique(rows.begin(), rows.end()), rows.end());
+    return rows;
+}
+
 std::vector<std::shared_ptr<Star>> ProjectView::getSelectedStars() const
 {
     std::vector<std::shared_ptr<Star>> selectedStars;
-    
-    if (!_starTable->selectionModel() || !_tableModel)
+
+    if (!_tableModel)
         return selectedStars;
-    
-    // Get unique selected rows
-    QSet<int> selectedSourceRows;
-    for (const QModelIndex& proxyIndex : _starTable->selectionModel()->selectedIndexes()) {
-        QModelIndex sourceIndex = mapToSource(proxyIndex);
-        selectedSourceRows.insert(sourceIndex.row());
+
+    const std::vector<int> rows = selectedSourceRows();
+    selectedStars.reserve(rows.size());
+    for (int row : rows) {
+        if (auto star = _tableModel->getStarAtRow(row))
+            selectedStars.push_back(std::move(star));
     }
-    
-    // Get stars for those rows
-    for (int row : selectedSourceRows) {
-        auto star = _tableModel->getStarAtRow(row);
-        if (star) {
-            selectedStars.push_back(star);
-        }
-    }
-    
+
     return selectedStars;
 }
 
@@ -833,42 +850,52 @@ void ProjectView::onReloadMetrics()
         return;
     }
     
-    // Get source row indices (need to sort descending to remove from end first)
-    std::vector<int> rowsToReload;
-    QSet<int> selectedSourceRows;
-    
-    for (const QModelIndex& proxyIndex : _starTable->selectionModel()->selectedIndexes()) {
-        QModelIndex sourceIndex = mapToSource(proxyIndex);
-        if (!selectedSourceRows.contains(sourceIndex.row())) {
-            selectedSourceRows.insert(sourceIndex.row());
-            rowsToReload.push_back(sourceIndex.row());
+    // getSelectedStars() already walked the selection; this used to walk it a
+    // second time and sort the rows descending, which only ever mattered for
+    // the removal path this was copied from.
+    const QString projectId = _currentProject->getId();
+    DatabaseManager* dbm = _controller->databaseManager();
+    const int total = static_cast<int>(selectedStars.size());
+
+    // Each star pulls in its spectra, photometry and RV curve and may then
+    // write a row back, so this is seconds of work on a catalogue-sized
+    // selection. It used to run with no dialog and no way out.
+    QProgressDialog progress(
+        QString("Reloading metrics for %1 star%2...").arg(total).arg(total != 1 ? "s" : ""),
+        "Cancel", 0, total, this);
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setMinimumDuration(300);
+
+    // One transaction for the whole batch: the summary write is skipped for
+    // stars whose values did not change, but a large selection still produces
+    // thousands of updates.
+    dbm->beginTransaction();
+
+    int done = 0, cancelled = 0;
+    for (const auto& star : selectedStars) {
+        if (progress.wasCanceled()) { cancelled = total - done; break; }
+
+        star->computeSummaryMetricsFull([dbm, star, projectId]() {
+            dbm->updateStarRow(projectId, star);
+        });
+
+        if ((++done % 64) == 0 || done == total) {
+            progress.setValue(done);
+            QApplication::processEvents();
         }
     }
-    
-    // Sort descending so we remove from the end first
-    std::sort(rowsToReload.begin(), rowsToReload.end(), std::greater<int>());
-    
-    // Reload in database and model
-    bool success = true;
-    for (int row : rowsToReload) {
-        auto star = _tableModel->getStarAtRow(row);
-        if (star) {
-            auto projectId = _currentProject->getId();
-            // star->computeSummaryMetricsFull();
-            star->computeSummaryMetricsFull([this, star, projectId]() {
-                _controller->databaseManager()->updateStarRow(projectId, star);
-            });
-        }
-    }
-    
+
+    dbm->commitTransaction();
+    progress.setValue(total);
+
     // Refresh the model
     _tableModel->refresh();
-    
-    if (success) {
-        updateStatusBar(QString("Reloaded Metrics for %1 star%2.")
-                        .arg(selectedStars.size())
-                        .arg(selectedStars.size() != 1 ? "s" : ""));
-    }
+
+    updateStatusBar(cancelled > 0
+        ? QString("Reloaded metrics for %1 star%2; cancelled with %3 remaining.")
+              .arg(done).arg(done != 1 ? "s" : "").arg(cancelled)
+        : QString("Reloaded Metrics for %1 star%2.")
+              .arg(done).arg(done != 1 ? "s" : ""));
 }
 
 void ProjectView::onComputeGalacticKinematics()

@@ -23,9 +23,50 @@ class QDoubleSpinBox;
 class GaiaWorker;
 class QThread;
 
-// Data row for storing parsed file data
+// One parsed row of the input file, stored positionally against the shared
+// column list (GeneralImportPage::_columnNames).
+//
+// This used to be a per-row std::unordered_map<QString, QVariant>, which costs
+// a node allocation and a string hash for every single cell. On a wide
+// catalogue that dominates the import: 88 k rows x 128 columns spent about a
+// second and roughly a gigabyte of memory building the maps, and the
+// deduplication pass then copied them again. A vector indexed by column
+// position has none of that per-cell overhead.
 struct DataRow {
-    std::unordered_map<QString, QVariant> values;
+    // Indexed by column position. May be shorter than the column list when a
+    // row has trailing empty cells; at() treats missing and invalid alike.
+    std::vector<QVariant> values;
+
+    // How many leading cells the reader actually wrote, whether or not they
+    // parsed to anything. The old name-keyed map recorded this implicitly:
+    // readCSV() inserted a key for every in-range cell, so a cell holding
+    // "NaN" still counted as written, while readFITS() inserted nothing for a
+    // null cell. mergeRows() keys its unmapped-column carry-over off that
+    // distinction, so it has to survive the move to positional storage.
+    int recordedCells = 0;
+
+    /// True when the reader wrote something at this position, even if the text
+    /// there did not parse. Only mergeRows() needs this; everywhere else a cell
+    /// that parsed to nothing is treated as absent, which at() already does.
+    bool wasRecorded(int column) const {
+        if (column < 0) return false;
+        if (column < recordedCells) return true;
+        return column < static_cast<int>(values.size()) && values[column].isValid();
+    }
+
+    /// Value at a column position, or nullptr when the row has nothing there.
+    const QVariant* at(int column) const {
+        if (column < 0 || column >= static_cast<int>(values.size()))
+            return nullptr;
+        return values[column].isValid() ? &values[column] : nullptr;
+    }
+
+    void set(int column, const QVariant& value) {
+        if (column < 0) return;
+        if (static_cast<int>(values.size()) <= column)
+            values.resize(column + 1);
+        values[column] = value;
+    }
 };
 
 class GeneralImportPage : public QWizardPage
@@ -73,10 +114,23 @@ private:
     void queryGaiaData(std::vector<std::shared_ptr<Star>>& stars);
     void removeDuplicateRows();
     QString generateRowKey(const DataRow& row) const;
+
+    /// Refreshes _columnIndex / _mappedColumns / _fieldColumn. Must be called
+    /// after anything changes _columnNames or _columnMappings.
+    void rebuildColumnLookups();
+    /// Position of a column by name, or -1.
+    int columnIndexOf(const QString& name) const;
     QString normalizeValue(const QVariant& value) const;
 
     std::vector<QString> _columnNames;
     std::unordered_map<QString, QString> _columnMappings;
+
+    // Derived from _columnNames / _columnMappings by rebuildColumnLookups().
+    // The per-row loops walk these instead of hashing a column name per cell.
+    struct MappedColumn { int column; QString field; };
+    std::vector<MappedColumn> _mappedColumns;         // mapped columns, by position
+    std::unordered_map<QString, int> _columnIndex;    // column name -> position
+    std::unordered_map<QString, int> _fieldColumn;    // star field -> position
     std::vector<QString> _unmappedColumns;
     std::vector<DataRow> _dataRows;
     QFutureWatcher<bool>* _fitsWatcher;
@@ -113,6 +167,7 @@ public:
     ColumnMappingDialog(const std::vector<QString>& unmappedColumns,
                        const std::unordered_map<QString, QString>& currentMappings,
                        const std::vector<QString>& availableFields,
+                       const std::vector<QString>& columnNames,
                        const std::vector<DataRow>& sampleData,
                        QWidget* parent = nullptr);
     
@@ -123,6 +178,7 @@ private:
     QTableWidget* _previewTable;
     std::unordered_map<QString, QString> _mappings;
     std::vector<DataRow> _sampleData;
+    std::unordered_map<QString, int> _sampleColumnIndex;  // column name -> position
     std::vector<QString> _unmappedColumns;
     
     void updatePreview();

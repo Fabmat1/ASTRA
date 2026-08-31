@@ -368,6 +368,7 @@ SpectrumRepository::loadSpectraIndex(const QString &projectId) {
     std::vector<SpectrumIndexRow> rows;
 
     QSqlQuery query(_db.threadConnection());
+    query.setForwardOnly(true);   // project-wide; only ever walked forward
     query.prepare(R"(
         SELECT s.id, s.star_id, s.file
         FROM spectra s
@@ -623,6 +624,7 @@ QSet<QString> SpectrumRepository::originIdsForProject(const QString& projectId)
     QSet<QString> ids;
 
     QSqlQuery query(_db.threadConnection());
+    query.setForwardOnly(true);   // project-wide; only ever walked forward
     query.prepare(R"(
         SELECT s.origin_id
         FROM spectra s

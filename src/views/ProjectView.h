@@ -201,6 +201,12 @@ public:
     // "all / filtered / selected" as a comparison sample, so the lists always
     // reflect the table's current state rather than a stale snapshot.
     std::vector<std::shared_ptr<Star>> getSelectedStars() const;
+    /// Source rows holding at least one selected cell, ascending and unique.
+    /// Walks the selection as ranges: the table selects individual cells, so
+    /// selectedIndexes() would materialise one QModelIndex per selected cell -
+    /// about 1.7 million of them once a catalogue-sized table is selected -
+    /// and selectedRows() would return nothing unless whole rows were picked.
+    std::vector<int> selectedSourceRows() const;
     // Stars currently visible through the filter proxy, in view order.
     std::vector<std::shared_ptr<Star>> getFilteredStars() const;
 
