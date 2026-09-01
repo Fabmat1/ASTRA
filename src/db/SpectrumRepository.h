@@ -3,6 +3,7 @@
 
 #include <QSet>
 #include <QString>
+#include <QStringList>
 #include <memory>
 #include <vector>
 
@@ -11,6 +12,20 @@ class Star;
 class SpectrumIndexRow;
 class Spectrum;
 class SpectralFit;
+
+/// One (instrument, mode) bucket of a star sample's spectra.
+///
+/// `instrumentId` empty means the "unlinked" bucket: rows written before the
+/// explicit instrument link existed carry a null instrument_id and mode_key,
+/// and they are counted and shown but cannot be configured, because there is
+/// no mode to hang a region configuration off.
+struct ModeSpectrumStat {
+    QString instrumentId;
+    QString modeKey;
+    QString instrumentName;    ///< the free-text `instrument` column, for display
+    int     count     = 0;     ///< spectra in this bucket
+    int     starCount = 0;     ///< distinct stars contributing to it
+};
 
 class SpectrumRepository {
   public:
@@ -46,6 +61,26 @@ class SpectrumRepository {
     /// every wavelength array with them.
     bool spectraCounts(const QString &starId, int *nSpectra,
                        int *nFitSpectra) const;
+
+    /// Spectrum counts per (instrument_id, mode_key) over @p starIds, as ONE
+    /// grouped query per chunk of star ids - the scope can be a whole
+    /// catalogue, so loading the spectra themselves is not an option. Rows
+    /// with no instrument link all merge into a single bucket whose
+    /// instrumentId and modeKey are empty.
+    std::vector<ModeSpectrumStat> spectraModeStats(const QStringList& starIds);
+
+    /// Up to @p limit spectrum ids from one (instrument, mode) bucket of
+    /// @p starIds, for picking a representative spectrum to plot. Pass empty
+    /// strings for both keys to address the unlinked bucket.
+    QStringList spectrumIdsForMode(const QStringList& starIds,
+                                   const QString& instrumentId,
+                                   const QString& modeKey, int limit);
+
+    /// Spectra by id, WITHOUT their spectral fits. The preview plot only needs
+    /// the wavelength and flux arrays, and pulling every fit blob for a handful
+    /// of candidate spectra would dwarf that.
+    std::vector<std::shared_ptr<Spectrum>>
+    loadSpectraByIds(const QStringList& spectrumIds);
 
     // Archive-fetch support: all non-null origin_ids in a project (for
     // de-duplication), and removal of previously fetched rows before a

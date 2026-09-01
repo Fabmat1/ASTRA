@@ -210,6 +210,12 @@ public:
     // Stars currently visible through the filter proxy, in view order.
     std::vector<std::shared_ptr<Star>> getFilteredStars() const;
 
+    // Opens the spectra-and-fits dialog for one star of this project, the same
+    // window the detail view's "Fit Spectra" button opens. Used by tools that
+    // identify a star by id and want the user to inspect or override what an
+    // unattended fit decided, such as the mass fitting manager's results table.
+    void showStarSpectraFits(const QString& starId);
+
   public slots:
     void onAddStar();
     void onImportStars();

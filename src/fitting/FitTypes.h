@@ -1,5 +1,6 @@
 #pragma once
 
+#include <QMetaType>
 #include <QString>
 #include <QVector>
 #include <QStringList>
@@ -55,6 +56,25 @@ struct ContinuumAnchor {
     double wlLow   = 0.0;
     double wlHigh  = 0.0;
     double spacing = 50.0;     // Å between anchor points
+};
+
+// Everything the user configures for one observed spectrum before it becomes
+// an Observation in a job. Lives here rather than inside FitSetupWidget so the
+// mass fitter can build the same configuration without a widget.
+struct SpectrumFitConfig {
+    bool   enabled = true;
+    double wlMin = 3600.0;
+    double wlMax = 5250.0;
+    QVector<IgnoreRegion>    ignore;
+    QVector<ContinuumAnchor> anchors;
+    double resOffset = 0.0;
+    double resSlope  = 0.37037;
+    bool   inferFromFits = false;
+
+    // Telluric seeds; only used when the job fits a telluric component.
+    // Genuinely per-observation, so the "copy to …" buttons leave them be.
+    double airmass = 1.0;    // 0 = no tellurics in this spectrum
+    double pwv     = 1.0;    // [mm]
 };
 
 struct SpectrumFile {
@@ -147,6 +167,41 @@ struct SpectralFitJob {
     QString backend = "GAEL";           // which IFitBackend to use
     IsisOptions            isis;
     IsisInteractiveOptions isisInteractive;   // used only by ISIS (interactive)
+};
+
+// The job settings that are *not* per-spectrum, split out so a job can be
+// assembled from a plain struct instead of from FitSetupWidget's widgets.
+// The defaults are read straight off a default SpectralFitJob: spelling them
+// out a second time is how the two would silently drift apart the first time
+// one of them is retuned.
+inline const SpectralFitJob& jobDefaults()
+{
+    static const SpectralFitJob d;
+    return d;
+}
+
+struct JobGlobals {
+    QString     backend      = jobDefaults().backend;
+    QStringList untiedParams = jobDefaults().untiedParams;
+
+    double filterSnr      = jobDefaults().filterSnr;
+    double requireBlue    = jobDefaults().requireBlue;
+    int    nitNoiseMax    = jobDefaults().nitNoiseMax;
+    double outlierSigmaLo = jobDefaults().outlierSigmaLo;
+    double outlierSigmaHi = jobDefaults().outlierSigmaHi;
+    bool   verbose        = jobDefaults().verbose;
+
+    bool   addTelluricModel   = jobDefaults().addTelluricModel;
+    bool   autoFreezeSurRatio = jobDefaults().autoFreezeSurRatio;
+    double surRatioThres      = jobDefaults().surRatioThres;
+    double c2DetectionThres   = jobDefaults().c2DetectionThres;
+    int    contJitterK        = jobDefaults().contJitterK;
+    int    workerThreads      = jobDefaults().workerThreads;
+
+    QStringList basePaths = jobDefaults().basePaths;
+
+    IsisOptions            isis            = jobDefaults().isis;
+    IsisInteractiveOptions isisInteractive = jobDefaults().isisInteractive;
 };
 
 // ────────────────────────────────────────────────────────────────────

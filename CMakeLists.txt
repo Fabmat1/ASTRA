@@ -267,6 +267,7 @@ set(SOURCES
     src/db/SpectrumRepository.cpp
     src/db/StarRepository.cpp
     src/db/PeriodogramRepository.cpp
+    src/db/MassFitRepository.cpp
 
     # dialogs
     src/dialogs/EditProjectDialog.cpp
@@ -297,6 +298,7 @@ set(SOURCES
     src/models/ElementAbundances.cpp
     src/models/Instrument.cpp
     src/models/InstrumentMode.cpp
+    src/models/MassFitPlan.cpp
     src/models/Photometry.cpp
     src/models/Project.cpp
     src/models/RadialVelocity.cpp
@@ -343,6 +345,7 @@ set(SOURCES
     src/utils/SpectrumCoadder.cpp
     src/utils/WheelGuard.cpp
     src/utils/SpectrumFetchService.cpp
+    src/utils/MassFitService.cpp
     src/utils/spectrafetch/SpectrumArchiveClient.cpp
     src/utils/spectrafetch/SpectrumArchiveRegistry.cpp
     src/utils/spectrafetch/SpectrumArmJoin.cpp
@@ -388,6 +391,9 @@ set(SOURCES
     src/views/tools/RVMCMCResultsDialog.cpp
     src/views/tools/ObservabilityDialog.cpp
     src/views/tools/RVDetectabilityDialog.cpp
+    src/views/tools/MassFitPlanDialog.cpp
+    src/views/tools/MassFitRuleEditor.cpp
+    src/views/tools/MassFitManagerDialog.cpp
 
     # views/panels
     src/views/panels/PanelUtils.cpp
@@ -406,6 +412,7 @@ set(SOURCES
     src/views/widgets/QuantityLabel.cpp
     src/views/widgets/QuantityDelegate.cpp
     src/views/widgets/FitPreviewOverlay.cpp
+    src/views/widgets/FitComponentsWidget.cpp
     src/views/widgets/GridSelectorWidget.cpp
     src/views/widgets/ShimmerWidget.cpp
     src/views/widgets/SquarePlotFrame.cpp
@@ -417,6 +424,8 @@ set(SOURCES
 
     # fitting
     src/fitting/FitBackendRegistry.cpp
+    src/fitting/FitJobFactory.cpp
+    src/fitting/FitTypesJson.cpp
     src/fitting/GaelBackend.cpp
     src/fitting/IsisBackend.cpp
     src/fitting/FitWorker.cpp
@@ -455,6 +464,7 @@ set(HEADERS
     src/db/SpectrumRepository.h
     src/db/StarRepository.h
     src/db/PeriodogramRepository.h
+    src/db/MassFitRepository.h
 
     # dialogs
     src/dialogs/EditProjectDialog.h
@@ -485,6 +495,7 @@ set(HEADERS
     src/models/ElementAbundances.h
     src/models/Instrument.h
     src/models/InstrumentMode.h
+    src/models/MassFitPlan.h
     src/models/Photometry.h
     src/models/Project.h
     src/models/RadialVelocity.h
@@ -512,6 +523,7 @@ set(HEADERS
     src/utils/LightcurveFetcher.h
     src/utils/LightcurveFetchService.h
     src/utils/SpectrumFetchService.h
+    src/utils/MassFitService.h
     src/utils/spectrafetch/SpectrumArchiveTypes.h
     src/utils/spectrafetch/SpectrumArchiveClient.h
     src/utils/spectrafetch/SpectrumArchiveRegistry.h
@@ -575,6 +587,9 @@ set(HEADERS
     src/views/tools/RVAddPointDialog.h
     src/views/tools/RVMCMCResultsDialog.h
     src/views/tools/ObservabilityDialog.h
+    src/views/tools/MassFitPlanDialog.h
+    src/views/tools/MassFitRuleEditor.h
+    src/views/tools/MassFitManagerDialog.h
 
     # views/panels
     src/views/panels/PanelUtils.h
@@ -588,6 +603,7 @@ set(HEADERS
 
     # views/widgets
     src/views/widgets/FitPreviewOverlay.h
+    src/views/widgets/FitComponentsWidget.h
     src/views/widgets/FlowLayout.h
     src/views/widgets/GridSelectorWidget.h
     src/views/widgets/ShimmerWidget.h
@@ -601,6 +617,8 @@ set(HEADERS
 
     #GAEL fitting
     src/fitting/FitTypes.h
+    src/fitting/FitJobFactory.h
+    src/fitting/FitTypesJson.h
     src/fitting/RVDetectability.h
     src/fitting/IFitBackend.h
     src/fitting/FitBackendRegistry.h
@@ -1178,6 +1196,27 @@ if(BUILD_TESTING)
     )
     set_tests_properties(arm_join PROPERTIES
         LABELS "utils;spectrafetch"
+        TIMEOUT 30
+    )
+
+    # Mass fitting plan: serialisation, rule evaluation, tree walking and
+    # validation. Model-only, so no database and no GUI.
+    add_executable(test_massfit_plan
+        tests/test_massfit_plan.cpp
+        src/models/MassFitPlan.cpp
+        src/fitting/FitTypesJson.cpp
+    )
+    target_include_directories(test_massfit_plan PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(test_massfit_plan PRIVATE Qt6::Core)
+    add_test(
+        NAME    massfit_plan
+        COMMAND test_massfit_plan
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(massfit_plan PROPERTIES
+        LABELS "models;massfit"
         TIMEOUT 30
     )
 

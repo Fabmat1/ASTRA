@@ -7,6 +7,7 @@
 #include "utils/BackgroundTaskManager.h"
 #include "utils/LightcurveFetchService.h"
 #include "utils/SpectrumFetchService.h"
+#include "utils/MassFitService.h"
 #include <algorithm>
 #include <QApplication>
 #include <QFile>
@@ -54,6 +55,13 @@ SpectrumFetchService* ApplicationController::spectrumFetchService()
     if (!_spectrumFetchService)
         _spectrumFetchService = std::make_unique<SpectrumFetchService>(this, this);
     return _spectrumFetchService.get();
+}
+
+MassFitService* ApplicationController::massFitService()
+{
+    if (!_massFitService)
+        _massFitService = std::make_unique<MassFitService>(this, this);
+    return _massFitService.get();
 }
 
 std::vector<std::shared_ptr<Project>> ApplicationController::getProjects() const

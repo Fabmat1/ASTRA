@@ -25,6 +25,7 @@
 #include "views/tools/SpectrumFetchSessionsDialog.h"
 #include "views/tools/ProjectPlotDialog.h"
 #include "views/tools/RVDetectabilityDialog.h"
+#include "views/tools/SpectraFitDialog.h"
 
 #include <QAction>
 #include <QApplication>
@@ -632,6 +633,35 @@ void ProjectView::installSampleProviders(StarDetailView* detailView)
             return self ? self->getFilteredStars()
                         : std::vector<std::shared_ptr<Star>>{};
         });
+}
+
+void ProjectView::showStarSpectraFits(const QString& starId)
+{
+    if (!_currentProject || starId.isEmpty())
+        return;
+
+    std::shared_ptr<Star> star;
+    for (const auto& s : _currentProject->getAllStars()) {
+        if (s && s->getId() == starId) { star = s; break; }
+    }
+    if (!star) {
+        QMessageBox::information(
+            this, tr("Fit Spectra"),
+            tr("That star is no longer part of this project."));
+        return;
+    }
+
+    // The same dialog the detail window opens, constructed the same way, so a
+    // drill-down lands on exactly the view the user already knows.
+    auto* dialog = new SpectraFitDialog(star, _controller->databaseManager(),
+                                        _currentProject->getId(), this,
+                                        _controller);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    connect(dialog, &SpectraFitDialog::starParametersChanged, this,
+            [this] { refreshTable(); });
+    dialog->show();
+    dialog->raise();
+    dialog->activateWindow();
 }
 
 void ProjectView::onStarDoubleClicked(const QModelIndex& index)

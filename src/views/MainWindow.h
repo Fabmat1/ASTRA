@@ -22,6 +22,7 @@ class InstrumentConfigView;
 class ProjectView;
 class LightcurveFetchSessionsDialog;
 class SpectrumFetchSessionsDialog;
+class MassFitManagerDialog;
 class UpdateManager;
 struct UpdateInfo;
 struct ThemeInfo;
@@ -48,6 +49,7 @@ private slots:
     void onShowInstrumentConfig();
     void onShowLcFetchSessions();
     void onShowSpectrumFetchSessions();
+    void onShowMassFitManager();
 
 private:
     void setupUi();
@@ -109,6 +111,7 @@ private:
     QAction* _createPlotAction;
     QAction* _computeKinematicsAction = nullptr;
     QAction* _rvDetectabilityAction = nullptr;
+    QAction* _massFitAction = nullptr;
 
     // Data menu actions
     QAction* _fetchLightcurvesAction = nullptr;
@@ -133,6 +136,18 @@ private:
     // download update does not fight it for the same widget.
     bool          _specFetchDiscovering = false;
     SpectrumFetchSessionsDialog* _specSessionsDialog = nullptr;
+
+    // Mass spectrum fitting status-bar widget
+    void setupMassFitStatusWidget();
+    QWidget*      _massFitWidget   = nullptr;
+    QToolButton*  _massFitBtn      = nullptr;
+    QProgressBar* _massFitProgress = nullptr;
+    MassFitManagerDialog* _massFitDialog = nullptr;
+
+protected:
+    // A campaign runs for hours on a pool this window owns the lifetime of, so
+    // quitting mid-run is confirmed rather than silently killing it.
+    void closeEvent(QCloseEvent* event) override;
 };
 
 #endif // MAINWINDOW_H

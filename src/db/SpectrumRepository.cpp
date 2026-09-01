@@ -9,6 +9,8 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QHash>
+#include <QStringList>
 #include <limits>
 #include "utils/DataStore.h"
 
@@ -207,6 +209,7 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
             abundances_json,
             has_telluric, telluric_airmass, telluric_airmass_error,
             telluric_pwv, telluric_pwv_error, telluric_barycorr,
+            n_data_points, n_free_parameters, converged, iterations,
             model_data_file
         ) VALUES (
             :id, :spectrum_id, :creation_date, :model_id, :is_best_fit, :is_flagged,
@@ -233,6 +236,7 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
             :abundances_json,
             :has_telluric, :telluric_airmass, :telluric_airmass_error,
             :telluric_pwv, :telluric_pwv_error, :telluric_barycorr,
+            :n_data_points, :n_free_parameters, :converged, :iterations,
             :model_data_file
         )
     )");
@@ -309,6 +313,11 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
     query.bindValue(":telluric_pwv", SqlValue::fromDouble(fit->telluricPwv));
     query.bindValue(":telluric_pwv_error", SqlValue::fromDouble(fit->telluricPwvError));
     query.bindValue(":telluric_barycorr", SqlValue::fromDouble(fit->telluricBarycorr));
+
+    query.bindValue(":n_data_points", fit->nDataPoints);
+    query.bindValue(":n_free_parameters", fit->nFreeParameters);
+    query.bindValue(":converged", fit->converged ? 1 : 0);
+    query.bindValue(":iterations", fit->iterations);
 
     query.bindValue(":model_data_file", modelFile);
 
@@ -490,6 +499,11 @@ std::vector<std::shared_ptr<SpectralFit>> SpectrumRepository::loadSpectralFits(c
         fit->telluricPwvError     = query.value("telluric_pwv_error").toDouble();
         fit->telluricBarycorr     = SqlValue::toDoubleOrNaN(query, "telluric_barycorr");
 
+        fit->nDataPoints     = query.value("n_data_points").toInt();
+        fit->nFreeParameters = query.value("n_free_parameters").toInt();
+        fit->converged       = query.value("converged").toInt() == 1;
+        fit->iterations      = query.value("iterations").toInt();
+
         fit->setModelDataFile(query.value("model_data_file").toString());
 
         fits.push_back(fit);
@@ -500,7 +514,7 @@ std::vector<std::shared_ptr<SpectralFit>> SpectrumRepository::loadSpectralFits(c
 
 bool SpectrumRepository::updateSpectrumFlag(const QString& spectrumId, bool flagged)
 {
-    QSqlQuery q(_db.database());
+    QSqlQuery q(_db.threadConnection());
     q.prepare("UPDATE spectra SET is_flagged = :f WHERE id = :id");
     q.bindValue(":f", flagged ? 1 : 0);
     q.bindValue(":id", spectrumId);
@@ -512,7 +526,7 @@ bool SpectrumRepository::updateSpectrumInstrument(const QString& spectrumId,
                                                   const QString& instrumentId,
                                                   const QString& modeKey)
 {
-    QSqlQuery q(_db.database());
+    QSqlQuery q(_db.threadConnection());
     q.prepare("UPDATE spectra SET instrument = :inst, instrument_id = :iid, "
               "mode_key = :mk WHERE id = :id");
     q.bindValue(":inst", instrument);
@@ -528,7 +542,7 @@ bool SpectrumRepository::updateSpectrumInstrument(const QString& spectrumId,
 
 bool SpectrumRepository::updateSpectralFitFlag(const QString& fitId, bool flagged)
 {
-    QSqlQuery q(_db.database());
+    QSqlQuery q(_db.threadConnection());
     q.prepare("UPDATE spectral_fits SET is_flagged = :f WHERE id = :id");
     q.bindValue(":f", flagged ? 1 : 0);
     q.bindValue(":id", fitId);
@@ -537,7 +551,7 @@ bool SpectrumRepository::updateSpectralFitFlag(const QString& fitId, bool flagge
 
 bool SpectrumRepository::updateBestFit(const QString& spectrumId, const QString& bestFitId)
 {
-    QSqlQuery q(_db.database());
+    QSqlQuery q(_db.threadConnection());
     // Clear for all fits of this spectrum
     q.prepare("UPDATE spectral_fits SET is_best_fit = 0 WHERE spectrum_id = :sid");
     q.bindValue(":sid", spectrumId);
@@ -700,4 +714,177 @@ bool SpectrumRepository::deleteSpectralFit(const QString& fitId)
         QFile::remove(modelFile);
 
     return true;
+}
+// ── Mode statistics over a star sample ──────────────────────────────────────
+//
+// The plan editor's scope can be a whole catalogue, so these never load a
+// spectrum to count one. SQLite caps a statement at SQLITE_MAX_VARIABLE_NUMBER
+// bound parameters (999 on older builds), so the star id list is chunked and
+// the per-chunk results merged. Chunks partition the ids, so both COUNT(*) and
+// COUNT(DISTINCT star_id) simply add up: no star appears in two chunks.
+
+namespace {
+
+constexpr int kStarIdChunk = 500;
+
+QString placeholders(int n)
+{
+    QStringList marks;
+    marks.reserve(n);
+    for (int i = 0; i < n; ++i) marks << QStringLiteral("?");
+    return marks.join(QLatin1Char(','));
+}
+
+} // namespace
+
+std::vector<ModeSpectrumStat>
+SpectrumRepository::spectraModeStats(const QStringList& starIds)
+{
+    std::vector<ModeSpectrumStat> out;
+    if (starIds.isEmpty()) return out;
+
+    // Insertion-ordered accumulation keyed on the bucket, so the same mode
+    // seen in two chunks lands on one row.
+    QHash<QString, int> indexByKey;
+
+    for (int off = 0; off < starIds.size(); off += kStarIdChunk) {
+        const QStringList chunk = starIds.mid(off, kStarIdChunk);
+
+        QSqlQuery query(_db.threadConnection());
+        query.setForwardOnly(true);
+        query.prepare(QStringLiteral(R"(
+            SELECT COALESCE(instrument_id, '') AS iid,
+                   COALESCE(mode_key, '')      AS mkey,
+                   COALESCE(MAX(instrument), '') AS iname,
+                   COUNT(*),
+                   COUNT(DISTINCT star_id)
+            FROM spectra
+            WHERE star_id IN (%1)
+            GROUP BY iid, mkey
+        )").arg(placeholders(chunk.size())));
+        for (const QString& id : chunk) query.addBindValue(id);
+
+        if (!query.exec()) {
+            LOG_ERROR("Spectra",
+                      QString("Failed to group spectra by mode: %1")
+                          .arg(query.lastError().text()));
+            return out;
+        }
+
+        while (query.next()) {
+            ModeSpectrumStat st;
+            st.instrumentId   = query.value(0).toString();
+            st.modeKey        = query.value(1).toString();
+            st.instrumentName = query.value(2).toString();
+            st.count          = query.value(3).toInt();
+            st.starCount      = query.value(4).toInt();
+
+            // A row with no instrument link has no mode to configure either,
+            // so everything unlinked collapses into one bucket regardless of
+            // whatever mode_key a legacy row may carry.
+            if (st.instrumentId.isEmpty()) st.modeKey.clear();
+
+            const QString key = st.instrumentId + QLatin1Char('\x1f') + st.modeKey;
+            auto it = indexByKey.constFind(key);
+            if (it == indexByKey.constEnd()) {
+                indexByKey.insert(key, static_cast<int>(out.size()));
+                out.push_back(st);
+            } else {
+                auto& dst = out[static_cast<std::size_t>(it.value())];
+                dst.count     += st.count;
+                dst.starCount += st.starCount;
+                if (dst.instrumentName.isEmpty())
+                    dst.instrumentName = st.instrumentName;
+            }
+        }
+    }
+
+    return out;
+}
+
+QStringList SpectrumRepository::spectrumIdsForMode(const QStringList& starIds,
+                                                   const QString& instrumentId,
+                                                   const QString& modeKey,
+                                                   int limit)
+{
+    QStringList ids;
+    if (starIds.isEmpty() || limit <= 0) return ids;
+
+    for (int off = 0; off < starIds.size() && ids.size() < limit;
+         off += kStarIdChunk) {
+        const QStringList chunk = starIds.mid(off, kStarIdChunk);
+
+        QSqlQuery query(_db.threadConnection());
+        query.setForwardOnly(true);
+        query.prepare(QStringLiteral(R"(
+            SELECT id FROM spectra
+            WHERE star_id IN (%1)
+              AND COALESCE(instrument_id, '') = ?
+              AND (COALESCE(instrument_id, '') = ''
+                   OR COALESCE(mode_key, '') = ?)
+            LIMIT ?
+        )").arg(placeholders(chunk.size())));
+        for (const QString& id : chunk) query.addBindValue(id);
+        query.addBindValue(instrumentId);
+        query.addBindValue(modeKey);
+        query.addBindValue(limit - ids.size());
+
+        if (!query.exec()) {
+            LOG_ERROR("Spectra",
+                      QString("Failed to list spectra for mode %1/%2: %3")
+                          .arg(instrumentId, modeKey, query.lastError().text()));
+            return ids;
+        }
+        while (query.next()) ids << query.value(0).toString();
+    }
+    return ids;
+}
+
+std::vector<std::shared_ptr<Spectrum>>
+SpectrumRepository::loadSpectraByIds(const QStringList& spectrumIds)
+{
+    std::vector<std::shared_ptr<Spectrum>> spectra;
+    if (spectrumIds.isEmpty()) return spectra;
+
+    for (int off = 0; off < spectrumIds.size(); off += kStarIdChunk) {
+        const QStringList chunk = spectrumIds.mid(off, kStarIdChunk);
+
+        QSqlQuery query(_db.threadConnection());
+        query.setForwardOnly(true);
+        query.prepare(QStringLiteral(
+            "SELECT * FROM spectra WHERE id IN (%1)")
+                          .arg(placeholders(chunk.size())));
+        for (const QString& id : chunk) query.addBindValue(id);
+
+        if (!query.exec()) {
+            LOG_ERROR("Spectra", QString("Failed to load spectra by id: %1")
+                                     .arg(query.lastError().text()));
+            return spectra;
+        }
+
+        while (query.next()) {
+            auto spectrum = std::make_shared<Spectrum>();
+            spectrum->setId(query.value("id").toString());
+            spectrum->setFile(query.value("file").toString());
+            spectrum->setInstrument(query.value("instrument").toString());
+            spectrum->setInstrumentId(query.value("instrument_id").toString());
+            spectrum->setModeKey(query.value("mode_key").toString());
+            const double expTime = query.value("exposure_time").toDouble();
+            spectrum->setTime(Time::fromMjdBjd(
+                query.value("mjd").toDouble(),
+                query.value("bjd").toDouble(),
+                expTime > 0.0 ? expTime : -1.0));
+            spectrum->setDataFile(query.value("data_file").toString());
+            spectrum->setBarycentricallyCorrected(
+                query.value("barycentric_corrected").toInt() != 0);
+            spectrum->setFlagged(query.value("is_flagged").toInt() != 0);
+            spectrum->setOrigin(query.value("origin").toString());
+            spectrum->setOriginId(query.value("origin_id").toString());
+            spectrum->setIsCoadd(query.value("is_coadd").isNull()
+                                 || query.value("is_coadd").toInt() != 0);
+            spectrum->setOriginMeta(query.value("origin_meta").toString());
+            spectra.push_back(spectrum);
+        }
+    }
+    return spectra;
 }

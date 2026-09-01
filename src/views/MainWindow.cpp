@@ -15,13 +15,16 @@
 #include "utils/AppSettings.h"
 #include "utils/BackgroundTaskManager.h"
 #include "utils/LightcurveFetchService.h"
+#include "utils/MassFitService.h"
 #include "utils/SpectrumFetchService.h"
 #include "utils/ThemeManager.h"
 #include "utils/UpdateManager.h"
 #include "views/tools/LightcurveFetchSessionsDialog.h"
+#include "views/tools/MassFitManagerDialog.h"
 #include "views/tools/SpectrumFetchSessionsDialog.h"
 #include <QAction>
 #include <QActionGroup>
+#include <QCloseEvent>
 #include <QHBoxLayout>
 #include <QInputDialog>
 #include <QMenu>
@@ -137,6 +140,7 @@ void MainWindow::setupUi()
 
     setupLcFetchStatusWidget();
     setupSpecFetchStatusWidget();
+    setupMassFitStatusWidget();
 
     statusBar()->showMessage("Ready");
 }
@@ -235,6 +239,117 @@ void MainWindow::onShowSpectrumFetchSessions()
     _specSessionsDialog->show();
     _specSessionsDialog->raise();
     _specSessionsDialog->activateWindow();
+}
+
+void MainWindow::setupMassFitStatusWidget()
+{
+    auto* service = _controller->massFitService();
+
+    _massFitWidget = new QWidget(this);
+    auto* lay = new QHBoxLayout(_massFitWidget);
+    lay->setContentsMargins(0, 0, 0, 0);
+    lay->setSpacing(4);
+
+    _massFitBtn = new QToolButton;
+    _massFitBtn->setAutoRaise(true);
+    _massFitBtn->setToolTip(tr("Open the mass spectrum fitting manager "
+                               "(progress, log, results)"));
+    _massFitProgress = new QProgressBar;
+    _massFitProgress->setMaximumWidth(140);
+    _massFitProgress->setMaximumHeight(14);
+    _massFitProgress->setTextVisible(false);
+
+    lay->addWidget(_massFitBtn);
+    lay->addWidget(_massFitProgress);
+    statusBar()->addPermanentWidget(_massFitWidget);
+    _massFitWidget->setVisible(false);
+
+    connect(_massFitBtn, &QToolButton::clicked, this, [this] {
+        onShowMassFitManager();
+        if (_massFitDialog) _massFitDialog->showRunsTab();
+    });
+
+    connect(service, &MassFitService::progressChanged,
+            this, [this](int done, int total, int running) {
+        // The service reports zero total once every run has reached a terminal
+        // state, which is exactly when the widget has nothing left to say.
+        if (total <= 0) {
+            _massFitWidget->setVisible(false);
+            return;
+        }
+        _massFitWidget->setVisible(true);
+        _massFitProgress->setRange(0, total);
+        _massFitProgress->setValue(done);
+        const bool active = done < total;
+        _massFitProgress->setVisible(active);
+        _massFitBtn->setText(active
+            ? tr("Fitting stars %1/%2 (%3 running)")
+                  .arg(done).arg(total).arg(running)
+            : tr("Mass fitting done (%1/%2)").arg(done).arg(total));
+    });
+
+    connect(service, &MassFitService::allFinished,
+            this, [this](int done, int total) {
+        Q_UNUSED(done);
+        statusBar()->showMessage(
+            tr("Mass spectrum fitting finished (%1 star%2)")
+                .arg(total).arg(total == 1 ? "" : "s"), 8000);
+    });
+
+    // Adopting a fit rewrites the star's atmospheric parameters, so the
+    // project table is stale until it reloads. A campaign finishes hundreds of
+    // stars, so the refreshes are coalesced instead of one per star.
+    auto* tableRefresh = new QTimer(this);
+    tableRefresh->setSingleShot(true);
+    tableRefresh->setInterval(750);
+    connect(tableRefresh, &QTimer::timeout, this, [this] {
+        if (_projectView) _projectView->refreshTable();
+    });
+    connect(service, &MassFitService::starParametersChanged, this,
+            [tableRefresh](const QString&) { tableRefresh->start(); });
+}
+
+void MainWindow::onShowMassFitManager()
+{
+    if (!_projectView) return;
+    auto project = _controller->getCurrentProject();
+    if (!project) {
+        QMessageBox::information(this, tr("Mass Spectrum Fitting"),
+                                 tr("No project is open."));
+        return;
+    }
+
+    // The samples come from the project view every time, not once at
+    // construction: the manager window is cached, so a run started days later
+    // must still be scoped to the table's current filter and selection.
+    auto allStars      = project->getAllStars();
+    auto filteredStars = _projectView->getFilteredStars();
+    auto selectedStars = _projectView->getSelectedStars();
+
+    if (!_massFitDialog) {
+        _massFitDialog = new MassFitManagerDialog(
+            _controller->massFitService(), _controller->databaseManager(),
+            project->getId(), std::move(allStars), std::move(filteredStars),
+            std::move(selectedStars), this);
+        _massFitDialog->setAttribute(Qt::WA_DeleteOnClose);
+        connect(_massFitDialog, &QObject::destroyed, this,
+                [this] { _massFitDialog = nullptr; });
+        // Drill-down reuses the project view's own way of opening a star's
+        // spectra and fits, so the manager never has to know about the
+        // project or the controller.
+        connect(_massFitDialog,
+                &MassFitManagerDialog::starDrillDownRequested, this,
+                [this](const QString& starId) {
+            if (_projectView) _projectView->showStarSpectraFits(starId);
+        });
+    } else {
+        _massFitDialog->setStarSamples(std::move(allStars),
+                                       std::move(filteredStars),
+                                       std::move(selectedStars));
+    }
+    _massFitDialog->show();
+    _massFitDialog->raise();
+    _massFitDialog->activateWindow();
 }
 
 void MainWindow::setupLcFetchStatusWidget()
@@ -637,11 +752,20 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
                 tr("Monte-Carlo the SB1 detection probability against orbital "
                    "period, using the stars' real RV epochs and uncertainties"));
 
+            _massFitAction =
+                _analysisMenu->addAction("Mass Spectrum &Fitting...");
+            _massFitAction->setStatusTip(
+                tr("Fit the spectra of many stars unattended: configure the "
+                   "fit regions and grids once, then run a whole sample "
+                   "through a decision tree"));
+
             connect(_createPlotAction, &QAction::triggered, _projectView, &ProjectView::onCreatePlot);
             connect(_computeKinematicsAction, &QAction::triggered, _projectView,
                     &ProjectView::onComputeGalacticKinematics);
             connect(_rvDetectabilityAction, &QAction::triggered, _projectView,
                     &ProjectView::onRVDetectability);
+            connect(_massFitAction, &QAction::triggered, this,
+                    &MainWindow::onShowMassFitManager);
 
             QAction* helpAction = _helpMenu->menuAction();
             menuBar->insertMenu(helpAction, _analysisMenu);
@@ -679,7 +803,14 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             _analysisMenu = nullptr;
             _computeKinematicsAction = nullptr;
             _rvDetectabilityAction = nullptr;
+            // Deleting the menu deletes its actions, so this pointer would
+            // dangle for as long as the window lives without it.
+            _massFitAction = nullptr;
         }
+
+        // The manager is scoped to one project: its plans, runs and star
+        // samples all belong to the one being closed.
+        if (_massFitDialog) _massFitDialog->close();
         
         // Remove Configure Columns from View menu
         if (_configureColumnsAction) {
@@ -919,4 +1050,25 @@ void MainWindow::promptInstallUpdate(const UpdateInfo& info)
     });
 
     _updater->downloadAndInstall(info);
+}
+
+void MainWindow::closeEvent(QCloseEvent* event)
+{
+    // A mass fitting run owns a thread pool whose destructor waits for the
+    // fits in flight, so quitting mid-campaign would either hang or throw the
+    // remaining stars away. Ask first; the run itself is resumable either way.
+    auto* massFit = _controller ? _controller->massFitService() : nullptr;
+    if (massFit && massFit->hasActiveRuns()) {
+        const auto answer = QMessageBox::question(
+            this, tr("Mass Spectrum Fitting"),
+            tr("A mass fitting run is still active.\n\n"
+               "Quitting stops it. Everything already fitted is kept, and the "
+               "run can be resumed from the manager next time. Quit now?"),
+            QMessageBox::Yes | QMessageBox::No, QMessageBox::No);
+        if (answer != QMessageBox::Yes) {
+            event->ignore();
+            return;
+        }
+    }
+    QMainWindow::closeEvent(event);
 }

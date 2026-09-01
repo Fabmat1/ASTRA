@@ -6,6 +6,7 @@
 #include "models/Instrument.h"
 #include "models/InstrumentMode.h"
 #include "db/DatabaseManager.h"
+#include "fitting/FitJobFactory.h"
 #include "utils/Logger.h"
 #include "utils/matchSpectraToInstrument.h"
 #include "views/panels/SpectraPanel.h"
@@ -684,30 +685,9 @@ void SpectraFitDialog::setBestFitTied(const QString& fitId, bool markBest)
 void SpectraFitDialog::propagateBestFitParams(
     const std::shared_ptr<SpectralFit>& fit)
 {
-    if (!_star || !fit) return;
-    bool changed = false;
-    auto setIf = [&](double v, auto setter, auto errSetter, double err,
-                     auto errUpSetter, double errUp,
-                     auto errDownSetter, double errDown) {
-        if (!std::isnan(v) && v != 0.0) {
-            (_star.get()->*setter)(v);
-            (_star.get()->*errSetter)(std::isnan(err) ? 0.0 : err);
-            (_star.get()->*errUpSetter)(errUp);
-            (_star.get()->*errDownSetter)(errDown);
-            changed = true;
-        }
-    };
-    setIf(fit->teff, &Star::setTeff,  &Star::setETeff,  fit->teffError,
-          &Star::setETeffUp, fit->teffErrorUp,
-          &Star::setETeffDown, fit->teffErrorDown);
-    setIf(fit->logg, &Star::setLogg,  &Star::setELogg,  fit->loggError,
-          &Star::setELoggUp, fit->loggErrorUp,
-          &Star::setELoggDown, fit->loggErrorDown);
-    setIf(fit->he,   &Star::setHe,    &Star::setEHe,    fit->heError,
-          &Star::setEHeUp, fit->heErrorUp,
-          &Star::setEHeDown, fit->heErrorDown);
-
-    if (changed) {
+    // The copying itself lives in FitJobFactory so that the mass fitter adopts
+    // a fit by exactly the same rules as a user ticking the best-fit box here.
+    if (astra::fitting::applyFitParamsToStar(_star, fit)) {
         if (_dbm && !_projectId.isEmpty())
             _dbm->updateStarRow(_projectId, _star);
         emit starParametersChanged();

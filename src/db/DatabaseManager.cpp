@@ -7,6 +7,7 @@
 #include "RadialVelocityRepository.h"
 #include "InstrumentRepository.h"
 #include "PeriodogramRepository.h"
+#include "MassFitRepository.h"
 #include "SqlValue.h"
 
 #include "models/ElementAbundances.h"
@@ -51,6 +52,7 @@ DatabaseManager::DatabaseManager(QObject *parent)
     , _rv(std::make_unique<RadialVelocityRepository>(*_db))
     , _instruments(std::make_unique<InstrumentRepository>(*_db))
     , _periodograms(std::make_unique<PeriodogramRepository>(*_db))
+    , _massFit(std::make_unique<MassFitRepository>(*_db))
 {
     _db->setDatabasePath(AppPaths::database());
     QDir().mkpath(QFileInfo(_db->databasePath()).absolutePath());
@@ -573,6 +575,13 @@ bool DatabaseManager::createTables()
             telluric_pwv REAL,
             telluric_pwv_error REAL,
             telluric_barycorr REAL,
+            -- What the solver reported about the fit itself. A raw chi2 is
+            -- only comparable between fits over the same points with the same
+            -- number of free parameters, so ranking attempts needs these.
+            n_data_points INTEGER DEFAULT 0,
+            n_free_parameters INTEGER DEFAULT 0,
+            converged INTEGER DEFAULT 0,
+            iterations INTEGER DEFAULT 0,
             model_data_file TEXT,
             FOREIGN KEY(spectrum_id) REFERENCES spectra(id) ON DELETE CASCADE
         )
@@ -705,6 +714,87 @@ bool DatabaseManager::createTables()
         )
     )";
 
+    // ── Mass spectrum fitting ───────────────────────────────────────────────
+    // A plan is a whole fitting campaign: per-mode regions, fit setups and the
+    // decision tree between them. Following the lc_fits precedent, only what
+    // is queried or listed gets its own column and the configuration itself
+    // rides along as one JSON blob.
+    QString createMassFitPlansTable = R"(
+        CREATE TABLE IF NOT EXISTS mass_fit_plans (
+            id TEXT PRIMARY KEY,
+            project_id TEXT NOT NULL,
+            name TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            config_json TEXT
+        )
+    )";
+
+    // plan_snapshot_json is the plan exactly as it was run. Editing a plan
+    // afterwards must not retroactively change what a finished run claims to
+    // have done, and a resume has to pick up the configuration the earlier
+    // attempts were made with.
+    QString createMassFitRunsTable = R"(
+        CREATE TABLE IF NOT EXISTS mass_fit_runs (
+            id TEXT PRIMARY KEY,
+            plan_id TEXT,
+            project_id TEXT NOT NULL,
+            created_at TEXT,
+            finished_at TEXT,
+            state TEXT,
+            plan_snapshot_json TEXT,
+            options_json TEXT,
+            star_total INTEGER DEFAULT 0,
+            star_done INTEGER DEFAULT 0,
+            star_failed INTEGER DEFAULT 0
+        )
+    )";
+
+    QString createMassFitRunStarsTable = R"(
+        CREATE TABLE IF NOT EXISTS mass_fit_run_stars (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            star_id TEXT NOT NULL,
+            state TEXT,
+            current_node_id TEXT,
+            adopted_fit_id TEXT,
+            adopted_node_id TEXT,
+            path_json TEXT,
+            error TEXT,
+            started_at TEXT,
+            finished_at TEXT
+        )
+    )";
+
+    // One row per tree node visited for one star. The parameter and quality
+    // columns are denormalised copies of the fit they came from: they are the
+    // inputs the branch conditions test, and resuming a run must not have to
+    // re-read a spectral fit blob per attempt to decide where to continue.
+    QString createMassFitAttemptsTable = R"(
+        CREATE TABLE IF NOT EXISTS mass_fit_attempts (
+            id TEXT PRIMARY KEY,
+            run_id TEXT NOT NULL,
+            star_id TEXT NOT NULL,
+            node_id TEXT,
+            setup_id TEXT,
+            seq INTEGER DEFAULT 0,
+            state TEXT,
+            chi2 REAL,
+            chi2r REAL,
+            converged INTEGER DEFAULT 0,
+            n_data_points INTEGER DEFAULT 0,
+            n_free_parameters INTEGER DEFAULT 0,
+            at_boundary INTEGER DEFAULT 0,
+            teff REAL,
+            logg REAL,
+            he REAL,
+            spectral_fit_ids_json TEXT,
+            error TEXT,
+            started_at TEXT,
+            finished_at TEXT
+        )
+    )";
+
     // Execute all table creation queries
     QStringList queries = {
         createProjectsTable,
@@ -722,6 +812,10 @@ bool DatabaseManager::createTables()
         createInstrumentsTable,
         createInstrumentModesTable,
         createPeriodogramsTable,
+        createMassFitPlansTable,
+        createMassFitRunsTable,
+        createMassFitRunStarsTable,
+        createMassFitAttemptsTable,
     };
 
     for (const QString& query : queries) {
@@ -1034,6 +1128,15 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE spectral_fits ADD COLUMN telluric_pwv_error REAL",
         "ALTER TABLE spectral_fits ADD COLUMN telluric_barycorr REAL",
 
+        // Solver bookkeeping. Kept so fits produced by different setups can be
+        // ranked by reduced chi2 rather than by a raw chi2 that says nothing
+        // across different wavelength ranges.
+        "ALTER TABLE spectral_fits ADD COLUMN n_data_points INTEGER DEFAULT 0",
+        "ALTER TABLE spectral_fits ADD COLUMN n_free_parameters INTEGER "
+        "DEFAULT 0",
+        "ALTER TABLE spectral_fits ADD COLUMN converged INTEGER DEFAULT 0",
+        "ALTER TABLE spectral_fits ADD COLUMN iterations INTEGER DEFAULT 0",
+
         // Archive-fetched spectra provenance. NULL origin = local import;
         // origin_id is the stable external id used for fetch de-duplication.
         "ALTER TABLE spectra ADD COLUMN origin TEXT",
@@ -1210,6 +1313,9 @@ bool DatabaseManager::createIndexes()
         "CREATE INDEX IF NOT EXISTS idx_lightcurves_instrument ON lightcurves(instrument_id, mode_key)",
         "CREATE INDEX IF NOT EXISTS idx_periodograms_lookup ON periodograms(star_id, source, filter)",
         "CREATE INDEX IF NOT EXISTS idx_lc_fits_lc ON lc_fits(lightcurve_id)",
+        "CREATE INDEX IF NOT EXISTS idx_mass_fit_runs_project ON mass_fit_runs(project_id)",
+        "CREATE INDEX IF NOT EXISTS idx_mass_fit_run_stars_run ON mass_fit_run_stars(run_id, state)",
+        "CREATE INDEX IF NOT EXISTS idx_mass_fit_attempts_run ON mass_fit_attempts(run_id, star_id)",
     };
 
     for (const QString& query : indexQueries) {
@@ -1931,6 +2037,29 @@ QSet<QString> DatabaseManager::spectrumOriginIdsForProject(const QString& projec
     return _spectra->originIdsForProject(projectId);
 }
 
+std::vector<ModeSpectrumStat>
+DatabaseManager::spectraModeStats(const QStringList& starIds)
+{
+    if (!_spectra) return {};
+    return _spectra->spectraModeStats(starIds);
+}
+
+QStringList DatabaseManager::spectrumIdsForMode(const QStringList& starIds,
+                                                const QString& instrumentId,
+                                                const QString& modeKey,
+                                                int limit)
+{
+    if (!_spectra) return {};
+    return _spectra->spectrumIdsForMode(starIds, instrumentId, modeKey, limit);
+}
+
+std::vector<std::shared_ptr<Spectrum>>
+DatabaseManager::loadSpectraByIds(const QStringList& spectrumIds)
+{
+    if (!_spectra) return {};
+    return _spectra->loadSpectraByIds(spectrumIds);
+}
+
 bool DatabaseManager::deleteSpectraByOriginId(const QString& starId, const QString& originId)
 {
     if (!_spectra) return false;
@@ -2184,3 +2313,47 @@ bool DatabaseManager::setBestLCFit(const QString &starId, const QString &source,
 
 bool DatabaseManager::deleteLCFit(const QString& fitId)
 { return _photometry->deleteLCFit(fitId); }
+
+// ── Mass spectrum fitting ─────────────────────────────────────────
+
+bool DatabaseManager::saveMassFitPlan(MassFitPlanRow& plan)
+{ return _massFit->savePlan(plan); }
+
+std::vector<MassFitPlanRow> DatabaseManager::loadMassFitPlans(
+    const QString& projectId)
+{ return _massFit->loadPlans(projectId); }
+
+bool DatabaseManager::deleteMassFitPlan(const QString& planId)
+{ return _massFit->deletePlan(planId); }
+
+bool DatabaseManager::saveMassFitRun(MassFitRunRow& run)
+{ return _massFit->saveRun(run); }
+
+std::vector<MassFitRunRow> DatabaseManager::loadMassFitRuns(
+    const QString& projectId)
+{ return _massFit->loadRuns(projectId); }
+
+std::optional<MassFitRunRow> DatabaseManager::loadMassFitRun(
+    const QString& runId)
+{ return _massFit->loadRun(runId); }
+
+bool DatabaseManager::updateMassFitRunState(const QString& runId,
+    const QString& state, int done, int failed, const QString& finishedAt)
+{ return _massFit->updateRunState(runId, state, done, failed, finishedAt); }
+
+bool DatabaseManager::deleteMassFitRun(const QString& runId)
+{ return _massFit->deleteRun(runId); }
+
+bool DatabaseManager::upsertMassFitRunStar(const MassFitRunStarRow& row)
+{ return _massFit->upsertRunStar(row); }
+
+std::vector<MassFitRunStarRow> DatabaseManager::loadMassFitRunStars(
+    const QString& runId)
+{ return _massFit->loadRunStars(runId); }
+
+bool DatabaseManager::saveMassFitAttempt(const MassFitAttemptRow& row)
+{ return _massFit->saveAttempt(row); }
+
+std::vector<MassFitAttemptRow> DatabaseManager::loadMassFitAttempts(
+    const QString& runId, const QString& starId)
+{ return _massFit->loadAttempts(runId, starId); }

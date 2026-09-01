@@ -15,6 +15,7 @@ class BackgroundTaskManager;
 class AppSettings;
 class LightcurveFetchService;
 class SpectrumFetchService;
+class MassFitService;
 
 
 class ApplicationController : public QObject
@@ -54,6 +55,9 @@ public:
     /// Lazily created app-wide manager for online spectrum archive fetching.
     SpectrumFetchService* spectrumFetchService();
 
+    /// Lazily created app-wide engine for mass spectrum fitting runs.
+    MassFitService* massFitService();
+
 signals:
     void projectCreated(const QString& projectId);
     void projectOpened(const QString& projectId);
@@ -69,6 +73,7 @@ private:
     std::unique_ptr<AppSettings> _settings;
     std::unique_ptr<LightcurveFetchService> _lightcurveFetchService;
     std::unique_ptr<SpectrumFetchService> _spectrumFetchService;
+    std::unique_ptr<MassFitService> _massFitService;
 
     void loadProjects();
 };

@@ -14,7 +14,7 @@ class Star;
 class Spectrum;
 class DatabaseManager;
 class SpectraPanel;
-class GridSelectorWidget;
+class FitComponentsWidget;
 class Instrument;
 
 class QVBoxLayout;
@@ -63,21 +63,10 @@ private slots:
     void onPanelSelectionChanged(const QString& spectrumId, const QString& fitId);
 
 private:
-    struct PerSpec {
-        bool   enabled = true;
-        double wlMin = 3600.0;
-        double wlMax = 5250.0;
-        QVector<astra::fitting::IgnoreRegion>    ignore;
-        QVector<astra::fitting::ContinuumAnchor> anchors;
-        double resOffset = 0.0;
-        double resSlope  = 0.37037;
-        bool   inferFromFits = false;
-
-        // Telluric seeds; only used when the job fits a telluric component.
-        // Genuinely per-observation, so the "copy to …" buttons leave them be.
-        double airmass = 1.0;    // 0 = no tellurics in this spectrum
-        double pwv     = 1.0;    // [mm]
-    };
+    // The per-spectrum configuration lives in the fitting core now, so the
+    // mass fitter can build the same jobs without a widget. The alias keeps
+    // the rest of this class reading as it did.
+    using PerSpec = astra::fitting::SpectrumFitConfig;
 
     void setupUi();
     QGroupBox* buildComponentsSection();
@@ -85,9 +74,6 @@ private:
     QGroupBox* buildPerSpectrumSection();
     QGroupBox* buildGlobalSection();
 
-    void rebuildComponentRows();
-    /// Collapsed "Element abundances" editor for _components[componentIndex].
-    QWidget* buildAbundanceSection(int componentIndex);
     void rebuildIgnoreRows();
     void rebuildAnchorRows();
 
@@ -97,9 +83,9 @@ private:
     void inferFromBestFit(PerSpec& cfg, const std::shared_ptr<Spectrum>& s) const;
     PerSpec makeDefaultConfig(const std::shared_ptr<Spectrum>& s) const;
 
+    /// Collects the widget-level settings the fitting core needs.
+    astra::fitting::JobGlobals collectGlobals() const;
     astra::fitting::SpectralFitJob buildJob(QStringList& tempFilesOut) const;
-    QString exportSpectrumToTemp(const std::shared_ptr<Spectrum>& s,
-                                  const QString& dir) const;
 
     void persistResult(const astra::fitting::SpectralFitResult& result,
                         const astra::fitting::SpectralFitJob&  job);
@@ -115,16 +101,12 @@ private:
     QHash<QString, PerSpec>                _configs;
     QString                                 _currentId;
 
-    QVector<astra::fitting::StellarComponent> _components;
-
-    QVector<GridSelectorWidget*> _componentSelectors;
-
     // ── UI ─────────────────────────────────────────────────────
     QListWidget*    _spectraList        = nullptr;
 
-    // Components section
-    QVBoxLayout*    _componentsLayout   = nullptr;
-    QPushButton*    _addComponentBtn    = nullptr;
+    // Components section - the editor itself lives in a reusable widget so
+    // the mass fitter's plan editor can embed the same one.
+    FitComponentsWidget* _componentsWidget = nullptr;
 
     // Per-spectrum editor
     QWidget*        _perSpectrumHost     = nullptr;

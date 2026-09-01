@@ -170,6 +170,25 @@ public:
     double telluricPwvError   = 0.0;
     double telluricBarycorr   = AsymErr::unset;   ///< [km/s]
 
+    // ── Solver bookkeeping ──────────────────────────────────────────────────
+    // What the minimiser reported about the fit itself rather than about the
+    // star. Without the point and free-parameter counts a raw chi2 cannot be
+    // compared between fits over different wavelength ranges or with different
+    // numbers of free parameters, which is exactly what ranking several
+    // attempts against each other needs. 0 / false for fits written before
+    // these were stored.
+    int  nDataPoints     = 0;
+    int  nFreeParameters = 0;
+    bool converged       = false;
+    int  iterations      = 0;
+
+    /// chi2 per degree of freedom, or NaN when the dof is not positive (an old
+    /// fit that never recorded the counts, or an over-parameterised one).
+    double reducedChi2() const {
+        const int dof = nDataPoints - nFreeParameters;
+        return dof > 0 ? chi2 / double(dof) : AsymErr::unset;
+    }
+
     /// True when this fit has a second stellar component worth reporting.
     bool hasSecondComponent() const {
         return nComponents >= 2 && !std::isnan(teff2);

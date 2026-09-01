@@ -3,18 +3,16 @@
 
 #include "models/Star.h"
 #include "models/Spectrum.h"
-#include "models/ElementAbundances.h"
 #include "db/DatabaseManager.h"
 #include "views/panels/SpectraPanel.h"
+#include "fitting/FitJobFactory.h"
 #include "fitting/FitWorker.h"
 #include "fitting/IsisBackend.h"
 #include "fitting/FitBackendRegistry.h"
 #include "utils/Logger.h"
 #include "utils/AppSettings.h"
-#include "views/widgets/GridSelectorWidget.h"
-#include "dialogs/SettingsDialog.h"
+#include "views/widgets/FitComponentsWidget.h"
 #include "InteractiveIsisDialog.h"
-#include "utils/CheckBoxDragger.h"
 #include "utils/CheckStateDragger.h"
 #include "utils/WheelGuard.h"
 #include "utils/UiIcons.h"
@@ -22,8 +20,6 @@
 #include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QFormLayout>
-#include <QGridLayout>
-#include <QToolButton>
 #include <QGroupBox>
 #include <QScrollArea>
 #include <QListWidget>
@@ -93,15 +89,6 @@ void clearLayout(QLayout* l)
     }
 }
 
-// An abundance spin box parked at its minimum reads "grid default" and means
-// "untouched": the element stays out of the job's map, so the backend models it
-// at the middle of its grid axis instead of at a value we invented.
-constexpr double kAbundanceUnset = -30.0;
-// Nothing between the sentinel and here is a physical abundance, so a value
-// that lands in the gap (stepping up out of "grid default") is snapped to the
-// element's solar value instead of being taken literally.
-constexpr double kAbundanceFloor = -20.0;
-
 QString spectrumLabel(const std::shared_ptr<Spectrum>& s, int idx)
 {
     QString l;
@@ -120,10 +107,6 @@ QString spectrumLabel(const std::shared_ptr<Spectrum>& s, int idx)
 FitSetupWidget::FitSetupWidget(const Context& ctx, QWidget* parent)
     : QWidget(parent), _ctx(ctx)
 {
-    // Seed defaults
-    fit::StellarComponent c;
-    _components.append(c);
-
     setupUi();
     refreshSpectraList();
 }
@@ -201,260 +184,10 @@ QGroupBox* FitSetupWidget::buildComponentsSection()
     auto* v = new QVBoxLayout(box);
     v->setSpacing(4);
 
-    _componentsLayout = new QVBoxLayout;
-    _componentsLayout->setSpacing(6);
-    v->addLayout(_componentsLayout);
+    _componentsWidget = new FitComponentsWidget(box);
+    v->addWidget(_componentsWidget);
 
-    auto* row = new QHBoxLayout;
-    _addComponentBtn = new QPushButton("+ Add component");
-    connect(_addComponentBtn, &QPushButton::clicked, this, [this]{
-        fit::StellarComponent c;
-        _components.append(c);
-        rebuildComponentRows();
-    });
-    row->addWidget(_addComponentBtn);
-    row->addStretch();
-    v->addLayout(row);
-
-    rebuildComponentRows();
     return box;
-}
-
-void FitSetupWidget::rebuildComponentRows()
-{
-    clearLayout(_componentsLayout);
-    _componentSelectors.clear();
-
-    AppSettings settings;
-    const QStringList basePaths = settings.gridBasePaths();
-
-    for (int i = 0; i < _components.size(); ++i) {
-        auto& c = _components[i];
-
-        auto* frame = new QGroupBox(QString("Component %1").arg(i + 1));
-        auto* form  = new QFormLayout(frame);
-        form->setLabelAlignment(Qt::AlignRight);
-
-        auto* selector = new GridSelectorWidget;
-        selector->setBasePaths(basePaths);
-        selector->setShowConfigureButton(true);
-        if (!c.gridPath.isEmpty())
-            selector->setSelection({}, c.gridPath);
-        // seed in case setSelection happened before scan populated combos
-        c.gridPath = selector->selectedRelativePath();
-
-        connect(selector, &GridSelectorWidget::selectionChanged,
-                this, [this, i, selector]{
-            if (i < _components.size())
-                _components[i].gridPath = selector->selectedRelativePath();
-        });
-        connect(selector, &GridSelectorWidget::configurePathsRequested,
-                this, [this]{
-            AppSettings s;
-            SettingsDialog dlg(&s, this);
-            if (dlg.exec() == QDialog::Accepted) {
-                AppSettings fresh;
-                const auto paths = fresh.gridBasePaths();
-                for (auto* sel : _componentSelectors) sel->setBasePaths(paths);
-            }
-        });
-
-        _componentSelectors.append(selector);
-        astra::blockWheelScrollingRecursive(selector);   // its grid combos
-        form->addRow("Grid:", selector);
-
-        struct P { const char* label; double* val; bool* freeze;
-                   double min, max; int decimals; double step; };
-        std::vector<P> params = {
-            { "Teff [K]",     &c.teff,  &c.freezeTeff,  1000.0, 200000.0, 0, 100.0 },
-            { "log g",        &c.logg,  &c.freezeLogg,     0.0,      7.0, 2,  0.05 },
-            { "vsini [km/s]", &c.vsini, &c.freezeVsini,    0.0,   2000.0, 2,  1.0  },
-            { "log(He/H)",    &c.he,    &c.freezeHe,      -5.0,      2.0, 3,  0.05 },
-            { "ζ",            &c.zeta,  &c.freezeZeta,    -5.0,     50.0, 3,  0.1  },
-            { "ξ",            &c.xi,    &c.freezeXi,      -5.0,     50.0, 3,  0.1  },
-            { "[M/H]",        &c.z,     &c.freezeZ,       -5.0,      5.0, 3,  0.05 },
-        };
-
-        for (auto& p : params) {
-            auto* spin = makeDoubleSpin(p.min, p.max, p.decimals, *p.val, p.step);
-            auto* cb   = new QCheckBox("freeze");
-            cb->setChecked(*p.freeze);
-            auto* row2 = new QHBoxLayout;
-            row2->addWidget(spin, 1);
-            row2->addWidget(cb);
-            form->addRow(p.label, row2);
-
-            double* vPtr = p.val;
-            bool*   fPtr = p.freeze;
-            connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                    this, [vPtr](double v){ *vPtr = v; });
-            connect(cb, &QCheckBox::toggled, this,
-                    [fPtr](bool b){ *fPtr = b; });
-        }
-
-        // Component 1's surface ratio is 1 and frozen by definition, so only
-        // the later components get an editable one.
-        if (i > 0) {
-            auto* srSpin = makeDoubleSpin(0.0, 1e6, 4, c.surRatio, 0.01);
-            srSpin->setToolTip(
-                "Effective surface area of this component relative to "
-                "component 1's.");
-            auto* srFreeze = new QCheckBox("freeze");
-            srFreeze->setChecked(c.freezeSurRatio);
-            auto* srRow = new QHBoxLayout;
-            srRow->addWidget(srSpin, 1);
-            srRow->addWidget(srFreeze);
-            form->addRow("Surface ratio", srRow);
-
-            connect(srSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                    this, [this, i](double v){
-                if (i < _components.size()) _components[i].surRatio = v;
-            });
-            connect(srFreeze, &QCheckBox::toggled, this, [this, i](bool b){
-                if (i < _components.size()) _components[i].freezeSurRatio = b;
-            });
-        }
-
-        form->addRow(buildAbundanceSection(i));
-
-        if (_components.size() > 1) {
-            auto* rm = new QPushButton("Remove component");
-            connect(rm, &QPushButton::clicked, this, [this, i]{
-                _components.removeAt(i);
-                rebuildComponentRows();
-            });
-            form->addRow("", rm);
-        }
-
-        _componentsLayout->addWidget(frame);
-    }
-}
-
-QWidget* FitSetupWidget::buildAbundanceSection(int componentIndex)
-{
-    const int ci = componentIndex;
-
-    auto* host = new QWidget;
-    auto* v    = new QVBoxLayout(host);
-    v->setContentsMargins(0, 0, 0, 0);
-    v->setSpacing(2);
-
-    // Two dozen elements would dwarf the seven stellar parameters above them,
-    // so the list lives behind a header button and starts closed.
-    auto* header = new QToolButton;
-    header->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
-    header->setArrowType(Qt::RightArrow);
-    header->setCheckable(true);
-    header->setAutoRaise(true);
-    header->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
-
-    auto* body = new QWidget;
-    body->setVisible(false);
-    connect(header, &QToolButton::toggled, body, [header, body](bool on){
-        body->setVisible(on);
-        header->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
-    });
-
-    auto summarise = [this, ci, header]{
-        if (ci >= _components.size()) return;
-        const auto& c = _components[ci];
-        int fitted = 0;
-        for (auto it = c.freezeAbundances.cbegin();
-             it != c.freezeAbundances.cend(); ++it)
-            if (!it.value()) ++fitted;
-        header->setText(QString("Element abundances  (%1 fitted, %2 seeded)")
-                            .arg(fitted).arg(c.abundances.size()));
-    };
-    summarise();
-
-    auto* bodyLayout = new QVBoxLayout(body);
-    bodyLayout->setContentsMargins(12, 2, 0, 2);
-    bodyLayout->setSpacing(2);
-
-    auto* grid = new QGridLayout;
-    grid->setHorizontalSpacing(8);
-    grid->setVerticalSpacing(2);
-
-    QVector<QCheckBox*>      fitBoxes;
-    QVector<QDoubleSpinBox*> valueSpins;
-
-    const auto& els  = astra::elements::all();
-    const auto& comp = _components[ci];
-    for (int e = 0; e < els.size(); ++e) {
-        const QString sym = els[e].symbol;
-
-        auto* fitBox = new QCheckBox(els[e].display);
-        fitBox->setMinimumWidth(48);
-        fitBox->setToolTip("Fit this element; unchecked it is still modelled, "
-                            "just held fixed.");
-        fitBox->setChecked(!comp.freezeAbundances.value(sym, true));
-
-        auto* spin = makeDoubleSpin(kAbundanceUnset, 12.0, 3,
-                                     comp.abundances.value(sym, kAbundanceUnset),
-                                     0.05);
-        spin->setSpecialValueText("grid default");
-        spin->setMaximumWidth(130);          // room for the special-value text
-        spin->setToolTip(
-            QString("Starting log10 n(%1)/n_total (solar: %2). "
-                     "10 or more removes the element from the model.")
-                .arg(els[e].display).arg(els[e].solarLogN, 0, 'f', 2));
-
-        connect(fitBox, &QCheckBox::toggled, this,
-                [this, ci, sym, summarise](bool on){
-            if (ci >= _components.size()) return;
-            // Absent means frozen, so unticking removes the entry rather than
-            // writing the default back.
-            if (on) _components[ci].freezeAbundances[sym] = false;
-            else    _components[ci].freezeAbundances.remove(sym);
-            summarise();
-        });
-        const double solar = els[e].solarLogN;
-        connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
-                [this, ci, sym, solar, spin, summarise](double val){
-            if (ci >= _components.size()) return;
-            if (val > kAbundanceUnset && val < kAbundanceFloor) {
-                spin->setValue(solar);   // re-enters and stores the solar seed
-                return;
-            }
-            if (val <= kAbundanceUnset) _components[ci].abundances.remove(sym);
-            else                        _components[ci].abundances[sym] = val;
-            summarise();
-        });
-
-        grid->addWidget(fitBox, e / 2, (e % 2) * 2);
-        grid->addWidget(spin,   e / 2, (e % 2) * 2 + 1);
-        fitBoxes.append(fitBox);
-        valueSpins.append(spin);
-    }
-    bodyLayout->addLayout(grid);
-
-    // Two dozen elements are tedious to tick one at a time, so a press can be
-    // dragged down/across the column to sweep a run of them.
-    new CheckBoxDragger(fitBoxes, body);
-
-    auto* clearRow = new QHBoxLayout;
-    auto* selectAllBtn = new QPushButton("Select all");
-    selectAllBtn->setToolTip("Fit every element (leaves the starting values "
-                              "untouched).");
-    auto* clearBtn = new QPushButton("Clear all");
-    clearBtn->setToolTip("Drop every seed and fit flag for this component.");
-    // Driving the widgets rather than the maps lets their own signals do the
-    // clearing, so no row is rebuilt from underneath the button.
-    connect(selectAllBtn, &QPushButton::clicked, this, [fitBoxes]{
-        for (auto* b : fitBoxes) b->setChecked(true);
-    });
-    connect(clearBtn, &QPushButton::clicked, this, [fitBoxes, valueSpins]{
-        for (auto* b : fitBoxes)   b->setChecked(false);
-        for (auto* s : valueSpins) s->setValue(kAbundanceUnset);
-    });
-    clearRow->addStretch();
-    clearRow->addWidget(selectAllBtn);
-    clearRow->addWidget(clearBtn);
-    bodyLayout->addLayout(clearRow);
-
-    v->addWidget(header);
-    v->addWidget(body);
-    return host;
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -1036,13 +769,7 @@ void FitSetupWidget::onCopyToAll()
 std::shared_ptr<Instrument> FitSetupWidget::instrumentForSpectrum(
     const std::shared_ptr<Spectrum>& s, QString* modeKey) const
 {
-    if (!_ctx.dbm || !s) return nullptr;
-    // Prefer explicit ID; fall back to string resolution for legacy rows.
-    if (!s->getInstrumentId().isEmpty()) {
-        if (modeKey) *modeKey = s->getModeKey();
-        return _ctx.dbm->getInstrumentById(s->getInstrumentId());
-    }
-    return _ctx.dbm->resolveInstrumentString(s->getInstrument(), modeKey);
+    return fit::instrumentForSpectrum(s, _ctx.dbm, modeKey);
 }
 
 
@@ -1057,13 +784,28 @@ void FitSetupWidget::onCopyToSameInstrument()
         if (s->getId() == _currentId) { src = s; break; }
     if (!src) return;
 
+    // Fit regions belong to an instrument *mode*, not to an instrument: two
+    // modes of the same spectrograph differ in resolution and coverage, and
+    // matching on the instrument name alone used to overwrite one mode's setup
+    // with the other's. Rows written before the instrument link existed carry
+    // no mode, and for those the name string is still all there is to go on.
+    const bool linked = !src->getInstrumentId().isEmpty();
+    const fit::ModeKey srcKey{ src->getInstrumentId(), src->getModeKey() };
     const QString instrument = src->getInstrument();
+    const QString label = (linked && !srcKey.modeKey.isEmpty())
+        ? QString("%1 / %2").arg(instrument.isEmpty() ? srcKey.instrumentId
+                                                      : instrument, srcKey.modeKey)
+        : (instrument.isEmpty() ? QStringLiteral("(no instrument)") : instrument);
+
     const auto ref = _configs[_currentId];
     int copied = 0;
 
     for (auto& s : _sortedSpectra) {
         if (s->getId() == _currentId) continue;
-        if (s->getInstrument() != instrument) continue;
+        const bool sameMode = linked
+            ? (fit::ModeKey{ s->getInstrumentId(), s->getModeKey() } == srcKey)
+            : (s->getInstrument() == instrument);
+        if (!sameMode) continue;
         auto& dst = _configs[s->getId()];
         dst.wlMin     = ref.wlMin;
         dst.wlMax     = ref.wlMax;
@@ -1074,87 +816,15 @@ void FitSetupWidget::onCopyToSameInstrument()
         ++copied;
     }
     LOG_INFO("FitSetup", QString("Copied settings to %1 spectra on %2")
-        .arg(copied).arg(instrument.isEmpty() ? "(no instrument)" : instrument));
+        .arg(copied).arg(label));
 }
 
 FitSetupWidget::PerSpec FitSetupWidget::makeDefaultConfig(
     const std::shared_ptr<Spectrum>& s) const
 {
-    PerSpec cfg;
-
-    // 1. Wavelength range from spectrum data, as fallback
-    auto wl = s->getWavelengths();
-    if (!wl.empty()) { cfg.wlMin = wl.front(); cfg.wlMax = wl.back(); }
-
-    // 2. Hardcoded sensible defaults
-    cfg.ignore = {
-        { 3932.0, 3935.0 }, { 3967.0, 3970.0 },
-        { 4610.0, 4655.0 }, { 5888.0, 5892.0 },
-        { 5894.0, 5898.0 },
-    };
-    cfg.anchors = {
-        { 3000.0,  3850.0,  50.0 },
-        { 3850.0,  4050.0, 100.0 },
-        { 4050.0,  4550.0, 100.0 },
-        { 4550.0, 15050.0, 200.0 },
-    };
-    cfg.resOffset = 0.0;
-    cfg.resSlope  = 0.37037;
-
-    // 3. Overlay instrument-mode defaults if available
     QString modeKey;
     auto inst = instrumentForSpectrum(s, &modeKey);
-    if (!inst || modeKey.isEmpty()) return cfg;
-
-    const auto* mode = inst->mode(modeKey);
-    if (!mode || !mode->hasSpectralProperties()) return cfg;
-
-    const auto& spec = mode->spectral();
-
-    // Derive the actual resolution from the instrument mode's R(λ) model.
-    // GAEL expresses resolution as the linear form res_offset + res_slope·λ,
-    // which is exactly the constant/linear ResolutionModel coefficients.
-    const auto& resModel = spec.resolution;
-    if (resModel.isValid()) {
-        const auto& c = resModel.coefficients;
-        if (c.size() == 1) {
-            cfg.resOffset = c[0];
-            cfg.resSlope  = 0.0;
-        } else if (c.size() == 2) {
-            cfg.resOffset = c[0];
-            cfg.resSlope  = c[1];
-        } else {
-            // Higher-order model: linearise R(λ) across the fit band so the
-            // offset+slope form best approximates the true resolution there.
-            const double lo = cfg.wlMin, hi = cfg.wlMax;
-            if (hi > lo) {
-                const double rlo = resModel.at(lo), rhi = resModel.at(hi);
-                cfg.resSlope  = (rhi - rlo) / (hi - lo);
-                cfg.resOffset = rlo - cfg.resSlope * lo;
-            } else {
-                cfg.resOffset = resModel.at(lo);
-                cfg.resSlope  = 0.0;
-            }
-        }
-    }
-
-    // Explicit per-mode fit defaults (if a user saved them) take precedence.
-    const auto& d = spec.fitDefaults;
-    if (d.wlMin)     cfg.wlMin     = *d.wlMin;
-    if (d.wlMax)     cfg.wlMax     = *d.wlMax;
-    if (d.resOffset) cfg.resOffset = *d.resOffset;
-    if (d.resSlope)  cfg.resSlope  = *d.resSlope;
-    if (!d.ignore.isEmpty()) {
-        cfg.ignore.clear();
-        for (const auto& r : d.ignore)
-            cfg.ignore.append({r.wlLow, r.wlHigh});
-    }
-    if (!d.anchors.isEmpty()) {
-        cfg.anchors.clear();
-        for (const auto& a : d.anchors)
-            cfg.anchors.append({a.wlLow, a.wlHigh, a.spacing});
-    }
-    return cfg;
+    return fit::makeDefaultConfig(s, inst, modeKey);
 }
 
 void FitSetupWidget::onSaveAsModeDefault()
@@ -1272,123 +942,55 @@ void FitSetupWidget::inferFromBestFit(PerSpec& cfg,
 // Build GAEL job / run / persist
 // =====================================================================
 
-fit::SpectralFitJob FitSetupWidget::buildJob(QStringList& tempFilesOut) const
+fit::JobGlobals FitSetupWidget::collectGlobals() const
 {
-    fit::SpectralFitJob job;
-    job.backend = _backendCombo->currentText();
+    fit::JobGlobals g;
+    g.backend = _backendCombo->currentText();
 
-    job.filterSnr      = _filterSnrSpin->value();
-    job.requireBlue    = _requireBlueSpin->value();
-    job.nitNoiseMax    = _nitNoiseMaxSpin->value();
-    job.outlierSigmaLo = _outlierLoSpin->value();
-    job.outlierSigmaHi = _outlierHiSpin->value();
-    job.verbose        = _verboseCheck->isChecked();
-    job.addTelluricModel   = _telluricCheck->isChecked();
-    job.contJitterK        = _contJitterKSpin->value();
-    job.autoFreezeSurRatio = _autoFreezeSurCheck->isChecked();
-    job.surRatioThres      = _surRatioThresSpin->value();
-    job.c2DetectionThres   = _c2DetectThresSpin->value();
+    g.filterSnr      = _filterSnrSpin->value();
+    g.requireBlue    = _requireBlueSpin->value();
+    g.nitNoiseMax    = _nitNoiseMaxSpin->value();
+    g.outlierSigmaLo = _outlierLoSpin->value();
+    g.outlierSigmaHi = _outlierHiSpin->value();
+    g.verbose        = _verboseCheck->isChecked();
+    g.addTelluricModel   = _telluricCheck->isChecked();
+    g.contJitterK        = _contJitterKSpin->value();
+    g.autoFreezeSurRatio = _autoFreezeSurCheck->isChecked();
+    g.surRatioThres      = _surRatioThresSpin->value();
+    g.c2DetectionThres   = _c2DetectThresSpin->value();
 
-    astra::fitting::IsisOptions isis;
     if (_isisXrangeSpin) {
-        isis.xrange           = _isisXrangeSpin->value();
-        isis.errorEstimation  = _isisErrorEstCb->isChecked();
-        isis.autoFreezeVsini  = _isisAutoVsiniCb->isChecked();
-        isis.applyMask        = _isisMaskCb->isChecked();
-        isis.xfigIgnore       = _isisXfigIgnoreSpin->value();
+        g.isis.xrange           = _isisXrangeSpin->value();
+        g.isis.errorEstimation  = _isisErrorEstCb->isChecked();
+        g.isis.autoFreezeVsini  = _isisAutoVsiniCb->isChecked();
+        g.isis.applyMask        = _isisMaskCb->isChecked();
+        g.isis.xfigIgnore       = _isisXfigIgnoreSpin->value();
     }
-    isis.addTelluricModel = job.addTelluricModel;   // one switch, both backends
-    job.isis = isis;
 
-    astra::fitting::IsisInteractiveOptions inter;
     if (_rvCorrCb) {
-        inter.rvCorrection    = _rvCorrCb->isChecked();
-        inter.rvAnchors       = _rvAnchorsEdit->text().trimmed();
-        inter.macrobroadening = _macrobroadeningCombo->currentData().toString();
+        g.isisInteractive.rvCorrection    = _rvCorrCb->isChecked();
+        g.isisInteractive.rvAnchors       = _rvAnchorsEdit->text().trimmed();
+        g.isisInteractive.macrobroadening = _macrobroadeningCombo->currentData().toString();
     }
-    job.isisInteractive = inter;
 
     AppSettings settings;
     for (const auto& p : settings.gridBasePaths())
-        job.basePaths.append(p);
-    job.workerThreads = settings.fitWorkerThreads();
+        g.basePaths.append(p);
+    g.workerThreads = settings.fitWorkerThreads();
 
     QStringList ut;
     for (const auto& p : _untiedEdit->text().split(',', Qt::SkipEmptyParts))
         ut << p.trimmed();
-    job.untiedParams = ut;
+    g.untiedParams = ut;
 
-    job.components = _components;
-
-    // One observation group per spectrum (simplest path: keeps per-file settings
-    // as group-level settings; no per-file overrides needed).
-    QTemporaryDir tempDir;
-    tempDir.setAutoRemove(false);   // worker still needs files after we return
-    const QString dir = tempDir.path();
-    tempFilesOut.append(dir);        // caller cleans up
-
-    job.outputPath = dir;
-
-    for (const auto& s : _sortedSpectra) {
-        if (!_configs.contains(s->getId())) continue;
-        const auto& cfg = _configs[s->getId()];
-        if (!cfg.enabled) continue;
-    
-        if (cfg.anchors.isEmpty()) {
-            LOG_WARNING("FitSetup",
-                QString("Spectrum %1 has no continuum anchors - skipping")
-                    .arg(s->getId()));
-            continue;
-        }
-
-        QString path = exportSpectrumToTemp(s, dir);
-        if (path.isEmpty()) continue;
-
-        fit::Observation obs;
-        obs.waveCut = { cfg.wlMin, cfg.wlMax };
-        obs.ignore  = cfg.ignore;
-        obs.anchors = cfg.anchors;
-
-        fit::SpectrumFile f;
-        f.filename   = path;
-        f.spectype   = "ASCII_with_2_columns";
-        f.resOffset  = cfg.resOffset;
-        f.resSlope   = cfg.resSlope;
-        f.airmass    = cfg.airmass;
-        f.pwv        = cfg.pwv;
-        // ASTRA records *whether* a spectrum was barycentrically corrected but
-        // not by how much, so the telluric shift starts at 0 and is fitted.
-        f.barycorr    = 0.0;
-        f.fitTelluric = job.addTelluricModel;
-        f.spectrumId  = s->getId();
-        obs.files.append(f);
-
-        job.observations.append(obs);
-    }
-
-    return job;
+    return g;
 }
 
-QString FitSetupWidget::exportSpectrumToTemp(const std::shared_ptr<Spectrum>& s,
-                                              const QString& dir) const
+fit::SpectralFitJob FitSetupWidget::buildJob(QStringList& tempFilesOut) const
 {
-    if (!s->hasData()) {
-        if (!s->getDataFile().isEmpty()) s->loadDataFromFile(s->getDataFile());
-        else if (!s->getFile().isEmpty()) s->loadFromFile(s->getFile());
-    }
-    auto wl = s->getWavelengths();
-    auto fl = s->getFluxes();
-    if (wl.empty() || fl.empty()) return {};
-
-    const QString safeId = QString(s->getId()).replace('/', '_').replace(':', '_');
-    QString path = QString("%1/%2.txt").arg(dir, safeId);
-    QFile f(path);
-    if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return {};
-    QTextStream out(&f);
-    out.setRealNumberPrecision(10);
-    for (size_t i = 0; i < wl.size(); ++i)
-        out << wl[i] << ' ' << fl[i] << '\n';
-    return path;
+    return fit::buildJob(_sortedSpectra, _configs,
+                         _componentsWidget->components(),
+                         collectGlobals(), tempFilesOut);
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -1397,7 +999,8 @@ void FitSetupWidget::onRunFit()
     commitEditorToState();
 
     // Sanity checks
-    if (_components.isEmpty() || _components.first().gridPath.isEmpty()) {
+    const auto components = _componentsWidget->components();
+    if (components.isEmpty() || components.first().gridPath.isEmpty()) {
         QMessageBox::warning(this, "Cannot run fit",
             "At least one component with a grid path is required.");
         return;
@@ -1471,156 +1074,10 @@ void FitSetupWidget::onRunFit()
 void FitSetupWidget::persistResult(const fit::SpectralFitResult& result,
                                     const fit::SpectralFitJob&    job)
 {
-    if (!result.success || result.components.isEmpty()) return;
-
-    // Make sure the RV curve is loaded, callbacks wired for every spectrum
-    // (including the one we're about to add a fit to), and any pre-existing
-    // drift is repaired before notifyBestFitChanged() fires below.
-    if (_ctx.star) _ctx.star->ensureRVCurveSynced();
-
-    // Component 1 goes into the flat fields - that is the star's reported
-    // solution and what the rest of ASTRA reads. Component 2, when there is
-    // one, rides along in the *2 fields of the same SpectralFit.
-    // A retired second component can come back with empty parameter vectors;
-    // writing its zeros would make hasSecondComponent() lie, so treat it as
-    // absent.
-    const auto& comp  = result.components.first();
-    const fit::FittedComponent* comp2 =
-        (result.components.size() > 1 && !result.components[1].teff.isEmpty())
-            ? &result.components[1] : nullptr;
-
-    // Map result spectra back to our Spectrum objects
-    for (int i = 0; i < result.spectra.size(); ++i) {
-        const auto& fs = result.spectra[i];
-        if (fs.spectrumId.isEmpty()) continue;
-
-        std::shared_ptr<Spectrum> target;
-        for (auto& s : _sortedSpectra)
-            if (s->getId() == fs.spectrumId) { target = s; break; }
-        if (!target) continue;
-
-        auto fit = std::make_shared<SpectralFit>();
-        fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
-        QStringList gridNames;
-        for (const auto& c : job.components) {
-            QString g = c.gridPath.trimmed();
-            if (g.endsWith('/')) g.chop(1);
-            if (!g.isEmpty()) gridNames << g;
-        }
-        const QString gridDesc = gridNames.isEmpty()
-                                ? QStringLiteral("model")
-                                : gridNames.join(" + ");
-        fit->modelId = QString("%1 · %2").arg(job.backend, gridDesc);
-
-        auto pick = [&](const QVector<fit::FittedParameter>& v, int idx) -> fit::FittedParameter {
-            if (v.isEmpty()) return {};
-            return v[std::min<int>(idx, int(v.size()) - 1)];       // tied → always [0]
-        };
-        auto P = [&](auto field) { return pick(field, i); };
-
-        fit->teff             = P(comp.teff).value;
-        fit->teffError        = P(comp.teff).error;
-        fit->logg             = P(comp.logg).value;
-        fit->loggError        = P(comp.logg).error;
-        fit->he               = P(comp.he).value;
-        fit->heError          = P(comp.he).error;
-        fit->vsini            = P(comp.vsini).value;
-        fit->vsiniError       = P(comp.vsini).error;
-        fit->radialVelocity   = P(comp.vrad).value;
-        fit->radialVelocityError = P(comp.vrad).error;
-        fit->metallicity      = P(comp.z).value;
-        fit->metallicityError = P(comp.z).error;
-        fit->macroturbulence  = P(comp.zeta).value;
-        fit->macroturbulenceError = P(comp.zeta).error;
-        fit->microturbulence  = P(comp.xi).value;
-        fit->microturbulenceError = P(comp.xi).error;
-        fit->chi2             = result.finalChi2;
-
-        // SpectralFit carries at most two components; a job with more would
-        // have to grow the model first, so clamp rather than write past it.
-        fit->nComponents = std::min<int>(result.components.size(), 2);
-
-        if (comp2) {
-            fit->teff2                 = P(comp2->teff).value;
-            fit->teff2Error            = P(comp2->teff).error;
-            fit->logg2                 = P(comp2->logg).value;
-            fit->logg2Error            = P(comp2->logg).error;
-            fit->he2                   = P(comp2->he).value;
-            fit->he2Error              = P(comp2->he).error;
-            fit->vsini2                = P(comp2->vsini).value;
-            fit->vsini2Error           = P(comp2->vsini).error;
-            fit->radialVelocity2       = P(comp2->vrad).value;
-            fit->radialVelocity2Error  = P(comp2->vrad).error;
-            fit->metallicity2          = P(comp2->z).value;
-            fit->metallicity2Error     = P(comp2->z).error;
-            fit->macroturbulence2      = P(comp2->zeta).value;
-            fit->macroturbulence2Error = P(comp2->zeta).error;
-            fit->microturbulence2      = P(comp2->xi).value;
-            fit->microturbulence2Error = P(comp2->xi).error;
-            if (!comp2->surRatio.isEmpty()) {
-                fit->surRatio      = P(comp2->surRatio).value;
-                fit->surRatioError = P(comp2->surRatio).error;
-            }
-        }
-
-        // An element switched out of the model (value ≥ 10) is not a
-        // measurement, so it never reaches the star.
-        auto copyAbundances = [&](const fit::FittedComponent& c,
-                                   QMap<QString, FittedAbundance>& dst) {
-            for (auto it = c.abundances.cbegin(); it != c.abundances.cend(); ++it) {
-                const fit::FittedParameter p = pick(it.value(), i);
-                if (astra::elements::isSwitchedOff(p.value)) continue;
-                FittedAbundance a;
-                a.value     = p.value;
-                a.error     = p.error;
-                a.frozen    = p.frozen;
-                a.limitSide = p.boundarySide;
-                dst.insert(it.key(), a);
-            }
-        };
-        copyAbundances(comp, fit->abundances);
-        if (comp2) copyAbundances(*comp2, fit->abundances2);
-
-        // Plottable arrays
-        fit->modelWavelengths.assign(fs.lambda.begin(),    fs.lambda.end());
-        fit->modelFluxes.assign     (fs.model.begin(),     fs.model.end());
-        fit->rebinnedFluxes.assign  (fs.flux.begin(),      fs.flux.end());
-        fit->rebinnedSigmas.assign  (fs.sigma.begin(),     fs.sigma.end());
-        fit->modelSplines.assign    (fs.continuum.begin(), fs.continuum.end());
-        fit->modelIgnore.assign     (fs.ignoreFlag.begin(),fs.ignoreFlag.end());
-
-        if (fs.componentModels.size() > 0) {
-            const auto& m1 = fs.componentModels[0];
-            fit->modelFluxesComp1.assign(m1.begin(), m1.end());
-        }
-        if (fs.componentModels.size() > 1) {
-            const auto& m2 = fs.componentModels[1];
-            fit->modelFluxesComp2.assign(m2.begin(), m2.end());
-        }
-        fit->telluricTransmission.assign(fs.telluric.begin(), fs.telluric.end());
-
-        fit->hasTelluric = fs.hasTelluric;
-        if (fs.hasTelluric) {
-            fit->telluricAirmass      = fs.tellAirmass.value;
-            fit->telluricAirmassError = fs.tellAirmass.error;
-            fit->telluricPwv          = fs.tellPwv.value;
-            fit->telluricPwvError     = fs.tellPwv.error;
-            fit->telluricBarycorr     = fs.tellBarycorr.value;
-        }
-
-        // Auto-mark best only if the spectrum has no best fit yet
-        if (!target->getBestFit())
-            fit->isBestFit = true;
-
-        target->addSpectralFit(fit);
-
-        if (_ctx.dbm) {
-            _ctx.dbm->saveSpectralFit(_ctx.star->getId(), target->getId(), fit);
-        }
-    }
-
-    LOG_INFO("FitSetup", QString("Persisted %1 spectral fits for star %2")
-        .arg(result.spectra.size()).arg(_ctx.star->getSourceId()));
+    // markBestIfNone stays true here: a single-star fit has always adopted
+    // itself when the spectrum had no best fit yet.
+    fit::persistFitResult(_ctx.star, _sortedSpectra, result, job,
+                          _ctx.dbm, _ctx.projectId, /*markBestIfNone=*/true);
 }
 
 void FitSetupWidget::pushPreviewToPanel()

@@ -3,9 +3,12 @@
 
 #include <QObject>
 #include <memory>
+#include <optional>
 #include <vector>
 #include <QSet>
 #include <QString>
+#include "MassFitRepository.h"
+#include "SpectrumRepository.h"
 #include "models/Instrument.h"
 #include "models/InstrumentMode.h"
 #include <QHash>
@@ -18,6 +21,7 @@ class SpectrumRepository;
 class RadialVelocityRepository;
 class InstrumentRepository;
 class PeriodogramRepository;
+class MassFitRepository;
 
 class Project;
 class Star;
@@ -81,6 +85,14 @@ public:
     bool updateSpectralFitFlag(const QString& fitId, bool flagged);
     bool updateBestFit(const QString& spectrumId, const QString& bestFitId);
     QSet<QString> spectrumOriginIdsForProject(const QString& projectId);
+    /// Spectrum counts per instrument mode over a star sample, and the ids /
+    /// rows needed to show one of those modes. See SpectrumRepository.
+    std::vector<ModeSpectrumStat> spectraModeStats(const QStringList& starIds);
+    QStringList spectrumIdsForMode(const QStringList& starIds,
+                                   const QString& instrumentId,
+                                   const QString& modeKey, int limit);
+    std::vector<std::shared_ptr<Spectrum>>
+    loadSpectraByIds(const QStringList& spectrumIds);
     bool deleteSpectraByOriginId(const QString& starId, const QString& originId);
     /// Spectrum counts for one star, straight from the database. See
     /// SpectrumRepository::spectraCounts.
@@ -147,6 +159,28 @@ public:
     bool setBestLCFit(const QString &starId, const QString &source,
                       const QString &filter, const QString &fitId);
 
+    // ── Mass spectrum fitting ────────────────────────────────────────────
+    // Plans, runs and their per-star progress. See MassFitRepository; the
+    // row structs stay in that header rather than being mirrored here.
+    bool saveMassFitPlan(MassFitPlanRow& plan);
+    std::vector<MassFitPlanRow> loadMassFitPlans(const QString& projectId);
+    bool deleteMassFitPlan(const QString& planId);
+
+    bool saveMassFitRun(MassFitRunRow& run);
+    std::vector<MassFitRunRow> loadMassFitRuns(const QString& projectId);
+    std::optional<MassFitRunRow> loadMassFitRun(const QString& runId);
+    bool updateMassFitRunState(const QString& runId, const QString& state,
+                               int done, int failed,
+                               const QString& finishedAt = {});
+    bool deleteMassFitRun(const QString& runId);
+
+    bool upsertMassFitRunStar(const MassFitRunStarRow& row);
+    std::vector<MassFitRunStarRow> loadMassFitRunStars(const QString& runId);
+
+    bool saveMassFitAttempt(const MassFitAttemptRow& row);
+    std::vector<MassFitAttemptRow> loadMassFitAttempts(
+        const QString& runId, const QString& starId = {});
+
   private:
     //void backfillSpectrumInstrumentIds();
     bool createTables();
@@ -163,6 +197,7 @@ public:
     std::unique_ptr<RadialVelocityRepository> _rv;
     std::unique_ptr<InstrumentRepository> _instruments;
     std::unique_ptr<PeriodogramRepository> _periodograms;
+    std::unique_ptr<MassFitRepository> _massFit;
 };
 
 #endif // DATABASEMANAGER_H
