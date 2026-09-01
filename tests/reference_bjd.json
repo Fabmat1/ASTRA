@@ -1,10 +1,11 @@
 {
   "generator": "generate_reference_bjd.py",
-  "astropy_version": "7.2.0",
-  "description": "Reference BJD(TDB) values computed with astropy for validation of C++ BarycentricCorrection.",
+  "astropy_version": "8.0.1",
+  "description": "Reference BJD(TDB) and barycentric velocity correction values computed with astropy for validation of C++ BarycentricCorrection.",
   "notes": [
     "bjd_tdb is the primary comparison value.",
     "ltt_bary_sec is the light-travel-time in seconds (for debugging).",
+    "berv_kms is SkyCoord.radial_velocity_correction(\"barycentric\"): the correction to ADD to a measured topocentric radial velocity, so lambda_bary = lambda_obs * (1 + berv_kms / c).",
     "All coordinates are J2000 ICRS.",
     "lon_deg is degrees East (negative = West)."
   ],
@@ -22,6 +23,7 @@
       "jd_tdb": 2451545.0007428695,
       "ltt_bary_sec": -110.33612378036992,
       "bjd_tdb": 2451544.999465831,
+      "berv_kms": 29.610330996855488,
       "label": "j2000/spica/mcdonald",
       "target_description": "\u03b1 Vir (Spica)",
       "observatory_description": "McDonald Observatory, Texas"
@@ -38,6 +40,7 @@
       "jd_tdb": 2451545.0007428695,
       "ltt_bary_sec": -231.22058866889896,
       "bjd_tdb": 2451544.998066705,
+      "berv_kms": -1.2248041332964708,
       "label": "j2000/vega/geocentre",
       "target_description": "\u03b1 Lyr (Vega)",
       "observatory_description": "Geocentre (space-based proxy)"
@@ -54,6 +57,7 @@
       "jd_tdb": 2458564.5008007595,
       "ltt_bary_sec": -497.75157299523966,
       "bjd_tdb": 2458564.495039746,
+      "berv_kms": -0.4577556234240253,
       "label": "vernal_equinox/ecliptic_plane/lasilla",
       "target_description": "Vernal equinox direction \u2013 maximal correction",
       "observatory_description": "La Silla Observatory, Chile"
@@ -70,6 +74,7 @@
       "jd_tdb": 2458564.5008007595,
       "ltt_bary_sec": -0.0363443005887236,
       "bjd_tdb": 2458564.500800339,
+      "berv_kms": 0.05736399412152182,
       "label": "vernal_equinox/ecliptic_pole/lasilla",
       "target_description": "Near north ecliptic pole \u2013 minimal correction",
       "observatory_description": "La Silla Observatory, Chile"
@@ -86,6 +91,7 @@
       "jd_tdb": 2458655.5008007456,
       "ltt_bary_sec": -374.36696424903556,
       "bjd_tdb": 2458655.4964677948,
+      "berv_kms": -6.0075092031334725,
       "label": "summer_solstice/sirius/mauna_kea",
       "target_description": "\u03b1 CMa (Sirius)",
       "observatory_description": "Mauna Kea, Hawaii"
@@ -102,6 +108,7 @@
       "jd_tdb": 2458655.5008007456,
       "ltt_bary_sec": -203.87314081631862,
       "bjd_tdb": 2458655.498441103,
+      "berv_kms": 0.06100779421503237,
       "label": "summer_solstice/polaris/mauna_kea",
       "target_description": "\u03b1 UMi (Polaris) \u2013 near celestial pole",
       "observatory_description": "Mauna Kea, Hawaii"
@@ -118,6 +125,7 @@
       "jd_tdb": 2458748.500800722,
       "ltt_bary_sec": -17.45703860533081,
       "bjd_tdb": 2458748.500598673,
+      "berv_kms": -29.63705702114077,
       "label": "autumnal_equinox/galactic_centre/paranal",
       "target_description": "Sgr A* / Galactic centre",
       "observatory_description": "Paranal Observatory, Chile"
@@ -134,6 +142,7 @@
       "jd_tdb": 2458840.5008007367,
       "ltt_bary_sec": 6.695827408002817,
       "bjd_tdb": 2458840.500878235,
+      "berv_kms": 30.212139936879634,
       "label": "winter_solstice/anti_solar/mcdonald",
       "target_description": "Anti-solar direction at equinox",
       "observatory_description": "McDonald Observatory, Texas"
@@ -150,6 +159,7 @@
       "jd_tdb": 2458849.5008007395,
       "ltt_bary_sec": -119.2487113970885,
       "bjd_tdb": 2458849.499420546,
+      "berv_kms": 29.447926750592643,
       "label": "perihelion/spica/paranal",
       "target_description": "\u03b1 Vir (Spica)",
       "observatory_description": "Paranal Observatory, Chile"
@@ -166,6 +176,7 @@
       "jd_tdb": 2458849.5008007395,
       "ltt_bary_sec": -84.9134078102948,
       "bjd_tdb": 2458849.4998179455,
+      "berv_kms": -30.31673483875382,
       "label": "perihelion/ecliptic_plane/geocentre",
       "target_description": "Vernal equinox direction \u2013 maximal correction",
       "observatory_description": "Geocentre (space-based proxy)"
@@ -182,6 +193,7 @@
       "jd_tdb": 2459034.500800741,
       "ltt_bary_sec": 103.25086587414788,
       "bjd_tdb": 2459034.501995774,
+      "berv_kms": -28.714538505372694,
       "label": "aphelion/spica/paranal",
       "target_description": "\u03b1 Vir (Spica)",
       "observatory_description": "Paranal Observatory, Chile"
@@ -198,6 +210,7 @@
       "jd_tdb": 2459034.500800741,
       "ltt_bary_sec": 104.6735169932465,
       "bjd_tdb": 2459034.50201224,
+      "berv_kms": 29.0622686282177,
       "label": "aphelion/ecliptic_plane/geocentre",
       "target_description": "Vernal equinox direction \u2013 maximal correction",
       "observatory_description": "Geocentre (space-based proxy)"
@@ -214,6 +227,7 @@
       "jd_tdb": 2460001.000800756,
       "ltt_bary_sec": -147.64291637627863,
       "bjd_tdb": 2460000.9990919256,
+      "berv_kms": 11.202236857321873,
       "label": "recent_epoch/vega/mcdonald",
       "target_description": "\u03b1 Lyr (Vega)",
       "observatory_description": "McDonald Observatory, Texas"
@@ -230,6 +244,7 @@
       "jd_tdb": 2460001.000800756,
       "ltt_bary_sec": 233.786578949518,
       "bjd_tdb": 2460001.003506619,
+      "berv_kms": -18.26265701195973,
       "label": "recent_epoch/sirius/lasilla",
       "target_description": "\u03b1 CMa (Sirius)",
       "observatory_description": "La Silla Observatory, Chile"
@@ -246,6 +261,7 @@
       "jd_tdb": 2460001.000800756,
       "ltt_bary_sec": -172.1648278610412,
       "bjd_tdb": 2460000.9988081073,
+      "berv_kms": 27.547850546808537,
       "label": "recent_epoch/galactic_centre/geocentre",
       "target_description": "Sgr A* / Galactic centre",
       "observatory_description": "Geocentre (space-based proxy)"
@@ -262,6 +278,7 @@
       "jd_tdb": 2459200.500800735,
       "ltt_bary_sec": -233.33866635821863,
       "bjd_tdb": 2459200.498100056,
+      "berv_kms": 27.06448583558496,
       "label": "tess_era/spica/geocentre",
       "target_description": "\u03b1 Vir (Spica)",
       "observatory_description": "Geocentre (space-based proxy)"
@@ -278,6 +295,7 @@
       "jd_tdb": 2459200.500800735,
       "ltt_bary_sec": 199.8219646836864,
       "bjd_tdb": 2459200.503113489,
+      "berv_kms": 0.6511226678335125,
       "label": "tess_era/polaris/geocentre",
       "target_description": "\u03b1 UMi (Polaris) \u2013 near celestial pole",
       "observatory_description": "Geocentre (space-based proxy)"
@@ -294,6 +312,7 @@
       "jd_tdb": 2448000.50066187,
       "ltt_bary_sec": 55.311179584958886,
       "bjd_tdb": 2448000.501302046,
+      "berv_kms": 13.733521056497402,
       "label": "early_epoch/vega/mcdonald",
       "target_description": "\u03b1 Lyr (Vega)",
       "observatory_description": "McDonald Observatory, Texas"
@@ -310,6 +329,7 @@
       "jd_tdb": 2448000.50066187,
       "ltt_bary_sec": -98.06679624591908,
       "bjd_tdb": 2448000.499526838,
+      "berv_kms": -22.421003748427395,
       "label": "early_epoch/sirius/paranal",
       "target_description": "\u03b1 CMa (Sirius)",
       "observatory_description": "Paranal Observatory, Chile"
@@ -326,6 +346,7 @@
       "jd_tdb": 2458564.5008007595,
       "ltt_bary_sec": -497.7670122623566,
       "bjd_tdb": 2458564.4950395674,
+      "berv_kms": -0.08026596145956283,
       "label": "vernal_equinox/ecliptic_plane/geocentre",
       "target_description": "Vernal equinox direction \u2013 maximal correction",
       "observatory_description": "Geocentre (space-based proxy)"
@@ -342,6 +363,7 @@
       "jd_tdb": 2458655.5008007456,
       "ltt_bary_sec": -8.990877077866967,
       "bjd_tdb": 2458655.5006966847,
+      "berv_kms": 29.74580620874435,
       "label": "summer_solstice/ecliptic_plane/geocentre",
       "target_description": "Vernal equinox direction \u2013 maximal correction",
       "observatory_description": "Geocentre (space-based proxy)"
@@ -358,6 +380,7 @@
       "jd_tdb": 2458748.500800722,
       "ltt_bary_sec": 499.3467655434625,
       "bjd_tdb": 2458748.506580198,
+      "berv_kms": 0.32540078457783495,
       "label": "autumnal_equinox/ecliptic_plane/geocentre",
       "target_description": "Vernal equinox direction \u2013 maximal correction",
       "observatory_description": "Geocentre (space-based proxy)"
@@ -374,6 +397,7 @@
       "jd_tdb": 2458840.5008007367,
       "ltt_bary_sec": -6.714064895990756,
       "bjd_tdb": 2458840.5007230276,
+      "berv_kms": -30.757917600692195,
       "label": "winter_solstice/ecliptic_plane/geocentre",
       "target_description": "Vernal equinox direction \u2013 maximal correction",
       "observatory_description": "Geocentre (space-based proxy)"

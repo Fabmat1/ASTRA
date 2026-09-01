@@ -165,6 +165,27 @@ system by the reader (see the notes below), before this step ever sees them.
   by default ASTRA converts them to air (Morton 2000) above 2000 A so they
   match the model grids and ground-based archives. The conversion can be
   disabled per fetch.
+- **Barycentric frame**: archives disagree about whether the wavelength scale
+  has been moved onto the solar system barycentre. HARPS, ESPRESSO, FEROS,
+  SDSS, LAMOST, APOGEE and the HST, FUSE and IUE pipelines publish a corrected
+  scale; the ESO UVES, X-Shooter and CRIRES+ streams publish a topocentric one
+  and leave the correction to the user, and GIRAFFE publishes a heliocentric
+  one. ASTRA reads the frame out of each downloaded file (`SPECSYS`, or the
+  HST `HELCORR` switch) and falls back to what the archive publishes when the
+  file says nothing. A topocentric or geocentric product is shifted on import
+  and marked as corrected; a product whose frame nobody states is left alone
+  and marked *not* barycentrically corrected, since a spectrum corrected twice
+  ends up further from the rest frame than one never corrected. The correction
+  is computed from the observatory position, the target and the mid-exposure
+  epoch, and agrees with astropy to about 20 m/s.
+
+  Either way the shift the wavelengths carry is written into the row's
+  provenance as `barycorrKms` - for an already-corrected product it is
+  recomputed rather than applied, and on real HARPS and FEROS files it lands
+  within 10 m/s of what those pipelines recorded. Spectral fits seed the
+  telluric component's own shift from it: the telluric lines stayed in the
+  observatory's frame while the stellar ones moved, so the two are offset by
+  exactly this much (GAEL fits it from there; ISIS uses its own defaults).
 - **Instruments**: fetched spectra are tagged with the matching instrument
   and mode automatically (the defaults include LAMOST, SDSS/BOSS, APOGEE,
   UVES, X-Shooter, HARPS, GIRAFFE, IUE, FUSE, and the HST spectrographs).

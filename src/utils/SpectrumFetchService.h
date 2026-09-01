@@ -262,7 +262,7 @@ private:
     void beginParse(Session* s, DownloadItem* item);
     void onParsed(const QString& sessionId, DownloadItem* item,
                   const std::vector<SpecFetch::ParsedSpectrum>& parsed,
-                  const QString& error);
+                  const QString& error, const QStringList& frameLog);
     /// Marks every not-yet-started item of a cancelled session as failed in
     /// one pass, returning how many. Deliberately not finishItem() per item:
     /// see the comment on the definition.

@@ -45,10 +45,22 @@ public:
 
     // UV and HST products are on vacuum wavelengths throughout.
     bool deliversVacuumWavelengths() const override { return true; }
-    bool deliversBarycentric(const SpecFetch::RemoteSpectrum& r) const override {
-        // HST pipeline spectra are heliocentric; IUE/FUSE are not.
-        return r.collection.compare(QStringLiteral("HST"),
-                                    Qt::CaseInsensitive) == 0;
+    SpecFetch::Frame declaredFrame(
+        const SpecFetch::RemoteSpectrum& r) const override {
+        // HST x1d products carry the HELCORR switch, which readFrameInfo()
+        // reads directly; this covers the coadds that do not. calstis/calcos
+        // and CalFUSE v3 both shift onto a heliocentric scale, and NEWSIPS
+        // does the same for IUE high-dispersion images (its low-dispersion
+        // ones are ~6 A per resolution element, where 30 km/s is 2% of a
+        // pixel). HUT and EUVE are left alone - nothing states their frame.
+        if (r.collection.compare(QStringLiteral("HST"),
+                                 Qt::CaseInsensitive) == 0 ||
+            r.collection.compare(QStringLiteral("FUSE"),
+                                 Qt::CaseInsensitive) == 0 ||
+            r.collection.compare(QStringLiteral("IUE"),
+                                 Qt::CaseInsensitive) == 0)
+            return SpecFetch::Frame::Heliocentric;
+        return SpecFetch::Frame::Unknown;
     }
 
     /// Missions offered in the setup UI (obs_collection values).

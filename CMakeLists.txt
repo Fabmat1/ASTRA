@@ -349,6 +349,7 @@ set(SOURCES
     src/utils/spectrafetch/SpectrumArchiveClient.cpp
     src/utils/spectrafetch/SpectrumArchiveRegistry.cpp
     src/utils/spectrafetch/SpectrumArmJoin.cpp
+    src/utils/spectrafetch/SpectrumFrame.cpp
     src/utils/spectrafetch/TapHelpers.cpp
     src/utils/spectrafetch/VoTableReader.cpp
     src/utils/spectrafetch/WavelengthConvert.cpp
@@ -528,6 +529,7 @@ set(HEADERS
     src/utils/spectrafetch/SpectrumArchiveClient.h
     src/utils/spectrafetch/SpectrumArchiveRegistry.h
     src/utils/spectrafetch/SpectrumArmJoin.h
+    src/utils/spectrafetch/SpectrumFrame.h
     src/utils/spectrafetch/TapHelpers.h
     src/utils/spectrafetch/VoTableReader.h
     src/utils/spectrafetch/WavelengthConvert.h
@@ -1180,6 +1182,32 @@ if(BUILD_TESTING)
         TIMEOUT 30
     )
 
+    # Spectral reference frame: what the FITS headers say, and the shift.
+    add_executable(test_spectrum_frame
+        tests/test_spectrum_frame.cpp
+        src/utils/spectrafetch/SpectrumFrame.cpp
+        src/models/BarycentricCorrection.cpp
+    )
+    target_include_directories(test_spectrum_frame PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    if(CCFITS_FOUND)
+        target_include_directories(test_spectrum_frame PRIVATE
+            ${CCFITS_INCLUDE_DIRS})
+        target_link_libraries(test_spectrum_frame PRIVATE
+            ${CCFITS_LIBRARIES})
+    endif()
+    target_link_libraries(test_spectrum_frame PRIVATE Qt6::Core)
+    add_test(
+        NAME    spectrum_frame
+        COMMAND test_spectrum_frame
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(spectrum_frame PROPERTIES
+        LABELS "utils;spectrafetch"
+        TIMEOUT 60
+    )
+
     # Arm joining: grouping one exposure's products and splicing them.
     add_executable(test_arm_join
         tests/test_arm_join.cpp
@@ -1269,6 +1297,7 @@ if(BUILD_TESTING)
     add_executable(test_spectrafetch_parsers
         tests/test_spectrafetch_parsers.cpp
         src/utils/spectrafetch/SpectrumArchiveClient.cpp
+        src/utils/spectrafetch/SpectrumFrame.cpp
         src/utils/spectrafetch/EsoArchiveClient.cpp
         src/utils/spectrafetch/EsoObsCoreIndex.cpp
         src/utils/spectrafetch/LamostArchiveClient.cpp
@@ -1318,6 +1347,7 @@ if(BUILD_TESTING)
     add_executable(test_eso_bulk_discovery
         tests/test_eso_bulk_discovery.cpp
         src/utils/spectrafetch/SpectrumArchiveClient.cpp
+        src/utils/spectrafetch/SpectrumFrame.cpp
         src/utils/spectrafetch/EsoArchiveClient.cpp
         src/utils/spectrafetch/EsoObsCoreIndex.cpp
         src/utils/spectrafetch/TapHelpers.cpp
@@ -1367,6 +1397,7 @@ if(BUILD_TESTING)
     add_executable(test_eso_obscore_index
         tests/test_eso_obscore_index.cpp
         src/utils/spectrafetch/SpectrumArchiveClient.cpp
+        src/utils/spectrafetch/SpectrumFrame.cpp
         src/utils/spectrafetch/EsoArchiveClient.cpp
         src/utils/spectrafetch/EsoObsCoreIndex.cpp
         src/utils/spectrafetch/TapHelpers.cpp
@@ -1408,6 +1439,7 @@ if(BUILD_TESTING)
     add_executable(test_mast_bulk_discovery
         tests/test_mast_bulk_discovery.cpp
         src/utils/spectrafetch/SpectrumArchiveClient.cpp
+        src/utils/spectrafetch/SpectrumFrame.cpp
         src/utils/spectrafetch/MastArchiveClient.cpp
         src/utils/spectrafetch/TapHelpers.cpp
         src/utils/spectrafetch/VoTableReader.cpp

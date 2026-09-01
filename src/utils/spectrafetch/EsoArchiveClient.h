@@ -54,7 +54,8 @@ public:
         QString* error) override;
 
     bool deliversVacuumWavelengths() const override { return false; }
-    bool deliversBarycentric(const SpecFetch::RemoteSpectrum& r) const override;
+    SpecFetch::Frame declaredFrame(
+        const SpecFetch::RemoteSpectrum& r) const override;
 
     /// Phase-3 collections offered in the setup UI (obs_collection values).
     static QStringList knownCollections();

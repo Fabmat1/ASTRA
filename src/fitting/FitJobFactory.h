@@ -70,6 +70,17 @@ SpectrumFitConfig makeDefaultConfig(const std::shared_ptr<Spectrum>& s,
 // Job assembly
 // ────────────────────────────────────────────────────────────────────
 
+/// Wavelength ranges a fit cannot use, from runs of at least four consecutive
+/// samples whose flux is non-finite or zero or less. Archives write a flux of
+/// exactly 0 where a pixel holds no measurement (ESO Phase 3 does it for every
+/// pixel it flags in QUAL), and a backend that drops those samples then
+/// interpolates over the hole, so the ranges are handed to it as ignore
+/// regions rather than left to be silently filled in. Ranges reach to the
+/// midpoint of the neighbouring usable samples and are returned in ascending
+/// wavelength order.
+QVector<IgnoreRegion> unusableRegions(const std::vector<double>& wl,
+                                      const std::vector<double>& fl);
+
 /// Writes a spectrum's (wavelength, flux) pairs to an ASCII file in @p dir for
 /// the backend to read. Returns the path, or an empty string when the spectrum
 /// carries no data.

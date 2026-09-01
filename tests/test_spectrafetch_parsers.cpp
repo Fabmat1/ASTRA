@@ -15,7 +15,8 @@
 //   ASTRA_TEST_MAST_FUSE    a FUSE NVO spectrum (*nvo4histfcal_vo.fits)
 //
 // Checks per file: parse succeeds, wavelengths are ascending Angstroms in a
-// plausible range, exposures/arms split as expected, originId suffixes.
+// plausible range, exposures/arms split as expected, originId suffixes, and
+// the wavelength reference frame the headers state.
 // ─────────────────────────────────────────────────────────────────────────────
 #include "models/Spectrum.h"
 #include "utils/spectrafetch/ApogeeArchiveClient.h"
@@ -23,10 +24,12 @@
 #include "utils/spectrafetch/LamostArchiveClient.h"
 #include "utils/spectrafetch/MastArchiveClient.h"
 #include "utils/spectrafetch/SdssOpticalArchiveClient.h"
+#include "utils/spectrafetch/SpectrumFrame.h"
 
 #include <QCoreApplication>
 #include <QFileInfo>
 
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
@@ -66,6 +69,52 @@ bool plausibleSpectrum(const SpecFetch::ParsedSpectrum& p, double wlMin,
     return true;
 }
 
+// What the file says about its wavelength frame, and - for a topocentric one
+// that also carries the pipeline's own correction - whether the velocity ASTRA
+// would apply agrees with it. That comparison is the end-to-end check on the
+// site, the epoch and the sign, on a real product rather than a fixture.
+void reportFrame(const QString& path, const SpecFetch::ParsedSpectrum& p,
+                 double raDeg, double decDeg, const std::string& label) {
+    // raDeg/decDeg: what the archive record said, NaN when it said nothing.
+    const SpecFetch::FrameInfo fi = SpecFetch::readFrameInfo(path);
+    std::printf("       %s: frame %s, site %s%s\n", label.c_str(),
+                qPrintable(SpecFetch::frameName(fi.frame)),
+                fi.site.known ? qPrintable(fi.site.source) : "unstated",
+                std::isnan(fi.statedCorrectionKms)
+                    ? ""
+                    : qPrintable(QStringLiteral(", %1 = %2 km/s")
+                                     .arg(fi.statedCorrectionKey)
+                                     .arg(fi.statedCorrectionKms, 0, 'f', 4)));
+
+    // A corrected product gets the same check: the import records the shift
+    // its wavelengths already carry so the fit can seed the telluric
+    // component with it, and that number has to agree with the pipeline's.
+    if (fi.frame == SpecFetch::Frame::Unknown) return;
+    // Same fallback the fetch service uses when the archive record carried no
+    // position: the telescope pointing out of the file.
+    if (std::isnan(raDeg))  raDeg  = fi.targetRaDeg;
+    if (std::isnan(decDeg)) decDeg = fi.targetDecDeg;
+
+    if (std::isnan(fi.statedCorrectionKms) || !fi.site.known ||
+        std::isnan(raDeg) || std::isnan(decDeg) ||
+        !p.spectrum || p.spectrum->getMJD() <= 0.0)
+        return;
+
+    double epoch = p.spectrum->getMJD();
+    if (p.spectrum->getExposureTime() > 0.0)
+        epoch += p.spectrum->getExposureTime() / 2.0 / 86400.0;
+    const double ours = SpecFetch::bervKms(epoch, raDeg, decDeg, fi.site);
+
+    // The pipeline evaluates its own value at the true mid-exposure with the
+    // real ephemeris; 0.1 km/s is a fifth of Earth's rotation speed and far
+    // more than either difference can explain, so anything above it means the
+    // site, the epoch or the sign is wrong.
+    check(std::fabs(ours - fi.statedCorrectionKms) < 0.1,
+          label + ": computed BERV " + std::to_string(ours) +
+              " km/s matches the header's " +
+              std::to_string(fi.statedCorrectionKms) + " km/s");
+}
+
 QString envPath(const char* var) {
     const char* v = std::getenv(var);
     return v ? QString::fromLocal8Bit(v) : QString();
@@ -88,8 +137,20 @@ int main(int argc, char** argv) {
         const auto parsed = client.parse(path, r, opt, &err);
         check(err.isEmpty(), "ESO: no error (" + err.toStdString() + ")");
         check(parsed.size() == 1, "ESO: one spectrum");
-        if (!parsed.empty())
+        if (!parsed.empty()) {
             plausibleSpectrum(parsed[0], 900.0, 30000.0, "ESO");
+            // ESO products carry RA/DEC in the primary header, but the fetch
+            // pipeline takes the position from the archive query; pass the
+            // target's own if ASTRA_TEST_ESO_RADEC is set as "ra,dec".
+            const QString radec = envPath("ASTRA_TEST_ESO_RADEC");
+            const QStringList parts = radec.split(QLatin1Char(','));
+            if (parts.size() == 2)
+                reportFrame(path, parsed[0], parts[0].toDouble(),
+                            parts[1].toDouble(), "ESO");
+            else
+                reportFrame(path, parsed[0], std::nan(""), std::nan(""),
+                            "ESO");
+        }
     }
 
     // ── SDSS full spec ───────────────────────────────────────────────────

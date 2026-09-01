@@ -8,6 +8,7 @@
 #define SPECTRUMARCHIVECLIENT_H
 
 #include "SpectrumArchiveTypes.h"
+#include "SpectrumFrame.h"
 
 #include <QList>
 
@@ -65,13 +66,25 @@ public:
     }
 
     // Whether the archive delivers wavelengths in vacuum (candidates for the
-    // vacuum-to-air conversion) and whether its products are already
-    // barycentrically/heliocentrically corrected.
+    // vacuum-to-air conversion).
     virtual bool deliversVacuumWavelengths() const { return false; }
-    virtual bool deliversBarycentric(const SpecFetch::RemoteSpectrum& r) const {
+
+    // The wavelength reference frame this archive publishes, per product.
+    // Only a fallback: the frame is read out of the file itself (SPECSYS, and
+    // the pipeline switches that stand in for it) whenever the product states
+    // it, and this answers for the ones that do not. Unknown means "leave the
+    // wavelengths alone" - a spectrum that is silently corrected twice is
+    // worse off than one that was never corrected at all.
+    virtual SpecFetch::Frame declaredFrame(
+        const SpecFetch::RemoteSpectrum& r) const {
         Q_UNUSED(r);
-        return false;
+        return SpecFetch::Frame::Unknown;
     }
+
+    // True when the epoch the client puts on a spectrum is the start of the
+    // exposure rather than its midpoint, so the barycentric correction can be
+    // evaluated half an exposure later. Worth up to ~60 m/s on a long one.
+    virtual bool reportsExposureStart() const { return true; }
 };
 
 #endif   // SPECTRUMARCHIVECLIENT_H

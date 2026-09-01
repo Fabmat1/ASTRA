@@ -195,13 +195,33 @@ QStringList EsoArchiveClient::knownCollections() {
     };
 }
 
-bool EsoArchiveClient::deliversBarycentric(
+SpecFetch::Frame EsoArchiveClient::declaredFrame(
     const SpecFetch::RemoteSpectrum& r) const {
-    // HARPS and ESPRESSO 1D products are wavelength-calibrated in the solar
-    // system barycentric frame; the other Phase-3 streams are topocentric.
-    return r.collection.contains(QStringLiteral("HARPS"), Qt::CaseInsensitive) ||
-           r.collection.contains(QStringLiteral("ESPRESSO"),
-                                 Qt::CaseInsensitive);
+    // Every Phase-3 1D spectrum carries SPECSYS - it is mandatory in the ESO
+    // Science Data Product standard - so this is the answer for the rare file
+    // that does not, taken from the release descriptions:
+    //
+    //   HARPS, ESPRESSO      barycentric
+    //   FEROS                barycentric (the DRS applies HIERARCH ESO DRS
+    //                        BARYCORR when it rebins the orders)
+    //   GIRAFFE, GAIAESO     heliocentric (the merged spectra are shifted)
+    //   UVES, XSHOOTER,      topocentric; the pipeline records the correction
+    //   CRIRESplus           in HIERARCH ESO QC VRAD BARYCOR but never applies
+    //                        it
+    //
+    // Every line except GAIAESO was read back off a product downloaded from
+    // the archive, not just off the release descriptions.
+    auto is = [&r](const char* name) {
+        return r.collection.contains(QLatin1String(name), Qt::CaseInsensitive);
+    };
+
+    if (is("HARPS") || is("ESPRESSO") || is("FEROS"))
+        return SpecFetch::Frame::Barycentric;
+    if (is("GIRAFFE") || is("GAIAESO"))
+        return SpecFetch::Frame::Heliocentric;
+    if (is("UVES") || is("XSHOOTER") || is("CRIRES"))
+        return SpecFetch::Frame::Topocentric;
+    return SpecFetch::Frame::Unknown;
 }
 
 QList<SpecFetch::RemoteSpectrum> EsoArchiveClient::discover(

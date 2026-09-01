@@ -33,6 +33,26 @@ double lightTravelTime(double mjd_utc,
                        double ra_deg, double dec_deg,
                        double lon_deg, double lat_deg, double alt_m);
 
+/// Barycentric radial‑velocity correction (BERV) in km/s: the component of
+/// the observer's velocity relative to the solar‑system barycentre *towards*
+/// the target, so that
+///
+///     RV_barycentric = RV_observed + berv
+///     lambda_barycentric = lambda_observed * (1 + berv / c)
+///
+/// Sign convention matches ESO's HIERARCH ESO QC VRAD BARYCOR and astropy's
+/// SkyCoord.radial_velocity_correction('barycentric').
+///
+/// @param mjd_utc   Mid‑exposure Modified Julian Date in UTC
+/// @param ra_deg    Right ascension (J2000, degrees)
+/// @param dec_deg   Declination (J2000, degrees)
+/// @param lon_deg   Observer longitude (degrees east); 0/0/0 for the geocentre
+/// @param lat_deg   Observer geodetic latitude (degrees)
+/// @param alt_m     Observer altitude above the WGS‑84 ellipsoid (meters)
+double barycentricVelocity(double mjd_utc,
+                           double ra_deg, double dec_deg,
+                           double lon_deg, double lat_deg, double alt_m);
+
 // ── Sub‑components (exposed for unit‑testing) ──────────────────────────────
 
 /// Cumulative leap seconds for a given MJD(UTC).

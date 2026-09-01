@@ -7,6 +7,7 @@
 #include "models/ElementAbundances.h"
 #include "db/DatabaseManager.h"
 #include "utils/Logger.h"
+#include "utils/spectrafetch/SpectrumFrame.h"
 
 #include <QFile>
 #include <QTemporaryDir>
@@ -123,6 +124,50 @@ SpectrumFitConfig makeDefaultConfig(const std::shared_ptr<Spectrum>& s,
 // Job assembly
 // ────────────────────────────────────────────────────────────────────
 
+// Runs of samples a fit cannot use: non-finite, or a flux of zero or less.
+//
+// Archives write a flux of exactly 0 where a pixel carries no measurement.
+// ESO Phase 3 does it for every pixel it flags in QUAL, which on a bright
+// target is most of the saturated continuum: eta Crt's X-Shooter VIS arm is
+// 63 % zeros. GAEL's sanitize_spectrum() drops those samples and its Nyquist
+// rebin then interpolates straight across the hole, so without this the fit is
+// handed a smooth line where the data is missing - and, since the pixels are
+// present on the fitted grid with ignoreflag = 1, weights it as real data.
+//
+// Returning them as ignore regions puts the decision where it belongs: the
+// pixels stay on the grid so the plot still shows what was there, and the
+// solver leaves them out of chi-squared.
+QVector<IgnoreRegion> unusableRegions(const std::vector<double>& wl,
+                                      const std::vector<double>& fl)
+{
+    QVector<IgnoreRegion> out;
+    const size_t n = std::min(wl.size(), fl.size());
+
+    // One or two dead pixels are noise, not a gap; only runs wide enough to
+    // interpolate across are worth excluding.
+    constexpr size_t kMinRun = 4;
+
+    auto unusable = [&](size_t i) {
+        return !std::isfinite(fl[i]) || fl[i] <= 0.0 || !std::isfinite(wl[i]);
+    };
+
+    size_t i = 0;
+    while (i < n) {
+        if (!unusable(i)) { ++i; continue; }
+        const size_t start = i;
+        while (i < n && unusable(i)) ++i;
+        if (i - start < kMinRun) continue;
+
+        // Widen to the midpoint of the neighbouring good samples so the run's
+        // edge pixels are covered too.
+        const double lo = (start > 0) ? 0.5 * (wl[start - 1] + wl[start])
+                                      : wl[start];
+        const double hi = (i < n) ? 0.5 * (wl[i - 1] + wl[i]) : wl[i - 1];
+        if (hi > lo) out.append(IgnoreRegion{lo, hi});
+    }
+    return out;
+}
+
 QString exportSpectrumToTemp(const std::shared_ptr<Spectrum>& s,
                              const QString& dir)
 {
@@ -208,6 +253,29 @@ SpectralFitJob buildJob(const std::vector<std::shared_ptr<Spectrum>>& spectra,
         obs.ignore  = cfg.ignore;
         obs.anchors = cfg.anchors;
 
+        // Blocks with no usable flux are excluded on top of whatever the user
+        // ignored; see unusableRegions().
+        const QVector<IgnoreRegion> dead =
+            unusableRegions(s->getWavelengths(), s->getFluxes());
+        if (!dead.isEmpty()) {
+            double covered = 0.0;
+            for (const auto& r : dead) {
+                obs.ignore.append(r);
+                if (r.wlHigh > cfg.wlMin && r.wlLow < cfg.wlMax)
+                    covered += std::min(r.wlHigh, cfg.wlMax) -
+                               std::max(r.wlLow, cfg.wlMin);
+            }
+            if (covered > 0.0)
+                LOG_INFO("FitSetup",
+                    QString("Spectrum %1: %2 block(s) without usable flux, "
+                            "%3 A of the %4-%5 A fit window ignored")
+                        .arg(s->getId())
+                        .arg(dead.size())
+                        .arg(covered, 0, 'f', 1)
+                        .arg(cfg.wlMin, 0, 'f', 0)
+                        .arg(cfg.wlMax, 0, 'f', 0));
+        }
+
         SpectrumFile f;
         f.filename   = path;
         f.spectype   = "ASCII_with_2_columns";
@@ -215,9 +283,15 @@ SpectralFitJob buildJob(const std::vector<std::shared_ptr<Spectrum>>& spectra,
         f.resSlope   = cfg.resSlope;
         f.airmass    = cfg.airmass;
         f.pwv        = cfg.pwv;
-        // ASTRA records *whether* a spectrum was barycentrically corrected but
-        // not by how much, so the telluric shift starts at 0 and is fitted.
-        f.barycorr    = 0.0;
+        // The telluric lines sit in the observatory's frame, so the
+        // barycentric correction that moved the stellar lines moved them by
+        // exactly as much - seed the backend's (free) telluric shift with it
+        // instead of starting the solver 30 km/s away. Fetched spectra carry
+        // the value in their provenance; a locally imported one does not say,
+        // and keeps the old zero seed.
+        const double barycorr =
+            SpecFetch::barycorrFromOriginMeta(s->getOriginMeta());
+        f.barycorr    = std::isnan(barycorr) ? 0.0 : barycorr;
         f.fitTelluric = job.addTelluricModel;
         f.spectrumId  = s->getId();
         obs.files.append(f);

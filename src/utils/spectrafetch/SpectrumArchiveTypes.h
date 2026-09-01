@@ -70,6 +70,13 @@ struct ParsedSpectrum {
     QString originId;                     // parent originId, "#expN" suffixed
     bool    isCoadd = true;
     QString instrumentHint;
+
+    // The barycentric correction these wavelengths carry [km/s] - applied on
+    // import for a topocentric product, applied by the archive's own pipeline
+    // for a corrected one, and NaN when the frame could not be established.
+    // Written to the row's provenance: the fit needs it to place the telluric
+    // lines, which stayed in the observatory's frame while the star's did not.
+    double  barycorrKms = std::nan("");
 };
 
 // Per-archive knobs from the setup dialog / settings.

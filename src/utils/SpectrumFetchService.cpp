@@ -12,6 +12,7 @@
 #include "utils/spectrafetch/SpectrumArchiveClient.h"
 #include "utils/spectrafetch/SpectrumArchiveRegistry.h"
 #include "utils/spectrafetch/SpectrumArmJoin.h"
+#include "utils/spectrafetch/SpectrumFrame.h"
 
 #include <QDir>
 #include <QFile>
@@ -740,6 +741,9 @@ void SpectrumFetchService::flushJoinGroup(Session* s, const QString& groupKey) {
         int         mjdCount = 0;
         double      maxExposure = 0.0;
         bool        allCoadds = true;
+        bool        allCorrected = true;
+        double      barycorrSum = 0.0;
+        int         barycorrCount = 0;
 
         for (const int i : g) {
             const Entry& e = entries[size_t(i)];
@@ -759,6 +763,12 @@ void SpectrumFetchService::flushJoinGroup(Session* s, const QString& groupKey) {
             maxExposure =
                 std::max(maxExposure, e.parsed.spectrum->getExposureTime());
             allCoadds = allCoadds && e.parsed.isCoadd;
+            allCorrected = allCorrected &&
+                           e.parsed.spectrum->isBarycentricallyCorrected();
+            if (!std::isnan(e.parsed.barycorrKms)) {
+                barycorrSum += e.parsed.barycorrKms;
+                ++barycorrCount;
+            }
         }
 
         // Arms of one exposure are published on a common flux system, so the
@@ -802,12 +812,17 @@ void SpectrumFetchService::flushJoinGroup(Session* s, const QString& groupKey) {
         spec->setInstrument(instrument);
         if (mjdCount > 0) spec->setMJD(mjdSum / mjdCount);
         if (maxExposure > 0.0) spec->setExposureTime(maxExposure);
+        // The arms were corrected individually before the splice; the joined
+        // spectrum only counts as corrected if every one of them was.
+        spec->setBarycentricallyCorrected(allCorrected);
 
         SpecFetch::ParsedSpectrum joined;
         joined.spectrum       = spec;
         joined.originId       = SpecFetch::joinedOriginId(memberIds);
         joined.isCoadd        = allCoadds;
         joined.instrumentHint = instrument;
+        if (barycorrCount > 0)
+            joined.barycorrKms = barycorrSum / barycorrCount;
 
         // The row stands in for every product it was made of: its provenance
         // is the first arm's, with the members recorded alongside.
@@ -1100,6 +1115,127 @@ void SpectrumFetchService::onDownloadFinished(const QString& sessionId,
     beginParse(s, item);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Barycentric frame
+// ─────────────────────────────────────────────────────────────────────────────
+
+// Puts every spectrum of one product on a barycentric wavelength scale and
+// records what was done to it.
+//
+// The frame comes from the file wherever the product states it (SPECSYS is
+// mandatory in the ESO Science Data Product standard, HST writes the HELCORR
+// switch) and from the archive client otherwise. Only a frame that is known
+// to be uncorrected is shifted: a product whose frame nobody states keeps its
+// wavelengths and is filed as not corrected, because correcting a spectrum
+// twice leaves it further from the rest frame than never correcting it.
+//
+// The correction is computed here rather than read out of the pipeline's own
+// keyword, because ours is checked against astropy to 20 m/s
+// (tests/test_barycentric) and the archives' keywords are not all documented
+// down to their sign. The stored value, where there is one, becomes a
+// cross-check on the site and epoch this went in with - on a real X-shooter
+// product the two agree to 19 m/s.
+static QStringList correctToBarycentric(
+    std::vector<SpecFetch::ParsedSpectrum>& parsed,
+    const QString& localPath, const SpecFetch::RemoteSpectrum& remote,
+    SpectrumArchiveClient* client, const SpecFetch::ObserverSite& siteHint,
+    bool epochIsExposureStart) {
+    QStringList log;
+    if (parsed.empty()) return log;
+
+    const SpecFetch::FrameInfo info = SpecFetch::readFrameInfo(localPath);
+
+    SpecFetch::Frame frame = info.frame;
+    QString          frameSource = QStringLiteral("file");
+    if (frame == SpecFetch::Frame::Unknown && client) {
+        frame       = client->declaredFrame(remote);
+        frameSource = QStringLiteral("archive");
+    }
+
+    // The file's own position wins: it is the telescope that took this
+    // exposure, not the instrument the name was matched to.
+    const SpecFetch::ObserverSite site = info.site.known ? info.site : siteHint;
+
+    // The archive's crossmatch position, or the telescope pointing when the
+    // record carried none.
+    const double raDeg =
+        !std::isnan(remote.ra) ? remote.ra : info.targetRaDeg;
+    const double decDeg =
+        !std::isnan(remote.dec) ? remote.dec : info.targetDecDeg;
+
+    // Mid-exposure, which is where the correction belongs.
+    auto epochOf = [epochIsExposureStart](const SpecFetch::ParsedSpectrum& p) {
+        double epoch = p.spectrum->getMJD();
+        const double exposure = p.spectrum->getExposureTime();
+        if (epochIsExposureStart && exposure > 0.0)
+            epoch += exposure / 2.0 / 86400.0;
+        return epoch;
+    };
+
+    for (SpecFetch::ParsedSpectrum& p : parsed) {
+        if (!p.spectrum || !p.spectrum->hasData()) continue;
+
+        if (SpecFetch::frameIsCorrected(frame)) {
+            // Heliocentric counts: the Sun moves at most ~15 m/s relative to
+            // the barycentre along any line of sight.
+            p.spectrum->setBarycentricallyCorrected(true);
+            // The archive's pipeline did the shift, but the fit still needs to
+            // know how far: the telluric lines went with it. Recomputing it is
+            // the same call, and to a seed's accuracy it is the same number.
+            p.barycorrKms = SpecFetch::bervKms(epochOf(p), raDeg, decDeg, site);
+            continue;
+        }
+
+        if (frame == SpecFetch::Frame::Unknown) {
+            p.spectrum->setBarycentricallyCorrected(false);
+            log << QStringLiteral(
+                       "%1: wavelength frame not stated by the file or the "
+                       "archive; left uncorrected")
+                       .arg(p.originId);
+            continue;
+        }
+
+        // Topocentric or geocentric: correct it.
+        const double berv =
+            SpecFetch::bervKms(epochOf(p), raDeg, decDeg, site);
+        if (!std::isfinite(berv)) {
+            p.spectrum->setBarycentricallyCorrected(false);
+            log << QStringLiteral(
+                       "%1: %2 wavelengths, but no epoch or position to "
+                       "correct them with; left uncorrected")
+                       .arg(p.originId, SpecFetch::frameName(frame));
+            continue;
+        }
+
+        std::vector<double> wl = p.spectrum->getWavelengths();
+        SpecFetch::applyRadialVelocityShift(wl, berv);
+        p.spectrum->setData(wl, p.spectrum->getFluxes(),
+                            p.spectrum->getFluxErrors());
+        p.spectrum->setBarycentricallyCorrected(true);
+        p.barycorrKms = berv;
+
+        QString note =
+            QStringLiteral("%1: %2 (%3) corrected to barycentric, %4 km/s")
+                .arg(p.originId, SpecFetch::frameName(frame), frameSource)
+                .arg(berv, 0, 'f', 3);
+        if (!site.known)
+            note += QStringLiteral(
+                " (geocentre assumed, up to 0.5 km/s of Earth rotation left "
+                "in)");
+        // A pipeline value that disagrees by more than a fifth of Earth's
+        // rotation speed means the site, the epoch or the sign is off - worth
+        // seeing in the log even though the correction still went in.
+        if (!std::isnan(info.statedCorrectionKms) &&
+            std::abs(info.statedCorrectionKms - berv) > 0.1)
+            note += QStringLiteral(" (%1 says %2 km/s)")
+                        .arg(info.statedCorrectionKey)
+                        .arg(info.statedCorrectionKms, 0, 'f', 3);
+        log << note;
+    }
+
+    return log;
+}
+
 void SpectrumFetchService::beginParse(Session* s, DownloadItem* item) {
     item->phase = DownloadItem::Phase::Parsing;
 
@@ -1117,15 +1253,43 @@ void SpectrumFetchService::beginParse(Session* s, DownloadItem* item) {
     SpecFetch::ArchiveOptions aopt = s->opt.perArchive.value(remote.archive);
     aopt.radiusArcsec              = s->opt.radiusArcsec;
 
+    // Where the observation was made, for the barycentric correction. The
+    // instrument table is only reachable from this thread, and most archive
+    // products name their site in the header anyway - this is the fallback
+    // for the ones that do not.
+    SpecFetch::ObserverSite siteHint;
+    if (DatabaseManager* dbm =
+            _controller ? _controller->databaseManager() : nullptr) {
+        if (auto inst = dbm->resolveInstrumentString(remote.instrumentHint)) {
+            if (inst->isSpaceBased()) {
+                // Earth orbit: the geocentre is the right stand-in, and its
+                // own motion is below what these spectra resolve.
+                siteHint.known  = true;
+                siteHint.source = QStringLiteral("space-based instrument");
+            } else if (inst->hasLocation()) {
+                siteHint.lonDeg = inst->getLongitude();
+                siteHint.latDeg = inst->getLatitude();
+                siteHint.altM   = inst->getAltitude();
+                siteHint.known  = true;
+                siteHint.source =
+                    QStringLiteral("instrument %1").arg(inst->getName());
+            }
+        }
+    }
+    const bool epochIsExposureStart = client->reportsExposureStart();
+
     (void)QtConcurrent::run([this, sessionId, originId, localPath, remote,
-                             client, aopt]() {
+                             client, aopt, siteHint, epochIsExposureStart]() {
         QString error;
-        const std::vector<SpecFetch::ParsedSpectrum> parsed =
+        std::vector<SpecFetch::ParsedSpectrum> parsed =
             client->parse(localPath, remote, aopt, &error);
+
+        const QStringList frameLog = correctToBarycentric(
+            parsed, localPath, remote, client, siteHint, epochIsExposureStart);
 
         QMetaObject::invokeMethod(
             this,
-            [this, sessionId, originId, parsed, error]() {
+            [this, sessionId, originId, parsed, error, frameLog]() {
                 Session* s = find(sessionId);
                 if (!s) return;
                 DownloadItem* item = nullptr;
@@ -1133,7 +1297,7 @@ void SpectrumFetchService::beginParse(Session* s, DownloadItem* item) {
                     if (it->remote.originId == originId) { item = it.get(); break; }
                 if (!item || item->phase != DownloadItem::Phase::Parsing)
                     return;
-                onParsed(sessionId, item, parsed, error);
+                onParsed(sessionId, item, parsed, error, frameLog);
             },
             Qt::QueuedConnection);
     });
@@ -1142,9 +1306,11 @@ void SpectrumFetchService::beginParse(Session* s, DownloadItem* item) {
 void SpectrumFetchService::onParsed(
     const QString& sessionId, DownloadItem* item,
     const std::vector<SpecFetch::ParsedSpectrum>& parsed,
-    const QString& error) {
+    const QString& error, const QStringList& frameLog) {
     Session* s = find(sessionId);
     if (!s) return;
+
+    for (const QString& line : frameLog) appendLog(s, line);
 
     if (parsed.empty()) {
         finishItem(s, item, DownloadItem::Phase::Failed,
@@ -1357,8 +1523,7 @@ int SpectrumFetchService::importParsed(
         return 0;
     }
 
-    SpectrumArchiveClient* client = clientFor(remote.archive);
-    const QString starId          = remote.starId;
+    const QString starId = remote.starId;
 
     const auto instruments = dbm->getAllInstruments();
 
@@ -1374,8 +1539,6 @@ int SpectrumFetchService::importParsed(
         meta["url"] = remote.downloadUrl.toString();
     for (auto it = extraMeta.constBegin(); it != extraMeta.constEnd(); ++it)
         meta[it.key()] = it.value();
-    const QString metaJson = QString::fromUtf8(
-        QJsonDocument(meta).toJson(QJsonDocument::Compact));
 
     const QString origin = remote.originId.section(':', 0, 0);
 
@@ -1398,10 +1561,15 @@ int SpectrumFetchService::importParsed(
         spec->setOrigin(origin);
         spec->setOriginId(p.originId);
         spec->setIsCoadd(p.isCoadd);
-        spec->setOriginMeta(metaJson);
-        if (client)
-            spec->setBarycentricallyCorrected(
-                client->deliversBarycentric(remote));
+
+        // Provenance is per product except for the barycentric shift, which
+        // is evaluated at each spectrum's own epoch.
+        QJsonObject rowMeta = meta;
+        if (!std::isnan(p.barycorrKms))
+            rowMeta[QLatin1String(SpecFetch::kBarycorrMetaKey)] =
+                p.barycorrKms;
+        spec->setOriginMeta(QString::fromUtf8(
+            QJsonDocument(rowMeta).toJson(QJsonDocument::Compact)));
 
         // Tag with a configured instrument/mode. Unlike a manual import, this
         // spectrum came from an archive that says what took it, so the shape

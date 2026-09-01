@@ -646,8 +646,11 @@ SpectralFitResult IsisBackend::run(const SpectralFitJob& job,
                     if (f.airmass != 1.0 || f.pwv != 1.0 || f.barycorr != 0.0)
                         tellSeeds = true;
             if (tellSeeds)
-                onLog(QStringLiteral("Note: per-spectrum telluric seeds are a "
-                                      "GAEL feature; ISIS uses its own defaults."));
+                onLog(QStringLiteral(
+                    "Note: per-spectrum telluric seeds - airmass, PWV and the "
+                    "barycentric shift the wavelengths carry - are a GAEL "
+                    "feature; ISIS starts the telluric component from its own "
+                    "defaults instead."));
             if (job.contJitterK > 0)
                 onLog(QStringLiteral("Note: continuum jitter (K = %1) is a GAEL "
                                       "feature; ISIS ignores it.")

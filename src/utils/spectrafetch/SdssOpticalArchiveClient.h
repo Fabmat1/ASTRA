@@ -38,10 +38,17 @@ public:
 
     // Vacuum wavelengths, heliocentric frame.
     bool deliversVacuumWavelengths() const override { return true; }
-    bool deliversBarycentric(const SpecFetch::RemoteSpectrum& r) const override {
+    SpecFetch::Frame declaredFrame(
+        const SpecFetch::RemoteSpectrum& r) const override {
+        // The idlspec2d pipeline shifts the wavelength solution to the
+        // heliocentric frame before coadding, so the per-exposure HDUs of a
+        // spec- file are on the same corrected scale as the coadd.
         Q_UNUSED(r);
-        return true;
+        return SpecFetch::Frame::Heliocentric;
     }
+
+    // MJD comes from TAI-BEG, the start of the exposure.
+    bool reportsExposureStart() const override { return true; }
 
     static QStringList knownDataReleases();   // for the setup UI
 };

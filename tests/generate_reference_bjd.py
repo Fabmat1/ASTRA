@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Generate reference BJD(TDB) values using astropy for validation
-of the C++ BarycentricCorrection implementation.
+Generate reference BJD(TDB) and barycentric radial-velocity correction
+values using astropy for validation of the C++ BarycentricCorrection
+implementation.
 
 Usage:
     python generate_reference_bjd.py [output_path]
@@ -48,6 +49,12 @@ def compute_bjd_tdb(mjd_utc: float, ra_deg: float, dec_deg: float,
     # BJD(TDB) = JD(TDB) + light_travel_time
     bjd_tdb = t_tdb.jd + ltt_bary.jd
 
+    # Barycentric radial-velocity correction: the value to ADD to a measured
+    # topocentric radial velocity, i.e. lambda_bary = lambda_obs * (1 + v/c).
+    berv = target.radial_velocity_correction(kind='barycentric',
+                                             obstime=t_utc,
+                                             location=location)
+
     return {
         'mjd_utc':      mjd_utc,
         'ra_deg':       ra_deg,
@@ -60,6 +67,7 @@ def compute_bjd_tdb(mjd_utc: float, ra_deg: float, dec_deg: float,
         'jd_tdb':       t_tdb.jd,
         'ltt_bary_sec': ltt_bary.sec,
         'bjd_tdb':      bjd_tdb,
+        'berv_kms':     berv.to(u.km / u.s).value,
     }
 
 
@@ -195,11 +203,15 @@ def main():
     output = {
         'generator':    'generate_reference_bjd.py',
         'astropy_version': __import__('astropy').__version__,
-        'description':  'Reference BJD(TDB) values computed with astropy '
-                        'for validation of C++ BarycentricCorrection.',
+        'description':  'Reference BJD(TDB) and barycentric velocity '
+                        'correction values computed with astropy for '
+                        'validation of C++ BarycentricCorrection.',
         'notes': [
             'bjd_tdb is the primary comparison value.',
             'ltt_bary_sec is the light-travel-time in seconds (for debugging).',
+            'berv_kms is SkyCoord.radial_velocity_correction("barycentric"): '
+            'the correction to ADD to a measured topocentric radial velocity, '
+            'so lambda_bary = lambda_obs * (1 + berv_kms / c).',
             'All coordinates are J2000 ICRS.',
             'lon_deg is degrees East (negative = West).',
         ],
@@ -215,11 +227,12 @@ def main():
     print(f"Astropy version: {output['astropy_version']}")
 
     # Print summary table
-    print(f"\n{'Label':<50s} {'LTT (s)':>10s} {'BJD(TDB)':>18s}")
-    print('-' * 80)
+    print(f"\n{'Label':<50s} {'LTT (s)':>10s} {'BJD(TDB)':>18s} "
+          f"{'BERV (km/s)':>12s}")
+    print('-' * 94)
     for tc in test_cases:
         print(f"{tc['label']:<50s} {tc['ltt_bary_sec']:>10.4f} "
-              f"{tc['bjd_tdb']:>18.8f}")
+              f"{tc['bjd_tdb']:>18.8f} {tc['berv_kms']:>12.5f}")
 
 
 if __name__ == '__main__':

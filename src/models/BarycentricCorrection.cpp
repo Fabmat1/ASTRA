@@ -418,6 +418,39 @@ double BarycentricCorrection::lightTravelTime(double mjd_utc,
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// Barycentric radial‑velocity correction (BERV)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The light‑travel‑time above is (r_obs · n̂) / c in days, so its time
+// derivative times c is exactly the observer's velocity towards the target.
+// Differentiating the same position chain rather than writing a second,
+// independent velocity model keeps the two corrections consistent and means
+// only one set of ephemeris terms has to be right.
+//
+// A central difference over ±100 s is far inside the smooth part of the model:
+// the fastest term is Earth's rotation (one cycle per day), whose truncation
+// error at this step is ~4 mm/s.
+// ═════════════════════════════════════════════════════════════════════════════
+
+double BarycentricCorrection::barycentricVelocity(double mjd_utc,
+                                                  double ra_deg, double dec_deg,
+                                                  double lon_deg, double lat_deg,
+                                                  double alt_m)
+{
+    constexpr double C_KM_PER_SEC = 299792.458;
+    constexpr double H_DAYS       = 100.0 / 86400.0;   // ±100 s
+
+    const double ltt_plus  = lightTravelTime(mjd_utc + H_DAYS, ra_deg, dec_deg,
+                                             lon_deg, lat_deg, alt_m);
+    const double ltt_minus = lightTravelTime(mjd_utc - H_DAYS, ra_deg, dec_deg,
+                                             lon_deg, lat_deg, alt_m);
+
+    // d(r_obs · n̂)/dt = c · d(ltt)/dt, and ltt is in days over a step in days,
+    // so the quotient is already dimensionless.
+    return C_KM_PER_SEC * (ltt_plus - ltt_minus) / (2.0 * H_DAYS);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // Full MJD(UTC) → BJD(TDB)
 // ═════════════════════════════════════════════════════════════════════════════
 

@@ -87,7 +87,10 @@ struct SpectrumFile {
     // The spectra handed to the backend are already barycentrically corrected,
     // so `barycorr` does not move the data; it seeds the telluric component's
     // own shift, because the telluric lines sit in the observatory's frame and
-    // the correction moved them by exactly this much.
+    // the correction moved them by exactly this much. The backend fits it from
+    // there, so this only has to be close - the value comes from the fetched
+    // spectrum's provenance (SpecFetch::kBarycorrMetaKey), and a spectrum that
+    // does not record one starts at zero.
     double  airmass     = 1.0;     // 0 switches the component off for this file
     double  pwv         = 1.0;     // precipitable water vapour [mm]
     double  barycorr    = 0.0;     // [km/s]

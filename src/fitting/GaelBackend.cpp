@@ -3,6 +3,8 @@
 #include <specfit/GaelAPI.hpp>
 
 #include <QDebug>
+#include <QFileInfo>
+#include <QHash>
 #include <QString>
 #include <stdexcept>
 #include <string>
@@ -203,17 +205,66 @@ SpectralFitResult GaelBackend::run(const SpectralFitJob& job,
         }
 
         // Map result spectra back to our spectrum IDs.
-        // GAEL returns spectra in the order they were submitted across
-        // all observations → flatten the job in the same order.
+        //
+        // Not by position: GAEL drops whatever fails preprocessing (load
+        // error, sanitize, the SNR cut, require_blue, an empty waveCut) from
+        // `spectra`, so one rejected spectrum shifts every later result onto
+        // the previous spectrum's id and the fit is silently filed against the
+        // wrong observation. The identity comes back with the result instead:
+        // `source_filename` is the path this backend handed in, so the job's
+        // own file list is the lookup table.
+        QHash<QString, QString> idByPath;      // temp file path -> spectrum id
+        QHash<QString, QString> idByBaseName;  // fallback if the path is rewritten
         QVector<QString> submittedIds;
         for (const auto& o : job.observations)
-            for (const auto& f : o.files)
+            for (const auto& f : o.files) {
                 submittedIds.append(f.spectrumId);
+                if (f.filename.isEmpty()) continue;
+                idByPath.insert(f.filename, f.spectrumId);
+                idByBaseName.insert(QFileInfo(f.filename).fileName(),
+                                    f.spectrumId);
+            }
 
-        for (int i = 0; i < static_cast<int>(r.spectra.size()); ++i) {
+        const int nReturned = static_cast<int>(r.spectra.size());
+        const int nRejected = static_cast<int>(r.rejected_files.size());
+        if (nReturned + nRejected != submittedIds.size() && onLog)
+            onLog(QStringLiteral("GAEL returned %1 spectra and rejected %2 of "
+                                 "%3 submitted; results are matched by name")
+                      .arg(nReturned).arg(nRejected).arg(submittedIds.size()));
+
+        auto resolveId = [&](const specfit::api::SpectrumResult& sp,
+                             int position) -> QString {
+            // The submission position GAEL carried through preprocessing.
+            if (sp.input_index >= 0 && sp.input_index < submittedIds.size())
+                return submittedIds[sp.input_index];
+
+            const QString src = QString::fromStdString(sp.source_filename);
+            if (!src.isEmpty()) {
+                if (const QString id = idByPath.value(src); !id.isEmpty())
+                    return id;
+                const QString byBase =
+                    idByBaseName.value(QFileInfo(src).fileName());
+                if (!byBase.isEmpty()) return byBase;
+            }
+            // Only fall back to the submission order when nothing was dropped
+            // and the counts line up, which is the one case where position is
+            // still meaningful.
+            if (nRejected == 0 && nReturned == submittedIds.size() &&
+                position < submittedIds.size())
+                return submittedIds[position];
+            if (onLog)
+                onLog(QStringLiteral("GAEL result %1 (%2) matches no submitted "
+                                     "spectrum; its fit is discarded")
+                          .arg(position)
+                          .arg(src.isEmpty() ? QStringLiteral("no source name")
+                                             : src));
+            return QString();
+        };
+
+        for (int i = 0; i < nReturned; ++i) {
             const auto& sp = r.spectra[i];
             FittedSpectrum fs;
-            fs.spectrumId = (i < submittedIds.size()) ? submittedIds[i] : QString();
+            fs.spectrumId = resolveId(sp, i);
             fs.lambda     = QVector<double>(sp.lambda.begin(),    sp.lambda.end());
             fs.flux       = QVector<double>(sp.flux.begin(),      sp.flux.end());
             fs.sigma      = QVector<double>(sp.sigma.begin(),     sp.sigma.end());
@@ -238,8 +289,15 @@ SpectralFitResult GaelBackend::run(const SpectralFitJob& job,
             out.spectra.append(fs);
         }
 
-        for (const auto& rf : r.rejected_files)
-            out.rejectedFiles.append(QString::fromStdString(rf));
+        // Report rejections by spectrum id, like the ISIS backend does; the
+        // raw value is a temp file path that means nothing to the user.
+        for (const auto& rf : r.rejected_files) {
+            const QString path = QString::fromStdString(rf);
+            QString id = idByPath.value(path);
+            if (id.isEmpty())
+                id = idByBaseName.value(QFileInfo(path).fileName());
+            out.rejectedFiles.append(id.isEmpty() ? path : id);
+        }
 
     } catch (const std::exception& e) {
         out.success       = false;

@@ -40,9 +40,10 @@ public:
     // Vacuum wavelengths; visit spectra are shifted to the star's rest
     // heliocentric frame in the apStar combination.
     bool deliversVacuumWavelengths() const override { return true; }
-    bool deliversBarycentric(const SpecFetch::RemoteSpectrum& r) const override {
+    SpecFetch::Frame declaredFrame(
+        const SpecFetch::RemoteSpectrum& r) const override {
         Q_UNUSED(r);
-        return true;
+        return SpecFetch::Frame::Barycentric;
     }
 };
 

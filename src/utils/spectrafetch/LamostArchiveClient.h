@@ -57,12 +57,16 @@ public:
         QString* error) override;
 
     bool deliversVacuumWavelengths() const override { return true; }
-    bool deliversBarycentric(const SpecFetch::RemoteSpectrum& r) const override {
+    SpecFetch::Frame declaredFrame(
+        const SpecFetch::RemoteSpectrum& r) const override {
         // LAMOST pipelines correct the wavelength solution to heliocentric
         // (single exposures included).
         Q_UNUSED(r);
-        return true;
+        return SpecFetch::Frame::Heliocentric;
     }
+
+    // The epochs this client sets already have half the exposure added.
+    bool reportsExposureStart() const override { return false; }
 
     /// Data releases offered in the setup UI, newest first.
     static QStringList knownDataReleases(bool mrs);
