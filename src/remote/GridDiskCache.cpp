@@ -7,8 +7,12 @@
 #include <QFileInfo>
 #include <QLockFile>
 
-#include <fcntl.h>
-#include <sys/stat.h>
+#ifdef Q_OS_WIN
+  #include <sys/utime.h>
+#else
+  #include <fcntl.h>
+  #include <sys/stat.h>
+#endif
 
 #include <algorithm>
 #include <vector>
@@ -43,8 +47,16 @@ bool GridDiskCache::has(const QString& localPath) const
     /*  Mark the use so eviction keeps what fits actually read.  Done with
      *  utimensat rather than QFile::setFileTime because that one needs the
      *  file opened, and this runs on every cache hit of every corner.      */
+#ifdef Q_OS_WIN
+    /*  _wutime(path, nullptr) stamps both timestamps with "now" and, like
+     *  utimensat, takes a path rather than an open handle.  The wide-char
+     *  form is what keeps a cache directory with non-ASCII characters in
+     *  its path working.                                                  */
+    ::_wutime(reinterpret_cast<const wchar_t*>(localPath.utf16()), nullptr);
+#else
     const struct timespec times[2] = {{0, UTIME_NOW}, {0, UTIME_NOW}};
     ::utimensat(AT_FDCWD, localPath.toLocal8Bit().constData(), times, 0);
+#endif
     return true;
 }
 
