@@ -22,9 +22,6 @@ on:
   # astra-0.7.2-x86_64-setup.exe and attaches it to the release for that tag.
   push:
     tags: ["v*"]
-    # TEMPORARY: iteration trigger for the windows-build branch. Dropped before
-    # this lands -- workflow_dispatch only works once the file is on main.
-    branches: [windows-build]
 
 permissions:
   contents: write   # needed only for the release-upload step
