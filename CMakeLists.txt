@@ -18,7 +18,21 @@ set_property(CACHE CMAKE_BUILD_TYPE PROPERTY STRINGS ${_allowed_build_types})
 # GAEL requires C++20, so the whole project is C++20.
 set(CMAKE_CXX_STANDARD          20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
-set(CMAKE_CXX_EXTENSIONS        OFF)   # use -std=c++20 (NOT gnu++20) everywhere
+# -std=c++20 (NOT gnu++20) everywhere -- one dialect for host and submodules.
+#
+# Windows is the exception, and has to be. -std=c++20 defines __STRICT_ANSI__,
+# and mingw-w64 hides a large part of its headers behind that: M_PI and the
+# other math constants (used in ~26 of our own translation units) and popen /
+# pclose (used by SEDplusplus) all vanish. Suppressing them one macro at a time
+# means patching submodules we do not own, so Windows gets gnu++20 instead.
+# That is still a single dialect for the whole Windows build -- GCC either way,
+# same ABI -- which is what this setting is actually protecting.
+if(WIN32)
+    set(ASTRA_CXX_EXTENSIONS ON)
+else()
+    set(ASTRA_CXX_EXTENSIONS OFF)
+endif()
+set(CMAKE_CXX_EXTENSIONS ${ASTRA_CXX_EXTENSIONS})
 
 # Pick a baseline ISA that covers desktop + laptop. Avoid -march=native.
 # x86 only: these tokens are rejected outright by Apple Clang on arm64, so the
@@ -258,7 +272,7 @@ foreach(_t IN ITEMS GAELcore qcustomplot)
         set_target_properties(${_t} PROPERTIES
             CXX_STANDARD 20
             CXX_STANDARD_REQUIRED ON
-            CXX_EXTENSIONS OFF)
+            CXX_EXTENSIONS ${ASTRA_CXX_EXTENSIONS})
     endif()
 endforeach()
 
@@ -829,10 +843,54 @@ endif()
 
 # Platform-specific settings
 if(WIN32)
+    # WIN32_EXECUTABLE keeps the GUI subsystem, so launching ASTRA never opens
+    # a console window behind the main window.
     set_target_properties(ASTRA PROPERTIES
         WIN32_EXECUTABLE TRUE
     )
-    
+
+    # --- App icon + VERSIONINFO -----------------------------------------
+    # Compiled into the executable itself. The installer's shortcut icon is a
+    # separate thing (build-windows.sh points Inno Setup at the same .ico);
+    # without this resource the .exe on disk still shows the generic icon.
+    # RC is not in the project()'s language list, so enable it here rather
+    # than everywhere -- it exists only on Windows toolchains.
+    enable_language(RC)
+
+    # VERSIONINFO wants exactly four comma-separated numbers. Release CI passes
+    # the tag (v0.7.0) in ASTRA_VERSION_OVERRIDE; a dev stamp such as
+    # git-<hash> is not a version at all, so fall back to the project version
+    # rather than emit an .rc the resource compiler rejects.
+    set(_astra_win_version "${PROJECT_VERSION}")
+    if(ASTRA_VERSION_OVERRIDE MATCHES "^v?([0-9]+(\\.[0-9]+)*)$")
+        set(_astra_win_version "${CMAKE_MATCH_1}")
+    endif()
+    string(REPLACE "." ";" _astra_win_version_parts "${_astra_win_version}")
+    list(LENGTH _astra_win_version_parts _astra_win_version_n)
+    while(_astra_win_version_n LESS 4)
+        list(APPEND _astra_win_version_parts 0)
+        math(EXPR _astra_win_version_n "${_astra_win_version_n} + 1")
+    endwhile()
+    list(SUBLIST _astra_win_version_parts 0 4 _astra_win_version_parts)
+    list(JOIN _astra_win_version_parts "," ASTRA_WIN_VERSION_CSV)
+    set(ASTRA_WIN_VERSION_DOT "${_astra_win_version}")
+
+    # configure_file writes the .rc next to the generated icon path, so the
+    # ICON statement needs an absolute path with forward slashes -- windres
+    # treats a backslash in a resource string as an escape.
+    set(ASTRA_WINDOWS_ICON
+        "${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/astra.ico")
+    if(EXISTS "${ASTRA_WINDOWS_ICON}")
+        configure_file(
+            "${CMAKE_CURRENT_SOURCE_DIR}/resources/windows/astra.rc.in"
+            "${CMAKE_CURRENT_BINARY_DIR}/astra.rc"
+            @ONLY)
+        target_sources(ASTRA PRIVATE "${CMAKE_CURRENT_BINARY_DIR}/astra.rc")
+    else()
+        message(WARNING "resources/windows/astra.ico is missing; ASTRA.exe "
+                        "will use the generic application icon.")
+    endif()
+
     # On Windows, you might need to copy CCfits DLLs to the output directory
     if(CCFITS_FOUND AND CCFITS_RUNTIME_LIBRARIES)
         add_custom_command(TARGET ASTRA POST_BUILD

@@ -1,8 +1,9 @@
 # Installation
 
-ASTRA runs on Linux and macOS. Most users should download a prebuilt package
-from the [latest release](https://github.com/Fabmat1/ASTRA/releases/latest);
-building from source is also supported.
+ASTRA runs on Linux, macOS and Windows. Most users should download a prebuilt
+package from the
+[latest release](https://github.com/Fabmat1/ASTRA/releases/latest); building
+from source is also supported.
 
 ## Linux AppImage (recommended)
 
@@ -55,6 +56,40 @@ and drag ASTRA into your Applications folder.
     the quarantine flag:
     ```bash
     xattr -dr com.apple.quarantine /Applications/ASTRA.app
+    ```
+
+## Windows (64-bit)
+
+Download the `astra-<version>-x86_64-setup.exe` from the
+[latest release](https://github.com/Fabmat1/ASTRA/releases/latest) and run it.
+The installer is per-user by default, so it needs no administrator rights;
+choose to elevate during setup if you would rather install into
+`C:\Program Files`.
+
+Everything ASTRA links is bundled, but two features shell out to tools you
+install yourself:
+
+- **Light-curve fetching and plotting** need Python 3 with `numpy`, plus
+  `gnuplot` on `PATH`. Install Python from
+  [python.org](https://www.python.org/downloads/windows/) (tick *Add python.exe
+  to PATH*) and gnuplot from [gnuplot.info](http://www.gnuplot.info/).
+- **In-app updates** are Linux/macOS only. On Windows, ASTRA still tells you
+  when a new release exists; download and run the new installer over the old
+  one to update.
+
+!!! note "Light-curve fitting is not available on Windows"
+    `lcurve`, the light-curve fitting engine, has no Windows build, so the
+    light-curve *fit* dialog has nothing to drive. Fetching, period searches
+    and plotting all work. Spectral fitting (GAEL) and SED fitting (`sedfit`)
+    are bundled and fully functional.
+
+!!! note "Unsigned installer"
+    The installer is not code-signed, so SmartScreen shows a
+    *Windows protected your PC* warning the first time. Choose **More info →
+    Run anyway**. Verify the download against the published
+    `astra-<version>-x86_64-setup.exe.sha256` if you want to be certain:
+    ```powershell
+    Get-FileHash .\astra-0.7.0-x86_64-setup.exe -Algorithm SHA256
     ```
 
 ## Building from source

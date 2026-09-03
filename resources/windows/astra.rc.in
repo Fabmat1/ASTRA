@@ -1,0 +1,36 @@
+/*  Windows resource script for ASTRA.exe.
+ *
+ *  Configured by the top-level CMakeLists.txt (@ONLY). Supplies the icon
+ *  Explorer and the taskbar show for the executable, plus the VERSIONINFO
+ *  block the Properties dialog reads. Without the icon here, the .exe gets
+ *  the generic MinGW application icon even though the installer shortcut has
+ *  a good one -- the same failure mode the .icns rules guard against on macOS.
+ */
+
+IDI_ASTRA_ICON ICON "@ASTRA_WINDOWS_ICON@"
+
+1 VERSIONINFO
+FILEVERSION     @ASTRA_WIN_VERSION_CSV@
+PRODUCTVERSION  @ASTRA_WIN_VERSION_CSV@
+FILEOS          0x40004L
+FILETYPE        0x1L
+BEGIN
+    BLOCK "StringFileInfo"
+    BEGIN
+        BLOCK "040904B0"
+        BEGIN
+            VALUE "CompanyName",      "Fabian Mattig"
+            VALUE "FileDescription",  "ASTRA - Stellar Astrophysics Data Manager"
+            VALUE "FileVersion",      "@ASTRA_WIN_VERSION_DOT@"
+            VALUE "InternalName",     "ASTRA"
+            VALUE "LegalCopyright",   "Fabian Mattig, MIT licensed"
+            VALUE "OriginalFilename", "ASTRA.exe"
+            VALUE "ProductName",      "ASTRA"
+            VALUE "ProductVersion",   "@ASTRA_WIN_VERSION_DOT@"
+        END
+    END
+    BLOCK "VarFileInfo"
+    BEGIN
+        VALUE "Translation", 0x409, 1200
+    END
+END

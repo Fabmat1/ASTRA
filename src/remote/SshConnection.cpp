@@ -10,7 +10,9 @@
 #include <QProcessEnvironment>
 #include <QStandardPaths>
 
-#include <unistd.h>
+#ifdef Q_OS_UNIX
+  #include <unistd.h>
+#endif
 
 namespace astra::remote {
 
@@ -59,8 +61,13 @@ void SshConnection::prepareSshProcess(QProcess& proc)
 
     /*  Detach from the controlling terminal so ssh cannot fall back to a
      *  TTY prompt nobody is watching; with no TTY (and _REQUIRE=force) it
-     *  routes every prompt, keyboard-interactive included, to askpass.      */
+     *  routes every prompt, keyboard-interactive included, to askpass.
+     *  setChildProcessModifier() is declared on Unix only, and Windows has no
+     *  controlling terminal to detach from: a GUI-subsystem child there never
+     *  gets a console in the first place, so askpass wins by default.       */
+#ifdef Q_OS_UNIX
     proc.setChildProcessModifier([] { ::setsid(); });
+#endif
 }
 
 QString SshConnection::controlPath() const
