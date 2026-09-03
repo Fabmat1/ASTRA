@@ -89,7 +89,7 @@ install yourself:
     Run anyway**. Verify the download against the published
     `astra-<version>-x86_64-setup.exe.sha256` if you want to be certain:
     ```powershell
-    Get-FileHash .\astra-0.7.0-x86_64-setup.exe -Algorithm SHA256
+    Get-FileHash .\astra-0.7.1-x86_64-setup.exe -Algorithm SHA256
     ```
 
 ## Building from source
