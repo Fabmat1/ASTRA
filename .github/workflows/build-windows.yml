@@ -66,8 +66,15 @@ jobs:
       # ccache for ASTRA/GAEL/sedfit plus the one-time CCfits source build.
       # Keyed on the SHA so every run saves a fresh entry, with a prefix
       # restore so it starts from the previous run's objects.
-      - name: Cache ccache + CCfits
-        uses: actions/cache@v4
+      #
+      # Split restore/save rather than the combined action on purpose: the
+      # combined one skips its save step when the job fails, so a build that
+      # dies at the last link, or hits the timeout, throws away an hour of
+      # compilation and the retry starts cold. Saving unconditionally means the
+      # retry only redoes what actually changed.
+      - name: Restore ccache + CCfits
+        id: cache
+        uses: actions/cache/restore@v4
         with:
           path: ${{ steps.cachedir.outputs.dir }}
           key: astra-windows-build-${{ github.sha }}
@@ -99,6 +106,13 @@ jobs:
           ASTRA_VERSION_OVERRIDE: ${{ steps.ver.outputs.stamp }}
           ASTRA_SKIP_SUBMODULE_UPDATE: "1"
         run: ./build-windows.sh "${{ steps.ver.outputs.version }}"
+
+      - name: Save ccache + CCfits
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.cachedir.outputs.dir }}
+          key: astra-windows-build-${{ github.sha }}
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
