@@ -92,12 +92,13 @@ jobs:
             echo "stamp=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
             echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
           else
-            echo "version=${{ github.event.inputs.version || '0.7.0' }}" >> "$GITHUB_OUTPUT"
-            # A manual run that names a release tag is a rebuild of that
-            # release, so it must stamp the same version a tag build would —
-            # otherwise the .exe attached to v0.7.0 reports git-<hash>.
-            echo "stamp=${{ github.event.inputs.release_tag }}" >> "$GITHUB_OUTPUT"
-            echo "tag=${{ github.event.inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+            # TEMPORARY (throwaway backport branch): this branch is v0.7.0's
+            # source with Windows support applied, pushed solely to backfill
+            # the v0.7.0 release. Pin all three so the push build stamps and
+            # attaches on its own, with no manual upload afterwards.
+            echo "version=0.7.0" >> "$GITHUB_OUTPUT"
+            echo "stamp=v0.7.0"  >> "$GITHUB_OUTPUT"
+            echo "tag=v0.7.0"    >> "$GITHUB_OUTPUT"
           fi
 
       - name: Build the installer
