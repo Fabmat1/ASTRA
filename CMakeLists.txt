@@ -265,6 +265,18 @@ if(ASTRA_HAVE_SEDFIT)
 endif()
 
 
+# ── GAELcore's CCfits include path ─────────────────────────────────────────
+# GAEL resolves CCfits with find_library() alone and never adds an include
+# directory for it, which works everywhere the headers sit in a default search
+# path (/usr/include on Linux, the Homebrew prefix on macOS). On Windows CCfits
+# is a source build in its own prefix, so <CCfits/CCfits> is not found and
+# GAELcore fails to compile. Hand it the directory ASTRA already resolved,
+# rather than a global include_directories() that would put -I/usr/include
+# ahead of /usr/local/include on the Unix builds.
+if(TARGET GAELcore AND CCFITS_FOUND)
+    target_include_directories(GAELcore PRIVATE ${CCFITS_INCLUDE_DIRS})
+endif()
+
 # ── Belt-and-braces: force the final ABI on every linked target ─────────────
 # Some submodules unconditionally `set(CMAKE_CXX_STANDARD 17)` in their own
 # CMakeLists.txt, which silently overrides our directory-scope setting.
