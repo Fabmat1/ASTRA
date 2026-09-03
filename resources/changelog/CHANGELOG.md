@@ -21,6 +21,16 @@
     implemented.
 -->
 
+## v0.7.2 (2026-09-03)
+
+### Added
+- **Light-curve fitting on Windows.** `lcurve` ships with the installer.
+- **In-app updates on Windows.** ASTRA closes, installs, and comes back.
+
+### Fixed
+- The text cursor was a fat block on scaled Windows displays.
+- The χ² Landscape and RV Periodogram tabs cut off their right-hand controls.
+
 ## v0.7.1 (2026-09-03)
 
 ### Added

@@ -36,10 +36,7 @@ constexpr const char* kRepoName  = "ASTRA";
 constexpr const char* kSettingsGroup = "AppSettings";
 constexpr const char* kSkippedKey    = "update/skippedVersion";
 
-// File suffix of the release asset this platform installs from. Windows has no
-// self-install path (canSelfInstall() is false there), but the suffix still has
-// to name the Windows package or the update *check* reports every release as
-// having no asset for this platform.
+// File suffix of the release asset this platform installs from.
 #if defined(Q_OS_MACOS)
 constexpr const char* kPackageSuffix = ".dmg";
 #elif defined(Q_OS_WIN)
@@ -325,9 +322,44 @@ bool UpdateManager::isAppBundle()
     return !appBundlePath().isEmpty();
 }
 
+QString UpdateManager::windowsInstallRoot()
+{
+#if defined(Q_OS_WIN)
+    // The installer lays the tree out as <root>/bin/ASTRA.exe and drops its
+    // uninstaller at <root>/unins000.exe. That uninstaller is the marker: it
+    // exists only for a tree Inno Setup created, which is exactly the tree the
+    // next setup .exe knows how to replace. A build tree has none, and running
+    // a release installer over one would be wrong.
+    QDir dir(QCoreApplication::applicationDirPath());
+    if (dir.dirName().compare(QLatin1String("bin"), Qt::CaseInsensitive) != 0)
+        return {};
+    if (!dir.cdUp())
+        return {};
+    // unins000 unless another Inno-installed program shares the directory, in
+    // which case the number goes up.
+    if (dir.entryList({QStringLiteral("unins*.exe")}, QDir::Files).isEmpty())
+        return {};
+    return dir.absolutePath();
+#else
+    return {};
+#endif
+}
+
+bool UpdateManager::isWindowsInstall()
+{
+    return !windowsInstallRoot().isEmpty();
+}
+
 bool UpdateManager::canSelfInstall()
 {
-    return isAppImage() || isAppBundle();
+    return isAppImage() || isAppBundle() || isWindowsInstall();
+}
+
+bool UpdateManager::installRunsAfterExit()
+{
+    // Windows holds an open image section on every running .exe and .dll, so
+    // the installer cannot touch the tree until this process is gone.
+    return isWindowsInstall();
 }
 
 QString UpdateManager::packagingName()
@@ -336,7 +368,38 @@ QString UpdateManager::packagingName()
         return QStringLiteral("AppImage");
     if (isAppBundle())
         return QStringLiteral("macOS app bundle");
+    if (isWindowsInstall())
+        return QStringLiteral("Windows installation");
     return {};
+}
+
+UpdateManager::FinishedPrompt
+UpdateManager::installFinishedPrompt(const QString& version)
+{
+    if (installRunsAfterExit())
+        return {tr("Finish the update"),
+                tr("ASTRA %1 has been downloaded and verified.\n\n"
+                   "Windows cannot replace a program while it is running, so "
+                   "ASTRA has to close for the installer to do its work. It "
+                   "starts again on its own once the installer is done.\n\n"
+                   "Close ASTRA and install now?").arg(version)};
+
+    return {tr("Update installed"),
+            tr("ASTRA %1 has been installed.\n\n"
+               "Restart now to use the new version?").arg(version)};
+}
+
+QString UpdateManager::manualInstallHint()
+{
+#if defined(Q_OS_WIN)
+    return tr("The installer has been opened. Run it to finish the update.");
+#elif defined(Q_OS_MACOS)
+    return tr("The disk image has been opened. Drag ASTRA to your Applications "
+              "folder to finish, then restart ASTRA.");
+#else
+    return tr("The package has been opened. Install it to finish, then restart "
+              "ASTRA.");
+#endif
 }
 
 int UpdateManager::compareVersions(const QString& a, const QString& b)
@@ -528,8 +591,8 @@ void UpdateManager::downloadAndInstall(const UpdateInfo& info)
     }
     if (!canSelfInstall()) {
         emit installFailed(tr("Automatic install is only available when running "
-                              "from the official AppImage (Linux) or app bundle "
-                              "(macOS)."));
+                              "from the official AppImage (Linux), app bundle "
+                              "(macOS) or installed build (Windows)."));
         return;
     }
     if (!info.hasPackage()) {
@@ -582,12 +645,13 @@ void UpdateManager::startPackageDownload(const QString& expectedSha256)
         _dlPath = current + QStringLiteral(".astra-update-%1")
                                 .arg(QCoreApplication::applicationPid());
     } else {
-        // macOS: the .dmg is mounted, not renamed into place, so a temp dir is
-        // fine - and stays usable when we have to fall back to a manual drag.
+        // macOS mounts the .dmg and Windows runs the setup .exe, so neither is
+        // renamed into place: a temp dir is fine, and stays usable when we have
+        // to fall back to installing by hand.
         const QString tmp = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
         QString name = _dlInfo.assetName;
         if (name.isEmpty())
-            name = QStringLiteral("astra-update.dmg");
+            name = QStringLiteral("astra-update") + QLatin1String(kPackageSuffix);
         _dlPath = QDir(tmp).absoluteFilePath(name);
         QFile::remove(_dlPath);
     }
@@ -656,6 +720,8 @@ void UpdateManager::finishInstall()
     emit installStarted();
     if (isAppImage())
         installAppImage();
+    else if (isWindowsInstall())
+        prepareWindowsSetup();
     else
         installMacBundle();
 }
@@ -726,6 +792,106 @@ void UpdateManager::installMacBundle()
     });
     connect(worker, &QThread::finished, worker, &QObject::deleteLater);
     worker->start();
+#else
+    requireManualInstall(tr("Unsupported platform."));
+#endif
+}
+
+namespace {
+#if defined(Q_OS_WIN)
+// Path of a verified setup .exe waiting for this process to exit. relaunch() is
+// static - it is the process saying goodbye, not the object - so the hand-over
+// has to outlive the UpdateManager instance.
+QString g_pendingWindowsSetup;
+QString g_pendingWindowsRoot;
+
+/// Write the hand-over script and start it. False when nothing was launched.
+///
+/// A script rather than the setup .exe directly, because two things have to
+/// happen around an event this process cannot outlive: the installer must run
+/// after we exit, and ASTRA must come back once it is done. cmd is the only
+/// thing on a stock Windows that can sequence that.
+bool launchWindowsInstaller(const QString& setup, const QString& root)
+{
+    const QString exe = QDir(root).absoluteFilePath(QStringLiteral("bin/ASTRA.exe"));
+    const QString tmp = QStandardPaths::writableLocation(QStandardPaths::TempLocation);
+    const QString script = QDir(tmp).absoluteFilePath(
+        QStringLiteral("astra-update-%1.cmd").arg(QCoreApplication::applicationPid()));
+
+    // cd out of the install tree first: the script inherits our working
+    // directory, and a directory handle held there can stop the installer from
+    // replacing what is in it.
+    //
+    // /SILENT rather than /VERYSILENT keeps Inno's own progress window, which
+    // is the only thing on screen once ASTRA is gone. /CLOSEAPPLICATIONS covers
+    // the seconds between this launch and our own exit. /DIR pins the target to
+    // the tree we run from: the installer is PrivilegesRequired=lowest, so a
+    // silent run left to guess would put a second copy under the user profile
+    // instead of upgrading this one.
+    const QString cmd = QStringLiteral(
+        "@echo off\r\n"
+        "cd /d \"%TEMP%\"\r\n"
+        "\"%1\" /SILENT /SUPPRESSMSGBOXES /NORESTART /NOCANCEL /CLOSEAPPLICATIONS /DIR=\"%2\"\r\n"
+        "if exist \"%3\" start \"\" \"%3\"\r\n"
+        "del \"%1\" >nul 2>&1\r\n"
+        "del \"%~f0\"\r\n")
+        .arg(QDir::toNativeSeparators(setup),
+             QDir::toNativeSeparators(root),
+             QDir::toNativeSeparators(exe));
+
+    QFile f(script);
+    if (!f.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        LOG_WARNING("UpdateManager",
+                    "Cannot write update script " + script + ": " + f.errorString());
+        return false;
+    }
+    // cmd reads a batch file in the console code page, not UTF-8.
+    f.write(cmd.toLocal8Bit());
+    f.close();
+
+    return QProcess::startDetached(
+        QStringLiteral("cmd.exe"),
+        {QStringLiteral("/c"), QDir::toNativeSeparators(script)});
+}
+#endif // Q_OS_WIN
+} // namespace
+
+void UpdateManager::prepareWindowsSetup()
+{
+#if defined(Q_OS_WIN)
+    const QString root = windowsInstallRoot();
+    if (root.isEmpty()) {
+        requireManualInstall(tr("ASTRA is not running from an installed copy."));
+        return;
+    }
+
+    // The silent install writes straight into the tree we are running from, so
+    // establish now that we are allowed to: a per-machine install under Program
+    // Files needs administrator rights, and a silent run has no way to ask for
+    // them - it would simply fail after ASTRA had already quit. Handing the
+    // package to Explorer instead lets Windows raise the elevation prompt.
+    QFile probe(QDir(root).absoluteFilePath(QStringLiteral(".astra-update-probe")));
+    if (!probe.open(QIODevice::WriteOnly)) {
+        requireManualInstall(tr("%1 cannot be written to by this user, so the "
+                                "installer needs administrator rights.").arg(root));
+        return;
+    }
+    probe.close();
+    probe.remove();
+
+    // Hold on to the package - relaunch() runs it once we are gone - and keep
+    // cleanupDownload() from deleting it on the way out.
+    g_pendingWindowsSetup = _dlPath;
+    g_pendingWindowsRoot  = root;
+    _dlPath.clear();
+
+    const QString version = _dlInfo.version;
+    cleanupDownload();
+    clearSkipMarker();
+
+    LOG_INFO("UpdateManager",
+             "Update " + version + " verified and ready to install over " + root);
+    emit installFinished(root);
 #else
     requireManualInstall(tr("Unsupported platform."));
 #endif
@@ -825,6 +991,31 @@ void UpdateManager::relaunch()
         // swapped bundle instead of the (now unlinked) one we are running from.
         QProcess::startDetached(QStringLiteral("/usr/bin/open"),
                                 {QStringLiteral("-n"), bundle});
+        QCoreApplication::quit();
+        return;
     }
+
+#if defined(Q_OS_WIN)
+    // Nothing has been installed yet on Windows: this is the hand-over. The
+    // script waits for nobody - it is the installer's /CLOSEAPPLICATIONS and our
+    // quit() below that get us out of the way - and starts ASTRA again at the
+    // end, so there is no relaunch to do here.
+    if (!g_pendingWindowsSetup.isEmpty()) {
+        const QString setup = g_pendingWindowsSetup;
+        const QString root  = g_pendingWindowsRoot;
+        g_pendingWindowsSetup.clear();
+        g_pendingWindowsRoot.clear();
+        if (launchWindowsInstaller(setup, root)) {
+            LOG_INFO("UpdateManager", "Handed " + setup + " to the installer");
+        } else {
+            // The package is good even when the hand-over is not; let the user
+            // finish it by hand rather than quitting with nothing to show.
+            LOG_WARNING("UpdateManager",
+                        "Could not start the installer; opening " + setup);
+            QDesktopServices::openUrl(QUrl::fromLocalFile(setup));
+        }
+    }
+#endif
+
     QCoreApplication::quit();
 }

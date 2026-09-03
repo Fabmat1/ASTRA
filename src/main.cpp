@@ -6,6 +6,7 @@
 #include "db/DatabaseManager.h"
 #include <QMessageBox>
 #include "utils/UiIcons.h"
+#include "utils/UiStyle.h"
 #include "utils/WindowSizing.h"
 #include "fitting/FitTypes.h"
 #include "fitting/FitBackendRegistry.h"
@@ -56,6 +57,10 @@ int main(int argc, char *argv[])
     // Dialog button boxes otherwise pick up Ok/Cancel/Close icons from the
     // desktop icon theme, which matches nothing else in ASTRA.
     UiIcons::installDialogButtonIcons(&app);
+
+    // Wraps the platform style; the theme stylesheet is applied later and
+    // layers on top of it.
+    UiStyle::installMetricFixes(&app);
 
     QFontDatabase::addApplicationFont(":/fonts/FiraCode-Regular.ttf");
     QFontDatabase::addApplicationFont(":/fonts/FiraCode-Medium.ttf");

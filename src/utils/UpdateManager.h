@@ -28,12 +28,16 @@ struct UpdateInfo {
 /// Checks GitHub for newer ASTRA releases and, when running from a package we
 /// know how to replace, downloads, verifies and installs the new version.
 ///
-/// Two install targets are supported:
-///   • Linux  - the AppImage we were launched from is swapped in place.
-///   • macOS  - the .dmg is mounted and the new ASTRA.app replaces the bundle
-///              we are running from. When that bundle is not writable (e.g. it
-///              belongs to another admin user), the download is handed to the
-///              Finder instead via manualInstallRequired().
+/// Three install targets are supported:
+///   • Linux   - the AppImage we were launched from is swapped in place.
+///   • macOS   - the .dmg is mounted and the new ASTRA.app replaces the bundle
+///               we are running from. When that bundle is not writable (e.g. it
+///               belongs to another admin user), the download is handed to the
+///               Finder instead via manualInstallRequired().
+///   • Windows - the setup .exe cannot overwrite an installation while it is
+///               running, so it is only *prepared* here: installFinished()
+///               means "verified and ready", and relaunch() hands the package
+///               to the installer and quits. See installRunsAfterExit().
 ///
 /// The startup check is fire-and-forget: connect to the signals and call
 /// checkForUpdates(). All network work is asynchronous.
@@ -69,13 +73,41 @@ public:
     /// True when running from a macOS .app bundle we can replace.
     static bool isAppBundle();
 
+    /// Root of the Inno Setup installation ASTRA runs from - the directory
+    /// holding bin/ASTRA.exe and the uninstaller - or "" when this is not an
+    /// installed Windows build (a build tree, or another platform).
+    static QString windowsInstallRoot();
+
+    /// True when running from an installation the Windows installer replaces.
+    static bool isWindowsInstall();
+
     /// True when this build knows how to install an update over itself
-    /// (AppImage on Linux, .app bundle on macOS).
+    /// (AppImage on Linux, .app bundle on macOS, installed build on Windows).
     static bool canSelfInstall();
 
+    /// True when the verified download still has to be handed to a separate
+    /// installer that can only run once ASTRA has exited (Windows). The UI has
+    /// to say so: installFinished() then means "ready to install", and
+    /// relaunch() is what starts the installer.
+    static bool installRunsAfterExit();
+
     /// Human-readable name of the packaging we are running from ("AppImage",
-    /// "macOS app bundle"), or "" when ASTRA runs unpackaged.
+    /// "macOS app bundle", "Windows installation"), or "" when ASTRA runs
+    /// unpackaged.
     static QString packagingName();
+
+    /// Wording for the message that follows installFinished(). It differs per
+    /// platform: on Windows nothing has been installed yet, so the message asks
+    /// permission to close instead of reporting success.
+    struct FinishedPrompt {
+        QString title;
+        QString text;   ///< Answering yes means calling relaunch().
+    };
+    static FinishedPrompt installFinishedPrompt(const QString& version);
+
+    /// What the user has to do with a package we downloaded but could not
+    /// install for them (manualInstallRequired()).
+    static QString manualInstallHint();
 
     /// Compare two version strings. Returns <0, 0, >0 like strcmp. A leading
     /// 'v' and any pre-release suffix after '-'/'+' are ignored.
@@ -101,7 +133,10 @@ public:
     /// Abort an in-progress download.
     void cancelDownload();
 
-    /// Re-launch the (just updated) ASTRA and ask this instance to quit.
+    /// Re-launch the (just updated) ASTRA and ask this instance to quit. On
+    /// Windows this is also what starts the installer: nothing can replace the
+    /// running installation until this process is gone, so the installer is
+    /// launched here and brings ASTRA back up itself.
     static void relaunch();
 
 signals:
@@ -115,8 +150,10 @@ signals:
     void installStarted();
     void installFinished(const QString& installedPath);
     /// The download is verified and usable, but ASTRA could not replace itself
-    /// (typically an app bundle owned by another user). `packagePath` is the
-    /// downloaded .dmg, which has been handed to the Finder for a manual drag.
+    /// (typically an app bundle owned by another user, or a Windows
+    /// installation that needs administrator rights). `packagePath` is the
+    /// downloaded package, which has been handed to the desktop so the user can
+    /// run it themselves.
     void manualInstallRequired(const QString& packagePath, const QString& reason);
     void installFailed(const QString& error);
 
@@ -126,6 +163,9 @@ private:
     void finishInstall();
     void installAppImage();
     void installMacBundle();
+    /// Windows: keep the verified setup .exe and report it as ready. Nothing is
+    /// installed until relaunch() runs it - see installRunsAfterExit().
+    void prepareWindowsSetup();
     void clearSkipMarker();
     void cleanupDownload();
     void failInstall(const QString& error);

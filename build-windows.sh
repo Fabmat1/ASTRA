@@ -20,6 +20,10 @@
 #                            installer — it does not stamp the binary.
 #   ISCC                   = path to Inno Setup's ISCC.exe, if it is not on PATH
 #                            and not in the default install location.
+#   ASTRA_BUNDLE_LCURVE=0  = do not build/bundle the lcurve fitting binaries
+#   LCURVE_REPO / LCURVE_REF / LCURVE_ARCH
+#                          = source, ref and -march baseline for that build
+#                            (defaults: the public repo, main, x86-64-v3)
 #
 # Toolchain: MSYS2 UCRT64 (mingw-w64 GCC). Not MSVC — GAEL declares
 # `LANGUAGES C CXX Fortran` and there is no Fortran compiler in the MSVC
@@ -31,13 +35,11 @@
 # MSYS2 does not package, so it gets a one-time source build here, cached.
 #
 # What is NOT in the Windows package, and why:
-#   • lcurve — the light-curve fitting binaries are a Unix Fortran/C++ program
-#     with no Windows build. Light-curve *fitting* is therefore unavailable;
-#     everything else (fetching, periodograms, plotting) works. ASTRA already
-#     resolves lcurve from Settings/PATH when it is not bundled, so a user who
-#     builds it themselves can still point at it.
 #   • ISIS — Unix-only, and SED fitting no longer needs it: the bundled
 #     `sedfit` (SEDplusplus) replaced it and does build here.
+#   • CUDA: lcurve is built with LCURVE_ENABLE_CUDA=OFF. The runners have no
+#     NVIDIA toolkit, and the fit dialog's GPU switch degrades to CPU on its
+#     own when the binaries carry no kernels.
 set -euo pipefail
 
 VERSION="${1:-0.0.0}"
@@ -232,6 +234,75 @@ cmake --install "${BUILD_DIR}"
 
 BIN_DIR="${STAGE_DIR}/bin"
 [[ -f "${BIN_DIR}/ASTRA.exe" ]] || { echo "No ASTRA.exe in ${BIN_DIR}"; exit 1; }
+
+# ── 5b. lcurve fitting binaries ─────────────────────────────────────────────
+# ASTRA shells out to lcurve_levmarq / lcurve_mcmc / lcurve_simplex to fit a
+# light curve, and to lcurve_re (the forward model) for the fit dialog's model
+# preview. Built from source here, exactly as build-appimage.sh and
+# build-macos.sh do, so every release picks up the current lcurve_re HEAD.
+#
+# They land in libexec/astra/lcurve, which is where ASTRA looks: the runtime
+# path comes from ASTRA_LCURVE_BUNDLE_RELDIR ("../libexec/astra/lcurve"),
+# computed from the install layout in CMakeLists.txt. Step 7 gives the
+# directory its own DLL closure, since Windows resolves imports next to the
+# .exe and these do not sit beside ASTRA.exe.
+if [[ "${ASTRA_BUNDLE_LCURVE:-1}" == "1" ]]; then
+  LCURVE_REPO="${LCURVE_REPO:-https://github.com/Fabmat1/lcurve_re.git}"
+  LCURVE_REF="${LCURVE_REF:-main}"
+  LCURVE_SRC="${CACHE}/lcurve_re"
+  LCURVE_BUILD="${LCURVE_SRC}/build-windows"
+  LCURVE_BINS=(lcurve_levmarq lcurve_mcmc lcurve_simplex lcurve_re)
+
+  echo ">>> Building lcurve (${LCURVE_REF})"
+  if [[ -d "${LCURVE_SRC}/.git" ]]; then
+    # reset --hard, not checkout: the cached clone still carries the previous
+    # run's -march rewrite in its working tree, and a plain checkout refuses to
+    # move past a locally modified file the new commit also touches.
+    git -C "${LCURVE_SRC}" fetch --depth 1 origin "${LCURVE_REF}"
+    git -C "${LCURVE_SRC}" reset -q --hard FETCH_HEAD
+  else
+    rm -rf "${LCURVE_SRC}"
+    git clone --depth 1 --branch "${LCURVE_REF}" "${LCURVE_REPO}" "${LCURVE_SRC}"
+  fi
+
+  # gnuplot-iostream is a header-only build dependency (new_helpers.h includes
+  # it unconditionally). MSYS2 has no package for it, and ASTRA never lets
+  # lcurve start a gnuplot process anyway - it drives the "stream" plot device,
+  # which writes JSON frames to stdout. Same fetch the macOS build does.
+  GP_INC="${CACHE}/include"
+  mkdir -p "${GP_INC}"
+  [[ -f "${GP_INC}/gnuplot-iostream.h" ]] || \
+    curl -fsSL -o "${GP_INC}/gnuplot-iostream.h" \
+      https://raw.githubusercontent.com/dstahlke/gnuplot-iostream/master/gnuplot-iostream.h
+
+  # lcurve_re's Release flags hardcode -march=native, which would tune the
+  # binaries to whatever CPU the runner happened to have. Pin ASTRA's own
+  # baseline (CMakeLists.txt: -march=x86-64-v3, AVX2/FMA) instead.
+  LCURVE_ARCH="${LCURVE_ARCH:-x86-64-v3}"
+  sed -i "s/-march=native/-march=${LCURVE_ARCH}/" "${LCURVE_SRC}/CMakeLists.txt"
+  grep -q -- "-march=native" "${LCURVE_SRC}/CMakeLists.txt" \
+    && { echo "::error::lcurve_re still requests -march=native"; exit 1; }
+
+  GP_INC_NATIVE="$(cygpath -m "${GP_INC}")"
+  cmake -S "${LCURVE_SRC}" -B "${LCURVE_BUILD}" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DLCURVE_ENABLE_CUDA=OFF \
+    -DGNUPLOT_IOSTREAM_INCLUDE_DIR="${GP_INC_NATIVE}" \
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+  cmake --build "${LCURVE_BUILD}" -j "${JOBS}" --target "${LCURVE_BINS[@]}"
+
+  LCURVE_DEST="${STAGE_DIR}/libexec/astra/lcurve"
+  mkdir -p "${LCURVE_DEST}"
+  for b in "${LCURVE_BINS[@]}"; do
+    [[ -f "${LCURVE_BUILD}/${b}.exe" ]] \
+      || { echo "::error::lcurve build produced no ${b}.exe"; exit 1; }
+    cp -f "${LCURVE_BUILD}/${b}.exe" "${LCURVE_DEST}/"
+  done
+  echo ">>> lcurve staged at libexec/astra/lcurve ($(ls "${LCURVE_DEST}" | tr '\n' ' '))"
+else
+  echo ">>> ASTRA_BUNDLE_LCURVE=0 - light-curve fitting will need a user-installed lcurve"
+fi
 
 # ── 6. Qt deployment ────────────────────────────────────────────────────────
 # Copies the Qt DLLs plus the platform/imageformat/sqldrivers plugins ASTRA

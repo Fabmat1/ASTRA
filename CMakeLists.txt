@@ -388,6 +388,7 @@ set(SOURCES
     src/utils/ThemeManager.cpp
     src/utils/WindowSizing.cpp
     src/utils/UiIcons.cpp
+    src/utils/UiStyle.cpp
     src/utils/UpdateManager.cpp
     src/utils/ObservabilityCalculator.cpp
     src/utils/LightcurveFetcher.cpp

@@ -32,6 +32,7 @@
 #include <QProgressDialog>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScrollBar>
 #include <QSet>
 #include <QSpinBox>
 #include <QSplitter>
@@ -48,6 +49,34 @@
 #include <memory>
 #include <numeric>
 #include <thread>
+
+namespace {
+
+// Size a tab's control column so its widest row fits.
+//
+// These columns are forms of full-range spin boxes, several of them two to a
+// row with a separator between, and a hardcoded pixel floor only fits them for
+// the font and widget metrics it was measured against. Windows' Segoe UI and
+// native spin boxes need more room than that, and the widest rows were simply
+// cut off - horizontal scrolling was switched off, so there was not even a bar
+// to reach them with.
+//
+// So take the larger of the known-good floor and the layout's own minimum,
+// which is the width below which a row stops being laid out and starts being
+// clipped. Not the size *hint*: these spin boxes have 1e9 ranges and would ask
+// for a column half the dialog wide. The horizontal bar stays as a backstop.
+void fitControlColumn(QScrollArea* scroll, QWidget* content, int floorPx, int slack)
+{
+    content->ensurePolished();   // the theme stylesheet adds padding to these
+    const int chrome = 2 * scroll->frameWidth()
+                     + scroll->verticalScrollBar()->sizeHint().width();
+    const int want = std::max(floorPx, content->minimumSizeHint().width() + chrome);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    scroll->setMinimumWidth(want);
+    scroll->setMaximumWidth(want + slack);
+}
+
+} // namespace
 
 // ───────────────────────────────────────────────────────────────────
 RVAddFitDialog::RVAddFitDialog(std::shared_ptr<Star> star,
@@ -2399,14 +2428,12 @@ void RVAddFitDialog::buildPeriodogramTab(QWidget* parent)
     // ── Right: controls (scrollable) ─────────────────────────────────
     auto* ctlScroll = new QScrollArea;
     ctlScroll->setWidgetResizable(true);
-    ctlScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     auto* ctl    = new QWidget;
     auto* ctlLay = new QVBoxLayout(ctl);
     ctlLay->setContentsMargins(6, 6, 6, 6);
     ctlLay->setSpacing(8);
     ctlScroll->setWidget(ctl);
-    ctlScroll->setMinimumWidth(330);
-    ctlScroll->setMaximumWidth(440);
+    // Width is measured from the finished content at the end of this function.
 
     auto mk = [](double mn, double mx, int dec, double step) {
         auto* s = new PreciseDoubleSpinBox;
@@ -2517,6 +2544,7 @@ void RVAddFitDialog::buildPeriodogramTab(QWidget* parent)
 
     connect(_pgFitBtn, &QPushButton::clicked, this, &RVAddFitDialog::onPgFitPeaks);
 
+    fitControlColumn(ctlScroll, ctl, /*floorPx=*/330, /*slack=*/110);
     splitter->addWidget(ctlScroll);
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 0);
@@ -2937,17 +2965,12 @@ void RVAddFitDialog::buildBootstrapTab(QWidget* parent)
     // ── Right: controls (scrollable) ─────────────────────────────────
     auto* ctlScroll = new QScrollArea;
     ctlScroll->setWidgetResizable(true);
-    ctlScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
     auto* ctl    = new QWidget;
     auto* ctlLay = new QVBoxLayout(ctl);
     ctlLay->setContentsMargins(6, 6, 6, 6);
     ctlLay->setSpacing(8);
     ctlScroll->setWidget(ctl);
-    // Wider floor than the other tabs: the K / γ rows put two full-range
-    // spin boxes side by side, and horizontal scrolling is off, so anything
-    // narrower clips the "Run scan" row rather than scrolling to it.
-    ctlScroll->setMinimumWidth(390);
-    ctlScroll->setMaximumWidth(470);
+    // Width is measured from the finished content at the end of this function.
 
     auto mk = [](double mn, double mx, int dec, double step) {
         auto* s = new PreciseDoubleSpinBox;
@@ -3146,6 +3169,9 @@ void RVAddFitDialog::buildBootstrapTab(QWidget* parent)
 
     connect(_bsFitBtn, &QPushButton::clicked, this, &RVAddFitDialog::onBsFitPeaks);
 
+    // The K / gamma / e rows put two spin boxes side by side, so this column
+    // starts wider than the periodogram tab's.
+    fitControlColumn(ctlScroll, ctl, /*floorPx=*/390, /*slack=*/80);
     splitter->addWidget(ctlScroll);
     splitter->setStretchFactor(0, 1);
     splitter->setStretchFactor(1, 0);

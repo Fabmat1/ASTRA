@@ -66,22 +66,20 @@ The installer is per-user by default, so it needs no administrator rights;
 choose to elevate during setup if you would rather install into
 `C:\Program Files`.
 
-Everything ASTRA links is bundled, but two features shell out to tools you
-install yourself:
+Everything ASTRA links is bundled, including the `lcurve` fitting binaries and
+`sedfit`. One feature shells out to tools you install yourself:
 
 - **Light-curve fetching and plotting** need Python 3 with `numpy`, plus
   `gnuplot` on `PATH`. Install Python from
   [python.org](https://www.python.org/downloads/windows/) (tick *Add python.exe
   to PATH*) and gnuplot from [gnuplot.info](http://www.gnuplot.info/).
-- **In-app updates** are Linux/macOS only. On Windows, ASTRA still tells you
-  when a new release exists; download and run the new installer over the old
-  one to update.
 
-!!! note "Light-curve fitting is not available on Windows"
-    `lcurve`, the light-curve fitting engine, has no Windows build, so the
-    light-curve *fit* dialog has nothing to drive. Fetching, period searches
-    and plotting all work. Spectral fitting (GAEL) and SED fitting (`sedfit`)
-    are bundled and fully functional.
+!!! info "In-app updates"
+    ASTRA updates itself on Windows as it does elsewhere, with one difference:
+    Windows cannot replace a running program, so ASTRA closes, the installer
+    runs, and ASTRA starts again by itself. An installation that needs
+    administrator rights (one you elevated into `C:\Program Files`) is handed
+    the downloaded installer to run by hand instead.
 
 !!! note "Unsigned installer"
     The installer is not code-signed, so SmartScreen shows a
@@ -89,7 +87,7 @@ install yourself:
     Run anyway**. Verify the download against the published
     `astra-<version>-x86_64-setup.exe.sha256` if you want to be certain:
     ```powershell
-    Get-FileHash .\astra-0.7.1-x86_64-setup.exe -Algorithm SHA256
+    Get-FileHash .\astra-0.7.2-x86_64-setup.exe -Algorithm SHA256
     ```
 
 ## Building from source

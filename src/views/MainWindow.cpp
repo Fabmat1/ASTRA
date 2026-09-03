@@ -1051,19 +1051,19 @@ void MainWindow::promptInstallUpdate(const UpdateInfo& info)
         progress->deleteLater();
         QMessageBox::information(this, "Finish the update manually",
             QString("ASTRA %1 was downloaded and verified, but it could not be "
-                    "installed automatically:\n%2\n\n"
-                    "The disk image has been opened. Drag ASTRA to your "
-                    "Applications folder to finish, then restart ASTRA.\n\n%3")
-                .arg(info.version, reason, path));
+                    "installed automatically:\n%2\n\n%3\n\n%4")
+                .arg(info.version, reason,
+                     UpdateManager::manualInstallHint(), path));
     });
     connect(_updater, &UpdateManager::installFinished, progress,
             [this, progress, info](const QString&) {
         progress->close();
         progress->deleteLater();
+        // On Windows this is "ready to install", not "installed": relaunch()
+        // is what hands the package to the installer. See installRunsAfterExit().
+        const auto prompt = UpdateManager::installFinishedPrompt(info.version);
         const auto btn = QMessageBox::information(
-            this, "Update installed",
-            QString("ASTRA %1 has been installed.\n\n"
-                    "Restart now to use the new version?").arg(info.version),
+            this, prompt.title, prompt.text,
             QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
         if (btn == QMessageBox::Yes)
             UpdateManager::relaunch();
