@@ -143,6 +143,23 @@ fi
 export CCACHE_DIR="${CACHE}/ccache"
 mkdir -p "${CCACHE_DIR}"
 
+# MSYS2's .pc files hard-code POSIX prefixes (includedir="/ucrt64/include"),
+# which only resolve when a command line passes through the MSYS2 runtime's
+# argument conversion. CMake and Ninja spawn the compiler natively, so nothing
+# converts them: SEDplusplus' pkg_check_modules(... IMPORTED_TARGET) fails
+# outright with "includes non-existent path /ucrt64/include", and ASTRA's own
+# FFTW3 lookup only appears to work because /ucrt64/include is already on the
+# compiler's default search path. PKG_CONFIG_SYSROOT_DIR makes pkgconf emit the
+# native prefix in front of every -I and -L it prints.
+export PKG_CONFIG_SYSROOT_DIR="$(cygpath -m /)"
+echo ">>> pkg-config sysroot: ${PKG_CONFIG_SYSROOT_DIR}"
+echo ">>> pkg-config cfitsio: $(pkg-config --cflags --libs cfitsio)"
+if pkg-config --cflags cfitsio | grep -qE '(^| )-I/'; then
+  echo "::error::pkg-config still reports POSIX include paths; the CMake" \
+       "generate step will reject them. Check PKG_CONFIG_SYSROOT_DIR."
+  exit 1
+fi
+
 # GAEL wants Python3 with the Development and NumPy components. On a GitHub
 # runner there is a second Python in C:/hostedtoolcache that CMake finds first,
 # and it has neither -- so point FindPython3 at MSYS2's explicitly rather than

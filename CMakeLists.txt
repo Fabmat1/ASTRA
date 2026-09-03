@@ -39,11 +39,24 @@ set(CMAKE_CXX_EXTENSIONS ${ASTRA_CXX_EXTENSIONS})
 # guard keeps the macOS build from having to patch (and thereby dirty) the
 # working tree — a dirty tree makes GitVersion.cmake stamp "git-<hash>-dirty"
 # instead of the release tag, which in turn disables the updater.
+# The NOT:RC guard matters only on Windows, where enable_language(RC) is on and
+# directory-level compile options land on windres' command line too -- and
+# windres treats an unrecognised option as a fatal usage error, so an unguarded
+# -march here takes the resource compile down with it.
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|i[3-6]86)$")
     add_compile_options(
-        -mtune=generic
-        -march=x86-64-v3    # AVX2/FMA. Use x86-64-v2 if you support older CPUs.
+        "$<$<NOT:$<COMPILE_LANGUAGE:RC>>:-mtune=generic>"
+        # AVX2/FMA. Use x86-64-v2 if you support older CPUs.
+        "$<$<NOT:$<COMPILE_LANGUAGE:RC>>:-march=x86-64-v3>"
     )
+endif()
+
+# MinGW's assembler defaults to the COFF section limit (32767). qcustomplot.cpp
+# alone is 35k lines of heavily templated Qt code and blows through it with
+# "too many sections"; the flag switches to the big-obj COFF variant. Set here,
+# ahead of the add_subdirectory() calls, so GAEL and SEDplusplus inherit it too.
+if(MINGW)
+    add_compile_options("$<$<NOT:$<COMPILE_LANGUAGE:RC>>:-Wa,-mbig-obj>")
 endif()
 
 # Pin Eigen ABI so allocations made in one TU can be safely freed in another.
