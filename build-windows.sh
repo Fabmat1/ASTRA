@@ -143,10 +143,21 @@ fi
 export CCACHE_DIR="${CACHE}/ccache"
 mkdir -p "${CCACHE_DIR}"
 
+# GAEL wants Python3 with the Development and NumPy components. On a GitHub
+# runner there is a second Python in C:/hostedtoolcache that CMake finds first,
+# and it has neither -- so point FindPython3 at MSYS2's explicitly rather than
+# letting it pick. Native (mixed) paths: this CMake is a Windows binary and does
+# not understand /ucrt64.
+UCRT_PREFIX="$(cygpath -m /ucrt64)"
+
 cmake -S "${SRC_DIR}" -B "${BUILD_DIR}" -G Ninja \
   -DCMAKE_BUILD_TYPE=Release \
   -DASTRA_VERSION_OVERRIDE="${ASTRA_VERSION_OVERRIDE:-}" \
   -DCMAKE_PREFIX_PATH="${CCFITS_PREFIX}" \
+  -DPython3_ROOT_DIR="${UCRT_PREFIX}" \
+  -DPython3_EXECUTABLE="${UCRT_PREFIX}/bin/python3.exe" \
+  -DPython3_FIND_STRATEGY=LOCATION \
+  -DPython3_FIND_REGISTRY=NEVER \
   -DCMAKE_INSTALL_PREFIX="${STAGE_DIR}" \
   -DCMAKE_C_COMPILER_LAUNCHER=ccache \
   -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
@@ -200,7 +211,11 @@ deploy_dll_closure() {  # $1 = directory holding the .exe(s) to satisfy
   local dir="$1" target dll key src
   local -a pending
   local -A seen=()
-  mapfile -t pending < <(find "${dir}" -maxdepth 1 \( -name '*.exe' -o -name '*.dll' \))
+  # Seed with everything windeployqt already put here, plugins included. A Qt
+  # plugin is loaded into the process, so its imports resolve against the
+  # executable's directory, not the plugin's -- which is why the whole subtree
+  # seeds one closure rooted at ${dir} rather than one closure per folder.
+  mapfile -t pending < <(find "${dir}" \( -name '*.exe' -o -name '*.dll' \))
   while ((${#pending[@]})); do
     target="${pending[0]}"
     pending=("${pending[@]:1}")
@@ -229,17 +244,21 @@ while read -r exe_dir; do
 done < <(find "${STAGE_DIR}" -name '*.exe' -printf '%h\n' | sort -u)
 
 # A missing import here means the app would fail to start with an unhelpful
-# "0xc0000135" dialog, so check rather than trust.
+# "0xc0000135" dialog, or a plugin that silently never loads, so check rather
+# than trust. Each PE is checked against the directory of the executable it
+# belongs to, since that is where Windows will look.
 missing=0
-while read -r exe; do
-  while read -r dll; do
-    [[ -n "${dll}" ]] || continue
-    [[ -f "$(dirname "${exe}")/${dll}" ]] && continue
-    [[ -f "/ucrt64/bin/${dll}" ]] || continue   # system DLL
-    echo "::error::${exe#${STAGE_DIR}/} imports ${dll}, which was not deployed"
-    missing=1
-  done < <(imports_of "${exe}")
-done < <(find "${STAGE_DIR}" -name '*.exe')
+while read -r exe_dir; do
+  while read -r pe; do
+    while read -r dll; do
+      [[ -n "${dll}" ]] || continue
+      [[ -f "${exe_dir}/${dll}" ]] && continue
+      [[ -f "/ucrt64/bin/${dll}" ]] || continue   # system DLL
+      echo "::error::${pe#${STAGE_DIR}/} imports ${dll}, which was not deployed"
+      missing=1
+    done < <(imports_of "${pe}")
+  done < <(find "${exe_dir}" \( -name '*.exe' -o -name '*.dll' \))
+done < <(find "${STAGE_DIR}" -name '*.exe' -printf '%h\n' | sort -u)
 ((missing == 0)) || exit 1
 
 echo ">>> Staged tree: $(du -sh "${STAGE_DIR}" | cut -f1)"
