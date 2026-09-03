@@ -1,0 +1,147 @@
+name: Windows build (x86_64)
+
+# Third release target alongside the .AppImage and the .dmg. Everything happens
+# inside MSYS2 UCRT64 (mingw-w64 GCC): GAEL declares `LANGUAGES C CXX Fortran`,
+# and MSVC has no Fortran compiler, so a Visual Studio build cannot even
+# configure. build-windows.sh does the actual work and is the same script a
+# developer runs locally, so what ships is what was tested.
+
+on:
+  # Manual trigger from the Actions tab — pick any version string.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version for the installer name (e.g. 0.7.0)"
+        required: false
+        default: "0.7.0"
+      release_tag:
+        description: "Attach the result to this existing release tag (e.g. v0.7.0). Leave empty to only keep the artifact."
+        required: false
+        default: ""
+  # Automatic on version tags: pushing v0.7.2 builds
+  # astra-0.7.2-x86_64-setup.exe and attaches it to the release for that tag.
+  push:
+    tags: ["v*"]
+    # TEMPORARY: iteration trigger for the windows-build branch. Dropped before
+    # this lands -- workflow_dispatch only works once the file is on main.
+    branches: [windows-build-v0.7.0]
+
+permissions:
+  contents: write   # needed only for the release-upload step
+
+jobs:
+  build:
+    runs-on: windows-2025
+    # A cold run installs the MSYS2 toolchain and builds CCfits from source on
+    # top of ASTRA itself. Cached runs are much shorter, but ASTRA is a large
+    # C++ target and MinGW is not fast.
+    timeout-minutes: 180
+    steps:
+      - name: Check out sources (with submodules)
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Set up MSYS2 (UCRT64)
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          # Deliberately empty: build-windows.sh owns the package list, so
+          # there is exactly one place to change it and local builds get the
+          # same set CI does. It installs `git` because the script's submodule
+          # step wants one, even though ASTRA_SKIP_SUBMODULE_UPDATE turns that
+          # step off here (actions/checkout already fetched them).
+          install: git
+
+      # $HOME inside MSYS2 is a path under the installed msys64 tree, not the
+      # runner's home, and only the MSYS2 shell can name it portably. Resolving
+      # it here keeps the cache step from hard-coding a layout setup-msys2 is
+      # free to change.
+      - name: Resolve build cache path
+        id: cachedir
+        shell: msys2 {0}
+        run: echo "dir=$(cygpath -w "$HOME/.cache/astra-build-windows")" >> "$GITHUB_OUTPUT"
+
+      # ccache for ASTRA/GAEL/sedfit plus the one-time CCfits source build.
+      # Keyed on the SHA so every run saves a fresh entry, with a prefix
+      # restore so it starts from the previous run's objects.
+      #
+      # Split restore/save rather than the combined action on purpose: the
+      # combined one skips its save step when the job fails, so a build that
+      # dies at the last link, or hits the timeout, throws away an hour of
+      # compilation and the retry starts cold. Saving unconditionally means the
+      # retry only redoes what actually changed.
+      - name: Restore ccache + CCfits
+        id: cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.cachedir.outputs.dir }}
+          key: astra-windows-build-${{ github.sha }}
+          restore-keys: astra-windows-build-
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+            # Stamp the tag into the binary. Without this the app self-reports
+            # whatever git describes at build time, and the in-app updater
+            # treats it as a development build.
+            echo "stamp=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=${{ github.event.inputs.version || '0.7.0' }}" >> "$GITHUB_OUTPUT"
+            # A manual run that names a release tag is a rebuild of that
+            # release, so it must stamp the same version a tag build would —
+            # otherwise the .exe attached to v0.7.0 reports git-<hash>.
+            echo "stamp=${{ github.event.inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+            echo "tag=${{ github.event.inputs.release_tag }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build the installer
+        shell: msys2 {0}
+        env:
+          # TEMPORARY (throwaway backport branch): this branch is v0.7.0's
+          # source with the Windows support applied, built to backfill the
+          # v0.7.0 release, so the binary must self-report v0.7.0 rather than
+          # the empty stamp a branch push would otherwise produce.
+          ASTRA_VERSION_OVERRIDE: v0.7.0
+          ASTRA_SKIP_SUBMODULE_UPDATE: "1"
+        run: ./build-windows.sh "${{ steps.ver.outputs.version }}"
+
+      - name: Save ccache + CCfits
+        if: always() && steps.cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ steps.cachedir.outputs.dir }}
+          key: astra-windows-build-${{ github.sha }}
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: astra-${{ steps.ver.outputs.version }}-x86_64-setup
+          path: |
+            astra-*-setup.exe
+            astra-*-setup.exe.sha256
+          if-no-files-found: error
+
+      # On tag pushes, and on a manual run that named a release tag: attach the
+      # installer to that release (creating it if it doesn't exist yet).
+      - name: Attach to GitHub release
+        if: steps.ver.outputs.tag != ''
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          gh release create "${TAG}" --verify-tag --generate-notes 2>/dev/null || true
+          # The AppImage and macOS jobs may be creating the same release right
+          # now; wait for whichever attempt won before uploading into it.
+          for _ in $(seq 1 12); do
+            gh release view "${TAG}" >/dev/null 2>&1 && break
+            sleep 5
+          done
+          gh release upload "${TAG}" \
+            astra-*-setup.exe astra-*-setup.exe.sha256 --clobber

@@ -25,9 +25,19 @@ namespace {
 QString executableIn(const QString& dir)
 {
     if (dir.isEmpty()) return {};
-    const QFileInfo fi(QDir(dir).absoluteFilePath(QStringLiteral("sedfit")));
+    const QString base = QDir(dir).absoluteFilePath(QStringLiteral("sedfit"));
+    const QFileInfo fi(base);
     if (fi.exists() && fi.isExecutable())
         return fi.absoluteFilePath();
+#ifdef Q_OS_WIN
+    // The bundled helper is sedfit.exe there, and QFileInfo does not append the
+    // extension for us -- without this every lookup below misses and SED
+    // fitting falls back to "no sedfit found" on a package that ships one.
+    // Same shape as AppSettings::lcurveBinary().
+    const QFileInfo fiExe(base + QStringLiteral(".exe"));
+    if (fiExe.exists())
+        return fiExe.absoluteFilePath();
+#endif
     return {};
 }
 

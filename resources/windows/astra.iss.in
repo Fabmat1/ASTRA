@@ -1,0 +1,78 @@
+; Inno Setup script for the ASTRA Windows installer.
+;
+; Not used directly: build-windows.sh substitutes the @TOKENS@ and hands the
+; result to ISCC. Editing this file by hand and running ISCC on it will fail on
+; the unsubstituted paths, which is the intent -- the staged tree only exists
+; after the build script has deployed the DLL closure into it.
+;
+; The installer is per-user by default (PrivilegesRequired=lowest), so a
+; researcher on a managed university machine can install ASTRA without an admin
+; prompt. Elevating is still offered, and then it installs into Program Files.
+
+#define AppName       "ASTRA"
+#define AppVersion    "@VERSION@"
+#define AppPublisher  "Fabian Mattig"
+#define AppURL        "https://github.com/Fabmat1/ASTRA"
+#define AppExeName    "ASTRA.exe"
+
+[Setup]
+; AppId is what Windows keys the installed program on. It must never change,
+; or an upgrade installs alongside the old copy instead of replacing it.
+AppId={{2EE13044-8AE7-4BE3-BAA0-63EAE967C338}
+AppName={#AppName}
+AppVersion={#AppVersion}
+AppVerName={#AppName} {#AppVersion}
+AppPublisher={#AppPublisher}
+AppPublisherURL={#AppURL}
+AppSupportURL={#AppURL}/issues
+AppUpdatesURL={#AppURL}/releases
+VersionInfoVersion={#AppVersion}
+
+DefaultDirName={autopf}\{#AppName}
+DefaultGroupName={#AppName}
+DisableProgramGroupPage=yes
+PrivilegesRequired=lowest
+PrivilegesRequiredOverridesAllowed=dialog
+
+; ASTRA is built -march=x86-64-v3 (AVX2), and every 64-bit Windows machine that
+; can run that is x64compatible. Blocking the 32-bit and ARM-emulation cases
+; here beats an illegal-instruction crash on first launch.
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+
+OutputDir=@OUT_DIR@
+OutputBaseFilename=@OUT_BASENAME@
+SetupIconFile=@ICON@
+UninstallDisplayIcon={app}\bin\{#AppExeName}
+UninstallDisplayName={#AppName} {#AppVersion}
+
+; The payload is Qt plus OpenBLAS plus the model grids' worth of reference
+; data, so it compresses for a while. Worth it: this file is downloaded far
+; more often than it is built.
+Compression=lzma2/max
+SolidCompression=yes
+WizardStyle=modern
+
+[Languages]
+Name: "english"; MessagesFile: "compiler:Default.isl"
+
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
+
+[Files]
+; The staged tree is already complete -- build-windows.sh ran windeployqt and
+; resolved the non-Qt DLL closure into it -- so this is a straight copy.
+Source: "@STAGE_DIR@\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+
+[Icons]
+Name: "{autoprograms}\{#AppName}"; Filename: "{app}\bin\{#AppExeName}"
+Name: "{autodesktop}\{#AppName}"; Filename: "{app}\bin\{#AppExeName}"; Tasks: desktopicon
+
+[Run]
+Filename: "{app}\bin\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(AppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
+
+[UninstallDelete]
+; Qt writes a settings cache next to the executable on some setups; leaving it
+; behind makes the uninstall look incomplete in Explorer.
+Type: dirifempty; Name: "{app}\bin"
+Type: dirifempty; Name: "{app}"

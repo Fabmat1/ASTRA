@@ -26,9 +26,11 @@ Makefile*
 # Release build scripts and their workflows — caught by *build-* above.
 !.github/workflows/build-macos.yml
 !.github/workflows/build-appimage.yml
+!.github/workflows/build-windows.yml
 !build-appimage.sh
 !build-macos.sh
 !build-macos-isis.sh
+!build-windows.sh
 *.qm
 *.prl
 
@@ -181,3 +183,9 @@ scripts/*
 !resources/scripts/out.svg
 
 *.pkl
+
+# Windows build outputs (build-windows/ and .build-cache/ are caught by
+# *build-* above; the staging tree and the installer are not).
+stage-windows/
+astra-*-setup.exe
+astra-*-setup.exe.sha256

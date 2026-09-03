@@ -36,9 +36,14 @@ constexpr const char* kRepoName  = "ASTRA";
 constexpr const char* kSettingsGroup = "AppSettings";
 constexpr const char* kSkippedKey    = "update/skippedVersion";
 
-// File suffix of the release asset this platform installs from.
+// File suffix of the release asset this platform installs from. Windows has no
+// self-install path (canSelfInstall() is false there), but the suffix still has
+// to name the Windows package or the update *check* reports every release as
+// having no asset for this platform.
 #if defined(Q_OS_MACOS)
 constexpr const char* kPackageSuffix = ".dmg";
+#elif defined(Q_OS_WIN)
+constexpr const char* kPackageSuffix = ".exe";
 #else
 constexpr const char* kPackageSuffix = ".AppImage";
 #endif
