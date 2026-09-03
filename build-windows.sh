@@ -92,7 +92,22 @@ PACMAN_PKGS=(
 )
 if [[ "${ASTRA_SKIP_PACMAN:-0}" != "1" ]]; then
   echo ">>> Installing MSYS2 packages"
-  pacman -S --needed --noconfirm "${PACMAN_PKGS[@]}"
+  # MSYS2 mirrors rotate packages out from under a local database, which
+  # surfaces as a 404 on a file pacman was just told exists, and they stall
+  # often enough to matter. Refresh the database and retry: losing a build to a
+  # transient download is worse than the twenty seconds this costs.
+  for _attempt in 1 2 3; do
+    pacman -Sy --noconfirm >/dev/null 2>&1 || true
+    if pacman -S --needed --noconfirm "${PACMAN_PKGS[@]}"; then
+      break
+    fi
+    if ((_attempt == 3)); then
+      echo "::error::pacman could not install the toolchain after 3 attempts"
+      exit 1
+    fi
+    echo ">>> pacman attempt ${_attempt} failed; refreshing and retrying"
+    sleep 15
+  done
 fi
 
 mkdir -p "${CACHE}"
