@@ -249,10 +249,44 @@ static void testNumberParsing() {
     CHECK(!ok);
 }
 
+// Per-star tables hand over the whole epoch series in one cell. Reading such a
+// cell as a single number is what made a 99-row table import zero RV points.
+static void testCellSeriesSplitting() {
+    // pandas list-of-floats, as written into a CSV column.
+    const QStringList rvs =
+        splitCellValues("[3.036464260574048, 1.6404158560377753]");
+    CHECK_EQ(rvs.size(), qsizetype(2));
+    if (rvs.size() == 2) {
+        bool ok = false;
+        CHECK_EQ(parseNumber(rvs[0], &ok), 3.036464260574048);
+        CHECK(ok);
+        CHECK_EQ(parseNumber(rvs[1], &ok), 1.6404158560377753);
+        CHECK(ok);
+    }
+
+    // Quoted, other bracket styles, other separators.
+    CHECK_EQ(splitCellValues("\"[0.26, 0.26, 0.26]\"").size(), qsizetype(3));
+    CHECK_EQ(splitCellValues("(1.0; 2.0)").size(), qsizetype(2));
+    CHECK_EQ(splitCellValues("1.0 2.0 3.0").size(), qsizetype(3));
+    CHECK_EQ(splitCellValues("1.0;2.0").size(), qsizetype(2));
+
+    // A scalar stays one value, an empty cell yields nothing, and an empty
+    // series is not a value either.
+    CHECK_EQ(splitCellValues("58000.25"), QStringList{"58000.25"});
+    CHECK(splitCellValues("   ").isEmpty());
+    CHECK(splitCellValues("[]").isEmpty());
+
+    // Outside brackets a comma may be a decimal point, and a space may sit
+    // inside a single value: neither may be split.
+    CHECK_EQ(splitCellValues("12,5"), QStringList{"12,5"});
+    CHECK_EQ(splitCellValues("HD 1185"), QStringList{"HD 1185"});
+}
+
 int main() {
     testSourceIdNormalisation();
     testAliasNormalisation();
     testNumberParsing();
+    testCellSeriesSplitting();
     testColumnDetection();
     testSeparation();
     testConeIndex();

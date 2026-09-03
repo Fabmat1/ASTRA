@@ -83,6 +83,7 @@ private:
     void updatePreviewFromProject();          // ← NEW (replaces old updatePreviewTree)
     void showTableMatchReport();
     void showTableSkipReport();
+    int  tableSkippedCount() const;
 
     // Helpers
     bool isBackgroundBusy() const;
@@ -126,6 +127,7 @@ private:
     int _tableBadTimeRows = 0;
     int _tableBadRVRows = 0;
     int _tableDuplicateRows = 0;
+    int _tableListMismatchRows = 0;
     QStringList _tableSkipExamples;
 
     // ── UI widgets ──────────────────────────────────

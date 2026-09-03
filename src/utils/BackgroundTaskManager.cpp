@@ -2093,7 +2093,7 @@ void RVExtractionTask::executeFromTable()
     // Why a matched row produced no point. Every one of these used to be a
     // silent `continue`, so an import that dropped every row looked identical
     // to one that had nothing to do.
-    int         shortRows = 0, badTime = 0, badRV = 0;
+    int         shortRows = 0, badTime = 0, badRV = 0, listMismatch = 0;
     QStringList skipExamples;
     auto recordSkip = [&](int rowIndex, const QString& why) {
         if (skipExamples.size() < 10)
@@ -2143,11 +2143,6 @@ void RVExtractionTask::executeFromTable()
             auto cell = [&row](int col) -> QString {
                 return (col >= 0 && col < row.size()) ? row[col] : QString();
             };
-            auto optional = [&](int col, double fallback) -> double {
-                bool         ok = false;
-                const double v  = StarMatching::parseNumber(cell(col), &ok);
-                return (ok && v > 0.0) ? v : fallback;
-            };
 
             if (cfg.timeCol >= row.size() || cfg.rvCol >= row.size()) {
                 shortRows++;
@@ -2157,60 +2152,102 @@ void RVExtractionTask::executeFromTable()
                 continue;
             }
 
-            bool okTime = false, okRV = false;
-            const double time = StarMatching::parseNumber(row[cfg.timeCol], &okTime);
-            const double rv   = StarMatching::parseNumber(row[cfg.rvCol],   &okRV);
-            if (!okTime) {
+            // A row is not necessarily one epoch: tables written per star hold
+            // the whole series in each cell ("[2460922.48, 2460927.34]").
+            const QStringList times = StarMatching::splitCellValues(row[cfg.timeCol]);
+            const QStringList rvs   = StarMatching::splitCellValues(row[cfg.rvCol]);
+            const QStringList errs  = StarMatching::splitCellValues(cell(cfg.rvErrCol));
+            const QStringList syss  = StarMatching::splitCellValues(cell(cfg.sysErrCol));
+            const QStringList comps = StarMatching::splitCellValues(cell(cfg.compCol));
+
+            const int nEpochs = static_cast<int>(std::max(times.size(), rvs.size()));
+            if (nEpochs == 0) {
                 badTime++;
-                recordSkip(ri, QString("timestamp '%1' is not a number")
-                    .arg(row[cfg.timeCol].trimmed()));
+                recordSkip(ri, "timestamp and RV cells are empty");
                 continue;
             }
-            if (!okRV) {
-                badRV++;
-                recordSkip(ri, QString("RV '%1' is not a number")
-                    .arg(row[cfg.rvCol].trimmed()));
+            // Series must line up; a single value applies to every epoch.
+            if ((times.size() != nEpochs && times.size() != 1) ||
+                (rvs.size()   != nEpochs && rvs.size()   != 1)) {
+                listMismatch++;
+                recordSkip(ri, QString("%1 timestamp(s) but %2 RV value(s)")
+                    .arg(times.size()).arg(rvs.size()));
                 continue;
             }
 
-            // Unset or unreadable component: the row belongs to the primary.
-            int component = 1;
-            {
-                bool         okComp = false;
-                const double c = StarMatching::parseNumber(cell(cfg.compCol), &okComp);
-                if (okComp && qRound(c) == 2) component = 2;
+            // Broadcast a one-element column across the series, and treat a
+            // column that ran short as absent for the remaining epochs.
+            auto elem = [](const QStringList& values, int k) -> QString {
+                if (values.isEmpty()) return QString();
+                if (values.size() == 1) return values.first();
+                return (k < values.size()) ? values[k] : QString();
+            };
+            auto optional = [&](const QStringList& values, int k,
+                                double fallback) -> double {
+                bool         ok = false;
+                const double v  = StarMatching::parseNumber(elem(values, k), &ok);
+                return (ok && v > 0.0) ? v : fallback;
+            };
+            auto where = [&](int k) {
+                return nEpochs > 1 ? QString("epoch %1: ").arg(k + 1) : QString();
+            };
+
+            for (int k = 0; k < nEpochs; ++k) {
+                bool okTime = false, okRV = false;
+                const double time = StarMatching::parseNumber(elem(times, k), &okTime);
+                const double rv   = StarMatching::parseNumber(elem(rvs, k),   &okRV);
+                if (!okTime) {
+                    badTime++;
+                    recordSkip(ri, where(k) + QString("timestamp '%1' is not a number")
+                        .arg(elem(times, k).trimmed()));
+                    continue;
+                }
+                if (!okRV) {
+                    badRV++;
+                    recordSkip(ri, where(k) + QString("RV '%1' is not a number")
+                        .arg(elem(rvs, k).trimmed()));
+                    continue;
+                }
+
+                // Unset or unreadable component: the epoch is the primary.
+                int component = 1;
+                {
+                    bool         okComp = false;
+                    const double c = StarMatching::parseNumber(elem(comps, k), &okComp);
+                    if (okComp && qRound(c) == 2) component = 2;
+                }
+
+                const QString source = "table_import";
+                const QString key    = epochKey(source, time, component);
+                if (existingEpochs.contains(key)) {
+                    duplicateRows++;
+                    recordSkip(ri, where(k) + QString("epoch %1 already present "
+                        "for this star").arg(time, 0, 'f', 6));
+                    continue;
+                }
+                existingEpochs.insert(key);
+
+                // Unset or unreadable error columns: 0, not a dropped epoch.
+                const double rvErr  = optional(errs, k, 0.0);
+                const double sysErr = optional(syss, k, 0.0);
+
+                auto rvPt = std::make_shared<RadialVelocityPoint>();
+                rvPt->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+
+                if (cfg.isBJD)
+                    rvPt->setBJD(time);
+                else
+                    rvPt->setMJD(time);
+
+                rvPt->setRV(rv);
+                rvPt->setRVErrorFormal(rvErr);
+                rvPt->setRVErrorSystematic(sysErr);
+                rvPt->setSource(source);
+                rvPt->setComponent(component);
+
+                curve->addRVPoint(rvPt);
+                added++;
             }
-
-            const QString source = "table_import";
-            const QString key    = epochKey(source, time, component);
-            if (existingEpochs.contains(key)) {
-                duplicateRows++;
-                recordSkip(ri, QString("epoch %1 already present for this star")
-                    .arg(time, 0, 'f', 6));
-                continue;
-            }
-            existingEpochs.insert(key);
-
-            // Unset or unreadable error columns: 0, not a dropped row.
-            const double rvErr  = optional(cfg.rvErrCol,  0.0);
-            const double sysErr = optional(cfg.sysErrCol, 0.0);
-
-            auto rvPt = std::make_shared<RadialVelocityPoint>();
-            rvPt->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
-
-            if (cfg.isBJD)
-                rvPt->setBJD(time);
-            else
-                rvPt->setMJD(time);
-
-            rvPt->setRV(rv);
-            rvPt->setRVErrorFormal(rvErr);
-            rvPt->setRVErrorSystematic(sysErr);
-            rvPt->setSource(source);
-            rvPt->setComponent(component);
-
-            curve->addRVPoint(rvPt);
-            added++;
         }
 
         if (added == 0)
@@ -2230,14 +2267,16 @@ void RVExtractionTask::executeFromTable()
     LOG_INFO("RVExtract",
         QString("Table import: %1 rows matched, %2 unmatched, %3 stars updated "
                 "(%4 new points); skipped %5 short rows, %6 bad timestamps, "
-                "%7 bad RVs, %8 duplicate epochs")
+                "%7 bad RVs, %8 duplicate epochs, %9 series length mismatches")
             .arg(matchedRows).arg(unmatchedRows).arg(matched).arg(totalPoints)
-            .arg(shortRows).arg(badTime).arg(badRV).arg(duplicateRows));
+            .arg(shortRows).arg(badTime).arg(badRV).arg(duplicateRows)
+            .arg(listMismatch));
     for (const QString& ex : skipExamples)
         LOG_INFO("RVExtract", QString("Table import skipped %1").arg(ex));
 
     emit matchReport(matchedRows, unmatchedRows, unmatchedExamples);
-    emit rowSkipReport(shortRows, badTime, badRV, duplicateRows, skipExamples);
+    emit rowSkipReport(shortRows, badTime, badRV, duplicateRows, listMismatch,
+                       skipExamples);
     emit extractionComplete(matched, totalPoints);
     emit finished(true, QString("RV Extraction: %1 stars (%2 points), "
                                 "%3 rows unmatched, %4 duplicate epochs skipped")

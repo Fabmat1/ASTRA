@@ -147,6 +147,49 @@ inline double parseNumber(const QString &raw, bool *ok = nullptr) {
     return fail();
 }
 
+// A table cell that holds a whole epoch series: "[3.04, 1.64]" as pandas
+// writes it, "1.0;2.0", or "1.0 2.0". One row per star with list-valued
+// columns is a common way to hand over RV data, and reading such a cell as a
+// single number loses every epoch in the file.
+// A scalar cell comes back as a one-element list so callers can treat every
+// cell the same way. A bare comma only separates inside brackets: outside, it
+// may well be a decimal comma.
+inline QStringList splitCellValues(const QString &raw) {
+    QString s = raw.trimmed();
+    if (s.startsWith('"') && s.endsWith('"') && s.size() >= 2)
+        s = s.mid(1, s.size() - 2).trimmed();
+    if (s.isEmpty())
+        return QStringList();
+
+    const bool bracketed = (s.startsWith('[') && s.endsWith(']')) ||
+                           (s.startsWith('(') && s.endsWith(')')) ||
+                           (s.startsWith('{') && s.endsWith('}'));
+    if (bracketed) {
+        s = s.mid(1, s.size() - 2).trimmed();
+        if (s.isEmpty())
+            return QStringList();   // an explicitly empty series
+    }
+
+    static const QRegularExpression bracketSepRe(QStringLiteral("[,;\\s]+"));
+    static const QRegularExpression plainSepRe(QStringLiteral("[;\\s]+"));
+    QStringList parts = s.split(bracketed ? bracketSepRe : plainSepRe,
+                                Qt::SkipEmptyParts);
+    if (parts.size() <= 1)
+        return QStringList{s};
+
+    if (!bracketed) {
+        // Outside brackets, only a split that yields numbers throughout is a
+        // series; anything else is one value that happens to hold a space.
+        for (const QString &p : parts) {
+            bool ok = false;
+            parseNumber(p, &ok);
+            if (!ok)
+                return QStringList{s};
+        }
+    }
+    return parts;
+}
+
 // ── Column auto-detection ───────────────────────────────────────
 
 // Index of the column whose name best fits `patterns`, or -1.

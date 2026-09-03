@@ -942,8 +942,12 @@ void RadialVelocityImportPage::autoDetectTableColumns()
     if (scale < 0 && timeIdx >= 0) {
         for (const QStringList& r : _tableRows) {
             if (timeIdx >= r.size()) continue;
+            // The cell may hold a whole series ("[2460922.48, ...]"); the
+            // first value is enough to tell JD-like numbers from MJD.
+            const QStringList values = StarMatching::splitCellValues(r[timeIdx]);
+            if (values.isEmpty()) continue;
             bool ok = false;
-            const double v = r[timeIdx].toDouble(&ok);
+            const double v = StarMatching::parseNumber(values.first(), &ok);
             if (!ok) continue;
             scale = (v > 2.4e6) ? 1 : 0;
             break;
@@ -1187,17 +1191,19 @@ void RadialVelocityImportPage::onProcessTable()
     }, Qt::QueuedConnection);
 
     _tableShortRows = _tableBadTimeRows = 0;
-    _tableBadRVRows = _tableDuplicateRows = 0;
+    _tableBadRVRows = _tableDuplicateRows = _tableListMismatchRows = 0;
     _tableSkipExamples.clear();
 
     connect(task, &RVExtractionTask::rowSkipReport,
             this, [this](int shortRows, int badTime, int badRV,
-                         int duplicateRows, const QStringList& examples) {
-        _tableShortRows     = shortRows;
-        _tableBadTimeRows   = badTime;
-        _tableBadRVRows     = badRV;
-        _tableDuplicateRows = duplicateRows;
-        _tableSkipExamples  = examples;
+                         int duplicateRows, int listMismatch,
+                         const QStringList& examples) {
+        _tableShortRows        = shortRows;
+        _tableBadTimeRows      = badTime;
+        _tableBadRVRows        = badRV;
+        _tableDuplicateRows    = duplicateRows;
+        _tableListMismatchRows = listMismatch;
+        _tableSkipExamples     = examples;
     }, Qt::QueuedConnection);
 
     connect(task, &RVExtractionTask::extractionComplete,
@@ -1211,8 +1217,7 @@ void RadialVelocityImportPage::onProcessTable()
             .arg(_tableMatchedRows)
             .arg(_tableMatchedRows + _tableUnmatchedRows);
 
-        const int skipped = _tableShortRows + _tableBadTimeRows
-                          + _tableBadRVRows + _tableDuplicateRows;
+        const int skipped = tableSkippedCount();
         if (skipped > 0) {
             QStringList why;
             if (_tableDuplicateRows > 0)
@@ -1221,9 +1226,12 @@ void RadialVelocityImportPage::onProcessTable()
                 why << QString("%1 unreadable timestamp").arg(_tableBadTimeRows);
             if (_tableBadRVRows > 0)
                 why << QString("%1 unreadable RV").arg(_tableBadRVRows);
+            if (_tableListMismatchRows > 0)
+                why << QString("%1 series length mismatch")
+                           .arg(_tableListMismatchRows);
             if (_tableShortRows > 0)
                 why << QString("%1 too few columns").arg(_tableShortRows);
-            msg += QString(" %1 matched row(s) yielded no point (%2).")
+            msg += QString(" %1 matched value(s) yielded no point (%2).")
                        .arg(skipped).arg(why.join(", "));
         }
         _statusLabel->setText(msg);
@@ -1240,38 +1248,47 @@ void RadialVelocityImportPage::onProcessTable()
 // preview instead of a silent counter.
 void RadialVelocityImportPage::showTableMatchReport()
 {
-    showTableSkipReport();
+    if (_tableUnmatchedRows > 0) {
+        auto* item = new QTreeWidgetItem;
+        item->setText(0, "Unmatched rows");
+        item->setText(1, QString::number(_tableUnmatchedRows));
+        item->setText(2, _tableIdTypeCombo->currentIndex() == 2
+            ? QString("No project star within %1 arcsec")
+                  .arg(_tableToleranceSpin->value(), 0, 'f', 1)
+            : "No project star with this identifier");
+        item->setText(3, "Skipped");
 
-    if (_tableUnmatchedRows <= 0)
-        return;
+        for (const QString& ex : _tableUnmatchedExamples) {
+            auto* child = new QTreeWidgetItem(item);
+            child->setText(0, "  " + ex);
+            child->setText(3, "No match");
+        }
 
-    auto* item = new QTreeWidgetItem;
-    item->setText(0, "Unmatched rows");
-    item->setText(1, QString::number(_tableUnmatchedRows));
-    item->setText(2, _tableIdTypeCombo->currentIndex() == 2
-        ? QString("No project star within %1 arcsec")
-              .arg(_tableToleranceSpin->value(), 0, 'f', 1)
-        : "No project star with this identifier");
-    item->setText(3, "Skipped");
-
-    for (const QString& ex : _tableUnmatchedExamples) {
-        auto* child = new QTreeWidgetItem(item);
-        child->setText(0, "  " + ex);
-        child->setText(3, "No match");
+        // Collapsed: a long list of names an import legitimately skipped must
+        // not bury the rows that failed for a fixable reason.
+        _previewTree->insertTopLevelItem(0, item);
+        item->setExpanded(false);
     }
 
-    _previewTree->insertTopLevelItem(0, item);
-    item->setExpanded(true);
+    // Inserted last so it sits above the unmatched rows.
+    showTableSkipReport();
+
     for (int i = 0; i < _previewTree->columnCount(); ++i)
         _previewTree->resizeColumnToContents(i);
+}
+
+// Matched rows that still produced nothing, by count.
+int RadialVelocityImportPage::tableSkippedCount() const
+{
+    return _tableShortRows + _tableBadTimeRows + _tableBadRVRows
+         + _tableDuplicateRows + _tableListMismatchRows;
 }
 
 // A row that matched a star but produced no point is the confusing case: the
 // import reports stars matched and still writes nothing. Name every reason.
 void RadialVelocityImportPage::showTableSkipReport()
 {
-    const int skipped = _tableShortRows + _tableBadTimeRows
-                      + _tableBadRVRows + _tableDuplicateRows;
+    const int skipped = tableSkippedCount();
     if (skipped <= 0)
         return;
 
@@ -1291,6 +1308,8 @@ void RadialVelocityImportPage::showTableSkipReport()
               "Epoch already present for this star (re-import)");
     addReason(_tableBadTimeRows,  "Timestamp cell is not a number");
     addReason(_tableBadRVRows,    "RV cell is not a number");
+    addReason(_tableListMismatchRows,
+              "Timestamp and RV cells hold different numbers of values");
     addReason(_tableShortRows,    "Row has fewer columns than mapped");
 
     for (const QString& ex : _tableSkipExamples) {

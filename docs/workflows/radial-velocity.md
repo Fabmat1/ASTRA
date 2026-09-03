@@ -46,6 +46,29 @@ the preview under **Unmatched rows**, together with the identifiers that
 failed - usually a sign that the star table has not been imported yet or that
 the match radius is too tight.
 
+### One row per epoch, or one row per star
+
+Both layouts work. A cell may hold a whole series instead of a single value,
+written the way pandas writes a list of floats:
+
+```
+main_id,ra,dec,bjd_list,vrad_list,vrad_err_list,systematic_rv_err,component
+10AQR,315.136083,-5.477333,"[2460922.4842, 2460927.3369]","[3.0365, 1.6404]","[0.26, 0.26]",0,1
+```
+
+Each element becomes its own RV point. The timestamp and RV series must hold
+the same number of values; a column holding a single value (the systematic
+error and component above) applies to every epoch of that row. Values may also
+be separated by semicolons or spaces, with or without brackets.
+
+Only the timestamp and the RV are required. An unset or empty error column
+means 0, an unset component means the primary, and neither drops the row.
+
+Matched rows that still produce no point are listed in the preview under
+**Matched rows without a new point**, with the reason (an epoch already
+imported, an unreadable cell, or a series length mismatch) and examples naming
+the offending cell.
+
 ## The RV Inspector
 
 Open a star's detail window and click **View / Adjust RV**. The

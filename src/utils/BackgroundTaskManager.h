@@ -461,7 +461,8 @@ signals:
     // Table mode: rows that did find a star but still produced no RV point,
     // broken down by reason, plus a few examples naming the offending cell.
     void rowSkipReport(int shortRows, int badTime, int badRV,
-                       int duplicateRows, const QStringList& examples);
+                       int duplicateRows, int listMismatch,
+                       const QStringList& examples);
 
 private:
     enum Mode { FromFits, FromFolders, FromTable };
