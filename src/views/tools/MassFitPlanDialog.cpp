@@ -1,4 +1,5 @@
 #include "views/tools/MassFitPlanDialog.h"
+#include "remote/RemoteHostRegistry.h"
 
 #include "db/DatabaseManager.h"
 #include "fitting/FitJobFactory.h"
@@ -1099,6 +1100,22 @@ QWidget* MassFitPlanDialog::buildSetupsTab()
                                  "ISIS (interactive) needs a person at the "
                                  "keyboard."));
     form->addRow(tr("Backend:"), _backendCombo);
+
+    // Where each fit of this setup runs. Remote hosts do the work without
+    // using local cores, so a campaign can run many stars at once.
+    _runOnCombo = new QComboBox;
+    _runOnCombo->addItem(tr("This computer"), QString());
+    for (const auto& h : astra::remote::RemoteHostRegistry::instance().hosts()) {
+        if (!h.useForFitting) continue;
+        _runOnCombo->addItem(
+            h.type == astra::remote::RemoteHost::Type::Slurm
+                ? tr("%1 (Slurm)").arg(h.name)
+                : h.name,
+            h.id);
+    }
+    _runOnCombo->setToolTip(tr("Run these fits on another machine over SSH. "
+                               "Only GAEL can run remotely."));
+    form->addRow(tr("Run on:"), _runOnCombo);
     v->addLayout(form);
 
     _inheritCheck = new QCheckBox(
@@ -1167,6 +1184,14 @@ QWidget* MassFitPlanDialog::buildSetupsTab()
 
     auto commit = [this]{ if (!_loadingSetup) commitSetupEditor(); };
     connect(_backendCombo, &QComboBox::currentIndexChanged, this, commit);
+    connect(_runOnCombo, &QComboBox::currentIndexChanged, this, commit);
+    connect(_backendCombo, &QComboBox::currentIndexChanged, this, [this] {
+        // ISIS has no remote worker; keep the two settings consistent.
+        const bool remotable =
+            _backendCombo->currentData().toString() == QLatin1String("GAEL");
+        _runOnCombo->setEnabled(remotable);
+        if (!remotable) _runOnCombo->setCurrentIndex(0);
+    });
     connect(_inheritCheck, &QCheckBox::toggled, this, commit);
     connect(_untiedEdit, &QLineEdit::textEdited, this, commit);
     connect(_filterSnrSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, commit);
@@ -1223,6 +1248,8 @@ void MassFitPlanDialog::commitSetupEditor()
         untied << p.trimmed();
     s.globals.untiedParams   = untied;
     s.globals.backend        = s.backend;
+    s.globals.executionHost  = _runOnCombo ? _runOnCombo->currentData().toString()
+                                           : QString();
     s.globals.filterSnr      = _filterSnrSpin->value();
     s.globals.outlierSigmaLo = _outlierLoSpin->value();
     s.globals.outlierSigmaHi = _outlierHiSpin->value();
@@ -1247,6 +1274,13 @@ void MassFitPlanDialog::loadSetupEditor()
     _backendCombo->setCurrentIndex(bi >= 0 ? bi : 0);
     _inheritCheck->setChecked(s.inheritFromParent);
     _componentsWidget->setComponents(s.components);
+    if (_runOnCombo) {
+        const int hi = _runOnCombo->findData(s.globals.executionHost);
+        // A host that was deleted since the plan was saved falls back to
+        // local rather than silently keeping an id nothing can resolve.
+        _runOnCombo->setCurrentIndex(hi >= 0 ? hi : 0);
+        _runOnCombo->setEnabled(s.backend == QLatin1String("GAEL"));
+    }
     _untiedEdit->setText(s.globals.untiedParams.join(QStringLiteral(", ")));
     _filterSnrSpin->setValue(s.globals.filterSnr);
     _outlierLoSpin->setValue(s.globals.outlierSigmaLo);

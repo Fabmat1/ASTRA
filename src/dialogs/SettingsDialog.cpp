@@ -1,4 +1,5 @@
 #include "SettingsDialog.h"
+#include "dialogs/RemoteHostsSettingsPage.h"
 #include "utils/AppSettings.h"
 #include "utils/IsisEnvironment.h"
 #include "utils/SedFitEnvironment.h"
@@ -192,6 +193,7 @@ void SettingsDialog::setupUi()
     _topicList->addItem("Lightcurve Fetching");
     _topicList->addItem("Lightcurve Fitting");
     _topicList->addItem("Spectra Fetching");
+    _topicList->addItem("Remote Hosts");
     _topicList->addItem("Updates");
 
     _pages = new QStackedWidget;
@@ -202,6 +204,7 @@ void SettingsDialog::setupUi()
     _pages->addWidget(createLightcurveFetchPage());
     _pages->addWidget(createLightcurveFitPage());
     _pages->addWidget(createSpectraFetchPage());
+    _pages->addWidget(createRemoteHostsPage());
     _pages->addWidget(createUpdatesPage());
 
     connect(_topicList, &QListWidget::currentRowChanged,
@@ -226,6 +229,12 @@ void SettingsDialog::setupUi()
             this, &SettingsDialog::apply);
 }
 
+
+QWidget* SettingsDialog::createRemoteHostsPage()
+{
+    _remoteHostsPage = new astra::remote::RemoteHostsSettingsPage;
+    return _remoteHostsPage;
+}
 
 QWidget* SettingsDialog::createGridPathsPage()
 {
@@ -664,6 +673,8 @@ void SettingsDialog::apply()
 
     if (_fitWorkersSpin)
         _settings->setFitWorkerThreads(_fitWorkersSpin->value());
+
+    if (_remoteHostsPage) _remoteHostsPage->apply();
 
     if (_updateOnStartup)
         _settings->setCheckUpdatesOnStartup(_updateOnStartup->isChecked());

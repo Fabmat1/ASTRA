@@ -8,6 +8,9 @@
 #include "utils/LightcurveFetchService.h"
 #include "utils/SpectrumFetchService.h"
 #include "utils/MassFitService.h"
+#include "remote/RemoteFitService.h"
+#include "remote/SshGridProvider.h"
+#include "remote/GridDiskCache.h"
 #include <algorithm>
 #include <QApplication>
 #include <QFile>
@@ -31,6 +34,27 @@ ApplicationController::ApplicationController(QObject *parent)
     _themeManager = std::make_unique<ThemeManager>(this);
     _backgroundTaskManager = std::make_unique<BackgroundTaskManager>(this);
     _settings = std::make_unique<AppSettings>(this);
+
+    // Grid base paths of the form ssh://<host>/<path> are served by this
+    // provider from inside GAEL; local paths are untouched. Installed once
+    // for the process, it dispatches per host itself.
+    {
+        auto cache = std::make_shared<astra::remote::GridDiskCache>(
+            _settings->effectiveRemoteGridCacheDir(),
+            qint64(_settings->remoteGridCacheCapGb()) << 30);
+        _gridProvider = std::make_shared<astra::remote::SshGridProvider>(cache);
+        specfit::set_grid_data_provider(_gridProvider);
+    }
+
+    // Remote fitting needs the database (runs outlive dialogs and sessions)
+    // and registers itself so any fit worker thread can reach it.
+    _remoteFitService =
+        std::make_unique<astra::remote::RemoteFitService>(_databaseManager.get(),
+                                                          this);
+    // Remote jobs do not stop when ASTRA does: pick up whatever an earlier
+    // session left running, watch it to the end and store its result.
+    _remoteFitService->reattachAll();
+
     loadProjects();
     LOG_INFO("Controller", QString("Loaded %1 projects").arg(_projects.size()));
     

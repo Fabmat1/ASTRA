@@ -37,6 +37,9 @@ constexpr const char* kSpecFetchParallel    = "specfetch/maxParallel";
 constexpr const char* kSpecFetchDir         = "specfetch/downloadDir";
 constexpr const char* kSpecFetchLamostToken = "specfetch/lamostToken";
 constexpr const char* kSpecFetchLastOptions = "specfetch/lastOptions";
+constexpr const char* kRemoteHosts          = "remote/hosts";
+constexpr const char* kRemoteGridCacheDir   = "remote/gridCacheDir";
+constexpr const char* kRemoteGridCacheCapGb = "remote/gridCacheCapGb";
 }
 
 QString AppSettings::panelName(DetailPanel p)
@@ -79,30 +82,14 @@ void AppSettings::applyDefaults()
         { DetailPanel::Spectra, DetailPanel::LightCurve     },
     };
     const QString home = QDir::homePath();
-    const QString user = qEnvironmentVariable("USER");
+    // Only locations inside the user's own home. Anything else is specific to
+    // one site's machines: it does not belong in a default that ships with
+    // the program, and shared paths name people and hosts. Add site paths
+    // under Settings / Grid Paths, or reach them over SSH under Settings /
+    // Remote Hosts. Non-existent paths are ignored at search time.
     _gridBasePaths = { home + "/ISIS_models",
                        home + "/isis/synthetic_spectra/grids",
-                       "/data/stellar/modelgrids" };
-    // Shared / group model-grid locations used across our analysis machines, so
-    // grids are found out of the box there. Non-existent paths are ignored at
-    // search time.
-    _gridBasePaths
-        << "/scratch1/irrgang/fitting/"
-        << "/userdata/data/irrgang/synthetic_spectra/grids/"
-        << "/userdata/data/heber/synthetic_spectra/grids/"
-        << "/userdata/data/dorsch/synthetic_spectra/grids/"
-        << "/home/indus/grids/"
-        << "/home/taurus/data/dorsch/grids/"
-        << "/home/carina/schaffenroth/data/photometry/"
-        << "/work/dorsch/grids/";
-    if (!user.isEmpty()) {
-        _gridBasePaths
-            << QStringLiteral("/scratch1/%1/fitting/").arg(user)
-            << QStringLiteral("/scratch2/%1/fitting/").arg(user)
-            << QStringLiteral("/userdata/data/%1/synthetic_spectra/grids/").arg(user)
-            << QStringLiteral("/Users/%1/programs/isis_grids/").arg(user)
-            << QStringLiteral("/Users/%1/Electra/isis_grids/").arg(user);
-    }
+                       home + "/grids" };
 
     _lcqueryPython = QStandardPaths::findExecutable("python3");
     if (_lcqueryPython.isEmpty())
@@ -168,6 +155,11 @@ void AppSettings::load()
         s.value(kSpecFetchLamostToken, _specFetchLamostToken).toString();
     _specFetchLastOptions =
         s.value(kSpecFetchLastOptions, _specFetchLastOptions).toString();
+    _remoteHostsJson = s.value(kRemoteHosts, _remoteHostsJson).toString();
+    _remoteGridCacheDir =
+        s.value(kRemoteGridCacheDir, _remoteGridCacheDir).toString();
+    _remoteGridCacheCapGb = std::clamp(
+        s.value(kRemoteGridCacheCapGb, _remoteGridCacheCapGb).toInt(), 1, 10000);
     s.endGroup();
 
     publishCopyPrefs();
@@ -222,6 +214,9 @@ void AppSettings::save() const
     s.setValue(kSpecFetchDir,         _specFetchDir);
     s.setValue(kSpecFetchLamostToken, _specFetchLamostToken);
     s.setValue(kSpecFetchLastOptions, _specFetchLastOptions);
+    s.setValue(kRemoteHosts,          _remoteHostsJson);
+    s.setValue(kRemoteGridCacheDir,   _remoteGridCacheDir);
+    s.setValue(kRemoteGridCacheCapGb, _remoteGridCacheCapGb);
 
     s.endGroup();
     s.sync();
@@ -405,6 +400,32 @@ void AppSettings::setSpecFetchLamostToken(const QString& t) {
 void AppSettings::setSpecFetchLastOptions(const QString& json) {
     if (_specFetchLastOptions == json) return;
     _specFetchLastOptions = json;
+    save();
+}
+
+void AppSettings::setRemoteHostsJson(const QString& json) {
+    if (_remoteHostsJson == json) return;
+    _remoteHostsJson = json;
+    save();
+    emit remoteHostsChanged();
+}
+
+void AppSettings::setRemoteGridCacheDir(const QString& dir) {
+    if (_remoteGridCacheDir == dir) return;
+    _remoteGridCacheDir = dir;
+    save();
+}
+
+QString AppSettings::effectiveRemoteGridCacheDir() const {
+    if (!_remoteGridCacheDir.isEmpty()) return _remoteGridCacheDir;
+    return QStandardPaths::writableLocation(QStandardPaths::CacheLocation)
+           + QStringLiteral("/gridcache");
+}
+
+void AppSettings::setRemoteGridCacheCapGb(int gb) {
+    gb = std::clamp(gb, 1, 10000);
+    if (_remoteGridCacheCapGb == gb) return;
+    _remoteGridCacheCapGb = gb;
     save();
 }
 

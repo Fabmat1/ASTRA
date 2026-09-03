@@ -814,9 +814,15 @@ bool RadialVelocityImportPage::loadCSVFile(
 
     QTextStream in(&file);
     QStringList lines;
+    QString     preambleHeader;   // last '#' line before the first data row
     while (!in.atEnd()) {
         QString line = in.readLine().trimmed();
-        if (line.isEmpty() || line.startsWith('#')) continue;
+        if (line.isEmpty()) continue;
+        if (line.startsWith('#')) {
+            if (lines.isEmpty())
+                preambleHeader = line.mid(1).trimmed();
+            continue;
+        }
         lines << line;
     }
     file.close();
@@ -832,8 +838,20 @@ bool RadialVelocityImportPage::loadCSVFile(
 
     int startRow = 0;
     if (headerCheck->isChecked()) {
-        outColumns = parseLine(lines[0], delim);
-        startRow = 1;
+        // ASCII tables usually comment their header out ("# name mjd rv").
+        // Taking it only when it lines up with the data keeps the first
+        // measurement from being consumed as a header row.
+        const QStringList commented = preambleHeader.isEmpty()
+                                    ? QStringList()
+                                    : parseLine(preambleHeader, delim);
+        if (commented.size() > 1 &&
+            commented.size() == parseLine(lines[0], delim).size()) {
+            outColumns = commented;
+            startRow   = 0;
+        } else {
+            outColumns = parseLine(lines[0], delim);
+            startRow   = 1;
+        }
     } else {
         int ncols = parseLine(lines[0], delim).size();
         for (int i = 0; i < ncols; ++i)
@@ -1168,16 +1186,48 @@ void RadialVelocityImportPage::onProcessTable()
         _tableUnmatchedExamples = examples;
     }, Qt::QueuedConnection);
 
+    _tableShortRows = _tableBadTimeRows = 0;
+    _tableBadRVRows = _tableDuplicateRows = 0;
+    _tableSkipExamples.clear();
+
+    connect(task, &RVExtractionTask::rowSkipReport,
+            this, [this](int shortRows, int badTime, int badRV,
+                         int duplicateRows, const QStringList& examples) {
+        _tableShortRows     = shortRows;
+        _tableBadTimeRows   = badTime;
+        _tableBadRVRows     = badRV;
+        _tableDuplicateRows = duplicateRows;
+        _tableSkipExamples  = examples;
+    }, Qt::QueuedConnection);
+
     connect(task, &RVExtractionTask::extractionComplete,
             this, [this](int numCurves, int numPoints) {
         _resultsReady = (numCurves > 0);
         _processTableBtn->setEnabled(true);
-        _statusLabel->setText(
-            QString("Processed: %1 stars (%2 new RV points). "
-                    "%3 of %4 rows matched a star.")
+
+        QString msg = QString("Processed: %1 stars (%2 new RV points). "
+                              "%3 of %4 rows matched a star.")
             .arg(numCurves).arg(numPoints)
             .arg(_tableMatchedRows)
-            .arg(_tableMatchedRows + _tableUnmatchedRows));
+            .arg(_tableMatchedRows + _tableUnmatchedRows);
+
+        const int skipped = _tableShortRows + _tableBadTimeRows
+                          + _tableBadRVRows + _tableDuplicateRows;
+        if (skipped > 0) {
+            QStringList why;
+            if (_tableDuplicateRows > 0)
+                why << QString("%1 already imported").arg(_tableDuplicateRows);
+            if (_tableBadTimeRows > 0)
+                why << QString("%1 unreadable timestamp").arg(_tableBadTimeRows);
+            if (_tableBadRVRows > 0)
+                why << QString("%1 unreadable RV").arg(_tableBadRVRows);
+            if (_tableShortRows > 0)
+                why << QString("%1 too few columns").arg(_tableShortRows);
+            msg += QString(" %1 matched row(s) yielded no point (%2).")
+                       .arg(skipped).arg(why.join(", "));
+        }
+        _statusLabel->setText(msg);
+
         updatePreviewFromProject();
         showTableMatchReport();
     }, Qt::QueuedConnection);
@@ -1185,10 +1235,13 @@ void RadialVelocityImportPage::onProcessTable()
     wiz->controller()->backgroundTaskManager()->queueTask(task);
 }
 
-// Unmatched rows are the usual reason a table import looks empty, so they get
-// their own entry at the top of the preview instead of a silent counter.
+// Unmatched rows, and matched rows that yielded nothing, are the usual reasons
+// a table import looks empty, so they get their own entries at the top of the
+// preview instead of a silent counter.
 void RadialVelocityImportPage::showTableMatchReport()
 {
+    showTableSkipReport();
+
     if (_tableUnmatchedRows <= 0)
         return;
 
@@ -1211,6 +1264,43 @@ void RadialVelocityImportPage::showTableMatchReport()
     item->setExpanded(true);
     for (int i = 0; i < _previewTree->columnCount(); ++i)
         _previewTree->resizeColumnToContents(i);
+}
+
+// A row that matched a star but produced no point is the confusing case: the
+// import reports stars matched and still writes nothing. Name every reason.
+void RadialVelocityImportPage::showTableSkipReport()
+{
+    const int skipped = _tableShortRows + _tableBadTimeRows
+                      + _tableBadRVRows + _tableDuplicateRows;
+    if (skipped <= 0)
+        return;
+
+    auto* item = new QTreeWidgetItem;
+    item->setText(0, "Matched rows without a new point");
+    item->setText(1, QString::number(skipped));
+    item->setText(3, "Skipped");
+
+    auto addReason = [item](int count, const QString& text) {
+        if (count <= 0) return;
+        auto* child = new QTreeWidgetItem(item);
+        child->setText(0, "  " + text);
+        child->setText(1, QString::number(count));
+        child->setText(3, "Skipped");
+    };
+    addReason(_tableDuplicateRows,
+              "Epoch already present for this star (re-import)");
+    addReason(_tableBadTimeRows,  "Timestamp cell is not a number");
+    addReason(_tableBadRVRows,    "RV cell is not a number");
+    addReason(_tableShortRows,    "Row has fewer columns than mapped");
+
+    for (const QString& ex : _tableSkipExamples) {
+        auto* child = new QTreeWidgetItem(item);
+        child->setText(0, "  " + ex);
+        child->setText(3, "Example");
+    }
+
+    _previewTree->insertTopLevelItem(0, item);
+    item->setExpanded(true);
 }
 
 void RadialVelocityImportPage::updatePreviewFromProject() {

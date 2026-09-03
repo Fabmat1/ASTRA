@@ -182,3 +182,6 @@ scripts/*
 !resources/scripts/out.svg
 
 *.pkl
+
+# Worker bundles built by scripts/build-worker-bundle.sh
+dist/

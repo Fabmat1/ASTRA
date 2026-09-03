@@ -101,26 +101,91 @@ void FitProgressDialog::refreshTiming()
     if (!_running) return;
     const double elapsed = _clock.elapsed() / 1000.0;
     QString t = QStringLiteral("elapsed %1").arg(formatDuration(elapsed));
+    if (_stepTotal > 1)
+        t += QStringLiteral("  ·  spectrum %1 of %2")
+                 .arg(_stepIndex + 1).arg(_stepTotal);
     if (_eta >= 0.0)
-        t += QStringLiteral("  ·  ~%1 remaining").arg(formatDuration(_eta));
+        t += _stepTotal > 1
+                 ? QStringLiteral("  ·  ~%1 left on this fit").arg(formatDuration(_eta))
+                 : QStringLiteral("  ·  ~%1 remaining").arg(formatDuration(_eta));
     _timing->setText(t);
 }
 
 void FitProgressDialog::setProgress(const astra::fitting::FitProgressInfo& info)
 {
-    if (!info.stage.isEmpty()) _status->setText(info.stage);
+    if (!info.stage.isEmpty()) {
+        _status->setText(_stepTotal > 1
+            ? QStringLiteral("[%1/%2] %3  ·  %4")
+                  .arg(_stepIndex + 1).arg(_stepTotal).arg(info.stage, _stepLabel)
+            : info.stage);
+    }
     _detail->setText(info.detail);
 
-    if (info.fraction < 0.0) {
+    if (info.fraction < 0.0 && _stepTotal <= 1) {
         // Indeterminate: Qt shows a marquee animation when min == max == 0.
         if (_bar->maximum() != 0) _bar->setRange(0, 0);
     } else {
         if (_bar->maximum() == 0) _bar->setRange(0, 1000);
-        _bar->setValue(std::clamp(int(info.fraction * 1000.0), 0, 1000));
+        // In a sequence the bar tracks the whole queue: a step with no
+        // fraction of its own simply parks at its own starting edge, so the
+        // bar never runs backwards when the next spectrum begins.
+        const double within = std::max(info.fraction, 0.0);
+        const double f = _stepTotal > 1
+                             ? (_stepIndex + within) / double(_stepTotal)
+                             : within;
+        _bar->setValue(std::clamp(int(f * 1000.0), 0, 1000));
     }
 
     _eta = info.etaSeconds;
     refreshTiming();
+}
+
+void FitProgressDialog::beginStep(int index, int total, const QString& label)
+{
+    _stepIndex = index;
+    _stepTotal = total;
+    _stepLabel = label;
+    _eta       = -1.0;
+
+    if (_bar->maximum() == 0) _bar->setRange(0, 1000);
+    _bar->setValue(std::clamp(int(index / double(std::max(total, 1)) * 1000.0),
+                              0, 1000));
+
+    _status->setText(QStringLiteral("[%1/%2] Starting  ·  %3")
+                         .arg(index + 1).arg(total).arg(label));
+    _detail->clear();
+    appendLog(QStringLiteral("\n── [%1/%2] %3 ──────────────")
+                  .arg(index + 1).arg(total).arg(label));
+    refreshTiming();
+}
+
+void FitProgressDialog::appendStepResult(const QString& line)
+{
+    appendLog(line);
+}
+
+void FitProgressDialog::setSequenceFinished(int nOk, int nFailed, bool aborted)
+{
+    const double elapsed = _clock.elapsed() / 1000.0;
+    stopRunning();
+    if (!aborted && nFailed == 0) _bar->setValue(1000);
+
+    QString summary;
+    if (aborted && nOk == 0)
+        summary = QStringLiteral("Aborted - no fit was saved.");
+    else if (aborted)
+        summary = QStringLiteral("Aborted - the %1 fit(s) that had finished "
+                                 "are saved, the rest were not run").arg(nOk);
+    else if (nFailed == 0)
+        summary = QStringLiteral("✓ Finished - %1 of %2 fits succeeded")
+                      .arg(nOk).arg(nOk + nFailed);
+    else
+        summary = QStringLiteral("Finished - %1 of %2 fits succeeded, %3 failed")
+                      .arg(nOk).arg(nOk + nFailed).arg(nFailed);
+    _status->setText(summary);
+    _detail->clear();
+    _timing->setText(QStringLiteral("took %1").arg(formatDuration(elapsed)));
+    appendLog("\n" + summary);
 }
 
 void FitProgressDialog::stopRunning()

@@ -185,6 +185,7 @@ private:
     QListWidget*         _setupList       = nullptr;
     QLineEdit*           _setupNameEdit   = nullptr;
     QComboBox*           _backendCombo    = nullptr;
+    QComboBox*           _runOnCombo      = nullptr;
     FitComponentsWidget* _componentsWidget = nullptr;
     QCheckBox*           _inheritCheck    = nullptr;
     QLineEdit*           _untiedEdit      = nullptr;

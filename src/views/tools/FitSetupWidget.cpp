@@ -1,4 +1,6 @@
 #include "FitSetupWidget.h"
+#include "remote/RemoteHostRegistry.h"
+#include "remote/SshConnection.h"
 #include "FitProgressDialog.h"
 
 #include "models/Star.h"
@@ -89,6 +91,18 @@ void clearLayout(QLayout* l)
     }
 }
 
+/// Removes the temporary directories buildJob() handed back. It sets
+/// autoRemove(false) because the backend still needs the exported spectra
+/// after the call returns, which makes cleanup the caller's job.
+void cleanupTempPaths(const QStringList& paths)
+{
+    for (const QString& p : paths) {
+        if (p.isEmpty()) continue;
+        QDir d(p);
+        if (d.exists()) d.removeRecursively();
+    }
+}
+
 QString spectrumLabel(const std::shared_ptr<Spectrum>& s, int idx)
 {
     QString l;
@@ -113,7 +127,18 @@ FitSetupWidget::FitSetupWidget(const Context& ctx, QWidget* parent)
 
 FitSetupWidget::~FitSetupWidget()
 {
-    if (_worker) _worker->requestAbort();
+    // Stop the queue as well, not just the fit in flight: the callbacks that
+    // would start the next one are about to be disconnected anyway.
+    _queueAborted = true;
+    if (_worker) {
+        // Deleting the worker joins its backend thread. That has to happen
+        // before the temporary directories go, because the backend is still
+        // reading the exported spectra out of them.
+        _worker->requestAbort();
+        delete _worker;
+        _worker = nullptr;
+    }
+    cleanupTempPaths(_queueTemps);
 }
 
 // =====================================================================
@@ -212,6 +237,7 @@ QGroupBox* FitSetupWidget::buildSpectraListSection()
         QString id = it->data(Qt::UserRole).toString();
         if (!id.isEmpty() && _configs.contains(id))
             _configs[id].enabled = (it->checkState() == Qt::Checked);
+        refreshRunSelectionUi();
     });
     v->addWidget(_spectraList);
 
@@ -221,15 +247,70 @@ QGroupBox* FitSetupWidget::buildSpectraListSection()
     connect(all,  &QPushButton::clicked, this, [this]{
         for (int i = 0; i < _spectraList->count(); ++i)
             _spectraList->item(i)->setCheckState(Qt::Checked);
+        refreshRunSelectionUi();
     });
     connect(none, &QPushButton::clicked, this, [this]{
         for (int i = 0; i < _spectraList->count(); ++i)
             _spectraList->item(i)->setCheckState(Qt::Unchecked);
+        refreshRunSelectionUi();
     });
     btnRow->addWidget(all);
     btnRow->addWidget(none);
     btnRow->addStretch();
     v->addLayout(btnRow);
+
+    // Joint by default, which is what a multi-epoch fit of one star wants:
+    // the atmospheric parameters are tied across the spectra. Ticking this
+    // instead fits each marked spectrum on its own, one after the other, so
+    // every spectrum gets its own independent solution.
+    _sequentialCheck = new QCheckBox(
+        "Fit one spectrum at a time (separate fit per marked spectrum)");
+    _sequentialCheck->setToolTip(
+        "Off: all marked spectra go into a single joint fit with the "
+        "atmospheric parameters tied across them.\n"
+        "On: each marked spectrum is fitted on its own, in list order, and "
+        "saved as its own fit. The untied-parameter list has no effect then.");
+    connect(_sequentialCheck, &QCheckBox::toggled,
+            this, [this]{ refreshRunSelectionUi(); });
+    v->addWidget(_sequentialCheck);
+
+    // Re-running a star after adding a few spectra should not redo the work
+    // that is already done. A spectrum counts as done when it carries a best
+    // fit - the same mark the tree shows and the rest of ASTRA reads.
+    _skipFittedCheck = new QCheckBox("Skip spectra that already have a best fit");
+    _skipFittedCheck->setToolTip(
+        "Leaves out every marked spectrum that already carries a best fit, so "
+        "a re-run only covers the ones still missing one.\n"
+        "Those rows are shown in italics. Clear a spectrum's best-fit mark in "
+        "the tree on the left to bring it back into the run.");
+    connect(_skipFittedCheck, &QCheckBox::toggled,
+            this, [this]{ refreshRunSelectionUi(); });
+    v->addWidget(_skipFittedCheck);
+
+    // Spectra of one star share a solution, so the fit that just converged is
+    // a far better guess for the next spectrum than the number in the form.
+    _seedFromPrevCheck = new QCheckBox(
+        "Start each fit from the previous fit's result");
+    connect(_seedFromPrevCheck, &QCheckBox::toggled,
+            this, [this]{ refreshRunSelectionUi(); });
+    _seedFromPrevCheck->setToolTip(
+        "Seeds every remaining fit with the values the last successful one "
+        "settled on, instead of restarting from the components above.\n"
+        "Only the stellar parameters and abundances travel. The continuum "
+        "spline, the ignore regions and the fit window stay per spectrum - "
+        "the anchor points are rarely the same twice - and so does the "
+        "radial velocity, which really does differ from epoch to epoch.\n"
+        "Grids and freeze switches are never touched.\n"
+        "Only applies when the spectra are fitted one at a time.");
+    v->addWidget(_seedFromPrevCheck);
+
+    // Two independent filters sit between the check marks and what actually
+    // runs, so the count that matters is spelled out rather than left to be
+    // inferred from the list.
+    _runSummaryLabel = new QLabel;
+    _runSummaryLabel->setStyleSheet("color: palette(mid);");
+    v->addWidget(_runSummaryLabel);
+
     return box;
 }
 
@@ -392,6 +473,24 @@ QGroupBox* FitSetupWidget::buildGlobalSection()
     connect(_backendCombo, &QComboBox::currentTextChanged,
         this, [this]{ updateBackendSpecificUi(); });
 
+    // Where the fit runs. Local unless the user has defined remote hosts;
+    // the entry carries the host id, so renaming a host later cannot point a
+    // saved job at the wrong machine.
+    _runOnCombo = new QComboBox;
+    _runOnCombo->addItem("This computer", QString());
+    for (const auto& h : astra::remote::RemoteHostRegistry::instance().hosts()) {
+        if (!h.useForFitting) continue;
+        _runOnCombo->addItem(
+            h.type == astra::remote::RemoteHost::Type::Slurm
+                ? QStringLiteral("%1 (Slurm)").arg(h.name)
+                : h.name,
+            h.id);
+    }
+    _runOnCombo->setToolTip(
+        "Run the fit on another machine over SSH. The grids have to exist "
+        "there; ASTRA installs its fitting worker automatically.");
+    form->addRow("Run on:", _runOnCombo);
+
     _untiedEdit = new QLineEdit("vrad");
     _untiedEdit->setPlaceholderText("Comma-separated: vrad,vsini,…");
     form->addRow("Untied params:", _untiedEdit);
@@ -530,6 +629,12 @@ void FitSetupWidget::updateBackendSpecificUi()
         _isisInteractiveGroup->setVisible(b == "ISIS (interactive)");
     if (_previewScriptBtn)
         _previewScriptBtn->setVisible(b == "ISIS" || b == "ISIS (interactive)");
+    // Only GAEL has a remote worker; ISIS is local and interactive.
+    if (_runOnCombo) {
+        const bool remotable = (b == "GAEL");
+        _runOnCombo->setEnabled(remotable);
+        if (!remotable) _runOnCombo->setCurrentIndex(0);
+    }
 }
 
 // =====================================================================
@@ -551,18 +656,27 @@ void FitSetupWidget::refreshSpectraList()
 
     for (int i = 0; i < (int)_sortedSpectra.size(); ++i) {
         auto& s = _sortedSpectra[i];
+        const QString id = s->getId();
+
+        if (!_configs.contains(id))
+            _configs[id] = makeDefaultConfig(s);
+        // Flagging a spectrum is how the user says it is unusable, so a
+        // flagged one is never fitted. Every other row keeps the mark the
+        // user gave it, so a refresh (a finished fit, an archive import)
+        // does not silently re-arm rows they had switched off.
+        if (s->isFlagged()) _configs[id].enabled = false;
+
         auto* item = new QListWidgetItem(spectrumLabel(s, i));
-        item->setData(Qt::UserRole, s->getId());
+        item->setData(Qt::UserRole, id);
         item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
-        item->setCheckState(Qt::Checked);
+        // The check state is written with signals blocked, so it has to be
+        // taken from the config rather than the other way round - otherwise
+        // an unmarked row would still be fitted.
+        item->setCheckState(_configs[id].enabled ? Qt::Checked : Qt::Unchecked);
         if (s->isFlagged()) {
             QFont f = item->font(); f.setStrikeOut(true); item->setFont(f);
-            item->setCheckState(Qt::Unchecked);
         }
         _spectraList->addItem(item);
-
-        if (!_configs.contains(s->getId()))
-            _configs[s->getId()] = makeDefaultConfig(s);
     }
     _spectraList->blockSignals(false);
 
@@ -573,6 +687,66 @@ void FitSetupWidget::refreshSpectraList()
         for (int i = 0; i < (int)_sortedSpectra.size(); ++i)
             if (_sortedSpectra[i]->getId() == _currentId) { row = i; break; }
         _spectraList->setCurrentRow(row);
+    }
+
+    refreshRunSelectionUi();
+}
+
+std::vector<std::shared_ptr<Spectrum>> FitSetupWidget::selectedSpectra() const
+{
+    const bool skipFitted = _skipFittedCheck && _skipFittedCheck->isChecked();
+
+    std::vector<std::shared_ptr<Spectrum>> out;
+    for (const auto& s : _sortedSpectra) {
+        const auto it = _configs.constFind(s->getId());
+        if (it == _configs.constEnd() || !it->enabled) continue;
+        if (skipFitted && s->getBestFit()) continue;
+        out.push_back(s);
+    }
+    return out;
+}
+
+void FitSetupWidget::refreshRunSelectionUi()
+{
+    if (!_spectraList || !_runSummaryLabel) return;
+
+    const bool skipFitted = _skipFittedCheck && _skipFittedCheck->isChecked();
+
+    // Italics rather than a colour: the row already uses strike-through for a
+    // flagged spectrum, and a hardcoded grey would not survive a theme change.
+    const QSignalBlocker block(_spectraList);
+    for (int i = 0; i < _spectraList->count() &&
+                    i < (int)_sortedSpectra.size(); ++i) {
+        auto* item = _spectraList->item(i);
+        const bool skipped = skipFitted && _sortedSpectra[i]->getBestFit();
+        QFont f = item->font();
+        f.setItalic(skipped);
+        item->setFont(f);
+        item->setToolTip(skipped
+            ? QStringLiteral("Already has a best fit, so this run skips it.")
+            : QString());
+    }
+
+    const bool sequential = _sequentialCheck && _sequentialCheck->isChecked();
+    // A joint fit is one job, so there is no previous result to start from;
+    // the option only means something for a sequence.
+    if (_seedFromPrevCheck) _seedFromPrevCheck->setEnabled(sequential);
+
+    const int willRun = (int)selectedSpectra().size();
+    const int total   = (int)_sortedSpectra.size();
+    if (willRun == 0) {
+        _runSummaryLabel->setText(
+            QStringLiteral("No spectra will be fitted (%1 available)").arg(total));
+    } else {
+        _runSummaryLabel->setText(
+            QStringLiteral("%1 of %2 spectra will be fitted, %3")
+                .arg(willRun).arg(total)
+                .arg(!sequential
+                         ? QStringLiteral("together in one joint fit")
+                     : _seedFromPrevCheck && _seedFromPrevCheck->isChecked()
+                         ? QStringLiteral("one at a time, each seeded from "
+                                          "the previous one")
+                         : QStringLiteral("one at a time")));
     }
 }
 
@@ -946,6 +1120,7 @@ fit::JobGlobals FitSetupWidget::collectGlobals() const
 {
     fit::JobGlobals g;
     g.backend = _backendCombo->currentText();
+    if (_runOnCombo) g.executionHost = _runOnCombo->currentData().toString();
 
     g.filterSnr      = _filterSnrSpin->value();
     g.requireBlue    = _requireBlueSpin->value();
@@ -974,7 +1149,7 @@ fit::JobGlobals FitSetupWidget::collectGlobals() const
     }
 
     AppSettings settings;
-    for (const auto& p : settings.gridBasePaths())
+    for (const auto& p : astra::remote::gridBasePathsIncludingRemote())
         g.basePaths.append(p);
     g.workerThreads = settings.fitWorkerThreads();
 
@@ -986,17 +1161,58 @@ fit::JobGlobals FitSetupWidget::collectGlobals() const
     return g;
 }
 
-fit::SpectralFitJob FitSetupWidget::buildJob(QStringList& tempFilesOut) const
+// ────────────────────────────────────────────────────────────────────
+QVector<fit::SpectralFitJob> FitSetupWidget::buildJobs(
+    QStringList& tempFilesOut) const
 {
-    return fit::buildJob(_sortedSpectra, _configs,
-                         _componentsWidget->components(),
-                         collectGlobals(), tempFilesOut);
+    const auto components = _componentsWidget->components();
+    const auto globals    = collectGlobals();
+    const auto selected   = selectedSpectra();
+
+    QVector<fit::SpectralFitJob> jobs;
+    if (selected.empty()) return jobs;
+
+    if (!_sequentialCheck || !_sequentialCheck->isChecked()) {
+        fit::SpectralFitJob job = fit::buildJob(selected, _configs, components,
+                                                globals, tempFilesOut);
+        if (!job.observations.isEmpty()) jobs.append(job);
+        return jobs;
+    }
+
+    // One job per selected spectrum, in the order the list shows them.
+    // Handing buildJob() a one-element vector is all it takes: every
+    // parameter is then trivially untied, which is exactly what fitting them
+    // separately means.
+    for (const auto& s : selected) {
+        fit::SpectralFitJob job = fit::buildJob({ s }, _configs, components,
+                                               globals, tempFilesOut);
+        if (!job.observations.isEmpty()) jobs.append(job);
+    }
+    return jobs;
+}
+
+QString FitSetupWidget::jobLabel(const fit::SpectralFitJob& job) const
+{
+    if (job.observations.size() != 1 || job.observations.first().files.isEmpty())
+        return {};
+    const QString id = job.observations.first().files.first().spectrumId;
+    for (int i = 0; i < (int)_sortedSpectra.size(); ++i)
+        if (_sortedSpectra[i]->getId() == id)
+            return spectrumLabel(_sortedSpectra[i], i);
+    return id;
 }
 
 // ────────────────────────────────────────────────────────────────────
 void FitSetupWidget::onRunFit()
 {
     commitEditorToState();
+
+    if (!_queue.isEmpty()) {
+        QMessageBox::information(this, "Fit already running",
+            "A fit is still running. Wait for it to finish, or abort it in "
+            "the progress window.");
+        return;
+    }
 
     // Sanity checks
     const auto components = _componentsWidget->components();
@@ -1006,66 +1222,297 @@ void FitSetupWidget::onRunFit()
         return;
     }
 
+    // A remote fit that cannot even reach its host should say so now, not
+    // after the progress window has opened and the first job has failed.
+    if (_runOnCombo) {
+        const QString hostId = _runOnCombo->currentData().toString();
+        if (!hostId.isEmpty()) {
+            astra::remote::RemoteHost host;
+            auto& reg = astra::remote::RemoteHostRegistry::instance();
+            if (!reg.hostById(hostId, &host)) {
+                QMessageBox::warning(this, "Cannot run fit",
+                    "The selected remote host no longer exists. Pick another "
+                    "under \"Run on\", or define it in Settings.");
+                return;
+            }
+            if (auto* conn = reg.connection(hostId)) {
+                QString cerr;
+                QApplication::setOverrideCursor(Qt::WaitCursor);
+                const bool up = conn->ensureMaster(&cerr);
+                QApplication::restoreOverrideCursor();
+                if (!up) {
+                    QMessageBox::warning(this, "Cannot run fit",
+                        QStringLiteral("Cannot reach %1:\n\n%2")
+                            .arg(host.name, cerr));
+                    return;
+                }
+            }
+        }
+    }
+
     QStringList tempCleanup;
-    fit::SpectralFitJob job = buildJob(tempCleanup);
-    if (job.observations.isEmpty()) {
+    QVector<fit::SpectralFitJob> jobs = buildJobs(tempCleanup);
+    if (jobs.isEmpty()) {
+        cleanupTempPaths(tempCleanup);
+        // Being skipped for already having a best fit looks exactly like
+        // being unmarked from here, so name that case rather than let the
+        // user hunt for a check mark they did not clear.
+        const bool skipFitted = _skipFittedCheck && _skipFittedCheck->isChecked();
+        int marked = 0;
+        for (const auto& s : _sortedSpectra) {
+            const auto it = _configs.constFind(s->getId());
+            if (it != _configs.constEnd() && it->enabled) ++marked;
+        }
         QMessageBox::warning(this, "Cannot run fit",
-            "No spectra selected (or no data loaded for the selected spectra).");
+            skipFitted && marked > 0 && selectedSpectra().empty()
+                ? QStringLiteral("Every marked spectrum already has a best "
+                                 "fit, and \"Skip spectra that already have a "
+                                 "best fit\" is on, so there is nothing left "
+                                 "to run.")
+                : QStringLiteral("No spectra selected (or no data loaded for "
+                                 "the selected spectra)."));
         return;
     }
 
-    if (job.backend == "ISIS (interactive)") {
-        auto* dlg = new InteractiveIsisDialog(job, this);
-        dlg->setAttribute(Qt::WA_DeleteOnClose);
-        connect(dlg, &InteractiveIsisDialog::fitExtracted,
-                this, [this](const fit::SpectralFitResult& r,
-                              const fit::SpectralFitJob&   j) {
-            persistResult(r, j);
-            emit fitCompleted();
-        });
-        dlg->show();
+    _queue        = jobs;
+    _queueTemps   = tempCleanup;
+    _queueIndex   = 0;
+    _queueOk      = 0;
+    _queueFailed  = 0;
+    _queueAborted = false;
+    _queueLast    = {};
+    _runButton->setEnabled(false);
+
+    if (jobs.first().backend == "ISIS (interactive)") {
+        runNextInteractiveJob();
         return;
     }
 
-    // Launch progress dialog + worker
+    startJobQueue();
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Run queue: one progress dialog, one worker per job, back to back
+// ────────────────────────────────────────────────────────────────────
+void FitSetupWidget::startJobQueue()
+{
+    auto* dlg = new FitProgressDialog(this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    if (_queue.size() > 1)
+        dlg->setWindowTitle(QString("Running %1 spectral fits").arg(_queue.size()));
+    _queueDlg = dlg;
+
+    // Abort applies to the queue, not just to the fit currently in the
+    // backend: the remaining spectra are dropped, everything already saved
+    // stays saved.
+    connect(dlg, &FitProgressDialog::abortRequested, this, [this] {
+        _queueAborted = true;
+        if (_worker) _worker->requestAbort();
+    });
+    // Closing the window while the queue is still running counts as a stop
+    // request: there is no way back to it, so leaving the rest of the queue
+    // grinding away invisibly would be worse.
+    connect(dlg, &QObject::destroyed, this, [this] {
+        if (_queue.isEmpty()) return;      // already finished
+        _queueAborted = true;
+        if (_worker) _worker->requestAbort();
+    });
+
+    dlg->show();
+    runNextQueuedJob();
+}
+
+void FitSetupWidget::runNextQueuedJob()
+{
+    if (_queueAborted || _queueIndex >= _queue.size()) { finishJobQueue(); return; }
+
+    const fit::SpectralFitJob job = _queue[_queueIndex];
+    const int total = _queue.size();
+
+    if (_queueDlg && total > 1)
+        _queueDlg->beginStep(_queueIndex, total, jobLabel(job));
+
     auto* worker = new fit::FitWorker(this);
     _worker = worker;
 
-    auto* dlg = new FitProgressDialog(this);
-    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    const auto stepPrefix = [this, total] {
+        return total > 1 ? QStringLiteral("[%1/%2] ").arg(_queueIndex + 1).arg(total)
+                         : QString();
+    };
 
-    connect(worker, &fit::FitWorker::logMessage,
-            dlg,    &FitProgressDialog::appendLog);
-    connect(worker, &fit::FitWorker::progress,
-            dlg,    &FitProgressDialog::setProgress);
-    connect(dlg,    &FitProgressDialog::abortRequested,
-            worker, &fit::FitWorker::requestAbort);
+    connect(worker, &fit::FitWorker::logMessage, this, [this](const QString& l) {
+        if (_queueDlg) _queueDlg->appendLog(l);
+    });
+    connect(worker, &fit::FitWorker::progress, this,
+            [this](const fit::FitProgressInfo& i) {
+        if (_queueDlg) _queueDlg->setProgress(i);
+    });
+
+    // Each of the three end states records the outcome, retires the worker and
+    // steps the queue on. Only an abort stops the rest of the queue: a
+    // spectrum the backend could not fit is logged and skipped.
+    connect(worker, &fit::FitWorker::finished, this,
+            [this, job, worker, stepPrefix](const fit::SpectralFitResult& r) {
+        persistResult(r, job);
+        ++_queueOk;
+        _queueLast = { true, false, {}, r };
+        seedRemainingJobs(r, job);
+        if (_queueDlg && _queue.size() > 1)
+            _queueDlg->appendStepResult(
+                stepPrefix() + QString("done - chi2 = %1, converged = %2")
+                                   .arg(r.finalChi2, 0, 'f', 3)
+                                   .arg(r.converged ? "yes" : "no"));
+        _worker = nullptr;
+        worker->deleteLater();
+        ++_queueIndex;
+        runNextQueuedJob();
+    });
 
     connect(worker, &fit::FitWorker::failed, this,
-            [this, dlg](const QString& err) {
-        dlg->setError(err);
+            [this, worker, stepPrefix](const QString& err) {
+        ++_queueFailed;
+        _queueLast = { false, false, err, {} };
+        if (_queueDlg && _queue.size() > 1)
+            _queueDlg->appendStepResult(stepPrefix() + "FAILED: " + err);
         _worker = nullptr;
-        _runButton->setEnabled(true);
-    });
-    // An honoured Abort is not a failure: nothing is persisted, and the
-    // dialog says so rather than showing an error banner.
-    connect(worker, &fit::FitWorker::aborted, this, [this, dlg] {
-        dlg->setAborted();
-        _worker = nullptr;
-        _runButton->setEnabled(true);
-    });
-    connect(worker, &fit::FitWorker::finished, this,
-            [this, dlg, job](const fit::SpectralFitResult& r) {
-        persistResult(r, job);
-        dlg->setFinished(r);
-        _worker = nullptr;
-        _runButton->setEnabled(true);
-        emit fitCompleted();
+        worker->deleteLater();
+        ++_queueIndex;
+        runNextQueuedJob();
     });
 
-    _runButton->setEnabled(false);
-    dlg->show();
+    connect(worker, &fit::FitWorker::aborted, this, [this, worker] {
+        _queueAborted = true;
+        _queueLast = { false, true, {}, {} };
+        _worker = nullptr;
+        worker->deleteLater();
+        finishJobQueue();
+    });
+
     worker->start(job);
+}
+
+void FitSetupWidget::seedRemainingJobs(const fit::SpectralFitResult& result,
+                                      const fit::SpectralFitJob&    job)
+{
+    if (!_seedFromPrevCheck || !_seedFromPrevCheck->isChecked()) return;
+    if (_queueIndex + 1 >= _queue.size()) return;
+
+    // specIndex 0: a sequential job covers exactly one spectrum, so there is
+    // only ever one column of untied values to read.
+    const auto seeded = fit::componentsFromResult(result, job.components, 0);
+
+    // Every job still queued, not just the next one: if the next spectrum
+    // fails outright, the one after it should still start from the last
+    // result that actually worked rather than fall back to the form.
+    for (int k = _queueIndex + 1; k < _queue.size(); ++k)
+        fit::seedComponentsFrom(_queue[k].components, seeded);
+
+    // Worth stating in the log: a chain that drifts is much easier to read
+    // back when each handover shows the numbers it passed on.
+    if (_queueDlg && !seeded.isEmpty()) {
+        const auto& c = seeded.first();
+        _queueDlg->appendStepResult(
+            QStringLiteral("  seeding the remaining %1 fit(s) from this one: "
+                           "teff = %2, logg = %3, He = %4")
+                .arg(_queue.size() - _queueIndex - 1)
+                .arg(c.teff, 0, 'f', 0)
+                .arg(c.logg, 0, 'f', 3)
+                .arg(c.he,   0, 'f', 3));
+    }
+}
+
+void FitSetupWidget::finishJobQueue()
+{
+    const int total = _queue.size();
+
+    if (_queueDlg) {
+        if (total > 1) {
+            _queueDlg->setSequenceFinished(_queueOk, _queueFailed, _queueAborted);
+        } else if (_queueLast.aborted || (_queueAborted && !_queueLast.ok)) {
+            _queueDlg->setAborted();
+        } else if (_queueLast.ok) {
+            _queueDlg->setFinished(_queueLast.result);
+        } else {
+            _queueDlg->setError(_queueLast.error);
+        }
+    }
+
+    cleanupTempPaths(_queueTemps);
+    _queueTemps.clear();
+    _queue.clear();
+    _queueDlg = nullptr;
+    _runButton->setEnabled(true);
+
+    // Once, at the end: the reload this triggers swaps out the Spectrum
+    // objects the queue is still holding, so it must not fire between jobs.
+    if (_queueOk > 0) emit fitCompleted();
+}
+
+// ────────────────────────────────────────────────────────────────────
+// ISIS (interactive): a chain of live sessions rather than a worker queue
+// ────────────────────────────────────────────────────────────────────
+void FitSetupWidget::runNextInteractiveJob()
+{
+    if (_queueAborted || _queueIndex >= _queue.size()) {
+        endInteractiveChain();
+        return;
+    }
+
+    const fit::SpectralFitJob job = _queue[_queueIndex];
+    const int total = _queue.size();
+    const int step  = _queueIndex;
+
+    auto* dlg = new InteractiveIsisDialog(job, this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    if (total > 1)
+        dlg->setWindowTitle(QString("ISIS (interactive) - spectrum %1 of %2: %3")
+                                .arg(step + 1).arg(total).arg(jobLabel(job)));
+
+    _isisStepExtracted = false;
+    connect(dlg, &InteractiveIsisDialog::fitExtracted, this,
+            [this](const fit::SpectralFitResult& r,
+                   const fit::SpectralFitJob&    j) {
+        persistResult(r, j);
+        _isisStepExtracted = true;
+        ++_queueOk;
+        seedRemainingJobs(r, j);
+    });
+
+    connect(dlg, &QObject::destroyed, this, [this, total] {
+        const bool gotFit = _isisStepExtracted;
+        if (!gotFit) ++_queueFailed;
+        ++_queueIndex;
+
+        // destroyed() fires from inside ~QObject, so the next session is
+        // opened from the event loop rather than from under the old one.
+        QMetaObject::invokeMethod(this, [this, gotFit, total] {
+            const int remaining = total - _queueIndex;
+            // Closing a session without extracting a fit is how the user
+            // skips a spectrum - but it is also how they would try to stop a
+            // long chain, so ask rather than march on regardless.
+            if (!gotFit && remaining > 0) {
+                const auto answer = QMessageBox::question(this,
+                    "Continue the sequence?",
+                    QString("No fit was extracted from that session.\n\n"
+                            "Continue with the remaining %1 spectra?")
+                        .arg(remaining),
+                    QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+                if (answer == QMessageBox::No) _queueAborted = true;
+            }
+            runNextInteractiveJob();
+        }, Qt::QueuedConnection);
+    });
+
+    dlg->show();
+}
+
+void FitSetupWidget::endInteractiveChain()
+{
+    cleanupTempPaths(_queueTemps);
+    _queueTemps.clear();
+    _queue.clear();
+    _runButton->setEnabled(true);
+    if (_queueOk > 0) emit fitCompleted();
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -1126,6 +1573,9 @@ void FitSetupWidget::onFitPreviewEdited(const FitPreviewConfig& pc)
 void FitSetupWidget::setPreviewActive(bool on)
 {
     _previewActive = on;
+    // Best-fit marks are set in the tree next door, so re-read them whenever
+    // this page comes back to the front.
+    if (on) refreshRunSelectionUi();
     if (!_ctx.panel) return;
     if (on) {
         if (!_currentId.isEmpty())
@@ -1144,21 +1594,30 @@ void FitSetupWidget::onPreviewScript()
     commitEditorToState();
 
     QStringList cleanup;
-    auto job = buildJob(cleanup);
-    if (job.observations.isEmpty()) {
+    const auto jobs = buildJobs(cleanup);
+    if (jobs.isEmpty()) {
+        cleanupTempPaths(cleanup);
         QMessageBox::information(this, "Preview script",
             "Nothing to preview: no spectra selected.");
         return;
     }
+    // In sequential mode every job is the same script over a different
+    // spectrum, so showing the first one and saying so beats N dialogs.
+    const auto& job = jobs.first();
 
     QString body;
+    if (jobs.size() > 1)
+        body = QString("# Sequential run: %1 separate fits, one per marked "
+                       "spectrum.\n# Shown below is the first (%2); the rest "
+                       "differ only in the spectrum they read.\n\n")
+                   .arg(jobs.size()).arg(jobLabel(job));
     if (job.backend == "ISIS") {
-        body = astra::fitting::IsisBackend::generateScript(job);
+        body += astra::fitting::IsisBackend::generateScript(job);
     } else if (job.backend == "ISIS (interactive)") {
-        body = InteractiveIsisDialog::generateScript(job, job.outputPath);
+        body += InteractiveIsisDialog::generateScript(job, job.outputPath);
     } else {
-        body = "# GAEL runs as a library, not a script.\n"
-               "# Job summary:\n";
+        body += "# GAEL runs as a library, not a script.\n"
+                "# Job summary:\n";
         body += QString("#   backend     : %1\n").arg(job.backend);
         body += QString("#   components  : %1\n").arg(job.components.size());
         body += QString("#   observations: %1\n").arg(job.observations.size());
@@ -1210,4 +1669,7 @@ void FitSetupWidget::onPreviewScript()
     v->addWidget(bb);
 
     dlg.exec();
+    // The exported spectra behind `cleanup` are deliberately left in place:
+    // the script on screen reads them by path, and copying it out to run by
+    // hand is the whole point of the preview.
 }

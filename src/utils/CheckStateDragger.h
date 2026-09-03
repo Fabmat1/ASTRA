@@ -30,6 +30,9 @@ private:
     int                          _column;
     bool                         _indicatorOnly = false;
     bool                         _dragging = false;
+    // The press we swallowed never reached the view, so its release must be
+    // swallowed too; see the release case in eventFilter().
+    bool                         _swallowRelease = false;
     Qt::CheckState               _targetState = Qt::Unchecked;
     QSet<QPersistentModelIndex>  _touched;
 };

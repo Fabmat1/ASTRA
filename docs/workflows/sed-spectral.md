@@ -31,6 +31,22 @@ Open a star's detail window and click **View / Fit Spectra** to open
   fit, per-spectrum wavelength ranges and resolution/telluric settings,
   ignore regions, and continuum-spline anchors. **Preview script…** shows the
   generated ISIS script; **▶ Run Fit** executes it with live progress.
+  By default the marked spectra go into one joint fit with the atmospheric
+  parameters tied across them. Tick **Fit one spectrum at a time** to fit
+  each marked spectrum separately instead: the fits run back to back in list
+  order, each saved as its own fit, and the progress dialog reports the whole
+  queue. A spectrum the backend cannot fit is logged and skipped; **Abort**
+  stops the queue, and every fit that had already finished stays saved.
+  **Skip spectra that already have a best fit** leaves out the spectra that
+  are done, so re-running a star after adding a few new spectra only covers
+  the new ones; those rows show in italics, and a line under the list says
+  how many spectra the run will actually cover. **Start each fit from the
+  previous fit's result** seeds every remaining fit in the sequence with the
+  values the last successful one settled on. Only the stellar parameters and
+  abundances carry over: the continuum spline, the ignore regions and the fit
+  window stay per spectrum, since the anchor points are rarely the same
+  twice, and so does the radial velocity. Grids and freeze switches are never
+  touched.
 - **Co-Add** tab - stack spectra (optionally shifted to rest frame using the
   fitted RVs) and save the co-added spectrum.
 

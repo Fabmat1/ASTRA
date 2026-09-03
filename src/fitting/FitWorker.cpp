@@ -34,7 +34,8 @@ void FitWorker::requestAbort() { _abortReq = true; }
 
 void FitWorker::runOnThread()
 {
-    auto backend = FitBackendRegistry::instance().create(_job.backend);
+    // createForJob, not create: a job may name a remote host to run on.
+    auto backend = FitBackendRegistry::instance().createForJob(_job);
     if (!backend) {
         emit failed(QStringLiteral("Unknown backend: %1").arg(_job.backend));
         return;

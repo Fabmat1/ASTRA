@@ -62,6 +62,7 @@ bool CheckStateDragger::eventFilter(QObject* obj, QEvent* ev)
 
         _view->model()->setData(idx, _targetState, Qt::CheckStateRole);
         _touched.insert(QPersistentModelIndex(idx));
+        _swallowRelease = true;
         return true; // consume; prevents Qt's default toggle from fighting us
     }
 
@@ -96,9 +97,17 @@ bool CheckStateDragger::eventFilter(QObject* obj, QEvent* ev)
     }
 
     case QEvent::MouseButtonRelease:
-        if (_dragging) {
-            _dragging = false;
-            _touched.clear();
+        _dragging = false;
+        _touched.clear();
+        if (_swallowRelease) {
+            _swallowRelease = false;
+            // The view never saw our press, so its pressedIndex still points at
+            // whatever row was pressed last - normally the highlighted one. If
+            // the release lands on that same row Qt counts it as a click and
+            // hands the event to the delegate, whose editorEvent() toggles the
+            // check state a second time and cancels ours out. Swallowing the
+            // release is what keeps the highlighted row togglable.
+            return true;
         }
         break;
 

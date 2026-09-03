@@ -75,5 +75,7 @@
         <file>claret_tables/Claret2020_sd_GDC.dat</file>
         <file>claret_tables/Claret2018_MS_TESS_LDC.dat</file>
         <file>claret_tables/Claret2020_sd_LDC.dat</file>
+        <file>remote/serve.sh</file>
+        <file>remote/launch.sh</file>
     </qresource>
 </RCC>

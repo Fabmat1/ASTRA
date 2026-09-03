@@ -1,4 +1,5 @@
 #include "MassFitService.h"
+#include "remote/RemoteHostRegistry.h"
 
 #include "controllers/ApplicationController.h"
 #include "db/DatabaseManager.h"
@@ -54,13 +55,10 @@ QString nowIso()
     return QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
 }
 
-/// One value out of a fitted parameter vector: tied parameters carry a single
-/// entry, untied ones carry one per spectrum, so an index past the end is the
-/// tied case and reads back the shared value.
+/// Reads one value out of a fitted parameter vector; see the fitting core.
 double pickValue(const QVector<fit::FittedParameter>& v, int idx)
 {
-    if (v.isEmpty()) return AsymErr::unset;
-    return v[std::min<int>(idx, int(v.size()) - 1)].value;
+    return fit::pickFittedValue(v, idx);
 }
 
 /// True when any *fitted* stellar parameter sits on the edge of its grid axis,
@@ -147,66 +145,6 @@ mf::AttemptSummary summarizeFit(const SpectralFit& f, int nSpectra)
 
     s.syncPrimaryComponent();
     return s;
-}
-
-/// Component initial values for the next node, seeded from what the parent node
-/// actually fitted. Grids, freeze flags and everything else stay as the child
-/// setup configured them: inheriting means "start where the parent ended", not
-/// "run the parent again".
-void seedFromParent(QVector<fit::StellarComponent>& components,
-                    const QVector<fit::StellarComponent>& parent)
-{
-    for (int i = 0; i < components.size() && i < parent.size(); ++i) {
-        auto&       c = components[i];
-        const auto& p = parent[i];
-        const auto take = [](double& dst, double src) {
-            if (!std::isnan(src)) dst = src;
-        };
-        take(c.teff,  p.teff);
-        take(c.logg,  p.logg);
-        take(c.he,    p.he);
-        take(c.vsini, p.vsini);
-        take(c.zeta,  p.zeta);
-        take(c.xi,    p.xi);
-        take(c.z,     p.z);
-        take(c.surRatio, p.surRatio);
-
-        // Only elements the child setup itself models: a value carried over
-        // for an element this grid does not resolve would be silently dropped
-        // by the backend anyway.
-        for (auto it = c.abundances.begin(); it != c.abundances.end(); ++it) {
-            const auto pit = p.abundances.constFind(it.key());
-            if (pit != p.abundances.constEnd() && !std::isnan(pit.value()))
-                it.value() = pit.value();
-        }
-    }
-}
-
-/// The fitted values of a finished job, in the shape the next node's
-/// `inheritFromParent` wants them.
-QVector<fit::StellarComponent> componentsFromResult(
-    const fit::SpectralFitResult& r,
-    const QVector<fit::StellarComponent>& asRun, int specIndex)
-{
-    QVector<fit::StellarComponent> out = asRun;
-    for (int i = 0; i < out.size() && i < r.components.size(); ++i) {
-        const auto& c = r.components[i];
-        auto&       o = out[i];
-        const auto take = [](double& dst, double src) {
-            if (!std::isnan(src)) dst = src;
-        };
-        take(o.teff,  pickValue(c.teff,  specIndex));
-        take(o.logg,  pickValue(c.logg,  specIndex));
-        take(o.he,    pickValue(c.he,    specIndex));
-        take(o.vsini, pickValue(c.vsini, specIndex));
-        take(o.zeta,  pickValue(c.zeta,  specIndex));
-        take(o.xi,    pickValue(c.xi,    specIndex));
-        take(o.z,     pickValue(c.z,     specIndex));
-        take(o.surRatio, pickValue(c.surRatio, specIndex));
-        for (auto it = c.abundances.cbegin(); it != c.abundances.cend(); ++it)
-            o.abundances.insert(it.key(), pickValue(it.value(), specIndex));
-    }
-    return out;
 }
 
 QString fitMapToJson(const QHash<QString, QString>& fitBySpectrum)
@@ -372,6 +310,24 @@ QStringList MassFitService::validateForRun(const mf::MassFitPlan& plan)
                             "Setup \"%1\" uses the interactive ISIS backend, "
                             "which needs a user at a terminal and cannot run "
                             "unattended. Use \"ISIS\" instead.").arg(label);
+
+        // A remote host that has been deleted since the plan was saved would
+        // otherwise only surface once every star has failed.
+        const QString hostId = s.globals.executionHost;
+        if (!hostId.isEmpty()) {
+            astra::remote::RemoteHost host;
+            if (!astra::remote::RemoteHostRegistry::instance().hostById(hostId,
+                                                                       &host))
+                problems << QStringLiteral(
+                                "Setup \"%1\" runs on a remote host that no "
+                                "longer exists. Pick a host in the setup, or "
+                                "run it on this computer.").arg(label);
+            else if (s.backend != QLatin1String("GAEL"))
+                problems << QStringLiteral(
+                                "Setup \"%1\" runs on %2, but only the GAEL "
+                                "backend can run remotely.")
+                                .arg(label, host.name);
+        }
     }
 
     return problems;
@@ -581,7 +537,9 @@ QString MassFitService::beginRun(std::unique_ptr<Run> run)
     // every parallel star the whole machine multiplies that memory by the
     // number of stars.
     AppSettings settings;
-    run->basePaths = settings.gridBasePaths();
+    // Remote streaming grids must be visible to bulk fits too; workers get
+    // this snapshot, they never touch AppSettings themselves.
+    run->basePaths = astra::remote::gridBasePathsIncludingRemote();
 
     int budget = settings.fitWorkerThreads();
     if (budget <= 0) budget = std::max(1, QThread::idealThreadCount());
@@ -873,7 +831,7 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
 
         QVector<fit::StellarComponent> comps = setup->components;
         if (setup->inheritFromParent && !parentComponents.isEmpty()) {
-            seedFromParent(comps, parentComponents);
+            fit::seedComponentsFrom(comps, parentComponents);
             log(QStringLiteral("setup \"%1\" seeded from the previous node's "
                                "result").arg(setup->name));
         }
@@ -914,7 +872,8 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
                 return jr;
             }
 
-            auto backend = fit::FitBackendRegistry::instance().create(globals.backend);
+            auto backend = fit::FitBackendRegistry::instance().createForJob(
+                job, w.projectId, w.starId);
             if (!backend) {
                 cleanupTempPaths(temps);
                 jr.error = QStringLiteral("unknown backend \"%1\"").arg(globals.backend);
@@ -1069,7 +1028,8 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
                                        : QStringLiteral("not converged")));
 
         if (representative)
-            parentComponents = componentsFromResult(*representative, comps, 0);
+            parentComponents =
+                fit::componentsFromResult(*representative, comps, 0);
 
         QString reason;
         const mf::TreeNode* next = mf::nextNode(w.plan, *node, summary, &reason);

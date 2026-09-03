@@ -67,6 +67,35 @@ SpectrumFitConfig makeDefaultConfig(const std::shared_ptr<Spectrum>& s,
                                     const QString& modeKey);
 
 // ────────────────────────────────────────────────────────────────────
+// Seeding one fit from another
+// ────────────────────────────────────────────────────────────────────
+
+/// One value out of a fitted parameter vector: tied parameters carry a single
+/// entry, untied ones carry one per spectrum, so an index past the end is the
+/// tied case and reads back the shared value.
+double pickFittedValue(const QVector<FittedParameter>& v, int idx);
+
+/// Copies the starting values of @p source onto @p components. Grids, freeze
+/// flags and everything else stay as @p components had them: seeding means
+/// "start where the other one ended", not "run the other one again".
+///
+/// Only what belongs to the star travels. The continuum spline, the ignore
+/// regions and the fit window are per-spectrum settings and stay put - two
+/// spectra rarely share anchor points - and so does the radial velocity,
+/// which is the one number that genuinely differs from epoch to epoch.
+void seedComponentsFrom(QVector<StellarComponent>& components,
+                        const QVector<StellarComponent>& source);
+
+/// The fitted values of a finished job, in the shape seedComponentsFrom()
+/// wants them: @p asRun is the component list the job was run with, and
+/// @p specIndex picks the spectrum whose values to read for untied
+/// parameters (0 for a job covering a single spectrum).
+QVector<StellarComponent> componentsFromResult(
+    const SpectralFitResult& r,
+    const QVector<StellarComponent>& asRun,
+    int specIndex);
+
+// ────────────────────────────────────────────────────────────────────
 // Job assembly
 // ────────────────────────────────────────────────────────────────────
 

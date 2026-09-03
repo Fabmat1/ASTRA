@@ -13,9 +13,37 @@
 #include <QFont>
 #include <QFontDatabase>
 #include "astra_version.h"
+#include "remote/AskPass.h"
+#include "remote/RemoteSelfTest.h"
 
 int main(int argc, char *argv[])
 {
+    // `astra --askpass "<prompt>"`: ssh calls the binary back for credentials
+    // (see remote/AskPass.h). Must run before the real application starts.
+    if (const int rc = astra::remote::runAskPassMode(argc, argv); rc >= 0)
+        return rc;
+
+    // `astra --remote-selftest <destination> [grid base]`: terminal
+    // diagnostics for the SSH transport (see remote/RemoteSelfTest.h).
+    if (const int rc = astra::remote::runRemoteSelfTest(argc, argv); rc >= 0)
+        return rc;
+
+    // `astra --remote-gridtest ...`: streamed vs local grid comparison.
+    if (const int rc = astra::remote::runRemoteGridTest(argc, argv); rc >= 0)
+        return rc;
+
+    // `astra --remote-fittest ...`: one real fit executed on a remote host.
+    if (const int rc = astra::remote::runRemoteFitTest(argc, argv); rc >= 0)
+        return rc;
+
+    // `astra --remote-detach start|finish|stop`: re-attach across a restart.
+    if (const int rc = astra::remote::runRemoteDetachTest(argc, argv); rc >= 0)
+        return rc;
+
+    // `astra --remote-gridlist ...`: the grid selector against a remote host.
+    if (const int rc = astra::remote::runRemoteGridListTest(argc, argv); rc >= 0)
+        return rc;
+
     QApplication app(argc, argv);
     app.setApplicationName("ASTRA");
     app.setApplicationVersion(ASTRA_VERSION_STRING);

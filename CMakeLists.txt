@@ -227,8 +227,20 @@ target_include_directories(qcustomplot PUBLIC
 set_target_properties(qcustomplot PROPERTIES AUTOMOC ON)
 
 # In ASTRA's top-level CMakeLists.txt
+# ASTRA_GAEL_SOURCE_DIR lets a developer build against an out-of-tree GAEL
+# checkout (e.g. -DASTRA_GAEL_SOURCE_DIR=$HOME/Projects/GAEL) instead of the
+# pinned submodule. Relative values are taken from the source root.
+# Note: CMake resolves a relative PATH cache value against the working
+# directory it was given on, so pass an absolute path when overriding.
+set(ASTRA_GAEL_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/external/GAEL" CACHE PATH
+    "GAEL source directory (default: the external/GAEL submodule)")
+get_filename_component(ASTRA_GAEL_SOURCE_DIR "${ASTRA_GAEL_SOURCE_DIR}"
+    ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+if(NOT EXISTS "${ASTRA_GAEL_SOURCE_DIR}/CMakeLists.txt")
+    message(FATAL_ERROR "ASTRA_GAEL_SOURCE_DIR does not look like a GAEL checkout: ${ASTRA_GAEL_SOURCE_DIR}")
+endif()
 set(GAEL_BUILD_REPORT OFF CACHE BOOL "" FORCE)   # no matplotlib/Python dep
-add_subdirectory(external/GAEL EXCLUDE_FROM_ALL)
+add_subdirectory("${ASTRA_GAEL_SOURCE_DIR}" gael-build EXCLUDE_FROM_ALL)
 
 # SEDplusplus submodule – builds the `sedfit` helper executable that ASTRA
 # drives via QProcess for photometric SED fitting. Built by default (not
@@ -300,12 +312,27 @@ set(SOURCES
     src/models/InstrumentMode.cpp
     src/models/MassFitPlan.cpp
     src/models/Photometry.cpp
+    src/models/RemoteHost.cpp
     src/models/Project.cpp
     src/models/RadialVelocity.cpp
     src/models/Spectrum.cpp
     src/models/Star.cpp
     src/models/Time.cpp
     src/models/PeriodogramRecord.cpp
+
+    # remote (SSH grid streaming + remote fitting)
+    src/dialogs/RemoteHostsSettingsPage.cpp
+    src/remote/ShellQuote.cpp
+    src/remote/AskPass.cpp
+    src/db/RemoteFitRepository.cpp
+    src/remote/GridDiskCache.cpp
+    src/remote/RemoteScheduler.cpp
+    src/remote/RemoteFitService.cpp
+    src/remote/SshGridProvider.cpp
+    src/remote/SshConnection.cpp
+    src/remote/SshFileStreamChannel.cpp
+    src/remote/RemoteHostRegistry.cpp
+    src/remote/RemoteSelfTest.cpp
 
     # utils
     src/utils/AppSettings.cpp
@@ -395,6 +422,7 @@ set(SOURCES
     src/views/tools/MassFitPlanDialog.cpp
     src/views/tools/MassFitRuleEditor.cpp
     src/views/tools/MassFitManagerDialog.cpp
+    src/views/tools/RemoteFitsDialog.cpp
 
     # views/panels
     src/views/panels/PanelUtils.cpp
@@ -428,6 +456,8 @@ set(SOURCES
     src/fitting/FitJobFactory.cpp
     src/fitting/FitTypesJson.cpp
     src/fitting/GaelBackend.cpp
+    src/fitting/GaelMapping.cpp
+    src/fitting/RemoteGaelBackend.cpp
     src/fitting/IsisBackend.cpp
     src/fitting/FitWorker.cpp
     src/fitting/StdStreamRedirector.cpp
@@ -498,12 +528,27 @@ set(HEADERS
     src/models/InstrumentMode.h
     src/models/MassFitPlan.h
     src/models/Photometry.h
+    src/models/RemoteHost.h
     src/models/Project.h
     src/models/RadialVelocity.h
     src/models/Spectrum.h
     src/models/Star.h
     src/models/Time.h
     src/models/PeriodogramRecord.h
+
+    # remote (SSH grid streaming + remote fitting)
+    src/dialogs/RemoteHostsSettingsPage.h
+    src/remote/ShellQuote.h
+    src/remote/AskPass.h
+    src/db/RemoteFitRepository.h
+    src/remote/GridDiskCache.h
+    src/remote/RemoteScheduler.h
+    src/remote/RemoteFitService.h
+    src/remote/SshGridProvider.h
+    src/remote/SshConnection.h
+    src/remote/SshFileStreamChannel.h
+    src/remote/RemoteHostRegistry.h
+    src/remote/RemoteSelfTest.h
 
     # utils
     src/utils/AppPaths.h
@@ -592,6 +637,7 @@ set(HEADERS
     src/views/tools/MassFitPlanDialog.h
     src/views/tools/MassFitRuleEditor.h
     src/views/tools/MassFitManagerDialog.h
+    src/views/tools/RemoteFitsDialog.h
 
     # views/panels
     src/views/panels/PanelUtils.h
@@ -625,6 +671,8 @@ set(HEADERS
     src/fitting/IFitBackend.h
     src/fitting/FitBackendRegistry.h
     src/fitting/GaelBackend.h
+    src/fitting/GaelMapping.h
+    src/fitting/RemoteGaelBackend.h
     src/fitting/IsisBackend.h
     src/fitting/FitWorker.h
     src/fitting/StdStreamRedirector.h
@@ -673,7 +721,7 @@ add_dependencies(ASTRA astra_version)
 target_include_directories(ASTRA PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
 
 target_include_directories(ASTRA PRIVATE
-    ${CMAKE_SOURCE_DIR}/external/GAEL/include
+    ${ASTRA_GAEL_SOURCE_DIR}/include
 )
 
 # Pass to source as a preprocessor define

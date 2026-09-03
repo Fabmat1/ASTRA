@@ -2,6 +2,7 @@
 
 #include <QWidget>
 #include <QHash>
+#include <QPointer>
 #include <QVector>
 #include <QStringList>
 #include <memory>
@@ -28,6 +29,8 @@ class QPushButton;
 class QLineEdit;
 class QGroupBox;
 class QScrollArea;
+class QLabel;
+class FitProgressDialog;
 
 namespace astra::fitting { class FitWorker; }
 
@@ -47,6 +50,11 @@ public:
 
     void refreshSpectraList();
     void setPreviewActive(bool on);
+    /// Marks the rows the "skip spectra that already have a best fit" option
+    /// would pass over, and refreshes the "N of M spectra will be fitted"
+    /// line under the list. Public because marking a fit as best happens in
+    /// the tree next door, not here.
+    void refreshRunSelectionUi();
 
 signals:
     void fitCompleted();
@@ -77,6 +85,12 @@ private:
     void rebuildIgnoreRows();
     void rebuildAnchorRows();
 
+    /// The spectra a run would actually cover: marked in the list, and - when
+    /// "skip spectra that already have a best fit" is on - not already
+    /// carrying one. Both run paths and the summary line read this, so what
+    /// the label promises is what the queue does.
+    std::vector<std::shared_ptr<Spectrum>> selectedSpectra() const;
+
     // Per-spectrum state lifecycle
     void commitEditorToState();       // numeric fields → _configs[_currentId]
     void loadStateToEditor();         // _configs[_currentId] → numeric fields
@@ -85,7 +99,32 @@ private:
 
     /// Collects the widget-level settings the fitting core needs.
     astra::fitting::JobGlobals collectGlobals() const;
-    astra::fitting::SpectralFitJob buildJob(QStringList& tempFilesOut) const;
+
+    /// The jobs one press of Run Fit stands for: a single joint job over every
+    /// marked spectrum, or - when "fit one spectrum at a time" is ticked - one
+    /// single-spectrum job per marked spectrum, in list order. Jobs that came
+    /// out empty (no anchors, no exportable data) are already dropped.
+    QVector<astra::fitting::SpectralFitJob> buildJobs(QStringList& tempFilesOut) const;
+
+    /// Name of the one spectrum a sequential job covers, for the progress
+    /// dialog. Empty for a joint job.
+    QString jobLabel(const astra::fitting::SpectralFitJob& job) const;
+
+    // ── Run queue ───────────────────────────────────────────────────────
+    // A joint run is just a queue of one, so both paths share this machinery.
+    void startJobQueue();
+    void runNextQueuedJob();
+    void finishJobQueue();
+    /// Carries the values a finished job settled on into every job still
+    /// queued behind it, so a sequential run walks from one spectrum to the
+    /// next instead of restarting from the configured guess each time.
+    void seedRemainingJobs(const astra::fitting::SpectralFitResult& result,
+                           const astra::fitting::SpectralFitJob&    job);
+    /// ISIS (interactive) cannot be driven from a worker: each job is a live
+    /// terminal session, so they are chained, the next opening once the user
+    /// closes the previous one.
+    void runNextInteractiveJob();
+    void endInteractiveChain();
 
     void persistResult(const astra::fitting::SpectralFitResult& result,
                         const astra::fitting::SpectralFitJob&  job);
@@ -129,6 +168,7 @@ private:
 
     // Global options
     QComboBox*      _backendCombo       = nullptr;
+    QComboBox*      _runOnCombo         = nullptr;
     QLineEdit*      _untiedEdit         = nullptr;
     QDoubleSpinBox* _filterSnrSpin      = nullptr;
     QDoubleSpinBox* _requireBlueSpin    = nullptr;
@@ -172,6 +212,32 @@ private:
 
     // Run
     QPushButton*    _runButton          = nullptr;
+    QCheckBox*      _sequentialCheck    = nullptr;
+    QCheckBox*      _skipFittedCheck    = nullptr;
+    QCheckBox*      _seedFromPrevCheck  = nullptr;
+    QLabel*         _runSummaryLabel    = nullptr;
 
     astra::fitting::FitWorker* _worker = nullptr;
+
+    // ── Run queue state ─────────────────────────────────────────────────
+    QVector<astra::fitting::SpectralFitJob> _queue;
+    QStringList _queueTemps;      // temp dirs buildJob() handed us to clean up
+    int  _queueIndex   = 0;
+    int  _queueOk      = 0;
+    int  _queueFailed  = 0;
+    bool _queueAborted = false;
+    // Interactive chain only: whether the session that just closed handed a
+    // fit back, which decides between "skipped" and "done".
+    bool _isisStepExtracted = false;
+    // The dialog deletes itself on close, which the user can do mid-run.
+    QPointer<FitProgressDialog> _queueDlg;
+
+    // Outcome of the most recent job, so a queue of one can still end with the
+    // exact single-fit wording the dialog has always shown.
+    struct LastJobOutcome {
+        bool                            ok = false;
+        bool                            aborted = false;
+        QString                         error;
+        astra::fitting::SpectralFitResult result;
+    } _queueLast;
 };

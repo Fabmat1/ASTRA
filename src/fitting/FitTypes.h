@@ -168,6 +168,10 @@ struct SpectralFitJob {
     QString outputPath;                  // temp dir for intermediate files
     QStringList basePaths;               // grid search paths (GAEL gs.base_paths)
     QString backend = "GAEL";           // which IFitBackend to use
+
+    // Id of the RemoteHost this fit should run on; empty = run locally.
+    // Only the GAEL backend can run remotely.
+    QString executionHost;
     IsisOptions            isis;
     IsisInteractiveOptions isisInteractive;   // used only by ISIS (interactive)
 };
@@ -202,6 +206,8 @@ struct JobGlobals {
     int    workerThreads      = jobDefaults().workerThreads;
 
     QStringList basePaths = jobDefaults().basePaths;
+
+    QString executionHost = jobDefaults().executionHost;
 
     IsisOptions            isis            = jobDefaults().isis;
     IsisInteractiveOptions isisInteractive = jobDefaults().isisInteractive;

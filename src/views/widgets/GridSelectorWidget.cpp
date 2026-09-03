@@ -1,4 +1,5 @@
 #include "GridSelectorWidget.h"
+#include "remote/RemoteHostRegistry.h"
 #include "utils/Logger.h"
 #include "utils/UiIcons.h"
 
@@ -435,6 +436,84 @@ QVector<DiscoveredGrid> GridSelectorWidget::performScan(
         QString base = raw.trimmed();
         if (base.isEmpty())
             continue;
+
+        // Remote base paths ("ssh://<host>/<dir>") are listed over the host's
+        // streaming channel instead of being walked locally: one round trip
+        // for the whole tree rather than a directory listing per level.
+        if (astra::remote::isRemoteGridUrl(base)) {
+            QString hostName, remoteDir;
+            if (!astra::remote::parseRemoteGridUrl(base, &hostName, &remoteDir))
+                continue;
+            auto *chan =
+                astra::remote::RemoteHostRegistry::instance().channelByName(
+                    hostName);
+            if (!chan) {
+                LOG_DEBUG("GridScan",
+                          QString("Remote host gone: %1").arg(hostName));
+                continue;
+            }
+            QStringList markerPaths;
+            QString err;
+            if (!chan->list(remoteDir, 6, &markerPaths, &err)) {
+                LOG_INFO("GridScan", QString("Remote listing of %1 failed: %2")
+                                         .arg(base, err));
+                continue;
+            }
+            for (const QString &marker : markerPaths) {
+                // ".../<grid dir>/grid.fits" -> the grid directory
+                const int slash = marker.lastIndexOf(QLatin1Char('/'));
+                if (slash <= 0)
+                    continue;
+                const QString gridDir = marker.left(slash);
+                QString rel = gridDir.mid(remoteDir.size());
+                while (rel.startsWith(QLatin1Char('/')))
+                    rel.remove(0, 1);
+                if (rel.isEmpty())
+                    rel = QStringLiteral(".");
+                if (!rel.endsWith(QLatin1Char('/')))
+                    rel += QLatin1Char('/');
+
+                bool skip = false;
+                for (const QString &tok : skipTokens)
+                    if (rel.contains(tok, Qt::CaseInsensitive))
+                        skip = true;
+                if (skip)
+                    continue;
+
+                const QString canon = base + gridDir.mid(remoteDir.size());
+                if (seen.contains(canon))
+                    continue;
+                seen.insert(canon);
+
+                DiscoveredGrid dg;
+                dg.fullPath     = canon;
+                dg.basePath     = base;
+                dg.relativePath = rel;
+                const int pi = matchPreset(gridDir, presets, leaves);
+                if (pi >= 0) {
+                    dg.presetIndex = pi;
+                    dg.category    = presets[pi].category;
+                    dg.displayName = presets[pi].name;
+                    dg.teffMin     = presets[pi].teffMin;
+                    dg.teffMax     = presets[pi].teffMax;
+                    dg.loggMin     = presets[pi].loggMin;
+                    dg.loggMax     = presets[pi].loggMax;
+                    dg.heMin       = presets[pi].heMin;
+                    dg.heMax       = presets[pi].heMax;
+                    dg.zMin        = presets[pi].zMin;
+                    dg.zMax        = presets[pi].zMax;
+                } else {
+                    dg.category    = QStringLiteral("Discovered");
+                    dg.displayName = rel;
+                }
+                // The host has to be visible in the combo: the same grid may
+                // exist locally and on several hosts, and they are not
+                // interchangeable (one costs a download).
+                dg.displayName += QStringLiteral(" @ ") + hostName;
+                discovered.append(std::move(dg));
+            }
+            continue;
+        }
 
         QDir baseDir(base);
         if (!baseDir.exists()) {

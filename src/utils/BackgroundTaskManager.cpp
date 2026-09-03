@@ -1935,17 +1935,20 @@ void RVExtractionTask::executeFromFolders()
                 if (cfg.timeCol >= fields.size() || cfg.rvCol >= fields.size())
                     continue;
 
-                bool okTime, okRV;
-                double time = fields[cfg.timeCol].trimmed().toDouble(&okTime);
-                double rv   = fields[cfg.rvCol].trimmed().toDouble(&okRV);
+                bool okTime = false, okRV = false;
+                double time = StarMatching::parseNumber(fields[cfg.timeCol], &okTime);
+                double rv   = StarMatching::parseNumber(fields[cfg.rvCol],   &okRV);
                 if (!okTime || !okRV) continue;
 
-                double rvErr = 0.0;
-                if (cfg.rvErrCol >= 0 && cfg.rvErrCol < fields.size()) {
-                    bool okErr;
-                    rvErr = fields[cfg.rvErrCol].trimmed().toDouble(&okErr);
-                    if (!okErr) rvErr = 0.0;
-                }
+                // Optional columns default rather than dropping the row.
+                auto optional = [&fields](int col, double fallback) -> double {
+                    if (col < 0 || col >= fields.size()) return fallback;
+                    bool         ok = false;
+                    const double v  = StarMatching::parseNumber(fields[col], &ok);
+                    return (ok && v > 0.0) ? v : fallback;
+                };
+                const double rvErr  = optional(cfg.rvErrCol,  0.0);
+                const double sysErr = optional(cfg.sysErrCol, 0.0);
 
                 auto rvPt = std::make_shared<RadialVelocityPoint>();
                 rvPt->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
@@ -1956,17 +1959,8 @@ void RVExtractionTask::executeFromFolders()
                     rvPt->setMJD(time);
                 }
                 rvPt->setRV(rv);
-                if (cfg.sysErrCol >= 0) {
-                    rvPt->setRVErrorFormal(rvErr);
-                    if (cfg.sysErrCol < fields.size()) {
-                        bool okSys;
-                        double sysErr = fields[cfg.sysErrCol].trimmed().toDouble(&okSys);
-                        if (okSys && sysErr > 0)
-                            rvPt->setRVErrorSystematic(sysErr);
-                    }
-                } else {
-                    rvPt->setRVError(rvErr);
-                }
+                rvPt->setRVErrorFormal(rvErr);
+                rvPt->setRVErrorSystematic(sysErr);
                 rvPt->setSource(fileName);
 
                 curve->addRVPoint(rvPt);
@@ -2042,8 +2036,8 @@ void RVExtractionTask::executeFromTable()
                 continue;
             }
             bool okRa = false, okDec = false;
-            ra  = row[cfg.idCol].trimmed().toDouble(&okRa);
-            dec = row[cfg.decCol].trimmed().toDouble(&okDec);
+            ra  = StarMatching::parseNumber(row[cfg.idCol],  &okRa);
+            dec = StarMatching::parseNumber(row[cfg.decCol], &okDec);
             if (!okRa || !okDec) {
                 recordUnmatched(QString("%1 / %2")
                     .arg(row[cfg.idCol].trimmed(), row[cfg.decCol].trimmed()));
@@ -2096,6 +2090,16 @@ void RVExtractionTask::executeFromTable()
     int processed = 0;
     const int totalStars = rowsByStar.size();
 
+    // Why a matched row produced no point. Every one of these used to be a
+    // silent `continue`, so an import that dropped every row looked identical
+    // to one that had nothing to do.
+    int         shortRows = 0, badTime = 0, badRV = 0;
+    QStringList skipExamples;
+    auto recordSkip = [&](int rowIndex, const QString& why) {
+        if (skipExamples.size() < 10)
+            skipExamples << QString("data row %1: %2").arg(rowIndex + 1).arg(why);
+    };
+
     for (auto it = rowsByStar.cbegin(); it != rowsByStar.cend(); ++it) {
         if (++processed % 200 == 0) {
             emit progress(QString("RV Extraction: %1/%2 stars...")
@@ -2132,35 +2136,64 @@ void RVExtractionTask::executeFromTable()
         int added = 0;
         for (int ri : it.value()) {
             const QStringList& row = cfg.rows[ri];
-            if (cfg.timeCol >= row.size() || cfg.rvCol >= row.size())
+
+            // Only the timestamp and the RV are mandatory. Everything else is
+            // read if it is there and defaulted if it is not, so a table
+            // without error or component columns still imports.
+            auto cell = [&row](int col) -> QString {
+                return (col >= 0 && col < row.size()) ? row[col] : QString();
+            };
+            auto optional = [&](int col, double fallback) -> double {
+                bool         ok = false;
+                const double v  = StarMatching::parseNumber(cell(col), &ok);
+                return (ok && v > 0.0) ? v : fallback;
+            };
+
+            if (cfg.timeCol >= row.size() || cfg.rvCol >= row.size()) {
+                shortRows++;
+                recordSkip(ri, QString("only %1 field(s), need at least %2")
+                    .arg(row.size())
+                    .arg(std::max(cfg.timeCol, cfg.rvCol) + 1));
                 continue;
+            }
 
-            bool okTime, okRV;
-            double time = row[cfg.timeCol].toDouble(&okTime);
-            double rv   = row[cfg.rvCol].toDouble(&okRV);
-            if (!okTime || !okRV) continue;
+            bool okTime = false, okRV = false;
+            const double time = StarMatching::parseNumber(row[cfg.timeCol], &okTime);
+            const double rv   = StarMatching::parseNumber(row[cfg.rvCol],   &okRV);
+            if (!okTime) {
+                badTime++;
+                recordSkip(ri, QString("timestamp '%1' is not a number")
+                    .arg(row[cfg.timeCol].trimmed()));
+                continue;
+            }
+            if (!okRV) {
+                badRV++;
+                recordSkip(ri, QString("RV '%1' is not a number")
+                    .arg(row[cfg.rvCol].trimmed()));
+                continue;
+            }
 
+            // Unset or unreadable component: the row belongs to the primary.
             int component = 1;
-            if (cfg.compCol >= 0 && cfg.compCol < row.size()) {
-                bool okComp;
-                const int c = row[cfg.compCol].trimmed().toInt(&okComp);
-                if (okComp && c == 2) component = 2;
+            {
+                bool         okComp = false;
+                const double c = StarMatching::parseNumber(cell(cfg.compCol), &okComp);
+                if (okComp && qRound(c) == 2) component = 2;
             }
 
             const QString source = "table_import";
             const QString key    = epochKey(source, time, component);
             if (existingEpochs.contains(key)) {
                 duplicateRows++;
+                recordSkip(ri, QString("epoch %1 already present for this star")
+                    .arg(time, 0, 'f', 6));
                 continue;
             }
             existingEpochs.insert(key);
 
-            double rvErr = 0.0;
-            if (cfg.rvErrCol >= 0 && cfg.rvErrCol < row.size()) {
-                bool okErr;
-                rvErr = row[cfg.rvErrCol].toDouble(&okErr);
-                if (!okErr) rvErr = 0.0;
-            }
+            // Unset or unreadable error columns: 0, not a dropped row.
+            const double rvErr  = optional(cfg.rvErrCol,  0.0);
+            const double sysErr = optional(cfg.sysErrCol, 0.0);
 
             auto rvPt = std::make_shared<RadialVelocityPoint>();
             rvPt->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
@@ -2171,17 +2204,8 @@ void RVExtractionTask::executeFromTable()
                 rvPt->setMJD(time);
 
             rvPt->setRV(rv);
-            if (cfg.sysErrCol >= 0) {
-                rvPt->setRVErrorFormal(rvErr);
-                if (cfg.sysErrCol < row.size()) {
-                    bool okSys;
-                    double sysErr = row[cfg.sysErrCol].toDouble(&okSys);
-                    if (okSys && sysErr > 0)
-                        rvPt->setRVErrorSystematic(sysErr);
-                }
-            } else {
-                rvPt->setRVError(rvErr);
-            }
+            rvPt->setRVErrorFormal(rvErr);
+            rvPt->setRVErrorSystematic(sysErr);
             rvPt->setSource(source);
             rvPt->setComponent(component);
 
@@ -2204,12 +2228,16 @@ void RVExtractionTask::executeFromTable()
     saveResultsToDatabase();
 
     LOG_INFO("RVExtract",
-        QString("Table import: %1 rows matched, %2 unmatched, %3 duplicate "
-                "epochs skipped, %4 stars updated (%5 new points)")
-            .arg(matchedRows).arg(unmatchedRows).arg(duplicateRows)
-            .arg(matched).arg(totalPoints));
+        QString("Table import: %1 rows matched, %2 unmatched, %3 stars updated "
+                "(%4 new points); skipped %5 short rows, %6 bad timestamps, "
+                "%7 bad RVs, %8 duplicate epochs")
+            .arg(matchedRows).arg(unmatchedRows).arg(matched).arg(totalPoints)
+            .arg(shortRows).arg(badTime).arg(badRV).arg(duplicateRows));
+    for (const QString& ex : skipExamples)
+        LOG_INFO("RVExtract", QString("Table import skipped %1").arg(ex));
 
     emit matchReport(matchedRows, unmatchedRows, unmatchedExamples);
+    emit rowSkipReport(shortRows, badTime, badRV, duplicateRows, skipExamples);
     emit extractionComplete(matched, totalPoints);
     emit finished(true, QString("RV Extraction: %1 stars (%2 points), "
                                 "%3 rows unmatched, %4 duplicate epochs skipped")

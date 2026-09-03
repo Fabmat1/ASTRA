@@ -53,6 +53,7 @@ DatabaseManager::DatabaseManager(QObject *parent)
     , _instruments(std::make_unique<InstrumentRepository>(*_db))
     , _periodograms(std::make_unique<PeriodogramRepository>(*_db))
     , _massFit(std::make_unique<MassFitRepository>(*_db))
+    , _remoteFit(std::make_unique<RemoteFitRepository>(*_db))
 {
     _db->setDatabasePath(AppPaths::database());
     QDir().mkpath(QFileInfo(_db->databasePath()).absolutePath());
@@ -750,6 +751,31 @@ bool DatabaseManager::createTables()
         )
     )";
 
+    // Fits handed to another machine. The job travels as JSON so a run can
+    // be re-attached and harvested by a later session, which is the whole
+    // point of running on a cluster.
+    QString createRemoteFitRunsTable = R"(
+        CREATE TABLE IF NOT EXISTS remote_fit_runs (
+            id TEXT PRIMARY KEY,
+            host_id TEXT NOT NULL,
+            host_name TEXT,
+            project_id TEXT,
+            star_id TEXT,
+            mass_fit_attempt_id TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            state TEXT,
+            scheduler TEXT,
+            slurm_job_id TEXT,
+            remote_pid INTEGER DEFAULT 0,
+            remote_dir TEXT,
+            job_json TEXT,
+            spectrum_ids_json TEXT,
+            bundle_version TEXT,
+            error TEXT
+        )
+    )";
+
     QString createMassFitRunStarsTable = R"(
         CREATE TABLE IF NOT EXISTS mass_fit_run_stars (
             id TEXT PRIMARY KEY,
@@ -816,6 +842,7 @@ bool DatabaseManager::createTables()
         createMassFitRunsTable,
         createMassFitRunStarsTable,
         createMassFitAttemptsTable,
+        createRemoteFitRunsTable,
     };
 
     for (const QString& query : queries) {
@@ -1314,6 +1341,7 @@ bool DatabaseManager::createIndexes()
         "CREATE INDEX IF NOT EXISTS idx_periodograms_lookup ON periodograms(star_id, source, filter)",
         "CREATE INDEX IF NOT EXISTS idx_lc_fits_lc ON lc_fits(lightcurve_id)",
         "CREATE INDEX IF NOT EXISTS idx_mass_fit_runs_project ON mass_fit_runs(project_id)",
+        "CREATE INDEX IF NOT EXISTS idx_remote_fit_runs_state ON remote_fit_runs(state)",
         "CREATE INDEX IF NOT EXISTS idx_mass_fit_run_stars_run ON mass_fit_run_stars(run_id, state)",
         "CREATE INDEX IF NOT EXISTS idx_mass_fit_attempts_run ON mass_fit_attempts(run_id, star_id)",
     };
@@ -2357,3 +2385,18 @@ bool DatabaseManager::saveMassFitAttempt(const MassFitAttemptRow& row)
 std::vector<MassFitAttemptRow> DatabaseManager::loadMassFitAttempts(
     const QString& runId, const QString& starId)
 { return _massFit->loadAttempts(runId, starId); }
+
+// ── Remote fitting ──────────────────────────────────────────────────────
+bool DatabaseManager::saveRemoteFitRun(const RemoteFitRunRow& row)
+{ return _remoteFit->save(row); }
+
+bool DatabaseManager::updateRemoteFitRunState(const QString& id,
+                                              const QString& state,
+                                              const QString& error)
+{ return _remoteFit->updateState(id, state, error); }
+
+std::optional<RemoteFitRunRow> DatabaseManager::loadRemoteFitRun(const QString& id)
+{ return _remoteFit->load(id); }
+
+std::vector<RemoteFitRunRow> DatabaseManager::loadActiveRemoteFitRuns()
+{ return _remoteFit->loadActive(); }

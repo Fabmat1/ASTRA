@@ -50,6 +50,7 @@ private slots:
     void onShowLcFetchSessions();
     void onShowSpectrumFetchSessions();
     void onShowMassFitManager();
+    void onShowRemoteFits();
 
 private:
     void setupUi();
@@ -112,6 +113,7 @@ private:
     QAction* _computeKinematicsAction = nullptr;
     QAction* _rvDetectabilityAction = nullptr;
     QAction* _massFitAction = nullptr;
+    QAction* _remoteFitsAction = nullptr;
 
     // Data menu actions
     QAction* _fetchLightcurvesAction = nullptr;

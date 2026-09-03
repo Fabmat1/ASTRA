@@ -279,7 +279,8 @@ QJsonObject toJson(const JobGlobals& v)
     o["contJitterK"]        = v.contJitterK;
     o["workerThreads"]      = v.workerThreads;
 
-    o["basePaths"] = QJsonArray::fromStringList(v.basePaths);
+    o["basePaths"]     = QJsonArray::fromStringList(v.basePaths);
+    o["executionHost"]  = v.executionHost;
 
     o["isis"]            = toJson(v.isis);
     o["isisInteractive"] = toJson(v.isisInteractive);
@@ -299,6 +300,7 @@ JobGlobals jobGlobalsFromJson(const QJsonObject& o)
     v.outlierSigmaHi = json::readDouble(o, "outlierSigmaHi", v.outlierSigmaHi);
     v.verbose        = json::readBool(o, "verbose", v.verbose);
 
+    v.executionHost      = json::readString(o, "executionHost", v.executionHost);
     v.addTelluricModel   = json::readBool(o, "addTelluricModel", v.addTelluricModel);
     v.autoFreezeSurRatio = json::readBool(o, "autoFreezeSurRatio", v.autoFreezeSurRatio);
     v.surRatioThres      = json::readDouble(o, "surRatioThres", v.surRatioThres);
@@ -316,6 +318,161 @@ JobGlobals jobGlobalsFromJson(const QJsonObject& o)
         v.isisInteractive = isisInteractiveOptionsFromJson(
             o.value(QLatin1String("isisInteractive")).toObject());
 
+    return v;
+}
+
+
+// ── SpectrumFile / Observation / SpectralFitJob ──────────────────────────
+// Needed by remote fitting: a job that runs on another machine has to survive
+// in the database until its result comes back, which may be after a restart.
+
+QJsonObject toJson(const SpectrumFile& v)
+{
+    QJsonObject o;
+    o["filename"]    = v.filename;
+    o["spectype"]    = v.spectype;
+    o["resOffset"]   = v.resOffset;
+    o["resSlope"]    = v.resSlope;
+    o["airmass"]     = v.airmass;
+    o["pwv"]         = v.pwv;
+    o["barycorr"]    = v.barycorr;
+    o["fitTelluric"] = v.fitTelluric;
+    o["spectrumId"]  = v.spectrumId;
+    // The optionals are per-file overrides: absent means "use the
+    // observation's value", which is not the same as an empty list.
+    if (v.waveCut) {
+        QJsonArray a;
+        a.append(v.waveCut->first);
+        a.append(v.waveCut->second);
+        o["waveCut"] = a;
+    }
+    if (v.ignore)
+        o["ignore"] = json::toArray(*v.ignore,
+                                    [](const IgnoreRegion& r) { return toJson(r); });
+    if (v.anchors)
+        o["anchors"] = json::toArray(*v.anchors,
+                                     [](const ContinuumAnchor& a) { return toJson(a); });
+    return o;
+}
+
+SpectrumFile spectrumFileFromJson(const QJsonObject& o)
+{
+    SpectrumFile v;
+    v.filename    = json::readString(o, "filename", v.filename);
+    v.spectype    = json::readString(o, "spectype", v.spectype);
+    v.resOffset   = json::readDouble(o, "resOffset", v.resOffset);
+    v.resSlope    = json::readDouble(o, "resSlope", v.resSlope);
+    v.airmass     = json::readDouble(o, "airmass", v.airmass);
+    v.pwv         = json::readDouble(o, "pwv", v.pwv);
+    v.barycorr    = json::readDouble(o, "barycorr", v.barycorr);
+    v.fitTelluric = json::readBool(o, "fitTelluric", v.fitTelluric);
+    v.spectrumId  = json::readString(o, "spectrumId", v.spectrumId);
+    if (const QJsonValue wc = o.value("waveCut"); wc.isArray()) {
+        const QJsonArray a = wc.toArray();
+        if (a.size() == 2)
+            v.waveCut = qMakePair(a[0].toDouble(), a[1].toDouble());
+    }
+    if (o.contains("ignore"))
+        v.ignore = json::fromArray<IgnoreRegion>(o, "ignore", ignoreRegionFromJson);
+    if (o.contains("anchors"))
+        v.anchors = json::fromArray<ContinuumAnchor>(o, "anchors",
+                                                     continuumAnchorFromJson);
+    return v;
+}
+
+QJsonObject toJson(const Observation& v)
+{
+    QJsonObject o;
+    QJsonArray wc;
+    wc.append(v.waveCut.first);
+    wc.append(v.waveCut.second);
+    o["waveCut"] = wc;
+    o["ignore"]  = json::toArray(v.ignore,
+                                 [](const IgnoreRegion& r) { return toJson(r); });
+    o["anchors"] = json::toArray(v.anchors,
+                                 [](const ContinuumAnchor& a) { return toJson(a); });
+    o["files"]   = json::toArray(v.files,
+                                 [](const SpectrumFile& f) { return toJson(f); });
+    return o;
+}
+
+Observation observationFromJson(const QJsonObject& o)
+{
+    Observation v;
+    if (const QJsonValue w = o.value("waveCut"); w.isArray()) {
+        const QJsonArray a = w.toArray();
+        if (a.size() == 2)
+            v.waveCut = qMakePair(a[0].toDouble(), a[1].toDouble());
+    }
+    v.ignore  = json::fromArray<IgnoreRegion>(o, "ignore", ignoreRegionFromJson);
+    v.anchors = json::fromArray<ContinuumAnchor>(o, "anchors",
+                                                 continuumAnchorFromJson);
+    v.files   = json::fromArray<SpectrumFile>(o, "files", spectrumFileFromJson);
+    return v;
+}
+
+QJsonObject toJson(const SpectralFitJob& v)
+{
+    QJsonObject o;
+    o["components"]   = json::toArray(v.components,
+                                      [](const StellarComponent& c) { return toJson(c); });
+    o["observations"] = json::toArray(v.observations,
+                                      [](const Observation& ob) { return toJson(ob); });
+    o["untiedParams"] = QJsonArray::fromStringList(v.untiedParams);
+
+    o["filterSnr"]      = v.filterSnr;
+    o["requireBlue"]    = v.requireBlue;
+    o["nitNoiseMax"]    = v.nitNoiseMax;
+    o["outlierSigmaLo"] = v.outlierSigmaLo;
+    o["outlierSigmaHi"] = v.outlierSigmaHi;
+    o["verbose"]        = v.verbose;
+
+    o["addTelluricModel"]   = v.addTelluricModel;
+    o["autoFreezeSurRatio"] = v.autoFreezeSurRatio;
+    o["surRatioThres"]      = v.surRatioThres;
+    o["c2DetectionThres"]   = v.c2DetectionThres;
+    o["contJitterK"]        = v.contJitterK;
+    o["workerThreads"]      = v.workerThreads;
+
+    o["outputPath"]    = v.outputPath;
+    o["basePaths"]     = QJsonArray::fromStringList(v.basePaths);
+    o["backend"]       = v.backend;
+    o["executionHost"] = v.executionHost;
+    o["isis"]            = toJson(v.isis);
+    o["isisInteractive"] = toJson(v.isisInteractive);
+    return o;
+}
+
+SpectralFitJob spectralFitJobFromJson(const QJsonObject& o)
+{
+    SpectralFitJob v;
+    v.components   = json::fromArray<StellarComponent>(o, "components",
+                                                       stellarComponentFromJson);
+    v.observations = json::fromArray<Observation>(o, "observations",
+                                                  observationFromJson);
+    v.untiedParams = json::readStringList(o, "untiedParams", v.untiedParams);
+
+    v.filterSnr      = json::readDouble(o, "filterSnr", v.filterSnr);
+    v.requireBlue    = json::readDouble(o, "requireBlue", v.requireBlue);
+    v.nitNoiseMax    = json::readInt(o, "nitNoiseMax", v.nitNoiseMax);
+    v.outlierSigmaLo = json::readDouble(o, "outlierSigmaLo", v.outlierSigmaLo);
+    v.outlierSigmaHi = json::readDouble(o, "outlierSigmaHi", v.outlierSigmaHi);
+    v.verbose        = json::readBool(o, "verbose", v.verbose);
+
+    v.addTelluricModel   = json::readBool(o, "addTelluricModel", v.addTelluricModel);
+    v.autoFreezeSurRatio = json::readBool(o, "autoFreezeSurRatio", v.autoFreezeSurRatio);
+    v.surRatioThres      = json::readDouble(o, "surRatioThres", v.surRatioThres);
+    v.c2DetectionThres   = json::readDouble(o, "c2DetectionThres", v.c2DetectionThres);
+    v.contJitterK        = json::readInt(o, "contJitterK", v.contJitterK);
+    v.workerThreads      = json::readInt(o, "workerThreads", v.workerThreads);
+
+    v.outputPath    = json::readString(o, "outputPath", v.outputPath);
+    v.basePaths     = json::readStringList(o, "basePaths", v.basePaths);
+    v.backend       = json::readString(o, "backend", v.backend);
+    v.executionHost = json::readString(o, "executionHost", v.executionHost);
+    v.isis            = isisOptionsFromJson(o.value("isis").toObject());
+    v.isisInteractive =
+        isisInteractiveOptionsFromJson(o.value("isisInteractive").toObject());
     return v;
 }
 

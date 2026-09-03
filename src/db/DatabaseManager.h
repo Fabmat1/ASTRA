@@ -8,6 +8,7 @@
 #include <QSet>
 #include <QString>
 #include "MassFitRepository.h"
+#include "RemoteFitRepository.h"
 #include "SpectrumRepository.h"
 #include "models/Instrument.h"
 #include "models/InstrumentMode.h"
@@ -22,6 +23,7 @@ class RadialVelocityRepository;
 class InstrumentRepository;
 class PeriodogramRepository;
 class MassFitRepository;
+class RemoteFitRepository;
 
 class Project;
 class Star;
@@ -177,6 +179,14 @@ public:
     bool upsertMassFitRunStar(const MassFitRunStarRow& row);
     std::vector<MassFitRunStarRow> loadMassFitRunStars(const QString& runId);
 
+    // ── Remote fitting ───────────────────────────────────────────────────
+    // Fits running on other machines; see RemoteFitRepository.
+    bool saveRemoteFitRun(const RemoteFitRunRow& row);
+    bool updateRemoteFitRunState(const QString& id, const QString& state,
+                                 const QString& error = {});
+    std::optional<RemoteFitRunRow> loadRemoteFitRun(const QString& id);
+    std::vector<RemoteFitRunRow> loadActiveRemoteFitRuns();
+
     bool saveMassFitAttempt(const MassFitAttemptRow& row);
     std::vector<MassFitAttemptRow> loadMassFitAttempts(
         const QString& runId, const QString& starId = {});
@@ -198,6 +208,7 @@ public:
     std::unique_ptr<InstrumentRepository> _instruments;
     std::unique_ptr<PeriodogramRepository> _periodograms;
     std::unique_ptr<MassFitRepository> _massFit;
+    std::unique_ptr<RemoteFitRepository> _remoteFit;
 };
 
 #endif // DATABASEMANAGER_H

@@ -68,6 +68,85 @@ inline QString normalizeAlias(const QString &raw) {
     return s.toLower();
 }
 
+// ── Numeric cell parsing ────────────────────────────────────────
+
+// Read a numeric table cell the way a person reads it, not the way
+// QString::toDouble() does. Real tables reach us from Excel exports, VizieR
+// dumps and pasted PDFs, so a cell can carry a Unicode minus ("−12.3"), a
+// decimal comma ("−12,3"), thousands separators, a Fortran exponent ("1.2D3"),
+// quotes, or non-breaking spaces - all of which QString::toDouble() rejects
+// outright, silently turning a whole import into zero points.
+// Empty cells and the usual "no value" spellings return ok = false.
+inline double parseNumber(const QString &raw, bool *ok = nullptr) {
+    auto fail = [&]() { if (ok) *ok = false; return 0.0; };
+
+    QString s = raw.trimmed();
+    if (s.startsWith('"') && s.endsWith('"') && s.size() >= 2)
+        s = s.mid(1, s.size() - 2).trimmed();
+    if (s.isEmpty())
+        return fail();
+
+    // Unicode dashes used as minus signs, and typographic spaces used as
+    // thousands separators.
+    static const QRegularExpression dashRe(
+        QStringLiteral("[\\x{2212}\\x{2010}\\x{2011}\\x{2012}\\x{2013}\\x{2014}]"));
+    static const QRegularExpression thinSpaceRe(
+        QStringLiteral("[\\x{00A0}\\x{202F}\\x{2007}\\x{2009}]"));
+    s.replace(dashRe, QStringLiteral("-"));
+    s.remove(thinSpaceRe);
+
+    // A plain space is only removed where it can be nothing but a thousands
+    // separator. Blindly stripping it would read the sexagesimal cell
+    // "22 31 17.4" as the number 2231174 instead of reporting it as unusable.
+    static const QRegularExpression signSpaceRe(QStringLiteral("^([+-])\\s+"));
+    s.replace(signSpaceRe, QStringLiteral("\\1"));
+    static const QRegularExpression groupedRe(
+        QStringLiteral("^[+-]?[0-9]{1,3}(?: [0-9]{3})+(?:[.,][0-9]+)?$"));
+    if (groupedRe.match(s).hasMatch())
+        s.remove(QLatin1Char(' '));
+
+    // Null markers seen in catalogue tables.
+    static const QStringList nullMarkers = {
+        "-", "--", "---", "na", "n/a", "null", "none", "nul", "?", ".", "*"};
+    if (nullMarkers.contains(s.toLower()))
+        return fail();
+
+    if (s.startsWith('+'))
+        s.remove(0, 1);
+
+    // Fortran exponents: 1.234D+02 / 1.234d-02.
+    static const QRegularExpression fortranRe(
+        QStringLiteral("^([+-]?[0-9.,]+)[dD]([+-]?[0-9]+)$"));
+    const QRegularExpressionMatch fm = fortranRe.match(s);
+    if (fm.hasMatch())
+        s = fm.captured(1) + QLatin1Char('e') + fm.captured(2);
+
+    bool parsed = false;
+    double v = s.toDouble(&parsed);
+    if (parsed) {
+        if (ok) *ok = true;
+        return v;
+    }
+
+    // Decimal comma ("12,345" from a German Excel export) versus thousands
+    // separators ("12,345.6"). A dot present anywhere means the commas group
+    // digits; otherwise a single comma is the decimal point.
+    if (s.contains(',')) {
+        QString alt = s;
+        if (alt.contains('.') || alt.count(',') > 1)
+            alt.remove(',');
+        else
+            alt.replace(',', '.');
+        v = alt.toDouble(&parsed);
+        if (parsed) {
+            if (ok) *ok = true;
+            return v;
+        }
+    }
+
+    return fail();
+}
+
 // ── Column auto-detection ───────────────────────────────────────
 
 // Index of the column whose name best fits `patterns`, or -1.

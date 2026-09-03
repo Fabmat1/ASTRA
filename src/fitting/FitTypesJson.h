@@ -49,6 +49,17 @@ IsisInteractiveOptions isisInteractiveOptionsFromJson(const QJsonObject& o);
 QJsonObject toJson(const JobGlobals& v);
 JobGlobals jobGlobalsFromJson(const QJsonObject& o);
 
+QJsonObject toJson(const SpectrumFile& v);
+SpectrumFile spectrumFileFromJson(const QJsonObject& o);
+
+QJsonObject toJson(const Observation& v);
+Observation observationFromJson(const QJsonObject& o);
+
+/// Whole job, input side complete. Remote fitting persists this so a run can
+/// be re-attached and harvested after ASTRA restarts.
+QJsonObject toJson(const SpectralFitJob& v);
+SpectralFitJob spectralFitJobFromJson(const QJsonObject& o);
+
 // ── Small readers shared with MassFitPlan ────────────────────────────────
 // Exposed because the plan model serialises the same way and there is no
 // reason for it to grow a second copy of these.

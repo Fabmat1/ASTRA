@@ -121,6 +121,22 @@ public:
     QString specFetchLastOptions() const { return _specFetchLastOptions; }
     void    setSpecFetchLastOptions(const QString& json);
 
+    // ── Remote hosts (SSH grid streaming + remote fitting) ──────────────
+    /// The user-defined remote hosts, as a JSON array (see RemoteHost).
+    QString remoteHostsJson() const { return _remoteHostsJson; }
+    void    setRemoteHostsJson(const QString& json);
+
+    /// Local cache directory for streamed grid files
+    /// ("" = <cache location>/gridcache).
+    QString remoteGridCacheDir() const { return _remoteGridCacheDir; }
+    void    setRemoteGridCacheDir(const QString& dir);
+    /// Resolved value with the default applied. Never empty.
+    QString effectiveRemoteGridCacheDir() const;
+
+    /// Size cap of that cache in GiB.
+    int  remoteGridCacheCapGb() const { return _remoteGridCacheCapGb; }
+    void setRemoteGridCacheCapGb(int gb);
+
     // ── Updates ──────────────────────────────────────────────────────────
     bool checkUpdatesOnStartup() const { return _checkUpdatesOnStartup; }
     void setCheckUpdatesOnStartup(bool on);
@@ -142,6 +158,7 @@ signals:
     void updateSettingsChanged();
     void numberFormatChanged();
     void fitWorkerThreadsChanged();
+    void remoteHostsChanged();
 
   private:
     void load();
@@ -177,4 +194,8 @@ signals:
 
     bool    _checkUpdatesOnStartup = true;
     QString _skippedUpdateVersion;
+
+    QString _remoteHostsJson;
+    QString _remoteGridCacheDir;
+    int     _remoteGridCacheCapGb = 20;
 };

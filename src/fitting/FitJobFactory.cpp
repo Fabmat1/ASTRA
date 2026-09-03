@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace astra::fitting {
 
@@ -190,6 +191,76 @@ QString exportSpectrumToTemp(const std::shared_ptr<Spectrum>& s,
     return path;
 }
 
+// ────────────────────────────────────────────────────────────────────
+// Seeding one fit from another
+// ────────────────────────────────────────────────────────────────────
+
+double pickFittedValue(const QVector<FittedParameter>& v, int idx)
+{
+    if (v.isEmpty()) return std::numeric_limits<double>::quiet_NaN();
+    return v[std::min<int>(idx, int(v.size()) - 1)].value;
+}
+
+namespace {
+/// A parameter the previous fit never produced comes back NaN; leaving the
+/// configured start value alone is right in that case.
+void takeIfKnown(double& dst, double src)
+{
+    if (!std::isnan(src)) dst = src;
+}
+}   // namespace
+
+void seedComponentsFrom(QVector<StellarComponent>& components,
+                        const QVector<StellarComponent>& source)
+{
+    for (int i = 0; i < components.size() && i < source.size(); ++i) {
+        auto&       c = components[i];
+        const auto& p = source[i];
+
+        takeIfKnown(c.teff,  p.teff);
+        takeIfKnown(c.logg,  p.logg);
+        takeIfKnown(c.he,    p.he);
+        takeIfKnown(c.vsini, p.vsini);
+        takeIfKnown(c.zeta,  p.zeta);
+        takeIfKnown(c.xi,    p.xi);
+        takeIfKnown(c.z,     p.z);
+        takeIfKnown(c.surRatio, p.surRatio);
+
+        // Only elements this component itself models: a value carried over
+        // for an element the grid does not resolve would be silently dropped
+        // by the backend anyway.
+        for (auto it = c.abundances.begin(); it != c.abundances.end(); ++it) {
+            const auto pit = p.abundances.constFind(it.key());
+            if (pit != p.abundances.constEnd() && !std::isnan(pit.value()))
+                it.value() = pit.value();
+        }
+    }
+}
+
+QVector<StellarComponent> componentsFromResult(
+    const SpectralFitResult& r,
+    const QVector<StellarComponent>& asRun,
+    int specIndex)
+{
+    QVector<StellarComponent> out = asRun;
+    for (int i = 0; i < out.size() && i < r.components.size(); ++i) {
+        const auto& c = r.components[i];
+        auto&       o = out[i];
+
+        takeIfKnown(o.teff,  pickFittedValue(c.teff,  specIndex));
+        takeIfKnown(o.logg,  pickFittedValue(c.logg,  specIndex));
+        takeIfKnown(o.he,    pickFittedValue(c.he,    specIndex));
+        takeIfKnown(o.vsini, pickFittedValue(c.vsini, specIndex));
+        takeIfKnown(o.zeta,  pickFittedValue(c.zeta,  specIndex));
+        takeIfKnown(o.xi,    pickFittedValue(c.xi,    specIndex));
+        takeIfKnown(o.z,     pickFittedValue(c.z,     specIndex));
+        takeIfKnown(o.surRatio, pickFittedValue(c.surRatio, specIndex));
+        for (auto it = c.abundances.cbegin(); it != c.abundances.cend(); ++it)
+            o.abundances.insert(it.key(), pickFittedValue(it.value(), specIndex));
+    }
+    return out;
+}
+
 SpectralFitJob buildJob(const std::vector<std::shared_ptr<Spectrum>>& spectra,
                         const QHash<QString, SpectrumFitConfig>& configs,
                         const QVector<StellarComponent>& components,
@@ -198,6 +269,7 @@ SpectralFitJob buildJob(const std::vector<std::shared_ptr<Spectrum>>& spectra,
 {
     SpectralFitJob job;
     job.backend = globals.backend;
+    job.executionHost = globals.executionHost;
 
     job.filterSnr      = globals.filterSnr;
     job.requireBlue    = globals.requireBlue;

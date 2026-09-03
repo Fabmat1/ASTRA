@@ -18,6 +18,7 @@ class QSpinBox;
 class QDoubleSpinBox;
 class QComboBox;
 class QuantityLabel;
+namespace astra::remote { class RemoteHostsSettingsPage; }
 
 class SettingsDialog : public QDialog
 {
@@ -38,7 +39,10 @@ private:
     QWidget* createLightcurveFetchPage();
     QWidget *createLightcurveFitPage();
     QWidget* createSpectraFetchPage();
+    QWidget* createRemoteHostsPage();
     QWidget* createUpdatesPage();
+
+    astra::remote::RemoteHostsSettingsPage* _remoteHostsPage = nullptr;
 
     QLineEdit *_lcurveDirEdit = nullptr;
     QLabel  *_lcurveStatusLbl = nullptr;

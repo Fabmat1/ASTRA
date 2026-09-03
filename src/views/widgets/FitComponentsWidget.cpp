@@ -1,5 +1,7 @@
 #include "views/widgets/FitComponentsWidget.h"
 
+#include "remote/RemoteHostRegistry.h"
+
 #include "dialogs/SettingsDialog.h"
 #include "models/ElementAbundances.h"
 #include "utils/AppSettings.h"
@@ -134,8 +136,7 @@ void FitComponentsWidget::rebuildComponentRows()
     clearLayout(_componentsLayout);
     _componentSelectors.clear();
 
-    AppSettings settings;
-    const QStringList basePaths = settings.gridBasePaths();
+    const QStringList basePaths = astra::remote::gridBasePathsIncludingRemote();
 
     for (int i = 0; i < _components.size(); ++i) {
         auto& c = _components[i];
@@ -168,8 +169,7 @@ void FitComponentsWidget::rebuildComponentRows()
             AppSettings s;
             SettingsDialog dlg(&s, this);
             if (dlg.exec() == QDialog::Accepted) {
-                AppSettings fresh;
-                const auto paths = fresh.gridBasePaths();
+                const auto paths = astra::remote::gridBasePathsIncludingRemote();
                 for (auto* sel : _componentSelectors) sel->setBasePaths(paths);
             }
         });

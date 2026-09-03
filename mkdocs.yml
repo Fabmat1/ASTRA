@@ -71,6 +71,7 @@ nav:
       - Light Curves: workflows/light-curves.md
       - Fetching Spectra: workflows/spectra-fetching.md
       - SED & Spectral Fitting: workflows/sed-spectral.md
+      - Remote Fitting: workflows/remote-fitting.md
   - Reference:
       - Database & Files: reference/database.md
       - Python Scripts: reference/scripts.md

@@ -53,7 +53,14 @@ panel already shows the catalog data; everything else is still empty.
    parameters; freeze anything you want held fixed.
 3. Select the elements to include, tick the spectra to fit, and set the
    wavelength range and any ignore regions.
-4. Click **▶ Run Fit** and watch the progress dialog. When it finishes, the
+4. Leave **Fit one spectrum at a time** unticked to fit all the marked
+   spectra together, or tick it to fit them one after another, each as its
+   own independent fit. For a sequence, **Start each fit from the previous
+   fit's result** usually converges faster, since the spectra of one star
+   share a solution. Coming back later with new spectra? Tick **Skip spectra
+   that already have a best fit** so the run only covers the ones still
+   missing one.
+5. Click **▶ Run Fit** and watch the progress dialog. When it finishes, the
    fit shows up in the tree; mark the good one as **Best**.
 
 Each fitted spectrum contributes a radial-velocity point, so after this step

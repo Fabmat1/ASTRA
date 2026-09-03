@@ -193,9 +193,66 @@ static void testConeIndex() {
     CHECK_EQ(band.nearest(0.0, 0.0, 0.0), 0); // non-positive radius
 }
 
+// Numeric cells as they actually arrive from Excel exports, VizieR dumps and
+// pasted PDFs. Every spelling here used to make QString::toDouble() fail, which
+// silently dropped the row from an RV table import.
+static void testNumberParsing() {
+    bool ok = false;
+
+    CHECK_EQ(parseNumber("12.5", &ok), 12.5);
+    CHECK(ok);
+    CHECK_EQ(parseNumber(" -12.5 ", &ok), -12.5);
+    CHECK(ok);
+    CHECK_EQ(parseNumber("+12.5", &ok), 12.5);
+    CHECK(ok);
+
+    // Unicode minus / dashes used as a sign.
+    CHECK_EQ(parseNumber(QString::fromUtf8("\u2212""12.5"), &ok), -12.5);
+    CHECK(ok);
+    CHECK_EQ(parseNumber(QString::fromUtf8("\u2013""12.5"), &ok), -12.5);
+    CHECK(ok);
+
+    // Decimal comma (German Excel export) and thousands separators.
+    CHECK_EQ(parseNumber("-12,5", &ok), -12.5);
+    CHECK(ok);
+    CHECK_EQ(parseNumber("12,345.6", &ok), 12345.6);
+    CHECK(ok);
+    CHECK_EQ(parseNumber("1,234,567", &ok), 1234567.0);
+    CHECK(ok);
+
+    // Quotes, non-breaking space, Fortran exponent, scientific notation.
+    CHECK_EQ(parseNumber("\"58000.25\"", &ok), 58000.25);
+    CHECK(ok);
+    CHECK_EQ(parseNumber(QString::fromUtf8("58\u00A0000.25"), &ok), 58000.25);
+    CHECK(ok);
+    CHECK_EQ(parseNumber("1.234D+02", &ok), 123.4);
+    CHECK(ok);
+    CHECK_EQ(parseNumber("1.234e2", &ok), 123.4);
+    CHECK(ok);
+
+    // A plain space groups thousands only where nothing else fits; a
+    // sexagesimal cell must stay unreadable rather than become 2231174.
+    CHECK_EQ(parseNumber("58 000.25", &ok), 58000.25);
+    CHECK(ok);
+    CHECK_EQ(parseNumber("- 12.5", &ok), -12.5);
+    CHECK(ok);
+    parseNumber("22 31 17.4", &ok);
+    CHECK(!ok);
+
+    // Empty and "no value" spellings report failure, so the caller can default
+    // an optional column instead of guessing a number.
+    for (const char* nul : {"", "   ", "-", "--", "NA", "n/a", "NULL", "?"}) {
+        parseNumber(QString::fromLatin1(nul), &ok);
+        CHECK(!ok);
+    }
+    parseNumber("not a number", &ok);
+    CHECK(!ok);
+}
+
 int main() {
     testSourceIdNormalisation();
     testAliasNormalisation();
+    testNumberParsing();
     testColumnDetection();
     testSeparation();
     testConeIndex();

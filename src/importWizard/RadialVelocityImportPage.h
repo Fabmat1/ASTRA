@@ -82,6 +82,7 @@ private:
     // Preview
     void updatePreviewFromProject();          // ← NEW (replaces old updatePreviewTree)
     void showTableMatchReport();
+    void showTableSkipReport();
 
     // Helpers
     bool isBackgroundBusy() const;
@@ -119,6 +120,13 @@ private:
     int _tableMatchedRows = 0;
     int _tableUnmatchedRows = 0;
     QStringList _tableUnmatchedExamples;
+
+    // Matched rows that still yielded no point, by reason (see rowSkipReport).
+    int _tableShortRows = 0;
+    int _tableBadTimeRows = 0;
+    int _tableBadRVRows = 0;
+    int _tableDuplicateRows = 0;
+    QStringList _tableSkipExamples;
 
     // ── UI widgets ──────────────────────────────────
     // Mode selection

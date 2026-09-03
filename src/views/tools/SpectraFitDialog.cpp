@@ -576,6 +576,9 @@ void SpectraFitDialog::onTreeItemClicked(QTreeWidgetItem* item, int column)
 
         setBestFitTied(fitId, !currentlyBest);
         updateBestMarkers();
+        // The fit setup page can skip spectra that already have a best fit,
+        // so its list has to hear about this straight away.
+        _setup->refreshRunSelectionUi();
         return;
     }
 

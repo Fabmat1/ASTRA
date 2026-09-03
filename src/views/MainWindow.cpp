@@ -21,6 +21,8 @@
 #include "utils/UpdateManager.h"
 #include "views/tools/LightcurveFetchSessionsDialog.h"
 #include "views/tools/MassFitManagerDialog.h"
+#include "views/tools/RemoteFitsDialog.h"
+#include "remote/RemoteFitService.h"
 #include "views/tools/SpectrumFetchSessionsDialog.h"
 #include <QAction>
 #include <QActionGroup>
@@ -307,6 +309,16 @@ void MainWindow::setupMassFitStatusWidget()
     });
     connect(service, &MassFitService::starParametersChanged, this,
             [tableRefresh](const QString&) { tableRefresh->start(); });
+}
+
+void MainWindow::onShowRemoteFits()
+{
+    // Modeless and not cached: the dialog reads everything from the service,
+    // which is where the runs actually live.
+    auto* dlg = new astra::remote::RemoteFitsDialog(
+        astra::remote::RemoteFitService::instance(), this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    dlg->show();
 }
 
 void MainWindow::onShowMassFitManager()
@@ -759,6 +771,11 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
                    "fit regions and grids once, then run a whole sample "
                    "through a decision tree"));
 
+            _remoteFitsAction = _analysisMenu->addAction("&Remote Fits...");
+            _remoteFitsAction->setStatusTip(
+                tr("Fits running on other machines: watch their progress, and "
+                   "stop them without losing what they already produced"));
+
             connect(_createPlotAction, &QAction::triggered, _projectView, &ProjectView::onCreatePlot);
             connect(_computeKinematicsAction, &QAction::triggered, _projectView,
                     &ProjectView::onComputeGalacticKinematics);
@@ -766,6 +783,8 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
                     &ProjectView::onRVDetectability);
             connect(_massFitAction, &QAction::triggered, this,
                     &MainWindow::onShowMassFitManager);
+            connect(_remoteFitsAction, &QAction::triggered, this,
+                    &MainWindow::onShowRemoteFits);
 
             QAction* helpAction = _helpMenu->menuAction();
             menuBar->insertMenu(helpAction, _analysisMenu);
@@ -806,6 +825,7 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             // Deleting the menu deletes its actions, so this pointer would
             // dangle for as long as the window lives without it.
             _massFitAction = nullptr;
+            _remoteFitsAction = nullptr;
         }
 
         // The manager is scoped to one project: its plans, runs and star
