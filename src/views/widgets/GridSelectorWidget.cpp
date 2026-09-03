@@ -22,10 +22,12 @@
 #include <QPushButton>
 #include <QSet>
 #include <QVBoxLayout>
-#include <dirent.h>
 #include <functional>
-#include <sys/stat.h>
 #include <utility>
+#ifndef Q_OS_WIN
+  #include <dirent.h>
+  #include <sys/stat.h>
+#endif
 
 namespace {
 
@@ -45,6 +47,24 @@ struct DirListing {
 };
 
 // Cheap marker probe: a few stat() calls, no directory enumeration.
+//
+// The POSIX spelling below is deliberate -- grid trees live on network mounts
+// with tens of thousands of directories, and readdir()'s d_type answers "is
+// this a directory?" without a stat() per entry. mingw-w64 has neither d_type
+// nor lstat(), so Windows gets a Qt implementation of the same two functions.
+// Same semantics either way: hidden entries skipped, symlinked directories not
+// followed, entryCount over everything but "." and "..".
+#ifdef Q_OS_WIN
+
+bool dirHasMarker(const QString &path, const QStringList &markers) {
+    for (const QString &m : markers)
+        if (QFileInfo(path + "/" + m).isFile())
+            return true;
+    return false;
+}
+
+#else
+
 bool dirHasMarker(const QString &path, const QStringList &markers) {
     for (const QString &m : markers) {
         struct stat      st;
@@ -55,7 +75,29 @@ bool dirHasMarker(const QString &path, const QStringList &markers) {
     return false;
 }
 
+#endif
+
 // readdir pass to enumerate subdirectories only.
+#ifdef Q_OS_WIN
+
+DirListing listDir(const QString &path) {
+    DirListing out;
+    const QFileInfoList entries =
+        QDir(path).entryInfoList(QDir::AllEntries | QDir::NoDotAndDotDot
+                                 | QDir::Hidden | QDir::System);
+    for (const QFileInfo &fi : entries) {
+        ++out.entryCount;
+        const QString name = fi.fileName();
+        if (name.startsWith('.'))
+            continue; // skip hidden
+        if (fi.isDir() && !fi.isSymLink())
+            out.subdirs << name;
+    }
+    return out;
+}
+
+#else
+
 DirListing listDir(const QString &path) {
     DirListing out;
     DIR       *dir = ::opendir(QFile::encodeName(path).constData());
@@ -98,6 +140,8 @@ DirListing listDir(const QString &path) {
     ::closedir(dir);
     return out;
 }
+
+#endif
 
 QString stripSlashes(QString s) {
     while (s.endsWith('/'))

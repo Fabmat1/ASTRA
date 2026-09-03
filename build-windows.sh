@@ -97,6 +97,48 @@ fi
 
 mkdir -p "${CACHE}"
 
+# ── 1b. Native-path pkg-config metadata ─────────────────────────────────────
+# Some MSYS2 .pc files hard-code POSIX prefixes (cfitsio: includedir=
+# "/ucrt64/include"), which resolve only when a command line passes through the
+# MSYS2 runtime's argument conversion. CMake and Ninja spawn the compiler
+# natively, so nothing converts them, and pkg_check_modules(... IMPORTED_TARGET)
+# fails outright with "includes non-existent path /ucrt64/include". Others
+# (gsl) derive their prefix from ${pcfiledir} and already come out native, so
+# PKG_CONFIG_SYSROOT_DIR is the wrong tool -- it prefixes blindly and turns
+# those into D:/.../D:/.../ucrt64/include.
+#
+# So rewrite the metadata instead: copy every .pc into a private directory with
+# a leading /ucrt64 replaced by the native prefix. The anchor is what keeps the
+# already-native files untouched -- their "/ucrt64" is preceded by "msys64",
+# not by a delimiter or an -I/-L.
+PC_DIR="${BUILD_DIR}/pkgconfig-native"
+UCRT_NATIVE="$(cygpath -m /ucrt64)"
+rm -rf "${PC_DIR}"
+mkdir -p "${PC_DIR}"
+for _pc in /ucrt64/lib/pkgconfig/*.pc /ucrt64/share/pkgconfig/*.pc; do
+  [[ -f "${_pc}" ]] || continue
+  sed -E "s#(^|[=\" ]|-I|-L)/ucrt64#\1${UCRT_NATIVE}#g" \
+      "${_pc}" > "${PC_DIR}/$(basename "${_pc}")"
+done
+# LIBDIR (not just PATH) so the unpatched originals are out of the search path
+# entirely and cannot be reached through a Requires: line.
+export PKG_CONFIG_LIBDIR="${PC_DIR}"
+export PKG_CONFIG_PATH="${PC_DIR}"
+
+# Fail here rather than in CMake's generate step, where the message names a
+# target instead of the cause.
+for _mod in cfitsio gsl libcurl zlib nlohmann_json fftw3; do
+  _flags="$(pkg-config --cflags --libs "${_mod}" 2>&1)" || {
+    echo "::error::pkg-config cannot resolve ${_mod}: ${_flags}"; exit 1; }
+  case "${_flags}" in
+    *-I/*|*-L/*)
+      echo "::error::${_mod}.pc still reports POSIX paths: ${_flags}"; exit 1 ;;
+    *"${UCRT_NATIVE}${UCRT_NATIVE}"*|*"$(cygpath -m /)${UCRT_NATIVE}"*)
+      echo "::error::${_mod}.pc paths were double-prefixed: ${_flags}"; exit 1 ;;
+  esac
+done
+echo ">>> pkg-config metadata rewritten to native paths in ${PC_DIR}"
+
 # ── 2. Submodules ───────────────────────────────────────────────────────────
 if [[ "${ASTRA_SKIP_SUBMODULE_UPDATE:-0}" != "1" ]]; then
   git -C "${SRC_DIR}" submodule update --init --recursive
@@ -143,22 +185,6 @@ fi
 export CCACHE_DIR="${CACHE}/ccache"
 mkdir -p "${CCACHE_DIR}"
 
-# MSYS2's .pc files hard-code POSIX prefixes (includedir="/ucrt64/include"),
-# which only resolve when a command line passes through the MSYS2 runtime's
-# argument conversion. CMake and Ninja spawn the compiler natively, so nothing
-# converts them: SEDplusplus' pkg_check_modules(... IMPORTED_TARGET) fails
-# outright with "includes non-existent path /ucrt64/include", and ASTRA's own
-# FFTW3 lookup only appears to work because /ucrt64/include is already on the
-# compiler's default search path. PKG_CONFIG_SYSROOT_DIR makes pkgconf emit the
-# native prefix in front of every -I and -L it prints.
-export PKG_CONFIG_SYSROOT_DIR="$(cygpath -m /)"
-echo ">>> pkg-config sysroot: ${PKG_CONFIG_SYSROOT_DIR}"
-echo ">>> pkg-config cfitsio: $(pkg-config --cflags --libs cfitsio)"
-if pkg-config --cflags cfitsio | grep -qE '(^| )-I/'; then
-  echo "::error::pkg-config still reports POSIX include paths; the CMake" \
-       "generate step will reject them. Check PKG_CONFIG_SYSROOT_DIR."
-  exit 1
-fi
 
 # GAEL wants Python3 with the Development and NumPy components. On a GitHub
 # runner there is a second Python in C:/hostedtoolcache that CMake finds first,
