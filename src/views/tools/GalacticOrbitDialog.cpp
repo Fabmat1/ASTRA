@@ -99,8 +99,15 @@ void GalacticOrbitDialog::setupUi()
         _star->getAlias().isEmpty() ? _star->getSourceId() : _star->getAlias()));
     resize(1250, 800);
 
+    // The dialog must stay freely resizable, so nothing inside may pin a floor
+    // on it: the layout keeps its hands off the window minimum and both
+    // columns below contribute no minimum of their own.
+    setMinimumSize(0, 0);
+
     auto* mainLayout = new QVBoxLayout(this);
+    mainLayout->setSizeConstraint(QLayout::SetNoConstraint);
     auto* splitter   = new QSplitter(Qt::Horizontal, this);
+    splitter->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     mainLayout->addWidget(splitter, 1);
 
     // ── left column: inputs, actions, results ──────────────────────────────
@@ -214,16 +221,18 @@ void GalacticOrbitDialog::setupUi()
     leftScroll->setWidgetResizable(true);
     leftScroll->setFrameShape(QFrame::NoFrame);
     leftScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
-    leftScroll->setMinimumWidth(345);
     leftScroll->setMaximumWidth(440);
+    leftScroll->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     splitter->addWidget(leftScroll);
 
     // ── right column: plots ────────────────────────────────────────────────
     auto* right       = new QWidget;
+    right->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     auto* rightLayout = new QVBoxLayout(right);
     rightLayout->setContentsMargins(6, 0, 0, 0);
 
     _plotTabs = new QTabWidget;
+    _plotTabs->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
 
     // 2D tab
     auto* tab2D  = new QWidget;

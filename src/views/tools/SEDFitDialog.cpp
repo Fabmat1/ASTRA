@@ -189,21 +189,32 @@ void SEDFitDialog::setupUi()
     setWindowTitle(QString("SED Analysis - %1").arg(title));
     resize(1500, 850);
 
+    // The dialog must stay freely resizable, so nothing inside may pin a floor
+    // on it: the layout keeps its hands off the window minimum and the columns
+    // below contribute no minimum of their own.
+    setMinimumSize(0, 0);
+
     auto* root = new QVBoxLayout(this);
+    root->setSizeConstraint(QLayout::SetNoConstraint);
     root->setContentsMargins(6, 6, 6, 6);
     root->setSpacing(4);
 
-    root->addWidget(createFitSelectorBar());
+    auto* selectorBar = createFitSelectorBar();
+    selectorBar->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Fixed);
+    root->addWidget(selectorBar);
 
     auto* mainSplit = new QSplitter(Qt::Horizontal);
+    mainSplit->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
 
     // Left side: plots + params above, photometry below
     auto* leftWidget = new QWidget;
+    leftWidget->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     auto* leftLayout = new QVBoxLayout(leftWidget);
     leftLayout->setContentsMargins(0, 0, 0, 0);
     leftLayout->setSpacing(4);
 
     auto* plotParamSplit = new QSplitter(Qt::Horizontal);
+    plotParamSplit->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     plotParamSplit->addWidget(createPlotArea());
     plotParamSplit->addWidget(createParameterPanel());
     plotParamSplit->setStretchFactor(0, 3);
@@ -257,10 +268,11 @@ QWidget* SEDFitDialog::createFitSelectorBar()
 QWidget* SEDFitDialog::createPlotArea()
 {
     auto* split = new QSplitter(Qt::Vertical);
+    split->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
 
     // ── SED plot ─────────────────────────────────────────────
     _sedPlot = new QCustomPlot;
-    _sedPlot->setMinimumHeight(250);
+    _sedPlot->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     applyPlotTheme(_sedPlot);
 
     QSharedPointer<QCPAxisTickerLog> xLogTicker(new QCPAxisTickerLog);
@@ -279,7 +291,7 @@ QWidget* SEDFitDialog::createPlotArea()
 
     // ── Residual plot ────────────────────────────────────────
     _residualPlot = new QCustomPlot;
-    _residualPlot->setMinimumHeight(80);
+    _residualPlot->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     applyPlotTheme(_residualPlot);
 
     QSharedPointer<QCPAxisTickerLog> rxLog(new QCPAxisTickerLog);
@@ -313,8 +325,8 @@ QWidget* SEDFitDialog::createParameterPanel()
 {
     _paramScroll = new QScrollArea;
     _paramScroll->setWidgetResizable(true);
-    _paramScroll->setMinimumWidth(260);
     _paramScroll->setMaximumWidth(380);
+    _paramScroll->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
 
     _paramPanel  = new QWidget;
     _paramLayout = new QVBoxLayout(_paramPanel);
@@ -332,6 +344,7 @@ QWidget* SEDFitDialog::createParameterPanel()
 QWidget* SEDFitDialog::createPhotometrySection()
 {
     auto* container = new QWidget;
+    container->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Maximum);
     auto* vlay = new QVBoxLayout(container);
     vlay->setContentsMargins(0, 0, 0, 0);
     vlay->setSpacing(0);
@@ -379,7 +392,7 @@ QWidget* SEDFitDialog::createNewFitPanel()
 {
     _newFitScroll = new QScrollArea;
     _newFitScroll->setWidgetResizable(true);
-    _newFitScroll->setMinimumWidth(200); 
+    _newFitScroll->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     _newFitScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
     _newFitScroll->setFrameShape(QFrame::NoFrame);
 

@@ -25,6 +25,7 @@
 #include <QEvent>
 #include <QHBoxLayout>
 #include <QPushButton>
+#include <QScrollArea>
 #include <QSplitter>
 #include <QTimer>
 #include <QUrl>
@@ -76,7 +77,13 @@ void StarDetailView::setupUi()
     setAttribute(Qt::WA_DeleteOnClose);
     resize(1400, 900);
 
+    // The window must be freely resizable, so nothing inside may pin a floor
+    // on it: the layout keeps its hands off the window minimum, the panels
+    // shrink to nothing (see buildGrid) and the sidebar scrolls.
+    setMinimumSize(0, 0);
+
     auto* outer = new QHBoxLayout(this);
+    outer->setSizeConstraint(QLayout::SetNoConstraint);
     outer->setContentsMargins(6, 6, 6, 6);
     outer->setSpacing(6);
 
@@ -110,12 +117,14 @@ void StarDetailView::buildGrid()
 
     _rootVSplit = new QSplitter(Qt::Vertical, _gridHost);
     _rootVSplit->setOpaqueResize(false);
+    _rootVSplit->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
 
     DetailPanel::Context ctx { _star, _dbm, _controller, _projectId };
 
     for (const auto& row : grid) {
         auto* hSplit = new QSplitter(Qt::Horizontal, _rootVSplit);
         hSplit->setOpaqueResize(false);
+        hSplit->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
 
         bool anyInRow = false;
         for (auto which : row) {
@@ -125,6 +134,9 @@ void StarDetailView::buildGrid()
             DetailPanel* panel =
                 DetailPanelFactory::create(which, ctx, hSplit, /*deferPopulate=*/true);
             if (panel) {
+                // Ignored policy: the panel keeps filling the splitter cell but
+                // contributes no minimum size, so the window can shrink past it.
+                panel->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
                 hSplit->addWidget(panel);
                 _panels.append(panel);
                 _populateQueue.append(panel);
@@ -132,7 +144,7 @@ void StarDetailView::buildGrid()
             } else {
                 // placeholder for "None" cells so row proportions are preserved
                 auto* empty = new QWidget(hSplit);
-                empty->setMinimumSize(40, 40);
+                empty->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
                 hSplit->addWidget(empty);
             }
         }
@@ -233,7 +245,6 @@ void StarDetailView::refreshAllThemes()
 QWidget* StarDetailView::createButtonSidebar()
 {
     QWidget* sidebar = new QWidget;
-    sidebar->setFixedWidth(180);
     QVBoxLayout* layout = new QVBoxLayout(sidebar);
     layout->setContentsMargins(2, 0, 2, 0);
     layout->setSpacing(8);
@@ -282,7 +293,17 @@ QWidget* StarDetailView::createButtonSidebar()
             &StarDetailView::onShareStar);
 
     layout->addStretch();
-    return sidebar;
+
+    // Scrolling the button stack keeps it usable when the window is shorter
+    // than the buttons need, instead of forcing a minimum height on it.
+    auto* scroll = new QScrollArea;
+    scroll->setWidget(sidebar);
+    scroll->setWidgetResizable(true);
+    scroll->setFrameShape(QFrame::NoFrame);
+    scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scroll->setFixedWidth(180);
+    scroll->setSizePolicy(QSizePolicy::Fixed, QSizePolicy::Ignored);
+    return scroll;
 }
 
 bool StarDetailView::event(QEvent *e) {
