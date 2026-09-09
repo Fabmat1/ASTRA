@@ -83,6 +83,32 @@ struct Csv {
 
 Csv parseCsv(const QByteArray& body);
 
+// ── Positional boxes ───────────────────────────────────────────────────────
+//
+// Several archives will not use their spatial index for a CONTAINS circle
+// (ESO and MAST both time out on one), so the query asks for an RA/Dec box
+// instead and the corners are trimmed client-side. A box is a superset of its
+// circle, which is what keeps the match radius exact.
+
+// "<raCol>/<decCol> lies in the box of half-height `radiusDeg` around this
+// star". The RA half-width is inflated by 1/cos(dec) so the box still holds
+// the whole circle, clamped near the poles where that blows up, and split in
+// two when it straddles the RA origin - `ra BETWEEN 359.9 AND 0.1` is empty,
+// not wrapped.
+QString boxPredicate(const QString& raCol, const QString& decCol, double ra,
+                     double dec, double radiusDeg);
+
+// The same box as [raLo, raHi] x [decLo, decHi] intervals rather than ADQL,
+// for queries that join against per-star bounds instead of OR-ing predicates.
+// A box straddling the RA origin yields two entries sharing one star.
+struct RaDecBox {
+    double raLo, raHi, decLo, decHi;
+};
+std::vector<RaDecBox> boxesFor(double ra, double dec, double radiusDeg);
+
+// Small-angle separation in degrees; plenty for arcsecond-scale radii.
+double angularSepDeg(double ra1, double dec1, double ra2, double dec2);
+
 // Split a work list into chunks of at most `chunkSize`.
 template <typename T>
 std::vector<std::vector<T>> chunked(const std::vector<T>& items,

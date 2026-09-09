@@ -20,6 +20,7 @@
 // epochs are mid-exposure UTC rather than the Beijing-time cards the same
 // headers also carry.
 // ─────────────────────────────────────────────────────────────────────────────
+#include "models/BarycentricCorrection.h"
 #include "models/Spectrum.h"
 #include "utils/SpectrumReader.h"
 #include "utils/spectrafetch/ApogeeArchiveClient.h"
@@ -40,10 +41,12 @@
 
 #include <fitsio.h>
 
+#include <algorithm>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -165,6 +168,58 @@ bool plateUtcWindow(const QString& path, double* begUtc, double* endUtc) {
     *begUtc = beg - kBeijingOffsetDays;
     *endUtc = end - kBeijingOffsetDays;
     return true;
+}
+
+// ── SDSS epoch helper ────────────────────────────────────────────────────
+//
+// The exposure HDUs of a full spec file carry TAI-BEG (start of integration,
+// TAI seconds) and EXPTIME. The correct epoch is the *midpoint* on the *UTC*
+// scale; the two ways to get it wrong are to keep TAI-BEG as-is (start, and
+// 32-37 s of leap seconds late) or to fall back on the integer plate MJD.
+struct SdssExposure {
+    double taiBeg  = 0.0;   // MJD(TAI) at the start of the integration
+    double expTime = 0.0;   // seconds
+};
+
+std::vector<SdssExposure> sdssBlueExposures(const QString& path) {
+    std::vector<SdssExposure> out;
+    fitsfile* f      = nullptr;
+    int       status = 0;
+    if (fits_open_file(&f, path.toUtf8().constData(), READONLY, &status) != 0)
+        return out;
+    int nHdus = 0;
+    fits_get_num_hdus(f, &nHdus, &status);
+    for (int hdu = 2; hdu <= nHdus; ++hdu) {
+        status = 0;
+        if (fits_movabs_hdu(f, hdu, nullptr, &status) != 0) continue;
+        char name[FLEN_VALUE] = {0};
+        status                = 0;
+        if (fits_read_key(f, TSTRING, "EXTNAME", name, nullptr, &status) != 0)
+            continue;
+        const QString ext = QString::fromLatin1(name).trimmed().toUpper();
+        if (!ext.startsWith(QLatin1Char('B')) ||
+            !ext.contains(QLatin1Char('-')))
+            continue;
+        SdssExposure e;
+        double        tai = 0, exp = 0;
+        status            = 0;
+        if (fits_read_key(f, TDOUBLE, "TAI-BEG", &tai, nullptr, &status) != 0 ||
+            tai <= 0)
+            continue;
+        status = 0;
+        if (fits_read_key(f, TDOUBLE, "EXPTIME", &exp, nullptr, &status) != 0 ||
+            exp <= 0)
+            continue;
+        e.taiBeg  = tai / 86400.0;
+        e.expTime = exp;
+        out.push_back(e);
+    }
+    fits_close_file(f, &status);
+    std::sort(out.begin(), out.end(),
+              [](const SdssExposure& a, const SdssExposure& b) {
+                  return a.taiBeg < b.taiBeg;
+              });
+    return out;
 }
 
 bool plausibleSpectrum(const SpecFetch::ParsedSpectrum& p, double wlMin,
@@ -299,10 +354,78 @@ int main(int argc, char** argv) {
                       "SDSS: exposure originId suffixed (" +
                           p.originId.toStdString() + ")");
         }
-        check(coadds == 1, "SDSS: exactly one coadd");
+        // With fetchExposures on, the exposures *replace* the coadd; the coadd
+        // is only the fallback for products that carry no exposure HDUs.
+        check(coadds == 0, "SDSS: exposures replace the coadd");
         check(exposures >= 2, "SDSS: several exposures (" +
                                   std::to_string(exposures) + ")");
-        plausibleSpectrum(parsed[0], 3000.0, 11000.0, "SDSS coadd");
+        // Legacy blue-camera HDUs are stored red-to-blue, so this also covers
+        // the reversal.
+        plausibleSpectrum(parsed[0], 3000.0, 11000.0, "SDSS exposure");
+
+        // Epochs must be mid-exposure UTC. Both historical mistakes are
+        // asserted against explicitly: taking TAI-BEG verbatim (start of the
+        // integration, on the TAI scale) and giving the coadd the integer
+        // plate MJD, which carries no time of day at all.
+        const auto exps = sdssBlueExposures(path);
+        check(!exps.empty(), "SDSS epochs: exposure HDUs readable");
+        if (!exps.empty()) {
+            std::vector<double> got;
+            for (const auto& p : parsed)
+                if (!p.isCoadd && p.spectrum) got.push_back(p.spectrum->getMJD());
+            std::sort(got.begin(), got.end());
+            got.erase(std::unique(got.begin(), got.end()), got.end());
+            check(got.size() == exps.size(),
+                  "SDSS epochs: one epoch per exposure (" +
+                      std::to_string(got.size()) + " of " +
+                      std::to_string(exps.size()) + ")");
+
+            int matched = 0, midNotStart = 0;
+            for (size_t i = 0; i < got.size() && i < exps.size(); ++i) {
+                const double leap =
+                    BarycentricCorrection::leapSecondsAt(exps[i].taiBeg);
+                const double want = exps[i].taiBeg - leap / 86400.0 +
+                                    exps[i].expTime / (2.0 * 86400.0);
+                if (std::abs(got[i] - want) * 86400.0 < 1.0) ++matched;
+                // The old bug wrote exps[i].taiBeg; half an exposure minus the
+                // leap seconds is hundreds of seconds away from it.
+                if (std::abs(got[i] - exps[i].taiBeg) * 86400.0 > 100.0)
+                    ++midNotStart;
+            }
+            check(matched == int(got.size()),
+                  "SDSS epochs: mid-exposure UTC (" + std::to_string(matched) +
+                      "/" + std::to_string(got.size()) + ")");
+            check(midNotStart == int(got.size()),
+                  "SDSS epochs: not the raw TAI-BEG start (" +
+                      std::to_string(midNotStart) + "/" +
+                      std::to_string(got.size()) + ")");
+
+            // The coadd sits inside the exposure span, so it can be neither
+            // the plate MJD nor an integer.
+            SpecFetch::ArchiveOptions coaddOpt = opt;
+            coaddOpt.fetchExposures            = false;
+            QString    coaddErr;
+            const auto coaddOnly =
+                client.parse(path, r, coaddOpt, &coaddErr);
+            check(coaddOnly.size() == 1, "SDSS coadd: single spectrum");
+            if (coaddOnly.size() == 1 && coaddOnly[0].spectrum) {
+                const double mjd   = coaddOnly[0].spectrum->getMJD();
+                const double first = exps.front().taiBeg;
+                const double last  = exps.back().taiBeg +
+                                    exps.back().expTime / 86400.0;
+                check(mjd > first - 60.0 / 86400.0 &&
+                          mjd < last + 60.0 / 86400.0,
+                      "SDSS coadd epoch: inside the exposure span");
+                // An APO night runs ~02:00-12:00 UTC, so the span never
+                // contains a whole MJD: a plate-MJD fallback would show up
+                // here as an integer.
+                check(std::abs(mjd - std::floor(mjd)) > 1e-6,
+                      "SDSS coadd epoch: not the integer plate MJD");
+                check(coaddOnly[0].spectrum->getExposureTime() > 0.0,
+                      "SDSS coadd: exposure time set");
+                plausibleSpectrum(coaddOnly[0], 3000.0, 11000.0, "SDSS coadd");
+            }
+        }
     }
 
     // ── LAMOST LRS ───────────────────────────────────────────────────────

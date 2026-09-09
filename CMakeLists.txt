@@ -1613,6 +1613,51 @@ if(BUILD_TESTING)
         TIMEOUT 900
     )
 
+    # SDSS discovery, live against SkyServer. Guards the sciencePrimary bug:
+    # dbo.fGetNearbySpecObjEq returns one spectrum per position, so every
+    # repeat visit of a star used to vanish from discovery.
+    add_executable(test_sdss_discovery
+        tests/test_sdss_discovery.cpp
+        src/utils/spectrafetch/SpectrumArchiveClient.cpp
+        src/utils/spectrafetch/SpectrumFrame.cpp
+        src/utils/spectrafetch/SdssOpticalArchiveClient.cpp
+        src/utils/spectrafetch/TapHelpers.cpp
+        src/utils/spectrafetch/VoTableReader.cpp
+        src/utils/spectrafetch/WavelengthConvert.cpp
+        src/utils/CdsTapClient.cpp
+        src/utils/SpectrumReader.cpp
+        src/utils/DataStore.cpp
+        src/utils/Logger.cpp
+        src/models/Spectrum.cpp
+        src/models/Time.cpp
+        src/models/Instrument.cpp
+        src/models/InstrumentMode.cpp
+        src/models/BarycentricCorrection.cpp
+    )
+    target_include_directories(test_sdss_discovery PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_compile_definitions(test_sdss_discovery PRIVATE
+        ASTRA_DATA_DIR="${ASTRA_DATA_DIR}"
+    )
+    if(CCFITS_FOUND)
+        target_include_directories(test_sdss_discovery PRIVATE
+            ${CCFITS_INCLUDE_DIRS})
+        target_link_libraries(test_sdss_discovery PRIVATE
+            ${CCFITS_LIBRARIES})
+    endif()
+    target_link_libraries(test_sdss_discovery PRIVATE
+        Qt6::Core Qt6::Network)
+    add_test(
+        NAME    sdss_discovery
+        COMMAND test_sdss_discovery
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(sdss_discovery PROPERTIES
+        LABELS "utils;spectrafetch;network"
+        TIMEOUT 900
+    )
+
     add_test(
         NAME    rv_mcmc_sampler
         COMMAND test_rvmcmc

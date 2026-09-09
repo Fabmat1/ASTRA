@@ -4,15 +4,18 @@
 
 #include "TapHelpers.h"
 #include "WavelengthConvert.h"
+#include "models/BarycentricCorrection.h"
 #include "models/Spectrum.h"
 #include "utils/CdsTapClient.h"
 #include "utils/Logger.h"
 
+#include <QHash>
 #include <QUrl>
 #include <QUrlQuery>
 
 #include <fitsio.h>
 
+#include <algorithm>
 #include <cmath>
 
 namespace {
@@ -61,6 +64,33 @@ bool readColumn(fitsfile* fptr, const char* name, long nrows,
                          &anynul, &status) == 0;
 }
 
+// Mid-exposure epoch of one exposure HDU as MJD(UTC).
+//
+// SDSS stamps exposures in TAI seconds.  Three traps live in these headers:
+// TAI-BEG is the *start* of the integration, the TAI card is not a midpoint
+// (it sits ~57 s after TAI-END), and TAI-END - TAI-BEG overshoots EXPTIME by
+// the readout, so the only correct midpoint is TAI-BEG + EXPTIME/2.  The
+// result still has to leave the TAI scale: everything downstream of
+// Spectrum::setMJD, BarycentricCorrection first of all, wants MJD(UTC).
+bool readExposureEpoch(fitsfile* fptr, double& mjdUtc, double& expTime) {
+    int    st  = 0;
+    double tai = 0;
+    if (fits_read_key(fptr, TDOUBLE, "TAI-BEG", &tai, nullptr, &st) != 0 ||
+        tai <= 0)
+        return false;
+
+    st = 0;
+    double e = 0;
+    if (fits_read_key(fptr, TDOUBLE, "EXPTIME", &e, nullptr, &st) != 0 || e <= 0)
+        e = 0.0;
+
+    const double mjdTai = tai / 86400.0;
+    mjdUtc  = mjdTai - BarycentricCorrection::leapSecondsAt(mjdTai) / 86400.0 +
+             e / (2.0 * 86400.0);
+    expTime = e;
+    return true;
+}
+
 // loglam/flux/ivar table (coadd or single exposure) -> spectrum arrays.
 bool readLoglamTable(fitsfile* fptr, std::vector<double>& wl,
                      std::vector<double>& flux, std::vector<double>& err) {
@@ -83,6 +113,15 @@ bool readLoglamTable(fitsfile* fptr, std::vector<double>& wl,
     if (ivar.size() == wl.size())
         for (size_t i = 0; i < ivar.size(); ++i)
             if (ivar[i] > 0) err[i] = 1.0 / std::sqrt(ivar[i]);
+
+    // The SDSS-I/II blue camera reads out red-to-blue, so its per-exposure
+    // HDUs are stored in *descending* wavelength (BOSS and every coadd are
+    // ascending). Everything downstream assumes ascending.
+    if (wl.size() > 1 && wl.front() > wl.back()) {
+        std::reverse(wl.begin(), wl.end());
+        std::reverse(flux.begin(), flux.end());
+        std::reverse(err.begin(), err.end());
+    }
     return true;
 }
 
@@ -102,7 +141,7 @@ QList<SpecFetch::RemoteSpectrum> SdssOpticalArchiveClient::discover(
 
     const QString dr =
         opt.dataRelease.isEmpty() ? QStringLiteral("DR17") : opt.dataRelease;
-    const double radiusArcmin = opt.radiusArcsec / 60.0;
+    const double radiusDeg = opt.radiusArcsec / 3600.0;
 
     const auto chunks = SpecFetch::chunked(stars, size_t(kChunkSize));
     int starsDone = 0;
@@ -110,22 +149,38 @@ QList<SpecFetch::RemoteSpectrum> SdssOpticalArchiveClient::discover(
     for (const auto& chunk : chunks) {
         if (cancel.load()) break;
 
+        // Per-star RA/Dec bounds, joined against specObjAll directly.
+        //
+        // NOT dbo.fGetNearbySpecObjEq: that function returns only the
+        // sciencePrimary spectrum, so a star observed more than once comes
+        // back as a single row and every repeat visit silently disappears -
+        // joining specObjAll to it cannot bring them back, because the
+        // function has already dropped them. Gaia DR3 2500824388329728256 has
+        // 21 spectra in DR17 and exactly one is sciencePrimary; the cone
+        // returned that one. Repeat visits are the whole point for RV work.
+        //
+        // A box straddling the RA origin contributes two rows sharing one
+        // idx, and the box is a superset of its circle, so the corners are
+        // trimmed against the true separation below.
         QStringList values;
         for (int k = 0; k < int(chunk.size()); ++k)
-            values << QStringLiteral("(%1, %2, %3)")
-                          .arg(k)
-                          .arg(chunk[k].ra, 0, 'f', 8)
-                          .arg(chunk[k].dec, 0, 'f', 8);
+            for (const SpecFetch::RaDecBox& b :
+                 SpecFetch::boxesFor(chunk[k].ra, chunk[k].dec, radiusDeg))
+                values << QStringLiteral("(%1, %2, %3, %4, %5)")
+                              .arg(k)
+                              .arg(b.raLo, 0, 'f', 8)
+                              .arg(b.raHi, 0, 'f', 8)
+                              .arg(b.decLo, 0, 'f', 8)
+                              .arg(b.decHi, 0, 'f', 8);
 
         const QString sql =
             QStringLiteral(
                 "SELECT p.idx, s.specObjID, s.plate, s.mjd, s.fiberID, "
-                "s.run2d, s.survey, s.instrument, s.snMedian "
-                "FROM (VALUES %1) AS p(idx, ra, dec) "
-                "CROSS APPLY dbo.fGetNearbySpecObjEq(p.ra, p.dec, %2) n "
-                "JOIN specObjAll s ON s.specObjID = n.specObjID")
-                .arg(values.join(QStringLiteral(", ")))
-                .arg(radiusArcmin, 0, 'f', 6);
+                "s.run2d, s.survey, s.instrument, s.snMedian, s.ra, s.dec "
+                "FROM (VALUES %1) AS p(idx, ra0, ra1, dec0, dec1) "
+                "JOIN specObjAll s ON s.ra BETWEEN p.ra0 AND p.ra1 "
+                "AND s.dec BETWEEN p.dec0 AND p.dec1")
+                .arg(values.join(QStringLiteral(", ")));
 
         // SkyServer's SqlSearch 500s on POSTed form bodies (as of 2026-08);
         // the identical query succeeds as a GET, which takes several KB of
@@ -154,6 +209,14 @@ QList<SpecFetch::RemoteSpectrum> SdssOpticalArchiveClient::discover(
         }
 
         const SpecFetch::Csv csv = SpecFetch::parseCsv(resp.body);
+
+        // Trim each box back to the circle the caller asked for, and settle
+        // ties: two stars closer together than the radius both match the same
+        // spectrum, and the service keys queued downloads on origin_id, so a
+        // spectrum has to end up on exactly one star - the nearest, as the ESO
+        // client also does.
+        QHash<QString, int> bestRow;                  // specObjID -> csv row
+        QHash<QString, double> bestSep;
         for (int i = 0; i < csv.rows.size(); ++i) {
             bool okIdx = false;
             const int idx = csv.value(i, QStringLiteral("idx")).toInt(&okIdx);
@@ -161,12 +224,36 @@ QList<SpecFetch::RemoteSpectrum> SdssOpticalArchiveClient::discover(
 
             const QString specObjId =
                 csv.value(i, QStringLiteral("specobjid"));
+            if (specObjId.isEmpty()) continue;
+
+            const double rowRa =
+                toDoubleOr(csv.value(i, QStringLiteral("ra")), NAN);
+            const double rowDec =
+                toDoubleOr(csv.value(i, QStringLiteral("dec")), NAN);
+            double sep = 0.0;
+            if (!std::isnan(rowRa) && !std::isnan(rowDec)) {
+                sep = SpecFetch::angularSepDeg(rowRa, rowDec, chunk[idx].ra,
+                                               chunk[idx].dec);
+                if (sep > radiusDeg) continue;        // a box corner
+            }
+            const auto it = bestSep.constFind(specObjId);
+            if (it != bestSep.constEnd() && it.value() <= sep) continue;
+            bestSep[specObjId] = sep;
+            bestRow[specObjId] = i;
+        }
+
+        // Walk the response in order rather than the hash, so the result is
+        // the same on every run.
+        for (int i = 0; i < csv.rows.size(); ++i) {
+            const QString specObjId =
+                csv.value(i, QStringLiteral("specobjid"));
+            if (bestRow.value(specObjId, -1) != i) continue;
+            const int idx = csv.value(i, QStringLiteral("idx")).toInt();
             const int plate = csv.value(i, QStringLiteral("plate")).toInt();
             const int mjd   = csv.value(i, QStringLiteral("mjd")).toInt();
             const int fiber = csv.value(i, QStringLiteral("fiberid")).toInt();
             const QString run2d = csv.value(i, QStringLiteral("run2d"));
-            if (specObjId.isEmpty() || plate <= 0 || mjd <= 0 || fiber <= 0)
-                continue;
+            if (plate <= 0 || mjd <= 0 || fiber <= 0) continue;
 
             SpecFetch::RemoteSpectrum r;
             r.archive        = SpecFetch::Archive::SdssOptical;
@@ -272,25 +359,12 @@ std::vector<SpecFetch::ParsedSpectrum> SdssOpticalArchiveClient::parse(
             std::vector<double> wl, flux, err;
             if (!readLoglamTable(fptr, wl, flux, err)) continue;
 
-            double expMjd = r.mjd, expTime = NAN;
-            {
-                int st = 0;
-                double tai = 0;
-                if (fits_read_key(fptr, TDOUBLE, "TAI-BEG", &tai, nullptr,
-                                  &st) == 0 &&
-                    tai > 0)
-                    expMjd = tai / 86400.0;
-                st = 0;
-                double e = 0;
-                if (fits_read_key(fptr, TDOUBLE, "EXPTIME", &e, nullptr, &st) ==
-                        0 &&
-                    e > 0)
-                    expTime = e;
-            }
+            double expMjd = r.mjd, expTime = 0.0;
+            if (!readExposureEpoch(fptr, expMjd, expTime)) expMjd = r.mjd;
 
             auto spec = makeSpectrum(wl, flux, err);
             spec->setMJD(expMjd);
-            if (!std::isnan(expTime)) spec->setExposureTime(expTime);
+            if (expTime > 0) spec->setExposureTime(expTime);
 
             SpecFetch::ParsedSpectrum ps;
             ps.spectrum       = spec;
@@ -301,6 +375,30 @@ std::vector<SpecFetch::ParsedSpectrum> SdssOpticalArchiveClient::parse(
         }
     }
 
+    // Epoch of the coadd: the exposure-weighted mean of its exposure
+    // midpoints.  SkyServer's specObj.mjd (r.mjd) is the *night* the plate was
+    // observed, an integer with no time of day - on plate 1619 that is 5.6 h
+    // away from the actual midpoint, which is useless for RV work.  The full
+    // spec files carry the per-exposure HDUs, so the real epoch is right
+    // there; only the lite products fall back on the plate MJD.  Blue cameras
+    // alone, because each exposure is filed once per camera and the red ones
+    // repeat the same TAI-BEG/EXPTIME.
+    double coaddMjd = r.mjd, coaddExpTime = 0.0;
+    if (out.empty()) {
+        double sumWeighted = 0.0;
+        for (int hdu = 2; hdu <= numHdus; ++hdu) {
+            const QString name = extname(hdu);
+            if (!name.startsWith(QLatin1Char('B')) ||
+                !name.contains(QLatin1Char('-')))
+                continue;
+            double mid = 0.0, e = 0.0;
+            if (!readExposureEpoch(fptr, mid, e) || e <= 0) continue;
+            sumWeighted += mid * e;
+            coaddExpTime += e;
+        }
+        if (coaddExpTime > 0) coaddMjd = sumWeighted / coaddExpTime;
+    }
+
     // Coadd HDU (EXTNAME "COADD", conventionally the first extension).
     if (out.empty()) {
         for (int hdu = 2; hdu <= numHdus; ++hdu) {
@@ -308,7 +406,8 @@ std::vector<SpecFetch::ParsedSpectrum> SdssOpticalArchiveClient::parse(
             std::vector<double> wl, flux, err;
             if (readLoglamTable(fptr, wl, flux, err)) {
                 auto spec = makeSpectrum(wl, flux, err);
-                spec->setMJD(r.mjd);
+                spec->setMJD(coaddMjd);
+                if (coaddExpTime > 0) spec->setExposureTime(coaddExpTime);
                 SpecFetch::ParsedSpectrum ps;
                 ps.spectrum       = spec;
                 ps.originId       = r.originId;

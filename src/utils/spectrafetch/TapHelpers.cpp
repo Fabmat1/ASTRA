@@ -2,6 +2,8 @@
 
 #include "TapHelpers.h"
 
+#include <cmath>
+
 #include "utils/CdsTapClient.h"
 
 #include "utils/Logger.h"
@@ -357,6 +359,58 @@ Csv parseCsv(const QByteArray& body) {
         }
     }
     return out;
+}
+
+// ── Positional boxes ───────────────────────────────────────────────────────
+
+std::vector<RaDecBox> boxesFor(double ra, double dec, double radiusDeg) {
+    const double cosDec = std::cos(dec * M_PI / 180.0);
+    const double halfRa =
+        std::min(180.0, radiusDeg / std::max(std::abs(cosDec), 1.0e-3));
+    const double decLo = std::max(-90.0, dec - radiusDeg);
+    const double decHi = std::min(90.0, dec + radiusDeg);
+
+    if (halfRa >= 180.0) return {{0.0, 360.0, decLo, decHi}};
+
+    const double lo = ra - halfRa;
+    const double hi = ra + halfRa;
+    if (lo < 0.0)
+        return {{lo + 360.0, 360.0, decLo, decHi}, {0.0, hi, decLo, decHi}};
+    if (hi > 360.0)
+        return {{lo, 360.0, decLo, decHi}, {0.0, hi - 360.0, decLo, decHi}};
+    return {{lo, hi, decLo, decHi}};
+}
+
+QString boxPredicate(const QString& raCol, const QString& decCol, double ra,
+                     double dec, double radiusDeg) {
+    const auto boxes = boxesFor(ra, dec, radiusDeg);
+    QStringList raTerms;
+    for (const RaDecBox& b : boxes)
+        raTerms << QStringLiteral("%1 BETWEEN %2 AND %3")
+                       .arg(raCol)
+                       .arg(b.raLo, 0, 'f', 8)
+                       .arg(b.raHi, 0, 'f', 8);
+
+    const QString raTerm = raTerms.size() > 1
+                               ? QStringLiteral("(%1)").arg(
+                                     raTerms.join(QStringLiteral(" OR ")))
+                               : raTerms.value(0);
+    return QStringLiteral("(%1 BETWEEN %2 AND %3 AND %4)")
+        .arg(decCol)
+        .arg(boxes.front().decLo, 0, 'f', 8)
+        .arg(boxes.front().decHi, 0, 'f', 8)
+        .arg(raTerm);
+}
+
+double angularSepDeg(double ra1, double dec1, double ra2, double dec2) {
+    const double d2r = M_PI / 180.0;
+    double       dra = ra1 - ra2;
+    // Wrap the RA difference, or a pair straddling the origin reads as ~360 deg.
+    if (dra > 180.0) dra -= 360.0;
+    if (dra < -180.0) dra += 360.0;
+    dra *= std::cos(0.5 * (dec1 + dec2) * d2r);
+    const double ddec = dec1 - dec2;
+    return std::sqrt(dra * dra + ddec * ddec);
 }
 
 }   // namespace SpecFetch

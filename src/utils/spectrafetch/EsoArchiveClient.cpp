@@ -94,51 +94,13 @@ bool looksLikeBudgetError(const QString& msg) {
     return false;
 }
 
-// ADQL for "s_ra/s_dec lies in the box of half-height `radiusDeg` around this
-// star". The RA half-width is inflated by 1/cos(dec) so the box still contains
-// the whole circle, clamped near the poles where that blows up, and split in
-// two when it straddles the RA origin - `s_ra BETWEEN 359.9 AND 0.1` is empty,
-// not wrapped.
+// ESO's ObsCore columns are s_ra/s_dec; the box shape itself, the 1/cos(dec)
+// inflation, the pole clamp and the RA-origin split live in TapHelpers so the
+// SDSS client shares exactly one copy of them.
 QString boxPredicate(double ra, double dec, double radiusDeg) {
-    const double cosDec = std::cos(dec * M_PI / 180.0);
-    const double halfRa =
-        std::min(180.0, radiusDeg / std::max(std::abs(cosDec), 1.0e-3));
-
-    const QString decTerm = QStringLiteral("s_dec BETWEEN %1 AND %2")
-                                .arg(dec - radiusDeg, 0, 'f', 8)
-                                .arg(dec + radiusDeg, 0, 'f', 8);
-
-    const double lo = ra - halfRa;
-    const double hi = ra + halfRa;
-
-    QString raTerm;
-    if (halfRa >= 180.0) {
-        raTerm = QStringLiteral("s_ra BETWEEN 0 AND 360");
-    } else if (lo < 0.0) {
-        raTerm = QStringLiteral("(s_ra BETWEEN %1 AND 360 OR s_ra BETWEEN 0 "
-                                "AND %2)")
-                     .arg(lo + 360.0, 0, 'f', 8)
-                     .arg(hi, 0, 'f', 8);
-    } else if (hi > 360.0) {
-        raTerm = QStringLiteral("(s_ra BETWEEN %1 AND 360 OR s_ra BETWEEN 0 "
-                                "AND %2)")
-                     .arg(lo, 0, 'f', 8)
-                     .arg(hi - 360.0, 0, 'f', 8);
-    } else {
-        raTerm = QStringLiteral("s_ra BETWEEN %1 AND %2")
-                     .arg(lo, 0, 'f', 8)
-                     .arg(hi, 0, 'f', 8);
-    }
-
-    return QStringLiteral("(%1 AND %2)").arg(decTerm, raTerm);
-}
-
-// Small-angle separation in degrees; plenty for arcsecond-scale radii.
-double angularSepDeg(double ra1, double dec1, double ra2, double dec2) {
-    const double d2r  = M_PI / 180.0;
-    const double dra  = (ra1 - ra2) * std::cos(0.5 * (dec1 + dec2) * d2r);
-    const double ddec = dec1 - dec2;
-    return std::sqrt(dra * dra + ddec * ddec);
+    return SpecFetch::boxPredicate(QStringLiteral("s_ra"),
+                                   QStringLiteral("s_dec"), ra, dec,
+                                   radiusDeg);
 }
 
 double toDoubleOr(const QString& s, double fallback) {
@@ -537,8 +499,8 @@ QList<SpecFetch::RemoteSpectrum> EsoArchiveClient::discoverViaBoxes(
             double bestSep = radiusDeg;
             if (!std::isnan(rowRa) && !std::isnan(rowDec)) {
                 for (size_t k = chunkBegin; k < chunkEnd; ++k) {
-                    const double sep = angularSepDeg(rowRa, rowDec,
-                                                     stars[k].ra, stars[k].dec);
+                    const double sep = SpecFetch::angularSepDeg(
+                        rowRa, rowDec, stars[k].ra, stars[k].dec);
                     if (sep < bestSep) { bestSep = sep; idx = k; }
                 }
             } else if (chunkSize == 1) {
