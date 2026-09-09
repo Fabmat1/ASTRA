@@ -5,26 +5,47 @@
 #include <QLineEdit>
 #include <QMessageBox>
 #include <QString>
+#include <QtGlobal>
 
 #include <cstdio>
 #include <cstring>
 
 namespace astra::remote {
+namespace {
+
+/*  ssh execs the helper as `<helper> "<prompt>"`: there is no way to make it
+ *  pass a flag of ours, so the arguments alone never tell an askpass call
+ *  apart from a normal launch - and mistaking one for the other starts a
+ *  second full ASTRA per credential prompt.  SshConnection puts this marker
+ *  in the environment it spawns ssh with, and ssh hands its own environment
+ *  to the helper, so finding it here means "you are the askpass".           */
+constexpr const char* kAskPassEnv = "ASTRA_SSH_ASKPASS";
+
+} // namespace
 
 int runAskPassMode(int argc, char** argv)
 {
-    if (argc < 2 || std::strcmp(argv[1], "--askpass") != 0) return -1;
+    /*  `astra --askpass "<prompt>"` stays supported for calling the helper by
+     *  hand; ssh's own convention puts the prompt one argument earlier.      */
+    const bool flagged = argc >= 2 && std::strcmp(argv[1], "--askpass") == 0;
+    const bool fromOurSsh =
+        qEnvironmentVariable(kAskPassEnv) == QLatin1String("1");
+    if (!flagged && !fromOurSsh) return -1;
 
     QApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("ASTRA"));
     app.setOrganizationName(QStringLiteral("ASTRA"));
 
-    const QString prompt = argc >= 3 ? QString::fromLocal8Bit(argv[2])
-                                     : QStringLiteral("SSH password:");
+    const int     promptArg = flagged ? 2 : 1;
+    const QString prompt    = argc > promptArg
+                                  ? QString::fromLocal8Bit(argv[promptArg])
+                                  : QStringLiteral("SSH password:");
 
     /*  Host-key confirmations arrive as yes/no questions; everything else is
-     *  a secret.  ssh's confirmation prompts all end in "(yes/no...)?".     */
+     *  a secret.  ssh's confirmation prompts all end in "(yes/no...)?", and
+     *  from OpenSSH 8.4 on it also says so in SSH_ASKPASS_PROMPT.           */
     const bool confirmation =
+        qEnvironmentVariable("SSH_ASKPASS_PROMPT") == QLatin1String("confirm") ||
         prompt.contains(QLatin1String("(yes/no")) ||
         prompt.endsWith(QLatin1String("(y/n)?"), Qt::CaseInsensitive);
 

@@ -57,6 +57,12 @@ void SshConnection::prepareSshProcess(QProcess& proc)
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("SSH_ASKPASS"), cachedAskPassPath());
     env.insert(QStringLiteral("SSH_ASKPASS_REQUIRE"), QStringLiteral("force"));
+    /*  ssh runs the helper as `<helper> "<prompt>"` and offers no way to add
+     *  an argument of ours, so this marker is how the re-executed binary
+     *  knows it was started as the askpass rather than by the user.  Without
+     *  it every credential prompt starts a whole second ASTRA instead of the
+     *  small password dialog (see remote/AskPass.cpp).                       */
+    env.insert(QStringLiteral("ASTRA_SSH_ASKPASS"), QStringLiteral("1"));
     proc.setProcessEnvironment(env);
 
     /*  Detach from the controlling terminal so ssh cannot fall back to a
