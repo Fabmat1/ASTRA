@@ -112,12 +112,20 @@ double toDoubleOr(const QString& s, double fallback) {
     return ok ? v : fallback;
 }
 
-double mjdFromDateObs(fitsfile* fptr) {
-    char val[FLEN_VALUE] = {0};
-    int  st              = 0;
-    if (fits_read_key(fptr, TSTRING, "DATE-OBS", val, nullptr, &st) != 0)
-        return NAN;
-    const QString raw = QString::fromLatin1(val).trimmed();
+// LAMOST keeps two clocks in every header and does not always say which is
+// which. DATE-OBS and the MJD card are UTC; DATE-BEG, DATE-END, LMJD, LMJM
+// and the MJM column of the single-exposure release are Beijing time, which
+// is UTC+8 all year (China has had no DST since 1991). Reading a "local"
+// stamp as if it were UTC puts the epoch 8 hours late - a constant offset,
+// so an RV curve built on it still fits perfectly and only falls apart the
+// moment it is phased against anything else.
+constexpr double kBeijingOffsetDays = 8.0 / 24.0;
+
+// Parses the LAMOST date strings into a day number, without deciding what
+// clock they are on: the caller subtracts kBeijingOffsetDays for the local
+// cards and nothing for the UTC ones.
+double mjdFromDateString(const QString& raw) {
+    if (raw.isEmpty()) return NAN;
 
     QDateTime dt = QDateTime::fromString(raw, Qt::ISODate);
     if (!dt.isValid()) {
@@ -143,6 +151,57 @@ double mjdFromDateObs(fitsfile* fptr) {
     return utc.toMSecsSinceEpoch() / 86400000.0 + 40587.0;
 }
 
+double mjdFromKey(fitsfile* fptr, const char* key) {
+    char val[FLEN_VALUE] = {0};
+    int  st              = 0;
+    if (fits_read_key(fptr, TSTRING, key, val, nullptr, &st) != 0) return NAN;
+    return mjdFromDateString(QString::fromLatin1(val).trimmed());
+}
+
+double mjdFromDateObs(fitsfile* fptr) {
+    return mjdFromKey(fptr, "DATE-OBS");   // already UTC
+}
+
+/// Mid-exposure UTC MJD of the HDU cfitsio is currently positioned on.
+///
+/// DATE-OBS leads because it is the only epoch card that is already UTC -
+/// LAMOST documents it as "the observation median UTC" - so it needs no
+/// timezone assumption at all; its one weakness is that it is truncated to
+/// the whole minute. DATE-BEG/DATE-END carry sub-seconds and their midpoint
+/// is the exact centre of the integration, so they refine DATE-OBS, but only
+/// when the header proves them trustworthy: their span has to match EXPTIME
+/// and their midpoint has to agree with DATE-OBS. Real files break that -
+/// obsid 1051609002 gives its first exposure a DATE-BEG 79 minutes before
+/// DATE-END for a 1200 s integration - and an unchecked midpoint would move
+/// that epoch by half an hour. LMJM/MJM is the last resort, for the sedr5
+/// products that file no per-exposure date card at all.
+double exposureMidMjd(fitsfile* fptr, double localMinuteStamp,
+                      double exposureSec) {
+    const double obs = mjdFromKey(fptr, "DATE-OBS");          // already UTC
+    const double beg = mjdFromKey(fptr, "DATE-BEG");          // Beijing
+    const double end = mjdFromKey(fptr, "DATE-END");          // Beijing
+
+    if (!std::isnan(beg) && !std::isnan(end) && end > beg) {
+        const double mid    = 0.5 * (beg + end) - kBeijingOffsetDays;
+        const double spanSec = (end - beg) * 86400.0;
+        const bool spanOk =
+            exposureSec <= 0.0 || std::abs(spanSec - exposureSec) < 120.0;
+        // DATE-OBS is minute-truncated, so 90 s is as close as the two can be
+        // asked to agree.
+        const bool agreesWithObs =
+            std::isnan(obs) || std::abs(mid - obs) < 90.0 / 86400.0;
+        if (spanOk && agreesWithObs) return mid;
+    }
+
+    if (!std::isnan(obs)) return obs;
+
+    if (localMinuteStamp > 0.0) {
+        const double half =
+            exposureSec > 0.0 ? exposureSec * 0.5 / 86400.0 : 0.0;
+        return localMinuteStamp / 1440.0 - kBeijingOffsetDays + half;
+    }
+    return NAN;
+}
 // Synchronous existence probe; fills *size from Content-Length when present.
 bool headOk(QNetworkAccessManager* nam, const QString& url, qint64* size) {
     QNetworkRequest req{QUrl(url)};
@@ -825,11 +884,16 @@ static std::vector<SpecFetch::ParsedSpectrum> parseSexp(
         double     expSec   = 0.0;
         if (firstArm < long(a.exptime.size()) && a.exptime[firstArm] > 0)
             expSec = a.exptime[firstArm];
-        // MJM stamps the exposure start; mid-exposure is the epoch RV work
-        // expects.
+        // MJM stamps the exposure start in *Beijing* time (it is the local
+        // modified julian minute, the same clock as LMJD and DATE-BEG), and
+        // the single-exposure release files no per-exposure UTC card: the
+        // whole-plate DATE-OBS covers all of them. So the epoch has to be
+        // built from MJM - shifted onto UTC - plus half the exposure, which
+        // is the mid-exposure stamp RV work expects.
         const double mjmVal = epoch.toDouble();
         if (mjmVal > 0)
-            spec->setMJD(mjmVal / 1440.0 + expSec * 0.5 / 86400.0);
+            spec->setMJD(mjmVal / 1440.0 - kBeijingOffsetDays +
+                         expSec * 0.5 / 86400.0);
         if (expSec > 0) spec->setExposureTime(expSec);
 
         SpecFetch::ParsedSpectrum ps;
@@ -949,17 +1013,21 @@ std::vector<SpecFetch::ParsedSpectrum> LamostArchiveClient::parse(
                 spec->setExposureTime(e);
             else
                 e = 0;
-            // Per-exposure epoch: LMJM is the modified julian minute of the
-            // exposure start; shift to mid-exposure for RV work.
+            // Per-exposure epoch. The exposure HDU carries its own DATE-BEG /
+            // DATE-END (Beijing) and DATE-OBS (UTC, whole minutes) alongside
+            // LMJM, the *local* modified julian minute of the exposure start
+            // - taking LMJM for a UTC stamp is what put every LAMOST exposure
+            // 8 hours late. exposureMidMjd() prefers the sub-second cards and
+            // falls back to LMJM with the offset removed.
             st2 = 0;
             char lmjmStr[FLEN_VALUE] = {0};
+            double lmjm = 0.0;
             if (fits_read_key(fptr, TSTRING, "LMJM", lmjmStr, nullptr, &st2) ==
-                0) {
-                const double lmjm =
-                    QString::fromLatin1(lmjmStr).trimmed().toDouble();
-                if (lmjm > 0)
-                    spec->setMJD(lmjm / 1440.0 + e * 0.5 / 86400.0);
-            }
+                0)
+                lmjm = QString::fromLatin1(lmjmStr).trimmed().toDouble();
+            const double epochMjd = exposureMidMjd(fptr, lmjm, e);
+            if (!std::isnan(epochMjd) && epochMjd > 0.0)
+                spec->setMJD(epochMjd);
         } else {
             if (!std::isnan(exptime)) spec->setExposureTime(exptime);
             // Newer files keep DATE-OBS on the arm HDUs rather than in the

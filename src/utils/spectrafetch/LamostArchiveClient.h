@@ -11,6 +11,13 @@
 // MRS products bundle COADD_B/COADD_R plus the individual exposures as extra
 // bintable HDUs, so "individual exposures" is native there.
 //
+// Epochs: LAMOST headers mix two clocks. DATE-OBS and the MJD card are UTC;
+// DATE-BEG, DATE-END, LMJD, LMJM and the sedr5 MJM column are Beijing time
+// (UTC+8, no DST). Every epoch this client sets is mid-exposure UTC MJD, so
+// the local stamps are shifted before use - reading LMJM/MJM as UTC puts an
+// exposure 8 hours late, which is invisible in an RV fit (it is a constant)
+// and fatal the moment the curve is phased against a light curve.
+//
 // The exposures option is an either/or: when set, individual exposures are
 // fetched instead of the coadd wherever they exist, with the coadd as the
 // fallback. For MRS the exposures come from the product file itself; LRS

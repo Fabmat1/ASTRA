@@ -15,10 +15,13 @@
 //   ASTRA_TEST_MAST_FUSE    a FUSE NVO spectrum (*nvo4histfcal_vo.fits)
 //
 // Checks per file: parse succeeds, wavelengths are ascending Angstroms in a
-// plausible range, exposures/arms split as expected, originId suffixes, and
-// the wavelength reference frame the headers state.
+// plausible range, exposures/arms split as expected, originId suffixes, the
+// wavelength reference frame the headers state, and - for LAMOST - that the
+// epochs are mid-exposure UTC rather than the Beijing-time cards the same
+// headers also carry.
 // ─────────────────────────────────────────────────────────────────────────────
 #include "models/Spectrum.h"
+#include "utils/SpectrumReader.h"
 #include "utils/spectrafetch/ApogeeArchiveClient.h"
 #include "utils/spectrafetch/EsoArchiveClient.h"
 #include "utils/spectrafetch/LamostArchiveClient.h"
@@ -27,7 +30,15 @@
 #include "utils/spectrafetch/SpectrumFrame.h"
 
 #include <QCoreApplication>
+#include <QDate>
+#include <QDateTime>
 #include <QFileInfo>
+#include <QString>
+#include <QStringList>
+#include <QTime>
+#include <QTimeZone>
+
+#include <fitsio.h>
 
 #include <cmath>
 #include <cstdio>
@@ -42,6 +53,118 @@ int gRun      = 0;
 void check(bool ok, const std::string& what) {
     std::printf("%s  %s\n", ok ? "[ ok ]" : "[FAIL]", what.c_str());
     if (!ok) ++gFailures;
+}
+
+
+// ── LAMOST epoch helpers ─────────────────────────────────────────────────
+//
+// LAMOST writes both clocks into every header: DATE-OBS and the MJD card are
+// UTC, DATE-BEG / DATE-END / LMJD / LMJM / MJM are Beijing time (UTC+8). The
+// file therefore checks itself - an epoch built from a local card without the
+// shift lands exactly 8 hours (0.3333 d) after the UTC one, and that constant
+// offset is invisible in an RV fit while wrecking any phasing against a light
+// curve. These read the UTC truth straight out of the file.
+
+constexpr double kBeijingOffsetDays = 8.0 / 24.0;
+
+// Same permissive parse the client uses: LAMOST writes "...T11:30:0.000",
+// which strict ISO parsing rejects.
+double mjdFromLamostDate(const QString& raw) {
+    QDateTime dt = QDateTime::fromString(raw, Qt::ISODate);
+    if (!dt.isValid()) {
+        const QStringList parts = raw.split(QLatin1Char('T'));
+        if (parts.size() == 2) {
+            const QDate d =
+                QDate::fromString(parts[0], QStringLiteral("yyyy-MM-dd"));
+            const QStringList hms = parts[1].split(QLatin1Char(':'));
+            if (d.isValid() && hms.size() == 3)
+                dt = QDateTime(d, QTime(hms[0].toInt(), hms[1].toInt(), 0),
+                               QTimeZone::UTC)
+                         .addMSecs(qint64(hms[2].toDouble() * 1000.0));
+        }
+    }
+    if (!dt.isValid()) return NAN;
+    dt.setTimeZone(QTimeZone::UTC);
+    return dt.toMSecsSinceEpoch() / 86400000.0 + 40587.0;
+}
+
+double headerMjd(fitsfile* f, const char* key) {
+    char val[FLEN_VALUE] = {0};
+    int  st              = 0;
+    if (fits_read_key(f, TSTRING, key, val, nullptr, &st) != 0) return NAN;
+    return mjdFromLamostDate(QString::fromLatin1(val).trimmed());
+}
+
+// One date card, from whichever HDU of `path` carries it first.
+double headerMjdOfFile(const QString& path, const char* key) {
+    fitsfile* f      = nullptr;
+    int       status = 0;
+    if (fits_open_file(&f, path.toUtf8().constData(), READONLY, &status) != 0)
+        return NAN;
+    int nHdus = 0;
+    fits_get_num_hdus(f, &nHdus, &status);
+    double out = NAN;
+    for (int hdu = 1; hdu <= nHdus && std::isnan(out); ++hdu) {
+        status = 0;
+        if (fits_movabs_hdu(f, hdu, nullptr, &status) != 0) continue;
+        out = headerMjd(f, key);
+    }
+    fits_close_file(f, &status);
+    return out;
+}
+
+// Mid-exposure UTC MJD of every exposure HDU, from that HDU's own DATE-OBS.
+std::vector<double> mrsExposureUtcMjds(const QString& path) {
+    std::vector<double> out;
+    fitsfile* f      = nullptr;
+    int       status = 0;
+    if (fits_open_file(&f, path.toUtf8().constData(), READONLY, &status) != 0)
+        return out;
+    int nHdus = 0;
+    fits_get_num_hdus(f, &nHdus, &status);
+    for (int hdu = 2; hdu <= nHdus; ++hdu) {
+        int type = ANY_HDU;
+        status   = 0;
+        if (fits_movabs_hdu(f, hdu, &type, &status) != 0) continue;
+        char name[FLEN_VALUE] = {0};
+        int  st               = 0;
+        if (fits_read_key(f, TSTRING, "EXTNAME", name, nullptr, &st) != 0)
+            continue;
+        const QString ext = QString::fromLatin1(name).trimmed().toUpper();
+        if (!ext.startsWith(QLatin1String("B-")) &&
+            !ext.startsWith(QLatin1String("R-")))
+            continue;
+        const double mjd = headerMjd(f, "DATE-OBS");
+        if (!std::isnan(mjd)) out.push_back(mjd);
+    }
+    fits_close_file(f, &status);
+    return out;
+}
+
+// The plate's observing window in UTC, from the Beijing DATE-BEG / DATE-END
+// cards. The sedr5 single-exposure files leave the primary header a stub and
+// put all metadata on the first bintable, so every HDU is tried. Returns
+// false when the cards are missing.
+bool plateUtcWindow(const QString& path, double* begUtc, double* endUtc) {
+    fitsfile* f      = nullptr;
+    int       status = 0;
+    if (fits_open_file(&f, path.toUtf8().constData(), READONLY, &status) != 0)
+        return false;
+    int nHdus = 0;
+    fits_get_num_hdus(f, &nHdus, &status);
+    double beg = NAN, end = NAN;
+    for (int hdu = 1; hdu <= nHdus && (std::isnan(beg) || std::isnan(end));
+         ++hdu) {
+        status = 0;
+        if (fits_movabs_hdu(f, hdu, nullptr, &status) != 0) continue;
+        if (std::isnan(beg)) beg = headerMjd(f, "DATE-BEG");
+        if (std::isnan(end)) end = headerMjd(f, "DATE-END");
+    }
+    fits_close_file(f, &status);
+    if (std::isnan(beg) || std::isnan(end) || end <= beg) return false;
+    *begUtc = beg - kBeijingOffsetDays;
+    *endUtc = end - kBeijingOffsetDays;
+    return true;
 }
 
 bool plausibleSpectrum(const SpecFetch::ParsedSpectrum& p, double wlMin,
@@ -197,9 +320,28 @@ int main(int argc, char** argv) {
         check(parsed.size() == 1, "LRS: one spectrum");
         if (!parsed.empty())
             plausibleSpectrum(parsed[0], 3000.0, 10000.0, "LRS");
+        // The generic reader is what a hand-dropped file goes through, and
+        // LAMOST files an integer night under the MJD card (MJD = 56579) next
+        // to the real epoch in DATE-OBS. Taking the card at face value would
+        // scatter epochs by up to half a day.
+        {
+            DefaultFitsSpectrumReader reader;
+            const SpectrumMetadata meta = reader.readMetadata(path);
+            check(meta.mjd.has_value(), "LRS generic reader: found an epoch");
+            if (meta.mjd.has_value()) {
+                const double v = *meta.mjd;
+                check(std::abs(v - std::round(v)) > 1e-6,
+                      "LRS generic reader: epoch is not a whole day (" +
+                          std::to_string(v) + ")");
+                const double fromHeader = headerMjdOfFile(path, "DATE-OBS");
+                check(!std::isnan(fromHeader) &&
+                          std::abs(v - fromHeader) < 1.0 / 86400.0,
+                      "LRS generic reader: epoch equals the file's DATE-OBS");
+            }
+        }
     }
 
-    // ── LAMOST LRS single exposures (sedr5) ──────────────────────────────
+    // ── LAMOST LRS single exposures (sedr5) ──────────────────────────────    // ── LAMOST LRS single exposures (sedr5) ──────────────────────────────
     // Optional companion: ASTRA_TEST_LAMOST_LRS in the same directory acts
     // as the coadd anchor; without it the FLUXCORR-only fallback is covered.
     if (const QString path = envPath("ASTRA_TEST_LAMOST_SEXP");
@@ -232,6 +374,30 @@ int main(int argc, char** argv) {
             const auto wl = parsed[0].spectrum->getWavelengths();
             check(wl.front() < 4500.0 && wl.back() > 8000.0,
                   "sexp: arms merged into one spectrum");
+        }
+
+        // The sedr5 files carry no per-exposure UTC card - only the MJM
+        // column, which is the *local* modified julian minute. The plate's
+        // Beijing DATE-BEG/DATE-END bound the night, so every exposure epoch
+        // has to land inside that window once it is shifted to UTC; taking
+        // MJM for UTC puts them all 8 h past DATE-END.
+        double begUtc = 0.0, endUtc = 0.0;
+        if (plateUtcWindow(path, &begUtc, &endUtc)) {
+            int inside = 0, total = 0;
+            for (const auto& p : parsed) {
+                if (!p.spectrum) continue;
+                ++total;
+                const double mjd = p.spectrum->getMJD();
+                if (mjd >= begUtc - 120.0 / 86400.0 &&
+                    mjd <= endUtc + 120.0 / 86400.0)
+                    ++inside;
+            }
+            check(total > 0 && inside == total,
+                  "sexp epochs: inside the plate's UTC observing window (" +
+                      std::to_string(inside) + "/" + std::to_string(total) +
+                      ")");
+        } else {
+            check(false, "sexp epochs: plate DATE-BEG/DATE-END readable");
         }
     }
 
@@ -272,6 +438,38 @@ int main(int argc, char** argv) {
                   "/" + std::to_string(exposures) + ")");
         if (!parsed.empty())
             plausibleSpectrum(parsed[0], 4800.0, 7000.0, "MRS exposure");
+
+        // Epochs must be mid-exposure UTC. Every exposure HDU states that in
+        // its own DATE-OBS, so the file is its own reference; using LMJM (the
+        // *local* modified julian minute) unshifted lands each exposure 8 h
+        // late, which is what this pins down.
+        const std::vector<double> refs = mrsExposureUtcMjds(path);
+        check(!refs.empty(), "MRS epochs: file states UTC DATE-OBS per "
+                             "exposure (" + std::to_string(refs.size()) + ")");
+        if (!refs.empty()) {
+            double worstSec = 0.0;
+            int    offBy8h  = 0;
+            for (const auto& p : parsed) {
+                if (!p.spectrum) continue;
+                const double mjd = p.spectrum->getMJD();
+                double best = 1e9;
+                for (const double r : refs)
+                    best = std::min(best, std::abs(mjd - r));
+                worstSec = std::max(worstSec, best * 86400.0);
+                for (const double r : refs)
+                    if (std::abs(mjd - r - kBeijingOffsetDays) < 120.0 / 86400.0)
+                        ++offBy8h;
+            }
+            // DATE-OBS is truncated to the whole minute and the client prefers
+            // the sub-second DATE-BEG/DATE-END midpoint, so they agree to well
+            // under a minute, never to the second.
+            check(worstSec < 90.0,
+                  "MRS epochs: mid-exposure UTC, worst deviation " +
+                      std::to_string(int(worstSec)) + " s");
+            check(offBy8h == 0,
+                  "MRS epochs: none sitting 8 h late on the Beijing clock (" +
+                      std::to_string(offBy8h) + ")");
+        }
     }
 
     // ── APOGEE apStar ────────────────────────────────────────────────────

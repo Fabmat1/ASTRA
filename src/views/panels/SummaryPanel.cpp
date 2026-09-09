@@ -16,7 +16,10 @@
 #include "utils/QuantityFormat.h"
 #include "utils/UiIcons.h"
 #include "views/widgets/CopyToast.h"
+#include "views/widgets/ElidedLabel.h"
+#include "views/widgets/FlowLayout.h"
 #include "views/widgets/QuantityLabel.h"
+#include "views/widgets/ResponsiveGridLayout.h"
 
 #include <QApplication>
 #include <QFile>
@@ -402,39 +405,43 @@ class SplitNormalMC {
 
 QWidget *buildPropertyGrid(const std::vector<PropRow> &rows,
                            const QColor &valCol, const QColor &labelCol) {
-    QWidget     *grid = new QWidget;
-    QGridLayout *gl   = new QGridLayout(grid);
+    QWidget *grid = new QWidget;
+    // The column count follows the width the panel actually has: two (or
+    // three, when there is room) pair-columns when wide, one when narrow.
+    auto *gl = new ResponsiveGridLayout(grid);
     gl->setContentsMargins(0, 0, 0, 0);
-    gl->setHorizontalSpacing(16);
-    gl->setVerticalSpacing(4);
+    gl->setColumnSpacing(14);
+    gl->setRowSpacing(3);
+    gl->setPairSpacing(8);
+    gl->setMaxColumns(rows.size() >= 8 ? 3 : 2);
     if (rows.empty())
         return grid;
 
-    int maxPerCol = static_cast<int>((rows.size() + 1) / 2);
-    for (int i = 0; i < static_cast<int>(rows.size()); ++i) {
-        int     col = (i < maxPerCol) ? 0 : 2;
-        int     row = (i < maxPerCol) ? i : i - maxPerCol;
-        QLabel *lbl = new QLabel(rows[i].label);
+    for (const auto &row : rows) {
+        QLabel *lbl = new QLabel(row.label);
         lbl->setStyleSheet(
             QString("font-size: 11px; font-weight: 600; color: %1; "
                     "background: transparent; border: none;")
                 .arg(labelCol.name()));
 
         QWidget *val = nullptr;
-        if (rows[i].useQuantity) {
+        if (row.useQuantity) {
             // Measured quantity: rendered by QuantityLabel so the asymmetric
             // sides stack, each piece can be selected, and a click copies the
             // value with its errors and unit in the configured notation.
-            auto *ql = new QuantityLabel(rows[i].quantity);
+            auto *ql = new QuantityLabel(row.quantity);
             ql->setTextPixelSize(12);
             ql->setColors(valCol, labelCol);
-            const Quantity q = rows[i].quantity;
+            const Quantity q = row.quantity;
             makeCopyable(lbl, [q] { return QuantityFormat::copyText(q); });
             val = ql;
         } else {
             const QString copyText =
-                rows[i].copyValue.isEmpty() ? rows[i].value : rows[i].copyValue;
-            QLabel *plain = new QLabel(rows[i].value);
+                row.copyValue.isEmpty() ? row.value : row.copyValue;
+            // Plain text can be long (a fit method, a spectral class), so it
+            // elides instead of pinning a floor under the panel's width.
+            ElidedLabel *plain = new ElidedLabel(row.value);
+            plain->setMinimumTextWidth(40);
             plain->setStyleSheet(QString("font-size: 12px; color: %1; "
                                          "background: transparent; border: none;")
                                      .arg(valCol.name()));
@@ -443,12 +450,8 @@ QWidget *buildPropertyGrid(const std::vector<PropRow> &rows,
             val = plain;
         }
 
-        gl->addWidget(lbl, row, col);
-        gl->addWidget(val, row, col + 1);
+        gl->addPair(lbl, val);
     }
-    gl->setColumnStretch(1, 1);
-    if (rows.size() > static_cast<size_t>(maxPerCol))
-        gl->setColumnStretch(3, 1);
     return grid;
 }
 
@@ -471,10 +474,15 @@ void SummaryPanel::setupUi() {
     outer->addWidget(box);
 
     auto *bl = new QVBoxLayout(box);
+    bl->setContentsMargins(6, 6, 6, 6);
     _scroll  = new QScrollArea;
     _scroll->setWidgetResizable(true);
     _scroll->setFrameShape(QFrame::NoFrame);
-    _scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    // The content reflows down to one column, but a measured value has a width
+    // it cannot go below. Past that point scrolling beats clipping, so the bar
+    // is offered on demand rather than suppressed outright.
+    _scroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAsNeeded);
+    _scroll->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Ignored);
     bl->addWidget(_scroll);
 
     _refResolver = new CrossRefResolver(AppPaths::database(), _ctx.controller->settings()->adsApiToken(), this);
@@ -512,8 +520,8 @@ QWidget *SummaryPanel::buildDashboard() {
     QWidget *container = new QWidget;
 
     QVBoxLayout *layout    = new QVBoxLayout(container);
-    layout->setContentsMargins(8, 8, 8, 8);
-    layout->setSpacing(10);
+    layout->setContentsMargins(6, 6, 6, 6);
+    layout->setSpacing(8);
 
     layout->addWidget(createNameHeader());
     layout->addWidget(createMetricCardsRow());
@@ -546,7 +554,7 @@ QWidget* SummaryPanel::createNameHeader()
     QWidget* header = new QWidget;
     QHBoxLayout* hLayout = new QHBoxLayout(header);
     hLayout->setContentsMargins(4, 0, 4, 0);
-    hLayout->setSpacing(12);
+    hLayout->setSpacing(8);
 
     // Left side: name + source ID
     QVBoxLayout *nameCol = new QVBoxLayout;
@@ -561,7 +569,11 @@ QWidget* SummaryPanel::createNameHeader()
     nameRow->setContentsMargins(0, 0, 0, 0);
     nameRow->setSpacing(6);
 
-    QLabel *nameLabel = new QLabel(displayName);
+    // The name is the one piece that can be arbitrarily long (a Gaia source
+    // ID when there is no alias), so it elides rather than pinning a floor
+    // under the panel width. The full name stays reachable as the tool tip.
+    ElidedLabel *nameLabel = new ElidedLabel(displayName);
+    nameLabel->setMinimumTextWidth(56);
     nameLabel->setStyleSheet(QString("font-size: 20px; font-weight: 700; "
                                      "color: %1; background: transparent;")
                                  .arg(dark ? "white" : "#1a1a1a"));
@@ -611,7 +623,18 @@ QWidget* SummaryPanel::createNameHeader()
     }
 
     if (!subText.isEmpty()) {
+        // Identifier line: wraps onto further lines instead of being cut off,
+        // so a narrow panel still shows every catalogue ID.
         QLabel* subLabel = new QLabel(subText);
+        subLabel->setWordWrap(true);
+        // A source ID is one unbreakable word, and a wrapping label refuses to
+        // go below its longest word. Ignoring the horizontal hint lets the
+        // header keep shrinking (the ID then clips, rather than the spectral
+        // class badge next to it being squeezed); the height-for-width flag is
+        // preserved so the line still wraps to as many rows as it needs.
+        QSizePolicy subPolicy = subLabel->sizePolicy();
+        subPolicy.setHorizontalPolicy(QSizePolicy::Ignored);
+        subLabel->setSizePolicy(subPolicy);
         subLabel->setStyleSheet(QString("font-size: 12px; color: %1; background: transparent;")
             .arg(dark ? "#999" : "#666"));
         subLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
@@ -635,6 +658,10 @@ QWidget *SummaryPanel::createSpecClassBadge() {
     QHBoxLayout *l    = new QHBoxLayout(host);
     l->setContentsMargins(0, 0, 0, 0);
     l->setSpacing(0);
+    // The badge keeps its natural width while the name next to it elides: a
+    // squeezed badge would clip its own class text, which is the one string
+    // here that cannot be inferred from anything else on screen.
+    host->setSizePolicy(QSizePolicy::Minimum, QSizePolicy::Fixed);
 
     // The empty-badge chrome is derived from the theme's own surface/foreground
     // instead of a fixed grey pair, so it matches whatever theme is active.
@@ -718,10 +745,13 @@ void SummaryPanel::commitSpecClass(const QString &raw) {
 }
 
 QWidget *SummaryPanel::createMetricCardsRow() {
-    QWidget     *row    = new QWidget;
-    QHBoxLayout *layout = new QHBoxLayout(row);
-    layout->setContentsMargins(0, 0, 0, 0);
-    layout->setSpacing(8);
+    QWidget *row = new QWidget;
+    // Cards are equal-width and wrap: four across in a wide panel, 2x2 when it
+    // is halved, stacked when it is narrower still.
+    auto *layout = new FlowLayout(row, 0, 6, 6);
+    layout->setUniformItemWidths(true);
+    layout->setPreferredItemWidth(150);
+    layout->setMaxColumns(4);
 
     auto has = [](double v) { return std::isfinite(v) && v != 0.0; };
 
@@ -801,9 +831,27 @@ QWidget* SummaryPanel::createMetricCard(const Quantity& q, const QString& label,
     // The measured variant: the headline number keeps the card's big accent
     // type while its uncertainty and unit ride along, stacked when asymmetric.
     auto* value = new QuantityLabel(q);
-    value->setTextPixelSize(22, true);
     value->setColors(accentColor,
                      blendColor(accentColor, PanelUtils::themeSurface(), 0.35));
+
+    // A QuantityLabel cannot be squeezed below the width its glyphs need, so a
+    // long value ("-123.4 +/- 0.8 km/s") at full headline size would set the
+    // floor for the whole card row. The type size therefore steps down until
+    // the headline fits a card of the row's preferred width; short values keep
+    // the full 22px. The width is measured through the renderer the label
+    // paints with, so it does not depend on the widget having been polished.
+    constexpr int kHeadlineBudget = 128;
+    int           px              = 13;
+    for (int candidate : {22, 19, 17, 15, 13}) {
+        px      = candidate;
+        QFont f = QApplication::font();
+        f.setPixelSize(candidate);
+        f.setBold(true);
+        if (QuantityRenderer::layout(q, f).size.width() <= kHeadlineBudget)
+            break;
+    }
+    value->setTextPixelSize(px, true);
+
     return buildMetricCard(value, label, subtitle, accentColor,
                            QuantityFormat::copyText(q));
 }
@@ -841,12 +889,15 @@ QWidget* SummaryPanel::buildMetricCard(QWidget* valueWidget, const QString& labe
     ).arg(cardBg.name(), border.name(), accentColor.name()));
 
     QVBoxLayout* layout = new QVBoxLayout(card);
-    layout->setContentsMargins(12, 10, 12, 10);
+    layout->setContentsMargins(10, 8, 10, 8);
     layout->setSpacing(2);
 
     layout->addWidget(valueWidget);
 
-    QLabel* labelWidget = new QLabel(label);
+    // Label and subtitle elide: they are secondary to the headline number and
+    // must not keep the card from narrowing.
+    ElidedLabel* labelWidget = new ElidedLabel(label);
+    labelWidget->setMinimumTextWidth(36);
     labelWidget->setStyleSheet(QString(
         "font-size: 11px; font-weight: 600; color: %1; border: none; background: transparent;"
     ).arg(labelCol.name()));
@@ -855,7 +906,8 @@ QWidget* SummaryPanel::buildMetricCard(QWidget* valueWidget, const QString& labe
     layout->addWidget(labelWidget);
 
     if (!subtitle.isEmpty()) {
-        QLabel* subLabel = new QLabel(subtitle);
+        ElidedLabel* subLabel = new ElidedLabel(subtitle);
+        subLabel->setMinimumTextWidth(36);
         subLabel->setStyleSheet(QString(
             "font-size: 10px; color: %1; border: none; background: transparent;"
         ).arg(subCol.name()));
@@ -863,8 +915,8 @@ QWidget* SummaryPanel::buildMetricCard(QWidget* valueWidget, const QString& labe
     }
 
     layout->addStretch();
-    card->setMinimumWidth(100);
-    card->setMinimumHeight(80);
+    card->setMinimumWidth(96);
+    card->setMinimumHeight(74);
     return card;
 }
 
@@ -1274,30 +1326,43 @@ QWidget* SummaryPanel::createDataInventorySection()
     layout->setSpacing(4);
 
     for (auto& item : items) {
-        QHBoxLayout* row = new QHBoxLayout;
-        row->setSpacing(8);
+        // One inventory line: the status dot and its label stay together on the
+        // left, while the detail text and the measured values behind it wrap
+        // onto further lines when the panel is too narrow to hold them.
+        QWidget* rowHost = new QWidget;
+        auto*    row     = new FlowLayout(rowHost, 0, 8, 2);
+        row->setExpandsTrailingItem(true);
 
-        // Status indicator
+        // Status indicator + label, as one unbreakable head.
+        QWidget* head       = new QWidget;
+        auto*    headLayout = new QHBoxLayout(head);
+        headLayout->setContentsMargins(0, 0, 0, 0);
+        headLayout->setSpacing(8);
+
         QLabel* indicator = new QLabel(item.available ? "●" : "○");
         indicator->setFixedWidth(16);
         indicator->setAlignment(Qt::AlignCenter);
         indicator->setStyleSheet(QString(
             "font-size: 12px; color: %1; background: transparent; border: none;"
         ).arg(item.available ? checkCol.name() : crossCol.name()));
-        row->addWidget(indicator);
+        headLayout->addWidget(indicator);
 
         // Label
         QLabel* lbl = new QLabel(item.label);
-        lbl->setFixedWidth(120);
+        lbl->setMinimumWidth(0);
         lbl->setStyleSheet(QString(
             "font-size: 12px; font-weight: 600; color: %1; background: transparent; border: none;"
         ).arg(tagText.name()));
-        row->addWidget(lbl);
+        headLayout->addWidget(lbl);
+        // The label column keeps its aligned width while there is room for it.
+        head->setMinimumWidth(16 + 8 + 96);
+        row->addWidget(head);
 
         // Detail
         if (!item.detail.isEmpty()) {
             QLabel* det = new QLabel(item.detail);
-            det->setTextFormat(Qt::RichText); 
+            det->setTextFormat(Qt::RichText);
+            det->setWordWrap(true);
             det->setStyleSheet(QString(
                 "font-size: 11px; color: %1; background: transparent; border: none;"
             ).arg(detailCol.name()));
@@ -1336,9 +1401,7 @@ QWidget* SummaryPanel::createDataInventorySection()
             row->addWidget(pair);
         }
 
-        row->addStretch();
-
-        layout->addLayout(row);
+        layout->addWidget(rowHost);
     }
 
     return createSectionFrame("Data Inventory", content);
@@ -1440,10 +1503,11 @@ void SummaryPanel::buildReferenceCards(QWidget           *host,
                 .arg(subtitleCol.name()));
         cardLayout->addWidget(subtitleLabel);
 
-        QWidget     *btnRow    = new QWidget;
-        QHBoxLayout *btnLayout = new QHBoxLayout(btnRow);
+        // The link row wraps: on a narrow card "Open on ADS" moves onto its
+        // own line instead of being pushed out of the card.
+        QWidget *btnRow    = new QWidget;
+        auto    *btnLayout = new FlowLayout(btnRow, 0, 8, 0);
         btnLayout->setContentsMargins(0, 2, 0, 0);
-        btnLayout->setSpacing(8);
 
         QPushButton *abstractBtn = new QPushButton("\u25b8 Abstract");
         abstractBtn->setFlat(true);
@@ -1463,8 +1527,6 @@ void SummaryPanel::buildReferenceCards(QWidget           *host,
         adsScrapeBtn->setStyleSheet(linkBtnStyle);
         adsScrapeBtn->setVisible(false);
         btnLayout->addWidget(adsScrapeBtn);
-
-        btnLayout->addStretch();
 
         QPushButton *adsBtn = new QPushButton("Open on ADS \u2197");
         adsBtn->setFlat(true);
@@ -1638,10 +1700,11 @@ void SummaryPanel::addReferenceCards(QWidget           *host,
                 .arg(subtitleCol.name()));
         cardLayout->addWidget(subtitleLabel);
 
-        QWidget     *btnRow    = new QWidget;
-        QHBoxLayout *btnLayout = new QHBoxLayout(btnRow);
+        // The link row wraps: on a narrow card "Open on ADS" moves onto its
+        // own line instead of being pushed out of the card.
+        QWidget *btnRow    = new QWidget;
+        auto    *btnLayout = new FlowLayout(btnRow, 0, 8, 0);
         btnLayout->setContentsMargins(0, 2, 0, 0);
-        btnLayout->setSpacing(8);
 
         QPushButton *abstractBtn = new QPushButton("\u25b8 Abstract");
         abstractBtn->setFlat(true);
@@ -1661,8 +1724,6 @@ void SummaryPanel::addReferenceCards(QWidget           *host,
         adsScrapeBtn->setStyleSheet(linkBtnStyle);
         adsScrapeBtn->setVisible(false);
         btnLayout->addWidget(adsScrapeBtn);
-
-        btnLayout->addStretch();
 
         QPushButton *adsBtn = new QPushButton("Open on ADS \u2197");
         adsBtn->setFlat(true);

@@ -477,6 +477,8 @@ set(SOURCES
     # views/widgets
     src/views/widgets/CopyToast.cpp
     src/views/widgets/FlowLayout.cpp
+    src/views/widgets/ResponsiveGridLayout.cpp
+    src/views/widgets/ElidedLabel.cpp
     src/views/widgets/QuantityRenderer.cpp
     src/views/widgets/QuantityLabel.cpp
     src/views/widgets/QuantityDelegate.cpp
@@ -693,6 +695,8 @@ set(HEADERS
     src/views/widgets/FitPreviewOverlay.h
     src/views/widgets/FitComponentsWidget.h
     src/views/widgets/FlowLayout.h
+    src/views/widgets/ResponsiveGridLayout.h
+    src/views/widgets/ElidedLabel.h
     src/views/widgets/GridSelectorWidget.h
     src/views/widgets/ShimmerWidget.h
     src/views/widgets/SquarePlotFrame.h

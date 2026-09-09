@@ -9,9 +9,11 @@
 #include <QTextStream>
 #include <QRegularExpression>
 #include <QTimeZone>
+#include <QDateTime>
 #include <algorithm>
 #include <cmath>
 #include <numeric>
+#include <optional>
 
 // ============================================================================
 // DefaultFitsSpectrumReader Implementation
@@ -28,7 +30,9 @@ const QStringList DefaultFitsSpectrumReader::DEC_KEYWORDS = {
 const QStringList DefaultFitsSpectrumReader::MJD_KEYWORDS = {
     // Mid- and observation-time cards first; the exposure-start cards after
     // them cover the archives that file no other epoch: EXPSTART on HST
-    // products, MJD-BEG on the HASP coadds, OBSSTART on FUSE.
+    // products, MJD-BEG on the HASP coadds, OBSSTART on FUSE. A bare "MJD"
+    // is not always an epoch - LAMOST files the night's integer day under it
+    // - so whatever this returns is cross-checked against DATE-OBS below.
     "MJD-OBS", "MJD", "MJD_OBS", "MJDOBS", "MJD-MID", "MJD_MID",
     "EXPSTART", "MJD-BEG", "MJDBEG", "MJD_BEG", "MJD-START", "MJDSTART",
     "OBSSTART"
@@ -49,6 +53,53 @@ const QStringList DefaultFitsSpectrumReader::INSTRUMENT_KEYWORDS = {
 const QStringList DefaultFitsSpectrumReader::OBJECT_KEYWORDS = {
     "OBJECT", "OBJNAME", "TARGET", "TARGNAME", "SRCNAME"
 };
+
+namespace {
+
+// An epoch that lands exactly on 00:00:00 UTC is a calendar date, not a
+// measurement: the odds of a real exposure midpoint doing that are one in
+// 86400, and pipelines that file a night identifier under an epoch keyword do
+// it every time.
+bool isWholeDay(double mjd)
+{
+    return std::abs(mjd - std::round(mjd)) < 1e-9;
+}
+
+// FITS says DATE-OBS is UTC, but not every writer produces a string Qt's
+// strict ISO parser accepts: LAMOST writes single-digit seconds
+// ("2018-11-16T10:57:0.000"), which fromString rejects outright.
+std::optional<double> mjdFromFitsDateTime(const QString& raw)
+{
+    const QString trimmed = raw.trimmed();
+    if (trimmed.isEmpty()) return std::nullopt;
+
+    QDateTime dt = QDateTime::fromString(trimmed, Qt::ISODate);
+    if (!dt.isValid()) {
+        const QStringList parts = trimmed.split(QLatin1Char('T'));
+        // A bare date is legal FITS ("1998-02-09") and means midnight, which
+        // isWholeDay() will then correctly refuse to prefer over a real epoch.
+        const QDate date =
+            QDate::fromString(parts.value(0), QStringLiteral("yyyy-MM-dd"));
+        if (!date.isValid()) return std::nullopt;
+        dt = QDateTime(date, QTime(0, 0), QTimeZone::utc());
+        if (parts.size() == 2) {
+            const QStringList hms = parts[1].split(QLatin1Char(':'));
+            if (hms.size() == 3)
+                dt = QDateTime(date,
+                               QTime(hms[0].toInt(), hms[1].toInt(), 0),
+                               QTimeZone::utc())
+                         .addMSecs(qint64(hms[2].toDouble() * 1000.0));
+        }
+    }
+    if (!dt.isValid()) return std::nullopt;
+    dt.setTimeZone(QTimeZone::utc());
+
+    const QDateTime j2000(QDate(2000, 1, 1), QTime(12, 0), QTimeZone::utc());
+    const double jd = 2451545.0 + j2000.msecsTo(dt) / 86400000.0;
+    return jd - Time::MJD_OFFSET;
+}
+
+}   // namespace
 
 bool DefaultFitsSpectrumReader::canRead(const QString& filepath) const
 {
@@ -239,19 +290,31 @@ SpectrumMetadata DefaultFitsSpectrumReader::readMetadata(const QString& filepath
     }
     status = 0;
 
-    // Try to get MJD from DATE-OBS if MJD not found
+    // DATE-OBS: the epoch of last resort, and the corrective for headers whose
+    // MJD card is not an epoch at all.
     {
-        if (dateObs.has_value() && !metadata.mjd.has_value()) {
-            // Parse ISO date format and convert to MJD
-            QDateTime dt = QDateTime::fromString(dateObs.value(), Qt::ISODate);
-            if (dt.isValid()) {
-                // MJD = JD - 2400000.5
-                // JD for J2000 epoch (2000-01-01T12:00:00) = 2451545.0
-                QDateTime j2000(QDate(2000, 1, 1), QTime(12, 0, 0), QTimeZone::utc());
-                double daysSinceJ2000 = j2000.msecsTo(dt) / 86400000.0;
-                double jd = 2451545.0 + daysSinceJ2000;
-                metadata.mjd = jd - Time::MJD_OFFSET;
-            }
+        const std::optional<double> dateObsMjd =
+            dateObs.has_value() ? mjdFromFitsDateTime(dateObs.value())
+                                : std::nullopt;
+
+        if (!metadata.mjd.has_value()) {
+            if (dateObsMjd.has_value()) metadata.mjd = dateObsMjd;
+        } else if (dateObsMjd.has_value() && isWholeDay(*metadata.mjd) &&
+                   !isWholeDay(*dateObsMjd) &&
+                   std::abs(*dateObsMjd - *metadata.mjd) < 1.5) {
+            // A whole-day MJD is not an observation: several surveys file the
+            // night's identifier under the MJD card and put the actual epoch
+            // only in DATE-OBS. LAMOST is the case in hand - its LRS headers
+            // carry MJD = 56579 next to DATE-OBS = 2013-10-14T12:59:31 - and
+            // taking the card at face value would scatter every epoch of such
+            // a file by up to half a day, which is fatal for anything phased.
+            // The 1.5 day guard keeps this from firing on an unrelated pair.
+            metadata.warnings
+                << QString("MJD card is a whole day (%1); using DATE-OBS (%2) "
+                           "as the epoch instead")
+                       .arg(*metadata.mjd, 0, 'f', 1)
+                       .arg(*dateObsMjd, 0, 'f', 6);
+            metadata.mjd = dateObsMjd;
         }
     }
     
