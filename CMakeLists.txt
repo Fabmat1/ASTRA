@@ -1281,6 +1281,25 @@ if(BUILD_TESTING)
         TIMEOUT 30
     )
 
+    # ── Star search box query parsing ────────────────────────────────────
+    add_executable(test_star_search
+        tests/test_star_search.cpp
+    )
+    target_include_directories(test_star_search PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(test_star_search PRIVATE Qt6::Core)
+
+    add_test(
+        NAME    star_search
+        COMMAND test_star_search
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(star_search PROPERTIES
+        LABELS "utils;search"
+        TIMEOUT 30
+    )
+
     # ── Import star-matching helpers ─────────────────────────────────────
     add_executable(test_star_matching
         tests/test_star_matching.cpp

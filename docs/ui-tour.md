@@ -27,7 +27,10 @@ Opening a project switches the main window to the project view:
   filters, and a collapsible **Observability filter** (observatory, date,
   minimum altitude, twilight definition). The observability filter becomes
   available once a ground-based instrument is configured under
-  **Data → Instruments…**.
+  **Data → Instruments…**. The search box matches every visible column plus
+  the alias, J-name, TIC and Gaia `source_id` whether or not those columns are
+  shown, and it understands positions - see
+  [Searching by name or position](#searching-by-name-or-position).
 - **Star table** - the heart of ASTRA. Sortable, multi-selectable, with
   right-click context menus for copying, sharing, moving stars between
   projects, and opening the detail view. Dropping a `.astra` file onto the
@@ -41,6 +44,45 @@ Opening a project switches the main window to the project view:
   <div class="mp-caption">Screenshot: the project view, annotated with the four regions above</div>
   <div class="mp-file">assets/images/project-view-annotated.png</div>
 </div>
+
+### Searching by name or position
+
+The search box narrows the table as you type. It matches any visible column,
+and always also the alias, J-name, TIC and Gaia `source_id`, so a star is
+findable by its identifiers even when you have those columns hidden.
+
+A J-name or a coordinate pair is matched **on the sky** rather than as text.
+That matters because the same object is written at whatever precision the
+source needed: the star our catalogue stores as `SDSSJ153301.20+375912.3` is
+`J1533+3759` in a paper title, and neither string contains the other. All of
+these find it:
+
+| You type | Read as |
+|---|---|
+| `J1533+3759` | RA to the minute of time, Dec to the arcminute |
+| `SDSS J153301.2+375912` | RA to 0.1 s, Dec to the arcsecond |
+| `SDSSJ153301.20+375912.3` | the full designation |
+| `15 33 01.2 +37 59 12.3` | sexagesimal, space separated |
+| `15:33:01.2 +37:59:12.3` | sexagesimal, colon separated |
+| `15h33m01.2s +37d59m12.3s` | sexagesimal with unit letters |
+| `233.2550 +37.98675` | decimal degrees |
+
+The precision you type sets how wide the search window is, so `J1533+3759`
+returns everything in that one-minute-by-one-arcminute box and the neighbouring
+box is not included. Because the match is positional, it also finds stars whose
+alias carries no J-name at all: searching `J1533+3759` turns up `FBS1531+381`,
+which sits inside that box.
+
+A fully written position pins a point on the sky to a fraction of an
+arcsecond, which would miss a star whose coordinates were refined after the
+designation was minted. The window therefore never shrinks below the **Star
+search radius** set under **File → Preferences… → General** (3 arcsec by
+default; 0 turns the floor off).
+
+Text that is not a position stays an ordinary substring search, so `Feige 34`,
+`HD 1185` and a bare Gaia `source_id` behave as before. Catalogue spelling
+differences are absorbed: `HD1185` finds `HD 1185`, and `alf Lac` finds the
+SIMBAD main_id `* alf Lac`.
 
 ### Columns and presets
 
@@ -117,7 +159,7 @@ described in the [workflow guides](workflows/radial-velocity.md).
 
 | Page | What it configures |
 |---|---|
-| General | ISIS and sedfit binaries, ADS API token, fit worker threads |
+| General | ISIS and sedfit binaries, ADS API token, fit worker threads, star search radius |
 | Star Detail View | Panel grid layout (rows/columns, panel per cell) |
 | Numbers & Copying | What a copied parameter carries and in which notation |
 | Grid Paths | Base directories scanned recursively for stellar model grids |

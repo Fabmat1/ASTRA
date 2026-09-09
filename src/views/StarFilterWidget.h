@@ -14,6 +14,7 @@
 #include <vector>
 #include "utils/FilterExpression.h"
 #include "utils/ObservabilityCalculator.h"
+#include "utils/StarSearchQuery.h"
 
 QT_BEGIN_NAMESPACE
 class QLineEdit;
@@ -162,6 +163,10 @@ protected:
 
 private:
     bool matchesQuickSearch(int sourceRow, const QModelIndex& sourceParent) const;
+    /// The identifier fields (alias, J-name, TIC, Gaia source_id) and the
+    /// star's position, which quick search consults whether or not the project
+    /// happens to show those columns.
+    bool matchesStarIdentity(const std::shared_ptr<Star>& star) const;
     bool matchesAdvancedFilters(int sourceRow, const QModelIndex& sourceParent) const;
     bool matchesObservability(int sourceRow, const QModelIndex& sourceParent) const;
     int columnIndexForKey(const QString& columnKey) const;
@@ -172,6 +177,11 @@ private:
 
     QString _quickSearchText;
     QStringList _quickSearchColumns;  // Empty = search all columns
+    // Parsed once per search string, not once per row: the table can hold tens
+    // of thousands of stars and filterAcceptsRow() runs for every one of them.
+    StarSearch::PositionQuery _quickSearchPos;
+    QString _quickSearchNorm;         // normalised form, for alias comparison
+    double  _quickSearchRadiusArcsec = StarSearch::kDefaultRadiusFloorArcsec;
     QVector<FilterCondition> _conditions;
     LogicMode _logicMode = And;
     

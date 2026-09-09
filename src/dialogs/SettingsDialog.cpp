@@ -396,6 +396,27 @@ QWidget *SettingsDialog::createGeneralPage() {
         form->addRow("Fit worker threads:", _fitWorkersSpin);
     }
 
+    // ── Star search radius floor ──────────────────────────────────────────
+    {
+        _starSearchRadiusSpin = new QDoubleSpinBox;
+        _starSearchRadiusSpin->setRange(0.0, 600.0);
+        _starSearchRadiusSpin->setDecimals(1);
+        _starSearchRadiusSpin->setSingleStep(0.5);
+        _starSearchRadiusSpin->setSuffix(" arcsec");
+        _starSearchRadiusSpin->setValue(_settings->starSearchRadiusArcsec());
+        _starSearchRadiusSpin->setToolTip(
+            "How close a star has to be for a fully written position typed "
+            "into the star search box to find it.\n\n"
+            "A designation such as J153301.20+375912.3 pins a point on the sky "
+            "to a fraction of an arcsecond, so without a floor it would miss "
+            "the star it names as soon as that star's coordinates were "
+            "refined. Abbreviated searches (J1533+3759) imply a wider window "
+            "of their own and ignore this value.\n\n"
+            "0 turns the floor off and searches at exactly the precision you "
+            "typed.");
+        form->addRow("Star search radius:", _starSearchRadiusSpin);
+    }
+
     outer->addLayout(form);
 
     auto *hint = new QLabel("<i>ISIS is used for spectral fitting; sedfit "
@@ -673,6 +694,8 @@ void SettingsDialog::apply()
 
     if (_fitWorkersSpin)
         _settings->setFitWorkerThreads(_fitWorkersSpin->value());
+    if (_starSearchRadiusSpin)
+        _settings->setStarSearchRadiusArcsec(_starSearchRadiusSpin->value());
 
     if (_remoteHostsPage) _remoteHostsPage->apply();
 

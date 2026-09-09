@@ -1,6 +1,7 @@
 #pragma once
 
 #include "QuantityFormat.h"
+#include "StarSearchQuery.h"
 
 #include <QObject>
 #include <QString>
@@ -100,6 +101,16 @@ public:
     void setCopyIncludeName(bool on);
     void setCopyRoundErrors(bool on);
 
+    // ── Star search ──────────────────────────────────────────────────────
+    /// Smallest radius a positional search in the star table will use [arcsec].
+    /// A fully written position ("J153301.20+375912.3") pins a point on the sky
+    /// to well under an arcsecond, which would miss a star whose coordinates
+    /// were refined after the designation was minted. The search window never
+    /// shrinks below this. Abbreviated positions imply a wider window of their
+    /// own and are unaffected.
+    double starSearchRadiusArcsec() const { return _starSearchRadiusArcsec; }
+    void   setStarSearchRadiusArcsec(double r);
+
     // ── Spectrum archive fetching ────────────────────────────────────────
     /// Crossmatch radius for archive queries [arcsec].
     double specFetchRadiusArcsec() const { return _specFetchRadiusArcsec; }
@@ -154,6 +165,7 @@ signals:
     void lcquerySettingsChanged();
     void lcurveSettingsChanged();
     void specFetchSettingsChanged();
+    void starSearchSettingsChanged();
     void adsApiTokenChanged();
     void updateSettingsChanged();
     void numberFormatChanged();
@@ -185,6 +197,8 @@ signals:
     QString _adsApiToken;
 
     QuantityFormat::Prefs _copy;
+
+    double  _starSearchRadiusArcsec = StarSearch::kDefaultRadiusFloorArcsec;
 
     double  _specFetchRadiusArcsec = 3.0;
     int     _specFetchMaxParallel  = 2;

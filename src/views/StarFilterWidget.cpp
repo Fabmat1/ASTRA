@@ -3,7 +3,9 @@
 #include "models/Star.h"
 #include "models/ColumnPreset.h"
 #include "models/Instrument.h"
+#include "utils/AppSettings.h"
 #include "utils/ObservabilityCalculator.h"
+#include "utils/StarMatching.h"
 #include "utils/UiIcons.h"
 
 #include <QDateEdit>
@@ -416,6 +418,14 @@ StarFilterProxyModel::StarFilterProxyModel(QObject* parent)
 void StarFilterProxyModel::setQuickSearchText(const QString& text)
 {
     _quickSearchText = text.trimmed();
+
+    // Parsing and normalisation happen here rather than in matchesQuickSearch()
+    // because that runs once per star, and a project can hold tens of thousands
+    // of them.
+    _quickSearchPos  = StarSearch::parsePosition(_quickSearchText);
+    _quickSearchNorm = StarMatching::normalizeAlias(_quickSearchText);
+    _quickSearchRadiusArcsec = AppSettings().starSearchRadiusArcsec();
+
     beginBatchFilter();
 endBatchFilter();
 }
@@ -510,6 +520,56 @@ bool StarFilterProxyModel::lessThan(const QModelIndex& left, const QModelIndex& 
     return QString::localeAwareCompare(leftData.toString(), rightData.toString()) < 0;
 }
 
+// The identifiers and the sky position, consulted for every search regardless
+// of which columns the project shows. A user who has hidden the J-name column
+// still expects to find a star by its J-name, and a coordinate search has to
+// reach ra/dec whether or not they are on screen.
+bool StarFilterProxyModel::matchesStarIdentity(const std::shared_ptr<Star>& star) const
+{
+    if (!star) return false;
+
+    const QString alias    = star->getAlias();
+    const QString jname    = star->getJName();
+    const QString tic      = star->getTic();
+    const QString sourceId = star->getSourceId();
+
+    for (const QString& field : {alias, jname, tic, sourceId}) {
+        if (!field.isEmpty() &&
+            field.contains(_quickSearchText, Qt::CaseInsensitive))
+            return true;
+    }
+
+    // Catalogue spelling differences: "HD 1185" has to find "HD1185", and
+    // "alf Lac" the SIMBAD main_id "* alf Lac".
+    if (!_quickSearchNorm.isEmpty()) {
+        for (const QString& field : {alias, jname}) {
+            if (field.isEmpty()) continue;
+            if (StarMatching::normalizeAlias(field).contains(_quickSearchNorm))
+                return true;
+        }
+    }
+
+    // "Gaia DR3 385485619900166400" typed against a bare stored source_id.
+    if (!sourceId.isEmpty()) {
+        const QString normQuery =
+            StarMatching::normalizeSourceId(_quickSearchText);
+        if (!normQuery.isEmpty() &&
+            StarMatching::normalizeSourceId(sourceId) == normQuery)
+            return true;
+    }
+
+    if (_quickSearchPos.valid) {
+        double ra = 0.0, dec = 0.0;
+        if (StarSearch::positionOf(star->getRa(), star->getDec(), jname, alias,
+                                   ra, dec) &&
+            StarSearch::matchesPosition(_quickSearchPos, ra, dec,
+                                        _quickSearchRadiusArcsec))
+            return true;
+    }
+
+    return false;
+}
+
 bool StarFilterProxyModel::matchesQuickSearch(int sourceRow, const QModelIndex& sourceParent) const
 {
     if (_quickSearchText.isEmpty()) return true;
@@ -532,7 +592,9 @@ bool StarFilterProxyModel::matchesQuickSearch(int sourceRow, const QModelIndex& 
             return true;
         }
     }
-    return false;
+
+    auto* starModel = qobject_cast<StarTableModel*>(sourceModel());
+    return starModel && matchesStarIdentity(starModel->getStarAtRow(sourceRow));
 }
 
 bool StarFilterProxyModel::matchesAdvancedFilters(int sourceRow, const QModelIndex& sourceParent) const
@@ -954,9 +1016,23 @@ void StarFilterWidget::setupUi()
     topBar->setSpacing(8);
 
     _searchEdit = new QLineEdit(this);
-    _searchEdit->setPlaceholderText("Search stars...");
+    _searchEdit->setPlaceholderText("Search name, J-name or coordinates...");
     _searchEdit->setClearButtonEnabled(true);
     _searchEdit->setMinimumWidth(200);
+    _searchEdit->setToolTip(
+        "<p>Matches any visible column, plus the alias, J-name, TIC and Gaia "
+        "source_id whether or not those columns are shown.</p>"
+        "<p>A J-name or a position is matched on the sky, so an abbreviated "
+        "designation finds the star it names and coordinates work even when "
+        "the star carries no J-name:</p>"
+        "<ul>"
+        "<li><code>J1533+3759</code> or <code>J153301.20+375912.3</code></li>"
+        "<li><code>15 33 01.2 +37 59 12.3</code>, "
+        "<code>15:33:01.2 +37:59:12.3</code></li>"
+        "<li><code>233.2550 +37.98675</code> (degrees)</li>"
+        "</ul>"
+        "<p>The precision you type sets how wide the search window is; "
+        "Settings &gt; General sets the smallest window it will use.</p>");
     topBar->addWidget(_searchEdit, 1);
 
     _filterCountLabel = new QLabel(this);

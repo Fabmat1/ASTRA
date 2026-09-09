@@ -75,6 +75,7 @@ private:
     QLineEdit*       _atlasTokenEdit   = nullptr;
     QLineEdit*       _adsTokenEdit     = nullptr;
     QSpinBox*        _fitWorkersSpin   = nullptr;
+    QDoubleSpinBox*  _starSearchRadiusSpin = nullptr;
     QLineEdit*       _blackgemEdit     = nullptr;
     QLabel*          _lcqTestResult    = nullptr;
 
