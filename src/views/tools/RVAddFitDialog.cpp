@@ -8,6 +8,7 @@
 #include "models/Photometry.h"
 #include "models/RadialVelocity.h"
 #include "models/Star.h"
+#include "utils/LCFitPhysics.h"
 #include "utils/Logger.h"
 #include "views/panels/PanelUtils.h"
 #include "views/panels/PeriodogramPanel.h"
@@ -428,10 +429,16 @@ void RVAddFitDialog::buildPhotTab(QWidget* parent)
     _photSamePhase->setChecked(true);
     _photSamePhase->setToolTip(
         "When a light-curve fit is associated with the selected photometric "
-        "period, hold the RV phase fixed so the RV node coincides with the LC "
-        "fit's ephemeris (T₀, period); only K and γ are fitted. Applies to "
-        "circular fits only (ignored for eccentric orbits, and when no matching "
-        "LC fit exists).");
+        "period, hold the RV phase fixed to the LC fit's ephemeris (T₀, period); "
+        "only the amplitudes and γ are fitted.\n\n"
+        "Which of the two conjunctions the lock lands on is decided by whichever "
+        "dataset can actually tell them apart: the light curve when its model is "
+        "asymmetric under a half-cycle shift (a reflection hump, unequal "
+        "eclipses, a bright spot, beaming), the RVs when it is not (a purely "
+        "ellipsoidal curve, or one fitted at half the orbital period). If the "
+        "two disagree you are told, rather than one being silently overruled.\n\n"
+        "Applies to circular fits only (ignored for eccentric orbits, and when "
+        "no matching LC fit exists).");
 
     form->addRow("Period prior width (×σ_P)", _photPeriodTol);
     form->addRow(_photEllipsoidal);
@@ -1982,7 +1989,8 @@ std::shared_ptr<LCFit> RVAddFitDialog::findLcFitForPeriod(double period) const
 
 // ───────────────────────────────────────────────────────────────────
 std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidFixedPhase(
-    double period, double t0LcBJD, QString* errOut, const LCFit* lcFit) const
+    double period, double t0LcBJD, QString* errOut, const LCFit* lcFit,
+    QString* noteOut) const
 {
     auto data = buildRVData();
     if (data.bjd.size() < 2) {
@@ -2006,30 +2014,42 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidFixedPhase(
         }
     }
 
-    // Lock φ so the RV node (where a circular RV equals γ) coincides with the
-    // LC conjunction t0LcBJD:
-    //   sin(2π((t0Lc − tRef)/P + φ)) = 0  ⇒  φ = −(t0Lc − tRef)/P  (mod 1).
-    double phi = -((t0LcBJD - t0) / period);
-    phi -= std::floor(phi);
+    // Lock φ so that star 1's orbit is in step with the LC ephemeris. lcurve's
+    // t0 is the conjunction with star 1 BEHIND star 2, where star 1's RV crosses
+    // γ descending, while ASTRA's φ = 0 is the ascending node: the two are half
+    // a cycle apart. See LCFitPhysics::rvPhaseLockedToLcT0 for the derivation,
+    // which follows from the model's coordinate definition alone and so holds
+    // for every system, reflection binary or CV alike.
+    double phi = LCFitPhysics::rvPhaseLockedToLcT0(t0LcBJD, t0, period);
 
     // With φ and P fixed the circular model is linear in the amplitudes:
     //   primary    RV_i = γ + K·c_i
-    //   secondary  RV_i = γ − K2·c_i          (antiphase, SB2 only)
-    // with c_i = sin(2π((bjd_i − tRef)/P + φ)). Solve the weighted normal
-    // equations - 2×2 for a single-lined fit, 3×3 when a secondary is present.
+    //   secondary  RV_i = γ − K2·c_i
+    // with c_i = sin(2π((bjd_i − tRef)/P + φ)). The secondary shares φ and moves
+    // in antiphase, so locking star 1 locks it too and no second convention is
+    // needed. Three shapes occur: primary only, both, and secondary only - the
+    // last when the RVs are measured off the companion rather than the
+    // catalogued star, which is routine for CV donors.
     const size_t nPts = data.bjd.size();
-    const bool sb2 = !data.comp.empty() &&
-        std::any_of(data.comp.begin(), data.comp.end(),
-                    [](int c) { return c >= 2; });
+    bool hasPrimary = false, hasSecondary = false;
+    for (size_t i = 0; i < nPts; ++i) {
+        if (!data.comp.empty() && data.comp[i] >= 2) hasSecondary = true;
+        else                                         hasPrimary   = true;
+    }
+    const bool sb2 = hasPrimary && hasSecondary;
     const int nPar = sb2 ? 3 : 2;
+    // Which amplitude the design's second column carries, and therefore which
+    // one has to come out positive.
+    const bool soloSecondary = hasSecondary && !hasPrimary;
 
     double gamma = 0.0, K = 0.0, K2 = 0.0;
     double gammaErr = 0.0, KErr = 0.0, K2Err = 0.0;
-    double Sw = 0, Sc = 0, Scc = 0, Sy = 0, Scy = 0;   // SB1 path
-    double det = 0.0;
-    std::vector<double> covN;                          // SB2 path
+    std::vector<double> covN;
     {
-        // Design basis per point: (1, c, 0) primary, (1, 0, −c) secondary.
+        // Design basis per point: (1, c, 0) primary, (1, 0, −c) secondary; with
+        // a single component present the unused column is dropped, so a
+        // secondary-only set solves (1, −c) for γ and K2 instead of going
+        // singular on an all-zero K column.
         std::vector<double> A(size_t(nPar) * nPar, 0.0), b(nPar, 0.0);
         for (size_t i = 0; i < nPts; ++i) {
             const double theta = (data.bjd[i] - t0) / period;
@@ -2037,80 +2057,167 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidFixedPhase(
             const double s = (data.rv_err[i] > 0) ? data.rv_err[i] : 1.0;
             const double w = 1.0 / (s * s);
             const double y = data.rv[i];
-            const bool sec = sb2 && data.comp[i] >= 2;
-            double g[3] = { 1.0, sec ? 0.0 : c, sec ? -c : 0.0 };
+            const bool sec = !data.comp.empty() && data.comp[i] >= 2;
+            double g[3] = { 1.0, 0.0, 0.0 };
+            if (sb2) { g[1] = sec ? 0.0 : c; g[2] = sec ? -c : 0.0; }
+            else     { g[1] = soloSecondary ? -c : c; }
             for (int a = 0; a < nPar; ++a) {
                 b[a] += w * g[a] * y;
                 for (int bb = 0; bb < nPar; ++bb)
                     A[size_t(a) * nPar + bb] += w * g[a] * g[bb];
             }
-            if (!sb2) { Sw += w; Sc += w * c; Scc += w * c * c; Sy += w * y; Scy += w * c * y; }
         }
 
-        if (!sb2) {
-            det = Sw * Scc - Sc * Sc;
-            if (!(std::abs(det) > 1e-30)) {
-                if (errOut)
-                    *errOut = "Phase-locked design is singular (RV points cover too "
-                              "little phase).";
-                return nullptr;
-            }
-            gamma = (Sy * Scc - Scy * Sc) / det;
-            K     = (Sw * Scy - Sc  * Sy) / det;
-        } else {
-            std::vector<double> Asolve = A, bsolve = b, x;
-            if (!solveLinearN(nPar, Asolve, bsolve, x) || !invertNxN(nPar, A, covN)) {
-                if (errOut)
-                    *errOut = "Phase-locked design is singular (RV points cover too "
-                              "little phase).";
-                return nullptr;
-            }
-            gamma = x[0]; K = x[1]; K2 = x[2];
+        std::vector<double> Asolve = A, bsolve = b, x;
+        if (!solveLinearN(nPar, Asolve, bsolve, x) || !invertNxN(nPar, A, covN)) {
+            if (errOut)
+                *errOut = "Phase-locked design is singular (RV points cover too "
+                          "little phase).";
+            return nullptr;
         }
+        gamma = x[0];
+        if (sb2)                { K = x[1]; K2 = x[2]; }
+        else if (soloSecondary) { K2 = x[1]; }
+        else                    { K = x[1]; }
     }
 
-    // Canonicalise a negative amplitude: −K·sin(x) = K·sin(x + π) ⇒ φ += 0.5.
-    // For SB2 the shift negates the sinusoid for BOTH components, so K2 flips
-    // with K; a secondary left negative means the data disagree with the
-    // component assignment, and clamping keeps the stored fit physical.
-    if (K < 0.0) {
-        K = -K; phi += 0.5;
-        if (sb2) K2 = -K2;
+    // ── Which half of the cycle? ───────────────────────────────────────
+    // At fixed φ the two branches are the SAME model: flipping the ephemeris by
+    // half a cycle maps (K, φ) → (−K, φ+0.5), so χ² cannot tell them apart and
+    // the RVs vote only through the amplitude having to be positive. The weight
+    // of that vote is the significance of the orbit detection itself, which puts
+    // it in the same units as the light curve's vote.
+    auto modelAt = [&](size_t i, double g, double k, double k2, double ph) {
+        const double c = std::sin(2.0 * M_PI * ((data.bjd[i] - t0) / period + ph));
+        const bool sec = !data.comp.empty() && data.comp[i] >= 2;
+        return sec ? (g - k2 * c) : (g + k * c);
+    };
+    auto chi2Of = [&](double g, double k, double k2, double ph) {
+        double acc = 0.0;
+        for (size_t i = 0; i < nPts; ++i) {
+            const double s = (data.rv_err[i] > 0) ? data.rv_err[i] : 1.0;
+            const double r = (data.rv[i] - modelAt(i, g, k, k2, ph)) / s;
+            acc += r * r;
+        }
+        return acc;
+    };
+
+    double chi2 = chi2Of(gamma, K, K2, phi);
+    const int dofFp = std::max(1, int(nPts) - nPar);
+
+    // The flat model: no orbit at all, γ at the weighted mean. Its χ² excess
+    // over the fit is exactly how strongly the RVs claim an orbit, and so how
+    // strongly they claim a branch.
+    double swRv = 0.0, swyRv = 0.0, swyyRv = 0.0;
+    for (size_t i = 0; i < nPts; ++i) {
+        const double s = (data.rv_err[i] > 0) ? data.rv_err[i] : 1.0;
+        const double w = 1.0 / (s * s);
+        swRv += w; swyRv += w * data.rv[i]; swyyRv += w * data.rv[i] * data.rv[i];
     }
-    if (sb2 && K2 < 0.0) K2 = 0.0;
-    phi -= std::floor(phi);
+    const double gammaFlat = (swRv > 0.0) ? swyRv / swRv : gamma;
+    const double chi2Flat =
+        std::max(0.0, swyyRv - (swRv > 0.0 ? swyRv * swyRv / swRv : 0.0));
+    // Rescaled the same way the light-curve vote is, so the two are comparable.
+    const double rvScale = std::max(1.0, chi2 / dofFp);
+    const double rvEvidence = (chi2Flat - chi2) / rvScale;
+
+    // The light curve's vote: how much worse its own model fits its own data
+    // once shifted by half an orbit. For an ellipsoidal fit run at half the
+    // orbital period the shift is a full LC cycle, an exact no-op that correctly
+    // reports no information.
+    LCFitPhysics::HalfCycleEvidence lcEv;
+    if (lcFit && lcFit->period > 0.0 && !lcFit->inputPoints.empty() &&
+        !lcFit->modelPoints.empty()) {
+        std::vector<double> ph, fl, er, mph, mfl;
+        ph.reserve(lcFit->inputPoints.size());
+        fl.reserve(lcFit->inputPoints.size());
+        er.reserve(lcFit->inputPoints.size());
+        for (const auto& p : lcFit->inputPoints) {
+            ph.push_back(p.phase); fl.push_back(p.flux); er.push_back(p.fluxError);
+        }
+        mph.reserve(lcFit->modelPoints.size());
+        mfl.reserve(lcFit->modelPoints.size());
+        for (const auto& p : lcFit->modelPoints) {
+            mph.push_back(p.phase); mfl.push_back(p.flux);
+        }
+        lcEv = LCFitPhysics::halfCycleEvidence(ph, fl, er, mph, mfl,
+                                               0.5 * period / lcFit->period);
+    }
+
+    const double ampLocked = soloSecondary ? K2 : K;
+    const bool lcDecides   = lcEv.usable && lcEv.deltaChi2 > rvEvidence;
+
+    QString branch;
+    QString note;
+    if (ampLocked >= 0.0) {
+        branch = lcEv.usable ? QStringLiteral("LC+RV") : QStringLiteral("LC");
+    } else if (!lcDecides) {
+        // The light curve leaves the branch open - purely ellipsoidal, fitted at
+        // half the orbital period, or too poorly reproduced to trust - so the
+        // RVs settle it. Flipping negates both amplitudes, the components being
+        // antiphase to one another.
+        K = -K; K2 = -K2; phi += 0.5; phi -= std::floor(phi);
+        chi2 = chi2Of(gamma, K, K2, phi);
+        branch = QStringLiteral("RV");
+    } else if (rvEvidence >= LCFitPhysics::kMinBranchChi2) {
+        // Both datasets are confident and they disagree. That is a real result,
+        // not a glitch: it is what donor-tracing or emission-line RVs look like.
+        // Report the branch the RVs demand and say so, rather than silently
+        // overruling either side.
+        K = -K; K2 = -K2; phi += 0.5; phi -= std::floor(phi);
+        chi2 = chi2Of(gamma, K, K2, phi);
+        branch = QStringLiteral("RV vs LC");
+        note = tr("The RVs detect an orbit (Δχ² = %1) in antiphase to the light "
+                  "curve's ephemeris (Δχ² = %2). The fit follows the RVs. Likely "
+                  "causes: the RVs trace the companion rather than the "
+                  "catalogued star (tag those points as component 2), "
+                  "emission-line contamination, or star 1 and star 2 swapped in "
+                  "the LC fit.")
+                   .arg(rvEvidence, 0, 'g', 3)
+                   .arg(lcEv.deltaChi2, 0, 'g', 3);
+    } else {
+        // The light curve fixes the branch and, on it, the RVs show no orbit.
+        // Reporting the mirrored amplitude would be the old silent flip; the
+        // honest statement is an upper limit.
+        gamma = gammaFlat;
+        K = 0.0; K2 = 0.0;
+        chi2 = chi2Flat;
+        branch = QStringLiteral("LC, K unresolved");
+        note = tr("On the light curve's ephemeris the RV amplitude is consistent "
+                  "with zero (Δχ² = %1), so it is reported as an upper limit "
+                  "rather than mirrored onto the opposite conjunction. Check for "
+                  "outliers among the RV points and for a period alias.")
+                   .arg(rvEvidence, 0, 'g', 3);
+    }
+    if (K  < 0.0) K  = 0.0;
+    if (K2 < 0.0) K2 = 0.0;
+    if (noteOut) *noteOut = note;
 
     // The model is linear in the amplitudes, so the posterior is exactly
     // Gaussian: cov = s²·A⁻¹ with s² = χ²/(n−nPar) (the same reduced-χ² error
     // rescaling the free LM fits use). No MC pass or asymmetric bounds needed.
-    double chi2 = 0.0;
-    for (size_t i = 0; i < nPts; ++i) {
-        const double theta = (data.bjd[i] - t0) / period;
-        const double c = std::sin(2.0 * M_PI * (theta + phi));
-        const double m = (sb2 && data.comp[i] >= 2) ? (gamma - K2 * c)
-                                                    : (gamma + K * c);
-        const double s = (data.rv_err[i] > 0) ? data.rv_err[i] : 1.0;
-        const double r = (data.rv[i] - m) / s;
-        chi2 += r * r;
-    }
-    const int dofFp = std::max(1, int(nPts) - nPar);
     const double s2 = chi2 / dofFp;
-    if (!sb2) {
-        gammaErr = std::sqrt(std::max(0.0, s2 * Scc / det));
-        KErr     = std::sqrt(std::max(0.0, s2 * Sw  / det));
-    } else {
-        gammaErr = std::sqrt(std::max(0.0, s2 * covN[0]));
-        KErr     = std::sqrt(std::max(0.0, s2 * covN[size_t(1) * nPar + 1]));
-        K2Err    = std::sqrt(std::max(0.0, s2 * covN[size_t(2) * nPar + 2]));
+    gammaErr = std::sqrt(std::max(0.0, s2 * covN[0]));
+    {
+        const double ampVar = std::max(0.0, s2 * covN[size_t(1) * nPar + 1]);
+        if (soloSecondary) K2Err = std::sqrt(ampVar);
+        else               KErr  = std::sqrt(ampVar);
+        if (sb2)
+            K2Err = std::sqrt(std::max(0.0, s2 * covN[size_t(2) * nPar + 2]));
     }
 
     auto fit = std::make_shared<RVFit>();
     fit->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
     fit->setCurveId(_curve ? _curve->getId() : QString());
     fit->setCreationDate(QDateTime::currentDateTime());
-    fit->setFitMethod(QString("LM phase-locked to LC (P=%1, T₀=%2)")
+    fit->setFitMethod(QString("LM phase-locked to LC (P=%1, T₀=%2; branch %3, "
+                              "Δχ² LC/RV=%4/%5)")
                           .arg(period, 0, 'f', 6)
-                          .arg(t0LcBJD, 0, 'f', 6));
+                          .arg(t0LcBJD, 0, 'f', 6)
+                          .arg(branch)
+                          .arg(lcEv.usable ? QString::number(lcEv.deltaChi2, 'g', 3)
+                                           : QStringLiteral("n/a"))
+                          .arg(rvEvidence, 0, 'g', 3));
     fit->setPeriod(period);
     fit->setK(K);
     fit->setGamma(gamma);
@@ -2119,7 +2226,7 @@ std::shared_ptr<RVFit> RVAddFitDialog::fitSinusoidFixedPhase(
     fit->setChi2(chi2);
     fit->setKError(KErr);
     fit->setGammaError(gammaErr);
-    if (sb2 && K2 > 0.0) { fit->setK2(K2); fit->setK2Error(K2Err); }
+    if (K2 > 0.0) { fit->setK2(K2); fit->setK2Error(K2Err); }
 
     // P and φ are hard-fixed to the LC ephemeris, so their uncertainty is the
     // ephemeris' own, propagated. φ = −(T₀ − tRef)/P gives
@@ -2289,6 +2396,7 @@ void RVAddFitDialog::onRunPhotFit()
     const bool samePhase = !ecc && _photSamePhase && _photSamePhase->isChecked();
 
     QStringList failed;
+    QStringList notes;
     QList<std::shared_ptr<RVFit>> fits;
     for (auto* it : items) {
         const double Praw  = it->data(Qt::UserRole + 0).toDouble();
@@ -2305,21 +2413,29 @@ void RVAddFitDialog::onRunPhotFit()
         std::shared_ptr<LCFit> lc;
         if (samePhase) lc = findLcFitForPeriod(Praw);
 
-        QString err;
+        QString err, note;
         std::shared_ptr<RVFit> fit;
         if (lc) {
             const double pRv = ellips ? 2.0 * lc->period : lc->period;
-            fit = fitSinusoidFixedPhase(pRv, lc->t0BJD, &err, lc.get());
+            fit = fitSinusoidFixedPhase(pRv, lc->t0BJD, &err, lc.get(), &note);
         } else {
             fit = ecc ? fitKeplerianLM(P, sigma, &err)
                       : fitSinusoidLM(P, sigma, &err);
         }
         if (!fit) { failed << QString("P=%1 d: %2").arg(P).arg(err); continue; }
+        if (!note.isEmpty())
+            notes << QString("P = %1 d: %2").arg(P, 0, 'g', 8).arg(note);
         fits.append(fit);
     }
     if (!failed.isEmpty()) {
         QMessageBox::warning(this, "From Photometry",
             "Some peaks failed:\n" + failed.join("\n"));
+    }
+    // The fit succeeded but its phase lock is worth a second look. Informational
+    // rather than a warning: for a CV measured off the donor, or an emission-line
+    // RV curve, an antiphase result is the finding rather than a mistake.
+    if (!notes.isEmpty()) {
+        QMessageBox::information(this, tr("Phase lock"), notes.join("\n\n"));
     }
     if (fits.isEmpty()) return;
 

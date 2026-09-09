@@ -1384,6 +1384,29 @@ if(BUILD_TESTING)
         TIMEOUT 30
     )
 
+    # Phase lock between an RV orbit and a light-curve ephemeris: the half-cycle
+    # convention offset (lcurve's t0 is star 1's descending node, ASTRA's phi = 0
+    # its ascending one) and the morphology-blind test that decides which of the
+    # two conjunctions a lock lands on. Pure maths, so no GUI and no database.
+    add_executable(test_phase_lock
+        tests/test_phase_lock.cpp
+        src/utils/LCFitPhysics.cpp
+        src/utils/ClaretTables.cpp
+    )
+    target_include_directories(test_phase_lock PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/src
+    )
+    target_link_libraries(test_phase_lock PRIVATE Qt6::Core)
+    add_test(
+        NAME    phase_lock
+        COMMAND test_phase_lock
+        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+    )
+    set_tests_properties(phase_lock PROPERTIES
+        LABELS "utils;lightcurve;rv"
+        TIMEOUT 30
+    )
+
     add_executable(test_votable_reader
         tests/test_votable_reader.cpp
         src/utils/spectrafetch/VoTableReader.cpp

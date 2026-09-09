@@ -10,6 +10,7 @@
 #include <array>
 #include <optional>
 #include <tuple>
+#include <vector>
 
 namespace LCFitPhysics {
 
@@ -83,6 +84,70 @@ struct ModelInputs {
 };
 
 QMap<QString, QString> buildModelParameters(const ModelInputs &in);
+
+// ── Tying an RV orbit to a light-curve ephemeris ──────────────────
+//
+// lcurve puts star 1 at the origin, star 2 at (1,0,0), and set_earth() points
+// the Earth vector at +x at phase 0, so its ephemeris zero point is the
+// conjunction with star 1 BEHIND star 2. Star 1's line-of-sight offset there is
+// -mu*sin(i)*cos(2*pi*phi), giving a radial velocity of gamma - K*sin(2*pi*phi):
+// at lcurve phase 0 that crosses gamma on the way DOWN, the descending node.
+// ASTRA's circular model is gamma + K*sin(2*pi*phi), whose phi = 0 is the
+// ascending node. The two conventions are therefore exactly half a cycle apart.
+//
+// That offset follows from the model's coordinate definition alone. It holds for
+// every system the fitter can describe - reflection binaries, eclipsers, CVs
+// with a disc and a bright spot, anything - and mentions no morphology.
+//
+// Returns the phase for a fit referenced to `tRefBJD`, wrapped to [0, 1).
+double rvPhaseLockedToLcT0(double t0LcBJD, double tRefBJD, double period);
+
+// How well a fitted light-curve model can tell orbital phase from phase + 0.5.
+//
+// lcurve's zero point fixes the orbital phase only as far as the model is
+// asymmetric under a half-cycle shift. A reflection hump, unequal eclipses, a
+// bright spot or Doppler beaming all break that symmetry; a purely ellipsoidal
+// curve does not, and one fitted at half the orbital period cannot by
+// construction. Rather than enumerate morphologies, ask the fitted model: shift
+// it by half an orbit and measure how much worse it fits its own data.
+struct HalfCycleEvidence {
+  bool usable = false;    ///< the model carries trustworthy phase information
+  double deltaChi2 = 0.0; ///< chi2 penalty for shifting the model half a cycle
+  double detection = 0.0; ///< chi2 by which the model beats a flat light curve
+};
+
+// A model must beat a flat light curve by this much before its ephemeris is
+// trusted at all (~5 sigma on one degree of freedom). Below it the curve is
+// consistent with no variability and carries no phase information: flickering a
+// CV model has no term for, a light curve that is mostly noise, a fit that never
+// converged.
+inline constexpr double kMinLcDetectionChi2 = 25.0;
+
+// The bar a vote for one branch over the other has to clear before it counts,
+// applied identically to the light curve's chi2 penalty and to the RVs' orbit
+// detection so the two are judged by the same standard (~3 sigma on one degree
+// of freedom). A symmetric curve clears it only on floating-point noise, which
+// is precisely what it must not do.
+inline constexpr double kMinBranchChi2 = 9.0;
+
+// Below this many usable bins the shifted-model comparison is not meaningful.
+inline constexpr int kMinLcPhaseBins = 8;
+
+// `shift` is half an orbit expressed in the MODEL's own phase units: 0.5 when
+// the light curve was fitted at the orbital period, and exactly 1.0 when it was
+// fitted at half of it. The latter is a deliberate no-op that reports zero
+// information, which is the truth: such a curve cannot distinguish the two
+// conjunctions even in principle.
+//
+// Both chi2 differences are divided by the fit's own reduced chi2 whenever that
+// exceeds 1, so a model that reproduces the data badly has its vote deflated in
+// proportion, and catalogue error bars quoted too small cannot inflate it.
+HalfCycleEvidence halfCycleEvidence(const std::vector<double> &phase,
+                                    const std::vector<double> &flux,
+                                    const std::vector<double> &fluxError,
+                                    const std::vector<double> &modelPhase,
+                                    const std::vector<double> &modelFlux,
+                                    double shift);
 
 // ── Free-parameter catalogue ──────────────────────────────────────
 // Every model parameter lcurve is able to fit. buildModelParameters()

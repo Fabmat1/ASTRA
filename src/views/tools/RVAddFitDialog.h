@@ -109,16 +109,21 @@ private:
                                           QString* errOut = nullptr) const;
 
     // Circular LM fit with the phase φ HARD-FIXED so the RV node coincides with
-    // the supplied light-curve ephemeris (t0LcBJD at period P, i.e. conjunction
-    // where a circular RV equals γ). Only K and γ are fitted (a 2-parameter
-    // weighted linear least squares); P and φ are held fixed. Used by the
-    // Photometry tab's "same phase as LC fit" option. nullptr on failure.
+    // the supplied light-curve ephemeris (t0LcBJD at period P, lcurve's
+    // conjunction with star 1 behind star 2). Only the amplitudes and γ are
+    // fitted (a weighted linear least squares); P and φ are held fixed. Used by
+    // the Photometry tab's "same phase as LC fit" option. nullptr on failure.
     // When the source LC fit is supplied its period/T₀ uncertainties are
-    // propagated onto the (otherwise hard-fixed) period and phase.
+    // propagated onto the (otherwise hard-fixed) period and phase, and its model
+    // curve decides which of the two conjunctions the lock lands on whenever it
+    // can tell them apart (see LCFitPhysics::halfCycleEvidence).
+    // `noteOut` receives a non-fatal explanation when the light curve and the
+    // RVs disagree about that, and is left empty otherwise.
     std::shared_ptr<RVFit> fitSinusoidFixedPhase(double period,
                                                  double t0LcBJD,
                                                  QString* errOut = nullptr,
-                                                 const LCFit* lcFit = nullptr) const;
+                                                 const LCFit* lcFit = nullptr,
+                                                 QString* noteOut = nullptr) const;
 
     // Find the best light-curve fit (across all LC sources) whose period matches
     // `period` within a small relative tolerance, or nullptr if none. Used to

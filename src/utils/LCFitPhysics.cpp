@@ -331,6 +331,134 @@ static QString lcurveParam(double value, double range, double step, bool vary,
       .arg(defined ? 1 : 0);
 }
 
+// ── Tying an RV orbit to a light-curve ephemeris ───────────────────
+
+double rvPhaseLockedToLcT0(double t0LcBJD, double tRefBJD, double period) {
+  if (!(period > 0.0) || !std::isfinite(t0LcBJD) || !std::isfinite(tRefBJD))
+    return 0.0;
+  // The half cycle is the convention offset documented in the header: lcurve's
+  // t0 is star 1's descending node, ASTRA's phi = 0 is its ascending node.
+  const double phi = 0.5 - ((t0LcBJD - tRefBJD) / period);
+  return phi - std::floor(phi);
+}
+
+namespace {
+
+// Linear interpolation of a phase-sampled curve, wrapping across phase 1 -> 0.
+// `x` is strictly ascending and confined to [0, 1).
+double interpWrapped(const std::vector<double> &x, const std::vector<double> &y,
+                     double p) {
+  const size_t n = x.size();
+  p -= std::floor(p);
+
+  size_t lo = 0, hi = 0;
+  double x0 = 0.0, x1 = 0.0;
+  const auto it = std::upper_bound(x.begin(), x.end(), p);
+  const size_t up = size_t(it - x.begin());
+  if (up == 0) {
+    // Before the first sample: interpolate from the last one, one cycle back.
+    lo = n - 1;
+    hi = 0;
+    x0 = x[lo] - 1.0;
+    x1 = x[0];
+  } else if (up == n) {
+    // Past the last sample: interpolate to the first one, one cycle on.
+    lo = n - 1;
+    hi = 0;
+    x0 = x[lo];
+    x1 = x[0] + 1.0;
+  } else {
+    lo = up - 1;
+    hi = up;
+    x0 = x[lo];
+    x1 = x[hi];
+  }
+
+  const double d = x1 - x0;
+  if (!(d > 0.0))
+    return y[lo];
+  return y[lo] + (p - x0) / d * (y[hi] - y[lo]);
+}
+
+} // namespace
+
+HalfCycleEvidence halfCycleEvidence(const std::vector<double> &phase,
+                                    const std::vector<double> &flux,
+                                    const std::vector<double> &fluxError,
+                                    const std::vector<double> &modelPhase,
+                                    const std::vector<double> &modelFlux,
+                                    double shift) {
+  HalfCycleEvidence e;
+  const size_t n = phase.size();
+  if (n < size_t(kMinLcPhaseBins) || flux.size() != n || fluxError.size() != n)
+    return e;
+  if (modelPhase.size() != modelFlux.size() || modelPhase.size() < 4)
+    return e;
+
+  // lcurve emits the model in ascending input phase, but a re-binned or merged
+  // curve need not be; sort and de-duplicate onto a clean [0, 1) grid.
+  std::vector<size_t> idx(modelPhase.size());
+  std::iota(idx.begin(), idx.end(), size_t(0));
+  std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) {
+    return modelPhase[a] < modelPhase[b];
+  });
+  std::vector<double> mx, my;
+  mx.reserve(idx.size());
+  my.reserve(idx.size());
+  for (size_t i : idx) {
+    if (!std::isfinite(modelPhase[i]) || !std::isfinite(modelFlux[i]))
+      continue;
+    const double p = modelPhase[i] - std::floor(modelPhase[i]);
+    if (!mx.empty() && p <= mx.back())
+      continue;
+    mx.push_back(p);
+    my.push_back(modelFlux[i]);
+  }
+  if (mx.size() < 4)
+    return e;
+
+  // chiA: the model as fitted. chiB: the same model shifted by half an orbit.
+  // The flat-line chi2 comes from the weighted sums, via
+  // sum(w*(y-ybar)^2) = sum(w*y^2) - (sum(w*y))^2/sum(w).
+  double chiA = 0.0, chiB = 0.0;
+  double sw = 0.0, swy = 0.0, swyy = 0.0;
+  int used = 0;
+  for (size_t i = 0; i < n; ++i) {
+    if (!std::isfinite(phase[i]) || !std::isfinite(flux[i]))
+      continue;
+    if (!(fluxError[i] > 0.0) || !std::isfinite(fluxError[i]))
+      continue;
+    const double w = 1.0 / (fluxError[i] * fluxError[i]);
+    const double ra = flux[i] - interpWrapped(mx, my, phase[i]);
+    const double rb = flux[i] - interpWrapped(mx, my, phase[i] + shift);
+    chiA += w * ra * ra;
+    chiB += w * rb * rb;
+    sw += w;
+    swy += w * flux[i];
+    swyy += w * flux[i] * flux[i];
+    ++used;
+  }
+  if (used < kMinLcPhaseBins || !(sw > 0.0))
+    return e;
+
+  const double chiFlat = std::max(0.0, swyy - swy * swy / sw);
+
+  // Deflate the vote by how badly the model actually describes the data, so an
+  // unmodelled light curve cannot vote confidently. Clamped at 1 so a good fit
+  // is never rewarded with an inflated vote.
+  const double scale = std::max(1.0, chiA / double(used));
+  e.deltaChi2 = (chiB - chiA) / scale;
+  e.detection = (chiFlat - chiA) / scale;
+
+  // The model must both detect variability and be asymmetric enough under the
+  // shift for the asymmetry itself to be significant. A penalty at or below zero
+  // means the shifted model fits at least as well, i.e. the light-curve fit
+  // settled half a cycle out or the curve is symmetric; report no information
+  // rather than a confidently wrong branch.
+  e.usable = e.detection > kMinLcDetectionChi2 && e.deltaChi2 > kMinBranchChi2;
+  return e;
+}
+
 QMap<QString, QString> buildModelParameters(const ModelInputs &in) {
   auto V = [&](const QString &k) { return in.varied.contains(k); };
   auto radiusRange = [](double v) {
