@@ -138,6 +138,9 @@ private:
     Context _ctx;
     std::vector<std::shared_ptr<Spectrum>> _sortedSpectra;
     QHash<QString, PerSpec>                _configs;
+    /// Spectrum id → the instrument/mode its config was derived from, so a
+    /// re-attributed spectrum can be told from one whose config still fits.
+    QHash<QString, QString>                _configSource;
     QString                                 _currentId;
 
     // ── UI ─────────────────────────────────────────────────────
@@ -195,6 +198,10 @@ private:
 
     QGroupBox* buildIsisOptionsSection();
     void       updateBackendSpecificUi();
+
+    /// Held while a rebuilt list re-selects a row whose config was just
+    /// re-derived, so the stale editor contents are not committed over it.
+    bool _suppressCommit = false;
 
     bool _applyingPreviewEdit = false;
     bool _previewActive = false;

@@ -27,6 +27,7 @@
 #include <QGroupBox>
 #include <QScrollArea>
 #include <QListWidget>
+#include <QSet>
 #include <QPushButton>
 #include <QDoubleSpinBox>
 #include <QSpinBox>
@@ -73,6 +74,17 @@ QString spectrumLabel(const std::shared_ptr<Spectrum>& s, int idx)
     else l = QString("#%1").arg(idx + 1);
     if (s->getMJD() > 0) l += QString("  MJD %1").arg(s->getMJD(), 0, 'f', 4);
     return l;
+}
+
+/// Which instrument and mode a spectrum is attributed to, as one comparable
+/// string. A fit configuration is built from that mode's defaults, so a change
+/// here is what says a cached configuration no longer describes the spectrum.
+/// The display string is part of it because legacy rows without an instrument
+/// id are resolved from it.
+QString attributionKey(const std::shared_ptr<Spectrum>& s)
+{
+    const QChar sep(0x1f);   // unit separator: never part of a name
+    return s->getInstrumentId() + sep + s->getModeKey() + sep + s->getInstrument();
 }
 
 } // namespace
@@ -617,12 +629,46 @@ void FitSetupWidget::refreshSpectraList()
             return a->getMJD() < b->getMJD();
         });
 
+    // Spectra that are gone take their per-spectrum state with them. A reload
+    // hands back the same ids (a finished fit, an archive import), so only a
+    // genuinely deleted spectrum loses its configuration here.
+    QSet<QString> live;
+    for (const auto& s : _sortedSpectra) live.insert(s->getId());
+    for (auto it = _configs.begin(); it != _configs.end(); ) {
+        if (live.contains(it.key())) ++it;
+        else it = _configs.erase(it);
+    }
+    for (auto it = _configSource.begin(); it != _configSource.end(); ) {
+        if (live.contains(it.key())) ++it;
+        else it = _configSource.erase(it);
+    }
+
+    bool currentRederived = false;
+
     for (int i = 0; i < (int)_sortedSpectra.size(); ++i) {
         auto& s = _sortedSpectra[i];
         const QString id = s->getId();
 
-        if (!_configs.contains(id))
+        const QString attribution = attributionKey(s);
+        if (!_configs.contains(id)) {
             _configs[id] = makeDefaultConfig(s);
+        } else if (_configSource.value(id) != attribution) {
+            // The spectrum was re-attributed to another instrument or mode, so
+            // everything its configuration took from the old mode's defaults -
+            // fit range, resolution law, ignore regions, continuum anchors -
+            // stopped describing it. Those are rebuilt from the new mode; what
+            // no instrument supplies stays as the user left it.
+            PerSpec fresh = makeDefaultConfig(s);
+            const PerSpec& prev = _configs[id];
+            fresh.enabled       = prev.enabled;
+            fresh.inferFromFits = prev.inferFromFits;
+            fresh.airmass       = prev.airmass;
+            fresh.pwv           = prev.pwv;
+            _configs[id]        = fresh;
+            if (id == _currentId) currentRederived = true;
+        }
+        _configSource[id] = attribution;
+
         // Flagging a spectrum is how the user says it is unusable, so a
         // flagged one is never fitted. Every other row keeps the mark the
         // user gave it, so a refresh (a finished fit, an archive import)
@@ -649,7 +695,18 @@ void FitSetupWidget::refreshSpectraList()
         int row = 0;
         for (int i = 0; i < (int)_sortedSpectra.size(); ++i)
             if (_sortedSpectra[i]->getId() == _currentId) { row = i; break; }
+        // Selecting a row commits the editor back into the config it was
+        // loaded from, which is how per-spectrum edits survive a rebuild. For
+        // a config just re-derived from a new instrument mode that would write
+        // the old mode's values straight back over it, so the commit is held
+        // and the row change loads the fresh values instead.
+        _suppressCommit = currentRederived;
         _spectraList->setCurrentRow(row);
+        _suppressCommit = false;
+    } else {
+        // Nothing left to configure: park the editor rather than leave it on a
+        // spectrum that is gone.
+        onSpectrumListRowChanged(-1);
     }
 
     refreshRunSelectionUi();
@@ -781,6 +838,7 @@ void FitSetupWidget::onPanelSelectionChanged(const QString& spectrumId,
 
 void FitSetupWidget::commitEditorToState()
 {
+    if (_suppressCommit) return;
     if (_currentId.isEmpty() || !_configs.contains(_currentId)) return;
     auto& c = _configs[_currentId];
     c.wlMin      = _wlMinSpin->value();

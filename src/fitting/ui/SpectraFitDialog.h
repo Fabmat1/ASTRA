@@ -64,6 +64,14 @@ private:
     /// Reload the star's spectra from the DB and refresh every view (after a
     /// fit completed or archive spectra were imported).
     void reloadStarSpectra();
+    /// Rebuild every view that lists spectra - the tree, the panel, the fit
+    /// setup list and the co-add list. Call whenever the star's spectrum set
+    /// or a spectrum's instrument/mode attribution changed.
+    void refreshSpectraViews();
+    /// Lighter counterpart for a change to a spectrum's *fits*: the spectrum
+    /// rows stay as they are, but which of them a run skips and which ones the
+    /// co-add can stack does not.
+    void refreshFitViews();
     void rebuildTree();
     void refreshTreeStyling();
     void styleFlagRow(QTreeWidgetItem* item);
@@ -111,4 +119,7 @@ private:
 
     bool _updatingTree    = false;
     bool _syncingFromPanel = false;
+    /// Set while the dialog is being destroyed, so the final flag flush skips
+    /// refreshing views that are about to go away.
+    bool _teardown        = false;
 };

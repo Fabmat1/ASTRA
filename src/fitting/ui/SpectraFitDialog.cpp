@@ -133,6 +133,9 @@ SpectraFitDialog::~SpectraFitDialog()
 {
     // Backstop for teardown paths that skip QDialog::finished (e.g. the parent
     // window closing): don't lose flag edits still sitting in the debounce.
+    // The flush still writes them; only the view refresh it would trigger is
+    // pointless now, which is what the flag turns off.
+    _teardown = true;
     flushPendingFlagChanges();
 }
 
@@ -310,11 +313,30 @@ void SpectraFitDialog::reloadStarSpectra()
     // picks up the new fit counts / atmospheric parameters.
     _star->ensureRVCurveSynced();
     _star->markSummaryDirty();
-    _setup->refreshSpectraList();   // drop stale spectrum pointers
-    _coadd->refreshSpectraList();
-    rebuildTree();
-    _panel->refresh();
+    refreshSpectraViews();
     emit spectraUpdated();
+}
+
+void SpectraFitDialog::refreshSpectraViews()
+{
+    // Each view keeps its own copy of the spectrum list (and, in the fit setup
+    // tab, per-spectrum state keyed by it), so they all have to be rebuilt
+    // together. A view left holding a deleted spectrum does not just show a
+    // stale row: its shared_ptr still carries the RV curve's best-fit
+    // callback, which is enough to resurrect the RV point that went with it.
+    if (_setup) _setup->refreshSpectraList();
+    if (_coadd) _coadd->refreshSpectraList();
+    rebuildTree();
+    if (_panel) _panel->refresh();
+}
+
+void SpectraFitDialog::refreshFitViews()
+{
+    // The spectrum rows are unchanged; what moved is which of them a run would
+    // skip (the ones that already carry a best fit) and which ones the co-add
+    // can stack (they need a usable, unflagged fit).
+    if (_setup) _setup->refreshRunSelectionUi();
+    if (_coadd) _coadd->refreshSpectraList();
 }
 
 // ----------------------------------------------------------------------------
@@ -554,6 +576,18 @@ void SpectraFitDialog::flushPendingFlagChanges()
     if (curve) curve->endBatchUpdate();
 
     if (_star) _star->markSummaryDirty();
+
+    // The lists next door filter on flags: a flagged spectrum is never fitted,
+    // and a flagged fit can neither be skipped over nor co-added. Following
+    // them here rather than per row is what keeps drag-flagging cheap.
+    if (!_teardown) {
+        if (!specFlags.isEmpty()) {
+            if (_setup) _setup->refreshSpectraList();
+            if (_coadd) _coadd->refreshSpectraList();
+        } else if (!fitFlags.isEmpty()) {
+            refreshFitViews();
+        }
+    }
 }
 
 void SpectraFitDialog::onTreeItemClicked(QTreeWidgetItem* item, int column)
@@ -577,8 +611,9 @@ void SpectraFitDialog::onTreeItemClicked(QTreeWidgetItem* item, int column)
         setBestFitTied(fitId, !currentlyBest);
         updateBestMarkers();
         // The fit setup page can skip spectra that already have a best fit,
-        // so its list has to hear about this straight away.
-        _setup->refreshRunSelectionUi();
+        // and the co-add stacks the best fit of each spectrum, so both have to
+        // hear about this straight away.
+        refreshFitViews();
         return;
     }
 
@@ -926,8 +961,7 @@ void SpectraFitDialog::onAddSpectraClicked()
 
     if (added > 0) {
         _star->markSummaryDirty();
-        rebuildTree();
-        _panel->refresh();
+        refreshSpectraViews();
         emit spectraUpdated();
     }
 
@@ -998,6 +1032,7 @@ void SpectraFitDialog::onAddFitClicked()
     spec->addSpectralFit(fit);
     _star->markSummaryDirty();
 
+    refreshFitViews();
     rebuildTree();
     _panel->refreshCurrentView();
     emit spectraUpdated();
@@ -1054,13 +1089,7 @@ void SpectraFitDialog::removeSpectrum(const QString& spectrumId)
     purgeRVPointsFor({spectrumId});
     _star->markSummaryDirty();
 
-    // Drop the deleted spectrum from the other tabs too: they hold their own
-    // shared_ptrs, and a stale one still carries the RV curve's best-fit
-    // callback - enough to resurrect the point we just deleted.
-    _setup->refreshSpectraList();
-    _coadd->refreshSpectraList();
-    rebuildTree();
-    _panel->refresh();
+    refreshSpectraViews();
     emit spectraUpdated();
 
     LOG_INFO("Tools", QString("Removed spectrum %1").arg(spectrumId));
@@ -1089,12 +1118,7 @@ void SpectraFitDialog::removeSpectra(const QStringList& spectrumIds)
         purgeRVPointsFor(QSet<QString>(removed.begin(), removed.end()));
         _star->markSummaryDirty();
 
-        // See removeSpectrum(): stale spectrum pointers in the other tabs can
-        // resurrect the RV points we just deleted.
-        _setup->refreshSpectraList();
-        _coadd->refreshSpectraList();
-        rebuildTree();
-        _panel->refresh();
+        refreshSpectraViews();
         emit spectraUpdated();
 
         LOG_INFO("Tools", QString("Removed %1 spectra").arg(removed.size()));
@@ -1132,6 +1156,7 @@ void SpectraFitDialog::removeFit(const QString& spectrumId, const QString& fitId
     }
     _star->markSummaryDirty();
 
+    refreshFitViews();
     rebuildTree();
     _panel->refreshCurrentView();
     emit spectraUpdated();
@@ -1202,8 +1227,7 @@ void SpectraFitDialog::redetectSpectrumById(const QString& spectrumId)
     const QString before = spec->getInstrument();
     if (autodetectInstrument(spec, instruments)) {
         _star->markSummaryDirty();
-        rebuildTree();
-        _panel->refresh();
+        refreshSpectraViews();
         emit spectraUpdated();
         QMessageBox::information(this, "Re-detect instrument/mode",
             QString("Detected: %1").arg(spec->getInstrument()));
@@ -1237,8 +1261,7 @@ void SpectraFitDialog::redetectSpectra(const QStringList& spectrumIds)
     }
 
     _star->markSummaryDirty();
-    rebuildTree();
-    _panel->refresh();
+    refreshSpectraViews();
     emit spectraUpdated();
 
     QMessageBox::information(this, "Re-detect instrument/mode",
@@ -1263,8 +1286,7 @@ void SpectraFitDialog::onRedetectAllClicked()
         if (autodetectInstrument(spec, instruments)) ++matched;
 
     _star->markSummaryDirty();
-    rebuildTree();
-    _panel->refresh();
+    refreshSpectraViews();
     emit spectraUpdated();
 
     QMessageBox::information(this, "Re-detect instruments/modes",
@@ -1355,8 +1377,7 @@ void SpectraFitDialog::defineInstrumentManually(const QStringList& spectrumIds)
     }
 
     _star->markSummaryDirty();
-    rebuildTree();
-    _panel->refresh();
+    refreshSpectraViews();
     emit spectraUpdated();
 
     LOG_INFO("Tools",
