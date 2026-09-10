@@ -443,16 +443,6 @@ def post_check(root: Path, mapping: dict[str, str]) -> int:
 
     # 2. no QtWidgets/QtGui in Core files
     #
-    # Known exception: three Core services hold an ApplicationController* purely to
-    # reach settings()/databaseManager()/getCurrentProject().  Their headers only
-    # forward-declare it, so astra_core compiles; the symbols resolve against the
-    # executable.  A test that links one of these objects would fail to link until
-    # the controller dependency is injected instead.  Tracked as a follow-up.
-    KNOWN_UI_BACKREFS = {
-        "lightcurve/LightcurveFetchService.cpp": "app/ui/ApplicationController.h",
-        "massfit/MassFitService.cpp": "app/ui/ApplicationController.h",
-        "spectra/SpectrumFetchService.cpp": "app/ui/ApplicationController.h",
-    }
     violators = []
     for new in sorted(mapping.values()):
         if is_ui(new):
@@ -466,8 +456,6 @@ def post_check(root: Path, mapping: dict[str, str]) -> int:
             if not m:
                 continue
             inc = m.group(1)
-            if KNOWN_UI_BACKREFS.get(new) == inc:
-                continue
             if any(tok == inc or inc.endswith(f"/{tok}") for tok in GUI_TOKENS):
                 violators.append(f"{new}: {inc}")
             elif re.search(r'(^|/)ui/', inc):
@@ -478,8 +466,7 @@ def post_check(root: Path, mapping: dict[str, str]) -> int:
             print(f"       {v}")
         problems += 1
     else:
-        ok(f"no Core file includes a QtWidgets/QtGui or ui/ header "
-           f"({len(KNOWN_UI_BACKREFS)} documented exceptions)")
+        ok("no Core file includes a QtWidgets/QtGui or ui/ header")
 
     # 3. every .cpp is listed in CMakeLists.txt
     cmake = (root / "CMakeLists.txt").read_text(encoding="utf-8", errors="replace")

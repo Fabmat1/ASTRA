@@ -1,4 +1,5 @@
 #include "rv/ui/RVInspectorDialog.h"
+#include "core/PhaseUtils.h"
 
 #include "rv/ui/RVAddFitDialog.h"
 #include "rv/ui/RVAddPointDialog.h"
@@ -708,12 +709,6 @@ double RVSolutionsWidget::phiFromT0BJD(const std::shared_ptr<RVFit> &fit,
 
     const double savedPhi = fit->getPhi();
 
-    auto wrap01 = [](double x) {
-        x = std::fmod(x, 1.0);
-        if (x < 0.0)
-            x += 1.0;
-        return x;
-    };
     // Distance to nearest period multiple (T0 is only defined mod P).
     auto modErr = [&](double t) {
         double d = std::fmod(t - targetT0, P);
@@ -729,8 +724,8 @@ double RVSolutionsWidget::phiFromT0BJD(const std::shared_ptr<RVFit> &fit,
         return savedPhi;
     }
 
-    const double cand1 = wrap01((A0 - targetT0) / P); // slope −P
-    const double cand2 = wrap01((targetT0 - A0) / P); // slope +P
+    const double cand1 = PhaseUtils::wrap01((A0 - targetT0) / P); // slope −P
+    const double cand2 = PhaseUtils::wrap01((targetT0 - A0) / P); // slope +P
 
     fit->setPhi(cand1);
     const double e1 = modErr(fit->getT0BJD());

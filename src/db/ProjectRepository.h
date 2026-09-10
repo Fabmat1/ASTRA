@@ -4,6 +4,7 @@
 #include <memory>
 #include <vector>
 #include <QString>
+#include <QStringList>
 
 class DBAccess;
 class Project;
@@ -16,6 +17,9 @@ public:
     bool saveProject(std::shared_ptr<Project> project);
     bool updateProject(std::shared_ptr<Project> project);
     bool deleteProject(const QString& projectId);
+
+    /// Ids of every star currently assigned to the project.
+    QStringList starIdsIn(const QString& projectId);
 
 private:
     DBAccess& _db;

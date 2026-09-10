@@ -1,4 +1,5 @@
 #include "importwizard/RadialVelocityImportPage.h"
+#include "core/DelimitedTable.h"
 #include "app/ui/ApplicationController.h"
 #include "core/Project.h"
 #include "core/Star.h"
@@ -764,45 +765,7 @@ QChar RadialVelocityImportPage::getDelimiter(QComboBox* combo) const
     }
 }
 
-QChar RadialVelocityImportPage::detectDelimiter(const QString& line) const
-{
-    int commas = line.count(',');
-    int tabs   = line.count('\t');
-    int semis  = line.count(';');
-    int spaces = line.split(QRegularExpression("\\s+"),
-                            Qt::SkipEmptyParts).size() - 1;
 
-    int best = commas;
-    QChar ch = ',';
-    if (tabs > best)   { best = tabs;   ch = '\t'; }
-    if (semis > best)  { best = semis;  ch = ';'; }
-    if (spaces > best) { ch = ' '; }
-    return ch;
-}
-
-QStringList RadialVelocityImportPage::parseLine(
-    const QString& line, QChar delimiter) const
-{
-    if (delimiter == ' ')
-        return line.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
-
-    QStringList result;
-    QString current;
-    bool inQuotes = false;
-    for (int i = 0; i < line.length(); ++i) {
-        QChar c = line[i];
-        if (c == '"') {
-            inQuotes = !inQuotes;
-        } else if (c == delimiter && !inQuotes) {
-            result << current.trimmed();
-            current.clear();
-        } else {
-            current += c;
-        }
-    }
-    result << current.trimmed();
-    return result;
-}
 
 bool RadialVelocityImportPage::loadCSVFile(
     const QString& filepath, QComboBox* delimCombo, QCheckBox* headerCheck,
@@ -831,7 +794,7 @@ bool RadialVelocityImportPage::loadCSVFile(
 
     QChar delim = getDelimiter(delimCombo);
     if (delim == '\0')
-        delim = detectDelimiter(lines.first());
+        delim = DelimitedTable::detectDelimiter(lines.first());
 
     outColumns.clear();
     outRows.clear();
@@ -843,23 +806,23 @@ bool RadialVelocityImportPage::loadCSVFile(
         // measurement from being consumed as a header row.
         const QStringList commented = preambleHeader.isEmpty()
                                     ? QStringList()
-                                    : parseLine(preambleHeader, delim);
+                                    : DelimitedTable::splitLine(preambleHeader, delim);
         if (commented.size() > 1 &&
-            commented.size() == parseLine(lines[0], delim).size()) {
+            commented.size() == DelimitedTable::splitLine(lines[0], delim).size()) {
             outColumns = commented;
             startRow   = 0;
         } else {
-            outColumns = parseLine(lines[0], delim);
+            outColumns = DelimitedTable::splitLine(lines[0], delim);
             startRow   = 1;
         }
     } else {
-        int ncols = parseLine(lines[0], delim).size();
+        int ncols = DelimitedTable::splitLine(lines[0], delim).size();
         for (int i = 0; i < ncols; ++i)
             outColumns << QString("Column_%1").arg(i);
     }
 
     for (int i = startRow; i < lines.size(); ++i)
-        outRows.push_back(parseLine(lines[i], delim));
+        outRows.push_back(DelimitedTable::splitLine(lines[i], delim));
 
     return true;
 }
@@ -1676,13 +1639,13 @@ void RadialVelocityImportPage::detectFolderColumns()
         if (firstLine.isEmpty()) continue;
 
         QChar delim = getDelimiter(_folderDelimCombo);
-        if (delim == '\0') delim = detectDelimiter(firstLine);
+        if (delim == '\0') delim = DelimitedTable::detectDelimiter(firstLine);
 
         QStringList cols;
         if (_folderHeaderCheck->isChecked()) {
-            cols = parseLine(firstLine, delim);
+            cols = DelimitedTable::splitLine(firstLine, delim);
         } else {
-            int n = parseLine(firstLine, delim).size();
+            int n = DelimitedTable::splitLine(firstLine, delim).size();
             for (int i = 0; i < n; ++i)
                 cols << QString("Column_%1").arg(i);
         }

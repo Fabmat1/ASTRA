@@ -1,4 +1,5 @@
 #include "rv/ui/RVAddFitDialog.h"
+#include "core/PhaseUtils.h"
 #include "rv/ui/RVMCMCResultsDialog.h"
 
 #include "db/DatabaseManager.h"
@@ -1319,7 +1320,7 @@ double fitCellChi2Kepler(const std::vector<double>& t,
         q[2] = std::clamp(q[2], gMin, gMax);
         q[3] -= std::floor(q[3]);                                   // φ ∈ [0,1)
         q[4] = std::clamp(q[4], eMin, eMax);
-        q[5] = std::fmod(q[5], 360.0); if (q[5] < 0) q[5] += 360.0; // ω ∈ [0,360)
+        q[5] = PhaseUtils::wrap360(q[5]);   // omega in [0, 360)
         if (sb2) {
             if (Kmax > 0.0) q[6] = std::min(q[6], Kmax);
             q[6] = std::max(q[6], std::max(0.0, Kmin));
@@ -1641,9 +1642,9 @@ KeplerLMResult keplerLM(const std::vector<double>& t,
 
     auto project = [&](double* q) {
         if (q[0] <= 1e-6) q[0] = 1e-6;                       // P > 0
-        q[3] = std::fmod(q[3], 1.0); if (q[3] < 0) q[3] += 1.0;     // φ ∈ [0,1)
+        q[3] = PhaseUtils::wrap01(q[3]);    // phase in [0, 1)
         q[4] = std::clamp(q[4], eMin, eMax);                // e bounds
-        q[5] = std::fmod(q[5], 360.0); if (q[5] < 0) q[5] += 360.0; // ω ∈ [0,360)
+        q[5] = PhaseUtils::wrap360(q[5]);   // omega in [0, 360)
         if (sb2) {
             // Both amplitudes are bounded non-negative here: the ω+180°
             // canonicalisation used for a single-lined fit would swap the two
@@ -1737,8 +1738,8 @@ KeplerLMResult keplerLM(const std::vector<double>& t,
     // +K with ω shifted by 180°. Not applicable to an SB2 fit, where both
     // amplitudes are already bounded non-negative and the ω shift would move
     // the secondary onto the primary's branch.
-    if (!sb2 && R.K < 0.0) { R.K = -R.K; R.omega = std::fmod(R.omega + 180.0, 360.0); }
-    R.phi = std::fmod(R.phi, 1.0); if (R.phi < 0) R.phi += 1.0;
+    if (!sb2 && R.K < 0.0) { R.K = -R.K; R.omega = PhaseUtils::wrap360(R.omega + 180.0); }
+    R.phi = PhaseUtils::wrap01(R.phi);
 
     R.chi2 = chi2; R.ok = true;
     return R;

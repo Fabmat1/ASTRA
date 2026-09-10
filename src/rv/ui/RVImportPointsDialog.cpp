@@ -1,4 +1,5 @@
 #include "rv/ui/RVImportPointsDialog.h"
+#include "core/DelimitedTable.h"
 
 #include "core/Star.h"
 #include "spectra/Spectrum.h"
@@ -209,43 +210,7 @@ QChar RVImportPointsDialog::delimiter() const
     }
 }
 
-QChar RVImportPointsDialog::detectDelimiter(const QString& line)
-{
-    int commas = line.count(',');
-    int tabs   = line.count('\t');
-    int semis  = line.count(';');
-    int spaces = line.split(QRegularExpression("\\s+"),
-                            Qt::SkipEmptyParts).size() - 1;
-    int best = commas;
-    QChar ch = ',';
-    if (tabs > best)   { best = tabs;  ch = '\t'; }
-    if (semis > best)  { best = semis; ch = ';'; }
-    if (spaces > best) { ch = ' '; }
-    return ch;
-}
 
-QStringList RVImportPointsDialog::parseLine(const QString& line, QChar delim)
-{
-    if (delim == ' ')
-        return line.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
-
-    QStringList result;
-    QString current;
-    bool inQuotes = false;
-    for (int i = 0; i < line.length(); ++i) {
-        QChar c = line[i];
-        if (c == '"') {
-            inQuotes = !inQuotes;
-        } else if (c == delim && !inQuotes) {
-            result << current.trimmed();
-            current.clear();
-        } else {
-            current += c;
-        }
-    }
-    result << current.trimmed();
-    return result;
-}
 
 bool RVImportPointsDialog::loadFile()
 {
@@ -270,19 +235,19 @@ bool RVImportPointsDialog::loadFile()
     if (lines.isEmpty()) return false;
 
     QChar delim = delimiter();
-    if (delim == '\0') delim = detectDelimiter(lines.first());
+    if (delim == '\0') delim = DelimitedTable::detectDelimiter(lines.first());
 
     int startRow = 0;
     if (_headerCheck->isChecked()) {
-        _columns = parseLine(lines[0], delim);
+        _columns = DelimitedTable::splitLine(lines[0], delim);
         startRow = 1;
     } else {
-        int ncols = parseLine(lines[0], delim).size();
+        int ncols = DelimitedTable::splitLine(lines[0], delim).size();
         for (int i = 0; i < ncols; ++i)
             _columns << QString("Column_%1").arg(i);
     }
     for (int i = startRow; i < lines.size(); ++i)
-        _rows.push_back(parseLine(lines[i], delim));
+        _rows.push_back(DelimitedTable::splitLine(lines[i], delim));
 
     return true;
 }

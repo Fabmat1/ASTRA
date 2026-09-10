@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include "app/ServiceContext.h"
 #include <QDateTime>
 #include <QJsonObject>
 #include <QHash>
@@ -17,7 +18,7 @@
 
 #include "spectra/fetch/SpectrumArchiveTypes.h"
 
-class ApplicationController;
+class ServiceContext;
 class QNetworkAccessManager;
 class QThreadPool;
 class QNetworkReply;
@@ -96,7 +97,7 @@ public:
         qint64    discoveryEtaMs = -1;
     };
 
-    explicit SpectrumFetchService(ApplicationController* controller,
+    explicit SpectrumFetchService(ServiceContext* controller,
                                   QObject*               parent = nullptr);
     ~SpectrumFetchService() override;
 
@@ -302,7 +303,7 @@ private:
     void purgeExistingOrigins(Session* s, const QString& starId,
                               const QStringList& originIds);
 
-    ApplicationController* _controller = nullptr;
+    ServiceContext* _controller = nullptr;
     QNetworkAccessManager* _nam        = nullptr;
     // Discovery workers block on synchronous HTTP for minutes at a time. On
     // their own pool they cannot fill the global one and starve the

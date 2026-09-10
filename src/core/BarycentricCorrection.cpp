@@ -120,12 +120,19 @@ double BarycentricCorrection::leapSecondsAt(double mjd_utc)
         else
             break;
     }
-    // Before 1972 we use a rough linear approximation
+    // Before 1972 there were no whole-second leap seconds: UTC ran at a rubber
+    // rate, and TAI - UTC drifted from about 1.42 s in 1961 to exactly 10 s at
+    // the start of 1972. A straight line between those two endpoints is close
+    // enough for the era (better than a second), and anchoring it at 1972
+    // rather than 1970 matters: the previous version was pinned to 10 s in
+    // 1970, so it overshot through 1971 and then stepped *down* by almost a
+    // second at the table's first entry, leaving the function non-monotonic
+    // across the boundary.
     if (mjd_utc < LEAP_TABLE[0].mjd) {
-        // Approximate ΔAT before 1972  (from Stephenson & Morrison)
-        double year = 2000.0 + (mjd_utc - J2000_MJD) / 365.25;
-        double dt   = year - 1970.0;
-        dat = 10.0 + 0.5 * dt;  // rough
+        constexpr double kDatAt1972    = 10.0;    // seconds, exact
+        constexpr double kDriftPerYear = 0.78;    // (10 - 1.42) / 11 years
+        const double year = 2000.0 + (mjd_utc - J2000_MJD) / 365.25;
+        dat = kDatAt1972 - kDriftPerYear * (1972.0 - year);
         if (dat < 0.0) dat = 0.0;
     }
     return dat;

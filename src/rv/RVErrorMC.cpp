@@ -1,4 +1,5 @@
 #include "rv/RVErrorMC.h"
+#include "core/PhaseUtils.h"
 
 #include "rv/RadialVelocity.h"   // RVFit::solveKepler
 
@@ -413,8 +414,8 @@ KeplerianErrors sampleKeplerian(const std::vector<double>& t,
         if (q[1] < 0.0) return false;                     // K ≥ 0 (truncated)
         if (q[4] < eMin || q[4] > eMax) return false;     // e bounds
         if (sb2 && q[6] < 0.0) return false;              // K2 ≥ 0 (truncated)
-        q[3] = std::fmod(q[3], 1.0);   if (q[3] < 0.0) q[3] += 1.0;    // φ
-        q[5] = std::fmod(q[5], 360.0); if (q[5] < 0.0) q[5] += 360.0;  // ω
+        q[3] = PhaseUtils::wrap01(q[3]);      // phase
+        q[5] = PhaseUtils::wrap360(q[5]);     // omega
         return true;
     };
 

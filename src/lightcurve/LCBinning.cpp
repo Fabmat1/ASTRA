@@ -1,4 +1,5 @@
 #include "lightcurve/LCBinning.h"
+#include "core/PhaseUtils.h"
 #include "core/Stats.h"
 
 #include <QCoreApplication>
@@ -39,11 +40,9 @@ Result fold(const std::vector<RawPoint> &raw, double period, int nBins,
     for (const RawPoint &p : raw) {
         if (p.rejected || !std::isfinite(p.time) || !std::isfinite(p.flux))
             continue;
-        double ph = std::fmod(p.time / period, 1.0);
-        if (ph < 0.0)
-            ph += 1.0;
-        int b = int(ph * nBins);
-        b     = std::clamp(b, 0, nBins - 1);
+        // T0 is folded into the ephemeris upstream, so the lightcurve side
+        // folds on t/period with a zero epoch. See PhaseUtils.
+        const int b = PhaseUtils::phaseBin(p.time / period, nBins);
         bins[size_t(b)].push_back(&p);
     }
 

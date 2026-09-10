@@ -321,6 +321,7 @@ set(ASTRA_CORE_SOURCES
     # core
     src/core/BarycentricCorrection.cpp
     src/core/ColumnPreset.cpp
+    src/core/DelimitedTable.cpp
     src/core/FilterExpression.cpp
     src/core/Instrument.cpp
     src/core/InstrumentMode.cpp
@@ -442,6 +443,7 @@ set(ASTRA_CORE_HEADERS
     # app
     src/app/AppPaths.h
     src/app/AppSettings.h
+    src/app/ServiceContext.h
     src/app/DataStore.h
     src/app/Logger.h
     src/app/PerfTimer.h
@@ -457,10 +459,12 @@ set(ASTRA_CORE_HEADERS
     src/core/AsymmetricErrors.h
     src/core/BarycentricCorrection.h
     src/core/ColumnPreset.h
+    src/core/DelimitedTable.h
     src/core/FilterExpression.h
     src/core/Instrument.h
     src/core/InstrumentMode.h
     src/core/Project.h
+    src/core/PhaseUtils.h
     src/core/Quantity.h
     src/core/QuantityFormat.h
     src/core/SkyGeometry.h
@@ -1395,11 +1399,28 @@ if(BUILD_TESTING)
         LIBS    doctest
         DEFINES ASTRA_TEST_REFERENCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/reference"
         SOURCES
+            # The Qt resource bundle: several Core units read their reference
+            # data from it (the TESS sector table, the Claret limb-darkening
+            # grids, the default instruments), so the tests need it too. It is
+            # listed on the executable rather than on astra_core because static
+            # libraries need explicit resource initialisation.
+            resources/resources.qrc
             tests/doctest_main.cpp
             tests/unit/core/time.cpp
             tests/unit/core/stats.cpp
+            tests/unit/core/delimited_table.cpp
+            tests/unit/core/asymmetric_errors.cpp
+            tests/unit/core/filter_expression.cpp
+            tests/unit/core/barycentric_parts.cpp
             tests/unit/spectra/exposure_epoch.cpp
             tests/unit/rv/rvfit.cpp
+            tests/unit/lightcurve/lcfit_physics.cpp
+            tests/unit/kinematics/galactic.cpp
+            tests/unit/observing/observability.cpp
+            tests/unit/fitting/fit_types_json.cpp
+            tests/unit/rv/periodogram.cpp
+            tests/unit/io/star_package.cpp
+            tests/unit/rv/rv_error_mc.cpp
             tests/unit/db/delete_star.cpp
     )
 

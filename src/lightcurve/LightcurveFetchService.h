@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include "app/ServiceContext.h"
 #include <QDateTime>
 #include <QList>
 #include <QObject>
@@ -11,7 +12,7 @@
 #include "lightcurve/LightcurveFetcher.h"
 
 class Star;
-class ApplicationController;
+class ServiceContext;
 
 /**
  * Application-level manager for lightcurvequery fetch sessions.
@@ -45,7 +46,7 @@ public:
         QDateTime createdAt;
     };
 
-    explicit LightcurveFetchService(ApplicationController* controller,
+    explicit LightcurveFetchService(ServiceContext* controller,
                                     QObject*               parent = nullptr);
     ~LightcurveFetchService() override;
 
@@ -134,7 +135,7 @@ private:
     QString importResults(Session* s);
     void emitProgress();
 
-    ApplicationController* _controller = nullptr;
+    ServiceContext* _controller = nullptr;
 
     std::vector<std::unique_ptr<Session>> _sessions;
     int _maxParallel = 1;

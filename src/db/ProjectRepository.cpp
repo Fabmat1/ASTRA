@@ -107,19 +107,26 @@ bool ProjectRepository::updateProject(std::shared_ptr<Project> project)
     return query.exec();
 }
 
+QStringList ProjectRepository::starIdsIn(const QString& projectId)
+{
+    QStringList ids;
+    QSqlQuery query(_db.threadConnection());
+    query.prepare("SELECT id FROM stars WHERE project_id = :pid");
+    query.bindValue(":pid", projectId);
+    if (query.exec())
+        while (query.next()) ids << query.value(0).toString();
+    return ids;
+}
+
 bool ProjectRepository::deleteProject(const QString& projectId)
 {
-    // Clean up all star data directories first
-    QSqlQuery starQuery(_db.threadConnection());
-    starQuery.prepare("SELECT id FROM stars WHERE project_id = :pid");
-    starQuery.bindValue(":pid", projectId);
-    if (starQuery.exec()) {
-        QString dataDir = QFileInfo(_db.databasePath()).absolutePath() + "/data";
-        while (starQuery.next()) {
-            DataStore::removeStarData(dataDir, starQuery.value(0).toString());
-        }
-    }
-
+    // Only the project row. Its stars are removed by DatabaseManager, which
+    // routes each one through StarRepository::deleteStar so that every child
+    // table goes too.
+    //
+    // This used to delete each star's data directory from disk and then drop
+    // the project, leaving every star, spectrum, RV curve and periodogram row
+    // in place, pointing at files that no longer existed.
     QSqlQuery query(_db.threadConnection());
     query.prepare("DELETE FROM projects WHERE id = :id");
     query.bindValue(":id", projectId);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QByteArray>
+#include "app/ServiceContext.h"
 #include <QDateTime>
 #include <QHash>
 #include <QJsonObject>
@@ -16,7 +17,7 @@
 #include "fitting/FitTypes.h"
 #include "massfit/MassFitPlan.h"
 
-class ApplicationController;
+class ServiceContext;
 class DatabaseManager;
 class QThreadPool;
 class SpectralFit;
@@ -101,7 +102,7 @@ public:
         QString   summary;           ///< human-readable result line
     };
 
-    explicit MassFitService(ApplicationController* controller,
+    explicit MassFitService(ServiceContext* controller,
                             QObject*               parent = nullptr);
     ~MassFitService() override;
 
@@ -274,7 +275,7 @@ private:
     static StarOutcome executeStar(const StarWork& work, DatabaseManager* dbm,
                                    MassFitService* service);
 
-    ApplicationController* _controller = nullptr;
+    ServiceContext* _controller = nullptr;
 
     std::vector<std::unique_ptr<Run>> _runs;
 

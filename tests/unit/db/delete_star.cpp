@@ -13,6 +13,8 @@
 
 #include <doctest.h>
 
+#include "core/Project.h"
+#include "core/Star.h"
 #include "db/DatabaseManager.h"
 
 #include <QSqlDatabase>
@@ -20,6 +22,8 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+
+#include <memory>
 
 namespace {
 
@@ -168,6 +172,228 @@ TEST_CASE("deleteStar refuses a star that belongs to another project")
     CHECK(rowCount("stars") == 1);
 
     dbm.closeDatabase();
+}
+
+}   // TEST_SUITE("db")
+
+// ── Repository round trips ──────────────────────────────────────────────────
+//
+// The persistence layer had no tests at all. These exercise the save-and-load
+// path for the entities most of the application depends on, through a real
+// SQLite database in a temporary directory, so schema drift between a writer
+// and its reader shows up here rather than as an empty panel.
+
+TEST_SUITE("db")
+{
+
+TEST_CASE("Project: saved and loaded back")
+{
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    DatabaseManager dbm;
+    REQUIRE(dbm.openDatabase(tmp.filePath("astra_test.db")));
+
+    auto project = std::make_shared<Project>("Hot subdwarfs", "A test project");
+    project->setId("P1");
+    REQUIRE(dbm.saveProject(project));
+
+    const auto loaded = dbm.loadProjects();
+    REQUIRE(loaded.size() == 1);
+    CHECK(loaded[0]->getId() == "P1");
+    CHECK(loaded[0]->getName() == "Hot subdwarfs");
+    CHECK(loaded[0]->getDescription() == "A test project");
+
+    dbm.closeDatabase();
+}
+
+TEST_CASE("Star: values survive the round trip through SQLite")
+{
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    DatabaseManager dbm;
+    REQUIRE(dbm.openDatabase(tmp.filePath("astra_test.db")));
+
+    auto project = std::make_shared<Project>("test");
+    project->setId("P1");
+    REQUIRE(dbm.saveProject(project));
+
+    auto star = std::make_shared<Star>();
+    star->setId("S1");
+    star->setAlias("HD 12345");
+    star->setSourceId("Gaia DR3 4242424242");
+    star->setRa(123.456789012);
+    star->setDec(-45.678901234);
+    star->setPlx(2.5);
+    star->setGmag(13.75);
+    star->setTeff(28123.0);
+    star->setLogg(5.43);
+    REQUIRE(dbm.saveStar("P1", star));
+
+    const auto stars = dbm.loadStars("P1");
+    REQUIRE(stars.size() == 1);
+    const auto& back = stars.front();
+
+    CHECK(back->getId() == "S1");
+    CHECK(back->getAlias() == "HD 12345");
+    CHECK(back->getSourceId() == "Gaia DR3 4242424242");
+    // Coordinates must not lose precision on the way through: a rounded
+    // position is a different star at arcsecond match radii.
+    CHECK(back->getRa() == doctest::Approx(123.456789012).epsilon(1e-12));
+    CHECK(back->getDec() == doctest::Approx(-45.678901234).epsilon(1e-12));
+    CHECK(back->getTeff() == doctest::Approx(28123.0));
+    CHECK(back->getLogg() == doctest::Approx(5.43));
+
+    dbm.closeDatabase();
+}
+
+TEST_CASE("Star: an update replaces rather than duplicates")
+{
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    DatabaseManager dbm;
+    REQUIRE(dbm.openDatabase(tmp.filePath("astra_test.db")));
+
+    auto project = std::make_shared<Project>("test");
+    project->setId("P1");
+    REQUIRE(dbm.saveProject(project));
+
+    auto star = std::make_shared<Star>();
+    star->setId("S1");
+    star->setAlias("original");
+    star->setRa(10.0);
+    star->setDec(20.0);
+    REQUIRE(dbm.saveStar("P1", star));
+
+    star->setAlias("corrected");
+    star->setTeff(30000.0);
+    REQUIRE(dbm.updateStar("P1", star));
+
+    const auto stars = dbm.loadStars("P1");
+    REQUIRE(stars.size() == 1);
+    CHECK(stars[0]->getAlias() == "corrected");
+    CHECK(stars[0]->getTeff() == doctest::Approx(30000.0));
+    CHECK(dbm.getStarCountForProject("P1") == 1u);
+
+    dbm.closeDatabase();
+}
+
+TEST_CASE("Stars belong to their own project")
+{
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    DatabaseManager dbm;
+    REQUIRE(dbm.openDatabase(tmp.filePath("astra_test.db")));
+
+    for (const char* id : {"P1", "P2"}) {
+        auto p = std::make_shared<Project>(QString::fromLatin1(id));
+        p->setId(id);
+        REQUIRE(dbm.saveProject(p));
+    }
+
+    auto a = std::make_shared<Star>();
+    a->setId("S1");
+    a->setAlias("in one");
+    REQUIRE(dbm.saveStar("P1", a));
+
+    auto b = std::make_shared<Star>();
+    b->setId("S2");
+    b->setAlias("in two");
+    REQUIRE(dbm.saveStar("P2", b));
+
+    CHECK(dbm.loadStars("P1").size() == 1);
+    CHECK(dbm.loadStars("P2").size() == 1);
+    CHECK(dbm.loadStars("P1")[0]->getId() == "S1");
+    CHECK(dbm.getStarCountForProject("P1") == 1u);
+    CHECK(dbm.loadStars("nonexistent").empty());
+
+    dbm.closeDatabase();
+}
+
+TEST_CASE("Stars move between projects with their data")
+{
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    DatabaseManager dbm;
+    REQUIRE(dbm.openDatabase(tmp.filePath("astra_test.db")));
+
+    for (const char* id : {"P1", "P2"}) {
+        auto p = std::make_shared<Project>(QString::fromLatin1(id));
+        p->setId(id);
+        REQUIRE(dbm.saveProject(p));
+    }
+
+    auto star = std::make_shared<Star>();
+    star->setId("S1");
+    star->setAlias("traveller");
+    REQUIRE(dbm.saveStar("P1", star));
+
+    REQUIRE(dbm.moveStarsToProject({"S1"}, "P2"));
+    CHECK(dbm.loadStars("P1").empty());
+    REQUIRE(dbm.loadStars("P2").size() == 1);
+    CHECK(dbm.loadStars("P2")[0]->getAlias() == "traveller");
+
+    dbm.closeDatabase();
+}
+
+TEST_CASE("Deleting a project takes its stars and all their data with it")
+{
+    // The project path used to delete each star's files from disk and then
+    // drop only the project row, leaving every star, spectrum, radial velocity
+    // and periodogram behind, pointing at files that no longer existed.
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    DatabaseManager dbm;
+    REQUIRE(dbm.openDatabase(tmp.filePath("astra_test.db")));
+
+    auto p = std::make_shared<Project>("doomed");
+    p->setId("P1");
+    REQUIRE(dbm.saveProject(p));
+
+    auto star = std::make_shared<Star>();
+    star->setId("S1");
+    REQUIRE(dbm.saveStar("P1", star));
+
+    // Give the star something in every child table.
+    REQUIRE(run("INSERT INTO photometry (id, star_id) VALUES ('PH1', 'S1')"));
+    REQUIRE(run("INSERT INTO photometric_points (id, photometry_id) VALUES ('PP1', 'PH1')"));
+    REQUIRE(run("INSERT INTO spectra (id, star_id) VALUES ('SP1', 'S1')"));
+    REQUIRE(run("INSERT INTO spectral_fits (id, spectrum_id) VALUES ('SF1', 'SP1')"));
+    REQUIRE(run("INSERT INTO rv_curves (id, star_id) VALUES ('RC1', 'S1')"));
+    REQUIRE(run("INSERT INTO rv_points (id, curve_id, radial_velocity) "
+                "VALUES ('RP1', 'RC1', 10.0)"));
+    REQUIRE(run("INSERT INTO periodograms (id, star_id) VALUES ('PG1', 'S1')"));
+
+    REQUIRE(dbm.deleteProject("P1"));
+
+    CHECK(dbm.loadProjects().empty());
+    CHECK(dbm.loadStars("P1").empty());
+    CHECK(rowCount("stars") == 0);
+    for (const QString& table : {QStringLiteral("photometry"),
+                                 QStringLiteral("photometric_points"),
+                                 QStringLiteral("spectra"),
+                                 QStringLiteral("spectral_fits"),
+                                 QStringLiteral("rv_curves"),
+                                 QStringLiteral("rv_points"),
+                                 QStringLiteral("periodograms")})
+        CHECK_MESSAGE(rowCount(table) == 0, "rows left in " << table.toStdString());
+
+    dbm.closeDatabase();
+}
+
+TEST_CASE("A fresh database opens clean and passes its integrity check")
+{
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    DatabaseManager dbm;
+    REQUIRE(dbm.openDatabase(tmp.filePath("astra_test.db")));
+
+    CHECK(dbm.isOpen());
+    CHECK(dbm.isHealthy());
+    CHECK(dbm.integrityError().isEmpty());
+    CHECK(dbm.loadProjects().empty());
+
+    dbm.closeDatabase();
+    CHECK_FALSE(dbm.isOpen());
 }
 
 }   // TEST_SUITE("db")

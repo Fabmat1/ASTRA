@@ -63,8 +63,6 @@ private:
 
     // CSV helpers
     QChar getDelimiter(QComboBox* combo) const;
-    QChar detectDelimiter(const QString& line) const;
-    QStringList parseLine(const QString& line, QChar delimiter) const;
     bool loadCSVFile(const QString& filepath, QComboBox* delimCombo,
                      QCheckBox* headerCheck, QStringList& outColumns,
                      std::vector<QStringList>& outRows);

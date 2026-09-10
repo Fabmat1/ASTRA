@@ -1,4 +1,5 @@
 #include "rv/RadialVelocity.h"
+#include "core/PhaseUtils.h"
 #include "core/Stats.h"
 #include "spectra/Spectrum.h"
 #include "core/Instrument.h"
@@ -99,17 +100,6 @@ double regularizedGammaP(double a, double x)
 }
 
 
-inline double wrapPhase(double p)
-{
-    p = std::fmod(p, 1.0);
-    if (p < 0.0) p += 1.0;
-    // An epoch on T0 gives a p of about -1e-17 (φ and -φ need not cancel to
-    // the last bit), and for |p| below 2^-53 the addition above rounds to
-    // exactly 1.0. Callers document and rely on [0, 1) - phase bin indices and
-    // plot wrapping both break at 1.0 - so close the interval here.
-    if (p >= 1.0) p = 0.0;
-    return p;
-}
 
 } // anonymous namespace
 
@@ -892,9 +882,9 @@ double RVFit::computePhase(const Time& t) const
     } else if (_tRefMJD > 0.0 && mjd > 0.0) {
         tVal = mjd; refVal = _tRefMJD;
     } else {
-        return wrapPhase(phaseSign() * _phi);
+        return PhaseUtils::wrap01(phaseSign() * _phi);
     }
-    return wrapPhase((tVal - refVal) / _period + phaseSign() * _phi);
+    return PhaseUtils::wrap01((tVal - refVal) / _period + phaseSign() * _phi);
 }
 
 

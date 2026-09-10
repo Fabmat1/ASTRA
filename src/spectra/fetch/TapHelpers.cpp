@@ -273,49 +273,6 @@ QByteArray tapAsyncQuery(QNetworkAccessManager* nam, const QString& asyncUrl,
     return res.body;
 }
 
-Csv parseCsv(const QByteArray& body) {
-    Csv out;
-
-    // Split into logical lines, honoring quoted fields (a quoted field may
-    // contain commas; embedded newlines are not expected in TAP output).
-    const QString text = QString::fromUtf8(body);
-    const QStringList lines =
-        text.split('\n', Qt::SkipEmptyParts);
-
-    auto splitLine = [](const QString& line) {
-        QStringList fields;
-        QString     cur;
-        bool        quoted = false;
-        for (const QChar ch : line) {
-            if (ch == '"') {
-                quoted = !quoted;
-            } else if (ch == ',' && !quoted) {
-                fields << cur.trimmed();
-                cur.clear();
-            } else if (ch != '\r') {
-                cur += ch;
-            }
-        }
-        fields << cur.trimmed();
-        return fields;
-    };
-
-    bool haveHeader = false;
-    for (const QString& raw : lines) {
-        const QString line = raw.trimmed();
-        if (line.isEmpty() || line.startsWith('#'))
-            continue;
-        const QStringList fields = splitLine(line);
-        if (!haveHeader) {
-            for (int i = 0; i < fields.size(); ++i)
-                out.columns.insert(fields.at(i).toLower(), i);
-            haveHeader = true;
-        } else {
-            out.rows.append(fields);
-        }
-    }
-    return out;
-}
 
 // ── Positional boxes ───────────────────────────────────────────────────────
 

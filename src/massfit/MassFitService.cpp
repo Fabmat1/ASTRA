@@ -2,12 +2,6 @@
 #include "app/AppPaths.h"
 #include "remote/RemoteHostRegistry.h"
 
-// ApplicationController lives in the UI layer, but this service only reaches
-// through it for settings(), databaseManager() and getCurrentProject().  The
-// header here forward-declares it, so astra_core still compiles; the symbols
-// resolve against the executable.  Inject those dependencies directly to make
-// this translation unit linkable from a test binary on its own.
-#include "app/ui/ApplicationController.h"
 #include "db/DatabaseManager.h"
 #include "fitting/FitBackendRegistry.h"
 #include "fitting/FitJobFactory.h"
@@ -201,7 +195,7 @@ QString pathToJson(const QStringList& path)
 // Lifetime
 // ═════════════════════════════════════════════════════════════════════════
 
-MassFitService::MassFitService(ApplicationController* controller,
+MassFitService::MassFitService(ServiceContext* controller,
                                QObject*               parent)
     : QObject(parent)
     , _controller(controller)

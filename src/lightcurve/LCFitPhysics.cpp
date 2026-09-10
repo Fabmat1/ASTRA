@@ -119,13 +119,37 @@ solveExact(double iDeg, double K1, double M1, double R1Rsun, double Pdays) {
 }
 
 double wdRadiusRsun(double M) {
-  if (M <= 0.0 || M >= 1.44)
+  // Eggleton's fit to the zero-temperature white-dwarf mass-radius relation,
+  // as quoted by Verbunt & Rappaport (1988):
+  //
+  //   R/Rsun = 0.0114 [ (M/Mch)^(-2/3) - (M/Mch)^(2/3) ]^(1/2)
+  //            x [ 1 + 3.5 (M/Mp)^(-2/3) + (M/Mp)^(-1) ]^(-2/3)
+  //
+  // The two brackets use different mass scales: the Chandrasekhar mass in the
+  // first, and the polytrope mass Mp = 0.00057 Msun in the second. An earlier
+  // version reused the Chandrasekhar-scaled ratio in both, which inflated the
+  // correction bracket by orders of magnitude and pushed the result under the
+  // floor for every mass in the physical range - the function returned the
+  // constant 0.003 Rsun for a 0.2 Msun white dwarf and for a 1.3 Msun one
+  // alike, roughly four times too small at typical masses.
+  constexpr double kChandrasekhar = 1.44;      // solar masses
+  constexpr double kPolytropeMass = 0.00057;   // solar masses
+
+  if (M <= 0.0 || M >= kChandrasekhar)
     return 0.012;
-  const double mu = M / 1.454;
-  const double mu23 = std::pow(mu, -2.0 / 3.0);
-  const double mu23p = std::pow(mu, 2.0 / 3.0);
-  const double R = 0.0114 * std::sqrt(mu23 - mu23p) *
-                   std::pow(1.0 + 3.5 * mu23 + 1.0 / mu, -2.0 / 3.0);
+
+  const double x = M / kChandrasekhar;
+  const double degenerate =
+      std::pow(x, -2.0 / 3.0) - std::pow(x, 2.0 / 3.0);
+  if (degenerate <= 0.0)
+    return 0.012;
+
+  const double y = M / kPolytropeMass;
+  const double correction =
+      1.0 + 3.5 * std::pow(y, -2.0 / 3.0) + 1.0 / y;
+
+  const double R = 0.0114 * std::sqrt(degenerate) *
+                   std::pow(correction, -2.0 / 3.0);
   return std::max(R, 0.003);
 }
 

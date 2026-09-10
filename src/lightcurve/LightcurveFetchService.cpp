@@ -1,11 +1,5 @@
 #include "lightcurve/LightcurveFetchService.h"
 
-// ApplicationController lives in the UI layer, but this service only reaches
-// through it for settings(), databaseManager() and getCurrentProject().  The
-// header here forward-declares it, so astra_core still compiles; the symbols
-// resolve against the executable.  Inject those dependencies directly to make
-// this translation unit linkable from a test binary on its own.
-#include "app/ui/ApplicationController.h"
 #include "db/DatabaseManager.h"
 #include "lightcurve/Photometry.h"
 #include "core/Star.h"
@@ -43,7 +37,7 @@ double readCrowdsapFile(const QString& path)
 
 } // namespace
 
-LightcurveFetchService::LightcurveFetchService(ApplicationController* controller,
+LightcurveFetchService::LightcurveFetchService(ServiceContext* controller,
                                                QObject*               parent)
     : QObject(parent)
     , _controller(controller)

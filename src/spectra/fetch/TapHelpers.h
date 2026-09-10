@@ -8,6 +8,7 @@
 #define SPECFETCH_TAPHELPERS_H
 
 #include "spectra/fetch/SpectrumArchiveTypes.h"
+#include "core/DelimitedTable.h"
 
 #include "catalog/CdsTapClient.h"
 
@@ -62,22 +63,10 @@ QByteArray tapAsyncQuery(QNetworkAccessManager* nam, const QString& asyncUrl,
 // Minimal CSV parse: header row -> lower-cased name->column map, then rows.
 // Handles quoted fields and embedded commas; good enough for TAP/SkyServer
 // CSV output.
-struct Csv {
-    QMap<QString, int> columns;      // lower-cased header -> index
-    QList<QStringList> rows;
-
-    int col(const QString& name) const {
-        return columns.value(name.toLower(), -1);
-    }
-    QString value(int row, const QString& name) const {
-        const int c = col(name);
-        if (c < 0 || row < 0 || row >= rows.size()) return QString();
-        const QStringList& r = rows.at(row);
-        return c < r.size() ? r.at(c) : QString();
-    }
-};
-
-Csv parseCsv(const QByteArray& body);
+// The CSV reader lives in core/DelimitedTable so the catalogue code can use it
+// too; these aliases keep the SpecFetch:: spelling the archive clients use.
+using Csv = DelimitedTable::Csv;
+using DelimitedTable::parseCsv;
 
 // ── Positional boxes ───────────────────────────────────────────────────────
 //

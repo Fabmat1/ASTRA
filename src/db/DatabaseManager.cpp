@@ -1832,7 +1832,14 @@ bool DatabaseManager::updateProject(std::shared_ptr<Project> project)
 
 bool DatabaseManager::deleteProject(const QString& projectId)
 {
-    return _projects->deleteProject(projectId);
+    // Each star has to go through the full star-deletion path, or the project
+    // disappears and leaves its stars, spectra, radial velocities and
+    // periodograms behind as rows nothing can reach again.
+    bool ok = true;
+    for (const QString& starId : _projects->starIdsIn(projectId))
+        ok &= _stars->deleteStar(projectId, starId);
+
+    return _projects->deleteProject(projectId) && ok;
 }
 
 bool DatabaseManager::saveStar(const QString& projectId, std::shared_ptr<Star> star)

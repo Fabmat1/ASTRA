@@ -1,4 +1,5 @@
 #include "lightcurve/ui/LCPanel.h"
+#include "core/PhaseUtils.h"
 #include "app/ui/panels/PanelUtils.h"
 #include "ui/widgets/WidgetFactory.h"
 #include "rv/ui/PeriodogramPanel.h"
@@ -45,12 +46,6 @@ inline QString keyFor(const QString& src, const QString& filt)
     return src + "::" + filt;
 }
 
-inline double phaseOf(double t, double t0, double P)
-{
-    double x = std::fmod((t - t0) / P, 1.0);
-    if (x < 0.0) x += 1.0;
-    return x;
-}
 
 QVector<std::tuple<double,double,double>>
 binSeries(const QVector<double>& px,
@@ -806,7 +801,7 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
         // x (phase, or BJD − t_0)
         QVector<double> px(s.bjd.size());
         for (int i = 0; i < s.bjd.size(); ++i)
-            px[i] = foldable ? phaseOf(s.bjd[i], _foldT0, _foldPeriod)
+            px[i] = foldable ? PhaseUtils::phaseOf(s.bjd[i], _foldT0, _foldPeriod)
                              : (s.bjd[i] - xOffset);
 
         // Normalize by median of unflagged finite flux
@@ -965,8 +960,8 @@ void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)
                 // still cover the whole visible range.
                 double phaseShift =
                     std::fmod(tAnchor / overlay->getPeriod(), 1.0)
-                    - phaseOf(tAnchor, _foldT0, _foldPeriod);
-                phaseShift = std::fmod(phaseShift, 1.0);
+                    - PhaseUtils::phaseOf(tAnchor, _foldT0, _foldPeriod);
+                phaseShift = PhaseUtils::wrap01(phaseShift);
                 if (phaseShift < 0.0) phaseShift += 1.0;
 
                 struct PP { double x, y; };

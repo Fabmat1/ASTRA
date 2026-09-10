@@ -9,6 +9,7 @@
 
 #include <doctest.h>
 
+#include "core/PhaseUtils.h"
 #include "core/Stats.h"
 
 #include <QFile>
@@ -155,6 +156,88 @@ TEST_CASE("Stats::logChi2SF: the median of a chi-square sits near p = 0.5")
     for (int i = 0; i < 5; ++i)
         CHECK(Stats::logChi2SF(medians[i], dofs[i])
               == doctest::Approx(std::log10(0.5)).epsilon(1e-3));
+}
+
+}   // TEST_SUITE("core")
+
+TEST_SUITE("core")
+{
+
+TEST_CASE("PhaseUtils::wrap01 closes the interval at both ends")
+{
+    CHECK(PhaseUtils::wrap01(0.25) == doctest::Approx(0.25));
+    CHECK(PhaseUtils::wrap01(1.25) == doctest::Approx(0.25));
+    CHECK(PhaseUtils::wrap01(-0.75) == doctest::Approx(0.25));
+    CHECK(PhaseUtils::wrap01(10.25) == doctest::Approx(0.25));
+    CHECK(PhaseUtils::wrap01(-10.75) == doctest::Approx(0.25));
+
+    CHECK(PhaseUtils::wrap01(0.0) == doctest::Approx(0.0));
+    CHECK(PhaseUtils::wrap01(1.0) == doctest::Approx(0.0));
+    CHECK(PhaseUtils::wrap01(-1.0) == doctest::Approx(0.0));
+
+    // The case the naive version gets wrong: a value just below zero rounds to
+    // exactly 1.0 when 1 is added, which is outside the documented range and
+    // makes a bin index run off the end of its array.
+    CHECK(PhaseUtils::wrap01(-1e-18) < 1.0);
+    CHECK(PhaseUtils::wrap01(-1e-17) < 1.0);
+
+    // Always inside [0, 1), whatever it is given.
+    for (double x = -5.0; x < 5.0; x += 0.013) {
+        const double p = PhaseUtils::wrap01(x);
+        CHECK(p >= 0.0);
+        CHECK(p < 1.0);
+    }
+}
+
+TEST_CASE("PhaseUtils::wrap360 behaves the same way in degrees")
+{
+    CHECK(PhaseUtils::wrap360(90.0) == doctest::Approx(90.0));
+    CHECK(PhaseUtils::wrap360(450.0) == doctest::Approx(90.0));
+    CHECK(PhaseUtils::wrap360(-270.0) == doctest::Approx(90.0));
+    CHECK(PhaseUtils::wrap360(0.0) == doctest::Approx(0.0));
+    CHECK(PhaseUtils::wrap360(360.0) == doctest::Approx(0.0));
+    CHECK(PhaseUtils::wrap360(-1e-15) < 360.0);
+
+    for (double a = -1000.0; a < 1000.0; a += 7.3) {
+        const double w = PhaseUtils::wrap360(a);
+        CHECK(w >= 0.0);
+        CHECK(w < 360.0);
+    }
+}
+
+TEST_CASE("PhaseUtils::phaseOf folds on an explicit epoch")
+{
+    CHECK(PhaseUtils::phaseOf(10.0, 10.0, 2.0) == doctest::Approx(0.0));
+    CHECK(PhaseUtils::phaseOf(10.5, 10.0, 2.0) == doctest::Approx(0.25));
+    CHECK(PhaseUtils::phaseOf(11.0, 10.0, 2.0) == doctest::Approx(0.5));
+    CHECK(PhaseUtils::phaseOf(12.0, 10.0, 2.0) == doctest::Approx(0.0));
+    CHECK(PhaseUtils::phaseOf(9.5, 10.0, 2.0) == doctest::Approx(0.75));
+
+    // A non-positive period cannot be folded; it must not divide by zero.
+    CHECK(PhaseUtils::phaseOf(10.0, 0.0, 0.0) == doctest::Approx(0.0));
+    CHECK(PhaseUtils::phaseOf(10.0, 0.0, -1.0) == doctest::Approx(0.0));
+}
+
+TEST_CASE("PhaseUtils::phaseBin always returns a usable index")
+{
+    CHECK(PhaseUtils::phaseBin(0.0, 10) == 0);
+    CHECK(PhaseUtils::phaseBin(0.05, 10) == 0);
+    CHECK(PhaseUtils::phaseBin(0.15, 10) == 1);
+    CHECK(PhaseUtils::phaseBin(0.99, 10) == 9);
+
+    // A phase of exactly 1, or one that wraps to it, belongs in bin 0.
+    CHECK(PhaseUtils::phaseBin(1.0, 10) == 0);
+    CHECK(PhaseUtils::phaseBin(-1e-18, 10) == 0);
+
+    // Never out of range, for any input at all.
+    for (int n : {1, 2, 5, 64, 1000}) {
+        for (double x = -3.0; x < 3.0; x += 0.0037) {
+            const int b = PhaseUtils::phaseBin(x, n);
+            CHECK(b >= 0);
+            CHECK(b < n);
+        }
+    }
+    CHECK(PhaseUtils::phaseBin(0.5, 0) == 0);
 }
 
 }   // TEST_SUITE("core")

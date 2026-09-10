@@ -49,8 +49,6 @@ private:
 
     // CSV helpers (self-contained, modelled on RadialVelocityImportPage)
     QChar       delimiter() const;
-    static QChar detectDelimiter(const QString& line);
-    static QStringList parseLine(const QString& line, QChar delim);
     bool loadFile();
     void populateColumnCombo(QComboBox* combo, const QStringList& patterns);
     void refreshPreview();

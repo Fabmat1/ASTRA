@@ -1,4 +1,5 @@
 #include "catalog/ui/ReidentifyStarDialog.h"
+#include "core/DelimitedTable.h"
 #include "core/SkyGeometry.h"
 
 #include "db/DatabaseManager.h" // adjust include path to your DatabaseManager
@@ -56,45 +57,6 @@ bool parseCoordPair(const QString &s, double &ra, double &dec) {
     ra  = r;
     dec = d;
     return true;
-}
-
-// CSV → header index map + value rows.
-struct Csv {
-    QMap<QString, int> idx;
-    QList<QStringList> rows;
-    bool               empty() const { return rows.isEmpty(); }
-};
-
-Csv parseCsv(const QString &body) {
-    Csv               out;
-    const QStringList lines = body.split('\n', Qt::SkipEmptyParts);
-    if (lines.size() < 1)
-        return out;
-    const QStringList headers = lines[0].split(',');
-    for (int i = 0; i < headers.size(); ++i)
-        out.idx[headers[i].trimmed().toLower().remove('"')] = i;
-    for (int i = 1; i < lines.size(); ++i)
-        out.rows << lines[i].split(',');
-    return out;
-}
-
-double cellD(const Csv &c, const QStringList &row, const QString &col) {
-    int i = c.idx.value(col.toLower(), -1);
-    if (i < 0 || i >= row.size())
-        return std::numeric_limits<double>::quiet_NaN();
-    QString s = row[i].trimmed().remove('"');
-    if (s.isEmpty())
-        return std::numeric_limits<double>::quiet_NaN();
-    bool   ok;
-    double v = s.toDouble(&ok);
-    return ok ? v : std::numeric_limits<double>::quiet_NaN();
-}
-
-QString cellS(const Csv &c, const QStringList &row, const QString &col) {
-    int i = c.idx.value(col.toLower(), -1);
-    if (i < 0 || i >= row.size())
-        return {};
-    return row[i].trimmed().remove('"');
 }
 
 } // namespace
@@ -526,19 +488,20 @@ bool ReidentifyStarDialog::coneSearchGaia(double ra, double dec,
         return false;
     }
 
-    const QString body = QString::fromUtf8(resp.body);
-
-    const Csv csv = parseCsv(body);
-    for (const QStringList &row : csv.rows) {
+    // The shared reader honours quoted fields; the local copy this replaced
+    // split on every comma, so a quoted value containing one shifted the whole
+    // row.
+    const DelimitedTable::Csv csv = DelimitedTable::parseCsv(resp.body);
+    for (int r = 0; r < csv.rows.size(); ++r) {
         Candidate c;
         // Source can be a big integer - keep as string.
-        c.sourceId = cellS(csv, row, "source");
+        c.sourceId = csv.value(r, "source");
         if (c.sourceId.isEmpty())
-            c.sourceId = cellS(csv, row, "source_id");
-        c.ra           = cellD(csv, row, "ra_icrs");
-        c.dec          = cellD(csv, row, "de_icrs");
-        c.gmag         = cellD(csv, row, "gmag");
-        double distDeg = cellD(csv, row, "dist");
+            c.sourceId = csv.value(r, "source_id");
+        c.ra           = csv.number(r, "ra_icrs");
+        c.dec          = csv.number(r, "de_icrs");
+        c.gmag         = csv.number(r, "gmag");
+        double distDeg = csv.number(r, "dist");
         c.sepArcsec    = std::isnan(distDeg)
                              ? std::numeric_limits<double>::quiet_NaN()
                              : distDeg * 3600.0;
@@ -695,31 +658,28 @@ bool ReidentifyStarDialog::fetchGaiaFull(const QString &sourceId, GaiaData &out,
         return false;
     }
 
-    const QString body = QString::fromUtf8(resp.body);
-
-    const Csv csv = parseCsv(body);
-    if (csv.empty()) {
+    const DelimitedTable::Csv csv = DelimitedTable::parseCsv(resp.body);
+    if (csv.isEmpty()) {
         err = "no Gaia DR3 record";
         return false;
     }
-    const QStringList &row = csv.rows.first();
 
-    out.ra      = cellD(csv, row, "ra_icrs");
-    out.dec     = cellD(csv, row, "de_icrs");
-    out.pmra    = cellD(csv, row, "pmra");
-    out.pmdec   = cellD(csv, row, "pmde");
-    out.e_pmra  = cellD(csv, row, "e_pmra");
-    out.e_pmdec = cellD(csv, row, "e_pmde");
-    out.plx     = cellD(csv, row, "plx");
-    out.e_plx   = cellD(csv, row, "e_plx");
-    out.gmag    = cellD(csv, row, "gmag");
-    out.bp      = cellD(csv, row, "bpmag");
-    out.rp      = cellD(csv, row, "rpmag");
+    out.ra      = csv.number(0, "ra_icrs");
+    out.dec     = csv.number(0, "de_icrs");
+    out.pmra    = csv.number(0, "pmra");
+    out.pmdec   = csv.number(0, "pmde");
+    out.e_pmra  = csv.number(0, "e_pmra");
+    out.e_pmdec = csv.number(0, "e_pmde");
+    out.plx     = csv.number(0, "plx");
+    out.e_plx   = csv.number(0, "e_plx");
+    out.gmag    = csv.number(0, "gmag");
+    out.bp      = csv.number(0, "bpmag");
+    out.rp      = csv.number(0, "rpmag");
 
     static constexpr double kPogson = 2.5 / 2.302585092994046;
     auto magErr = [&](const char *f, const char *eF) -> double {
-        double F   = cellD(csv, row, f);
-        double eFv = cellD(csv, row, eF);
+        double F   = csv.number(0, QString::fromLatin1(f));
+        double eFv = csv.number(0, QString::fromLatin1(eF));
         if (std::isnan(F) || std::isnan(eFv) || F <= 0.0 || eFv <= 0.0)
             return std::numeric_limits<double>::quiet_NaN();
         return kPogson * (eFv / F);
@@ -728,9 +688,9 @@ bool ReidentifyStarDialog::fetchGaiaFull(const QString &sourceId, GaiaData &out,
     out.e_bp   = magErr("fbp", "e_fbp");
     out.e_rp   = magErr("frp", "e_frp");
 
-    out.pmra_pmdec_corr = cellD(csv, row, "pmrapmdecor");
-    out.plx_pmra_corr   = cellD(csv, row, "plxpmracor");
-    out.plx_pmdec_corr  = cellD(csv, row, "plxpmdecor");
+    out.pmra_pmdec_corr = csv.number(0, "pmrapmdecor");
+    out.plx_pmra_corr   = csv.number(0, "plxpmracor");
+    out.plx_pmdec_corr  = csv.number(0, "plxpmdecor");
 
     if (!std::isnan(out.bp) && !std::isnan(out.rp))
         out.bp_rp = out.bp - out.rp;
@@ -787,12 +747,12 @@ bool ReidentifyStarDialog::fetchBibcodes(const QString        &sourceId,
         return false;
     }
 
-    const QString body = QString::fromUtf8(reply->readAll());
+    const QByteArray body = reply->readAll();
     reply->deleteLater();
 
-    const Csv csv = parseCsv(body);
-    for (const QStringList &row : csv.rows) {
-        QString bib = cellS(csv, row, "bibcode");
+    const DelimitedTable::Csv csv = DelimitedTable::parseCsv(body);
+    for (int r = 0; r < csv.rows.size(); ++r) {
+        const QString bib = csv.value(r, "bibcode");
         if (!bib.isEmpty())
             out.push_back(bib);
     }

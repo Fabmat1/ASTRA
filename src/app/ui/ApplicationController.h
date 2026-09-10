@@ -2,6 +2,8 @@
 #define APPLICATIONCONTROLLER_H
 
 #include <QObject>
+
+#include "app/ServiceContext.h"
 #include <memory>
 #include <vector>
 
@@ -19,7 +21,7 @@ class MassFitService;
 namespace astra::remote { class SshGridProvider; class RemoteFitService; }
 
 
-class ApplicationController : public QObject
+class ApplicationController : public QObject, public ServiceContext
 {
     Q_OBJECT
 
@@ -34,7 +36,7 @@ public:
     void updateProject(std::shared_ptr<Project> project);
     void closeProject();
     bool deleteProject(const QString& projectId);
-    std::shared_ptr<Project> getCurrentProject() const { return _currentProject; }
+    std::shared_ptr<Project> getCurrentProject() const override { return _currentProject; }
     bool saveStarsToProject(std::shared_ptr<Project> project, const std::vector<std::shared_ptr<Star>>& stars);
     bool deleteStarFromProject(std::shared_ptr<Project> project, std::shared_ptr<Star> star);
     bool deleteStarsFromProject(std::shared_ptr<Project> project, const std::vector<std::shared_ptr<Star>>& stars);
@@ -46,9 +48,9 @@ public:
     ThemeManager* themeManager() const { return _themeManager.get(); }
 
     BackgroundTaskManager* backgroundTaskManager() const { return _backgroundTaskManager.get(); }
-    DatabaseManager* databaseManager() const { return _databaseManager.get(); }
+    DatabaseManager* databaseManager() const override { return _databaseManager.get(); }
 
-    AppSettings* settings() const { return _settings.get(); }
+    AppSettings* settings() const override { return _settings.get(); }
 
     /// Lazily created app-wide manager for background lightcurve fetching.
     LightcurveFetchService* lightcurveFetchService();
