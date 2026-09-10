@@ -1551,6 +1551,55 @@ void IsisFitImportTask::execute() {
 // RVExtractionTask Implementation
 // ============================================================================
 
+namespace {
+
+/// Turn one parsed number into a stored timestamp.
+///
+/// Fixed-offset scales (JD↔MJD, BTJD/BKJD/Gaia TCB→BJD) the Time constructor
+/// handles on its own. HJD is the one that needs the sky: it is undone to UTC
+/// here, from the matched star's coordinates, because the database has no
+/// heliocentric column and an unconverted HJD would sit in the MJD column up to
+/// 8.3 minutes from the truth. The site is unknown at this point in the import -
+/// instruments are assigned later - so the geocentre stands in, which costs at
+/// most 21 ms. The BJD is deliberately left for the resolver that runs once the
+/// point has an instrument, exactly as it is for an MJD column.
+///
+/// Returns an invalid-for-storage Time (no MJD) when the star carries no
+/// coordinates and the scale is HJD; callers drop those rows rather than write
+/// a heliocentric number into an MJD column.
+Time timestampFor(double value, TimeScale scale,
+                  const std::shared_ptr<Star>& star)
+{
+    Time t(value, scale);
+
+    if (scale == TimeScale::HJD && star) {
+        const double ra = star->getRa(), dec = star->getDec();
+        if (!std::isnan(ra) && !std::isnan(dec))
+            t.computeMJD(nullptr, ra, dec);
+    }
+    return t;
+}
+
+/// Whether `t` came out of timestampFor() with nothing storable in it.
+bool isUnconvertibleHjd(const Time& t, TimeScale scale)
+{
+    return scale == TimeScale::HJD && !t.mjd().has_value();
+}
+
+/// The tabulated value restored to a full Julian date, or NaN when it cannot
+/// be one. A reduced column ("HJD-2450000") that arrives without its offset
+/// would otherwise be converted as though the leading digits were simply
+/// absent, which lands the epoch millennia away; refusing the row is the only
+/// honest option, since nothing in the number says what was subtracted.
+double restoredEpoch(double value, double offset, TimeScale scale)
+{
+    const double v = value + offset;
+    return Time::isPlausibleFor(v, scale)
+               ? v : std::numeric_limits<double>::quiet_NaN();
+}
+
+} // namespace
+
 RVExtractionTask::RVExtractionTask(
     std::vector<std::shared_ptr<Star>> stars,
     const QString& projectId,
@@ -1944,14 +1993,32 @@ void RVExtractionTask::executeFromFolders()
                 const double rvErr  = optional(cfg.rvErrCol,  0.0);
                 const double sysErr = optional(cfg.sysErrCol, 0.0);
 
+                const double epoch =
+                    restoredEpoch(time, cfg.epochOffset, cfg.timeScale);
+                if (std::isnan(epoch)) {
+                    LOG_WARNING("RVExtract",
+                        QString("%1: %2 is not a %3 - the column is a reduced "
+                                "Julian date and the epoch offset is unset; "
+                                "row skipped")
+                            .arg(fileName)
+                            .arg(time, 0, 'f', 4)
+                            .arg(Time::scaleToString(cfg.timeScale)));
+                    continue;
+                }
+
+                const Time stamp = timestampFor(epoch, cfg.timeScale, star);
+                if (isUnconvertibleHjd(stamp, cfg.timeScale)) {
+                    LOG_WARNING("RVExtract",
+                        QString("%1: HJD timestamps need the star's "
+                                "coordinates, and %2 has none - row skipped")
+                            .arg(fileName, dirName));
+                    continue;
+                }
+
                 auto rvPt = std::make_shared<RadialVelocityPoint>();
                 rvPt->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
 
-                if (cfg.isBJD) {
-                    rvPt->setBJD(time);
-                } else {
-                    rvPt->setMJD(time);
-                }
+                rvPt->setTime(stamp);
                 rvPt->setRV(rv);
                 rvPt->setRVErrorFormal(rvErr);
                 rvPt->setRVErrorSystematic(sysErr);
@@ -2119,11 +2186,17 @@ void RVExtractionTask::executeFromTable()
             curve->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
         }
 
+        // Incoming timestamps are compared on whichever scale they end up
+        // stored as, so a re-import of the same table finds its own rows: a
+        // barycentric column keys on BJD, everything else - HJD included, since
+        // it is converted below - keys on MJD.
+        const bool keyOnBjd = Time::isBarycentric(cfg.timeScale);
+
         QSet<QString> existingEpochs;
         for (const auto& pt : curve->getRVPoints()) {
             if (!pt) continue;
             existingEpochs.insert(epochKey(
-                pt->getSource(), cfg.isBJD ? pt->getBJD() : pt->getMJD(),
+                pt->getSource(), keyOnBjd ? pt->getBJD() : pt->getMJD(),
                 pt->getComponent()));
         }
 
@@ -2211,8 +2284,30 @@ void RVExtractionTask::executeFromTable()
                     if (okComp && qRound(c) == 2) component = 2;
                 }
 
+                const double epoch =
+                    restoredEpoch(time, cfg.epochOffset, cfg.timeScale);
+                if (std::isnan(epoch)) {
+                    badTime++;
+                    recordSkip(ri, where(k) + QString(
+                        "'%1' is not a %2 - the column is a reduced Julian "
+                        "date; set the epoch offset (usually 2450000)")
+                            .arg(time, 0, 'f', 4)
+                            .arg(Time::scaleToString(cfg.timeScale)));
+                    continue;
+                }
+
+                const Time stamp = timestampFor(epoch, cfg.timeScale, star);
+                if (isUnconvertibleHjd(stamp, cfg.timeScale)) {
+                    badTime++;
+                    recordSkip(ri, where(k) + "HJD timestamp needs the star's "
+                                              "coordinates, which are missing");
+                    continue;
+                }
+
                 const QString source = "table_import";
-                const QString key    = epochKey(source, time, component);
+                const QString key    = epochKey(
+                    source, keyOnBjd ? stamp.bjdOr(0.0) : stamp.mjdOr(0.0),
+                    component);
                 if (existingEpochs.contains(key)) {
                     duplicateRows++;
                     recordSkip(ri, where(k) + QString("epoch %1 already present "
@@ -2228,11 +2323,7 @@ void RVExtractionTask::executeFromTable()
                 auto rvPt = std::make_shared<RadialVelocityPoint>();
                 rvPt->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
 
-                if (cfg.isBJD)
-                    rvPt->setBJD(time);
-                else
-                    rvPt->setMJD(time);
-
+                rvPt->setTime(stamp);
                 rvPt->setRV(rv);
                 rvPt->setRVErrorFormal(rvErr);
                 rvPt->setRVErrorSystematic(sysErr);

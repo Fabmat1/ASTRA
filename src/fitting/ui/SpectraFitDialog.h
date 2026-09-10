@@ -81,6 +81,10 @@ private:
     void propagateBestFitParams(const std::shared_ptr<SpectralFit>& fit);
     void syncTreeSelectionTo(const QString& spectrumId, const QString& fitId);
 
+    /// Open the read-only record of everything stored for one spectrum / fit.
+    void showSpectrumDetails(const QString& spectrumId);
+    void showFitDetails(const QString& spectrumId, const QString& fitId);
+
     void removeSpectrum(const QString& spectrumId);
     void removeSpectra(const QStringList& spectrumIds);
     void removeFit(const QString& spectrumId, const QString& fitId);

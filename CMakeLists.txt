@@ -690,6 +690,7 @@ set(ASTRA_UI_SOURCES
     src/spectra/ui/ArchiveFetchWidget.cpp
     src/spectra/ui/CoAddWidget.cpp
     src/spectra/ui/SpectraPanel.cpp
+    src/spectra/ui/SpectrumDetailsDialog.cpp
     src/spectra/ui/SpectrumFetchSessionsDialog.cpp
 
     # ui/widgets
@@ -817,6 +818,7 @@ set(ASTRA_UI_HEADERS
     src/spectra/ui/ArchiveFetchWidget.h
     src/spectra/ui/CoAddWidget.h
     src/spectra/ui/SpectraPanel.h
+    src/spectra/ui/SpectrumDetailsDialog.h
     src/spectra/ui/SpectrumFetchSessionsDialog.h
 
     # ui/widgets

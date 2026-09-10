@@ -86,9 +86,21 @@ void RVImportPointsDialog::setupUi()
     _timeColCombo = new QComboBox;
     colGrid->addWidget(_timeColCombo, row, 1);
     _timeTypeCombo = new QComboBox;
-    _timeTypeCombo->addItems({"MJD", "BJD", "JD",
+    _timeTypeCombo->addItems({"MJD", "BJD", "JD", "HJD",
                               "BTJD (TESS)", "BKJD (Kepler)", "Gaia TCB"});
+    _timeTypeCombo->setToolTip(
+        "Scale of the timestamp column. HJD is converted to MJD and BJD using "
+        "the row's instrument and the star's coordinates.");
     colGrid->addWidget(_timeTypeCombo, row++, 2);
+
+    colGrid->addWidget(new QLabel("Epoch offset:"), row, 0);
+    _epochOffsetEdit = new QLineEdit;
+    _epochOffsetEdit->setPlaceholderText(QStringLiteral("0"));
+    _epochOffsetEdit->setToolTip(
+        "Added to every timestamp before it is read on the scale above, for "
+        "tables that tabulate a reduced Julian date such as HJD-2450000. "
+        "Filled in automatically when the file states it.");
+    colGrid->addWidget(_epochOffsetEdit, row++, 1);
 
     colGrid->addWidget(new QLabel("RV column [km/s]:"), row, 0);
     _rvColCombo = new QComboBox;
@@ -120,6 +132,8 @@ void RVImportPointsDialog::setupUi()
             this, [this](int) { refreshPreview(); });
     connect(_timeTypeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int) { refreshPreview(); });
+    connect(_epochOffsetEdit, &QLineEdit::textChanged,
+            this, [this](const QString&) { refreshPreview(); });
     for (auto* c : {_rvColCombo, _errColCombo, _sysErrColCombo, _instColCombo,
                     _compColCombo})
         connect(c, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -216,6 +230,7 @@ bool RVImportPointsDialog::loadFile()
 {
     _columns.clear();
     _rows.clear();
+    _metadataLines.clear();
 
     const QString path = _fileEdit->text().trimmed();
     if (path.isEmpty()) return false;
@@ -228,7 +243,10 @@ bool RVImportPointsDialog::loadFile()
     QStringList lines;
     while (!in.atEnd()) {
         QString line = in.readLine().trimmed();
-        if (line.isEmpty() || line.startsWith('#')) continue;
+        if (line.isEmpty()) continue;
+        // Comment lines are not data, but they are not noise either: a VizieR
+        // export states a column's epoch offset only there.
+        if (line.startsWith('#')) { _metadataLines << line; continue; }
         lines << line;
     }
     file.close();
@@ -364,16 +382,32 @@ void RVImportPointsDialog::onReloadFile()
     int timeIdx = _timeColCombo->currentIndex() - 1;
     if (timeIdx >= 0 && timeIdx < _columns.size()) {
         const QString tn = _columns[timeIdx].toLower();
-        if      (tn.contains("btjd")) _timeTypeCombo->setCurrentIndex(3);
-        else if (tn.contains("bkjd")) _timeTypeCombo->setCurrentIndex(4);
-        else if (tn.contains("tcb"))  _timeTypeCombo->setCurrentIndex(5);
+        // Longest names first: "btjd" also contains "jd", and "hjd" has to be
+        // recognised before the bare-JD fallback claims it.
+        if      (tn.contains("btjd")) _timeTypeCombo->setCurrentIndex(4);
+        else if (tn.contains("bkjd")) _timeTypeCombo->setCurrentIndex(5);
+        else if (tn.contains("tcb"))  _timeTypeCombo->setCurrentIndex(6);
         else if (tn.contains("bjd"))  _timeTypeCombo->setCurrentIndex(1);
+        else if (tn.contains("hjd"))  _timeTypeCombo->setCurrentIndex(3);
         else if (tn.contains("jd") && !tn.contains("mjd"))
                                       _timeTypeCombo->setCurrentIndex(2);
         else                          _timeTypeCombo->setCurrentIndex(0);
+
+        // ... and the epoch offset from whatever the file says about that
+        // column. A VizieR table names the column plain "HJD" and mentions the
+        // reduction only in its '#Column' description.
+        _epochOffsetEdit->setText(QString::number(
+            Time::epochOffsetFor(_columns[timeIdx], _metadataLines), 'f', 1));
     }
 
     refreshPreview();
+}
+
+double RVImportPointsDialog::epochOffset() const
+{
+    bool ok = false;
+    const double v = _epochOffsetEdit->text().trimmed().toDouble(&ok);
+    return ok ? v : 0.0;
 }
 
 TimeScale RVImportPointsDialog::selectedScale() const
@@ -382,9 +416,10 @@ TimeScale RVImportPointsDialog::selectedScale() const
         case 0: return TimeScale::MJD;
         case 1: return TimeScale::BJD;
         case 2: return TimeScale::JD;
-        case 3: return TimeScale::BTJD;
-        case 4: return TimeScale::BKJD;
-        case 5: return TimeScale::GaiaTCB;
+        case 3: return TimeScale::HJD;
+        case 4: return TimeScale::BTJD;
+        case 5: return TimeScale::BKJD;
+        case 6: return TimeScale::GaiaTCB;
         default: return TimeScale::MJD;
     }
 }
@@ -412,7 +447,8 @@ void RVImportPointsDialog::refreshPreview()
     const int errCol    = _errColCombo->currentIndex() - 1;
     const int sysErrCol = _sysErrColCombo->currentIndex() - 1;
     const int instCol   = _instColCombo->currentIndex() - 1;
-    const TimeScale scale = selectedScale();
+    const TimeScale scale  = selectedScale();
+    const double    offset = epochOffset();
 
     const double ra  = _star ? _star->getRa()  : std::numeric_limits<double>::quiet_NaN();
     const double dec = _star ? _star->getDec() : std::numeric_limits<double>::quiet_NaN();
@@ -422,22 +458,32 @@ void RVImportPointsDialog::refreshPreview()
     _preview->setRowCount(maxPreview);
 
     int valid = 0;
+    int implausible = 0;
+    double firstImplausible = 0.0;
     bool needsInstrument = false;
     for (int r = 0; r < static_cast<int>(_rows.size()); ++r) {
         const QStringList& row = _rows[r];
         if (timeCol >= row.size() || rvCol >= row.size()) continue;
         bool okT, okV;
-        double tVal = row[timeCol].toDouble(&okT);
+        double tVal = row[timeCol].toDouble(&okT) + offset;
         double rv   = row[rvCol].toDouble(&okV);
         if (!okT || !okV) continue;
+
+        // A value that cannot be a timestamp on the chosen scale is a missing
+        // epoch offset, not an epoch. Converting it anyway is what put an MJD
+        // of -2391132 in the database, so it is counted and reported instead.
+        if (!Time::isPlausibleFor(tVal, scale)) {
+            if (implausible++ == 0) firstImplausible = tVal;
+            continue;
+        }
 
         auto inst = resolveRowInstrument(row, instCol);
 
         Time t(tVal, scale);
-        if (!t.hasBjd()) {
-            if (inst && haveCoords) t.computeBJD(*inst, ra, dec);
-            else                    needsInstrument = true;
-        }
+        // resolveScales walks HJD → MJD → BJD; the first leg only needs the
+        // coordinates, so an HJD row still yields an MJD without an instrument.
+        if (haveCoords) t.resolveScales(inst.get(), ra, dec);
+        if (!t.hasBjd()) needsInstrument = true;
 
         if (r < maxPreview) {
             auto setCell = [&](int c, const QString& s, bool dim = false,
@@ -468,14 +514,22 @@ void RVImportPointsDialog::refreshPreview()
 
     QString msg = QString("%1 of %2 rows parse as valid RV points.")
                       .arg(valid).arg(_rows.size());
+    if (implausible > 0) {
+        msg += QString(" %1 row(s) hold a value (%2) that cannot be a %3 - "
+                       "this is a reduced Julian date; set the epoch offset "
+                       "(commonly 2450000) or correct the scale.")
+                   .arg(implausible)
+                   .arg(firstImplausible, 0, 'f', 4)
+                   .arg(_timeTypeCombo->currentText());
+    }
     if (needsInstrument) {
         if (!haveCoords)
             msg += " Star has no coordinates – BJD cannot be computed for "
                    "non-barycentric timestamps.";
         else
             msg += " Map an instrument column or pick a default instrument to "
-                   "convert MJD/JD timestamps to BJD (can also be assigned per "
-                   "point afterwards).";
+                   "convert MJD/JD/HJD timestamps to BJD (can also be assigned "
+                   "per point afterwards).";
     }
     _status->setText(msg);
 }
@@ -495,19 +549,31 @@ void RVImportPointsDialog::onAccept()
 
     const int instCol = _instColCombo->currentIndex() - 1;
     const int compCol = _compColCombo->currentIndex() - 1;
-    const TimeScale scale = selectedScale();
+    const TimeScale scale  = selectedScale();
+    const double    offset = epochOffset();
 
     const double ra  = _star ? _star->getRa()  : std::numeric_limits<double>::quiet_NaN();
     const double dec = _star ? _star->getDec() : std::numeric_limits<double>::quiet_NaN();
     const bool haveCoords = !std::isnan(ra) && !std::isnan(dec);
 
     std::vector<std::shared_ptr<RadialVelocityPoint>> out;
+    int implausible = 0;
+    double firstImplausible = 0.0;
     for (const QStringList& row : _rows) {
         if (timeCol >= row.size() || rvCol >= row.size()) continue;
         bool okT, okV;
-        double tVal = row[timeCol].toDouble(&okT);
+        double tVal = row[timeCol].toDouble(&okT) + offset;
         double rv   = row[rvCol].toDouble(&okV);
         if (!okT || !okV) continue;
+
+        // Same guard as the preview, and this is the one that matters: a
+        // reduced Julian date read as a full one writes an epoch that is wrong
+        // by the offset and looks like a number, so it has to stop here rather
+        // than reach the database.
+        if (!Time::isPlausibleFor(tVal, scale)) {
+            if (implausible++ == 0) firstImplausible = tVal;
+            continue;
+        }
 
         auto inst = resolveRowInstrument(row, instCol);
 
@@ -522,11 +588,12 @@ void RVImportPointsDialog::onAccept()
 
         // Build the timestamp; the Time ctor handles fixed-offset scales
         // (JD↔MJD, BTJD/BKJD/Gaia TCB → BJD). MJD/JD still need a
-        // barycentric correction, performed via the row's instrument.
+        // barycentric correction, and HJD a heliocentric one first, both
+        // performed via the row's instrument.
         Time t(tVal, scale);
         p->setTime(t);
-        if (inst && haveCoords && !p->time().hasBjd())
-            p->time().computeBJD(*inst, ra, dec);
+        if (haveCoords)
+            p->time().resolveScales(inst.get(), ra, dec);
         if (inst) p->setInstrument(inst);
 
         double errFormal = 0.0;
@@ -549,6 +616,22 @@ void RVImportPointsDialog::onAccept()
         p->setRVManualErrorSystematic(errSys);
 
         out.push_back(std::move(p));
+    }
+
+    if (implausible > 0) {
+        // Refuse rather than import a subset: a table with a reduced epoch
+        // column has it on every row, so "some rows were skipped" would mean
+        // the offset is wrong, not that a few rows are odd.
+        QMessageBox::warning(this, "Epoch offset needed",
+            QString("%1 row(s) hold a value such as %2, which cannot be a %3 - "
+                    "a full Julian date is around 2.45 million.\n\n"
+                    "This table tabulates a reduced Julian date. Set the epoch "
+                    "offset (2450000 is the usual one) or pick the scale the "
+                    "column is really on, then import again.")
+                .arg(implausible)
+                .arg(firstImplausible, 0, 'f', 4)
+                .arg(_timeTypeCombo->currentText()));
+        return;
     }
 
     if (out.empty()) {

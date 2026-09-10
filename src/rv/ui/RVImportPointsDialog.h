@@ -56,6 +56,11 @@ private:
     // Map the time-scale combo selection to a TimeScale enum.
     TimeScale selectedScale() const;
 
+    /// The number added to every timestamp before it is read on the selected
+    /// scale, for tables that tabulate a reduced Julian date. Auto-filled from
+    /// the file when it says so, and editable when it does not.
+    double epochOffset() const;
+
     // Resolve a free-text instrument token (from the instrument column) to a
     // known Instrument, falling back to the default-instrument selector.
     void buildInstrumentLookup();
@@ -69,6 +74,9 @@ private:
     // Loaded table
     QStringList                _columns;
     std::vector<QStringList>   _rows;
+    /// The file's '#' lines, kept because VizieR states a column's epoch
+    /// offset there and nowhere else.
+    QStringList                _metadataLines;
 
     // Instrument name/id → object lookup for per-row matching.
     QHash<QString, std::shared_ptr<Instrument>> _instByKey;
@@ -80,6 +88,7 @@ private:
 
     QComboBox*  _timeColCombo  = nullptr;
     QComboBox*  _timeTypeCombo = nullptr;
+    QLineEdit*  _epochOffsetEdit = nullptr;
     QComboBox*  _rvColCombo     = nullptr;
     QComboBox*  _errColCombo     = nullptr;
     QComboBox*  _sysErrColCombo  = nullptr;

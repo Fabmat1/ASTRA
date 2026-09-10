@@ -5,6 +5,7 @@
 #include <QDialog>
 #include <QString>
 #include <QStringList>
+#include <limits>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -19,7 +20,9 @@ class QTableWidget;
 ///
 /// Times are pre-filled from the FITS header when there is one, and otherwise
 /// from a sidecar file next to the spectrum (the `<name>_mjd.txt` convention
-/// the import wizard understands).
+/// the import wizard understands). Scales the database cannot hold directly are
+/// converted on accept: an HJD is walked back to UTC and forward to BJD using
+/// the row's instrument site and the star's coordinates.
 class AddSpectraDialog : public QDialog
 {
     Q_OBJECT
@@ -57,6 +60,11 @@ public:
                      QStringList sidecarPool = {},
                      QWidget* parent = nullptr);
 
+    /// Target coordinates (J2000 degrees), needed to undo a heliocentric
+    /// timestamp and to compute the BJD. Without them the HJD option is
+    /// offered but the row is flagged, since the number cannot be stored.
+    void setTargetCoordinates(double raDeg, double decDeg);
+
     /// The entries with the user's choices written into their spectra.
     /// Only meaningful once exec() has returned Accepted.
     const std::vector<Entry>& entries() const { return _entries; }
@@ -72,8 +80,13 @@ private:
     void copyFirstRowToAll();
     bool applyChoices();
 
+    /// The instrument selected in `row`, or nullptr when the row has none.
+    std::shared_ptr<Instrument> rowInstrument(int row) const;
+
     std::vector<Entry>                       _entries;
     std::vector<std::shared_ptr<Instrument>> _instruments;
     QStringList                              _sidecarPool;
     QTableWidget*                            _table = nullptr;
+    double _raDeg  = std::numeric_limits<double>::quiet_NaN();
+    double _decDeg = std::numeric_limits<double>::quiet_NaN();
 };

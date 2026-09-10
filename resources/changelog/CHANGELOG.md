@@ -21,6 +21,31 @@
     implemented.
 -->
 
+## v0.8.0 (2026-09-10)
+
+### Added
+- **Coordinate star search.** The filter box takes J-names and hms/dms coordinates and finds every star inside a settable radius.
+- **Spectrum details window.** One read-only panel with every value ASTRA stores for a spectrum or for one of its spectral fits.
+- HJD timestamps are accepted for spectra and RV points, and converted to MJD and BJD from the site and the star's coordinates.
+- RV import reads reduced Julian dates ("HJD-2450000") from the file, and stops instead of converting values that cannot be dates.
+- The timestamp scale is now a drop-down, pre-filled from the column name and the value range, in place of the BJD/MJD tick box.
+- SDSS searches return every visit to a target, not just the survey's primary spectrum. Repeat visits are what RV work needs.
+- More panels reflow instead of clipping when the window narrows: summary, star details, SED fit, galactic orbit.
+
+### Fixed
+- LAMOST single-exposure epochs now account for the Beijing-time stamps those files carry. Re-fetch them for the corrected times.
+- SDSS epochs are now taken as mid-exposure MJD(UTC), converted from the TAI cards in the header.
+- RV fits now hand lcurve the same phase convention, so light-curve models line up. Re-run older LC fits to pick it up.
+- The Kepler solver now converges for eccentricities above 0.8, so very eccentric orbits fit cleanly.
+- The white dwarf radius follows the mass-radius relation instead of a fixed value.
+- Deleting a star or a project now also clears its spectra, fits and RV points.
+- SSH password prompts no longer bring up an extra ASTRA window.
+- The Fit Setup tab follows the spectrum picked in the tree.
+- The copy confirmation shows its check mark properly on every platform.
+
+### Changed
+- The source tree is now organised by domain, with a unit test suite checked against astropy and stored reference values.
+
 ## v0.7.2 (2026-09-03)
 
 ### Added

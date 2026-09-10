@@ -33,6 +33,35 @@ double lightTravelTime(double mjd_utc,
                        double ra_deg, double dec_deg,
                        double lon_deg, double lat_deg, double alt_m);
 
+/// Observer→Sun light‑travel time (days): the same projection as
+/// lightTravelTime(), but onto the Sun's centre instead of the solar‑system
+/// barycentre. This is the offset that turns a JD into an HJD.
+double heliocentricLightTravelTime(double mjd_utc,
+                                   double ra_deg, double dec_deg,
+                                   double lon_deg, double lat_deg, double alt_m);
+
+/// MJD(UTC) → HJD(UTC).
+///
+/// HJD is left on UTC, which is the convention essentially all published
+/// heliocentric timestamps follow (and the one astropy's
+/// `Time.utc + light_travel_time(kind="heliocentric")` reproduces). The scale
+/// itself is only good to the ~4 s by which the Sun wanders around the
+/// barycentre, so the missing UTC→TDB shift is not the limiting error; BJD is
+/// the scale to use when that matters.
+double mjdUtcToHjdUtc(double mjd_utc,
+                      double ra_deg, double dec_deg,
+                      double lon_deg, double lat_deg, double alt_m);
+
+/// HJD(UTC) → MJD(UTC): the inverse of mjdUtcToHjdUtc().
+///
+/// The correction has to be evaluated at the observation epoch, which is what
+/// is being solved for, so this iterates. The light‑travel time drifts by well
+/// under a second across the 16.6 minutes it spans, so the fixed point is
+/// reached on the first pass and the rest only confirm it.
+double hjdUtcToMjdUtc(double hjd_utc,
+                      double ra_deg, double dec_deg,
+                      double lon_deg, double lat_deg, double alt_m);
+
 /// Barycentric radial‑velocity correction (BERV) in km/s: the component of
 /// the observer's velocity relative to the solar‑system barycentre *towards*
 /// the target, so that

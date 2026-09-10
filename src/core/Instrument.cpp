@@ -27,27 +27,58 @@ bool Instrument::hasLocation() const
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// MJD(UTC) → BJD(TDB)
+// Time‑scale conversions
 // ═════════════════════════════════════════════════════════════════════════════
+
+void Instrument::correctionSite(double& lonDeg, double& latDeg, double& altM,
+                                const char* warnContext) const
+{
+    // Space‑based: the topocentric term is a light‑travel time across an orbit
+    // radius, well below the accuracy of either scale. Pass the geocentre
+    // (0, 0, 0) so observerGeocentricPosition returns ~0.
+    if (!_spaceBased && !hasLocation() && warnContext) {
+        qWarning() << warnContext << ':' << _name
+                   << "has no location – using geocentre.";
+    }
+
+    if (_spaceBased || !hasLocation()) {
+        lonDeg = latDeg = altM = 0.0;
+        return;
+    }
+
+    lonDeg = _longitude;
+    latDeg = _latitude;
+    altM   = _altitude;
+}
+
+// ── MJD(UTC) → BJD(TDB) ─────────────────────────────────────────────────────
 
 double Instrument::mjdToBjd(double mjd, double ra, double dec) const
 {
-    if (_spaceBased) {
-        // Space‑based: topocentric correction is negligible.
-        // Pass geocentre (0, 0, 0) so observerGeocentricPosition returns ~0.
-        return BarycentricCorrection::mjdUtcToBjdTdb(
-            mjd, ra, dec, 0.0, 0.0, 0.0);
-    }
+    double lon, lat, alt;
+    correctionSite(lon, lat, alt, "Instrument::mjdToBjd");
+    return BarycentricCorrection::mjdUtcToBjdTdb(mjd, ra, dec, lon, lat, alt);
+}
 
-    if (!hasLocation()) {
-        qWarning() << "Instrument::mjdToBjd:" << _name
-                    << "has no location – using geocentre.";
-        return BarycentricCorrection::mjdUtcToBjdTdb(
-            mjd, ra, dec, 0.0, 0.0, 0.0);
-    }
+// ── MJD(UTC) ↔ HJD(UTC) ─────────────────────────────────────────────────────
+//
+// Neither direction warns about a missing site: the observer's position on
+// Earth moves the heliocentric light travel by at most 21 ms (one Earth radius
+// over c), which is four orders of magnitude inside the ~4 s the heliocentric
+// scale is worth in the first place. BJD is where the site actually matters.
 
-    return BarycentricCorrection::mjdUtcToBjdTdb(
-        mjd, ra, dec, _longitude, _latitude, _altitude);
+double Instrument::mjdToHjd(double mjd, double ra, double dec) const
+{
+    double lon, lat, alt;
+    correctionSite(lon, lat, alt);
+    return BarycentricCorrection::mjdUtcToHjdUtc(mjd, ra, dec, lon, lat, alt);
+}
+
+double Instrument::hjdToMjd(double hjd, double ra, double dec) const
+{
+    double lon, lat, alt;
+    correctionSite(lon, lat, alt);
+    return BarycentricCorrection::hjdUtcToMjdUtc(hjd, ra, dec, lon, lat, alt);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

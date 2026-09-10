@@ -1,8 +1,10 @@
 #include "core/Time.h"
+#include "core/BarycentricCorrection.h"
 #include "core/Instrument.h"
 
 #include <cmath>
 #include <QDebug>
+#include <QRegularExpression>
 
 // ═════════════════════════════════════════════════════════════════════════════
 // Construction
@@ -114,6 +116,10 @@ void Time::setBJD(double v)
 void Time::setHJD(double v)
 {
     _hjd = v;
+    // Deliberately no invalidation of _mjd/_jd/_bjd, unlike setMJD(): those are
+    // the scales an HJD is *derived into*, so a reader that already found a
+    // real MJD in the header keeps it, and a Time that has only the HJD gets
+    // the others filled in by computeMJD() once the coordinates turn up.
     adoptNativeScale(TimeScale::HJD, v);
 }
 
@@ -130,21 +136,56 @@ void Time::setAutoConvertInfo(std::shared_ptr<const Instrument> inst,
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-// BJD accessor with lazy auto‑conversion
+// Scale accessors with lazy auto‑conversion
 // ═════════════════════════════════════════════════════════════════════════════
+
+void Time::ensureMjdFromHjd() const
+{
+    if (_mjd.has_value()) return;
+    if (!_hjd.has_value() || !_autoInst) return;
+
+    _mjd = _autoInst->hjdToMjd(*_hjd, _autoRA, _autoDec);
+    _jd  = *_mjd + MJD_OFFSET;
+}
+
+std::optional<double> Time::mjd() const
+{
+    ensureMjdFromHjd();
+    return _mjd;
+}
+
+std::optional<double> Time::jd() const
+{
+    ensureMjdFromHjd();
+    return _jd;
+}
 
 std::optional<double> Time::bjd() const
 {
     if (_bjd.has_value())
         return _bjd;
 
-    // Attempt lazy conversion: need MJD + instrument + coordinates
-    if (!_mjd.has_value() || !_autoInst)
+    // Attempt lazy conversion: need MJD + instrument + coordinates. An
+    // HJD-only Time qualifies too - mjd() undoes the heliocentric leg first.
+    const auto m = mjd();
+    if (!m.has_value() || !_autoInst)
         return std::nullopt;
 
     // Perform the conversion and cache the result
-    _bjd = _autoInst->mjdToBjd(*_mjd, _autoRA, _autoDec);
+    _bjd = _autoInst->mjdToBjd(*m, _autoRA, _autoDec);
     return _bjd;
+}
+
+std::optional<double> Time::hjd() const
+{
+    if (_hjd.has_value())
+        return _hjd;
+
+    if (!_mjd.has_value() || !_autoInst)
+        return std::nullopt;
+
+    _hjd = _autoInst->mjdToHjd(*_mjd, _autoRA, _autoDec);
+    return _hjd;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -154,6 +195,11 @@ std::optional<double> Time::bjd() const
 void Time::computeBJD(const Instrument& inst, double raDeg, double decDeg)
 {
     if (_bjd.has_value() && *_bjd > 0.0) return;
+
+    // An HJD-only Time is one heliocentric correction away from an MJD, which
+    // is what the barycentric leg needs; do that first rather than refusing.
+    computeMJD(&inst, raDeg, decDeg);
+
     if (!_mjd.has_value()) {
         qWarning() << "Time::computeBJD: MJD not available – cannot convert.";
         return;
@@ -169,8 +215,29 @@ void Time::computeHJD(const Instrument& inst, double raDeg, double decDeg)
         qWarning() << "Time::computeHJD: MJD not available – cannot convert.";
         return;
     }
-    Q_UNUSED(inst); Q_UNUSED(raDeg); Q_UNUSED(decDeg);
-    qWarning() << "Time::computeHJD: not yet fully implemented.";
+    _hjd = inst.mjdToHjd(*_mjd, raDeg, decDeg);
+    adoptNativeScale(TimeScale::HJD, *_hjd);
+}
+
+void Time::computeMJD(const Instrument* inst, double raDeg, double decDeg)
+{
+    if (_mjd.has_value()) return;
+    if (!_hjd.has_value()) return;   // nothing to undo; not an error
+
+    // No instrument: the geocentre. The site is worth ≤ 21 ms here, and an
+    // import that has matched the star but not the telescope would otherwise
+    // have to throw the timestamp away.
+    _mjd = inst ? inst->hjdToMjd(*_hjd, raDeg, decDeg)
+                : BarycentricCorrection::hjdUtcToMjdUtc(
+                      *_hjd, raDeg, decDeg, 0.0, 0.0, 0.0);
+    _jd  = *_mjd + MJD_OFFSET;
+    adoptNativeScale(TimeScale::MJD, *_mjd);
+}
+
+void Time::resolveScales(const Instrument* inst, double raDeg, double decDeg)
+{
+    computeMJD(inst, raDeg, decDeg);
+    if (inst) computeBJD(*inst, raDeg, decDeg);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -184,6 +251,9 @@ double Time::sortValue() const
     if (b.has_value())         return *b;
     if (_mjd.has_value())      return *_mjd + MJD_OFFSET;
     if (_jd.has_value())       return *_jd;
+    // An HJD is the same epoch to within the ±8.3 minutes of the heliocentric
+    // correction, which is close enough to order a series by.
+    if (_hjd.has_value())      return *_hjd;
     return _nativeValue;
 }
 
@@ -298,6 +368,97 @@ TimeScale Time::stringToScale(const QString& str)
     if (lower == "bkjd")                        return TimeScale::BKJD;
     if (lower == "gaiatcb" || lower == "tcb")   return TimeScale::GaiaTCB;
     return TimeScale::Unknown;
+}
+
+bool Time::isBarycentric(TimeScale ts)
+{
+    switch (ts) {
+    case TimeScale::BJD:
+    case TimeScale::BTJD:
+    case TimeScale::BKJD:
+    case TimeScale::GaiaTCB:
+        return true;
+    case TimeScale::JD:
+    case TimeScale::MJD:
+    case TimeScale::HJD:
+    case TimeScale::Unknown:
+        return false;
+    }
+    return false;
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Reduced (offset) Julian dates
+// ═════════════════════════════════════════════════════════════════════════════
+
+double Time::parseEpochOffset(const QString& text)
+{
+    // A JD-family word, then the offset the table has subtracted. The word is
+    // required: a bare "2450000" in a description is as likely to be a range
+    // bound or a bibcode fragment as an epoch offset, and guessing at those is
+    // how timestamps get quietly ruined.
+    //
+    // The separator may be '-', '+' or '_'. Underscore is the file-name form
+    // ("HJD_2450000") and always means subtraction, like the hyphen; only an
+    // explicit '+' reverses the sign.
+    static const QRegularExpression re(
+        QStringLiteral(R"([a-z]*jd[a-z_]*\s*([-+_])\s*(2[0-9]{6}(?:\.[0-9]+)?))"),
+        QRegularExpression::CaseInsensitiveOption);
+
+    const auto m = re.match(text);
+    if (!m.hasMatch()) return 0.0;
+
+    const double magnitude = m.captured(2).toDouble();
+    return (m.captured(1) == QLatin1String("+")) ? -magnitude : magnitude;
+}
+
+double Time::epochOffsetFor(const QString& columnLabel,
+                            const QStringList& metadataLines)
+{
+    // The header cell wins: if it says "HJD-2450000" there is nothing to
+    // interpret.
+    if (const double fromLabel = parseEpochOffset(columnLabel);
+        fromLabel != 0.0)
+        return fromLabel;
+
+    // Otherwise the file's own metadata. VizieR writes one line per column,
+    //   #Column HJD (F13.8) [3852.76/9935.72] Heliocentric Julian date; HJD-2450000.0
+    // so the line that names this column and states an offset is the one.
+    const QString needle = columnLabel.trimmed();
+    if (needle.isEmpty()) return 0.0;
+
+    for (const QString& line : metadataLines) {
+        if (!line.contains(needle, Qt::CaseInsensitive)) continue;
+        if (const double fromMeta = parseEpochOffset(line); fromMeta != 0.0)
+            return fromMeta;
+    }
+    return 0.0;
+}
+
+bool Time::isPlausibleFor(double value, TimeScale scale)
+{
+    if (std::isnan(value)) return false;
+
+    switch (scale) {
+    case TimeScale::JD:
+    case TimeScale::HJD:
+    case TimeScale::BJD:
+        // JD 2000000 is 1720 CE, comfortably before any observation ASTRA will
+        // ever see, so this rejects reduced epochs without second-guessing a
+        // genuinely old one.
+        return value >= 2.0e6;
+
+    case TimeScale::MJD:
+        // MJD 1e6 is the year 4600. A value that large is a JD mislabelled.
+        return value < 1.0e6;
+
+    case TimeScale::BTJD:
+    case TimeScale::BKJD:
+    case TimeScale::GaiaTCB:
+    case TimeScale::Unknown:
+        return true;
+    }
+    return true;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

@@ -8,6 +8,10 @@
 // accident (cache invalidation on setMJD, the 0.0 sentinel in fromMjdBjd,
 // and the deliberately lossy scaleToString).
 //
+// The HJD cases below pin the plumbing rather than the ephemeris - which scale
+// is derived from which, and in what order.  The heliocentric correction itself
+// is validated against astropy in tests/test_barycentric.cpp.
+//
 // The offset constants are exact by definition, so they are asserted directly
 // rather than against an astropy-generated reference:
 //   MJD  = JD - 2400000.5      (IAU)
@@ -17,6 +21,7 @@
 
 #include <doctest.h>
 
+#include "core/Instrument.h"
 #include "core/Time.h"
 
 #include <QBuffer>
@@ -265,6 +270,242 @@ TEST_CASE("Time: survives a QDataStream round trip")
     CHECK(*restored.hjd() == doctest::Approx(2458325.5));
     CHECK(restored.exposureTimeSec() == doctest::Approx(120.0));
     CHECK(restored == original);
+}
+
+TEST_CASE("Time: an HJD is undone to MJD and carried on to BJD")
+{
+    // La Silla, and Spica - the same site/target pair the astropy-referenced
+    // barycentric test uses, so the numbers here are checked elsewhere against
+    // a real ephemeris.  What this case pins is the plumbing: which scale gets
+    // derived from which, and in what order.
+    auto lasilla = std::make_shared<Instrument>("La Silla", -29.2563, -70.7345, 2347.0);
+    constexpr double kRa  = 201.2983;
+    constexpr double kDec = -11.1614;
+
+    // Forward, so the test has an HJD that belongs to a known MJD.
+    Time forward(51544.5, TimeScale::MJD);
+    forward.computeHJD(*lasilla, kRa, kDec);
+    REQUIRE(forward.hasHjd());
+    const double hjd = *forward.hjd();
+
+    // The heliocentric correction is a light-travel time across at most 1 AU,
+    // so it never leaves the ±8.32 minute window.
+    CHECK(std::fabs(hjd - (51544.5 + Time::MJD_OFFSET)) < 8.32 / (24.0 * 60.0));
+
+    // Backward: an HJD-native Time knows nothing else until the sky is
+    // supplied, and then recovers the epoch it came from.
+    Time imported(hjd, TimeScale::HJD);
+    CHECK(imported.nativeScale() == TimeScale::HJD);
+    CHECK_FALSE(imported.mjd().has_value());
+    CHECK_FALSE(imported.hasBjd());
+
+    imported.resolveScales(lasilla.get(), kRa, kDec);
+    REQUIRE(imported.mjd().has_value());
+    // Approx's default relative epsilon is 0.05 days on a number this size, so
+    // the recovered epoch is compared in seconds instead.  The bound is 0.1 ms
+    // because that is a couple of ulps of the JD the round trip passes
+    // through: a double resolves 2.45e6 to about 40 microseconds, and no
+    // number of iterations closes tighter than the representation does.
+    constexpr double kSecPerDay = 86400.0;
+    CHECK(std::fabs(*imported.mjd() - 51544.5) * kSecPerDay < 1e-4);
+    CHECK(std::fabs(*imported.jd() - (51544.5 + Time::MJD_OFFSET))
+              * kSecPerDay < 1e-4);
+
+    // ... and the BJD follows from the recovered MJD, not from the HJD.
+    REQUIRE(imported.hasBjd());
+    Time direct(51544.5, TimeScale::MJD);
+    direct.computeBJD(*lasilla, kRa, kDec);
+    CHECK(*imported.bjd() == doctest::Approx(*direct.bjd()));
+
+    // The native scale stays HJD: that is what the file said, and it is what a
+    // round trip through the star package has to reproduce.
+    CHECK(imported.nativeScale() == TimeScale::HJD);
+    CHECK(imported.nativeValue() == doctest::Approx(hjd));
+}
+
+TEST_CASE("Time: HJD without an instrument still yields an MJD")
+{
+    // Import paths match the star before they assign a telescope, so the
+    // conversion has to work from the coordinates alone.  Dropping the site
+    // moves the answer by at most one Earth radius of light travel, 21 ms.
+    auto lasilla = std::make_shared<Instrument>("La Silla", -29.2563, -70.7345, 2347.0);
+    constexpr double kRa  = 201.2983;
+    constexpr double kDec = -11.1614;
+
+    Time forward(51544.5, TimeScale::MJD);
+    forward.computeHJD(*lasilla, kRa, kDec);
+    const double hjd = *forward.hjd();
+
+    Time geocentric(hjd, TimeScale::HJD);
+    geocentric.computeMJD(nullptr, kRa, kDec);
+    REQUIRE(geocentric.mjd().has_value());
+
+    constexpr double kSecPerDay = 86400.0;
+    CHECK(std::fabs(*geocentric.mjd() - 51544.5) * kSecPerDay < 0.021);
+
+    // No BJD, though: that one does need the site, and resolveScales says so
+    // by leaving it unset rather than guessing.
+    Time onlyHelio(hjd, TimeScale::HJD);
+    onlyHelio.resolveScales(nullptr, kRa, kDec);
+    CHECK(onlyHelio.mjd().has_value());
+    CHECK_FALSE(onlyHelio.hasBjd());
+}
+
+TEST_CASE("Time: setHJD annotates, it does not overwrite")
+{
+    // A FITS header may carry both cards.  The MJD is the epoch the telescope
+    // recorded; the HJD is derived from it, so recording the HJD must not
+    // disturb the MJD or invalidate a BJD the way setMJD does.
+    Time t(51544.5, TimeScale::MJD);
+    t.setBJD(2451544.999465831);
+
+    t.setHJD(2451544.9986788062);
+    CHECK(*t.mjd() == doctest::Approx(51544.5));
+    CHECK(t.hasBjd());
+    CHECK(*t.bjd() == doctest::Approx(2451544.999465831));
+    CHECK(t.nativeScale() == TimeScale::MJD);
+
+    // With nothing else known, the HJD claims the native scale.
+    Time bare;
+    bare.setHJD(2451544.9986788062);
+    CHECK(bare.nativeScale() == TimeScale::HJD);
+    CHECK_FALSE(bare.mjd().has_value());
+}
+
+TEST_CASE("Time: the auto-convert link resolves an HJD lazily")
+{
+    auto lasilla = std::make_shared<Instrument>("La Silla", -29.2563, -70.7345, 2347.0);
+    constexpr double kRa  = 201.2983;
+    constexpr double kDec = -11.1614;
+
+    Time forward(51544.5, TimeScale::MJD);
+    forward.computeHJD(*lasilla, kRa, kDec);
+
+    Time lazy(*forward.hjd(), TimeScale::HJD);
+    CHECK_FALSE(lazy.mjd().has_value());
+
+    lazy.setAutoConvertInfo(lasilla, kRa, kDec);
+    REQUIRE(lazy.mjd().has_value());
+    CHECK(*lazy.mjd() == doctest::Approx(51544.5));
+    REQUIRE(lazy.bjd().has_value());
+
+    // sortValue falls back to the HJD when nothing better can be derived, so
+    // an unresolved series still orders correctly.
+    const Time unresolved(*forward.hjd(), TimeScale::HJD);
+    CHECK(unresolved.sortValue() == doctest::Approx(*forward.hjd()));
+}
+
+TEST_CASE("Time: isBarycentric separates the scales that need a correction")
+{
+    CHECK(Time::isBarycentric(TimeScale::BJD));
+    CHECK(Time::isBarycentric(TimeScale::BTJD));
+    CHECK(Time::isBarycentric(TimeScale::BKJD));
+    CHECK(Time::isBarycentric(TimeScale::GaiaTCB));
+
+    // HJD is referred to the Sun, not the barycentre, so it is not one of them:
+    // it still needs both corrections applied to reach a BJD.
+    CHECK_FALSE(Time::isBarycentric(TimeScale::HJD));
+    CHECK_FALSE(Time::isBarycentric(TimeScale::JD));
+    CHECK_FALSE(Time::isBarycentric(TimeScale::MJD));
+    CHECK_FALSE(Time::isBarycentric(TimeScale::Unknown));
+}
+
+TEST_CASE("Time: a reduced Julian date's offset is read off the column")
+{
+    // The exact metadata line VizieR emits for J/ApJ/950/141 (ELM Survey
+    // South II), which is the case that exposed this: the column is called
+    // plain "HJD" and only the description says it has been reduced.
+    const QStringList vizier = {
+        "#Column\tName\t(A11)\tObject identifier\t[ucd=meta.id;meta.main]",
+        "#Column\tHJD\t(F13.8)\t[3852.76/9935.72] Heliocentric Julian date; "
+        "HJD-2450000.0\t[ucd=time.epoch]",
+        "#Column\tRVel\t(F9.4)\t[-498/493] Radial Velocity",
+    };
+    CHECK(Time::epochOffsetFor("HJD", vizier) == doctest::Approx(2450000.0));
+
+    // A header cell that states it itself needs no metadata at all.
+    CHECK(Time::epochOffsetFor("HJD-2450000", {}) == doctest::Approx(2450000.0));
+    CHECK(Time::epochOffsetFor("BJD_TDB-2457000", {}) == doctest::Approx(2457000.0));
+    CHECK(Time::epochOffsetFor("hjd_2450000", {}) == doctest::Approx(2450000.0));
+
+    // The sign is the one thing worth being careful about: "HJD-2450000" means
+    // the table holds HJD *minus* that, so recovering the HJD adds it back.
+    CHECK(Time::parseEpochOffset("HJD - 2450000.0") == doctest::Approx(2450000.0));
+    CHECK(Time::parseEpochOffset("JD+2400000") == doctest::Approx(-2400000.0));
+
+    // No offset stated, nothing invented.
+    CHECK(Time::parseEpochOffset("HJD") == doctest::Approx(0.0));
+    CHECK(Time::parseEpochOffset("Heliocentric Julian date") == doctest::Approx(0.0));
+    CHECK(Time::epochOffsetFor("HJD", {"#Column RVel [-498/493] Radial Velocity"})
+              == doctest::Approx(0.0));
+
+    // A bare number is not an offset: the JD word has to be there, or a range
+    // bound or a catalogue number would be read as one.
+    CHECK(Time::parseEpochOffset("[2450000/2460000] epoch") == doctest::Approx(0.0));
+    CHECK(Time::parseEpochOffset("2023ApJ...950..141K") == doctest::Approx(0.0));
+
+    // A metadata line naming a different column must not bleed across.
+    CHECK(Time::epochOffsetFor("MJD", vizier) == doctest::Approx(0.0));
+}
+
+TEST_CASE("Time: a value too small for its scale is rejected, not converted")
+{
+    // The reduced HJD as it appears in the file: 8867.95 cannot be a Julian
+    // date of anything (JD 8867 is the sixth millennium BC), and converting it
+    // as one is what put an MJD of -2391132 in the database.
+    CHECK_FALSE(Time::isPlausibleFor(8867.954449, TimeScale::HJD));
+    CHECK_FALSE(Time::isPlausibleFor(8867.954449, TimeScale::BJD));
+    CHECK_FALSE(Time::isPlausibleFor(8867.954449, TimeScale::JD));
+
+    // With the offset restored it is fine.
+    CHECK(Time::isPlausibleFor(8867.954449 + 2450000.0, TimeScale::HJD));
+
+    // The same mix-up the other way round: a full JD labelled MJD.
+    CHECK_FALSE(Time::isPlausibleFor(2458867.95, TimeScale::MJD));
+    CHECK(Time::isPlausibleFor(58867.45, TimeScale::MJD));
+
+    // The mission scales are reduced by definition, so smallness is expected.
+    CHECK(Time::isPlausibleFor(1325.0, TimeScale::BTJD));
+    CHECK(Time::isPlausibleFor(131.5, TimeScale::BKJD));
+    CHECK(Time::isPlausibleFor(1700.0, TimeScale::GaiaTCB));
+
+    CHECK_FALSE(Time::isPlausibleFor(std::nan(""), TimeScale::MJD));
+}
+
+TEST_CASE("Time: the reduced HJD from the ELM Survey table converts correctly")
+{
+    // End to end on the row that was imported wrongly: HJD-2450000 = 8867.9544
+    // for Gaia DR3 785814333240812544 (J1129+4715).
+    auto site = std::make_shared<Instrument>("APO", 32.7803, -105.8203, 2788.0);
+    constexpr double kRa  = 172.30901;
+    constexpr double kDec = 47.25048;
+
+    const double tabulated = 8867.95444900;
+    const double offset    = Time::epochOffsetFor(
+        "HJD", {"#Column\tHJD\t(F13.8)\tHeliocentric Julian date; HJD-2450000.0"});
+    REQUIRE(offset == doctest::Approx(2450000.0));
+
+    Time t(tabulated + offset, TimeScale::HJD);
+    REQUIRE(Time::isPlausibleFor(t.nativeValue(), TimeScale::HJD));
+
+    t.resolveScales(site.get(), kRa, kDec);
+    REQUIRE(t.mjd().has_value());
+
+    // 2020-01-14, inside the ELM Survey South observing window - and not the
+    // -2391132 that the missing offset produced.
+    CHECK(*t.mjd() > 58800.0);
+    CHECK(*t.mjd() < 58880.0);
+    REQUIRE(t.hasBjd());
+    CHECK(*t.bjd() > 2458800.0);
+
+    // HJD and BJD differ by two things and no more: the UTC->TDB shift that
+    // BJD carries and HJD does not (69.18 s in 2020 - 37 leap seconds plus
+    // 32.184), and the few seconds of light travel between the Sun and the
+    // barycentre. Anything outside this window means one of the two legs has
+    // gone somewhere it should not.
+    const double hjdToBjdSec = (*t.bjd() - t.nativeValue()) * 86400.0;
+    CHECK(hjdToBjdSec > 60.0);
+    CHECK(hjdToBjdSec < 80.0);
 }
 
 TEST_CASE("Time: an invalid value round trips as invalid")

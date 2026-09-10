@@ -48,6 +48,11 @@ public:
     // ── Time and velocity corrections ───────────────────────────────────────
 
     double mjdToBjd(double mjd, double ra, double dec) const;
+
+    /// MJD(UTC) ↔ HJD(UTC), using this instrument's site.
+    double mjdToHjd(double mjd, double ra, double dec) const;
+    double hjdToMjd(double hjd, double ra, double dec) const;
+
     bool hasLocation() const;
 
     // ── Serialization ───────────────────────────────────────────────────────
@@ -59,6 +64,13 @@ public:
     void clearModes();
 
 private:
+    /// The geodetic site the corrections are evaluated at. Space‑based
+    /// instruments and instruments with no configured location both fall back
+    /// to the geocentre; `warnContext` names the caller in the warning the
+    /// latter emits, and is left empty to stay quiet.
+    void correctionSite(double& lonDeg, double& latDeg, double& altM,
+                        const char* warnContext = nullptr) const;
+
     QString _id;
     QString _name;
     QString _fullName;

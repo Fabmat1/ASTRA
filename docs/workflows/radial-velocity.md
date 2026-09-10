@@ -46,6 +46,42 @@ the preview under **Unmatched rows**, together with the identifiers that
 failed - usually a sign that the star table has not been imported yet or that
 the match radius is too tight.
 
+### Timestamp scales
+
+The scale drop-down next to the timestamp column says what the numbers are.
+It is pre-filled from the column name (`bjd_list`, `hjd`, `mjd_obs`), and from
+the magnitude of the first value when the name gives nothing away, but a
+mislabelled column is worth correcting by hand: nothing downstream can tell an
+MJD read as a BJD from the real thing.
+
+ASTRA stores each epoch as an MJD (UTC) and a BJD (TDB), so the other scales
+are converted on import:
+
+- **MJD** and **BJD** are stored as they stand.
+- **HJD** is heliocentric, and is undone to UTC using the star's coordinates
+  before it is stored. Skipping that step would misplace the epoch by up to
+  8.3 minutes, twice a year in opposite directions, which is enough to smear a
+  short-period orbit. A row whose star has no coordinates is skipped and
+  reported rather than stored on the wrong scale.
+
+The BJD is filled in once the point has an instrument, since the barycentric
+correction needs the observing site. The heliocentric leg does not: the site
+moves it by at most 21 ms, so an HJD converts correctly even before any
+telescope has been assigned.
+
+#### Reduced Julian dates
+
+Catalogues often strip the leading digits off a Julian date and say so in the
+column description rather than the column name - `HJD-2450000.0` is the usual
+form, and a VizieR export states it in the `#Column` preamble. The **Epoch
+offset** field holds the number added back before the scale conversion, and is
+filled in automatically when the file says what it is.
+
+If it is left at 0 and the values are too small to be Julian dates, the import
+stops and says so instead of converting them: a reduced date put through a
+scale conversion as if it were a full one is off by the whole offset, and the
+result still looks like a number.
+
 ### One row per epoch, or one row per star
 
 Both layouts work. A cell may hold a whole series instead of a single value,

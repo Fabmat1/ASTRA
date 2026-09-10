@@ -388,12 +388,24 @@ BarycentricCorrection::observerGeocentricPosition(double mjd_utc,
 // ═════════════════════════════════════════════════════════════════════════════
 // Light travel time
 // ═════════════════════════════════════════════════════════════════════════════
+//
+// Barycentric and heliocentric light travel differ only in where the origin
+// sits: the solar‑system barycentre for the first, the Sun's centre for the
+// second. Everything else - the target direction, Earth's orbit, the observer's
+// place on the rotating Earth - is shared, so the two are one function with the
+// barycentre offset switched in or out. Keeping them together also keeps them
+// consistent: a fix to the ephemeris lands on both scales at once.
+// ═════════════════════════════════════════════════════════════════════════════
 
-double BarycentricCorrection::lightTravelTime(double mjd_utc,
-                                               double ra_deg, double dec_deg,
-                                               double lon_deg, double lat_deg,
-                                               double alt_m)
+namespace {
+
+double projectedLightTravel(double mjd_utc,
+                            double ra_deg, double dec_deg,
+                            double lon_deg, double lat_deg, double alt_m,
+                            bool toBarycentre)
 {
+    using BarycentricCorrection::Vec3;
+
     // Julian centuries of TDB from J2000 (approximate: use UTC, error < 1 ms)
     double T = (mjd_utc - J2000_MJD) / 36525.0;
 
@@ -404,24 +416,83 @@ double BarycentricCorrection::lightTravelTime(double mjd_utc,
     double ny = std::cos(dec) * std::sin(ra);
     double nz = std::sin(dec);
 
-    // ── Observer's barycentric position ─────────────────────────────────────
-    Vec3 earthPos  = earthHeliocentricPosition(T);
-    Vec3 baryOff   = ssBarycenterOffset(T);
-    Vec3 topoOff   = observerGeocentricPosition(mjd_utc, lon_deg, lat_deg, alt_m);
+    // ── Observer's position relative to the chosen origin ───────────────────
+    // earthHeliocentricPosition gives Earth‑relative‑to‑Sun, so the Sun is
+    // already the origin; the barycentre is one further subtraction away.
+    Vec3 earthPos = BarycentricCorrection::earthHeliocentricPosition(T);
+    Vec3 topoOff  = BarycentricCorrection::observerGeocentricPosition(
+                        mjd_utc, lon_deg, lat_deg, alt_m);
 
-    // Observer position relative to SS barycenter (AU, equatorial J2000):
-    //   r_obs = r_earth_helio − r_bary_from_sun + r_topo
-    // Note: earthHeliocentricPosition gives Earth‑relative‑to‑Sun.
-    //       ssBarycenterOffset gives barycenter‑relative‑to‑Sun.
-    //       So  r_obs_bary = r_earth_helio − r_bary_offset + r_topo.
-    double ox = earthPos.x - baryOff.x + topoOff.x;
-    double oy = earthPos.y - baryOff.y + topoOff.y;
-    double oz = earthPos.z - baryOff.z + topoOff.z;
+    double ox = earthPos.x + topoOff.x;
+    double oy = earthPos.y + topoOff.y;
+    double oz = earthPos.z + topoOff.z;
+
+    if (toBarycentre) {
+        //   r_obs_bary = r_earth_helio − r_bary_from_sun + r_topo
+        // ssBarycenterOffset gives barycenter‑relative‑to‑Sun.
+        Vec3 baryOff = BarycentricCorrection::ssBarycenterOffset(T);
+        ox -= baryOff.x;
+        oy -= baryOff.y;
+        oz -= baryOff.z;
+    }
 
     // ── Light travel time correction (days) ─────────────────────────────────
-    // Δt = −(r_obs · n̂) / c
+    // Δt = (r_obs · n̂) / c
     double dot = ox * nx + oy * ny + oz * nz;
     return dot / C_AU_PER_DAY;
+}
+
+} // namespace
+
+double BarycentricCorrection::lightTravelTime(double mjd_utc,
+                                               double ra_deg, double dec_deg,
+                                               double lon_deg, double lat_deg,
+                                               double alt_m)
+{
+    return projectedLightTravel(mjd_utc, ra_deg, dec_deg,
+                                lon_deg, lat_deg, alt_m,
+                                /*toBarycentre=*/true);
+}
+
+double BarycentricCorrection::heliocentricLightTravelTime(
+    double mjd_utc, double ra_deg, double dec_deg,
+    double lon_deg, double lat_deg, double alt_m)
+{
+    return projectedLightTravel(mjd_utc, ra_deg, dec_deg,
+                                lon_deg, lat_deg, alt_m,
+                                /*toBarycentre=*/false);
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// MJD(UTC) ↔ HJD(UTC)
+// ═════════════════════════════════════════════════════════════════════════════
+
+double BarycentricCorrection::mjdUtcToHjdUtc(double mjd_utc,
+                                              double ra_deg, double dec_deg,
+                                              double lon_deg, double lat_deg,
+                                              double alt_m)
+{
+    return mjd_utc + MJD_OFFSET
+         + heliocentricLightTravelTime(mjd_utc, ra_deg, dec_deg,
+                                       lon_deg, lat_deg, alt_m);
+}
+
+double BarycentricCorrection::hjdUtcToMjdUtc(double hjd_utc,
+                                              double ra_deg, double dec_deg,
+                                              double lon_deg, double lat_deg,
+                                              double alt_m)
+{
+    // Fixed‑point iteration on  mjd = hjd − offset − ltt(mjd).  The correction
+    // spans ±8.3 minutes and drifts by ≲ 0.6 s over that interval, so the map
+    // contracts by ~10⁻⁴ per pass: the first pass is already good to well under
+    // a millisecond and the second is below double precision on a JD.
+    double mjd = hjd_utc - MJD_OFFSET;
+    for (int i = 0; i < 3; ++i) {
+        mjd = hjd_utc - MJD_OFFSET
+            - heliocentricLightTravelTime(mjd, ra_deg, dec_deg,
+                                          lon_deg, lat_deg, alt_m);
+    }
+    return mjd;
 }
 
 // ═════════════════════════════════════════════════════════════════════════════

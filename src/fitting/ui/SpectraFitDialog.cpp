@@ -11,6 +11,7 @@
 #include "spectra/matchSpectraToInstrument.h"
 #include "spectra/ui/SpectraPanel.h"
 #include "spectra/ui/AddSpectraDialog.h"
+#include "spectra/ui/SpectrumDetailsDialog.h"
 #include "fitting/ui/FitSetupWidget.h"
 #include "spectra/ui/CoAddWidget.h"
 #include "spectra/ui/ArchiveFetchWidget.h"
@@ -807,6 +808,16 @@ void SpectraFitDialog::onTreeContextMenu(const QPoint& pos)
                     this, &SpectraFitDialog::onAddFitClicked);
 
             menu.addSeparator();
+            QAction* detailsAct =
+                menu.addAction(QStringLiteral("Show All Parameters…"));
+            detailsAct->setToolTip(
+                "Everything ASTRA stores for this spectrum: epochs, "
+                "instrument attribution, coverage and archive provenance.");
+            connect(detailsAct, &QAction::triggered, this, [this, specId]{
+                showSpectrumDetails(specId);
+            });
+
+            menu.addSeparator();
             QAction* redetectAct =
                 menu.addAction(QStringLiteral("Re-detect instrument/mode"));
             redetectAct->setToolTip(
@@ -837,6 +848,15 @@ void SpectraFitDialog::onTreeContextMenu(const QPoint& pos)
         else if (kind == kKindFit) {
             const QString fitId  = item->data(kColName, kRoleId).toString();
             const QString specId = item->data(kColName, kRoleParentId).toString();
+
+            menu.addSeparator();
+            QAction* detailsAct =
+                menu.addAction(QStringLiteral("Show All Parameters…"));
+            detailsAct->setToolTip(
+                "Every fitted parameter of this fit, including both "
+                "components, the telluric term and the element abundances.");
+            connect(detailsAct, &QAction::triggered, this,
+                    [this, specId, fitId]{ showFitDetails(specId, fitId); });
 
             menu.addSeparator();
             QAction* removeAct = menu.addAction(QStringLiteral("Remove Fit"));
@@ -937,6 +957,8 @@ void SpectraFitDialog::onAddSpectraClicked()
 
     if (!pending.empty()) {
         AddSpectraDialog dlg(pending, instruments, sidecars, this);
+        // Needed to undo a heliocentric timestamp and to compute the BJD.
+        dlg.setTargetCoordinates(_star->getRa(), _star->getDec());
         if (dlg.exec() != QDialog::Accepted) return;
         pending = dlg.entries();
     }
@@ -1069,6 +1091,32 @@ void SpectraFitDialog::purgeRVPointsFor(const QSet<QString>& spectrumIds)
     LOG_INFO("Tools", QString("Removed %1 RV point(s) belonging to %2 deleted "
                               "spectrum(a)").arg(gone.size())
                                             .arg(spectrumIds.size()));
+}
+
+// ----------------------------------------------------------------------------
+// Stored-record inspection
+// ----------------------------------------------------------------------------
+
+void SpectraFitDialog::showSpectrumDetails(const QString& spectrumId)
+{
+    for (const auto& spec : _spectra)
+        if (spec->getId() == spectrumId) {
+            SpectrumDetailsDialog::showSpectrum(spec, _dbm, this);
+            return;
+        }
+}
+
+void SpectraFitDialog::showFitDetails(const QString& spectrumId,
+                                      const QString& fitId)
+{
+    for (const auto& spec : _spectra) {
+        if (spec->getId() != spectrumId) continue;
+        for (const auto& fit : spec->getSpectralFits())
+            if (fit->getId() == fitId) {
+                SpectrumDetailsDialog::showFit(spec, fit, this);
+                return;
+            }
+    }
 }
 
 void SpectraFitDialog::removeSpectrum(const QString& spectrumId)

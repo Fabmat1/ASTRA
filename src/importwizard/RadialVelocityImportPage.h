@@ -63,9 +63,22 @@ private:
 
     // CSV helpers
     QChar getDelimiter(QComboBox* combo) const;
+    /// Collects `outMetadata` alongside the table: a VizieR export states a
+    /// column's epoch offset only in its '#' preamble.
     bool loadCSVFile(const QString& filepath, QComboBox* delimCombo,
                      QCheckBox* headerCheck, QStringList& outColumns,
-                     std::vector<QStringList>& outRows);
+                     std::vector<QStringList>& outRows,
+                     QStringList* outMetadata = nullptr);
+
+    /// Fill `offsetEdit` from what the file says about `timeCombo`'s column,
+    /// so a reduced Julian date is restored before anything is converted.
+    static void applyDetectedEpochOffset(const QStringList& columns,
+                                         const QStringList& metadata,
+                                         const QComboBox* timeCombo,
+                                         QLineEdit* offsetEdit);
+
+    /// The value in an epoch-offset field, or 0 when it is blank or unusable.
+    static double epochOffsetIn(const QLineEdit* offsetEdit);
     void populateColumnCombos(const QStringList& columns,
                               const QList<QPair<QComboBox*, QStringList>>& comboPatterns);
     void autoDetectTableColumns();
@@ -107,6 +120,7 @@ private:
     // Table import data (loaded from file, passed to task)
     QStringList _tableColumns;
     std::vector<QStringList> _tableRows;
+    QStringList _tableMetadata;      // the table's '#' preamble lines
 
     // Fit params file data
     QStringList _fitColumns;
@@ -164,6 +178,7 @@ private:
     QCheckBox* _folderHeaderCheck = nullptr;
     QComboBox* _folderTimeColCombo = nullptr;
     QComboBox* _folderTimeTypeCombo = nullptr;
+    QLineEdit* _folderEpochOffsetEdit = nullptr;
     QComboBox* _folderRVColCombo = nullptr;
     QComboBox* _folderRVErrColCombo = nullptr;
     QPushButton* _scanFoldersBtn = nullptr;
@@ -184,6 +199,7 @@ private:
     QDoubleSpinBox* _tableToleranceSpin = nullptr;
     QComboBox* _tableTimeColCombo = nullptr;
     QComboBox* _tableTimeTypeCombo = nullptr;
+    QLineEdit* _tableEpochOffsetEdit = nullptr;
     QComboBox* _tableRVColCombo = nullptr;
     QComboBox* _tableRVErrColCombo = nullptr;
     QPushButton* _processTableBtn = nullptr;

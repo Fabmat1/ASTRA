@@ -7,6 +7,7 @@
 #include "importwizard/ImportStagingArea.h"
 #include "app/Logger.h"
 #include "catalog/StarMatching.h"
+#include "core/Time.h"
 
 #include <QObject>
 #include <QThread>
@@ -407,7 +408,14 @@ public:
         int rvCol;
         int rvErrCol;
         int sysErrCol = -1;
-        bool isBJD;
+        /// Scale of the timestamp column. HJD is undone to MJD from the matched
+        /// star's coordinates; see the note on TableConfig::timeScale.
+        TimeScale timeScale = TimeScale::MJD;
+        /// Added to every timestamp before it is read on `timeScale`, for
+        /// tables that tabulate a reduced Julian date ("HJD-2450000"). Rows
+        /// whose value is still impossible for the scale are dropped rather
+        /// than converted; see Time::isPlausibleFor.
+        double epochOffset = 0.0;
     };
 
     static RVExtractionTask* createFromFolders(
@@ -432,7 +440,18 @@ public:
         int rvErrCol;
         int sysErrCol = -1;
         int compCol = -1;   // optional stellar component column (1 or 2)
-        bool isBJD;
+        /// Scale of the timestamp column.
+        ///
+        /// The extraction runs before any instrument has been assigned, so an
+        /// HJD is undone at the geocentre - worth at most 21 ms here, against
+        /// the ~8 minutes that not undoing it at all would cost. The BJD is
+        /// left to the resolver that runs once a point has an instrument.
+        TimeScale timeScale = TimeScale::MJD;
+        /// Added to every timestamp before it is read on `timeScale`, for
+        /// tables that tabulate a reduced Julian date ("HJD-2450000"). Rows
+        /// whose value is still impossible for the scale are dropped rather
+        /// than converted; see Time::isPlausibleFor.
+        double epochOffset = 0.0;
     };
 
     static RVExtractionTask* createFromTable(

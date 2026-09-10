@@ -16,6 +16,10 @@ struct SpectrumMetadata {
     std::optional<double> dec;
     std::optional<double> mjd;
     std::optional<double> bjd;
+    /// Heliocentric epoch, if that is what the header carried. Undoing it needs
+    /// the target coordinates, so the reader records it as-is and leaves the
+    /// conversion to MJD/BJD to whoever knows the star.
+    std::optional<double> hjd;
     std::optional<double> exposureTime;
     std::optional<QString> instrument;
     std::optional<QString> objectName;
@@ -73,6 +77,7 @@ private:
     static const QStringList DEC_KEYWORDS;
     static const QStringList MJD_KEYWORDS;
     static const QStringList BJD_KEYWORDS;
+    static const QStringList HJD_KEYWORDS;
     static const QStringList EXPTIME_KEYWORDS;
     static const QStringList INSTRUMENT_KEYWORDS;
     static const QStringList OBJECT_KEYWORDS;

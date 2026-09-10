@@ -23,6 +23,7 @@
 #include <QVBoxLayout>
 
 #include <algorithm>
+#include <cmath>
 
 namespace {
 
@@ -36,13 +37,16 @@ enum Column {
     ColumnCount
 };
 
-// Only these survive a round-trip through the database, which stores a
-// spectrum's time as MJD and BJD.
+// The database stores a spectrum's time as MJD and BJD, so these are the
+// scales that survive the round trip: the first two are a constant offset
+// apart, BJD is stored as it stands, and HJD is converted on accept from the
+// row's instrument site and the star's coordinates.
 struct ScaleChoice { const char* label; TimeScale scale; };
 const ScaleChoice kScaleChoices[] = {
     { "MJD", TimeScale::MJD },
     { "JD",  TimeScale::JD  },
     { "BJD", TimeScale::BJD },
+    { "HJD", TimeScale::HJD },
 };
 
 /// First number in `path`, skipping comment lines and non-numeric tokens, so
@@ -321,7 +325,9 @@ void AddSpectraDialog::fillRow(int row, const Entry& entry)
         scaleCombo->addItem(QString::fromLatin1(c.label),
                             static_cast<int>(c.scale));
     scaleCombo->setToolTip(
-        "Scale of the value on the left. JD is stored as MJD.");
+        "Scale of the value on the left. JD is stored as MJD; HJD is converted "
+        "to MJD and BJD using the instrument's site and the star's "
+        "coordinates.");
     astra::blockWheelScrolling(scaleCombo);
     _table->setCellWidget(row, ColScale, scaleCombo);
 
@@ -340,12 +346,17 @@ void AddSpectraDialog::fillRow(int row, const Entry& entry)
         scale  = t.nativeScale();
         value  = t.nativeValue();
         source = QStringLiteral("file header");
-        // Scales the DB cannot hold are folded onto the ones it can.
-        if (scale != TimeScale::MJD && scale != TimeScale::JD &&
-            scale != TimeScale::BJD)
-        {
+        // Scales the combo cannot offer (BTJD and friends) are folded onto the
+        // ones it can. HJD is not among them any more - it converts on accept -
+        // but an MJD alongside it is still the better value to show, being the
+        // epoch the telescope actually recorded.
+        const bool offered = std::any_of(
+            std::begin(kScaleChoices), std::end(kScaleChoices),
+            [scale](const ScaleChoice& c) { return c.scale == scale; });
+        if (!offered || (scale == TimeScale::HJD && t.mjd().has_value())) {
             if (auto mjd = t.mjd())  { scale = TimeScale::MJD; value = *mjd; }
             else if (t.hasBjd())     { scale = TimeScale::BJD; value = t.bjdOr(0.0); }
+            else if (t.hasHjd())     { scale = TimeScale::HJD; value = t.hjd(); }
         }
     }
     else if (const auto detected = detectSidecarTime(entry.path, _sidecarPool)) {
@@ -371,6 +382,25 @@ void AddSpectraDialog::fillRow(int row, const Entry& entry)
     auto* sourceItem = new QTableWidgetItem(source);
     sourceItem->setToolTip(sourceTip.isEmpty() ? source : sourceTip);
     _table->setItem(row, ColSource, sourceItem);
+}
+
+void AddSpectraDialog::setTargetCoordinates(double raDeg, double decDeg)
+{
+    _raDeg  = raDeg;
+    _decDeg = decDeg;
+}
+
+std::shared_ptr<Instrument> AddSpectraDialog::rowInstrument(int row) const
+{
+    auto* combo = qobject_cast<QComboBox*>(_table->cellWidget(row, ColInstrument));
+    if (!combo) return nullptr;
+
+    const QString id = combo->currentData().toString();
+    if (id.isEmpty()) return nullptr;
+
+    for (const auto& inst : _instruments)
+        if (inst->getId() == id) return inst;
+    return nullptr;
 }
 
 void AddSpectraDialog::populateModes(int row, const QString& instrumentId,
@@ -433,6 +463,8 @@ bool AddSpectraDialog::applyChoices()
 {
     QStringList concerns;
 
+    const bool haveCoords = !std::isnan(_raDeg) && !std::isnan(_decDeg);
+
     for (int row = 0; row < static_cast<int>(_entries.size()); ++row) {
         auto& spec = _entries[row].spectrum;
 
@@ -483,16 +515,40 @@ bool AddSpectraDialog::applyChoices()
             static_cast<TimeScale>(scaleCombo->currentData().toInt());
 
         // An MJD has ~5 digits and a (B)JD ~2.4 million, so a value on the
-        // wrong side of that is the classic scale mix-up.
-        const bool looksLikeJd = value > 1.0e6;
-        if ((scale == TimeScale::MJD) == looksLikeJd) {
-            concerns << QString("%1 - %2 does not look like a %3")
+        // wrong side of that is either the classic scale mix-up or a reduced
+        // Julian date that has arrived without the offset it was written with.
+        if (!Time::isPlausibleFor(value, scale)) {
+            concerns << QString("%1 - %2 cannot be a %3 (a Julian date is "
+                                "around 2.45 million, an MJD around 60 000); "
+                                "check the scale, or add back the offset if "
+                                "this is a reduced date such as HJD-2450000")
                             .arg(name, text, scaleCombo->currentText());
         }
 
         Time t(value, scale);
         if (spec->time().hasExposureTime())
             t.setExposureTime(spec->time().exposureTimeSec());
+
+        // HJD is not a column in the database: it has to become an MJD (and,
+        // where the site is known, a BJD) before the row is written, and both
+        // legs need the star's coordinates.
+        if (scale == TimeScale::HJD) {
+            if (haveCoords) {
+                t.resolveScales(rowInstrument(row).get(), _raDeg, _decDeg);
+            }
+            if (!t.mjd().has_value()) {
+                concerns << QString("%1 - an HJD cannot be converted without "
+                                    "the star's coordinates, so no observation "
+                                    "time will be stored").arg(name);
+                continue;
+            }
+            if (!t.hasBjd()) {
+                concerns << QString("%1 - HJD converted to MJD, but the BJD "
+                                    "needs an instrument with a location")
+                                .arg(name);
+            }
+        }
+
         spec->setTime(t);
     }
 

@@ -38,7 +38,10 @@ panel already shows the catalog data; everything else is still empty.
    **Spectral Analysis** window.
 2. Click **Add Spectra…** and select your spectrum files. ASTRA detects the
    instrument and mode automatically; review the table (file, instrument,
-   mode, scale, time) and confirm.
+   mode, scale, time) and confirm. The time is read from the FITS header or a
+   `_mjd.txt`-style sidecar; the scale column says which scale it is on. MJD,
+   JD, BJD and HJD are all accepted - an HJD is converted to MJD and BJD from
+   the instrument's site and the star's coordinates when you confirm.
 3. The spectra appear in the tree on the left and can be inspected in the
    **Browse** tab.
 

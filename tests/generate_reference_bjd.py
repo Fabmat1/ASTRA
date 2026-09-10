@@ -49,6 +49,14 @@ def compute_bjd_tdb(mjd_utc: float, ra_deg: float, dec_deg: float,
     # BJD(TDB) = JD(TDB) + light_travel_time
     bjd_tdb = t_tdb.jd + ltt_bary.jd
 
+    # Heliocentric light travel time, and the HJD it produces.  HJD stays on
+    # UTC: that is the convention published heliocentric timestamps follow, and
+    # the ~4 s the Sun wanders from the barycentre swamps the UTC-TDB shift
+    # anyway.  Anything needing better belongs on BJD.
+    ltt_helio = t_utc.light_travel_time(target, kind='heliocentric',
+                                        location=location)
+    hjd_utc = t_utc.jd + ltt_helio.jd
+
     # Barycentric radial-velocity correction: the value to ADD to a measured
     # topocentric radial velocity, i.e. lambda_bary = lambda_obs * (1 + v/c).
     berv = target.radial_velocity_correction(kind='barycentric',
@@ -67,6 +75,8 @@ def compute_bjd_tdb(mjd_utc: float, ra_deg: float, dec_deg: float,
         'jd_tdb':       t_tdb.jd,
         'ltt_bary_sec': ltt_bary.sec,
         'bjd_tdb':      bjd_tdb,
+        'ltt_helio_sec': ltt_helio.sec,
+        'hjd_utc':      hjd_utc,
         'berv_kms':     berv.to(u.km / u.s).value,
     }
 
@@ -212,6 +222,9 @@ def main():
             'berv_kms is SkyCoord.radial_velocity_correction("barycentric"): '
             'the correction to ADD to a measured topocentric radial velocity, '
             'so lambda_bary = lambda_obs * (1 + berv_kms / c).',
+            'hjd_utc is JD(UTC) + heliocentric light travel - the convention '
+            'published HJD timestamps follow. ltt_helio_sec is that correction '
+            'in seconds.',
             'All coordinates are J2000 ICRS.',
             'lon_deg is degrees East (negative = West).',
         ],

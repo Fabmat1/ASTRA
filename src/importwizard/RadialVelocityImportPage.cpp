@@ -44,6 +44,58 @@
 #include <algorithm>
 #include <numeric>
 
+namespace {
+
+/// A field for the offset of a reduced Julian-date column, wired to nothing:
+/// both panels build the same one, and it is read back by epochOffsetIn().
+QLineEdit* makeEpochOffsetEdit()
+{
+    auto* edit = new QLineEdit;
+    edit->setPlaceholderText(QStringLiteral("0"));
+    edit->setToolTip(
+        "Added to every timestamp before it is read on the scale to the left, "
+        "for tables that tabulate a reduced Julian date such as HJD-2450000. "
+        "Filled in automatically when the file states it.");
+    return edit;
+}
+
+/// The scale a timestamp-type combo is showing. Both such combos are built
+/// from the same list, so the mapping lives in one place; anything unexpected
+/// falls back to MJD, which is what the combos default to.
+TimeScale timeScaleFromCombo(const QComboBox* combo)
+{
+    switch (combo->currentIndex()) {
+        case 1:  return TimeScale::BJD;
+        case 2:  return TimeScale::HJD;
+        default: return TimeScale::MJD;
+    }
+}
+
+} // namespace
+
+double RadialVelocityImportPage::epochOffsetIn(const QLineEdit* offsetEdit)
+{
+    if (!offsetEdit) return 0.0;
+    bool ok = false;
+    const double v = offsetEdit->text().trimmed().toDouble(&ok);
+    return ok ? v : 0.0;
+}
+
+void RadialVelocityImportPage::applyDetectedEpochOffset(
+    const QStringList& columns, const QStringList& metadata,
+    const QComboBox* timeCombo, QLineEdit* offsetEdit)
+{
+    if (!timeCombo || !offsetEdit) return;
+
+    const int idx = timeCombo->currentIndex() - 1;   // -1 for "(none)"
+    if (idx < 0 || idx >= columns.size()) {
+        offsetEdit->clear();
+        return;
+    }
+    offsetEdit->setText(QString::number(
+        Time::epochOffsetFor(columns[idx], metadata), 'f', 1));
+}
+
 // ════════════════════════════════════════════════════════════════
 // RadialVelocityImportPage - Construction & UI
 // ════════════════════════════════════════════════════════════════
@@ -352,8 +404,15 @@ void RadialVelocityImportPage::setupFromFoldersPage()
     _folderTimeColCombo = new QComboBox;
     fmtLayout->addWidget(_folderTimeColCombo, row, 1);
     _folderTimeTypeCombo = new QComboBox;
-    _folderTimeTypeCombo->addItems({"MJD", "BJD"});
+    _folderTimeTypeCombo->addItems({"MJD", "BJD", "HJD"});
+    _folderTimeTypeCombo->setToolTip(
+        "Scale of the timestamp column. HJD is converted to MJD using each "
+        "matched star's coordinates.");
     fmtLayout->addWidget(_folderTimeTypeCombo, row++, 2);
+
+    fmtLayout->addWidget(new QLabel("Epoch offset:"), row, 0);
+    _folderEpochOffsetEdit = makeEpochOffsetEdit();
+    fmtLayout->addWidget(_folderEpochOffsetEdit, row++, 1);
 
     fmtLayout->addWidget(new QLabel("RV column:"), row, 0);
     _folderRVColCombo = new QComboBox;
@@ -465,8 +524,15 @@ void RadialVelocityImportPage::setupFromTablePage()
     _tableTimeColCombo = new QComboBox;
     colLayout->addWidget(_tableTimeColCombo, row, 1);
     _tableTimeTypeCombo = new QComboBox;
-    _tableTimeTypeCombo->addItems({"MJD", "BJD"});
+    _tableTimeTypeCombo->addItems({"MJD", "BJD", "HJD"});
+    _tableTimeTypeCombo->setToolTip(
+        "Scale of the timestamp column. HJD is converted to MJD using each "
+        "matched star's coordinates.");
     colLayout->addWidget(_tableTimeTypeCombo, row++, 2);
+
+    colLayout->addWidget(new QLabel("Epoch offset:"), row, 0);
+    _tableEpochOffsetEdit = makeEpochOffsetEdit();
+    colLayout->addWidget(_tableEpochOffsetEdit, row++, 1);
 
     colLayout->addWidget(new QLabel("RV column:"), row, 0);
     _tableRVColCombo = new QComboBox;
@@ -769,8 +835,11 @@ QChar RadialVelocityImportPage::getDelimiter(QComboBox* combo) const
 
 bool RadialVelocityImportPage::loadCSVFile(
     const QString& filepath, QComboBox* delimCombo, QCheckBox* headerCheck,
-    QStringList& outColumns, std::vector<QStringList>& outRows)
+    QStringList& outColumns, std::vector<QStringList>& outRows,
+    QStringList* outMetadata)
 {
+    if (outMetadata) outMetadata->clear();
+
     QFile file(filepath);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text))
         return false;
@@ -784,6 +853,7 @@ bool RadialVelocityImportPage::loadCSVFile(
         if (line.startsWith('#')) {
             if (lines.isEmpty())
                 preambleHeader = line.mid(1).trimmed();
+            if (outMetadata) *outMetadata << line;
             continue;
         }
         lines << line;
@@ -895,12 +965,15 @@ void RadialVelocityImportPage::autoDetectTableColumns()
     onTableIdTypeChanged();
 
     // Time scale: trust the column name, fall back to the magnitude of the
-    // first value (JD-like numbers are ~2.4e6, MJD ~6e4).
+    // first value (JD-like numbers are ~2.4e6, MJD ~6e4). An "hjd" column used
+    // to be read as a BJD, which silently misplaced every epoch by up to 8.3
+    // minutes; it now gets the scale it names.
     int scale = -1;
     if (timeIdx >= 0 && timeIdx < cols.size()) {
         const QString tn = cols[timeIdx].toLower();
-        if (tn.contains("mjd"))                            scale = 0;
-        else if (tn.contains("bjd") || tn.contains("hjd")) scale = 1;
+        if (tn.contains("mjd"))      scale = 0;
+        else if (tn.contains("bjd")) scale = 1;
+        else if (tn.contains("hjd")) scale = 2;
     }
     if (scale < 0 && timeIdx >= 0) {
         for (const QStringList& r : _tableRows) {
@@ -916,7 +989,10 @@ void RadialVelocityImportPage::autoDetectTableColumns()
             break;
         }
     }
-    _tableTimeTypeCombo->setCurrentIndex(scale == 1 ? 1 : 0);
+    _tableTimeTypeCombo->setCurrentIndex(scale > 0 ? scale : 0);
+
+    applyDetectedEpochOffset(cols, _tableMetadata,
+                             _tableTimeColCombo, _tableEpochOffsetEdit);
 }
 
 void RadialVelocityImportPage::populateColumnCombos(
@@ -1053,7 +1129,8 @@ void RadialVelocityImportPage::onScanFolders()
     cfg.rvCol      = rvCol;
     cfg.rvErrCol   = rvErrCol;
     cfg.sysErrCol  = _folderSysErrColCombo->currentIndex() - 1;
-    cfg.isBJD      = (_folderTimeTypeCombo->currentIndex() == 1);
+    cfg.timeScale   = timeScaleFromCombo(_folderTimeTypeCombo);
+    cfg.epochOffset = epochOffsetIn(_folderEpochOffsetEdit);
 
     _scanFoldersBtn->setEnabled(false);
     _folderProgress->setVisible(true);
@@ -1133,7 +1210,8 @@ void RadialVelocityImportPage::onProcessTable()
     cfg.rvErrCol = rvErrCol;
     cfg.sysErrCol = _tableSysErrColCombo->currentIndex() - 1;
     cfg.compCol   = _tableCompColCombo->currentIndex() - 1;
-    cfg.isBJD    = (_tableTimeTypeCombo->currentIndex() == 1);
+    cfg.timeScale   = timeScaleFromCombo(_tableTimeTypeCombo);
+    cfg.epochOffset = epochOffsetIn(_tableEpochOffsetEdit);
 
     _processTableBtn->setEnabled(false);
     _statusLabel->setText("Processing table in background...");
@@ -1543,7 +1621,7 @@ void RadialVelocityImportPage::onBrowseTableFile()
 
     // Load & detect columns
     if (loadCSVFile(file, _tableDelimCombo, _tableHeaderCheck,
-                    _tableColumns, _tableRows)) {
+                    _tableColumns, _tableRows, &_tableMetadata)) {
         for (QComboBox* combo : {_tableIdColCombo, _tableDecColCombo,
                                  _tableTimeColCombo, _tableRVColCombo,
                                  _tableRVErrColCombo, _tableSysErrColCombo,
@@ -1626,13 +1704,14 @@ void RadialVelocityImportPage::detectFolderColumns()
         if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) continue;
 
         QTextStream in(&file);
-        QString firstLine;
+        QString     firstLine;
+        QStringList sampleMetadata;
         while (!in.atEnd()) {
             QString line = in.readLine().trimmed();
-            if (!line.isEmpty() && !line.startsWith('#')) {
-                firstLine = line;
-                break;
-            }
+            if (line.isEmpty()) continue;
+            if (line.startsWith('#')) { sampleMetadata << line; continue; }
+            firstLine = line;
+            break;
         }
         file.close();
 
@@ -1666,9 +1745,13 @@ void RadialVelocityImportPage::detectFolderColumns()
             QString tn = cols[timeIdx].toLower();
             if (tn.contains("bjd"))
                 _folderTimeTypeCombo->setCurrentIndex(1);
+            else if (tn.contains("hjd"))
+                _folderTimeTypeCombo->setCurrentIndex(2);
             else
                 _folderTimeTypeCombo->setCurrentIndex(0);
         }
+        applyDetectedEpochOffset(cols, sampleMetadata,
+                                 _folderTimeColCombo, _folderEpochOffsetEdit);
         break;
     }
 }

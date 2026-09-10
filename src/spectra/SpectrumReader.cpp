@@ -42,6 +42,12 @@ const QStringList DefaultFitsSpectrumReader::BJD_KEYWORDS = {
     "BJD", "BJD-OBS", "BJD_OBS", "BJDOBS", "BJD-MID", "BJD_MID", "BJD_TDB"
 };
 
+// Heliocentric cards. Searched after MJD and BJD, so a header that carries a
+// real UTC epoch or a barycentric one is never demoted to the weaker scale.
+const QStringList DefaultFitsSpectrumReader::HJD_KEYWORDS = {
+    "HJD", "HJD-OBS", "HJD_OBS", "HJDOBS", "HJD-MID", "HJD_MID", "HJD_UTC"
+};
+
 const QStringList DefaultFitsSpectrumReader::EXPTIME_KEYWORDS = {
     "EXPTIME", "EXPOSURE", "EXP_TIME", "ITIME", "TEXP", "EXPTIM"
 };
@@ -267,6 +273,8 @@ SpectrumMetadata DefaultFitsSpectrumReader::readMetadata(const QString& filepath
             metadata.mjd = findDoubleHeader(fptr, MJD_KEYWORDS);
         if (!metadata.bjd.has_value())
             metadata.bjd = findDoubleHeader(fptr, BJD_KEYWORDS);
+        if (!metadata.hjd.has_value())
+            metadata.hjd = findDoubleHeader(fptr, HJD_KEYWORDS);
         if (!metadata.exposureTime.has_value())
             metadata.exposureTime = findDoubleHeader(fptr, EXPTIME_KEYWORDS);
         if (!metadata.instrument.has_value())
@@ -337,8 +345,9 @@ SpectrumMetadata DefaultFitsSpectrumReader::readMetadata(const QString& filepath
     if (!metadata.dec.has_value()) {
         metadata.warnings << "DEC not found in header";
     }
-    if (!metadata.mjd.has_value() && !metadata.bjd.has_value()) {
-        metadata.warnings << "Observation time (MJD/BJD) not found in header";
+    if (!metadata.mjd.has_value() && !metadata.bjd.has_value() &&
+        !metadata.hjd.has_value()) {
+        metadata.warnings << "Observation time (MJD/BJD/HJD) not found in header";
     }
     if (!metadata.exposureTime.has_value()) {
         metadata.warnings << "Exposure time not found in header";
@@ -752,8 +761,14 @@ SpectrumReadResult DefaultFitsSpectrumReader::readSpectrum(const QString& filepa
     double mjd = result.metadata.mjd.value_or(0.0);
     double bjd = result.metadata.bjd.value_or(0.0);
     double exp = result.metadata.exposureTime.value_or(0.0);
-    result.spectrum->setTime(Time::fromMjdBjd(mjd, bjd,
-                                            exp > 0.0 ? exp : -1.0));
+    Time t = Time::fromMjdBjd(mjd, bjd, exp > 0.0 ? exp : -1.0);
+    // An HJD card is recorded whether or not the header also carried an MJD:
+    // setHJD() never overwrites a scale that is already known, and if it is the
+    // only epoch present it becomes the native one, to be undone once the
+    // star's coordinates are attached.
+    if (result.metadata.hjd.has_value())
+        t.setHJD(*result.metadata.hjd);
+    result.spectrum->setTime(t);
     if (result.metadata.instrument.has_value()) {
         result.spectrum->setInstrument(result.metadata.instrument.value());
     }
@@ -840,7 +855,8 @@ SpectrumMetadata AsciiSpectrumReader::readMetadata(const QString& filepath) cons
     SpectrumMetadata metadata = _externalMetadata;
     metadata.filepath = filepath;
     
-    if (!metadata.mjd.has_value() && !metadata.bjd.has_value()) {
+    if (!metadata.mjd.has_value() && !metadata.bjd.has_value() &&
+        !metadata.hjd.has_value()) {
         metadata.warnings << "Observation time must be provided externally";
     }
     if (!metadata.exposureTime.has_value()) {
