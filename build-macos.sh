@@ -751,11 +751,11 @@ if [[ "${ASTRA_BUNDLE_ISIS}" == "1" ]]; then
 
     # Both script libraries live on one university server, and unlike the ISIS
     # stack they are re-fetched at HEAD every run (by design), so downtime there
-    # costs the entire bundle. scripts/isis-scripts.sh retries, then falls back
+    # costs the entire bundle. isis-scripts.sh retries, then falls back
     # to the newest of a cached snapshot of the last good clone and a local ISIS
     # install, and annotates the run whenever it has to. A total miss still
     # falls through to the non-fatal path below.
-    source "${SRC_DIR}/scripts/isis-scripts.sh"
+    source "${SRC_DIR}/isis-scripts.sh"
 
     # Both makes concatenate every .sl file and run the result through awk (the
     # `test` target that share/isisscripts.sl depends on). macOS ships the BSD

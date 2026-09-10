@@ -15,7 +15,7 @@
 #                ASTRA_REQUIRE_ISIS=1 (fail instead of shipping without ISIS),
 #                ASTRA_ISIS_SCRIPTS_CACHE / ASTRA_ISIS_SCRIPTS_DIR (snapshot and
 #                  local-install fallbacks for the ISIS script libraries, see
-#                  scripts/isis-scripts.sh),
+#                  isis-scripts.sh),
 #                LCURVE_REPO, LCURVE_REF, LCURVE_ARCH (-march for the bundled
 #                  lcurve solvers; default x86-64-v3, same baseline as ASTRA),
 #                ASTRA_BUILDER_IMAGE (use a prebuilt/published image, e.g. from
@@ -83,7 +83,7 @@ mkdir -p "${CCACHE_DIR_HOST}"
 
 # Snapshot of the last isisscripts/stellar_isisscripts clone that worked, plus
 # an optional local ISIS install to fall back on when their server is down (see
-# scripts/isis-scripts.sh). Both are mounted rather than fetched inside the
+# isis-scripts.sh). Both are mounted rather than fetched inside the
 # container, so a build with no network for that host still produces a complete
 # AppImage. On a runner the snapshot dir is filled by actions/cache.
 ISIS_SCRIPTS_CACHE_HOST="${ASTRA_ISIS_SCRIPTS_CACHE:-${HOME}/.cache/astra-isis-scripts}"
@@ -198,7 +198,7 @@ cd /src
 # The S-Lang/ISIS core (slang, isis, modules, jed, slirp) is compiled at
 # image-build time. The script libraries (isisscripts, stellar_isisscripts)
 # change often, so they are fetched at the freshest HEAD available and built
-# here on every run (their `make` is cheap); scripts/isis-scripts.sh handles the
+# here on every run (their `make` is cheap); isis-scripts.sh handles the
 # fetch and its fallbacks. ISIS only *reads* its tree at runtime, so it is
 # shipped as data under usr/share/astra/isis and runs in place; ASTRA points it
 # there via ISIS_SRCDIR / SLSH_PATH / SLANG_MODULE_PATH and a private .isisrc
@@ -229,12 +229,12 @@ if [[ "${ASTRA_BUNDLE_ISIS:-1}" == "1" ]]; then
   (
     set -e
     # --- Script libraries: freshest HEAD obtainable, built fresh each run ---
-    # scripts/isis-scripts.sh tries upstream first and falls back to a cached
+    # isis-scripts.sh tries upstream first and falls back to a cached
     # snapshot or a local ISIS install; /src is the repo, mounted by the caller.
     ISIS_SCRIPTS_SRC=/tmp/isis_scripts
     rm -rf "${ISIS_SCRIPTS_SRC}"
     mkdir -p "${ISIS_SCRIPTS_SRC}"
-    source /src/scripts/isis-scripts.sh
+    source /src/isis-scripts.sh
     isis_scripts_fetch "${ISIS_SCRIPTS_SRC}"
     cd "${ISIS_SCRIPTS_SRC}"
 

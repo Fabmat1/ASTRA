@@ -15,11 +15,30 @@ name: ISIS scripts snapshot
 #
 # Twice a week also keeps it alive: GitHub evicts cache entries that go 7 days
 # without being read.
+#
+# While upstream is unreachable there is still one way to fill the cache: run
+# this on a self-hosted runner that has a local ISIS install, with
+#   gh workflow run isis-scripts-cache.yml --ref main \
+#      -f runner=self-hosted -f source=local
+# The cache API only accepts writes from inside a job, so a machine holding the
+# tree cannot upload it directly; lending that machine to Actions for one job is
+# the way to get it in without publishing the libraries anywhere.
 
 on:
   schedule:
     - cron: "17 4 * * 1,4"    # Mon + Thu, 04:17 UTC
   workflow_dispatch:
+    inputs:
+      runner:
+        description: "Runner label (self-hosted to seed from a local ISIS install)"
+        required: false
+        default: "ubuntu-24.04"
+      source:
+        description: "upstream (clone, fall back if it fails) or local (skip the clone entirely)"
+        required: false
+        default: "upstream"
+        type: choice
+        options: [upstream, local]
 
 permissions:
   contents: read
@@ -30,7 +49,7 @@ concurrency:
 
 jobs:
   snapshot:
-    runs-on: ubuntu-24.04
+    runs-on: ${{ inputs.runner || 'ubuntu-24.04' }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -46,11 +65,17 @@ jobs:
           key: astra-isis-scripts-
           restore-keys: astra-isis-scripts-
 
-      - name: Clone upstream and refresh the snapshot
+      # isis_scripts_fetch clones upstream, or falls back to the newest of the
+      # restored snapshot and a local install. isis_scripts_snapshot then packs
+      # whatever it settled on, so a local-only seed lands in the cache too.
+      - name: Fetch the script libraries and refresh the snapshot
+        env:
+          ASTRA_ISIS_SCRIPTS_OFFLINE: ${{ inputs.source == 'local' && '1' || '0' }}
         run: |
           set -euo pipefail
-          source scripts/isis-scripts.sh
+          source ./isis-scripts.sh
           isis_scripts_fetch "${RUNNER_TEMP}/isis_scripts"
+          isis_scripts_snapshot "${RUNNER_TEMP}/isis_scripts"
           ls -lh ~/.cache/astra-isis-scripts
 
       # The key carries both upstream commits, so an unchanged upstream matches
@@ -60,7 +85,7 @@ jobs:
         id: key
         run: |
           set -euo pipefail
-          revs="$(cat ~/.cache/astra-isis-scripts/*.rev | awk '{print $2}' | tr '\n' '-')"
+          revs="$(cat ~/.cache/astra-isis-scripts/*.rev | awk '{print $2}' | cut -c1-12 | tr '\n' '-')"
           echo "key=astra-isis-scripts-${revs%-}" >> "$GITHUB_OUTPUT"
 
       - name: Save snapshot
