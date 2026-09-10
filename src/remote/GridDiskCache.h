@@ -40,7 +40,6 @@ public:
     QString directory() const { return _dir; }
 
     /*  Total size on disk (a full scan; for the settings UI).              */
-    qint64 currentSizeBytes() const;
 
 private:
     QString _dir;

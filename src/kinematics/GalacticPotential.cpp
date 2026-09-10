@@ -1,4 +1,4 @@
-#include "GalacticPotential.h"
+#include "kinematics/GalacticPotential.h"
 
 #include <cmath>
 
@@ -33,16 +33,6 @@ double GalacticPotential::sunGCDist() const
     case Model::MN_NFW: return 8.33;
     }
     return 8.40;
-}
-
-const char* GalacticPotential::modelName(Model m)
-{
-    switch (m) {
-    case Model::AS:     return "Model I (Allen & Santillan revised)";
-    case Model::MN_TF:  return "Model II (MN disc + truncated flat halo)";
-    case Model::MN_NFW: return "Model III (MN disc + NFW halo)";
-    }
-    return "";
 }
 
 // (dΦ_halo/dR)/R in model units; R² = r²+z². Positive = inward pull.

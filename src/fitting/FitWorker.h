@@ -4,8 +4,8 @@
 #include <QThread>
 #include <atomic>
 #include <memory>
-#include "FitTypes.h"
-#include "IFitBackend.h"
+#include "fitting/FitTypes.h"
+#include "fitting/IFitBackend.h"
 
 namespace astra::fitting {
 

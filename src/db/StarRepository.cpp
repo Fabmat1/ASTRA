@@ -1,21 +1,24 @@
-#include "StarRepository.h"
-#include "DBAccess.h"
-#include "SqlValue.h"
-#include "models/ElementAbundances.h"
-#include "models/Star.h"
-#include "models/Project.h"
+#include "db/StarRepository.h"
+#include "db/DBAccess.h"
+#include "db/SqlValue.h"
+#include "fitting/ElementAbundances.h"
+#include "core/Star.h"
+#include "core/Project.h"
 #include <QSqlQuery>
+#include <QSet>
+#include <QSqlDatabase>
 #include <QSqlError>
+#include <QDebug>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QFileInfo>
-#include "utils/DataStore.h"
-#include "utils/Logger.h"
-#include "utils/StarMatching.h"
-#include "models/Photometry.h"
-#include "models/Spectrum.h"
-#include "models/RadialVelocity.h"
+#include "app/DataStore.h"
+#include "app/Logger.h"
+#include "catalog/StarMatching.h"
+#include "lightcurve/Photometry.h"
+#include "spectra/Spectrum.h"
+#include "rv/RadialVelocity.h"
 #include <QFile>
 #include <QTextStream>
 
@@ -504,73 +507,117 @@ bool StarRepository::updateStar(const QString& projectId, std::shared_ptr<Star> 
 
 bool StarRepository::deleteStar(const QString& projectId, const QString& starId)
 {
-    // Clean up all data files for this star in one shot
+    // Everything hanging off a star has to go with it. The schema declares
+    // ON DELETE CASCADE on most of these tables, but no connection ever runs
+    // PRAGMA foreign_keys=ON and SQLite defaults it off, so no cascade has ever
+    // fired: every child row has to be deleted explicitly here. Anything left
+    // behind is unreachable - nothing joins back to a deleted star - so it just
+    // grows the database and can collide with a re-imported star of the same id.
+    //
+    // The on-disk blobs need no separate handling: DataStore::removeStarData
+    // drops the star's whole directory, periodograms and lightcurve models
+    // included.
     DataStore::removeStarData(QFileInfo(_db.databasePath()).absolutePath() + "/data", starId);
 
-    // Delete photometry and related data
-    QSqlQuery photometryQuery(_db.threadConnection());
-    photometryQuery.prepare("SELECT id FROM photometry WHERE star_id = :star_id");
-    photometryQuery.bindValue(":star_id", starId);
-    if (photometryQuery.exec()) {
-        while (photometryQuery.next()) {
-            QString photometryId = photometryQuery.value(0).toString();
+    QSqlDatabase db = _db.threadConnection();
 
-            QSqlQuery sedQuery(_db.threadConnection());
-            sedQuery.prepare("DELETE FROM sed_models WHERE photometry_id = :id");
-            sedQuery.bindValue(":id", photometryId);
-            sedQuery.exec();
-
-            QSqlQuery lcQuery(_db.threadConnection());
-            lcQuery.prepare("SELECT id FROM lightcurves WHERE photometry_id = :id");
-            lcQuery.bindValue(":id", photometryId);
-            if (lcQuery.exec()) {
-                while (lcQuery.next()) {
-                    QSqlQuery lcModelQuery;
-                    lcModelQuery.prepare("DELETE FROM lightcurve_models WHERE lightcurve_id = :id");
-                    lcModelQuery.bindValue(":id", lcQuery.value(0).toString());
-                    lcModelQuery.exec();
-                }
-            }
-
-            QSqlQuery deleteLcQuery(_db.threadConnection());
-            deleteLcQuery.prepare("DELETE FROM lightcurves WHERE photometry_id = :id");
-            deleteLcQuery.bindValue(":id", photometryId);
-            deleteLcQuery.exec();
-
-            QSqlQuery pointsQuery(_db.threadConnection());
-            pointsQuery.prepare("DELETE FROM photometric_points WHERE photometry_id = :id");
-            pointsQuery.bindValue(":id", photometryId);
-            pointsQuery.exec();
-        }
+    // Some of these tables are created lazily the first time their repository
+    // writes (rv_periodograms is), so a database that has never held a
+    // periodogram does not have one. Ask the schema rather than assuming, or a
+    // missing table fails the statement and rolls the whole delete back.
+    QSet<QString> tables;
+    {
+        QSqlQuery q(db);
+        if (q.exec("SELECT name FROM sqlite_master WHERE type = 'table'"))
+            while (q.next()) tables.insert(q.value(0).toString());
     }
 
-    QSqlQuery deletePhotometry(_db.threadConnection());
-    deletePhotometry.prepare("DELETE FROM photometry WHERE star_id = :star_id");
-    deletePhotometry.bindValue(":star_id", starId);
-    deletePhotometry.exec();
+    // One transaction: a partial delete is what leaves orphans in the first place.
+    const bool inTransaction = db.transaction();
 
-    QSqlQuery spectraQuery(_db.threadConnection());
-    spectraQuery.prepare("SELECT id FROM spectra WHERE star_id = :star_id");
-    spectraQuery.bindValue(":star_id", starId);
-    if (spectraQuery.exec()) {
-        while (spectraQuery.next()) {
-            QSqlQuery fitsQuery;
-            fitsQuery.prepare("DELETE FROM spectral_fits WHERE spectrum_id = :id");
-            fitsQuery.bindValue(":id", spectraQuery.value(0).toString());
-            fitsQuery.exec();
+    auto exec = [&db, &tables](const QString& table, const QString& where,
+                               const QString& key, const QString& value) {
+        if (!tables.contains(table)) return true;
+        const QString sql = QStringLiteral("DELETE FROM %1 WHERE %2").arg(table, where);
+        QSqlQuery q(db);
+        q.prepare(sql);
+        q.bindValue(key, value);
+        if (!q.exec()) {
+            qWarning() << "deleteStar:" << sql << q.lastError().text();
+            return false;
         }
+        return true;
+    };
+
+    auto idsFrom = [&db](const QString& sql, const QString& key,
+                         const QString& value) {
+        QStringList ids;
+        QSqlQuery q(db);
+        q.prepare(sql);
+        q.bindValue(key, value);
+        if (q.exec())
+            while (q.next()) ids << q.value(0).toString();
+        return ids;
+    };
+
+    bool ok = true;
+
+    // ── Photometry: SED models, lightcurves, their fits and models, points ──
+    for (const QString& photometryId :
+         idsFrom("SELECT id FROM photometry WHERE star_id = :star_id",
+                 ":star_id", starId)) {
+        ok &= exec("sed_models", "photometry_id = :id", ":id", photometryId);
+
+        // No lightcurve_models delete here: no schema, migration or repository
+        // in the project ever creates that table. The statement that used to
+        // stand here referenced a table that has never existed.
+        for (const QString& lightcurveId :
+             idsFrom("SELECT id FROM lightcurves WHERE photometry_id = :id",
+                     ":id", photometryId)) {
+            ok &= exec("lc_fits", "lightcurve_id = :id", ":id", lightcurveId);
+        }
+
+        ok &= exec("lightcurves", "photometry_id = :id", ":id", photometryId);
+        ok &= exec("photometric_points", "photometry_id = :id", ":id", photometryId);
     }
+    ok &= exec("photometry", "star_id = :star_id", ":star_id", starId);
 
-    QSqlQuery deleteSpectra(_db.threadConnection());
-    deleteSpectra.prepare("DELETE FROM spectra WHERE star_id = :star_id");
-    deleteSpectra.bindValue(":star_id", starId);
-    deleteSpectra.exec();
+    // ── Spectra and their fits ──────────────────────────────────────────────
+    for (const QString& spectrumId :
+         idsFrom("SELECT id FROM spectra WHERE star_id = :star_id",
+                 ":star_id", starId)) {
+        ok &= exec("spectral_fits", "spectrum_id = :id", ":id", spectrumId);
+    }
+    ok &= exec("spectra", "star_id = :star_id", ":star_id", starId);
 
-    QSqlQuery query(_db.threadConnection());
+    // ── Radial velocities: points, fits and per-curve periodograms ──────────
+    for (const QString& curveId :
+         idsFrom("SELECT id FROM rv_curves WHERE star_id = :star_id",
+                 ":star_id", starId)) {
+        ok &= exec("rv_points", "curve_id = :id", ":id", curveId);
+        ok &= exec("rv_fits", "curve_id = :id", ":id", curveId);
+        ok &= exec("rv_periodograms", "curve_id = :id", ":id", curveId);
+    }
+    ok &= exec("rv_curves", "star_id = :star_id", ":star_id", starId);
+
+    // ── Periodograms, mass-fit bookkeeping and adopted remote runs ──────────
+    ok &= exec("periodograms", "star_id = :star_id", ":star_id", starId);
+    ok &= exec("mass_fit_attempts", "star_id = :star_id", ":star_id", starId);
+    ok &= exec("mass_fit_run_stars", "star_id = :star_id", ":star_id", starId);
+    ok &= exec("remote_fit_runs", "star_id = :star_id", ":star_id", starId);
+
+    // ── The star itself ─────────────────────────────────────────────────────
+    QSqlQuery query(db);
     query.prepare("DELETE FROM stars WHERE id = :id AND project_id = :project_id");
     query.bindValue(":id", starId);
     query.bindValue(":project_id", projectId);
-    return query.exec();
+    ok &= query.exec();
+
+    if (inTransaction) {
+        if (ok) db.commit();
+        else    db.rollback();
+    }
+    return ok;
 }
 
 bool StarRepository::importCSV(const QString& filepath, std::shared_ptr<Project> project)

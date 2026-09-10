@@ -15,8 +15,8 @@
 // step control (Numerical Recipes), absolute tolerance on the mixed
 // position/velocity state in kpc & kpc/Myr.
 
-#include "GalacticCoordinates.h"
-#include "GalacticPotential.h"
+#include "kinematics/GalacticCoordinates.h"
+#include "kinematics/GalacticPotential.h"
 
 #include <vector>
 

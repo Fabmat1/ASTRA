@@ -9,7 +9,7 @@
 // Run:    ctest --test-dir build -R barycentric
 // ═════════════════════════════════════════════════════════════════════════════
 
-#include "models/BarycentricCorrection.h"
+#include "core/BarycentricCorrection.h"
 
 #include <QCoreApplication>
 #include <QFile>

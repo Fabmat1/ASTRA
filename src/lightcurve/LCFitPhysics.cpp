@@ -1,0 +1,812 @@
+#include "lightcurve/LCFitPhysics.h"
+
+#include <QFile>
+#include <QObject>
+#include <QRegularExpression>
+#include <QTextStream>
+
+#include <algorithm>
+#include <array>
+#include <cmath>
+#include <numeric>
+#include <vector>
+
+namespace LCFitPhysics {
+
+// ── AsymMeasurement helpers ────────────────────────────────────────
+
+QString AsymMeasurement::toPriorString() const {
+  return QString::number(value, 'g', 12) + ' ' +
+         QString::number(errLo, 'g', 12) + ' ' +
+         QString::number(errHi, 'g', 12);
+}
+
+std::optional<AsymMeasurement> AsymMeasurement::parse(const QString &s) {
+  static const QRegularExpression splitter(R"(\s+)");
+  const QString t = s.trimmed();
+  if (t.isEmpty())
+    return std::nullopt;
+  const auto parts = t.split(splitter, Qt::SkipEmptyParts);
+  bool ok = false;
+  AsymMeasurement m;
+  m.value = parts[0].toDouble(&ok);
+  if (!ok)
+    return std::nullopt;
+  if (parts.size() == 1) {
+    m.errLo = m.errHi = 0.0;
+    return m;
+  }
+  m.errLo = std::abs(parts[1].toDouble(&ok));
+  if (!ok)
+    return std::nullopt;
+  if (parts.size() == 2) {
+    m.errHi = m.errLo;
+    return m;
+  }
+  m.errHi = std::abs(parts[2].toDouble(&ok));
+  if (!ok)
+    return std::nullopt;
+  return m;
+}
+
+int Observables::count() const {
+  int n = 0;
+  for (const auto *p : {&K1, &K2, &M1, &M2, &R1, &Mt, &qObs, &logg1})
+    if (p->has_value() && p->value().isValid())
+      ++n;
+  return n;
+}
+
+// ── Physics ────────────────────────────────────────────────────────
+
+Implied impliedFromParams(double iDeg, double q, double vs, double r1,
+                          double Pdays, std::optional<double> r2) {
+  const double si = std::sin(iDeg * kDeg2Rad);
+  const double Psec = Pdays * kDay2Sec;
+  const double aKm = vs * Psec / (2.0 * M_PI);
+  const double Mt =
+      4.0 * M_PI * M_PI * aKm * aKm * aKm / (kGMsun * Psec * Psec);
+
+  Implied r;
+  r.q = q;
+  r.K1 = vs * si * q / (1.0 + q);
+  r.K2 = vs * si / (1.0 + q);
+  r.R1 = r1 * aKm / kRsunKm;
+  r.M1 = Mt / (1.0 + q);
+  r.M2 = q * Mt / (1.0 + q);
+  r.Mt = Mt;
+  r.aRs = aKm / kRsunKm;
+
+  if (r.R1 > 0 && r.M1 > 0)
+    r.logg1 = kLoggSun + std::log10(r.M1) - 2.0 * std::log10(r.R1);
+  if (r2 && *r2 > 0 && *r2 < 1) {
+    const double R2 = *r2 * aKm / kRsunKm;
+    r.R2 = R2;
+    if (R2 > 0 && r.M2 > 0)
+      r.logg2 = kLoggSun + std::log10(r.M2) - 2.0 * std::log10(R2);
+  }
+  return r;
+}
+
+std::optional<std::tuple<double, double, double>>
+solveExact(double iDeg, double K1, double M1, double R1Rsun, double Pdays) {
+  const double si = std::sin(iDeg * kDeg2Rad);
+  if (si < 0.01)
+    return std::nullopt;
+  const double Psec = Pdays * kDay2Sec;
+  const double rhs =
+      2.0 * M_PI * kGMsun * M1 * si * si * si / (K1 * K1 * K1 * Psec);
+
+  // Bisect on log(q): (1+q)²/q³ = rhs (monotonic in q on (0, ∞))
+  double lo = std::log(1e-4), hi = std::log(1e4);
+  for (int it = 0; it < 200; ++it) {
+    const double m = 0.5 * (lo + hi);
+    const double q = std::exp(m);
+    if ((1.0 + q) * (1.0 + q) / (q * q * q) > rhs)
+      lo = m;
+    else
+      hi = m;
+    if (hi - lo < 1e-13)
+      break;
+  }
+  const double q = std::exp(0.5 * (lo + hi));
+  const double vs = K1 * (1.0 + q) / (q * si);
+  const double aKm = vs * Psec / (2.0 * M_PI);
+  const double r1 = R1Rsun * kRsunKm / aKm;
+  if (r1 <= 0 || r1 >= 1)
+    return std::nullopt;
+  return std::make_tuple(q, vs, r1);
+}
+
+double wdRadiusRsun(double M) {
+  if (M <= 0.0 || M >= 1.44)
+    return 0.012;
+  const double mu = M / 1.454;
+  const double mu23 = std::pow(mu, -2.0 / 3.0);
+  const double mu23p = std::pow(mu, 2.0 / 3.0);
+  const double R = 0.0114 * std::sqrt(mu23 - mu23p) *
+                   std::pow(1.0 + 3.5 * mu23 + 1.0 / mu, -2.0 / 3.0);
+  return std::max(R, 0.003);
+}
+
+double estimateR2(std::optional<double> M2est, double Pdays, double vs,
+                  ClaretTables::StarType type) {
+  const double aKm = vs * Pdays * kDay2Sec / (2.0 * M_PI);
+  double R2Rsun;
+  if (type == ClaretTables::StarType::WD) {
+    const double M = (M2est && *M2est > 0) ? *M2est : 0.6;
+    R2Rsun = wdRadiusRsun(M);
+  } else if (!M2est || *M2est <= 0) {
+    R2Rsun = 0.3;
+  } else {
+    R2Rsun = (*M2est < 1.0) ? std::pow(*M2est, 0.8) : std::pow(*M2est, 0.57);
+  }
+  return std::clamp(R2Rsun * kRsunKm / aKm, 1e-4, 0.95);
+}
+
+// ── Nelder-Mead simplex (4D, with bound clamping) ──────────────────
+
+template <typename F>
+static std::vector<double>
+nelderMead(F &&f, std::vector<double> x0,
+           const std::vector<std::pair<double, double>> &bounds,
+           int maxIter = 1500, double xtol = 1e-7) {
+  const int n = int(x0.size());
+  auto clamp = [&](std::vector<double> &x) {
+    for (int i = 0; i < n; ++i)
+      x[i] = std::clamp(x[i], bounds[i].first, bounds[i].second);
+  };
+  clamp(x0);
+
+  std::vector<std::vector<double>> S(n + 1, x0);
+  std::vector<double> fS(n + 1);
+  fS[0] = f(S[0]);
+  for (int i = 0; i < n; ++i) {
+    const double step = std::max(0.05 * std::abs(x0[i]), 0.05);
+    S[i + 1][i] += step;
+    clamp(S[i + 1]);
+    fS[i + 1] = f(S[i + 1]);
+  }
+
+  std::vector<int> order(n + 1);
+  for (int it = 0; it < maxIter; ++it) {
+    std::iota(order.begin(), order.end(), 0);
+    std::sort(order.begin(), order.end(),
+              [&](int a, int b) { return fS[a] < fS[b]; });
+
+    const int worst = order[n], second = order[n - 1], best = order[0];
+    double dx = 0.0;
+    for (int i = 0; i < n; ++i)
+      dx = std::max(dx, std::abs(S[worst][i] - S[best][i]));
+    if (dx < xtol)
+      break;
+
+    std::vector<double> c(n, 0.0);
+    for (int i = 0; i < n; ++i)
+      for (int k = 0; k < n; ++k)
+        c[k] += S[order[i]][k];
+    for (double &v : c)
+      v /= n;
+
+    std::vector<double> xr(n);
+    for (int k = 0; k < n; ++k)
+      xr[k] = c[k] + (c[k] - S[worst][k]);
+    clamp(xr);
+    const double fr = f(xr);
+
+    if (fr < fS[best]) {
+      std::vector<double> xe(n);
+      for (int k = 0; k < n; ++k)
+        xe[k] = c[k] + 2.0 * (c[k] - S[worst][k]);
+      clamp(xe);
+      const double fe = f(xe);
+      if (fe < fr) {
+        S[worst] = xe;
+        fS[worst] = fe;
+      } else {
+        S[worst] = xr;
+        fS[worst] = fr;
+      }
+    } else if (fr < fS[second]) {
+      S[worst] = xr;
+      fS[worst] = fr;
+    } else {
+      std::vector<double> xc(n);
+      for (int k = 0; k < n; ++k)
+        xc[k] = c[k] + 0.5 * (S[worst][k] - c[k]);
+      clamp(xc);
+      const double fc = f(xc);
+      if (fc < fS[worst]) {
+        S[worst] = xc;
+        fS[worst] = fc;
+      } else {
+        for (int i = 1; i <= n; ++i) {
+          const int idx = order[i];
+          for (int k = 0; k < n; ++k)
+            S[idx][k] = S[best][k] + 0.5 * (S[idx][k] - S[best][k]);
+          clamp(S[idx]);
+          fS[idx] = f(S[idx]);
+        }
+      }
+    }
+  }
+  int b = 0;
+  for (int i = 1; i <= n; ++i)
+    if (fS[i] < fS[b])
+      b = i;
+  return S[b];
+}
+
+StartParams optimiseStart(double iDegInit, double Pdays, const Observables &obs,
+                          bool iFree) {
+  auto chi2 = [&](const std::vector<double> &x) -> double {
+    const double iD = iFree ? x[0] : iDegInit;
+    const double q = std::exp(x[1]);
+    const double vs = std::exp(x[2]);
+    const double r1 = 1.0 / (1.0 + std::exp(-x[3]));
+    const double si = std::sin(iD * kDeg2Rad);
+    if (si < 1e-6)
+      return 1e20;
+
+    const auto imp = impliedFromParams(iD, q, vs, r1, Pdays);
+    double c2 = 0.0;
+    auto add = [&](const std::optional<AsymMeasurement> &m, double mv) {
+      if (m && m->isValid()) {
+        const double p = m->pull(mv);
+        c2 += p * p;
+      }
+    };
+    add(obs.K1, imp.K1);
+    add(obs.K2, imp.K2);
+    add(obs.M1, imp.M1);
+    add(obs.M2, imp.M2);
+    add(obs.R1, imp.R1);
+    add(obs.Mt, imp.Mt);
+    add(obs.qObs, q);
+    if (obs.logg1 && obs.logg1->isValid() && imp.logg1) {
+      const double p = obs.logg1->pull(*imp.logg1);
+      c2 += p * p;
+    }
+    c2 += 0.01 * std::pow((iD - 80.0) / 20.0, 2);
+    if (si > 0)
+      c2 -= 0.5 * std::log(si);
+    return c2;
+  };
+
+  // Initial guess: exact solve if K1/M1/R1 are present, else defaults
+  double q0 = 1.0, vs0 = 200.0, r10 = 0.2;
+  if (obs.K1 && obs.M1 && obs.R1) {
+    if (auto ex = solveExact(iDegInit, obs.K1->value, obs.M1->value,
+                             obs.R1->value, Pdays))
+      std::tie(q0, vs0, r10) = *ex;
+  }
+  const std::vector<double> x0 = {
+      iDegInit,
+      std::log(std::max(q0, 1e-4)),
+      std::log(std::max(vs0, 1.0)),
+      std::log(r10 / std::max(1e-6, 1.0 - r10)),
+  };
+  const std::vector<std::pair<double, double>> bounds = {
+      iFree ? std::make_pair(5.0, 89.99)
+            : std::make_pair(iDegInit - 1e-3, iDegInit + 1e-3),
+      {std::log(0.01), std::log(100.0)},
+      {std::log(10.0), std::log(3000.0)},
+      {-6.0, 6.0},
+  };
+
+  const std::vector<double> seeds =
+      iFree ? std::vector<double>{iDegInit, 80.0, 60.0, 45.0, 70.0}
+            : std::vector<double>{iDegInit};
+
+  std::vector<double> best = x0;
+  double bestF = std::numeric_limits<double>::infinity();
+  for (double iSeed : seeds) {
+    std::vector<double> xt = x0;
+    xt[0] = std::clamp(iSeed, bounds[0].first, bounds[0].second);
+    auto r = nelderMead(chi2, xt, bounds);
+    const double fr = chi2(r);
+    if (fr < bestF) {
+      bestF = fr;
+      best = r;
+    }
+  }
+
+  StartParams sp;
+  sp.i = iFree ? best[0] : iDegInit;
+  sp.q = std::exp(best[1]);
+  sp.vs = std::exp(best[2]);
+  sp.r1 = 1.0 / (1.0 + std::exp(-best[3]));
+  return sp;
+}
+
+// ── Config string helpers ──────────────────────────────────────────
+
+static QString fmt(double v) { return QString::number(v, 'g', 12); }
+
+static QString lcurveParam(double value, double range, double step, bool vary,
+                           bool defined = true) {
+  return QString("%1 %2 %3 %4 %5")
+      .arg(fmt(value), fmt(range), fmt(step))
+      .arg(vary ? 1 : 0)
+      .arg(defined ? 1 : 0);
+}
+
+// ── Tying an RV orbit to a light-curve ephemeris ───────────────────
+
+double rvPhaseLockedToLcT0(double t0LcBJD, double tRefBJD, double period) {
+  if (!(period > 0.0) || !std::isfinite(t0LcBJD) || !std::isfinite(tRefBJD))
+    return 0.0;
+  // The half cycle is the convention offset documented in the header: lcurve's
+  // t0 is star 1's descending node, ASTRA's phi = 0 is its ascending node.
+  const double phi = 0.5 - ((t0LcBJD - tRefBJD) / period);
+  return phi - std::floor(phi);
+}
+
+namespace {
+
+// Linear interpolation of a phase-sampled curve, wrapping across phase 1 -> 0.
+// `x` is strictly ascending and confined to [0, 1).
+double interpWrapped(const std::vector<double> &x, const std::vector<double> &y,
+                     double p) {
+  const size_t n = x.size();
+  p -= std::floor(p);
+
+  size_t lo = 0, hi = 0;
+  double x0 = 0.0, x1 = 0.0;
+  const auto it = std::upper_bound(x.begin(), x.end(), p);
+  const size_t up = size_t(it - x.begin());
+  if (up == 0) {
+    // Before the first sample: interpolate from the last one, one cycle back.
+    lo = n - 1;
+    hi = 0;
+    x0 = x[lo] - 1.0;
+    x1 = x[0];
+  } else if (up == n) {
+    // Past the last sample: interpolate to the first one, one cycle on.
+    lo = n - 1;
+    hi = 0;
+    x0 = x[lo];
+    x1 = x[0] + 1.0;
+  } else {
+    lo = up - 1;
+    hi = up;
+    x0 = x[lo];
+    x1 = x[hi];
+  }
+
+  const double d = x1 - x0;
+  if (!(d > 0.0))
+    return y[lo];
+  return y[lo] + (p - x0) / d * (y[hi] - y[lo]);
+}
+
+} // namespace
+
+HalfCycleEvidence halfCycleEvidence(const std::vector<double> &phase,
+                                    const std::vector<double> &flux,
+                                    const std::vector<double> &fluxError,
+                                    const std::vector<double> &modelPhase,
+                                    const std::vector<double> &modelFlux,
+                                    double shift) {
+  HalfCycleEvidence e;
+  const size_t n = phase.size();
+  if (n < size_t(kMinLcPhaseBins) || flux.size() != n || fluxError.size() != n)
+    return e;
+  if (modelPhase.size() != modelFlux.size() || modelPhase.size() < 4)
+    return e;
+
+  // lcurve emits the model in ascending input phase, but a re-binned or merged
+  // curve need not be; sort and de-duplicate onto a clean [0, 1) grid.
+  std::vector<size_t> idx(modelPhase.size());
+  std::iota(idx.begin(), idx.end(), size_t(0));
+  std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) {
+    return modelPhase[a] < modelPhase[b];
+  });
+  std::vector<double> mx, my;
+  mx.reserve(idx.size());
+  my.reserve(idx.size());
+  for (size_t i : idx) {
+    if (!std::isfinite(modelPhase[i]) || !std::isfinite(modelFlux[i]))
+      continue;
+    const double p = modelPhase[i] - std::floor(modelPhase[i]);
+    if (!mx.empty() && p <= mx.back())
+      continue;
+    mx.push_back(p);
+    my.push_back(modelFlux[i]);
+  }
+  if (mx.size() < 4)
+    return e;
+
+  // chiA: the model as fitted. chiB: the same model shifted by half an orbit.
+  // The flat-line chi2 comes from the weighted sums, via
+  // sum(w*(y-ybar)^2) = sum(w*y^2) - (sum(w*y))^2/sum(w).
+  double chiA = 0.0, chiB = 0.0;
+  double sw = 0.0, swy = 0.0, swyy = 0.0;
+  int used = 0;
+  for (size_t i = 0; i < n; ++i) {
+    if (!std::isfinite(phase[i]) || !std::isfinite(flux[i]))
+      continue;
+    if (!(fluxError[i] > 0.0) || !std::isfinite(fluxError[i]))
+      continue;
+    const double w = 1.0 / (fluxError[i] * fluxError[i]);
+    const double ra = flux[i] - interpWrapped(mx, my, phase[i]);
+    const double rb = flux[i] - interpWrapped(mx, my, phase[i] + shift);
+    chiA += w * ra * ra;
+    chiB += w * rb * rb;
+    sw += w;
+    swy += w * flux[i];
+    swyy += w * flux[i] * flux[i];
+    ++used;
+  }
+  if (used < kMinLcPhaseBins || !(sw > 0.0))
+    return e;
+
+  const double chiFlat = std::max(0.0, swyy - swy * swy / sw);
+
+  // Deflate the vote by how badly the model actually describes the data, so an
+  // unmodelled light curve cannot vote confidently. Clamped at 1 so a good fit
+  // is never rewarded with an inflated vote.
+  const double scale = std::max(1.0, chiA / double(used));
+  e.deltaChi2 = (chiB - chiA) / scale;
+  e.detection = (chiFlat - chiA) / scale;
+
+  // The model must both detect variability and be asymmetric enough under the
+  // shift for the asymmetry itself to be significant. A penalty at or below zero
+  // means the shifted model fits at least as well, i.e. the light-curve fit
+  // settled half a cycle out or the curve is symmetric; report no information
+  // rather than a confidently wrong branch.
+  e.usable = e.detection > kMinLcDetectionChi2 && e.deltaChi2 > kMinBranchChi2;
+  return e;
+}
+
+QMap<QString, QString> buildModelParameters(const ModelInputs &in) {
+  auto V = [&](const QString &k) { return in.varied.contains(k); };
+  auto radiusRange = [](double v) {
+    if (v < 0.5)
+      return std::max(std::min(0.3 * std::max(v, 0.01), 0.5 - v), 0.001);
+    return 0.01;
+  };
+
+  const double qRange = std::min(2.0 * in.q, 5.0);
+  const double iRange = std::min({in.i, 90.0 - in.i, 45.0});
+  const double vsRange = std::max(0.5 * in.vs, 10.0);
+  const double t1Range = std::max(0.5 * in.t1, 1000.0);
+  const double t2Range = std::max(0.5 * in.t2, 1000.0);
+
+  QMap<QString, QString> p;
+  p["q"] = lcurveParam(in.q, qRange, std::max(in.q * 0.02, 0.001), V("q"));
+  p["iangle"] = lcurveParam(in.i, iRange, 1.0, V("iangle"));
+  p["r1"] = lcurveParam(in.r1, radiusRange(in.r1),
+                        std::max(in.r1 * 0.010, 1e-5), V("r1"));
+  p["r2"] = lcurveParam(in.r2, radiusRange(in.r2),
+                        std::max(in.r2 * 0.015, 1e-5), V("r2"));
+  p["velocity_scale"] = lcurveParam(in.vs, vsRange, std::max(in.vs * 0.02, 0.1),
+                                    V("velocity_scale"));
+  p["t1"] = lcurveParam(in.t1, t1Range, std::max(in.t1 * 0.005, 10.0), V("t1"));
+  p["t2"] = lcurveParam(in.t2, t2Range, std::max(in.t2 * 0.02, 10.0), V("t2"));
+
+  for (int j = 0; j < 4; ++j) {
+    p[QString("ldc1_%1").arg(j + 1)] =
+        lcurveParam(in.ldc1[j], 0.5, 0.001, V(QString("ldc1_%1").arg(j + 1)));
+    p[QString("ldc2_%1").arg(j + 1)] =
+        lcurveParam(in.ldc2[j], 0.5, 0.001, V(QString("ldc2_%1").arg(j + 1)));
+  }
+
+  p["beam_factor1"] = lcurveParam(in.bf1, 1.0, 0.01, V("beam_factor1"));
+  p["beam_factor2"] = lcurveParam(in.bf2, 1.0, 0.01, V("beam_factor2"));
+  p["t0"] = lcurveParam(in.t0, 0.1, 1e-5, V("t0"));
+  p["period"] = lcurveParam(1.0, 0.001, 1e-8, V("period"));
+  p["pdot"] = lcurveParam(0.0, 0.01, 1e-5, V("pdot"));
+  p["deltat"] = lcurveParam(0.0, 0.001, 1e-4, V("deltat"));
+  p["gravity_dark1"] = lcurveParam(in.gd1, 0.1, 1e-6, V("gravity_dark1"));
+  p["gravity_dark2"] = lcurveParam(in.gd2, 0.1, 1e-6, V("gravity_dark2"));
+
+  // Parameters the dialog has no dedicated editor for. They keep lcurve's
+  // neutral defaults unless the user sets one free on the solver page, which
+  // is also where a legal starting value for it comes from.
+  p["absorb"] = lcurveParam(1.0, 0.5, 0.01, V("absorb"));
+  p["cphi3"] = lcurveParam(0.01, 0.05, 0.01, V("cphi3"));
+  p["cphi4"] = lcurveParam(0.055, 0.05, 0.01, V("cphi4"));
+  p["spin1"] = lcurveParam(1.0, 0.1, 0.01, V("spin1"));
+  p["spin2"] = lcurveParam(1.0, 0.1, 0.01, V("spin2"));
+  for (const char *k : {"slope", "quad", "cube", "third"})
+    p[k] = lcurveParam(0.0, 0.01, 1e-5, V(k));
+
+  struct PD {
+    const char *name;
+    double val, rng, step;
+  };
+  for (const PD &d : std::array<PD, 10>{{
+           {"rdisc1", 0, 0.01, 0.001},
+           {"rdisc2", 0, 0.01, 0.02},
+           {"height_disc", 0, 0.01, 1e-5},
+           {"beta_disc", 0, 0.01, 1e-5},
+           {"temp_disc", 0, 50, 40},
+           {"texp_disc", 0, 0.2, 0.001},
+           {"lin_limb_disc", 0, 0.02, 1e-4},
+           {"quad_limb_disc", 0, 0.02, 1e-4},
+           // lcurve warns and zeroes these two when they are missing; write
+           // them out so the config says what the model will use.
+           {"temp_edge", 0, 50, 40},
+           {"absorb_edge", 0, 0.5, 0.01},
+       }})
+    p[d.name] = lcurveParam(d.val, d.rng, d.step, V(d.name));
+
+  for (const PD &d : std::array<PD, 10>{{
+           {"radius_spot", 0, 0.01, 0.01},
+           {"length_spot", 0, 0.01, 0.005},
+           {"height_spot", 0, 0.01, 1e-5},
+           {"expon_spot", 0, 0.2, 0.1},
+           {"epow_spot", 0, 0.01, 0.01},
+           {"angle_spot", 0, 5, 2},
+           {"yaw_spot", 0, 5, 2},
+           {"temp_spot", 0, 500, 200},
+           {"tilt_spot", 0, 5, 2},
+           {"cfrac_spot", 0, 0.05, 0.008},
+       }})
+    p[d.name] = lcurveParam(d.val, d.rng, d.step, V(d.name));
+
+  for (const char *star : {"1", "2"})
+    for (const char *attr : {"long", "lat", "fwhm", "tcen"})
+      p[QString("stsp%1_1_%2").arg(star, attr)] =
+          lcurveParam(0, 0, 0, false, false);
+
+  // Scalar grid / control parameters
+  const QMap<QString, QString> scalars = {
+      {"delta_phase", "1e-07"},
+      {"nlat1f", "250"},
+      {"nlat2f", "250"},
+      {"nlat1c", "250"},
+      {"nlat2c", "250"},
+      {"npole", "1"},
+      {"nlatfill", "2"},
+      {"nlngfill", "2"},
+      {"lfudge", "0"},
+      {"llo", "90"},
+      {"lhi", "-90"},
+      {"phase1", "0.1"},
+      {"phase2", "0.4"},
+      {"roche1", "1"},
+      {"roche2", "1"},
+      {"eclipse1", "1"},
+      {"eclipse2", "1"},
+      {"glens1", "0"},
+      {"use_radii", "1"},
+      {"gdark_bolom1", "1"},
+      {"gdark_bolom2", "1"},
+      {"mucrit1", "0"},
+      {"mucrit2", "0"},
+      {"limb1", "Claret"},
+      {"limb2", "Claret"},
+      {"mirror", "0"},
+      {"add_disc", "0"},
+      {"nrad", "40"},
+      {"opaque", "0"},
+      {"add_spot", "0"},
+      {"nspot", "0"},
+      {"iscale", "0"},
+      {"wavelength", fmt(in.wavelengthNm)},
+      {"tperiod", fmt(in.period)},
+  };
+  for (auto it = scalars.cbegin(); it != scalars.cend(); ++it)
+    p[it.key()] = it.value();
+
+  return p;
+}
+
+const QVector<VaryableParam> &varyableParameters() {
+  using G = VaryableParam::Gate;
+  // Grouped in the order the picker shows them. `managed` parameters take
+  // their starting value from the setup or advanced pages; `standalone` ones
+  // have no editor anywhere else, so they carry their own start and search
+  // range, seeded with a value lcurve considers legal - several of them
+  // default to 0, which lcurve rejects outright once they are free.
+  static const QVector<VaryableParam> params = [] {
+    QVector<VaryableParam> v;
+    auto managed = [&v](const QString &key, const QString &group,
+                        const QString &desc, G gate = G::None) {
+      VaryableParam p;
+      p.key         = key;
+      p.group       = group;
+      p.description = desc;
+      p.gate        = gate;
+      v.push_back(p);
+    };
+    auto standalone = [&v](const QString &key, const QString &group,
+                           const QString &desc, G gate, double start,
+                           double range, double lo, double hi, int decimals) {
+      VaryableParam p;
+      p.key              = key;
+      p.group            = group;
+      p.description      = desc;
+      p.gate             = gate;
+      p.needsStartEditor = true;
+      p.start            = start;
+      p.range            = range;
+      p.lo               = lo;
+      p.hi               = hi;
+      p.decimals         = decimals;
+      v.push_back(p);
+    };
+
+    const QString geom = QObject::tr("Geometry & scale");
+    managed("q", geom, QObject::tr("Mass ratio M₂/M₁."));
+    managed("iangle", geom, QObject::tr("Orbital inclination in degrees."));
+    managed("r1", geom,
+            QObject::tr("Radius of star 1 in units of the orbital "
+                        "separation."));
+    managed("r2", geom,
+            QObject::tr("Radius of star 2 in units of the orbital "
+                        "separation."));
+    managed("velocity_scale", geom,
+            QObject::tr("K₁+K₂ in km/s. Sets the absolute scale of the "
+                        "system."));
+    standalone("cphi3", geom,
+               QObject::tr("Third-contact phase. Used only when the model is "
+                           "parameterised by contact phases instead of radii "
+                           "(<i>use_radii</i> off on the Advanced page)."),
+               G::RadiiOff, 0.01, 0.05, 0.0, 0.25, 5);
+    standalone("cphi4", geom,
+               QObject::tr("Fourth-contact phase. Used only when the model is "
+                           "parameterised by contact phases instead of radii "
+                           "(<i>use_radii</i> off on the Advanced page)."),
+               G::RadiiOff, 0.055, 0.05, 0.0, 0.25, 5);
+
+    const QString surf = QObject::tr("Stellar surfaces");
+    managed("t1", surf, QObject::tr("Temperature of star 1 in K."));
+    managed("t2", surf, QObject::tr("Temperature of star 2 in K."));
+    managed("spin1", surf,
+            QObject::tr("Spin/orbit frequency ratio of star 1 "
+                        "(1 = synchronous)."));
+    managed("spin2", surf,
+            QObject::tr("Spin/orbit frequency ratio of star 2 "
+                        "(1 = synchronous)."));
+    managed("gravity_dark1", surf,
+            QObject::tr("Gravity-darkening exponent of star 1."));
+    managed("gravity_dark2", surf,
+            QObject::tr("Gravity-darkening exponent of star 2."));
+    managed("beam_factor1", surf,
+            QObject::tr("Doppler-beaming factor of star 1."));
+    managed("beam_factor2", surf,
+            QObject::tr("Doppler-beaming factor of star 2."));
+    managed("absorb", surf,
+            QObject::tr("Fraction of the irradiating flux that is absorbed "
+                        "and reprocessed."));
+
+    const QString limb = QObject::tr("Limb darkening");
+    for (int s = 1; s <= 2; ++s)
+      for (int j = 1; j <= 4; ++j)
+        managed(QStringLiteral("ldc%1_%2").arg(s).arg(j), limb,
+                QObject::tr("Limb-darkening coefficient %1 of star %2, "
+                            "otherwise taken from the Claret tables on the "
+                            "setup page.")
+                    .arg(j)
+                    .arg(s));
+
+    const QString eph = QObject::tr("Ephemeris");
+    managed("t0", eph, QObject::tr("Zero point of the ephemeris."));
+    managed("period", eph,
+            QObject::tr("Period in the units of the fitted data. The light "
+                        "curve is phase-folded, so this is 1 and freeing it "
+                        "stretches the fold."));
+    managed("pdot", eph, QObject::tr("Rate of change of the period."));
+    managed("deltat", eph,
+            QObject::tr("Timing offset between the primary and the secondary "
+                        "eclipse."));
+
+    const QString base = QObject::tr("Baseline & third light");
+    managed("slope", base, QObject::tr("Linear term of the baseline trend."));
+    managed("quad", base,
+            QObject::tr("Quadratic term of the baseline trend."));
+    managed("cube", base, QObject::tr("Cubic term of the baseline trend."));
+    managed("third", base,
+            QObject::tr("Third light: flux from a source that is neither "
+                        "star."));
+
+    const QString disc = QObject::tr("Accretion disc");
+    standalone("rdisc1", disc,
+               QObject::tr("Inner disc radius, in units of the orbital "
+                           "separation."),
+               G::DiscOn, 0.05, 0.05, 0.0, 1.0, 5);
+    standalone("rdisc2", disc,
+               QObject::tr("Outer disc radius, in units of the orbital "
+                           "separation."),
+               G::DiscOn, 0.40, 0.20, 0.0, 1.0, 5);
+    standalone("height_disc", disc,
+               QObject::tr("Disc height at the outer edge, in units of the "
+                           "orbital separation."),
+               G::DiscOn, 0.01, 0.01, 0.0, 1.0, 5);
+    standalone("beta_disc", disc, QObject::tr("Disc flaring exponent."),
+               G::DiscOn, 1.5, 0.5, 1.0, 100.0, 3);
+    standalone("temp_disc", disc,
+               QObject::tr("Disc temperature at the outer edge, in K."),
+               G::DiscOn, 5000.0, 2000.0, 500.0, 1e6, 1);
+    standalone("texp_disc", disc,
+               QObject::tr("Exponent of the disc's radial temperature "
+                           "profile."),
+               G::DiscOn, -0.75, 0.5, -100.0, 100.0, 3);
+    standalone("lin_limb_disc", disc,
+               QObject::tr("Linear limb-darkening coefficient of the disc."),
+               G::DiscOn, 0.3, 0.3, 0.0, 1.0, 4);
+    standalone("quad_limb_disc", disc,
+               QObject::tr("Quadratic limb-darkening coefficient of the "
+                           "disc."),
+               G::DiscOn, 0.0, 0.2, 0.0, 1.0, 4);
+    standalone("temp_edge", disc,
+               QObject::tr("Temperature of the disc edge, in K."), G::DiscOn,
+               5000.0, 2000.0, 1.0, 1e6, 1);
+    standalone("absorb_edge", disc,
+               QObject::tr("Absorption by the disc edge."), G::DiscOn, 0.5,
+               0.5, 0.0, 1000.0, 4);
+
+    const QString spot = QObject::tr("Hot spot");
+    standalone("radius_spot", spot,
+               QObject::tr("Distance of the hot spot from the accretor, "
+                           "in units of the orbital separation."),
+               G::SpotOn, 0.3, 0.1, 0.0, 1.0, 5);
+    standalone("length_spot", spot,
+               QObject::tr("Length scale of the hot spot."), G::SpotOn,
+               0.05, 0.05, 0.0, 1.0, 5);
+    standalone("height_spot", spot,
+               QObject::tr("Height of the hot spot above the disc."),
+               G::SpotOn, 0.05, 0.05, 0.0, 1.0, 5);
+    standalone("expon_spot", spot,
+               QObject::tr("Exponent of the hot spot's brightness "
+                           "profile."),
+               G::SpotOn, 2.0, 1.0, 1e-4, 100.0, 3);
+    standalone("epow_spot", spot,
+               QObject::tr("Exponent controlling how sharply the hot spot "
+                           "falls off."),
+               G::SpotOn, 1.0, 1.0, 1e-4, 10.0, 3);
+    standalone("angle_spot", spot,
+               QObject::tr("Orientation of the hot spot's beaming, in "
+                           "degrees."),
+               G::SpotOn, 140.0, 45.0, -1000.0, 1000.0, 2);
+    standalone("yaw_spot", spot,
+               QObject::tr("Yaw of the hot spot's beaming, in degrees."),
+               G::SpotOn, 0.0, 45.0, -1000.0, 1000.0, 2);
+    standalone("temp_spot", spot,
+               QObject::tr("Temperature of the hot spot, in K."), G::SpotOn,
+               10000.0, 5000.0, 0.0, 1e8, 1);
+    standalone("tilt_spot", spot,
+               QObject::tr("Tilt of the hot spot's beaming, in degrees."),
+               G::SpotOn, 90.0, 45.0, -1000.0, 1000.0, 2);
+    standalone("cfrac_spot", spot,
+               QObject::tr("Fraction of the hot spot's light that is "
+                           "emitted isotropically."),
+               G::SpotOn, 0.5, 0.5, 0.0, 1.0, 4);
+    return v;
+  }();
+  return params;
+}
+
+const VaryableParam *varyableParameter(const QString &key) {
+  for (const auto &p : varyableParameters())
+    if (p.key == key)
+      return &p;
+  return nullptr;
+}
+
+QMap<QString, QString> buildPriors(const PriorInputs &in) {
+  QMap<QString, QString> out;
+  auto add = [&](const std::optional<AsymMeasurement> &m, const char *name) {
+    if (m && m->isValid())
+      out[name] = m->toPriorString();
+  };
+  add(in.K1, "K1");
+  add(in.K2, "K2");
+  add(in.M1, "M1");
+  add(in.M2, "M2");
+  add(in.M2min, "M2_min");
+  add(in.Mtotal, "M_total");
+  add(in.q, "q");
+  add(in.R1, "R1");
+  add(in.R2, "R2");
+  add(in.logg1, "logg1");
+  add(in.logg2, "logg2");
+  add(in.T1, "T1");
+  add(in.T2, "T2");
+  return out;
+}
+
+} // namespace LCFitPhysics

@@ -1,13 +1,13 @@
-#include "FitJobFactory.h"
+#include "fitting/FitJobFactory.h"
 
-#include "models/Star.h"
-#include "models/Spectrum.h"
-#include "models/Instrument.h"
-#include "models/InstrumentMode.h"
-#include "models/ElementAbundances.h"
+#include "core/Star.h"
+#include "spectra/Spectrum.h"
+#include "core/Instrument.h"
+#include "core/InstrumentMode.h"
+#include "fitting/ElementAbundances.h"
 #include "db/DatabaseManager.h"
-#include "utils/Logger.h"
-#include "utils/spectrafetch/SpectrumFrame.h"
+#include "app/Logger.h"
+#include "spectra/fetch/SpectrumFrame.h"
 
 #include <QFile>
 #include <QTemporaryDir>

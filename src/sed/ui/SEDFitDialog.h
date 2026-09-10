@@ -1,0 +1,199 @@
+#pragma once
+
+#include <QDialog>
+#include <QProcess>
+#include <memory>
+#include <vector>
+#include "ui/widgets/GridSelectorWidget.h"
+
+class Star;
+class SEDModel;
+class Photometry;
+class DatabaseManager;
+struct SEDPhotometryPoint;
+
+class GridSelectorWidget;
+class QCustomPlot;
+class QCPGraph;
+class QCPErrorBars;
+class QTableWidget;
+class QComboBox;
+class QCheckBox;
+class QSpinBox;
+class QDoubleSpinBox;
+class QGroupBox;
+class QLabel;
+class QVBoxLayout;
+class QPushButton;
+class QSplitter;
+class QScrollArea;
+class QToolButton;
+class QTextEdit;
+class QProgressBar;
+class QLineEdit;
+
+struct FitParameterRow
+{
+    QString name;
+    double  value    = 0.0;
+    bool    frozen   = true;
+    double  min      = 0.0;
+    double  max      = 0.0;
+    bool    hasRange = false;
+};
+
+class SEDFitDialog : public QDialog
+{
+    Q_OBJECT
+
+public:
+    explicit SEDFitDialog(std::shared_ptr<Star> star,
+                          DatabaseManager* dbm = nullptr,
+                          const QString& projectId = {},
+                          QWidget* parent = nullptr);
+    ~SEDFitDialog() override;
+
+signals:
+    void fitDataChanged();
+
+private slots:
+    void onFitSelected(int index);
+    void onSetBestFit();
+    void onDeleteFit();
+    void onPhotometryFlagToggled(int row, int column);
+    void onRunFit();
+    void onFitProcessFinished(int exitCode, QProcess::ExitStatus status);
+    void onAddParameter();
+    void onRemoveParameter();
+    void onComp2Toggled(bool enabled);
+
+private:
+    void setupUi();
+    QWidget* createFitSelectorBar();
+    QWidget* createPlotArea();
+    QWidget* createParameterPanel();
+    QWidget* createPhotometrySection();
+    QWidget* createNewFitPanel();
+    QWidget* createAdvancedOptions();
+
+    void loadExistingFits();
+    void updatePlot(bool preserveRange = false);
+    void updateResidualPlot();
+    void updateParameterDisplay();
+    void updatePhotometryTable();
+    void updateFitSelector();
+
+    // Canonical (per-star) SED photometry points helpers.
+    std::vector<SEDPhotometryPoint>& canonicalPhotometryPoints();
+    void ensureCanonicalPhotometryPoints();
+    void persistCanonicalPhotometryPoints();
+    // Overlay the canonical include/exclude flags onto a fit's observed points
+    // (in memory) so the plot reflects the single source of truth.
+    void applyCanonicalFlagsToFit(const std::shared_ptr<SEDModel>& model);
+    void initDefaultFitParams();
+
+    bool isDarkTheme() const;
+    QColor modelCurveColor() const;
+    QColor comp1Color() const;
+    QColor comp2Color() const;
+    QColor includedPointColor() const;
+    QColor excludedPointColor() const;
+    QColor systemColor(int index) const;
+    void applyPlotTheme(QCustomPlot* plot);
+
+    bool    isSedFitAvailable() const;
+    QString findSedFitBinary() const;
+    QString generateConfigJson() const;
+    QString starIdentifierForScript() const;
+    void    importFitResults(const QString& workDir);
+    void    applyBestFitToStar(std::shared_ptr<SEDModel> model);
+
+    void    clearParameterPanel();
+    QString statusTag(int status) const;
+    
+    void writePhotometryDat(const QString& filepath);
+    void populateParamsFromFit();
+    
+    // ════════════════════════════════════════════════════════
+
+    std::shared_ptr<Star> _star;
+    DatabaseManager*      _dbm = nullptr;
+    QString               _projectId;
+
+    std::vector<std::shared_ptr<SEDModel>> _fits;
+    int _currentFitIndex = -1;
+
+    QComboBox*   _fitCombo       = nullptr;
+    QPushButton* _setBestFitBtn  = nullptr;
+    QPushButton* _deleteFitBtn   = nullptr;
+
+    QCustomPlot* _sedPlot       = nullptr;
+    QCustomPlot* _residualPlot  = nullptr;
+
+    QScrollArea* _paramScroll   = nullptr;
+    QWidget*     _paramPanel    = nullptr;
+    QVBoxLayout* _paramLayout   = nullptr;
+
+    QPushButton*  _photToggleBtn = nullptr;
+    QWidget*      _photContent   = nullptr;
+    QTableWidget* _photTable     = nullptr;
+    bool _updatingPhotTable = false;
+
+    QPushButton* _newFitToggleBtn = nullptr;
+    QScrollArea* _newFitScroll    = nullptr;
+
+    GridSelectorWidget* _gridSelector1 = nullptr;
+    GridSelectorWidget* _gridSelector2 = nullptr;
+    QCheckBox*          _enableComp2Cb = nullptr;
+    QGroupBox*          _grid2Group    = nullptr;    
+
+    QCheckBox*      _fixDistCb    = nullptr;
+    QDoubleSpinBox* _distSpin     = nullptr;
+    QDoubleSpinBox* _distErrSpin  = nullptr;
+    QToolButton*    _distCorrectBtn = nullptr;
+
+    // Query Gaia DR3 and apply the Lindegren (2021) parallax zero-point
+    // correction + El-Badry (2021) error inflation to the fixed distance.
+    void applyGaiaDistanceCorrection();
+
+    QTableWidget* _paramTableWidget = nullptr;
+    QPushButton*  _addParamBtn      = nullptr;
+    QPushButton*  _removeParamBtn   = nullptr;
+    std::vector<FitParameterRow> _fitParams;
+
+    QComboBox* _confLevelCombo = nullptr;
+    QSpinBox*  _nmcSpin        = nullptr;
+    QCheckBox* _writeModelCb   = nullptr;
+    QCheckBox* _saveMCCb       = nullptr;
+    QCheckBox* _applyZPOCb     = nullptr;
+    QCheckBox* _useSavedPhotCb = nullptr;
+
+    QPushButton* _advToggleBtn        = nullptr;
+    QWidget*     _advContent          = nullptr;
+    QCheckBox*   _stilDistSimpleCb    = nullptr;
+    QCheckBox*   _stilEbmvSimpleCb    = nullptr;
+    QCheckBox*   _stilEbmvRerunCb     = nullptr;
+    QDoubleSpinBox* _massCanSpin      = nullptr;
+    QDoubleSpinBox* _deltaMassCanSpin = nullptr;
+    QCheckBox*   _deriveLoggCb        = nullptr;
+    QCheckBox*   _hbDistanceCb        = nullptr;
+    QCheckBox*   _deriveLoggC2Cb      = nullptr;
+    QDoubleSpinBox* _zC2Spin          = nullptr;
+    QCheckBox*   _deriveSRCb          = nullptr;
+    QDoubleSpinBox* _sdOBRadSpin      = nullptr;
+    QDoubleSpinBox* _r1Spin           = nullptr;
+    QDoubleSpinBox* _r1ErrSpin        = nullptr;
+
+    QPushButton*  _runFitBtn      = nullptr;
+    QPushButton*  _previewBtn     = nullptr;
+    QTextEdit*    _fitOutput      = nullptr;
+    QProgressBar* _fitProgress    = nullptr;
+    QProcess*     _fitProcess     = nullptr;
+    QString       _workDir;
+
+    QDoubleSpinBox *_rejectionSpin = nullptr;
+    
+    bool            _paramSignalsConnected = false;
+    bool _paramsUserModified = false; // user manually edited the param table
+    bool _populatingParams = false; // we're programmatically filling the table
+};

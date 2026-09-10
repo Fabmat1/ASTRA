@@ -61,7 +61,6 @@ public:
     // Escape velocity at pos [km/s]: v_esc = sqrt(−2·Φ)
     double escapeVelocityKmS(const Vec3& pos) const;
 
-    static const char* modelName(Model m);
 
 private:
     Model _model;

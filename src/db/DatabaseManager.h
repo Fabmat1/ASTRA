@@ -7,11 +7,11 @@
 #include <vector>
 #include <QSet>
 #include <QString>
-#include "MassFitRepository.h"
-#include "RemoteFitRepository.h"
-#include "SpectrumRepository.h"
-#include "models/Instrument.h"
-#include "models/InstrumentMode.h"
+#include "db/MassFitRepository.h"
+#include "db/RemoteFitRepository.h"
+#include "db/SpectrumRepository.h"
+#include "core/Instrument.h"
+#include "core/InstrumentMode.h"
 #include <QHash>
 
 class DBAccess;

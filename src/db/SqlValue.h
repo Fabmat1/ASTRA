@@ -39,4 +39,12 @@ inline double toDoubleOrNaN(const QSqlQuery& q, int idx)
     return v.toDouble();
 }
 
+// Binds an empty string as SQL NULL rather than ''. Optional foreign keys and
+// timestamps want a real NULL, so an absent value does not masquerade as a
+// present-but-blank one.
+inline QVariant textOrNull(const QString& s)
+{
+    return s.isEmpty() ? QVariant(QMetaType(QMetaType::QString)) : QVariant(s);
+}
+
 } // namespace SqlValue

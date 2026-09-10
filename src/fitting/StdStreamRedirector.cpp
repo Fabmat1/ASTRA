@@ -1,4 +1,4 @@
-#include "StdStreamRedirector.h"
+#include "fitting/StdStreamRedirector.h"
 
 #include <QByteArray>
 #include <cstdio>

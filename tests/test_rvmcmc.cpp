@@ -11,7 +11,7 @@
 // The eccentric model has no such closed form, so it is checked against the
 // injected truth at the 3σ level plus a self-consistency check on χ².
 // ─────────────────────────────────────────────────────────────────────────────
-#include "fitting/RVMCMC.h"
+#include "rv/RVMCMC.h"
 
 #include <QCoreApplication>
 

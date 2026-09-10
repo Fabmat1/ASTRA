@@ -1,8 +1,8 @@
-#include "StarKinematics.h"
+#include "kinematics/StarKinematics.h"
 
-#include "models/AsymmetricErrors.h"
-#include "models/RadialVelocity.h"
-#include "models/Star.h"
+#include "core/AsymmetricErrors.h"
+#include "rv/RadialVelocity.h"
+#include "core/Star.h"
 
 #include <algorithm>
 #include <QString>

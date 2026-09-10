@@ -1,4 +1,5 @@
-#include "KinematicsCalculator.h"
+#include "kinematics/KinematicsCalculator.h"
+#include "core/AsymmetricErrors.h"
 
 #include <QThread>
 #include <QtConcurrent>
@@ -10,6 +11,8 @@
 namespace GalKin {
 
 namespace {
+
+using AsymErr::drawTwoPiece;
 
 // Cholesky factor of the 3×3 covariance of (plx, pmra, pmdec).
 // Returns false when the correlation matrix is not positive definite.
@@ -38,14 +41,6 @@ bool cholesky3(const double cov[3][3], double L[3][3])
 // Two-piece ("dimidiated") Gaussian draw: z·σ₊ above the centre, z·σ₋ below.
 // Reproduces the stored 15.9/50/84.1 percentiles exactly (same convention as
 // SummaryPanel's SplitNormalMC).
-inline double drawTwoPiece(std::mt19937_64& rng,
-                           std::normal_distribution<double>& gauss, double v,
-                           double sigUp, double sigDown)
-{
-    const double z = gauss(rng);
-    return v + z * (z >= 0.0 ? sigUp : sigDown);
-}
-
 } // namespace
 
 ValueDist KinematicsCalculator::distFromSamples(double nominal,

@@ -1,4 +1,4 @@
-#include "KinematicContours.h"
+#include "kinematics/KinematicContours.h"
 
 #include <QFile>
 #include <QHash>

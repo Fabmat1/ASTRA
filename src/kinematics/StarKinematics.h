@@ -5,8 +5,8 @@
 // and writes UVW/XYZ results back to the star's gal* fields using the
 // AsymErr storage convention.
 
-#include "KinematicsCalculator.h"
-#include "PopulationClassifier.h"
+#include "kinematics/KinematicsCalculator.h"
+#include "kinematics/PopulationClassifier.h"
 
 #include <QString>
 

@@ -1,7 +1,7 @@
-#include "PeriodogramRepository.h"
-#include "DBAccess.h"
-#include "models/PeriodogramRecord.h"
-#include "utils/DataStore.h"
+#include "db/PeriodogramRepository.h"
+#include "db/DBAccess.h"
+#include "rv/PeriodogramRecord.h"
+#include "app/DataStore.h"
 
 #include <QSqlQuery>
 #include <QSqlError>

@@ -1,7 +1,7 @@
 #ifndef MASSFITREPOSITORY_H
 #define MASSFITREPOSITORY_H
 
-#include "models/AsymmetricErrors.h"
+#include "core/AsymmetricErrors.h"
 
 #include <QString>
 #include <optional>

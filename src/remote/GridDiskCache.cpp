@@ -66,17 +66,6 @@ void GridDiskCache::noteAdded(qint64 bytes)
     if (_sinceScan >= kScanInterval) evictIfNeeded();
 }
 
-qint64 GridDiskCache::currentSizeBytes() const
-{
-    qint64 total = 0;
-    QDirIterator it(_dir, QDir::Files, QDirIterator::Subdirectories);
-    while (it.hasNext()) {
-        it.next();
-        total += it.fileInfo().size();
-    }
-    return total;
-}
-
 void GridDiskCache::evictIfNeeded(bool force)
 {
     if (!force && _sinceScan < kScanInterval) return;

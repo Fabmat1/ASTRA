@@ -1,6 +1,7 @@
-#include "RemoteFitRepository.h"
-#include "DBAccess.h"
-#include "utils/Logger.h"
+#include "db/RemoteFitRepository.h"
+#include "db/SqlValue.h"
+#include "db/DBAccess.h"
+#include "app/Logger.h"
 
 #include <QDateTime>
 #include <QSqlError>
@@ -12,10 +13,7 @@
 
 namespace {
 
-QVariant textOrNull(const QString& s)
-{
-    return s.isEmpty() ? QVariant(QMetaType(QMetaType::QString)) : QVariant(s);
-}
+using SqlValue::textOrNull;
 
 RemoteFitRunRow readRow(const QSqlQuery& q)
 {

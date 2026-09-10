@@ -8,7 +8,7 @@
 // sends every failed fit down the hot-grid branch. A cycle in the tree spins a
 // star through the same two setups until the depth guard trips, hours later.
 // ─────────────────────────────────────────────────────────────────────────────
-#include "models/MassFitPlan.h"
+#include "massfit/MassFitPlan.h"
 
 #include <QJsonDocument>
 

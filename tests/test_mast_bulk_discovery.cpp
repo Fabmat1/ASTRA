@@ -18,8 +18,8 @@
 // budget, every returned product is inside the tolerance of the mission it
 // belongs to, and progress is reported monotonically to completion.
 // ─────────────────────────────────────────────────────────────────────────────
-#include "utils/spectrafetch/MastArchiveClient.h"
-#include "utils/spectrafetch/SpectrumArchiveTypes.h"
+#include "spectra/fetch/MastArchiveClient.h"
+#include "spectra/fetch/SpectrumArchiveTypes.h"
 
 #include <QCoreApplication>
 #include <QElapsedTimer>

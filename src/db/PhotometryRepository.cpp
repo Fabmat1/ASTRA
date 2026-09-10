@@ -1,14 +1,14 @@
-#include "PhotometryRepository.h"
-#include "DBAccess.h"
-#include "SqlValue.h"
-#include "models/Photometry.h"
+#include "db/PhotometryRepository.h"
+#include "db/DBAccess.h"
+#include "db/SqlValue.h"
+#include "lightcurve/Photometry.h"
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
-#include "utils/DataStore.h"
-#include "utils/Logger.h"
+#include "app/DataStore.h"
+#include "app/Logger.h"
 
 PhotometryRepository::PhotometryRepository(DBAccess& db) : _db(db) {}
 

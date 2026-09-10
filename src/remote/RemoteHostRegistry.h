@@ -1,6 +1,6 @@
 #pragma once
 
-#include "models/RemoteHost.h"
+#include "remote/RemoteHost.h"
 #include "remote/SshConnection.h"
 #include "remote/SshFileStreamChannel.h"
 
@@ -38,7 +38,6 @@ public:
     SshFileStreamChannel* channel(const QString& hostId);
 
     /*  Convenience: transports by host NAME (the key inside ssh:// URLs).  */
-    SshConnection*        connectionByName(const QString& name);
     SshFileStreamChannel* channelByName(const QString& name);
 
     struct ProbeResult {

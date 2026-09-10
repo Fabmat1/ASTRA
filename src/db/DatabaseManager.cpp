@@ -1,22 +1,22 @@
-#include "DatabaseManager.h"
-#include "DBAccess.h"
-#include "ProjectRepository.h"
-#include "StarRepository.h"
-#include "PhotometryRepository.h"
-#include "SpectrumRepository.h"
-#include "RadialVelocityRepository.h"
-#include "InstrumentRepository.h"
-#include "PeriodogramRepository.h"
-#include "MassFitRepository.h"
-#include "SqlValue.h"
+#include "db/DatabaseManager.h"
+#include "db/DBAccess.h"
+#include "db/ProjectRepository.h"
+#include "db/StarRepository.h"
+#include "db/PhotometryRepository.h"
+#include "db/SpectrumRepository.h"
+#include "db/RadialVelocityRepository.h"
+#include "db/InstrumentRepository.h"
+#include "db/PeriodogramRepository.h"
+#include "db/MassFitRepository.h"
+#include "db/SqlValue.h"
 
-#include "models/ElementAbundances.h"
-#include "models/Project.h"
-#include "models/Star.h"
-#include "models/Photometry.h"
-#include "models/Spectrum.h"
-#include "models/PeriodogramRecord.h"
-#include "utils/DataStore.h"
+#include "fitting/ElementAbundances.h"
+#include "core/Project.h"
+#include "core/Star.h"
+#include "lightcurve/Photometry.h"
+#include "spectra/Spectrum.h"
+#include "rv/PeriodogramRecord.h"
+#include "app/DataStore.h"
 
 #include <algorithm>
 #include <QSqlQuery>
@@ -36,11 +36,11 @@
 #include <QJsonDocument>
 #include <QJsonArray>
 
-#include "utils/Logger.h"
-#include "utils/StarMatching.h"
-#include "utils/AppPaths.h"
-#include "models/Time.h"
-#include "models/RadialVelocity.h"
+#include "app/Logger.h"
+#include "catalog/StarMatching.h"
+#include "app/AppPaths.h"
+#include "core/Time.h"
+#include "rv/RadialVelocity.h"
 
 DatabaseManager::DatabaseManager(QObject *parent)
     : QObject(parent)

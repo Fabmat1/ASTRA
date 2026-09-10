@@ -5,7 +5,7 @@
 // The reference object throughout is J153301.20+375912.3, i.e.
 // RA = 233.25500 deg, Dec = +37.98675 deg.
 
-#include "utils/StarSearchQuery.h"
+#include "catalog/StarSearchQuery.h"
 
 #include <QString>
 #include <QtGlobal>

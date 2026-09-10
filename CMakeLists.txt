@@ -301,449 +301,570 @@ foreach(_t IN ITEMS GAELcore qcustomplot)
     endif()
 endforeach()
 
-# Source files
-set(SOURCES
-    src/main.cpp
+# ── Source lists ─────────────────────────────────────────────────────────────
+# Split by layer, not by domain: everything that does not live under a ui/ folder
+# is Core-only and goes into astra_core, which the tests link against.  The rule
+# is mechanical, so scripts/reorganize_src.py can regenerate these lists and
+# verify that no Core file pulls in QtWidgets or QtGui.
+set(ASTRA_CORE_SOURCES
 
-    # controllers
-    src/controllers/ApplicationController.cpp
+    # app
+    src/app/AppSettings.cpp
+    src/app/DataStore.cpp
+    src/app/Logger.cpp
+
+    # catalog
+    src/catalog/CatalogQueryWorkers.cpp
+    src/catalog/CdsTapClient.cpp
+    src/catalog/CrossRefResolver.cpp
+
+    # core
+    src/core/BarycentricCorrection.cpp
+    src/core/ColumnPreset.cpp
+    src/core/FilterExpression.cpp
+    src/core/Instrument.cpp
+    src/core/InstrumentMode.cpp
+    src/core/Project.cpp
+    src/core/QuantityFormat.cpp
+    src/core/Star.cpp
+    src/core/Stats.cpp
+    src/core/Time.cpp
 
     # db
-    src/db/DatabaseManager.cpp
     src/db/DBAccess.cpp
+    src/db/DatabaseManager.cpp
     src/db/InstrumentRepository.cpp
+    src/db/MassFitRepository.cpp
+    src/db/PeriodogramRepository.cpp
     src/db/PhotometryRepository.cpp
     src/db/ProjectRepository.cpp
     src/db/RadialVelocityRepository.cpp
+    src/db/RemoteFitRepository.cpp
     src/db/SpectrumRepository.cpp
     src/db/StarRepository.cpp
-    src/db/PeriodogramRepository.cpp
-    src/db/MassFitRepository.cpp
-
-    # dialogs
-    src/dialogs/EditProjectDialog.cpp
-    src/dialogs/ExportTableDialog.cpp
-    src/dialogs/NewProjectDialog.cpp
-    src/dialogs/SettingsDialog.cpp
-    src/dialogs/FirstRunDialog.cpp
-    src/dialogs/WhatsNewDialog.cpp
-    src/dialogs/AddStarDialog.cpp
-    src/dialogs/ImportLightcurve.cpp
-    src/dialogs/LCFitDialog.cpp
-    src/dialogs/LightcurveCredentialPrompts.cpp
-    src/dialogs/ReidentifyStarDialog.cpp
-
-    # importWizard
-    src/importWizard/GeneralImportPage.cpp
-    src/importWizard/ImportStagingArea.cpp
-    src/importWizard/LightcurveImportPage.cpp
-    src/importWizard/RadialVelocityImportPage.cpp
-    src/importWizard/SEDImportPage.cpp
-    src/importWizard/SpectraImportPage.cpp
-    src/importWizard/SpectralFitImportPage.cpp
-    src/importWizard/StarImportWizard.cpp
-
-    # models
-    src/models/BarycentricCorrection.cpp
-    src/models/ColumnPreset.cpp
-    src/models/ElementAbundances.cpp
-    src/models/Instrument.cpp
-    src/models/InstrumentMode.cpp
-    src/models/MassFitPlan.cpp
-    src/models/Photometry.cpp
-    src/models/RemoteHost.cpp
-    src/models/Project.cpp
-    src/models/RadialVelocity.cpp
-    src/models/Spectrum.cpp
-    src/models/Star.cpp
-    src/models/Time.cpp
-    src/models/PeriodogramRecord.cpp
-
-    # remote (SSH grid streaming + remote fitting)
-    src/dialogs/RemoteHostsSettingsPage.cpp
-    src/remote/ShellQuote.cpp
-    src/remote/AskPass.cpp
-    src/db/RemoteFitRepository.cpp
-    src/remote/GridDiskCache.cpp
-    src/remote/RemoteScheduler.cpp
-    src/remote/RemoteFitService.cpp
-    src/remote/SshGridProvider.cpp
-    src/remote/SshConnection.cpp
-    src/remote/SshFileStreamChannel.cpp
-    src/remote/RemoteHostRegistry.cpp
-    src/remote/RemoteSelfTest.cpp
-
-    # utils
-    src/utils/AppSettings.cpp
-    src/utils/QuantityFormat.cpp
-    src/utils/BackgroundTaskManager.cpp
-    src/utils/CatalogQueryWorkers.cpp
-    src/utils/CdsTapClient.cpp
-    src/utils/CoastlineData.cpp
-    src/utils/CrossRefResolver.cpp
-    src/utils/DataStore.cpp
-    src/utils/ExtractSED.cpp
-    src/utils/Logger.cpp
-    src/utils/SpectrumReader.cpp
-    src/utils/ThemeManager.cpp
-    src/utils/WindowSizing.cpp
-    src/utils/UiIcons.cpp
-    src/utils/UiStyle.cpp
-    src/utils/UpdateManager.cpp
-    src/utils/ObservabilityCalculator.cpp
-    src/utils/LightcurveFetcher.cpp
-    src/utils/LightcurveFetchService.cpp
-    src/utils/PlotPresetStore.cpp
-    src/utils/LcqueryEnvironment.cpp
-    src/utils/IsisEnvironment.cpp
-    src/utils/SedFitEnvironment.cpp
-    src/utils/CheckBoxDragger.cpp
-    src/utils/CheckStateDragger.cpp
-    src/utils/ClaretTables.cpp
-    src/utils/LCBinning.cpp
-    src/utils/LCFitPhysics.cpp
-    src/utils/LCFitRunner.cpp
-    src/utils/FilterWavelength.cpp
-    src/utils/FilterExpression.cpp
-    src/utils/SystematicErrors.cpp
-    src/utils/TessSectors.cpp
-    src/utils/ClaretFilter.cpp
-    src/utils/matchSpectraToInstrument.cpp
-    src/utils/SpectrumCoadder.cpp
-    src/utils/WheelGuard.cpp
-    src/utils/SpectrumFetchService.cpp
-    src/utils/MassFitService.cpp
-    src/utils/spectrafetch/SpectrumArchiveClient.cpp
-    src/utils/spectrafetch/SpectrumArchiveRegistry.cpp
-    src/utils/spectrafetch/SpectrumArmJoin.cpp
-    src/utils/spectrafetch/SpectrumFrame.cpp
-    src/utils/spectrafetch/TapHelpers.cpp
-    src/utils/spectrafetch/VoTableReader.cpp
-    src/utils/spectrafetch/WavelengthConvert.cpp
-    src/utils/spectrafetch/EsoArchiveClient.cpp
-    src/utils/spectrafetch/EsoObsCoreIndex.cpp
-    src/utils/spectrafetch/LamostArchiveClient.cpp
-    src/utils/spectrafetch/SdssOpticalArchiveClient.cpp
-    src/utils/spectrafetch/MastArchiveClient.cpp
-    src/utils/spectrafetch/ApogeeArchiveClient.cpp
-
-    # views
-    src/views/ColumnConfigDialog.cpp
-    src/views/InstrumentConfigView.cpp
-    src/views/MainWindow.cpp
-    src/views/ProjectSelectionView.cpp
-    src/views/ProjectView.cpp
-    src/views/StarDetailView.cpp
-    src/views/StarFilterWidget.cpp
-
-    # views/tools
-    src/views/tools/CMDDialog.cpp
-    src/views/tools/GalacticOrbitDialog.cpp
-    src/views/tools/ProjectPlotDialog.cpp
-    src/views/tools/LightcurveFetchDialog.cpp
-    src/views/tools/LightcurveFetchSessionsDialog.cpp
-    src/views/tools/LcquerySetupDialog.cpp
-    src/views/tools/RVInspectorDialog.cpp
-    src/views/tools/SEDFitDialog.cpp
-    src/views/tools/SpectraFitDialog.cpp
-    src/views/tools/ArchiveFetchWidget.cpp
-    src/views/tools/SpectrumFetchSessionsDialog.cpp
-    src/views/tools/AddSpectraDialog.cpp
-    src/views/tools/FitSetupWidget.cpp
-    src/views/tools/CoAddWidget.cpp
-    src/views/tools/FitProgressDialog.cpp
-    src/views/tools/InteractiveIsisDialog.cpp
-    src/views/tools/RVAddFitDialog.cpp
-    src/views/tools/RVAddPointDialog.cpp
-    src/views/tools/RVImportPointsDialog.cpp
-    src/views/tools/RVMCMCResultsDialog.cpp
-    src/views/tools/ObservabilityDialog.cpp
-    src/views/tools/RVDetectabilityDialog.cpp
-    src/views/tools/MassFitPlanDialog.cpp
-    src/views/tools/MassFitRuleEditor.cpp
-    src/views/tools/MassFitManagerDialog.cpp
-    src/views/tools/RemoteFitsDialog.cpp
-
-    # views/panels
-    src/views/panels/PanelUtils.cpp
-    src/views/panels/DetailPanel.cpp
-    src/views/panels/DetailPanelFactory.cpp
-    src/views/panels/SummaryPanel.cpp
-    src/views/panels/RVPanel.cpp
-    src/views/panels/LCPanel.cpp
-    src/views/panels/SpectraPanel.cpp
-    src/views/panels/PeriodogramPanel.cpp
-
-    # views/widgets
-    src/views/widgets/CopyToast.cpp
-    src/views/widgets/FlowLayout.cpp
-    src/views/widgets/ResponsiveGridLayout.cpp
-    src/views/widgets/ElidedLabel.cpp
-    src/views/widgets/QuantityRenderer.cpp
-    src/views/widgets/QuantityLabel.cpp
-    src/views/widgets/QuantityDelegate.cpp
-    src/views/widgets/FitPreviewOverlay.cpp
-    src/views/widgets/FitComponentsWidget.cpp
-    src/views/widgets/GridSelectorWidget.cpp
-    src/views/widgets/ShimmerWidget.cpp
-    src/views/widgets/SquarePlotFrame.cpp
-    src/views/widgets/TerminalView.cpp
-    src/views/widgets/AnsiTerminalWidget.cpp
-    src/views/widgets/LCModelPreview.cpp
-    src/views/widgets/IsisMacroPanel.cpp
-    src/views/widgets/PlotKeyNavigator.cpp
 
     # fitting
+    src/fitting/ElementAbundances.cpp
     src/fitting/FitBackendRegistry.cpp
     src/fitting/FitJobFactory.cpp
     src/fitting/FitTypesJson.cpp
+    src/fitting/FitWorker.cpp
     src/fitting/GaelBackend.cpp
     src/fitting/GaelMapping.cpp
-    src/fitting/RemoteGaelBackend.cpp
     src/fitting/IsisBackend.cpp
-    src/fitting/FitWorker.cpp
+    src/fitting/IsisEnvironment.cpp
+    src/fitting/RemoteGaelBackend.cpp
     src/fitting/StdStreamRedirector.cpp
-    src/fitting/Periodogram.cpp
-    src/fitting/RVErrorMC.cpp
-    src/fitting/RVMCMC.cpp
-    src/fitting/RVDetectability.cpp
+    src/fitting/SystematicErrors.cpp
 
     # io
     src/io/StarPackage.cpp
-    src/io/StarShare.cpp
 
     # kinematics
-    src/kinematics/GalacticPotential.cpp
     src/kinematics/GalacticCoordinates.cpp
-    src/kinematics/OrbitIntegrator.cpp
-    src/kinematics/KinematicsCalculator.cpp
-    src/kinematics/StarKinematics.cpp
-    src/kinematics/PopulationClassifier.cpp
+    src/kinematics/GalacticPotential.cpp
     src/kinematics/KinematicContours.cpp
+    src/kinematics/KinematicsCalculator.cpp
+    src/kinematics/OrbitIntegrator.cpp
+    src/kinematics/PopulationClassifier.cpp
+    src/kinematics/StarKinematics.cpp
+
+    # lightcurve
+    src/lightcurve/ClaretFilter.cpp
+    src/lightcurve/ClaretTables.cpp
+    src/lightcurve/LCBinning.cpp
+    src/lightcurve/LCFitPhysics.cpp
+    src/lightcurve/LCFitRunner.cpp
+    src/lightcurve/LcqueryEnvironment.cpp
+    src/lightcurve/LightcurveFetchService.cpp
+    src/lightcurve/LightcurveFetcher.cpp
+    src/lightcurve/Photometry.cpp
+    src/lightcurve/TessSectors.cpp
+
+    # massfit
+    src/massfit/MassFitPlan.cpp
+    src/massfit/MassFitService.cpp
+
+    # observing
+    src/observing/ObservabilityCalculator.cpp
+
+    # remote
+    src/remote/GridDiskCache.cpp
+    src/remote/RemoteFitService.cpp
+    src/remote/RemoteHost.cpp
+    src/remote/RemoteHostRegistry.cpp
+    src/remote/RemoteScheduler.cpp
+    src/remote/SshConnection.cpp
+    src/remote/SshFileStreamChannel.cpp
+    src/remote/SshGridProvider.cpp
+
+    # rv
+    src/rv/Periodogram.cpp
+    src/rv/PeriodogramRecord.cpp
+    src/rv/RVDetectability.cpp
+    src/rv/RVErrorMC.cpp
+    src/rv/RVMCMC.cpp
+    src/rv/RadialVelocity.cpp
+
+    # sed
+    src/sed/ExtractSED.cpp
+    src/sed/FilterWavelength.cpp
+    src/sed/SedFitEnvironment.cpp
+
+    # spectra
+    src/spectra/Spectrum.cpp
+    src/spectra/SpectrumCoadder.cpp
+    src/spectra/SpectrumFetchService.cpp
+    src/spectra/SpectrumReader.cpp
+
+    # spectra/fetch
+    src/spectra/fetch/ApogeeArchiveClient.cpp
+    src/spectra/fetch/EsoArchiveClient.cpp
+    src/spectra/fetch/ExposureEpoch.cpp
+    src/spectra/fetch/EsoObsCoreIndex.cpp
+    src/spectra/fetch/LamostArchiveClient.cpp
+    src/spectra/fetch/MastArchiveClient.cpp
+    src/spectra/fetch/SdssOpticalArchiveClient.cpp
+    src/spectra/fetch/SpectrumArchiveClient.cpp
+    src/spectra/fetch/SpectrumArchiveRegistry.cpp
+    src/spectra/fetch/SpectrumArmJoin.cpp
+    src/spectra/fetch/SpectrumFrame.cpp
+    src/spectra/fetch/TapHelpers.cpp
+    src/spectra/fetch/VoTableReader.cpp
+    src/spectra/fetch/WavelengthConvert.cpp
+
+    # spectra
+    src/spectra/matchSpectraToInstrument.cpp
 )
 
-# Header files
-set(HEADERS
-    # controllers
-    src/controllers/ApplicationController.h
+set(ASTRA_CORE_HEADERS
+
+    # app
+    src/app/AppPaths.h
+    src/app/AppSettings.h
+    src/app/DataStore.h
+    src/app/Logger.h
+    src/app/PerfTimer.h
+
+    # catalog
+    src/catalog/CatalogQueryWorkers.h
+    src/catalog/CdsTapClient.h
+    src/catalog/CrossRefResolver.h
+    src/catalog/StarMatching.h
+    src/catalog/StarSearchQuery.h
+
+    # core
+    src/core/AsymmetricErrors.h
+    src/core/BarycentricCorrection.h
+    src/core/ColumnPreset.h
+    src/core/FilterExpression.h
+    src/core/Instrument.h
+    src/core/InstrumentMode.h
+    src/core/Project.h
+    src/core/Quantity.h
+    src/core/QuantityFormat.h
+    src/core/SkyGeometry.h
+    src/core/Star.h
+    src/core/Stats.h
+    src/core/Time.h
 
     # db
-    src/db/DatabaseManager.h
     src/db/DBAccess.h
+    src/db/DatabaseManager.h
     src/db/InstrumentRepository.h
+    src/db/MassFitRepository.h
+    src/db/PeriodogramRepository.h
     src/db/PhotometryRepository.h
     src/db/ProjectRepository.h
     src/db/RadialVelocityRepository.h
-    src/db/SpectrumRepository.h
-    src/db/StarRepository.h
-    src/db/PeriodogramRepository.h
-    src/db/MassFitRepository.h
-
-    # dialogs
-    src/dialogs/EditProjectDialog.h
-    src/dialogs/ExportTableDialog.h
-    src/dialogs/NewProjectDialog.h
-    src/dialogs/SettingsDialog.h
-    src/dialogs/FirstRunDialog.h
-    src/dialogs/WhatsNewDialog.h
-    src/dialogs/AddStarDialog.h
-    src/dialogs/ImportLightcurve.h
-    src/dialogs/LCFitDialog.h
-    src/dialogs/LightcurveCredentialPrompts.h
-    src/dialogs/ReidentifyStarDialog.h
-    
-    # importWizard
-    src/importWizard/GeneralImportPage.h
-    src/importWizard/ImportStagingArea.h
-    src/importWizard/LightcurveImportPage.h
-    src/importWizard/RadialVelocityImportPage.h
-    src/importWizard/SEDImportPage.h
-    src/importWizard/SpectraImportPage.h
-    src/importWizard/SpectralFitImportPage.h
-    src/importWizard/StarImportWizard.h
-
-    # models
-    src/models/BarycentricCorrection.h
-    src/models/ColumnPreset.h
-    src/models/ElementAbundances.h
-    src/models/Instrument.h
-    src/models/InstrumentMode.h
-    src/models/MassFitPlan.h
-    src/models/Photometry.h
-    src/models/RemoteHost.h
-    src/models/Project.h
-    src/models/RadialVelocity.h
-    src/models/Spectrum.h
-    src/models/Star.h
-    src/models/Time.h
-    src/models/PeriodogramRecord.h
-
-    # remote (SSH grid streaming + remote fitting)
-    src/dialogs/RemoteHostsSettingsPage.h
-    src/remote/ShellQuote.h
-    src/remote/AskPass.h
     src/db/RemoteFitRepository.h
-    src/remote/GridDiskCache.h
-    src/remote/RemoteScheduler.h
-    src/remote/RemoteFitService.h
-    src/remote/SshGridProvider.h
-    src/remote/SshConnection.h
-    src/remote/SshFileStreamChannel.h
-    src/remote/RemoteHostRegistry.h
-    src/remote/RemoteSelfTest.h
+    src/db/SpectrumRepository.h
+    src/db/SqlValue.h
+    src/db/StarRepository.h
 
-    # utils
-    src/utils/AppPaths.h
-    src/utils/AppSettings.h
-    src/utils/BackgroundTaskManager.h
-    src/utils/CatalogQueryWorkers.h
-    src/utils/CoastlineData.h
-    src/utils/CrossRefResolver.h
-    src/utils/DataStore.h
-    src/utils/ExtractSED.h
-    src/utils/Logger.h
-    src/utils/SpectrumReader.h
-    src/utils/ThemeManager.h
-    src/utils/WindowSizing.h
-    src/utils/UiIcons.h
-    src/utils/UpdateManager.h
-    src/utils/ObservabilityCalculator.h
-    src/utils/LightcurveFetcher.h
-    src/utils/LightcurveFetchService.h
-    src/utils/SpectrumFetchService.h
-    src/utils/MassFitService.h
-    src/utils/spectrafetch/SpectrumArchiveTypes.h
-    src/utils/spectrafetch/SpectrumArchiveClient.h
-    src/utils/spectrafetch/SpectrumArchiveRegistry.h
-    src/utils/spectrafetch/SpectrumArmJoin.h
-    src/utils/spectrafetch/SpectrumFrame.h
-    src/utils/spectrafetch/TapHelpers.h
-    src/utils/spectrafetch/VoTableReader.h
-    src/utils/spectrafetch/WavelengthConvert.h
-    src/utils/spectrafetch/EsoArchiveClient.h
-    src/utils/spectrafetch/EsoObsCoreIndex.h
-    src/utils/spectrafetch/LamostArchiveClient.h
-    src/utils/spectrafetch/SdssOpticalArchiveClient.h
-    src/utils/spectrafetch/MastArchiveClient.h
-    src/utils/spectrafetch/ApogeeArchiveClient.h
-    src/utils/PlotPresetStore.h
-    src/utils/LcqueryEnvironment.h
-    src/utils/IsisEnvironment.h
-    src/utils/SedFitEnvironment.h
-    src/utils/CheckBoxDragger.h
-    src/utils/CheckStateDragger.h
-    src/utils/ClaretTables.h
-    src/utils/LCFitPhysics.h
-    src/utils/LCFitRunner.h
-    src/utils/FilterWavelength.h
-    src/utils/FilterExpression.h
-    src/utils/SystematicErrors.h
-    src/utils/TessSectors.h
-    src/utils/ClaretFilter.h
-    src/utils/matchSpectraToInstrument.h
-    src/utils/SpectrumCoadder.h
-    src/utils/WheelGuard.h
-
-    # views
-    src/views/BooleanColumnDelegate.h
-    src/views/ColumnConfigDialog.h
-    src/views/InstrumentConfigView.h
-    src/views/MainWindow.h
-    src/views/ProjectSelectionView.h
-    src/views/ProjectView.h
-    src/views/StarDetailView.h
-    src/views/StarFilterWidget.h
-
-    # views/tools
-    src/views/tools/CMDDialog.h
-    src/views/tools/RVDetectabilityDialog.h
-    src/views/tools/GalacticOrbitDialog.h
-    src/views/tools/ProjectPlotDialog.h
-    src/views/tools/LightcurveFetchDialog.h
-    src/views/tools/LightcurveFetchSessionsDialog.h
-    src/views/tools/LcquerySetupDialog.h
-    src/views/tools/RVInspectorDialog.h
-    src/views/tools/SEDFitDialog.h
-    src/views/tools/SpectraFitDialog.h
-    src/views/tools/ArchiveFetchWidget.h
-    src/views/tools/SpectrumFetchSessionsDialog.h
-    src/views/tools/AddSpectraDialog.h
-    src/views/tools/FitSetupWidget.h
-    src/views/tools/CoAddWidget.h
-    src/views/tools/FitProgressDialog.h
-    src/views/tools/InteractiveIsisDialog.h
-    src/views/tools/RVAddFitDialog.h
-    src/views/tools/RVAddPointDialog.h
-    src/views/tools/RVMCMCResultsDialog.h
-    src/views/tools/ObservabilityDialog.h
-    src/views/tools/MassFitPlanDialog.h
-    src/views/tools/MassFitRuleEditor.h
-    src/views/tools/MassFitManagerDialog.h
-    src/views/tools/RemoteFitsDialog.h
-
-    # views/panels
-    src/views/panels/PanelUtils.h
-    src/views/panels/DetailPanel.h
-    src/views/panels/DetailPanelFactory.h
-    src/views/panels/SummaryPanel.h
-    src/views/panels/RVPanel.h
-    src/views/panels/LCPanel.h
-    src/views/panels/SpectraPanel.h
-    src/views/panels/PeriodogramPanel.h
-
-    # views/widgets
-    src/views/widgets/FitPreviewOverlay.h
-    src/views/widgets/FitComponentsWidget.h
-    src/views/widgets/FlowLayout.h
-    src/views/widgets/ResponsiveGridLayout.h
-    src/views/widgets/ElidedLabel.h
-    src/views/widgets/GridSelectorWidget.h
-    src/views/widgets/ShimmerWidget.h
-    src/views/widgets/SquarePlotFrame.h
-    src/views/widgets/TerminalView.h
-    src/views/widgets/AnsiTerminalWidget.h
-    src/views/widgets/LCModelPreview.h
-    src/views/widgets/IsisMacroPanel.h
-    src/views/widgets/PlotKeyNavigator.h
-    src/views/widgets/PreciseDoubleSpinBox.h
-
-    #GAEL fitting
-    src/fitting/FitTypes.h
-    src/fitting/FitJobFactory.h
-    src/fitting/FitTypesJson.h
-    src/fitting/RVDetectability.h
-    src/fitting/IFitBackend.h
+    # fitting
+    src/fitting/ElementAbundances.h
     src/fitting/FitBackendRegistry.h
+    src/fitting/FitJobFactory.h
+    src/fitting/FitTypes.h
+    src/fitting/FitTypesJson.h
+    src/fitting/FitWorker.h
     src/fitting/GaelBackend.h
     src/fitting/GaelMapping.h
-    src/fitting/RemoteGaelBackend.h
+    src/fitting/IFitBackend.h
     src/fitting/IsisBackend.h
-    src/fitting/FitWorker.h
+    src/fitting/IsisEnvironment.h
+    src/fitting/RemoteGaelBackend.h
     src/fitting/StdStreamRedirector.h
-    src/fitting/Periodogram.h
-    src/fitting/RVErrorMC.h
-    src/fitting/RVMCMC.h
+    src/fitting/SystematicErrors.h
 
     # io
     src/io/StarPackage.h
-    src/io/StarShare.h
 
     # kinematics
-    src/kinematics/GalacticPotential.h
     src/kinematics/GalacticCoordinates.h
-    src/kinematics/OrbitIntegrator.h
-    src/kinematics/KinematicsCalculator.h
-    src/kinematics/StarKinematics.h
-    src/kinematics/PopulationClassifier.h
+    src/kinematics/GalacticPotential.h
     src/kinematics/KinematicContours.h
+    src/kinematics/KinematicsCalculator.h
+    src/kinematics/OrbitIntegrator.h
+    src/kinematics/PopulationClassifier.h
+    src/kinematics/StarKinematics.h
+
+    # lightcurve
+    src/lightcurve/ClaretFilter.h
+    src/lightcurve/ClaretTables.h
+    src/lightcurve/LCBinning.h
+    src/lightcurve/LCFitPhysics.h
+    src/lightcurve/LCFitRunner.h
+    src/lightcurve/LcqueryEnvironment.h
+    src/lightcurve/LightcurveFetchService.h
+    src/lightcurve/LightcurveFetcher.h
+    src/lightcurve/Photometry.h
+    src/lightcurve/TessSectors.h
+
+    # massfit
+    src/massfit/MassFitPlan.h
+    src/massfit/MassFitService.h
+
+    # observing
+    src/observing/ObservabilityCalculator.h
+
+    # remote
+    src/remote/GridDiskCache.h
+    src/remote/RemoteFitService.h
+    src/remote/RemoteHost.h
+    src/remote/RemoteHostRegistry.h
+    src/remote/RemoteScheduler.h
+    src/remote/SshConnection.h
+    src/remote/SshFileStreamChannel.h
+    src/remote/SshGridProvider.h
+
+    # rv
+    src/rv/Periodogram.h
+    src/rv/PeriodogramRecord.h
+    src/rv/RVDetectability.h
+    src/rv/RVErrorMC.h
+    src/rv/RVMCMC.h
+    src/rv/RadialVelocity.h
+
+    # sed
+    src/sed/ExtractSED.h
+    src/sed/FilterWavelength.h
+    src/sed/SedFitEnvironment.h
+
+    # spectra
+    src/spectra/Spectrum.h
+    src/spectra/SpectrumCoadder.h
+    src/spectra/SpectrumFetchService.h
+    src/spectra/SpectrumReader.h
+
+    # spectra/fetch
+    src/spectra/fetch/ApogeeArchiveClient.h
+    src/spectra/fetch/EsoArchiveClient.h
+    src/spectra/fetch/ExposureEpoch.h
+    src/spectra/fetch/EsoObsCoreIndex.h
+    src/spectra/fetch/LamostArchiveClient.h
+    src/spectra/fetch/MastArchiveClient.h
+    src/spectra/fetch/SdssOpticalArchiveClient.h
+    src/spectra/fetch/SpectrumArchiveClient.h
+    src/spectra/fetch/SpectrumArchiveRegistry.h
+    src/spectra/fetch/SpectrumArchiveTypes.h
+    src/spectra/fetch/SpectrumArmJoin.h
+    src/spectra/fetch/SpectrumFrame.h
+    src/spectra/fetch/TapHelpers.h
+    src/spectra/fetch/VoTableReader.h
+    src/spectra/fetch/WavelengthConvert.h
+
+    # spectra
+    src/spectra/matchSpectraToInstrument.h
 )
 
-# Create executable
+set(ASTRA_UI_SOURCES
+
+    # app/ui
+    src/app/ui/ApplicationController.cpp
+    src/app/ui/BackgroundTaskManager.cpp
+    src/app/ui/ColumnConfigDialog.cpp
+    src/app/ui/EditProjectDialog.cpp
+    src/app/ui/ExportTableDialog.cpp
+    src/app/ui/FirstRunDialog.cpp
+    src/app/ui/InstrumentConfigView.cpp
+    src/app/ui/LcquerySetupDialog.cpp
+    src/app/ui/MainWindow.cpp
+    src/app/ui/NewProjectDialog.cpp
+    src/app/ui/PlotPresetStore.cpp
+    src/app/ui/ProjectPlotDialog.cpp
+    src/app/ui/ProjectSelectionView.cpp
+    src/app/ui/ProjectView.cpp
+    src/app/ui/SettingsDialog.cpp
+    src/app/ui/StarDetailView.cpp
+    src/app/ui/StarFilterWidget.cpp
+    src/app/ui/ThemeManager.cpp
+    src/app/ui/UiIcons.cpp
+    src/app/ui/UiStyle.cpp
+    src/app/ui/UpdateManager.cpp
+    src/app/ui/WhatsNewDialog.cpp
+    src/app/ui/WindowSizing.cpp
+
+    # app/ui/panels
+    src/app/ui/panels/DetailPanel.cpp
+    src/app/ui/panels/DetailPanelFactory.cpp
+    src/app/ui/panels/PanelUtils.cpp
+    src/app/ui/panels/SummaryPanel.cpp
+
+    # catalog/ui
+    src/catalog/ui/AddStarDialog.cpp
+    src/catalog/ui/CMDDialog.cpp
+    src/catalog/ui/ReidentifyStarDialog.cpp
+
+    # fitting/ui
+    src/fitting/ui/FitComponentsWidget.cpp
+    src/fitting/ui/FitPreviewOverlay.cpp
+    src/fitting/ui/FitProgressDialog.cpp
+    src/fitting/ui/FitSetupWidget.cpp
+    src/fitting/ui/InteractiveIsisDialog.cpp
+    src/fitting/ui/IsisMacroPanel.cpp
+    src/fitting/ui/SpectraFitDialog.cpp
+
+    # importwizard
+    src/importwizard/GeneralImportPage.cpp
+    src/importwizard/ImportStagingArea.cpp
+    src/importwizard/LightcurveImportPage.cpp
+    src/importwizard/RadialVelocityImportPage.cpp
+    src/importwizard/SEDImportPage.cpp
+    src/importwizard/SpectraImportPage.cpp
+    src/importwizard/SpectralFitImportPage.cpp
+    src/importwizard/StarImportWizard.cpp
+
+    # io/ui
+    src/io/ui/StarShare.cpp
+
+    # kinematics/ui
+    src/kinematics/ui/GalacticOrbitDialog.cpp
+
+    # lightcurve/ui
+    src/lightcurve/ui/ImportLightcurve.cpp
+    src/lightcurve/ui/LCFitDialog.cpp
+    src/lightcurve/ui/LCModelPreview.cpp
+    src/lightcurve/ui/LCPanel.cpp
+    src/lightcurve/ui/LightcurveCredentialPrompts.cpp
+    src/lightcurve/ui/LightcurveFetchDialog.cpp
+    src/lightcurve/ui/LightcurveFetchSessionsDialog.cpp
+
+    # massfit/ui
+    src/massfit/ui/MassFitManagerDialog.cpp
+    src/massfit/ui/MassFitPlanDialog.cpp
+    src/massfit/ui/MassFitRuleEditor.cpp
+
+    # observing/ui
+    src/observing/ui/CoastlineData.cpp
+    src/observing/ui/ObservabilityDialog.cpp
+
+    # remote/ui
+    src/remote/ui/AnsiTerminalWidget.cpp
+    src/remote/ui/AskPass.cpp
+    src/remote/ui/RemoteFitsDialog.cpp
+    src/remote/ui/RemoteHostsSettingsPage.cpp
+    src/remote/ui/RemoteSelfTest.cpp
+    src/remote/ui/TerminalView.cpp
+
+    # rv/ui
+    src/rv/ui/PeriodogramPanel.cpp
+    src/rv/ui/RVAddFitDialog.cpp
+    src/rv/ui/RVAddPointDialog.cpp
+    src/rv/ui/RVDetectabilityDialog.cpp
+    src/rv/ui/RVImportPointsDialog.cpp
+    src/rv/ui/RVInspectorDialog.cpp
+    src/rv/ui/RVMCMCResultsDialog.cpp
+    src/rv/ui/RVPanel.cpp
+
+    # sed/ui
+    src/sed/ui/SEDFitDialog.cpp
+
+    # spectra/ui
+    src/spectra/ui/AddSpectraDialog.cpp
+    src/spectra/ui/ArchiveFetchWidget.cpp
+    src/spectra/ui/CoAddWidget.cpp
+    src/spectra/ui/SpectraPanel.cpp
+    src/spectra/ui/SpectrumFetchSessionsDialog.cpp
+
+    # ui/widgets
+    src/ui/widgets/CheckBoxDragger.cpp
+    src/ui/widgets/CheckStateDragger.cpp
+    src/ui/widgets/CopyToast.cpp
+    src/ui/widgets/ElidedLabel.cpp
+    src/ui/widgets/FlowLayout.cpp
+    src/ui/widgets/GridSelectorWidget.cpp
+    src/ui/widgets/PlotKeyNavigator.cpp
+    src/ui/widgets/QuantityDelegate.cpp
+    src/ui/widgets/QuantityLabel.cpp
+    src/ui/widgets/QuantityRenderer.cpp
+    src/ui/widgets/ResponsiveGridLayout.cpp
+    src/ui/widgets/ShimmerWidget.cpp
+    src/ui/widgets/SquarePlotFrame.cpp
+    src/ui/widgets/WheelGuard.cpp
+    src/ui/widgets/WidgetFactory.cpp
+)
+
+set(ASTRA_UI_HEADERS
+
+    # app/ui
+    src/app/ui/ApplicationController.h
+    src/app/ui/BackgroundTaskManager.h
+    src/app/ui/ColumnConfigDialog.h
+    src/app/ui/EditProjectDialog.h
+    src/app/ui/ExportTableDialog.h
+    src/app/ui/FirstRunDialog.h
+    src/app/ui/InstrumentConfigView.h
+    src/app/ui/LcquerySetupDialog.h
+    src/app/ui/MainWindow.h
+    src/app/ui/NewProjectDialog.h
+    src/app/ui/PlotPresetStore.h
+    src/app/ui/ProjectPlotDialog.h
+    src/app/ui/ProjectSelectionView.h
+    src/app/ui/ProjectView.h
+    src/app/ui/SettingsDialog.h
+    src/app/ui/StarDetailView.h
+    src/app/ui/StarFilterWidget.h
+    src/app/ui/ThemeManager.h
+    src/app/ui/UiIcons.h
+    src/app/ui/UiStyle.h
+    src/app/ui/UpdateManager.h
+    src/app/ui/WhatsNewDialog.h
+    src/app/ui/WindowSizing.h
+
+    # app/ui/panels
+    src/app/ui/panels/DetailPanel.h
+    src/app/ui/panels/DetailPanelFactory.h
+    src/app/ui/panels/PanelUtils.h
+    src/app/ui/panels/SummaryPanel.h
+
+    # catalog/ui
+    src/catalog/ui/AddStarDialog.h
+    src/catalog/ui/CMDDialog.h
+    src/catalog/ui/ReidentifyStarDialog.h
+
+    # fitting/ui
+    src/fitting/ui/FitComponentsWidget.h
+    src/fitting/ui/FitPreviewOverlay.h
+    src/fitting/ui/FitProgressDialog.h
+    src/fitting/ui/FitSetupWidget.h
+    src/fitting/ui/InteractiveIsisDialog.h
+    src/fitting/ui/IsisMacroPanel.h
+    src/fitting/ui/SpectraFitDialog.h
+
+    # importwizard
+    src/importwizard/GeneralImportPage.h
+    src/importwizard/ImportStagingArea.h
+    src/importwizard/LightcurveImportPage.h
+    src/importwizard/RadialVelocityImportPage.h
+    src/importwizard/SEDImportPage.h
+    src/importwizard/SpectraImportPage.h
+    src/importwizard/SpectralFitImportPage.h
+    src/importwizard/StarImportWizard.h
+
+    # io/ui
+    src/io/ui/StarShare.h
+
+    # kinematics/ui
+    src/kinematics/ui/GalacticOrbitDialog.h
+
+    # lightcurve/ui
+    src/lightcurve/ui/ImportLightcurve.h
+    src/lightcurve/ui/LCFitDialog.h
+    src/lightcurve/ui/LCModelPreview.h
+    src/lightcurve/ui/LCPanel.h
+    src/lightcurve/ui/LightcurveCredentialPrompts.h
+    src/lightcurve/ui/LightcurveFetchDialog.h
+    src/lightcurve/ui/LightcurveFetchSessionsDialog.h
+
+    # massfit/ui
+    src/massfit/ui/MassFitManagerDialog.h
+    src/massfit/ui/MassFitPlanDialog.h
+    src/massfit/ui/MassFitRuleEditor.h
+
+    # observing/ui
+    src/observing/ui/CoastlineData.h
+    src/observing/ui/ObservabilityDialog.h
+
+    # remote/ui
+    src/remote/ui/AnsiTerminalWidget.h
+    src/remote/ui/AskPass.h
+    src/remote/ui/RemoteFitsDialog.h
+    src/remote/ui/RemoteHostsSettingsPage.h
+    src/remote/ui/RemoteSelfTest.h
+    src/remote/ui/TerminalView.h
+
+    # rv/ui
+    src/rv/ui/PeriodogramPanel.h
+    src/rv/ui/RVAddFitDialog.h
+    src/rv/ui/RVAddPointDialog.h
+    src/rv/ui/RVDetectabilityDialog.h
+    src/rv/ui/RVImportPointsDialog.h
+    src/rv/ui/RVInspectorDialog.h
+    src/rv/ui/RVMCMCResultsDialog.h
+    src/rv/ui/RVPanel.h
+
+    # sed/ui
+    src/sed/ui/SEDFitDialog.h
+
+    # spectra/ui
+    src/spectra/ui/AddSpectraDialog.h
+    src/spectra/ui/ArchiveFetchWidget.h
+    src/spectra/ui/CoAddWidget.h
+    src/spectra/ui/SpectraPanel.h
+    src/spectra/ui/SpectrumFetchSessionsDialog.h
+
+    # ui/widgets
+    src/ui/widgets/BooleanColumnDelegate.h
+    src/ui/widgets/CheckBoxDragger.h
+    src/ui/widgets/CheckStateDragger.h
+    src/ui/widgets/CopyToast.h
+    src/ui/widgets/ElidedLabel.h
+    src/ui/widgets/FlowLayout.h
+    src/ui/widgets/GridSelectorWidget.h
+    src/ui/widgets/PlotKeyNavigator.h
+    src/ui/widgets/PreciseDoubleSpinBox.h
+    src/ui/widgets/QuantityDelegate.h
+    src/ui/widgets/QuantityLabel.h
+    src/ui/widgets/QuantityRenderer.h
+    src/ui/widgets/ResponsiveGridLayout.h
+    src/ui/widgets/ShimmerWidget.h
+    src/ui/widgets/SquarePlotFrame.h
+    src/ui/widgets/WheelGuard.h
+    src/ui/widgets/WidgetFactory.h
+)
+
+# ── astra_core: every Core-only translation unit ─────────────────────────────
+# The application and all test binaries link this, so a test never has to
+# re-list the sources it needs.  Third-party dependencies are attached here
+# once (PUBLIC) and inherited by everything downstream.
+add_library(astra_core STATIC
+    ${ASTRA_CORE_SOURCES}
+    ${ASTRA_CORE_HEADERS}
+)
+target_include_directories(astra_core PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+    ${CMAKE_CURRENT_BINARY_DIR}/generated
+    ${ASTRA_GAEL_SOURCE_DIR}/include
+)
+target_link_libraries(astra_core PUBLIC
+    Qt6::Core
+    Qt6::Sql
+    Qt6::Network
+    Qt6::Concurrent
+    GAEL::core
+)
+set_target_properties(astra_core PROPERTIES AUTOMOC ON)
+
+# ── Create executable: main + everything under a ui/ folder ──────────────────
 qt_add_executable(ASTRA
-    ${SOURCES}
-    ${HEADERS}
+    src/main.cpp
+    ${ASTRA_UI_SOURCES}
+    ${ASTRA_UI_HEADERS}
     resources/resources.qrc
 )
+target_link_libraries(ASTRA PRIVATE astra_core)
 
 # ── Git-derived version header (regenerated every build) ──────────────────────
 # ASTRA_VERSION_OVERRIDE stamps a fixed version string (release pipelines only);
@@ -762,15 +883,16 @@ add_custom_target(astra_version ALL
     COMMENT "Resolving ASTRA version from git"
     VERBATIM)
 add_dependencies(ASTRA astra_version)
-target_include_directories(ASTRA PRIVATE ${CMAKE_CURRENT_BINARY_DIR}/generated)
+add_dependencies(astra_core astra_version)
 
-target_include_directories(ASTRA PRIVATE
-    ${ASTRA_GAEL_SOURCE_DIR}/include
-)
 
-# Pass to source as a preprocessor define
-target_compile_definitions(ASTRA PRIVATE
-    ASTRA_DATA_DIR="${ASTRA_DATA_DIR}"
+# Pass to source as preprocessor defines.
+#
+# ASTRA_DATA_DIR stays PRIVATE on every target: AppPaths::initialize() is
+# inline, so each translation unit bakes in the value it was compiled with,
+# and test_eso_obscore_index deliberately overrides it with its own directory.
+# Exporting it PUBLIC would give that test two conflicting definitions.
+set(ASTRA_COMMON_DEFINES
     ASTRA_LCQUERY_SCRIPT="${LCQUERY_SCRIPT}"
     ASTRA_LCQUERY_REQS="${LCQUERY_REQS}"
     ASTRA_HAVE_LCQUERY=$<BOOL:${ASTRA_HAVE_LCQUERY}>
@@ -786,6 +908,12 @@ target_compile_definitions(ASTRA PRIVATE
     ASTRA_SEDFIT_REFDATA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/resources/sedfit/refdata"
 )
 
+target_compile_definitions(astra_core
+    PUBLIC  ${ASTRA_COMMON_DEFINES}
+    PRIVATE ASTRA_DATA_DIR="${ASTRA_DATA_DIR}"
+)
+target_compile_definitions(ASTRA PRIVATE ASTRA_DATA_DIR="${ASTRA_DATA_DIR}")
+
 # Profiling option
 option(ENABLE_PROFILING "Build with profiling support (debug symbols + frame pointers)" OFF)
 
@@ -795,27 +923,20 @@ if(ENABLE_PROFILING)
     set(PROFILING_FLAGS -O2 -g -fno-omit-frame-pointer)
 
     target_compile_options(ASTRA       PRIVATE ${PROFILING_FLAGS})
+    target_compile_options(astra_core  PRIVATE ${PROFILING_FLAGS})
     target_compile_options(qcustomplot PRIVATE ${PROFILING_FLAGS})
 
     target_link_options(ASTRA PRIVATE -rdynamic)
 endif()
 
-# Set up include directories
-target_include_directories(ASTRA PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/src
-)
 
 # Link libraries
+# Qt6::Core/Sql/Network/Concurrent and GAEL::core arrive through astra_core.
 target_link_libraries(ASTRA PRIVATE
-    Qt6::Core
     Qt6::Widgets
-    Qt6::Sql
-    Qt6::Network
-    Qt6::Concurrent
     Qt6::PrintSupport
     Qt6::Svg
     qcustomplot
-    GAEL::core
 )
 
 # ── FFTW3 ──────────────────────────────────────────────────────────────────
@@ -826,18 +947,18 @@ if(PkgConfig_FOUND)
     pkg_check_modules(FFTW3 fftw3)
 endif()
 if(FFTW3_FOUND)
-    target_include_directories(ASTRA PRIVATE ${FFTW3_INCLUDE_DIRS})
-    target_link_libraries(ASTRA PRIVATE ${FFTW3_LIBRARIES})
-    target_link_directories(ASTRA PRIVATE ${FFTW3_LIBRARY_DIRS})
+    target_include_directories(astra_core PUBLIC ${FFTW3_INCLUDE_DIRS})
+    target_link_libraries(astra_core PUBLIC ${FFTW3_LIBRARIES})
+    target_link_directories(astra_core PUBLIC ${FFTW3_LIBRARY_DIRS})
 else()
     find_path(FFTW3_INCLUDE_DIR fftw3.h)
     find_library(FFTW3_LIBRARY NAMES fftw3 libfftw3)
     if(NOT FFTW3_INCLUDE_DIR OR NOT FFTW3_LIBRARY)
-        message(FATAL_ERROR "FFTW3 not found - required by src/fitting/Periodogram.cpp")
+        message(FATAL_ERROR "FFTW3 not found - required by src/rv/Periodogram.cpp")
     endif()
     message(STATUS "Found FFTW3: ${FFTW3_LIBRARY}")
-    target_include_directories(ASTRA PRIVATE ${FFTW3_INCLUDE_DIR})
-    target_link_libraries(ASTRA PRIVATE ${FFTW3_LIBRARY})
+    target_include_directories(astra_core PUBLIC ${FFTW3_INCLUDE_DIR})
+    target_link_libraries(astra_core PUBLIC ${FFTW3_LIBRARY})
 endif()
 
 # ── OpenMP for the RV-MCMC sampler ─────────────────────────────────────────
@@ -851,23 +972,24 @@ if(OpenMP_CXX_FOUND)
     # AppleClang reports "-Xclang -fopenmp" here, which has to reach the driver
     # as two arguments, not one.
     separate_arguments(ASTRA_OPENMP_FLAGS NATIVE_COMMAND "${OpenMP_CXX_FLAGS}")
-    set_source_files_properties(src/fitting/RVMCMC.cpp PROPERTIES
+    set_source_files_properties(src/rv/RVMCMC.cpp PROPERTIES
         COMPILE_OPTIONS "${ASTRA_OPENMP_FLAGS}")
-    target_include_directories(ASTRA PRIVATE ${OpenMP_CXX_INCLUDE_DIRS})
-    target_link_libraries(ASTRA PRIVATE ${OpenMP_CXX_LIBRARIES})
+    target_include_directories(astra_core PUBLIC ${OpenMP_CXX_INCLUDE_DIRS})
+    target_link_libraries(astra_core PUBLIC ${OpenMP_CXX_LIBRARIES})
 else()
     message(WARNING "OpenMP not found - the RV-MCMC sampler will be single-threaded")
 endif()
 
 # Add CCfits support if available
 if(CCFITS_FOUND)
-    target_compile_definitions(ASTRA PRIVATE HAVE_CCFITS)
-    target_include_directories(ASTRA PRIVATE ${CCFITS_INCLUDE_DIRS})
-    target_link_libraries(ASTRA PRIVATE ${CCFITS_LIBRARIES})
+    # PUBLIC: HAVE_CCFITS is consumed by UI translation units too.
+    target_compile_definitions(astra_core PUBLIC HAVE_CCFITS)
+    target_include_directories(astra_core PUBLIC ${CCFITS_INCLUDE_DIRS})
+    target_link_libraries(astra_core PUBLIC ${CCFITS_LIBRARIES})
     
     # On some systems, we might need to add additional math libraries
     if(UNIX AND NOT APPLE)
-        target_link_libraries(ASTRA PRIVATE m)
+        target_link_libraries(astra_core PUBLIC m)
     endif()
 endif()
 
@@ -1157,23 +1279,6 @@ option(BUILD_TESTING "Build test suite" ON)
 if(BUILD_TESTING)
     enable_testing()
 
-    # ── Core library (model sources needed by tests, without GUI) ────────
-    # Avoids linking the entire application + all Qt Widgets dependencies.
-    add_library(astra_core STATIC
-        src/models/BarycentricCorrection.cpp
-        src/models/Instrument.cpp
-        src/models/Time.cpp
-    )
-    target_include_directories(astra_core PUBLIC
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_link_libraries(astra_core PUBLIC
-        Qt6::Core
-    )
-    set_target_properties(astra_core PROPERTIES
-        AUTOMOC ON
-    )
-
     # ── Reference data generation ────────────────────────────────────────
     find_package(Python3 COMPONENTS Interpreter)
 
@@ -1197,535 +1302,113 @@ if(BUILD_TESTING)
                         "Run manually: python3 tests/generate_reference_bjd.py")
     endif()
 
-    # ── Barycentric correction test ──────────────────────────────────────
-    add_executable(test_barycentric
-        tests/test_barycentric.cpp
-    )
-    target_link_libraries(test_barycentric PRIVATE
-        astra_core
-        Qt6::Core
-    )
-    # Tell the test where to find the JSON at compile time
-    target_compile_definitions(test_barycentric PRIVATE
-        REFERENCE_BJD_PATH="${REFERENCE_JSON}"
-    )
+    # ── Test helper ──────────────────────────────────────────────────────
+    # Every test binary links astra_core, so a test lists only its own source.
+    #
+    #   astra_add_test(<ctest name> [TARGET t] [SOURCES ...] [LABELS ...]
+    #                  [TIMEOUT s] [DEFINES ...] [ARGS ...] [DATA_DIR dir])
+    #
+    # TARGET defaults to test_<name> and SOURCES to tests/<target>.cpp.
+    # ASTRA_DATA_DIR is set per test so a test can point at its own sandbox.
+    function(astra_add_test NAME)
+        cmake_parse_arguments(T "" "TARGET;TIMEOUT;DATA_DIR"
+                                 "SOURCES;LABELS;DEFINES;LIBS;ARGS" ${ARGN})
+        if(NOT T_TARGET)
+            set(T_TARGET test_${NAME})
+        endif()
+        if(NOT T_SOURCES)
+            set(T_SOURCES tests/${T_TARGET}.cpp)
+        endif()
+        if(NOT T_TIMEOUT)
+            set(T_TIMEOUT 30)
+        endif()
+        if(NOT T_DATA_DIR)
+            set(T_DATA_DIR "${ASTRA_DATA_DIR}")
+        endif()
+        add_executable(${T_TARGET} ${T_SOURCES})
+        target_link_libraries(${T_TARGET} PRIVATE astra_core ${T_LIBS})
+        target_compile_definitions(${T_TARGET} PRIVATE
+            ASTRA_DATA_DIR="${T_DATA_DIR}"
+            ${T_DEFINES}
+        )
+        add_test(
+            NAME    ${NAME}
+            COMMAND ${T_TARGET} ${T_ARGS}
+            WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
+        )
+        set_tests_properties(${NAME} PROPERTIES
+            LABELS "${T_LABELS}"
+            TIMEOUT ${T_TIMEOUT}
+        )
+        set_property(GLOBAL APPEND PROPERTY ASTRA_TEST_TARGETS ${T_TARGET})
+    endfunction()
 
-    # Ensure reference data is generated before the test runs
+    # ── Offline tests ────────────────────────────────────────────────────
+    astra_add_test(quantity_format  TARGET test_quantityformat LABELS utils formatting)
+    astra_add_test(star_search      LABELS utils search)
+    astra_add_test(star_matching    LABELS utils import)
+    astra_add_test(wavelength_convert LABELS utils spectrafetch)
+    astra_add_test(spectrum_frame   LABELS utils spectrafetch TIMEOUT 60)
+    astra_add_test(arm_join         LABELS utils spectrafetch)
+    astra_add_test(votable_reader   LABELS utils spectrafetch)
+    astra_add_test(massfit_plan     LABELS models massfit)
+    astra_add_test(phase_lock       LABELS utils lightcurve rv)
+    astra_add_test(instrument_match LABELS utils
+                   DEFINES ASTRA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}")
+    astra_add_test(rv_mcmc_sampler  TARGET test_rvmcmc LABELS fitting statistics TIMEOUT 300)
+
+    # Skips itself unless the ASTRA_TEST_* fixture paths point at real FITS files.
+    astra_add_test(spectrafetch_parsers LABELS utils spectrafetch TIMEOUT 120)
+
+    # ── Live-archive tests ───────────────────────────────────────────────
+    # These hit the real archives; they self-skip unless ASTRA_TEST_*_LIVE is set.
+    # Exclude them with `ctest -LE network`.
+    astra_add_test(eso_bulk_discovery  LABELS utils spectrafetch network TIMEOUT 900)
+    astra_add_test(mast_bulk_discovery LABELS utils spectrafetch network TIMEOUT 900)
+    astra_add_test(sdss_discovery      LABELS utils spectrafetch network TIMEOUT 900)
+    astra_add_test(eso_obscore_index   LABELS utils spectrafetch network TIMEOUT 1800
+                   DATA_DIR "${CMAKE_CURRENT_BINARY_DIR}/eso_index_test")
+
+    # ── Barycentric correction, checked against astropy ──────────────────
+    astra_add_test(barycentric_correction TARGET test_barycentric
+                   LABELS models astronomy
+                   ARGS "${REFERENCE_JSON}"
+                   DEFINES REFERENCE_BJD_PATH="${REFERENCE_JSON}")
     if(TARGET generate_reference)
         add_dependencies(test_barycentric generate_reference)
     endif()
 
-    # ── RV-MCMC sampler test ─────────────────────────────────────────────
-    # Compiles the sampler (plus the periodogram it seeds from and the logger
-    # it reports through) straight into the test binary - no GUI, no database.
-    add_executable(test_rvmcmc
-        tests/test_rvmcmc.cpp
-        src/fitting/RVMCMC.cpp
-        src/fitting/Periodogram.cpp
-        src/utils/Logger.cpp
-    )
-    set_target_properties(test_rvmcmc PROPERTIES AUTOMOC ON)
-    target_include_directories(test_rvmcmc PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_compile_definitions(test_rvmcmc PRIVATE
-        ASTRA_DATA_DIR="${ASTRA_DATA_DIR}"
-    )
-    target_link_libraries(test_rvmcmc PRIVATE Qt6::Core)
-    # Periodogram.cpp uses Eigen; the app gets it transitively through GAEL.
-    find_package(Eigen3 QUIET NO_MODULE)
-    if(TARGET Eigen3::Eigen)
-        target_link_libraries(test_rvmcmc PRIVATE Eigen3::Eigen)
-    elseif(TARGET GAEL::core)
-        target_link_libraries(test_rvmcmc PRIVATE GAEL::core)
-    endif()
-    # EIGEN_USE_BLAS/LAPACKE are set project-wide, so Eigen calls out to them.
-    find_package(BLAS QUIET)
-    if(BLAS_FOUND)
-        target_link_libraries(test_rvmcmc PRIVATE ${BLAS_LIBRARIES})
-    endif()
-    find_package(LAPACK QUIET)
-    if(LAPACK_FOUND)
-        target_link_libraries(test_rvmcmc PRIVATE ${LAPACK_LIBRARIES})
-    endif()
-    if(OpenMP_CXX_FOUND)
-        target_include_directories(test_rvmcmc PRIVATE ${OpenMP_CXX_INCLUDE_DIRS})
-        target_link_libraries(test_rvmcmc PRIVATE ${OpenMP_CXX_LIBRARIES})
-    endif()
-    if(FFTW3_FOUND)
-        target_include_directories(test_rvmcmc PRIVATE ${FFTW3_INCLUDE_DIRS})
-        target_link_directories(test_rvmcmc PRIVATE ${FFTW3_LIBRARY_DIRS})
-        target_link_libraries(test_rvmcmc PRIVATE ${FFTW3_LIBRARIES})
-    else()
-        target_include_directories(test_rvmcmc PRIVATE ${FFTW3_INCLUDE_DIR})
-        target_link_libraries(test_rvmcmc PRIVATE ${FFTW3_LIBRARY})
-    endif()
+    # ── doctest unit tests ───────────────────────────────────────────────
+    # One binary for all new unit tests: they all link astra_core (plus GAEL and
+    # Qt through it), so linking dominates and a binary per domain would cost
+    # more than it buys.  Grouping is by TEST_SUITE instead:
+    #     ./astra_tests -ts=core        run one domain
+    #     ./astra_tests -ltc            list the test cases
+    add_library(doctest INTERFACE)
+    target_include_directories(doctest INTERFACE
+        ${CMAKE_CURRENT_SOURCE_DIR}/external/doctest)
 
-    # ── Copy-format test ─────────────────────────────────────────────────
-    add_executable(test_quantityformat
-        tests/test_quantityformat.cpp
-        src/utils/QuantityFormat.cpp
-    )
-    target_include_directories(test_quantityformat PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_link_libraries(test_quantityformat PRIVATE Qt6::Core)
-
-    add_test(
-        NAME    quantity_format
-        COMMAND test_quantityformat
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    )
-    set_tests_properties(quantity_format PROPERTIES
-        LABELS "utils;formatting"
-        TIMEOUT 30
-    )
-
-    # ── Star search box query parsing ────────────────────────────────────
-    add_executable(test_star_search
-        tests/test_star_search.cpp
-    )
-    target_include_directories(test_star_search PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_link_libraries(test_star_search PRIVATE Qt6::Core)
-
-    add_test(
-        NAME    star_search
-        COMMAND test_star_search
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    )
-    set_tests_properties(star_search PROPERTIES
-        LABELS "utils;search"
-        TIMEOUT 30
-    )
-
-    # ── Import star-matching helpers ─────────────────────────────────────
-    add_executable(test_star_matching
-        tests/test_star_matching.cpp
-    )
-    target_include_directories(test_star_matching PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_link_libraries(test_star_matching PRIVATE Qt6::Core)
-
-    add_test(
-        NAME    star_matching
-        COMMAND test_star_matching
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    )
-    set_tests_properties(star_matching PROPERTIES
-        LABELS "utils;import"
-        TIMEOUT 30
-    )
-
-    # ── Spectrum-fetch helper tests ──────────────────────────────────────
-    add_executable(test_wavelength_convert
-        tests/test_wavelength_convert.cpp
-        src/utils/spectrafetch/WavelengthConvert.cpp
-    )
-    target_include_directories(test_wavelength_convert PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    add_test(
-        NAME    wavelength_convert
-        COMMAND test_wavelength_convert
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    )
-    set_tests_properties(wavelength_convert PROPERTIES
-        LABELS "utils;spectrafetch"
-        TIMEOUT 30
-    )
-
-    # Spectral reference frame: what the FITS headers say, and the shift.
-    add_executable(test_spectrum_frame
-        tests/test_spectrum_frame.cpp
-        src/utils/spectrafetch/SpectrumFrame.cpp
-        src/models/BarycentricCorrection.cpp
-    )
-    target_include_directories(test_spectrum_frame PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    if(CCFITS_FOUND)
-        target_include_directories(test_spectrum_frame PRIVATE
-            ${CCFITS_INCLUDE_DIRS})
-        target_link_libraries(test_spectrum_frame PRIVATE
-            ${CCFITS_LIBRARIES})
-    endif()
-    target_link_libraries(test_spectrum_frame PRIVATE Qt6::Core)
-    add_test(
-        NAME    spectrum_frame
-        COMMAND test_spectrum_frame
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    )
-    set_tests_properties(spectrum_frame PROPERTIES
-        LABELS "utils;spectrafetch"
-        TIMEOUT 60
-    )
-
-    # Arm joining: grouping one exposure's products and splicing them.
-    add_executable(test_arm_join
-        tests/test_arm_join.cpp
-        src/utils/spectrafetch/SpectrumArmJoin.cpp
-    )
-    target_include_directories(test_arm_join PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_link_libraries(test_arm_join PRIVATE Qt6::Core)
-    add_test(
-        NAME    arm_join
-        COMMAND test_arm_join
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    )
-    set_tests_properties(arm_join PROPERTIES
-        LABELS "utils;spectrafetch"
-        TIMEOUT 30
-    )
-
-    # Mass fitting plan: serialisation, rule evaluation, tree walking and
-    # validation. Model-only, so no database and no GUI.
-    add_executable(test_massfit_plan
-        tests/test_massfit_plan.cpp
-        src/models/MassFitPlan.cpp
-        src/fitting/FitTypesJson.cpp
-    )
-    target_include_directories(test_massfit_plan PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_link_libraries(test_massfit_plan PRIVATE Qt6::Core)
-    add_test(
-        NAME    massfit_plan
-        COMMAND test_massfit_plan
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    )
-    set_tests_properties(massfit_plan PROPERTIES
-        LABELS "models;massfit"
-        TIMEOUT 30
-    )
-
-    # Phase lock between an RV orbit and a light-curve ephemeris: the half-cycle
-    # convention offset (lcurve's t0 is star 1's descending node, ASTRA's phi = 0
-    # its ascending one) and the morphology-blind test that decides which of the
-    # two conjunctions a lock lands on. Pure maths, so no GUI and no database.
-    add_executable(test_phase_lock
-        tests/test_phase_lock.cpp
-        src/utils/LCFitPhysics.cpp
-        src/utils/ClaretTables.cpp
-    )
-    target_include_directories(test_phase_lock PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_link_libraries(test_phase_lock PRIVATE Qt6::Core)
-    add_test(
-        NAME    phase_lock
-        COMMAND test_phase_lock
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    )
-    set_tests_properties(phase_lock PROPERTIES
-        LABELS "utils;lightcurve;rv"
-        TIMEOUT 30
-    )
-
-    add_executable(test_votable_reader
-        tests/test_votable_reader.cpp
-        src/utils/spectrafetch/VoTableReader.cpp
-    )
-    target_include_directories(test_votable_reader PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_link_libraries(test_votable_reader PRIVATE Qt6::Core)
-    add_test(
-        NAME    votable_reader
-        COMMAND test_votable_reader
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    )
-    set_tests_properties(votable_reader PROPERTIES
-        LABELS "utils;spectrafetch"
-        TIMEOUT 30
-    )
-
-    # Instrument shape-matcher regressions against the shipped defaults.
-    add_executable(test_instrument_match
-        tests/test_instrument_match.cpp
-        src/utils/matchSpectraToInstrument.cpp
-        src/models/Instrument.cpp
-        src/models/InstrumentMode.cpp
-        src/models/BarycentricCorrection.cpp
-    )
-    target_include_directories(test_instrument_match PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_compile_definitions(test_instrument_match PRIVATE
-        ASTRA_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
-    )
-    target_link_libraries(test_instrument_match PRIVATE Qt6::Core)
-    add_test(
-        NAME    instrument_match
-        COMMAND test_instrument_match
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    )
-    set_tests_properties(instrument_match PROPERTIES
-        LABELS "utils"
-        TIMEOUT 30
-    )
-
-    # Archive FITS parsers, run against real product files whose paths come
-    # from ASTRA_TEST_* environment variables (skips cleanly when unset -
-    # the files are too large to commit as fixtures).
-    add_executable(test_spectrafetch_parsers
-        tests/test_spectrafetch_parsers.cpp
-        src/utils/spectrafetch/SpectrumArchiveClient.cpp
-        src/utils/spectrafetch/SpectrumFrame.cpp
-        src/utils/spectrafetch/EsoArchiveClient.cpp
-        src/utils/spectrafetch/EsoObsCoreIndex.cpp
-        src/utils/spectrafetch/LamostArchiveClient.cpp
-        src/utils/spectrafetch/SdssOpticalArchiveClient.cpp
-        src/utils/spectrafetch/ApogeeArchiveClient.cpp
-        src/utils/spectrafetch/MastArchiveClient.cpp
-        src/utils/spectrafetch/TapHelpers.cpp
-        src/utils/spectrafetch/VoTableReader.cpp
-        src/utils/spectrafetch/WavelengthConvert.cpp
-        src/utils/CdsTapClient.cpp
-        src/utils/SpectrumReader.cpp
-        src/utils/DataStore.cpp
-        src/utils/Logger.cpp
-        src/models/Spectrum.cpp
-        src/models/Time.cpp
-        src/models/Instrument.cpp
-        src/models/InstrumentMode.cpp
-        src/models/BarycentricCorrection.cpp
-    )
-    target_include_directories(test_spectrafetch_parsers PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_compile_definitions(test_spectrafetch_parsers PRIVATE
-        ASTRA_DATA_DIR="${ASTRA_DATA_DIR}"
-    )
-    if(CCFITS_FOUND)
-        target_include_directories(test_spectrafetch_parsers PRIVATE
-            ${CCFITS_INCLUDE_DIRS})
-        target_link_libraries(test_spectrafetch_parsers PRIVATE
-            ${CCFITS_LIBRARIES})
-    endif()
-    target_link_libraries(test_spectrafetch_parsers PRIVATE
-        Qt6::Core Qt6::Network)
-    add_test(
-        NAME    spectrafetch_parsers
-        COMMAND test_spectrafetch_parsers
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    )
-    set_tests_properties(spectrafetch_parsers PROPERTIES
-        LABELS "utils;spectrafetch"
-        TIMEOUT 120
-    )
-
-    # Bulk ESO discovery against the live TAP service. Off unless
-    # ASTRA_TEST_ESO_LIVE=1 is set (see the file header); guards the
-    # project-sized query that the 120 s /sync budget used to kill.
-    add_executable(test_eso_bulk_discovery
-        tests/test_eso_bulk_discovery.cpp
-        src/utils/spectrafetch/SpectrumArchiveClient.cpp
-        src/utils/spectrafetch/SpectrumFrame.cpp
-        src/utils/spectrafetch/EsoArchiveClient.cpp
-        src/utils/spectrafetch/EsoObsCoreIndex.cpp
-        src/utils/spectrafetch/TapHelpers.cpp
-        src/utils/spectrafetch/VoTableReader.cpp
-        src/utils/CdsTapClient.cpp
-        src/utils/SpectrumReader.cpp
-        src/utils/DataStore.cpp
-        src/utils/Logger.cpp
-        src/models/Spectrum.cpp
-        src/models/Time.cpp
-        src/models/Instrument.cpp
-        src/models/InstrumentMode.cpp
-        src/models/BarycentricCorrection.cpp
-    )
-    target_include_directories(test_eso_bulk_discovery PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_compile_definitions(test_eso_bulk_discovery PRIVATE
-        ASTRA_DATA_DIR="${ASTRA_DATA_DIR}"
-    )
-    if(CCFITS_FOUND)
-        target_include_directories(test_eso_bulk_discovery PRIVATE
-            ${CCFITS_INCLUDE_DIRS})
-        target_link_libraries(test_eso_bulk_discovery PRIVATE
-            ${CCFITS_LIBRARIES})
-    endif()
-    target_link_libraries(test_eso_bulk_discovery PRIVATE
-        Qt6::Core Qt6::Network)
-    add_test(
-        NAME    eso_bulk_discovery
-        COMMAND test_eso_bulk_discovery
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    )
-    set_tests_properties(eso_bulk_discovery PROPERTIES
-        LABELS "utils;spectrafetch;network"
-        TIMEOUT 900
-    )
-
-    # Bulk MAST discovery against the live TAP service. Off unless
-    # ASTRA_TEST_MAST_LIVE=1 is set (see the file header); guards the cone
-    # query that the CAOM TAP answers with a 504 instead of a plan.
-    # Local ESO ObsCore mirror: build, cache round trip, band search against a
-    # brute-force scan, and the mirrored discovery path end to end. Live, so it
-    # skips unless ASTRA_TEST_ESO_LIVE=1 is set (see the file header). Gets its
-    # own ASTRA_DATA_DIR so a run never replaces the user's real mirror with a
-    # single-collection one.
-    add_executable(test_eso_obscore_index
-        tests/test_eso_obscore_index.cpp
-        src/utils/spectrafetch/SpectrumArchiveClient.cpp
-        src/utils/spectrafetch/SpectrumFrame.cpp
-        src/utils/spectrafetch/EsoArchiveClient.cpp
-        src/utils/spectrafetch/EsoObsCoreIndex.cpp
-        src/utils/spectrafetch/TapHelpers.cpp
-        src/utils/spectrafetch/VoTableReader.cpp
-        src/utils/CdsTapClient.cpp
-        src/utils/SpectrumReader.cpp
-        src/utils/DataStore.cpp
-        src/utils/Logger.cpp
-        src/models/Spectrum.cpp
-        src/models/Time.cpp
-        src/models/Instrument.cpp
-        src/models/InstrumentMode.cpp
-        src/models/BarycentricCorrection.cpp
-    )
-    target_include_directories(test_eso_obscore_index PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_compile_definitions(test_eso_obscore_index PRIVATE
-        ASTRA_DATA_DIR="${CMAKE_CURRENT_BINARY_DIR}/eso_index_test"
-    )
-    if(CCFITS_FOUND)
-        target_include_directories(test_eso_obscore_index PRIVATE
-            ${CCFITS_INCLUDE_DIRS})
-        target_link_libraries(test_eso_obscore_index PRIVATE
-            ${CCFITS_LIBRARIES})
-    endif()
-    target_link_libraries(test_eso_obscore_index PRIVATE
-        Qt6::Core Qt6::Network)
-    add_test(
-        NAME    eso_obscore_index
-        COMMAND test_eso_obscore_index
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    )
-    set_tests_properties(eso_obscore_index PROPERTIES
-        LABELS "utils;spectrafetch;network"
-        TIMEOUT 1800
-    )
-
-    add_executable(test_mast_bulk_discovery
-        tests/test_mast_bulk_discovery.cpp
-        src/utils/spectrafetch/SpectrumArchiveClient.cpp
-        src/utils/spectrafetch/SpectrumFrame.cpp
-        src/utils/spectrafetch/MastArchiveClient.cpp
-        src/utils/spectrafetch/TapHelpers.cpp
-        src/utils/spectrafetch/VoTableReader.cpp
-        src/utils/CdsTapClient.cpp
-        src/utils/SpectrumReader.cpp
-        src/utils/DataStore.cpp
-        src/utils/Logger.cpp
-        src/models/Spectrum.cpp
-        src/models/Time.cpp
-        src/models/Instrument.cpp
-        src/models/InstrumentMode.cpp
-        src/models/BarycentricCorrection.cpp
-    )
-    target_include_directories(test_mast_bulk_discovery PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_compile_definitions(test_mast_bulk_discovery PRIVATE
-        ASTRA_DATA_DIR="${ASTRA_DATA_DIR}"
-    )
-    if(CCFITS_FOUND)
-        target_include_directories(test_mast_bulk_discovery PRIVATE
-            ${CCFITS_INCLUDE_DIRS})
-        target_link_libraries(test_mast_bulk_discovery PRIVATE
-            ${CCFITS_LIBRARIES})
-    endif()
-    target_link_libraries(test_mast_bulk_discovery PRIVATE
-        Qt6::Core Qt6::Network)
-    add_test(
-        NAME    mast_bulk_discovery
-        COMMAND test_mast_bulk_discovery
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    )
-    set_tests_properties(mast_bulk_discovery PROPERTIES
-        LABELS "utils;spectrafetch;network"
-        TIMEOUT 900
-    )
-
-    # SDSS discovery, live against SkyServer. Guards the sciencePrimary bug:
-    # dbo.fGetNearbySpecObjEq returns one spectrum per position, so every
-    # repeat visit of a star used to vanish from discovery.
-    add_executable(test_sdss_discovery
-        tests/test_sdss_discovery.cpp
-        src/utils/spectrafetch/SpectrumArchiveClient.cpp
-        src/utils/spectrafetch/SpectrumFrame.cpp
-        src/utils/spectrafetch/SdssOpticalArchiveClient.cpp
-        src/utils/spectrafetch/TapHelpers.cpp
-        src/utils/spectrafetch/VoTableReader.cpp
-        src/utils/spectrafetch/WavelengthConvert.cpp
-        src/utils/CdsTapClient.cpp
-        src/utils/SpectrumReader.cpp
-        src/utils/DataStore.cpp
-        src/utils/Logger.cpp
-        src/models/Spectrum.cpp
-        src/models/Time.cpp
-        src/models/Instrument.cpp
-        src/models/InstrumentMode.cpp
-        src/models/BarycentricCorrection.cpp
-    )
-    target_include_directories(test_sdss_discovery PRIVATE
-        ${CMAKE_CURRENT_SOURCE_DIR}/src
-    )
-    target_compile_definitions(test_sdss_discovery PRIVATE
-        ASTRA_DATA_DIR="${ASTRA_DATA_DIR}"
-    )
-    if(CCFITS_FOUND)
-        target_include_directories(test_sdss_discovery PRIVATE
-            ${CCFITS_INCLUDE_DIRS})
-        target_link_libraries(test_sdss_discovery PRIVATE
-            ${CCFITS_LIBRARIES})
-    endif()
-    target_link_libraries(test_sdss_discovery PRIVATE
-        Qt6::Core Qt6::Network)
-    add_test(
-        NAME    sdss_discovery
-        COMMAND test_sdss_discovery
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    )
-    set_tests_properties(sdss_discovery PROPERTIES
-        LABELS "utils;spectrafetch;network"
-        TIMEOUT 900
-    )
-
-    add_test(
-        NAME    rv_mcmc_sampler
-        COMMAND test_rvmcmc
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    )
-    set_tests_properties(rv_mcmc_sampler PROPERTIES
-        LABELS "fitting;statistics"
+    astra_add_test(unit
+        TARGET  astra_tests
+        LABELS  unit doctest
         TIMEOUT 300
-    )
-
-    # Register with CTest
-    add_test(
-        NAME    barycentric_correction
-        COMMAND test_barycentric "${REFERENCE_JSON}"
-        WORKING_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}"
-    )
-    set_tests_properties(barycentric_correction PROPERTIES
-        LABELS "models;astronomy"
-        TIMEOUT 30
+        LIBS    doctest
+        DEFINES ASTRA_TEST_REFERENCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/reference"
+        SOURCES
+            tests/doctest_main.cpp
+            tests/unit/core/time.cpp
+            tests/unit/core/stats.cpp
+            tests/unit/spectra/exposure_epoch.cpp
+            tests/unit/rv/rvfit.cpp
+            tests/unit/db/delete_star.cpp
     )
 
     # ── Convenience target ───────────────────────────────────────────────
     # `cmake --build build --target check` builds and runs all tests
+    get_property(ASTRA_TEST_TARGETS GLOBAL PROPERTY ASTRA_TEST_TARGETS)
     add_custom_target(check
         COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure --test-dir "${CMAKE_CURRENT_BINARY_DIR}"
-        DEPENDS test_barycentric
+        DEPENDS ${ASTRA_TEST_TARGETS}
         COMMENT "Running all tests..."
     )
 endif()

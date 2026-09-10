@@ -1,6 +1,6 @@
 #include "remote/RemoteHostRegistry.h"
 
-#include "utils/AppSettings.h"
+#include "app/AppSettings.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -101,13 +101,6 @@ SshFileStreamChannel* RemoteHostRegistry::channel(const QString& hostId)
 {
     auto* t = transportsFor(hostId);
     return t ? t->chan.get() : nullptr;
-}
-
-SshConnection* RemoteHostRegistry::connectionByName(const QString& name)
-{
-    RemoteHost h;
-    if (!hostByName(name, &h)) return nullptr;
-    return connection(h.id);
 }
 
 SshFileStreamChannel* RemoteHostRegistry::channelByName(const QString& name)

@@ -1,8 +1,8 @@
-#include "SpectrumRepository.h"
-#include "DBAccess.h"
-#include "SqlValue.h"
-#include "models/Spectrum.h"
-#include "utils/Logger.h"
+#include "db/SpectrumRepository.h"
+#include "db/DBAccess.h"
+#include "db/SqlValue.h"
+#include "spectra/Spectrum.h"
+#include "app/Logger.h"
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QFile>
@@ -12,7 +12,7 @@
 #include <QHash>
 #include <QStringList>
 #include <limits>
-#include "utils/DataStore.h"
+#include "app/DataStore.h"
 
 SpectrumRepository::SpectrumRepository(DBAccess& db) : _db(db) {}
 

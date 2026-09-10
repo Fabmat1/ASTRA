@@ -4,8 +4,8 @@
 #include <memory>
 #include <vector>
 #include <QString>
-#include "models/Instrument.h"
-#include "models/InstrumentMode.h"
+#include "core/Instrument.h"
+#include "core/InstrumentMode.h"
 
 class DBAccess;
 
@@ -39,10 +39,6 @@ public:
     void uncacheInstrument(const QString& id);
     QString instrumentUUID(const QString& name);
     
-    static InstrumentModeMatch matchSpectralProperties(
-        const std::vector<std::shared_ptr<Instrument>>& instruments,
-        const QString& instrumentHint,
-        double wlMin, double wlMax, int numPoints);
 
 private:
     DBAccess& _db;

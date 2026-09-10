@@ -1,4 +1,4 @@
-#include "GaelBackend.h"
+#include "fitting/GaelBackend.h"
 
 #include "fitting/GaelMapping.h"
 

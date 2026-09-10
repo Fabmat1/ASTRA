@@ -10,7 +10,7 @@
 //
 // Run: ctest --test-dir build -R spectrum_frame
 // ─────────────────────────────────────────────────────────────────────────────
-#include "utils/spectrafetch/SpectrumFrame.h"
+#include "spectra/fetch/SpectrumFrame.h"
 
 #include <QCoreApplication>
 #include <QDir>

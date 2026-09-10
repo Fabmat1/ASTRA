@@ -10,7 +10,7 @@
 // Soderblom 1987 sign convention with U positive towards the Galactic
 // centre) which is the convention stored on the Star model.
 
-#include "GalacticPotential.h"
+#include "kinematics/GalacticPotential.h"
 
 namespace GalKin {
 

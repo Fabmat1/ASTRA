@@ -4,7 +4,7 @@
 // an ESO DataLink document (CDATA-wrapped URLs, semantics column), and a TAP
 // error document (QUERY_STATUS=ERROR).
 // ─────────────────────────────────────────────────────────────────────────────
-#include "utils/spectrafetch/VoTableReader.h"
+#include "spectra/fetch/VoTableReader.h"
 
 #include <cstdio>
 #include <string>

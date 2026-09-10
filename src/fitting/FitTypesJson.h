@@ -35,7 +35,6 @@ QJsonObject toJson(const ContinuumAnchor& v);
 ContinuumAnchor continuumAnchorFromJson(const QJsonObject& o);
 
 QJsonObject toJson(const SpectrumFitConfig& v);
-SpectrumFitConfig spectrumFitConfigFromJson(const QJsonObject& o);
 
 QJsonObject toJson(const StellarComponent& v);
 StellarComponent stellarComponentFromJson(const QJsonObject& o);

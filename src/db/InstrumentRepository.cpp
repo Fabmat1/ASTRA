@@ -1,9 +1,9 @@
-#include "InstrumentRepository.h"
-#include "DBAccess.h"
+#include "db/InstrumentRepository.h"
+#include "db/DBAccess.h"
 #include <QUuid>
-#include "models/Instrument.h"
-#include "models/InstrumentMode.h"
-#include "utils/matchSpectraToInstrument.h"
+#include "core/Instrument.h"
+#include "core/InstrumentMode.h"
+#include "spectra/matchSpectraToInstrument.h"
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QJsonDocument>
@@ -352,119 +352,6 @@ bool InstrumentRepository::writeModesToDb(const QString& instrumentId,
         }
     }
     return true;
-}
-
-InstrumentModeMatch InstrumentRepository::matchSpectralProperties(
-    const std::vector<std::shared_ptr<Instrument>>& instruments,
-    const QString& instrumentHint,
-    double wlMin, double wlMax, int numPoints)
-{
-    InstrumentModeMatch best;
-
-    if (wlMin >= wlMax || numPoints < 2)
-        return best;
-
-    double deltaLambda = (wlMax - wlMin) / (numPoints - 1);
-    double centralWl   = (wlMin + wlMax) / 2.0;
-    double samplingRes = (deltaLambda > 0) ? centralWl / (2.0 * deltaLambda) : 0.0;
-
-    // Build hint variants for flexible name matching
-    QStringList hintParts;
-    if (!instrumentHint.isEmpty()) {
-        QString h = instrumentHint.trimmed();
-        hintParts << h;
-        if (h.contains('/')) {
-            hintParts << h.section('/', 0, 0).trimmed();
-            hintParts << h.section('/', 1).trimmed();
-        }
-        static QRegularExpression sepRe("[/\\-_\\s]+");
-        for (const auto& part : h.split(sepRe, Qt::SkipEmptyParts))
-            hintParts << part.trimmed();
-        hintParts.removeDuplicates();
-    }
-
-    // Find candidate instruments that match the hint
-    std::vector<std::shared_ptr<Instrument>> candidates;
-    bool hintResolved = false;
-
-    if (!hintParts.isEmpty()) {
-        for (const auto& inst : instruments) {
-            for (const QString& hint : hintParts) {
-                if (hint.length() < 2) continue;
-                if (inst->getName().compare(hint, Qt::CaseInsensitive) == 0 ||
-                    inst->getFullName().contains(hint, Qt::CaseInsensitive))
-                {
-                    candidates.push_back(inst);
-                    hintResolved = true;
-                    break;
-                }
-            }
-        }
-    }
-
-    if (!hintResolved)
-        candidates = instruments;
-
-    // Wavelength-overlap scoring helper
-    auto scoreOverlap = [&](double mMin, double mMax) -> double {
-        if (mMin >= mMax) return 0.0;
-        double oMin = std::max(wlMin, mMin);
-        double oMax = std::min(wlMax, mMax);
-        if (oMin >= oMax) return 0.0;
-
-        double overlap   = oMax - oMin;
-        double specRange = wlMax - wlMin;
-        double modeRange = mMax - mMin;
-        double specCov = (specRange > 0) ? overlap / specRange : 0.0;
-        double modeCov = (modeRange > 0) ? overlap / modeRange : 0.0;
-        return std::sqrt(specCov * modeCov);
-    };
-
-    double bestScore = -1.0;
-
-    for (const auto& inst : candidates) {
-        for (const auto& mode : inst->modes()) {
-            if (!mode.hasSpectralProperties()) continue;
-            const auto& sp = mode.spectral();
-
-            // Wavelength overlap - check broad range and each setup
-            double wlScore = scoreOverlap(sp.wavelengthMin, sp.wavelengthMax);
-            if (wlScore < 0.05) continue;
-
-            for (const auto& setup : sp.commonSetups) {
-                if (setup.wavelengthMin > 0 && setup.wavelengthMax > setup.wavelengthMin)
-                    wlScore = std::max(wlScore,
-                                       scoreOverlap(setup.wavelengthMin, setup.wavelengthMax));
-            }
-
-            // Resolution compatibility from sampling
-            double resScore = 0.5;
-            if (samplingRes > 0 && sp.resolution.isValid()) {
-                double modeRes = sp.resolution.at(centralWl);
-                if (modeRes > 0) {
-                    if (modeRes > samplingRes * 20.0)
-                        resScore = 0.05;           // mode far beyond sampling capability
-                    else if (modeRes > samplingRes)
-                        resScore = 0.3 + 0.7 * (samplingRes / modeRes);
-                    else
-                        resScore = 1.0;            // oversampled - fine
-                }
-            }
-
-            double hintBonus = hintResolved ? 0.15 : 0.0;
-            double total = wlScore * 0.55 + resScore * 0.30 + hintBonus;
-
-            if (total > bestScore) {
-                bestScore        = total;
-                best.instrument  = inst;
-                best.modeKey     = mode.key();
-                best.displayString = inst->getName() + "/" + mode.key();
-                best.confidence  = std::min(1.0, total);
-            }
-        }
-    }
-
-    return best;
 }
 
 void InstrumentRepository::cacheInstrument(std::shared_ptr<Instrument> inst)

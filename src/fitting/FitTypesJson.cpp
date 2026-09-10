@@ -117,24 +117,6 @@ QJsonObject toJson(const SpectrumFitConfig& v)
     return o;
 }
 
-SpectrumFitConfig spectrumFitConfigFromJson(const QJsonObject& o)
-{
-    SpectrumFitConfig v;
-    v.enabled       = json::readBool(o, "enabled", v.enabled);
-    v.wlMin         = json::readDouble(o, "wlMin", v.wlMin);
-    v.wlMax         = json::readDouble(o, "wlMax", v.wlMax);
-    v.ignore        = json::fromArray<IgnoreRegion>(o, "ignore",
-                                                    ignoreRegionFromJson);
-    v.anchors       = json::fromArray<ContinuumAnchor>(o, "anchors",
-                                                       continuumAnchorFromJson);
-    v.resOffset     = json::readDouble(o, "resOffset", v.resOffset);
-    v.resSlope      = json::readDouble(o, "resSlope", v.resSlope);
-    v.inferFromFits = json::readBool(o, "inferFromFits", v.inferFromFits);
-    v.airmass       = json::readDouble(o, "airmass", v.airmass);
-    v.pwv           = json::readDouble(o, "pwv", v.pwv);
-    return v;
-}
-
 // ── StellarComponent ─────────────────────────────────────────────────────
 
 QJsonObject toJson(const StellarComponent& v)

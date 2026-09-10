@@ -10,9 +10,9 @@
 // Ported from the ISIS kinematics_bound.sl / orbit_calculator MC machinery;
 // bug fixes and changes w.r.t. the original are documented next to the code.
 
-#include "GalacticCoordinates.h"
-#include "GalacticPotential.h"
-#include "OrbitIntegrator.h"
+#include "kinematics/GalacticCoordinates.h"
+#include "kinematics/GalacticPotential.h"
+#include "kinematics/OrbitIntegrator.h"
 
 #include <atomic>
 #include <cstdint>

@@ -20,15 +20,15 @@
 // epochs are mid-exposure UTC rather than the Beijing-time cards the same
 // headers also carry.
 // ─────────────────────────────────────────────────────────────────────────────
-#include "models/BarycentricCorrection.h"
-#include "models/Spectrum.h"
-#include "utils/SpectrumReader.h"
-#include "utils/spectrafetch/ApogeeArchiveClient.h"
-#include "utils/spectrafetch/EsoArchiveClient.h"
-#include "utils/spectrafetch/LamostArchiveClient.h"
-#include "utils/spectrafetch/MastArchiveClient.h"
-#include "utils/spectrafetch/SdssOpticalArchiveClient.h"
-#include "utils/spectrafetch/SpectrumFrame.h"
+#include "core/BarycentricCorrection.h"
+#include "spectra/Spectrum.h"
+#include "spectra/SpectrumReader.h"
+#include "spectra/fetch/ApogeeArchiveClient.h"
+#include "spectra/fetch/EsoArchiveClient.h"
+#include "spectra/fetch/LamostArchiveClient.h"
+#include "spectra/fetch/MastArchiveClient.h"
+#include "spectra/fetch/SdssOpticalArchiveClient.h"
+#include "spectra/fetch/SpectrumFrame.h"
 
 #include <QCoreApplication>
 #include <QDate>

@@ -8,7 +8,7 @@
 // (two significant digits on the tighter side, value matched to it) and the
 // negative-decimals case where the error is larger than one.
 // ─────────────────────────────────────────────────────────────────────────────
-#include "utils/QuantityFormat.h"
+#include "core/QuantityFormat.h"
 
 #include <QCoreApplication>
 

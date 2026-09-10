@@ -1,6 +1,6 @@
 #pragma once
 
-#include "IFitBackend.h"
+#include "fitting/IFitBackend.h"
 
 namespace astra::fitting {
 

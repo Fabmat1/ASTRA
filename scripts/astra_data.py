@@ -4,15 +4,15 @@ Read-only Python access to an ASTRA database and its .asd data files.
 
 Used by plot_curve.py and plot_periodogram.py.
 
-The .asd container format (see src/utils/DataStore.cpp):
+The .asd container format (see src/app/DataStore.cpp):
     4 bytes  magic "ASTR"
     quint16  format version (big-endian, QDataStream Qt_6_0)
     quint16  data type      (DataStore::DataType)
     QByteArray  qCompress()'d payload (quint32 length + 4-byte size + zlib)
 
 Payload layouts follow the QDataStream serialisation in
-src/models/Photometry.cpp (lightcurves), src/models/PeriodogramRecord.cpp
-(periodograms) and src/models/Time.cpp (Time).
+src/lightcurve/Photometry.cpp (lightcurves), src/rv/PeriodogramRecord.cpp
+(periodograms) and src/core/Time.cpp (Time).
 """
 
 import os
@@ -31,7 +31,7 @@ LIGHTCURVE_DATA = 6
 PERIODOGRAM_DATA = 7
 LCFIT_DATA = 8
 
-# TimeScale enum (src/models/Time.h)
+# TimeScale enum (src/core/Time.h)
 _SCALE_JD, _SCALE_MJD, _SCALE_BJD, _SCALE_HJD = 0, 1, 2, 3
 _SCALE_BTJD, _SCALE_BKJD, _SCALE_GAIATCB = 4, 5, 6
 MJD_OFFSET = 2400000.5
@@ -151,7 +151,7 @@ def parse_lightcurve(filepath):
 def parse_lc_fit(filepath):
     """
     Parse an LCFitData .asd file (see LCFit::saveDataToFile in
-    src/models/Photometry.cpp).
+    src/lightcurve/Photometry.cpp).
 
     Returns (input_points, model_points), each a (phase, flux, flux_err)
     tuple of arrays. Phases follow ASTRA's LC-fit convention:
@@ -324,7 +324,7 @@ def load_best_fit(conn, curve_id):
 
 
 # --------------------------------------------------------------------
-#  RV model - must mirror RVFit in src/models/RadialVelocity.cpp
+#  RV model - must mirror RVFit in src/rv/RadialVelocity.cpp
 # --------------------------------------------------------------------
 
 def fit_is_eccentric(fit):

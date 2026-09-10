@@ -1,7 +1,7 @@
-#include "IsisBackend.h"
-#include "utils/AppPaths.h"
-#include "utils/AppSettings.h"
-#include "utils/IsisEnvironment.h"
+#include "fitting/IsisBackend.h"
+#include "app/AppPaths.h"
+#include "app/AppSettings.h"
+#include "fitting/IsisEnvironment.h"
 
 #include <algorithm>
 #include <QByteArray>
@@ -26,28 +26,6 @@ namespace astra::fitting {
 // ─────────────────────────────────────────────────────────────────────
 namespace {
 
-QString ensureAutoepsCache(const QString& workDir,
-                            const std::function<void(const QString&)>& onLog)
-{
-    const QString cacheRoot = AppPaths::root();
-    if (cacheRoot.isEmpty()) return {};
-    const QString autoepsCache = cacheRoot + "/cache/isis/autoeps";
-    QDir().mkpath(autoepsCache);
-
-    const QString linkPath = workDir + "/autoeps";
-    QFileInfo fi(linkPath);
-    if (fi.exists() || fi.isSymLink()) QFile::remove(linkPath);
-
-    if (!QFile::link(autoepsCache, linkPath)) {
-        if (onLog) onLog(QStringLiteral(
-            "Warning: could not symlink autoeps cache (%1 → %2); "
-            "ISIS will rebuild it from scratch.")
-                .arg(linkPath, autoepsCache));
-        return {};
-    }
-    if (onLog) onLog(QStringLiteral("autoeps cache: %1").arg(autoepsCache));
-    return autoepsCache;
-}
 
 struct IsisStage { const char* needle; const char* label; double fraction; };
 constexpr IsisStage kIsisStages[] = {
@@ -617,7 +595,7 @@ SpectralFitResult IsisBackend::run(const SpectralFitJob& job,
             ts << generateScript(job);
         }
 
-        ensureAutoepsCache(workDir, onLog);
+        IsisEnvironment::ensureAutoepsCache(workDir, onLog);
 
         if (onLog) {
             onLog(QStringLiteral("ISIS binary : %1").arg(binary));

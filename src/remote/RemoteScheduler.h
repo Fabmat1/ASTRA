@@ -1,6 +1,6 @@
 #pragma once
 
-#include "models/RemoteHost.h"
+#include "remote/RemoteHost.h"
 
 #include <QString>
 

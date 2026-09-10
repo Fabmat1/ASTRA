@@ -1,4 +1,5 @@
-#include "PopulationClassifier.h"
+#include "kinematics/PopulationClassifier.h"
+#include "core/AsymmetricErrors.h"
 
 #include <algorithm>
 #include <cmath>
@@ -20,6 +21,8 @@ const double PopulationClassifier::kSigma[3][3] = {
 };
 
 namespace {
+
+using AsymErr::drawTwoPiece;
 
 // diagonal-covariance 3D Gaussian density of the galactocentric velocity
 // 'v' under component k, with the star's measurement variance added
@@ -77,14 +80,6 @@ inline void toGalactocentric(const VelocityInput& in, double v[3])
 }
 
 // two-piece Gaussian draw (same convention as KinematicsCalculator)
-inline double drawTwoPiece(std::mt19937_64& rng,
-                           std::normal_distribution<double>& gauss, double v,
-                           double sigUp, double sigDown)
-{
-    const double z = gauss(rng);
-    return v + z * (z >= 0.0 ? sigUp : sigDown);
-}
-
 } // namespace
 
 MembershipProbability PopulationClassifier::posterior(const VelocityInput& in,

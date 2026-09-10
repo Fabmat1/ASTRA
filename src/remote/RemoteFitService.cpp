@@ -5,13 +5,13 @@
 #include "fitting/FitJobFactory.h"
 #include "fitting/FitTypesJson.h"
 #include "fitting/GaelMapping.h"
-#include "models/Spectrum.h"
-#include "models/Star.h"
+#include "spectra/Spectrum.h"
+#include "core/Star.h"
 #include "remote/RemoteHostRegistry.h"
 #include "remote/RemoteScheduler.h"
 #include "remote/SshConnection.h"
 #include "remote/SshFileStreamChannel.h"
-#include "utils/Logger.h"
+#include "app/Logger.h"
 
 #include <specfit/GaelAPI.hpp>
 

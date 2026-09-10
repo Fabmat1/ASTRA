@@ -1,4 +1,4 @@
-#include "GalacticCoordinates.h"
+#include "kinematics/GalacticCoordinates.h"
 
 #include <cmath>
 

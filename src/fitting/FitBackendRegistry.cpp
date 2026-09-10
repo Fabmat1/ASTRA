@@ -1,7 +1,7 @@
-#include "FitBackendRegistry.h"
-#include "GaelBackend.h"
-#include "IsisBackend.h"
-#include "RemoteGaelBackend.h"
+#include "fitting/FitBackendRegistry.h"
+#include "fitting/GaelBackend.h"
+#include "fitting/IsisBackend.h"
+#include "fitting/RemoteGaelBackend.h"
 
 #include "remote/RemoteFitService.h"
 

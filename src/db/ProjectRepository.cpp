@@ -1,11 +1,11 @@
-#include "ProjectRepository.h"
-#include "utils/Logger.h"
-#include "DBAccess.h"
-#include "models/Project.h"
+#include "db/ProjectRepository.h"
+#include "app/Logger.h"
+#include "db/DBAccess.h"
+#include "core/Project.h"
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QFileInfo>
-#include "utils/DataStore.h"
+#include "app/DataStore.h"
 
 ProjectRepository::ProjectRepository(DBAccess& db) : _db(db) {}
 

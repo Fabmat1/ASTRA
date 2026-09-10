@@ -1,6 +1,6 @@
 #pragma once
 
-#include "IFitBackend.h"
+#include "fitting/IFitBackend.h"
 #include <QStringList>
 #include <memory>
 

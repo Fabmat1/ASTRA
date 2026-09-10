@@ -1,0 +1,2579 @@
+#include <charconv>
+#include "importwizard/SpectralFitImportPage.h"
+#include "importwizard/StarImportWizard.h"
+#include "app/ui/ApplicationController.h"
+#include "core/Project.h"
+#include "core/Star.h"
+#include "spectra/Spectrum.h"
+#include "fitting/ElementAbundances.h"
+#include "app/Logger.h"
+#include "db/DatabaseManager.h"
+#include "app/ui/BackgroundTaskManager.h"
+
+#include <limits>
+#include <QVBoxLayout>
+#include <QHBoxLayout>
+#include <QLabel>
+#include <QLineEdit>
+#include <QPushButton>
+#include <QCheckBox>
+#include <QRadioButton>
+#include <QStackedWidget>
+#include <QTreeWidget>
+#include <QTreeWidgetItem>
+#include <QProgressBar>
+#include <QButtonGroup>
+#include <QGroupBox>
+#include <QFileDialog>
+#include <QMessageBox>
+#include <QDir>
+#include <QDirIterator>
+#include <QFileInfo>
+#include <QTextStream>
+#include <QApplication>
+#include <QRegularExpression>
+#include <QHeaderView>
+#include <QtConcurrent>
+#include <QFutureWatcher>
+
+#include <cstdlib>
+#include <cstring>
+
+#if !defined(__cpp_lib_to_chars) && defined(__APPLE__)
+#include <xlocale.h>   // strtod_l
+#endif
+
+namespace {
+
+// Parse a double from [p, end). Advances p. Returns true on success.
+inline bool parseDouble(const char*& p, const char* end, double& out)
+{
+#ifdef __cpp_lib_to_chars
+    auto [ptr, ec] = std::from_chars(p, end, out);
+    if (ec != std::errc{}) return false;
+    p = ptr;
+    return true;
+#else
+    // Apple libc++ has no floating-point std::from_chars (integer-only).
+    // strtod is locale-sensitive and Qt sets the process locale, so use
+    // strtod_l with the C locale (NULL) via a NUL-terminated copy.
+    char buf[128];
+    size_t n = static_cast<size_t>(end - p);
+    if (n > sizeof(buf) - 1) n = sizeof(buf) - 1;
+    std::memcpy(buf, p, n);
+    buf[n] = '\0';
+    char* endp = nullptr;
+#ifdef __APPLE__
+    const double v = strtod_l(buf, &endp, nullptr);
+#else
+    const double v = std::strtod(buf, &endp);
+#endif
+    if (endp == buf) return false;
+    out = v;
+    p += endp - buf;
+    return true;
+#endif
+}
+
+inline bool parseLong(const char*& p, const char* end, long& out)
+{
+    auto [ptr, ec] = std::from_chars(p, end, out);
+    if (ec != std::errc{}) return false;
+    p = ptr;
+    return true;
+}
+
+// Element abundances as they came out of a fit report → the fit's map.
+// Neither GAEL's fit_parameters.csv nor ISIS's spectrum_properties.txt records
+// whether a parameter was frozen or which side of its grid axis it is pinned
+// against, so `frozen` stays false and `limitSide` stays 0: an imported
+// abundance is shown as a measurement rather than as an invented limit.
+void copyImportedAbundances(const QMap<QString, QPair<double, double>>& src,
+                            QMap<QString, FittedAbundance>&             dst)
+{
+    for (auto it = src.cbegin(); it != src.cend(); ++it) {
+        // An element switched out of the model (value ≥ 10) is not a
+        // measurement - same rule the live fitting backends apply.
+        if (astra::elements::isSwitchedOff(it.value().first))
+            continue;
+        FittedAbundance a;
+        a.value = it.value().first;
+        a.error = it.value().second;
+        dst.insert(it.key(), a);
+    }
+}
+
+void applyImportedTelluric(const FitTelluricParams& t, SpectralFit& fit)
+{
+    if (!t.present)
+        return;
+    fit.hasTelluric          = true;
+    fit.telluricAirmass      = t.airmass;
+    fit.telluricAirmassError = t.airmassError;
+    fit.telluricPwv          = t.pwv;
+    fit.telluricPwvError     = t.pwvError;
+    fit.telluricBarycorr     = t.barycorr;
+}
+
+// ── .tex value parser (mirrors IsisBackend) ─────────────────────────
+QPair<double, double> parseTexValue(const QString &raw) {
+    QString s = raw;
+    s.remove(QRegularExpression(R"(\\color\{[^}]*\})"));
+    s.remove(QRegularExpression(R"(\\mathrm\{[^}]*\})"));
+    s.remove(QRegularExpression(R"(\\,)"));
+    s.remove('$');
+
+    static const QRegularExpression rePm(
+        R"(([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*\\pm\s*([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?))");
+    if (auto m = rePm.match(s); m.hasMatch())
+        return {m.captured(1).toDouble(), m.captured(2).toDouble()};
+
+    static const QRegularExpression reAsym(
+        R"(([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\s*\^\{\+\{?([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\}?\}_\{-\{?([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)\}?\})");
+    if (auto m = reAsym.match(s); m.hasMatch())
+        return {m.captured(1).toDouble(),
+                0.5 * (m.captured(2).toDouble() + m.captured(3).toDouble())};
+
+    static const QRegularExpression reNum(R"([-+]?\d*\.?\d+(?:[eE][-+]?\d+)?)");
+    if (auto m = reNum.match(s); m.hasMatch())
+        return {m.captured(0).toDouble(), 0.0};
+    return {0.0, 0.0};
+}
+
+struct IsisTexResults {
+    QString grid;
+    double  chi2 = 0.0;
+    QHash<QString, QPair<double, double>>
+        tied; // teff, logg, vsini, zeta, xi, z, he
+    /// Second occurrence of the same row markers: a two-component fit prints
+    /// one row per component under identical captions, in component order.
+    QHash<QString, QPair<double, double>> tied2;
+};
+
+void parseIsisTex(const QByteArray &bytes, IsisTexResults &out) {
+    const QString     content = QString::fromUtf8(bytes);
+    const QStringList lines   = content.split('\n');
+
+    auto rowExpr = [&](const QString &contains,
+                       int            nth = 1) -> std::optional<QString> {
+        int seen = 0;
+        for (const QString &ln : lines) {
+            if (!ln.contains(contains))
+                continue;
+            const int amp = ln.indexOf('&');
+            const int end = ln.lastIndexOf("\\\\");
+            if (amp > 0 && end > amp && ++seen == nth)
+                return ln.mid(amp + 1, end - amp - 1).trimmed();
+        }
+        return std::nullopt;
+    };
+
+    if (auto e = rowExpr("Grid ")) {
+        QString g = *e;
+        g.remove('$');
+        out.grid = g.trimmed();
+    }
+    if (auto e = rowExpr(R"(\chi^2_\mathrm{red,final})"))
+        out.chi2 = parseTexValue(*e).first;
+
+    struct Row {
+        const char *marker;
+        const char *key;
+    };
+    const Row rows[] = {
+        {"Effective temperature", "teff"},
+        {"Surface gravity", "logg"},
+        {"Projected rotational velocity", "vsini"},
+        {"Macroturbulence", "zeta"},
+        {"Microturbulence", "xi"},
+        {"Metallicity", "z"},
+        {"He abundance", "he"},
+    };
+    for (const auto &r : rows) {
+        if (auto e = rowExpr(QString::fromLatin1(r.marker)))
+            out.tied[QString::fromLatin1(r.key)] = parseTexValue(*e);
+        if (auto e = rowExpr(QString::fromLatin1(r.marker), 2))
+            out.tied2[QString::fromLatin1(r.key)] = parseTexValue(*e);
+    }
+}
+
+// ── spectrum_properties.txt parser (lowercased headers) ─────────────
+struct IsisPropRow {
+    QString                filename;
+    QString                spectype;
+    QHash<QString, double> values; // key lowercased, e.g. "c1_vrad_min"
+};
+
+QVector<IsisPropRow> parseIsisProperties(const QByteArray &bytes) {
+    QVector<IsisPropRow> rows;
+    const QString        text  = QString::fromUtf8(bytes);
+    const QStringList    lines = text.split('\n');
+    if (lines.isEmpty())
+        return rows;
+
+    static const QRegularExpression reWS(R"(\s+)");
+    int                             headerLine = -1;
+    QStringList                     headers;
+    for (int i = 0; i < lines.size(); ++i) {
+        const QString t = lines[i].trimmed();
+        if (t.isEmpty())
+            continue;
+        headers    = t.split(reWS, Qt::SkipEmptyParts);
+        headerLine = i;
+        break;
+    }
+    if (headerLine < 0 || headers.isEmpty())
+        return rows;
+    for (QString &h : headers)
+        h = h.toLower();
+
+    for (int i = headerLine + 1; i < lines.size(); ++i) {
+        const QString t = lines[i].trimmed();
+        if (t.isEmpty())
+            continue;
+        const QStringList tok = t.split(reWS, Qt::SkipEmptyParts);
+        if (tok.size() != headers.size())
+            continue;
+
+        IsisPropRow r;
+        for (int c = 0; c < headers.size(); ++c) {
+            const QString &h = headers[c];
+            const QString &v = tok[c];
+            if (h == "filename")
+                r.filename = v;
+            else if (h == "spectype")
+                r.spectype = v;
+            else {
+                bool   ok = false;
+                double dv = v.toDouble(&ok);
+                if (ok)
+                    r.values.insert(h, dv);
+            }
+        }
+        rows.append(r);
+    }
+    return rows;
+}
+
+} // anonymous namespace
+
+// ════════════════════════════════════════════════════════════════
+// ISIS: parsing + matching  (file scope - NOT in anonymous namespace)
+// ════════════════════════════════════════════════════════════════
+
+IsisFitDirectory
+SpectralFitImportPage::parseIsisDirectory(const IsisScanResult &scan) {
+    IsisFitDirectory dir;
+    dir.dirPath       = scan.dirPath;
+    dir.gridDirName   = scan.gridDirName;
+    dir.parentDirName = scan.parentDirName;
+
+    if (!scan.valid) {
+        dir.parseOk    = false;
+        dir.parseError = scan.error;
+        return dir;
+    }
+
+    IsisTexResults tex;
+    parseIsisTex(scan.resultsTexContent, tex);
+    dir.grid = tex.grid;
+    dir.chi2 = tex.chi2;
+
+    const QVector<IsisPropRow> rows =
+        parseIsisProperties(scan.propertiesContent);
+    if (rows.isEmpty()) {
+        dir.parseOk    = false;
+        dir.parseError = "No spectrum rows found in spectrum_properties.txt";
+        return dir;
+    }
+
+    auto tiedOf = [&](const char *key) -> QPair<double, double> {
+        return tex.tied.value(QString::fromLatin1(key), {0.0, 0.0});
+    };
+    auto tiedOf2 = [&](const char *key) -> QPair<double, double> {
+        return tex.tied2.value(QString::fromLatin1(key), {0.0, 0.0});
+    };
+
+    auto fill = [](const IsisPropRow &r, const QString &name, double tiedV,
+                   double tiedE, double &ov, double &oe) {
+        auto get = [&](const QString &k) -> std::optional<double> {
+            auto it = r.values.find(k);
+            return it != r.values.end() ? std::optional<double>(it.value())
+                                        : std::nullopt;
+        };
+        for (const QString &col : {"c1_" + name, name}) {
+            if (auto v = get(col)) {
+                ov      = *v;
+                auto mn = get(col + "_min");
+                auto mx = get(col + "_max");
+                oe      = (mn && mx) ? 0.5 * (*mx - *mn) : tiedE;
+                return;
+            }
+        }
+        ov = tiedV;
+        oe = tiedE;
+    };
+
+    // Component 2 is only visible in the per-spectrum table: ISIS's .tex
+    // prints every parameter under the same caption whatever component it
+    // belongs to, so its rows can be used as a fall-through for tied c2
+    // parameters but never as the evidence that a second component exists.
+    auto fill2 = [](const IsisPropRow &r, const QString &name, double tiedV,
+                    double tiedE, double &ov, double &oe) {
+        auto get = [&](const QString &k) -> std::optional<double> {
+            auto it = r.values.find(k);
+            return it != r.values.end() ? std::optional<double>(it.value())
+                                        : std::nullopt;
+        };
+        const QString col = "c2_" + name;
+        if (auto v = get(col)) {
+            ov      = *v;
+            auto mn = get(col + "_min");
+            auto mx = get(col + "_max");
+            oe      = (mn && mx) ? 0.5 * (*mx - *mn) : tiedE;
+            return;
+        }
+        ov = tiedV;
+        oe = tiedE;
+    };
+
+    for (int i = 0; i < rows.size(); ++i) {
+        const IsisPropRow          &r = rows[i];
+        IsisFitDirectory::SpecMatch sm;
+        sm.specIndex     = i + 1;
+        sm.isisFilename  = r.filename;
+        sm.modelDataFile = scan.modelDataFiles.value(i + 1);
+
+        fill(r, "teff", tiedOf("teff").first, tiedOf("teff").second, sm.teff,
+             sm.teffError);
+        fill(r, "logg", tiedOf("logg").first, tiedOf("logg").second, sm.logg,
+             sm.loggError);
+        fill(r, "vsini", tiedOf("vsini").first, tiedOf("vsini").second,
+             sm.vsini, sm.vsiniError);
+        fill(r, "he", tiedOf("he").first, tiedOf("he").second, sm.he,
+             sm.heError);
+        fill(r, "zeta", tiedOf("zeta").first, tiedOf("zeta").second, sm.zeta,
+             sm.zetaError);
+        fill(r, "xi", tiedOf("xi").first, tiedOf("xi").second, sm.xi,
+             sm.xiError);
+        fill(r, "z", tiedOf("z").first, tiedOf("z").second, sm.z, sm.zError);
+        fill(r, "vrad", 0.0, 0.0, sm.vrad, sm.vradError);
+
+        // ── Second component ────────────────────────────────────
+        bool prefixed = false;   // c1_-style naming (multi-component ISIS run)
+        for (auto it = r.values.cbegin();
+             it != r.values.cend() && !(sm.hasComp2 && prefixed); ++it) {
+            if (it.key().startsWith("c2_"))
+                sm.hasComp2 = true;
+            else if (it.key().startsWith("c1_"))
+                prefixed = true;
+        }
+
+        if (sm.hasComp2) {
+            fill2(r, "teff", tiedOf2("teff").first, tiedOf2("teff").second,
+                  sm.teff2, sm.teff2Error);
+            fill2(r, "logg", tiedOf2("logg").first, tiedOf2("logg").second,
+                  sm.logg2, sm.logg2Error);
+            fill2(r, "vsini", tiedOf2("vsini").first, tiedOf2("vsini").second,
+                  sm.vsini2, sm.vsini2Error);
+            fill2(r, "he", tiedOf2("he").first, tiedOf2("he").second, sm.he2,
+                  sm.he2Error);
+            fill2(r, "zeta", tiedOf2("zeta").first, tiedOf2("zeta").second,
+                  sm.zeta2, sm.zeta2Error);
+            fill2(r, "xi", tiedOf2("xi").first, tiedOf2("xi").second, sm.xi2,
+                  sm.xi2Error);
+            fill2(r, "z", tiedOf2("z").first, tiedOf2("z").second, sm.z2,
+                  sm.z2Error);
+            fill2(r, "vrad", 0.0, 0.0, sm.vrad2, sm.vrad2Error);
+            fill2(r, "sur_ratio", 0.0, 0.0, sm.surRatio, sm.surRatioError);
+        }
+
+        // ── Element abundances ──────────────────────────────────
+        // Probing the supported species is safer than scanning the header:
+        // the parser lower-cases column names, so a bare one-letter species
+        // ("c", "s") is indistinguishable from any other column, and an
+        // unprefixed name is only ISIS's single-component spelling anyway.
+        auto readAbundance = [&](const QString &col,
+                                 QMap<QString, QPair<double, double>> &dst,
+                                 const QString &symbol, bool requireBounds) {
+            auto it = r.values.find(col);
+            if (it == r.values.end())
+                return;
+            auto       mn     = r.values.find(col + "_min");
+            auto       mx     = r.values.find(col + "_max");
+            const bool bounds = mn != r.values.end() && mx != r.values.end();
+            if (requireBounds && !bounds)
+                return;
+            dst.insert(symbol, { it.value(),
+                                 bounds ? 0.5 * (mx.value() - mn.value())
+                                        : 0.0 });
+        };
+        for (const auto &ei : astra::elements::all()) {
+            const QString lower = ei.symbol.toLower();
+            readAbundance("c1_" + lower, sm.abundances, ei.symbol, false);
+            // An unprefixed name is only a species if the fit actually varied
+            // it: without the _min/_max pair, "n" or "s" is far more likely to
+            // be some other column of the table.
+            if (!prefixed)
+                readAbundance(lower, sm.abundances, ei.symbol, true);
+            if (sm.hasComp2)
+                readAbundance("c2_" + lower, sm.abundances2, ei.symbol, false);
+        }
+
+        // ── Telluric component ──────────────────────────────────
+        // Only a column with the _min/_max pair a *fitted* parameter carries
+        // is taken; a bare `airmass` column would be the observation's.
+        auto readTelluric = [&](const QString &col, double &ov, double &oe) {
+            auto it = r.values.find(col);
+            auto mn = r.values.find(col + "_min");
+            auto mx = r.values.find(col + "_max");
+            if (it == r.values.end() || mn == r.values.end() ||
+                mx == r.values.end())
+                return false;
+            ov = it.value();
+            oe = 0.5 * (mx.value() - mn.value());
+            return true;
+        };
+        const bool tellA =
+            readTelluric("airmass", sm.telluric.airmass,
+                         sm.telluric.airmassError);
+        const bool tellP =
+            readTelluric("pwv", sm.telluric.pwv, sm.telluric.pwvError);
+        if (tellA || tellP) {
+            sm.telluric.present = true;
+            double dummy        = 0.0;
+            readTelluric("barycorr", sm.telluric.barycorr, dummy);
+        }
+
+        dir.specMatches.push_back(std::move(sm));
+    }
+
+    dir.totalSpectra = static_cast<int>(dir.specMatches.size());
+    return dir;
+}
+
+void SpectralFitImportPage::matchIsisDirectories(
+    std::vector<IsisFitDirectory> &dirs, const SpectrumIndex &index) {
+    int totalMatched = 0;
+    int loggedDirs   = 0;
+
+    for (auto &dir : dirs) {
+        dir.matchedSpectra = 0;
+        if (!dir.parseOk)
+            continue;
+
+        // ── DIAGNOSTIC: dump the first few dirs ──────────────────
+        const bool logThis = (loggedDirs++ < 5);
+        if (logThis) {
+            LOG_INFO("FitImport", QString("ISIS dir '%1' parent='%2' grid='%3' "
+                                          "spectra=%4")
+                                      .arg(dir.dirPath)
+                                      .arg(dir.parentDirName)
+                                      .arg(dir.gridDirName)
+                                      .arg(dir.specMatches.size()));
+        }
+
+        std::shared_ptr<Star> dirStar;
+        auto                  trySourceId = [&](const QString &key) -> bool {
+            auto it = index.sourceIdIndex.find(key);
+            if (it != index.sourceIdIndex.end()) {
+                dirStar = it.value();
+                return true;
+            }
+            return false;
+        };
+        trySourceId(dir.parentDirName) ||
+            trySourceId(dir.parentDirName.toLower()) ||
+            trySourceId(dir.gridDirName) ||
+            trySourceId(dir.gridDirName.toLower());
+
+        if (logThis)
+            LOG_INFO("FitImport", QString("  star-by-dir: %1")
+                                      .arg(dirStar ? dirStar->getId()
+                                                   : QStringLiteral("(none)")));
+
+        for (auto &sm : dir.specMatches) {
+            QFileInfo     fi(sm.isisFilename);
+            const QString completeBase = fi.completeBaseName().toLower();
+            const QString base         = fi.baseName().toLower();
+            const QString fullName     = fi.fileName().toLower();
+
+            bool matched = false;
+            for (const QString &key :
+                 {completeBase, base, fullName, sm.isisFilename.toLower()}) {
+                if (key.isEmpty())
+                    continue;
+                auto fnIt = index.filenameIndex.find(key);
+                if (fnIt != index.filenameIndex.end()) {
+                    sm.matchedStar     = fnIt.value().first;
+                    sm.matchedSpectrum = fnIt.value().second;
+                    sm.matched = matched = true;
+                    if (!dirStar)
+                        dirStar = sm.matchedStar;
+                    break;
+                }
+            }
+
+            if (!matched && dirStar) {
+                auto sIt = index.starSpectraIndex.find(dirStar->getId());
+                if (sIt != index.starSpectraIndex.end()) {
+                    for (const auto &sp : sIt.value()) {
+                        QFileInfo     spFi(sp->getFile());
+                        const QString spCB = spFi.completeBaseName().toLower();
+                        const QString spB  = spFi.baseName().toLower();
+                        const QString spFN = spFi.fileName().toLower();
+                        if (spCB == completeBase || spB == base ||
+                            spB == completeBase || spCB == base ||
+                            spFN == fullName) {
+                            sm.matchedStar     = dirStar;
+                            sm.matchedSpectrum = sp;
+                            sm.matched = matched = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (logThis) {
+                LOG_INFO("FitImport",
+                         QString("  spec %1 isisFilename='%2' "
+                                 "keys[%3 | %4 | %5] -> %6")
+                             .arg(sm.specIndex)
+                             .arg(sm.isisFilename)
+                             .arg(completeBase)
+                             .arg(base)
+                             .arg(fullName)
+                             .arg(sm.matched ? "MATCH" : "no match"));
+            }
+
+            if (sm.matched)
+                ++dir.matchedSpectra;
+        }
+        totalMatched += dir.matchedSpectra;
+    }
+
+    // One-time dump of a sample of index keys to compare against
+    {
+        int         n = 0;
+        QStringList sample;
+        for (auto it = index.filenameIndex.cbegin();
+             it != index.filenameIndex.cend() && n < 20; ++it, ++n)
+            sample << it.key();
+        LOG_INFO("FitImport", QString("filenameIndex sample (%1 total): %2")
+                                  .arg(index.filenameIndex.size())
+                                  .arg(sample.join(", ")));
+    }
+
+    LOG_INFO("FitImport",
+             QString("ISIS matching complete: %1 matched").arg(totalMatched));
+}
+
+// ════════════════════════════════════════════════════════════════
+// Construction & UI setup
+// ════════════════════════════════════════════════════════════════
+
+SpectralFitImportPage::SpectralFitImportPage(QWidget* parent)
+    : QWizardPage(parent)
+{
+    setTitle("Import Spectral Fits");
+    setSubTitle("Import model fit results and associate them with existing spectra");
+    setupUi();
+}
+
+void SpectralFitImportPage::setupUi()
+{
+    QVBoxLayout* mainLayout = new QVBoxLayout(this);
+
+    // ── Mode selection ──────────────────────────────────────────
+    QGroupBox* modeGroup = new QGroupBox("Import Method");
+    QHBoxLayout* modeLayout = new QHBoxLayout;
+
+    _gaelRadio   = new QRadioButton("Import GAEL fits (folder scan)");
+    _isisRadio    = new QRadioButton("Import ISIS fits");
+    _mappingRadio = new QRadioButton("Import raw parameters (table)");
+    _gaelRadio->setChecked(true);
+
+    QButtonGroup* modeButtonGroup = new QButtonGroup(this);
+    modeButtonGroup->addButton(_gaelRadio);
+    modeButtonGroup->addButton(_isisRadio);
+    modeButtonGroup->addButton(_mappingRadio);
+
+    modeLayout->addWidget(_gaelRadio);
+    modeLayout->addWidget(_isisRadio);
+    modeLayout->addWidget(_mappingRadio);
+    modeLayout->addStretch();
+    modeGroup->setLayout(modeLayout);
+    mainLayout->addWidget(modeGroup);
+
+    connect(_gaelRadio,   &QRadioButton::toggled,
+            this, &SpectralFitImportPage::onImportModeChanged);
+    connect(_isisRadio,    &QRadioButton::toggled,
+            this, &SpectralFitImportPage::onImportModeChanged);
+
+    // ── Mode stack ──────────────────────────────────────────────
+    _modeStack = new QStackedWidget;
+    setupGaelPage();
+    setupIsisPage();
+    setupMappingPage();
+    _modeStack->addWidget(_gaelPage);    // index 0
+    _modeStack->addWidget(_isisPage);     // index 1
+    _modeStack->addWidget(_mappingPage);  // index 2
+    mainLayout->addWidget(_modeStack);
+
+    // ── Mark best fit ───────────────────────────────────────────
+    _markBestFitCheck = new QCheckBox(
+        "Auto-determine best fit per spectrum (lowest reduced χ²)");
+    _markBestFitCheck->setToolTip(
+        "For each spectrum, compares the reduced χ² of all newly imported fits\n"
+        "and any existing fits. Only the fit with the lowest χ² is marked as best.\n"
+        "If an existing fit already has a lower χ² than all new fits, no change is made.");
+    _markBestFitCheck->setChecked(true);
+    mainLayout->addWidget(_markBestFitCheck);
+
+    // ── Preview ─────────────────────────────────────────────────
+    QGroupBox* previewGroup = new QGroupBox("Preview");
+    QVBoxLayout* previewLayout = new QVBoxLayout;
+
+    _previewTree = new QTreeWidget;
+    _previewTree->setHeaderLabels({
+        "Directory / Spectrum", "Grid", "Star", "Parameters", "Status"
+    });
+    _previewTree->setAlternatingRowColors(true);
+    _previewTree->setRootIsDecorated(true);
+    _previewTree->header()->setStretchLastSection(true);
+    previewLayout->addWidget(_previewTree);
+
+    _statusLabel = new QLabel(
+        "Select a root folder and scan for GAEL output directories.");
+    _statusLabel->setWordWrap(true);
+    previewLayout->addWidget(_statusLabel);
+
+    previewGroup->setLayout(previewLayout);
+    mainLayout->addWidget(previewGroup);
+}
+
+void SpectralFitImportPage::setupGaelPage()
+{
+    _gaelPage = new QWidget;
+    QVBoxLayout* layout = new QVBoxLayout(_gaelPage);
+
+    QGroupBox* folderGroup = new QGroupBox("GAEL Output Root Folder");
+    QVBoxLayout* folderLayout = new QVBoxLayout;
+
+    QHBoxLayout* pathLayout = new QHBoxLayout;
+    _gaelFolderEdit = new QLineEdit;
+    _gaelFolderEdit->setPlaceholderText(
+        "Select root folder containing GAEL output directories...");
+    pathLayout->addWidget(_gaelFolderEdit);
+
+    QPushButton* browseBtn = new QPushButton("Browse...");
+    connect(browseBtn, &QPushButton::clicked,
+            this, &SpectralFitImportPage::onBrowseGaelFolder);
+    pathLayout->addWidget(browseBtn);
+    folderLayout->addLayout(pathLayout);
+
+    QLabel* helpLabel = new QLabel(
+        "Recursively searches for subdirectories containing both "
+        "<b>fit_parameters.csv</b> and <b>fit_report.tex</b>.");
+    helpLabel->setWordWrap(true);
+    folderLayout->addWidget(helpLabel);
+
+    QHBoxLayout* scanLayout = new QHBoxLayout;
+    _gaelScanButton = new QPushButton("Scan for GAEL Outputs");
+    _gaelScanButton->setEnabled(false);
+    connect(_gaelScanButton, &QPushButton::clicked,
+            this, &SpectralFitImportPage::onScanGael);
+    scanLayout->addWidget(_gaelScanButton);
+
+    _gaelProgress = new QProgressBar;
+    _gaelProgress->setVisible(false);
+    scanLayout->addWidget(_gaelProgress);
+    scanLayout->addStretch();
+    folderLayout->addLayout(scanLayout);
+
+    folderGroup->setLayout(folderLayout);
+    layout->addWidget(folderGroup);
+    layout->addStretch();
+}
+
+void SpectralFitImportPage::setupIsisPage()
+{
+    _isisPage = new QWidget;
+    QVBoxLayout* layout = new QVBoxLayout(_isisPage);
+
+    QGroupBox* folderGroup = new QGroupBox("ISIS Output Root Folder");
+    QVBoxLayout* folderLayout = new QVBoxLayout;
+
+    QHBoxLayout* pathLayout = new QHBoxLayout;
+    _isisFolderEdit = new QLineEdit;
+    _isisFolderEdit->setPlaceholderText(
+        "Select root folder containing ISIS spectroscopy output directories...");
+    pathLayout->addWidget(_isisFolderEdit);
+
+    QPushButton *browseBtn = new QPushButton("Browse...");
+    connect(browseBtn, &QPushButton::clicked, this,
+            &SpectralFitImportPage::onBrowseIsisFolder);
+    pathLayout->addWidget(browseBtn);
+    folderLayout->addLayout(pathLayout);
+
+    QLabel *helpLabel = new QLabel(
+        "Recursively searches for subdirectories containing both "
+        "<b>spectrum_properties.txt</b> and <b>spectroscopy_results.tex</b>. "
+        "Per-spectrum model curves are read from the matching "
+        "<b>&lt;id&gt;_id_&lt;N&gt;.dat</b> files at import time.");
+    helpLabel->setWordWrap(true);
+    folderLayout->addWidget(helpLabel);
+
+    QHBoxLayout *scanLayout = new QHBoxLayout;
+    _isisScanButton         = new QPushButton("Scan for ISIS Outputs");
+    _isisScanButton->setEnabled(false);
+    connect(_isisScanButton, &QPushButton::clicked, this,
+            &SpectralFitImportPage::onScanIsis);
+    scanLayout->addWidget(_isisScanButton);
+
+    _isisProgress = new QProgressBar;
+    _isisProgress->setVisible(false);
+    scanLayout->addWidget(_isisProgress);
+    scanLayout->addStretch();
+    folderLayout->addLayout(scanLayout);
+
+    folderGroup->setLayout(folderLayout);
+    layout->addWidget(folderGroup);
+    layout->addStretch();
+}
+
+void SpectralFitImportPage::onBrowseIsisFolder() {
+    QString folder = QFileDialog::getExistingDirectory(
+        this, "Select ISIS Output Root Folder", _isisFolderEdit->text());
+    if (folder.isEmpty())
+        return;
+
+    _isisFolderEdit->setText(folder);
+    _isisScanButton->setEnabled(_indexBuilt);
+    _isisDirs.clear();
+    _previewTree->clear();
+    _statusLabel->setText(
+        _indexBuilt ? "Click 'Scan for ISIS Outputs' to search."
+                    : "⏳ Waiting for spectrum index to finish building...");
+}
+
+void SpectralFitImportPage::onScanIsis() {
+    if (_asyncBusy)
+        return;
+
+    if (isSpectraImportRunning() || !_indexBuilt) {
+        _statusLabel->setText("⏳ Spectrum index not ready yet. Please wait "
+                              "for spectra import to finish.");
+        return;
+    }
+
+    QString rootFolder = _isisFolderEdit->text().trimmed();
+    if (rootFolder.isEmpty())
+        return;
+
+    _asyncBusy = true;
+    _isisScanButton->setEnabled(false);
+    _isisProgress->setVisible(true);
+    _isisProgress->setRange(0, 0);
+    _isisRootFolder = rootFolder;
+    _statusLabel->setText("Scanning for ISIS output directories...");
+
+    SpectrumIndex indexSnapshot = _specIndex; // cheap shared_ptr refcount bump
+
+    auto future = QtConcurrent::run(
+        [rootFolder,
+         indexSnapshot]() mutable -> QPair<std::vector<IsisFitDirectory>, int> {
+            // ── Phase 1: lightweight filesystem scan ───────────────
+            // Only existence checks + tiny text files + dat *paths*.
+            std::vector<IsisScanResult>     scanResults;
+            static const QRegularExpression reIdDat(R"(_id_(\d+)\.dat$)");
+
+            auto considerDir = [&](const QString &dirPath) {
+                QDir dir(dirPath);
+                if (!dir.exists("spectrum_properties.txt") ||
+                    !dir.exists("spectroscopy_results.tex"))
+                    return;
+
+                IsisScanResult scan;
+                scan.dirPath     = dirPath;
+                scan.gridDirName = dir.dirName();
+                QDir parent(dirPath);
+                parent.cdUp();
+                scan.parentDirName = parent.dirName();
+
+                {
+                    QFile f(dir.filePath("spectrum_properties.txt"));
+                    if (f.open(QIODevice::ReadOnly))
+                        scan.propertiesContent = f.readAll();
+                    else {
+                        scan.valid = false;
+                        scan.error = "Cannot read spectrum_properties.txt";
+                    }
+                }
+                {
+                    QFile f(dir.filePath("spectroscopy_results.tex"));
+                    if (f.open(QIODevice::ReadOnly))
+                        scan.resultsTexContent = f.readAll();
+                }
+
+                const QStringList datFiles =
+                    dir.entryList({"*_id_*.dat"}, QDir::Files);
+                for (const QString &d : datFiles) {
+                    auto m = reIdDat.match(d);
+                    if (m.hasMatch())
+                        scan.modelDataFiles[m.captured(1).toInt()] =
+                            dir.filePath(d);
+                }
+
+                scanResults.push_back(std::move(scan));
+            };
+
+            considerDir(rootFolder); // include root itself
+
+            QDirIterator it(rootFolder, QDir::Dirs | QDir::NoDotAndDotDot,
+                            QDirIterator::Subdirectories);
+            while (it.hasNext())
+                considerDir(it.next());
+
+            int scanCount = static_cast<int>(scanResults.size());
+
+            // ── Phase 2: parse all dirs in parallel ────────────────
+            std::vector<IsisFitDirectory> dirs =
+                QtConcurrent::blockingMapped<std::vector<IsisFitDirectory>>(
+                    scanResults, [](const IsisScanResult &s) {
+                        return parseIsisDirectory(s);
+                    });
+
+            // ── Phase 3: match against the spectrum index ──────────
+            matchIsisDirectories(dirs, indexSnapshot);
+
+            return qMakePair(std::move(dirs), scanCount);
+        });
+
+    auto *watcher =
+        new QFutureWatcher<QPair<std::vector<IsisFitDirectory>, int>>(this);
+
+    connect(
+        watcher,
+        &QFutureWatcher<QPair<std::vector<IsisFitDirectory>, int>>::finished,
+        this, [this, watcher]() {
+            auto result = watcher->result();
+            watcher->deleteLater();
+
+            _isisDirs     = std::move(result.first);
+            int scanCount = result.second;
+
+            _asyncBusy = false;
+            _isisScanButton->setEnabled(true);
+            _isisProgress->setVisible(false);
+
+            LOG_INFO("FitImport",
+                     QString("ISIS scan complete: %1 directories found")
+                         .arg(scanCount));
+
+            if (_isisDirs.empty()) {
+                _statusLabel->setText("No ISIS output directories found. Each "
+                                      "directory must contain "
+                                      "both spectrum_properties.txt and "
+                                      "spectroscopy_results.tex.");
+                return;
+            }
+            updateIsisPreviewTable();
+        });
+
+    watcher->setFuture(future);
+}
+
+void SpectralFitImportPage::updateIsisPreviewTable() {
+    _previewTree->clear();
+    _previewTree->setUpdatesEnabled(false);
+
+    static constexpr int MAX_PREVIEW_DIRS     = 200;
+    static constexpr int MAX_CHILDREN_PER_DIR = 10;
+
+    int totalDirs    = static_cast<int>(_isisDirs.size());
+    int fullyMatched = 0, partialMatched = 0, unmatched = 0;
+    int totalSpecMatch = 0, totalSpecAll = 0;
+    int twoComponent = 0, withElements = 0;
+
+    for (const auto &dir : _isisDirs) {
+        totalSpecAll += dir.totalSpectra;
+        totalSpecMatch += dir.matchedSpectra;
+        if (!dir.specMatches.empty()) {
+            const auto &s = dir.specMatches.front();
+            if (s.hasComp2)
+                ++twoComponent;
+            if (!s.abundances.isEmpty() || !s.abundances2.isEmpty())
+                ++withElements;
+        }
+        if (!dir.parseOk || dir.matchedSpectra == 0)
+            unmatched++;
+        else if (dir.matchedSpectra == dir.totalSpectra)
+            fullyMatched++;
+        else
+            partialMatched++;
+    }
+
+    int dirsShown = 0;
+    for (const auto &dir : _isisDirs) {
+        if (dirsShown >= MAX_PREVIEW_DIRS)
+            break;
+        dirsShown++;
+
+        QTreeWidgetItem *dirItem = new QTreeWidgetItem;
+
+        QString relPath = dir.dirPath;
+        if (!_isisRootFolder.isEmpty() && relPath.startsWith(_isisRootFolder)) {
+            relPath = relPath.mid(_isisRootFolder.length());
+            if (relPath.startsWith('/') || relPath.startsWith('\\'))
+                relPath = relPath.mid(1);
+        }
+        if (relPath.isEmpty())
+            relPath = dir.gridDirName;
+        dirItem->setText(0, relPath);
+        dirItem->setText(1, dir.grid.isEmpty() ? dir.gridDirName : dir.grid);
+
+        if (!dir.parseOk) {
+            dirItem->setText(2, "(parse error)");
+            dirItem->setForeground(2, QBrush(Qt::red));
+        } else if (!dir.specMatches.empty() &&
+                   dir.specMatches.front().matchedStar) {
+            auto    star = dir.specMatches.front().matchedStar;
+            QString name = star->getAlias();
+            if (name.isEmpty())
+                name = star->getSourceId();
+            if (name.isEmpty())
+                name = star->getId();
+            dirItem->setText(2, name);
+        } else {
+            dirItem->setText(2, "(no star found)");
+            dirItem->setForeground(2, QBrush(Qt::red));
+        }
+
+        if (dir.parseOk && !dir.specMatches.empty()) {
+            const auto &s = dir.specMatches.front();
+            QStringList params;
+            if (s.teff > 0)
+                params << QString("Teff=%1").arg(s.teff, 0, 'f', 0);
+            if (s.logg > 0)
+                params << QString("logg=%1").arg(s.logg, 0, 'f', 2);
+            if (s.he != 0)
+                params << QString("He=%1").arg(s.he, 0, 'f', 2);
+            if (s.hasComp2) {
+                params << "2 comp";
+                if (s.teff2 > 0)
+                    params << QString("Teff₂=%1").arg(s.teff2, 0, 'f', 0);
+                if (s.logg2 > 0)
+                    params << QString("logg₂=%1").arg(s.logg2, 0, 'f', 2);
+                if (s.surRatio > 0)
+                    params << QString("sur=%1").arg(s.surRatio, 0, 'f', 3);
+            }
+            if (!s.abundances.isEmpty())
+                params << QString("%1 elem").arg(s.abundances.size());
+            if (!s.abundances2.isEmpty())
+                params << QString("%1 elem₂").arg(s.abundances2.size());
+            if (dir.chi2 > 0)
+                params << QString("χ²=%1").arg(dir.chi2, 0, 'f', 2);
+            dirItem->setText(3, params.join(", "));
+        }
+
+        if (!dir.parseOk) {
+            dirItem->setText(4, dir.parseError);
+            dirItem->setForeground(4, QBrush(Qt::red));
+        } else if (dir.matchedSpectra == dir.totalSpectra &&
+                   dir.totalSpectra > 0) {
+            dirItem->setText(4, QString("%1/%1 matched").arg(dir.totalSpectra));
+            dirItem->setForeground(4, QBrush(QColor(0, 150, 0)));
+        } else if (dir.matchedSpectra > 0) {
+            dirItem->setText(4, QString("%1/%2 matched")
+                                    .arg(dir.matchedSpectra)
+                                    .arg(dir.totalSpectra));
+            dirItem->setForeground(4, QBrush(QColor(200, 150, 0)));
+        } else {
+            dirItem->setText(4, QString("0/%1 matched").arg(dir.totalSpectra));
+            dirItem->setForeground(4, QBrush(Qt::red));
+        }
+
+        int childrenShown = 0;
+        for (const auto &sm : dir.specMatches) {
+            if (childrenShown >= MAX_CHILDREN_PER_DIR) {
+                int remaining =
+                    static_cast<int>(dir.specMatches.size()) - childrenShown;
+                QTreeWidgetItem *more = new QTreeWidgetItem;
+                more->setText(
+                    0, QString("... and %1 more spectra").arg(remaining));
+                more->setForeground(0, QBrush(Qt::gray));
+                dirItem->addChild(more);
+                break;
+            }
+            childrenShown++;
+
+            QTreeWidgetItem *specItem = new QTreeWidgetItem;
+            specItem->setText(
+                0,
+                QString("spec %1: %2").arg(sm.specIndex).arg(sm.isisFilename));
+            if (sm.matched && sm.matchedSpectrum) {
+                QString n = QFileInfo(sm.matchedSpectrum->getFile()).fileName();
+                if (n.isEmpty())
+                    n = sm.matchedSpectrum->getId();
+                specItem->setText(2, n);
+            } else {
+                specItem->setText(2, "(no match)");
+                specItem->setForeground(2, QBrush(Qt::red));
+            }
+            QString specParams = QString("vrad=%1±%2")
+                                     .arg(sm.vrad, 0, 'f', 1)
+                                     .arg(sm.vradError, 0, 'f', 1);
+            if (sm.hasComp2)
+                specParams += QString(", vrad₂=%1±%2")
+                                  .arg(sm.vrad2, 0, 'f', 1)
+                                  .arg(sm.vrad2Error, 0, 'f', 1);
+            if (sm.telluric.present)
+                specParams += QString(", airmass=%1, pwv=%2")
+                                  .arg(sm.telluric.airmass, 0, 'f', 2)
+                                  .arg(sm.telluric.pwv, 0, 'f', 2);
+            specItem->setText(3, specParams);
+            QString status = sm.matched ? "✓" : "✗";
+            status += sm.modelDataFile.isEmpty() ? " model ✗" : " model ✓";
+            specItem->setText(4, status);
+            if (!sm.matched)
+                specItem->setForeground(4, QBrush(Qt::red));
+            dirItem->addChild(specItem);
+        }
+        _previewTree->addTopLevelItem(dirItem);
+    }
+
+    for (int i = 0; i < _previewTree->columnCount(); ++i)
+        _previewTree->resizeColumnToContents(i);
+    _previewTree->setUpdatesEnabled(true);
+
+    QString statusText = QString("Found %1 ISIS directories - %2 fully "
+                                 "matched, %3 partial, %4 unmatched "
+                                 "(%5/%6 spectra matched)")
+                             .arg(totalDirs)
+                             .arg(fullyMatched)
+                             .arg(partialMatched)
+                             .arg(unmatched)
+                             .arg(totalSpecMatch)
+                             .arg(totalSpecAll);
+    if (twoComponent > 0 || withElements > 0)
+        statusText += QString(" - %1 two-component, %2 with element abundances")
+                          .arg(twoComponent)
+                          .arg(withElements);
+    if (totalDirs > MAX_PREVIEW_DIRS)
+        statusText +=
+            QString(" - showing first %1 directories").arg(MAX_PREVIEW_DIRS);
+    _statusLabel->setText(statusText);
+}
+
+void SpectralFitImportPage::setupMappingPage()
+{
+    _mappingPage = new QWidget;
+    QVBoxLayout* layout = new QVBoxLayout(_mappingPage);
+    QLabel* stub = new QLabel(
+        "<i>Raw parameter table import is not yet implemented. "
+        "This will be available in a future version.</i>");
+    stub->setWordWrap(true);
+    stub->setAlignment(Qt::AlignCenter);
+    layout->addWidget(stub);
+    layout->addStretch();
+}
+
+// ════════════════════════════════════════════════════════════════
+// Lifecycle
+// ════════════════════════════════════════════════════════════════
+
+void SpectralFitImportPage::initializePage()
+{
+    LOG_INFO("FitImport", "=== Initializing SpectralFitImportPage ===");
+
+    StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
+    if (!importWizard) {
+        LOG_ERROR("FitImport", "Cannot cast wizard to StarImportWizard!");
+        return;
+    }
+
+    auto               controller = importWizard->controller();
+    ImportStagingArea *staging    = importWizard->stagingArea();
+    DatabaseManager   *dbm        = controller->databaseManager();
+    const QString      projectId  = importWizard->project()->getId();
+
+    // Star SHELLS only (DB ∪ new staging stars). Normally already seeded
+    // off-thread by the Spectra page; safety net otherwise.
+    if (!staging->isDbSeeded()) {
+        QApplication::setOverrideCursor(Qt::WaitCursor);
+        staging->seedFromDB(dbm, projectId);
+        QApplication::restoreOverrideCursor();
+    }
+    _importedStars = staging->allStars();
+
+    LOG_INFO("FitImport", QString("Using %1 stars for fit matching")
+             .arg(_importedStars.size()));
+
+    _asyncBusy  = false;
+    _indexBuilt = false;
+    _gaelDirs.clear();
+    _previewTree->clear();
+
+    // If spectra import is still running, tell the user to wait
+    if (isSpectraImportRunning()) {
+        _gaelScanButton->setEnabled(false);
+        _statusLabel->setText(
+            "⏳ Spectra import is still running in the background. "
+            "Please wait for it to finish before scanning for fits.");
+
+        auto* pollTimer = new QTimer(this);
+        pollTimer->setInterval(500);
+        connect(pollTimer, &QTimer::timeout, this, [this, pollTimer]() {
+            if (!isSpectraImportRunning()) {
+                pollTimer->stop();
+                pollTimer->deleteLater();
+                _specIndex = buildSpectrumLookupIndex();
+                _indexBuilt = true;
+                _gaelScanButton->setEnabled(!_gaelFolderEdit->text().trimmed().isEmpty());
+                _isisScanButton->setEnabled(!_isisFolderEdit->text().trimmed().isEmpty());
+                _statusLabel->setText(
+                    QString("Ready - %1 stars, %2 spectra indexed.")
+                    .arg(_specIndex.sourceIdIndex.size())
+                    .arg(_specIndex.totalSpectra));
+            }
+        });
+        pollTimer->start();
+        return;
+    }
+
+    _specIndex = buildSpectrumLookupIndex();
+    _indexBuilt = true;
+
+    _statusLabel->setText(
+        QString("Ready - %1 spectra indexed across %2 stars.")
+        .arg(_specIndex.totalSpectra)
+        .arg(_specIndex.starSpectraIndex.size()));
+}
+
+
+bool SpectralFitImportPage::isSpectraImportRunning() const
+{
+    StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
+    if (!importWizard || !importWizard->controller())
+        return false;
+
+    auto* taskMgr = importWizard->controller()->backgroundTaskManager();
+    return taskMgr && taskMgr->hasActiveTasks();
+}
+
+
+// ════════════════════════════════════════════════════════════════
+// Index building
+// ════════════════════════════════════════════════════════════════
+
+SpectralFitImportPage::SpectrumIndex
+SpectralFitImportPage::buildSpectrumLookupIndex() {
+    LOG_INFO("FitImport",
+             "=== Building (lightweight) spectrum lookup index ===");
+
+    SpectrumIndex      idx;
+    QRegularExpression numericRe("(\\d{10,})");
+
+    // starId -> shell, for attaching spectra to the right star
+    QHash<QString, std::shared_ptr<Star>> starById;
+    starById.reserve(_importedStars.size());
+
+    // ── 1) Star identity index (shells only - no spectra touched) ──────────
+    for (const auto &star : _importedStars) {
+        const QString starId   = star->getId();
+        const QString sourceId = star->getSourceId();
+        const QString alias    = star->getAlias();
+        starById.insert(starId, star);
+
+        if (!sourceId.isEmpty()) {
+            idx.sourceIdIndex[sourceId]           = star;
+            idx.sourceIdIndex[sourceId.toLower()] = star;
+            auto m                                = numericRe.match(sourceId);
+            if (m.hasMatch())
+                idx.sourceIdIndex[m.captured(1)] = star;
+        }
+        if (!alias.isEmpty()) {
+            idx.sourceIdIndex[alias]           = star;
+            idx.sourceIdIndex[alias.toLower()] = star;
+        }
+        if (!starId.isEmpty())
+            idx.sourceIdIndex[starId] = star;
+    }
+
+    // Helper: register one (star, spectrum) into filename + starSpectra indices
+    auto registerSpectrum = [&](const std::shared_ptr<Star>     &star,
+                                const std::shared_ptr<Spectrum> &sp) {
+        idx.starSpectraIndex[star->getId()].push_back(sp);
+        idx.totalSpectra++;
+
+        const QString rawFile = sp->getFile();
+        if (rawFile.isEmpty())
+            return;
+
+        QFileInfo     fi(rawFile);
+        const QString completeBase = fi.completeBaseName().toLower();
+        const QString base         = fi.baseName().toLower();
+        const QString fileName     = fi.fileName().toLower();
+
+        auto pair = qMakePair(star, sp);
+        if (!completeBase.isEmpty())
+            idx.filenameIndex.insert(completeBase, pair);
+        if (!base.isEmpty() && base != completeBase)
+            idx.filenameIndex.insert(base, pair);
+        if (!fileName.isEmpty() && fileName != completeBase)
+            idx.filenameIndex.insert(fileName, pair);
+    };
+
+    // ── 2) In-memory spectra (staged this session OR already loaded) ───────
+    //     NOTE: do NOT gate on hasSpectraLoaded(). That flag only means
+    //     "lazy-loaded from DB"; staged spectra are attached via addSpectrum()
+    //     WITHOUT setting it. The shells from loadStars carry no spectra
+    //     loader, so getSpectra() here never triggers DB I/O - it returns
+    //     in-memory only.
+    QSet<QString> inMemoryIds;
+    for (const auto &star : _importedStars) {
+        for (const auto &sp : star->getSpectra()) { // in-memory, no I/O
+            if (!sp)
+                continue;
+            inMemoryIds.insert(sp->getId());
+            registerSpectrum(star, sp);
+        }
+    }
+
+    // ── 3) DB spectra (lightweight): id + file only → build shells ─────────
+    StarImportWizard *wiz = qobject_cast<StarImportWizard *>(wizard());
+    if (wiz) {
+        DatabaseManager *dbm       = wiz->controller()->databaseManager();
+        const QString    projectId = wiz->project()->getId();
+
+        const auto rows   = dbm->loadSpectraIndex(projectId); // one cheap query
+        int        shells = 0;
+        for (const auto &row : rows) {
+            // ⚠ adjust field names to match your SpectrumIndexRow struct
+            if (inMemoryIds.contains(row.spectrumId))
+                continue; // already have the real object
+            auto starIt = starById.find(row.starId);
+            if (starIt == starById.end())
+                continue; // star not in working set
+
+            auto shell = std::make_shared<Spectrum>();
+            shell->setId(row.spectrumId);
+            shell->setFile(row.file);
+            registerSpectrum(starIt.value(), shell);
+            ++shells;
+        }
+        LOG_INFO(
+            "FitImport",
+            QString("Lightweight index: %1 DB shells + %2 in-memory spectra")
+                .arg(shells)
+                .arg(inMemoryIds.size()));
+    }
+
+    LOG_INFO("FitImport",
+             QString("=== Index complete: %1 sourceId keys, %2 filename keys, "
+                     "%3 spectra across %4 stars ===")
+                 .arg(idx.sourceIdIndex.size())
+                 .arg(idx.filenameIndex.size())
+                 .arg(idx.totalSpectra)
+                 .arg(idx.starSpectraIndex.size()));
+
+    return idx;
+}
+
+// ════════════════════════════════════════════════════════════════
+// Mode switching
+// ════════════════════════════════════════════════════════════════
+
+void SpectralFitImportPage::onImportModeChanged() {
+    if (_gaelRadio->isChecked())
+        _modeStack->setCurrentIndex(0);
+    else if (_isisRadio->isChecked())
+        _modeStack->setCurrentIndex(1);
+    else
+        _modeStack->setCurrentIndex(2);
+
+    _previewTree->clear();
+    _gaelDirs.clear();
+    _isisDirs.clear();
+}
+
+// ════════════════════════════════════════════════════════════════
+// GAEL: folder selection
+// ════════════════════════════════════════════════════════════════
+
+void SpectralFitImportPage::onBrowseGaelFolder()
+{
+    QString folder = QFileDialog::getExistingDirectory(
+        this, "Select GAEL Output Root Folder", _gaelFolderEdit->text());
+    if (folder.isEmpty()) return;
+
+    _gaelFolderEdit->setText(folder);
+    _gaelScanButton->setEnabled(true);
+    _gaelDirs.clear();
+    _previewTree->clear();
+    _statusLabel->setText("Click 'Scan for GAEL Outputs' to search.");
+}
+
+// ════════════════════════════════════════════════════════════════
+// GAEL: async scan - ALL heavy work in background thread
+// ════════════════════════════════════════════════════════════════
+
+void SpectralFitImportPage::onScanGael()
+{
+    if (_asyncBusy) return;
+
+    if (isSpectraImportRunning()) {
+        _statusLabel->setText(
+            "⏳ Spectra import is still running. Please wait for it to finish.");
+        return;
+    }
+
+    QString rootFolder = _gaelFolderEdit->text().trimmed();
+    if (rootFolder.isEmpty()) return;
+
+    _asyncBusy = true;
+    _gaelScanButton->setEnabled(false);
+    _gaelProgress->setVisible(true);
+    _gaelProgress->setRange(0, 0);
+    _gaelRootFolder = rootFolder;
+    _statusLabel->setText("Scanning for GAEL output directories...");
+
+    // Capture the index for the background thread (it's a value type with
+    // shared_ptrs inside, so this is a cheap refcount bump).
+    SpectrumIndex indexSnapshot = _specIndex;
+
+    auto future = QtConcurrent::run(
+        [rootFolder, indexSnapshot]() mutable
+            -> QPair<std::vector<GaelFitDirectory>, int>
+    {
+        // ── Phase 1: Filesystem scan ────────────────────────────
+        // Collect candidate dirs in one pass
+        std::vector<GaelScanResult> scanResults;
+
+        QDirIterator it(rootFolder,
+                        QDir::Dirs | QDir::NoDotAndDotDot,
+                        QDirIterator::Subdirectories);
+
+        // Also check root itself
+        {
+            QDir rootDir(rootFolder);
+            if (rootDir.exists("fit_parameters.csv") &&
+                rootDir.exists("fit_report.tex"))
+            {
+                GaelScanResult scan;
+                scan.dirPath = rootFolder;
+                scan.gridName = rootDir.dirName();
+                QDir parent(rootFolder); parent.cdUp();
+                scan.parentDirName = parent.dirName();
+                scanResults.push_back(std::move(scan));
+            }
+        }
+
+        while (it.hasNext()) {
+            QString dirPath = it.next();
+            QDir dir(dirPath);
+            if (!dir.exists("fit_parameters.csv") ||
+                !dir.exists("fit_report.tex"))
+                continue;
+
+            GaelScanResult scan;
+            scan.dirPath   = dirPath;
+            scan.gridName  = dir.dirName();
+            QDir parent(dirPath); parent.cdUp();
+            scan.parentDirName = parent.dirName();
+
+            // Read the two small text files
+            {  
+                QFile f(dir.filePath("fit_report.tex"));
+                if (f.open(QIODevice::ReadOnly)) {
+                    scan.fitReportContent = f.readAll();
+                } else {
+                    scan.valid = false;
+                    scan.error = "Cannot read fit_report.tex";
+                }
+            }
+            {
+                QFile f(dir.filePath("fit_parameters.csv"));
+                if (f.open(QIODevice::ReadOnly)) {
+                    scan.fitParametersContent = f.readAll();
+                } else {
+                    scan.valid = false;
+                    scan.error = "Cannot read fit_parameters.csv";
+                }
+            }
+
+            // Plotdata files
+            const QStringList pdFiles =
+                dir.entryList({"*_plotdata.csv"}, QDir::Files);
+            for (const QString& pdf : pdFiles) {
+                QString key = pdf;
+                key.chop(static_cast<int>(QString("_plotdata.csv").length()));
+                scan.plotdataFiles[key.toLower()] = dir.filePath(pdf);
+            }
+
+            scanResults.push_back(std::move(scan));
+        }
+
+        int scanCount = static_cast<int>(scanResults.size());
+
+        // ── Phase 2: Parse all dirs in parallel ────────────────
+        std::vector<GaelFitDirectory> dirs =
+            QtConcurrent::blockingMapped<std::vector<GaelFitDirectory>>(
+                scanResults,
+                [](const GaelScanResult& s) -> GaelFitDirectory {
+                    return parseGaelDirectory(s);
+                });
+
+        // ── Phase 3: Match against index ────────────────────────
+        matchGaelDirectories(dirs, indexSnapshot);
+
+        return qMakePair(std::move(dirs), scanCount);
+    });
+
+    auto* watcher = new QFutureWatcher<
+        QPair<std::vector<GaelFitDirectory>, int>>(this);
+
+    connect(watcher,
+            &QFutureWatcher<QPair<std::vector<GaelFitDirectory>, int>>::finished,
+            this, [this, watcher]()
+    {
+        auto result = watcher->result();
+        watcher->deleteLater();
+
+        _gaelDirs = std::move(result.first);
+        int scanCount = result.second;
+
+        _asyncBusy = false;
+        _gaelScanButton->setEnabled(true);
+        _gaelProgress->setVisible(false);
+
+        LOG_INFO("FitImport",
+                 QString("Scan complete: %1 GAEL directories found")
+                 .arg(scanCount));
+
+        if (_gaelDirs.empty()) {
+            _statusLabel->setText(
+                "No GAEL output directories found. Each directory must "
+                "contain both fit_parameters.csv and fit_report.tex.");
+            return;
+        }
+
+        updateGaelPreviewTable();
+    });
+
+    watcher->setFuture(future);
+}
+
+// ════════════════════════════════════════════════════════════════
+// GAEL: parsing
+// ════════════════════════════════════════════════════════════════
+
+GaelFitDirectory SpectralFitImportPage::parseGaelDirectory(
+    const GaelScanResult& scan)
+{
+    GaelFitDirectory dir;
+    dir.dirPath       = scan.dirPath;
+    dir.gridName      = scan.gridName;
+    dir.parentDirName = scan.parentDirName;
+    dir.plotdataFiles = scan.plotdataFiles;
+
+    if (!scan.valid) {
+        dir.parseOk    = false;
+        dir.parseError = scan.error;
+        return dir;
+    }
+
+    dir.specIndexToFilename = parseGaelFitReport(scan.fitReportContent);
+    if (dir.specIndexToFilename.isEmpty()) {
+        dir.parseOk    = false;
+        dir.parseError = "No spectrum identifiers found in fit_report.tex";
+        return dir;
+    }
+
+    parseGaelFitParameters(scan.fitParametersContent, dir);
+    dir.totalSpectra = dir.specIndexToFilename.size();
+    return dir;
+}
+
+QMap<int, QString> SpectralFitImportPage::parseGaelFitReport(
+    const QByteArray& contentBytes)
+{
+    QMap<int, QString> result;
+
+    // Regex needs QString, but this file is small and parsed once per dir.
+    const QString content = QString::fromUtf8(contentBytes);
+
+    // Strategy 1: spec N & \verb|filename|
+    {
+        static const QRegularExpression re(
+            R"(spec\s+(\d+)\s*&\s*\\verb\|([^|]+)\|)");
+        auto matches = re.globalMatch(content);
+        while (matches.hasNext()) {
+            auto m = matches.next();
+            result[m.captured(1).toInt()] = m.captured(2).trimmed();
+        }
+    }
+    if (!result.isEmpty()) return result;
+
+    // Strategy 2: spec N & filename
+    {
+        static const QRegularExpression re(
+            R"(spec\s+(\d+)\s*&\s*([^\s&\\]+))");
+        auto matches = re.globalMatch(content);
+        while (matches.hasNext()) {
+            auto m = matches.next();
+            result[m.captured(1).toInt()] = m.captured(2).trimmed();
+        }
+    }
+    if (!result.isEmpty()) return result;
+
+    // Strategy 3: loose
+    {
+        static const QRegularExpression re(
+            R"(spec(?:trum)?\s*(\d+)\s*[&:=\s]+\s*[\|\"']?([^\s\|\"'\\&]+\.\w+))");
+        auto matches = re.globalMatch(content);
+        while (matches.hasNext()) {
+            auto m = matches.next();
+            result[m.captured(1).toInt()] = m.captured(2).trimmed();
+        }
+    }
+
+    if (result.isEmpty())
+        LOG_WARNING("FitImport", "No spectrum identifiers found in fit_report.tex");
+
+    return result;
+}
+
+void SpectralFitImportPage::parseGaelFitParameters(
+    const QByteArray& content, GaelFitDirectory& dir)
+{
+    const char* p   = content.constData();
+    const char* end = p + content.size();
+
+    while (p < end && *p != '\n') ++p;
+    if (p < end) ++p;
+
+    auto skipWs = [](const char*& cur, const char* lim) {
+        while (cur < lim && (*cur == ' ' || *cur == '\t')) ++cur;
+    };
+
+    while (p < end) {
+        skipWs(p, end);
+
+        const char* paramStart = p;
+        while (p < end && *p != ',' && *p != '\n' && *p != '\r') ++p;
+        const char* paramEnd = p;
+        while (paramEnd > paramStart &&
+               (paramEnd[-1] == ' ' || paramEnd[-1] == '\t'))
+            --paramEnd;
+
+        if (p >= end || *p != ',') {
+            while (p < end && *p != '\n') ++p;
+            if (p < end) ++p;
+            continue;
+        }
+        ++p;
+        skipWs(p, end);
+
+        double value = 0.0;
+        const bool okVal = parseDouble(p, end, value);
+        skipWs(p, end);
+
+        double error = 0.0;
+        if (p < end && *p == ',') {
+            ++p;
+            skipWs(p, end);
+            parseDouble(p, end, error);
+        }
+
+        while (p < end && *p != '\n') ++p;
+        if (p < end) ++p;
+
+        if (!okVal) continue;
+
+        const size_t pLen = static_cast<size_t>(paramEnd - paramStart);
+        auto eq = [&](const char* lit, size_t litLen) {
+            return pLen == litLen && std::memcmp(paramStart, lit, litLen) == 0;
+        };
+
+        if (eq("final_chi2", 10)) { dir.chi2 = value; continue; }
+
+        // "c<N>_<tag>": stripping the component prefix once lets both
+        // components share one dispatch, and lets every row that is not a
+        // stellar parameter - the continuum anchors, which outnumber them by
+        // orders of magnitude - fall through after three character tests.
+        if (pLen > 3 && paramStart[0] == 'c' && paramStart[2] == '_' &&
+            (paramStart[1] == '1' || paramStart[1] == '2'))
+        {
+            const bool   c2   = (paramStart[1] == '2');
+            const char*  tag  = paramStart + 3;
+            const size_t tLen = pLen - 3;
+
+            auto teq = [&](const char* lit, size_t litLen) {
+                return tLen == litLen && std::memcmp(tag, lit, litLen) == 0;
+            };
+            // Any recognised c2_ row is what makes this a two-component fit:
+            // GAEL writes none at all for a component it dropped.
+            auto set = [&](double& v1, double& e1, double& v2, double& e2) {
+                if (c2) { v2 = value; e2 = error; dir.hasComp2 = true; }
+                else    { v1 = value; e1 = error; }
+            };
+
+            if      (teq("teff",  4)) set(dir.teff,  dir.teffError,  dir.teff2,  dir.teff2Error);
+            else if (teq("logg",  4)) set(dir.logg,  dir.loggError,  dir.logg2,  dir.logg2Error);
+            else if (teq("he",    2)) set(dir.he,    dir.heError,    dir.he2,    dir.he2Error);
+            else if (teq("vsini", 5)) set(dir.vsini, dir.vsiniError, dir.vsini2, dir.vsini2Error);
+            else if (teq("zeta",  4)) set(dir.zeta,  dir.zetaError,  dir.zeta2,  dir.zeta2Error);
+            else if (teq("xi",    2)) set(dir.xi,    dir.xiError,    dir.xi2,    dir.xi2Error);
+            else if (teq("z",     1)) set(dir.z,     dir.zError,     dir.z2,     dir.z2Error);
+            else if (teq("vrad",  4)) {
+                if (c2) {
+                    dir.vrad2Tied      = true;
+                    dir.tiedVrad2      = value;
+                    dir.tiedVrad2Error = error;
+                    dir.hasComp2       = true;
+                } else {
+                    dir.vradTied      = true;
+                    dir.tiedVrad      = value;
+                    dir.tiedVradError = error;
+                }
+            }
+            else if (tLen > 6 && std::memcmp(tag, "vrad_d", 6) == 0) {
+                long specIdx;
+                const char* sp = tag + 6;
+                if (parseLong(sp, paramEnd, specIdx) && sp == paramEnd) {
+                    if (c2) {
+                        dir.vrad2PerSpectrum[static_cast<int>(specIdx)] = { value, error };
+                        dir.hasComp2 = true;
+                    } else {
+                        dir.vradPerSpectrum[static_cast<int>(specIdx)] = { value, error };
+                    }
+                }
+            }
+            else if (teq("sur_ratio", 9)) {
+                // c1_sur_ratio is pinned to 1 by GAEL, so only the second
+                // component's ratio says anything.
+                if (c2) {
+                    dir.surRatio      = value;
+                    dir.surRatioError = error;
+                    dir.hasComp2      = true;
+                }
+            }
+            else if (tLen <= 2 && tag[0] >= 'A' && tag[0] <= 'Z') {
+                // Whatever is left and looks like a grid species name ("FE")
+                // is an element abundance - the grid decides which exist, so
+                // the element table is the only filter. The upper-case gate
+                // keeps the QString out of every other row.
+                const QString sym =
+                    QString::fromLatin1(tag, static_cast<int>(tLen));
+                if (astra::elements::indexOfSymbol(sym) >= 0) {
+                    if (c2) {
+                        dir.abundances2.insert(sym, { value, error });
+                        dir.hasComp2 = true;
+                    } else {
+                        dir.abundances.insert(sym, { value, error });
+                    }
+                }
+            }
+        }
+        // Telluric parameters carry the spectrum's file stem as a prefix
+        // ("<stem>_airmass"), so they can only be matched by suffix. The
+        // continuum anchors share that prefix but always end in a digit,
+        // which is what keeps them out of the comparisons below.
+        else if (pLen > 4 && (paramEnd[-1] < '0' || paramEnd[-1] > '9')) {
+            auto tail = [&](const char* lit, size_t litLen) {
+                return pLen > litLen &&
+                       std::memcmp(paramEnd - litLen, lit, litLen) == 0;
+            };
+
+            int    which   = -1;
+            size_t tailLen = 0;
+            if      (tail("_airmass",  8)) { which = 0; tailLen = 8; }
+            else if (tail("_pwv",      4)) { which = 1; tailLen = 4; }
+            else if (tail("_barycorr", 9)) { which = 2; tailLen = 9; }
+
+            if (which >= 0) {
+                const QString stem =
+                    QString::fromLatin1(paramStart,
+                                        static_cast<int>(pLen - tailLen))
+                        .toLower();
+                FitTelluricParams& t = dir.telluricByStem[stem];
+                t.present = true;
+                if (which == 0)      { t.airmass = value; t.airmassError = error; }
+                else if (which == 1) { t.pwv     = value; t.pwvError     = error; }
+                else                 { t.barycorr = value; }
+            }
+        }
+    }
+}
+
+// ════════════════════════════════════════════════════════════════
+// GAEL: matching - static, no per-item logging
+// ════════════════════════════════════════════════════════════════
+
+void SpectralFitImportPage::matchGaelDirectories(
+    std::vector<GaelFitDirectory>& dirs,
+    const SpectrumIndex& index)
+{
+    LOG_INFO("FitImport", QString("Matching %1 directories against index "
+             "(%2 filename keys, %3 sourceId keys)")
+             .arg(dirs.size())
+             .arg(index.filenameIndex.size())
+             .arg(index.sourceIdIndex.size()));
+
+    int totalMatched = 0;
+
+    for (auto& dir : dirs) {
+        dir.specMatches.clear();
+        dir.matchedSpectra = 0;
+
+        if (!dir.parseOk)
+            continue;
+
+        // ── Step 1: identify the star ───────────────────────────
+        std::shared_ptr<Star> dirStar;
+
+        // Try parent dir as sourceId
+        auto trySourceId = [&](const QString& key) -> bool {
+            auto it = index.sourceIdIndex.find(key);
+            if (it != index.sourceIdIndex.end()) {
+                dirStar = it.value();
+                return true;
+            }
+            return false;
+        };
+
+        trySourceId(dir.parentDirName) ||
+        trySourceId(dir.parentDirName.toLower()) ||
+        trySourceId(dir.gridName) ||
+        trySourceId(dir.gridName.toLower());
+
+        // Probe filenames if star not found yet
+        if (!dirStar) {
+            for (auto it = dir.specIndexToFilename.cbegin();
+                 !dirStar && it != dir.specIndexToFilename.cend(); ++it) {
+                QFileInfo fi(it.value());
+                for (const QString& key : {
+                         fi.completeBaseName().toLower(),
+                         fi.baseName().toLower(),
+                         fi.fileName().toLower(),
+                         it.value().toLower()}) {
+                    auto fnIt = index.filenameIndex.find(key);
+                    if (fnIt != index.filenameIndex.end()) {
+                        dirStar = fnIt.value().first;
+                        break;
+                    }
+                }
+            }
+        }
+
+        // ── Step 2: match each spectrum ─────────────────────────
+        for (auto it = dir.specIndexToFilename.cbegin();
+             it != dir.specIndexToFilename.cend(); ++it)
+        {
+            int specIdx      = it.key();
+            QString filename = it.value();
+
+            GaelFitDirectory::SpecMatch sm;
+            sm.specIndex     = specIdx;
+            sm.gaelFilename = filename;
+
+            // Radial velocity
+            if (dir.vradTied) {
+                sm.vrad      = dir.tiedVrad;
+                sm.vradError = dir.tiedVradError;
+            } else if (dir.vradPerSpectrum.contains(specIdx)) {
+                sm.vrad      = dir.vradPerSpectrum[specIdx].first;
+                sm.vradError = dir.vradPerSpectrum[specIdx].second;
+            }
+            if (dir.vrad2Tied) {
+                sm.vrad2      = dir.tiedVrad2;
+                sm.vrad2Error = dir.tiedVrad2Error;
+            } else if (dir.vrad2PerSpectrum.contains(specIdx)) {
+                sm.vrad2      = dir.vrad2PerSpectrum[specIdx].first;
+                sm.vrad2Error = dir.vrad2PerSpectrum[specIdx].second;
+            }
+
+            // Plotdata file lookup
+            QFileInfo fi(filename);
+            QString completeBase = fi.completeBaseName().toLower();
+            QString base         = fi.baseName().toLower();
+            QString fullName     = fi.fileName().toLower();
+
+            // Telluric parameters are keyed by the same stem GAEL derives
+            // from the spectrum's filename.
+            if (dir.telluricByStem.contains(completeBase))
+                sm.telluric = dir.telluricByStem.value(completeBase);
+            else if (dir.telluricByStem.contains(base))
+                sm.telluric = dir.telluricByStem.value(base);
+
+            if (dir.plotdataFiles.contains(completeBase))
+                sm.plotdataFile = dir.plotdataFiles[completeBase];
+            else if (dir.plotdataFiles.contains(base))
+                sm.plotdataFile = dir.plotdataFiles[base];
+            else if (dir.plotdataFiles.contains(fullName))
+                sm.plotdataFile = dir.plotdataFiles[fullName];
+
+            // Filename index match
+            bool matched = false;
+            for (const QString& key : {completeBase, base, fullName, filename.toLower()}) {
+                auto fnIt = index.filenameIndex.find(key);
+                if (fnIt != index.filenameIndex.end()) {
+                    sm.matchedStar     = fnIt.value().first;
+                    sm.matchedSpectrum = fnIt.value().second;
+                    sm.matched         = true;
+                    matched            = true;
+                    if (!dirStar) dirStar = sm.matchedStar;
+                    break;
+                }
+            }
+
+            // Fallback: search within the star's own spectra
+            if (!matched && dirStar) {
+                auto sIt = index.starSpectraIndex.find(dirStar->getId());
+                if (sIt != index.starSpectraIndex.end()) {
+                    for (const auto& sp : sIt.value()) {
+                        QFileInfo spFi(sp->getFile());
+                        QString spCB = spFi.completeBaseName().toLower();
+                        QString spB  = spFi.baseName().toLower();
+                        QString spFN = spFi.fileName().toLower();
+
+                        if (spCB == completeBase || spB == base ||
+                            spB == completeBase || spCB == base ||
+                            spFN == fullName)
+                        {
+                            sm.matchedStar     = dirStar;
+                            sm.matchedSpectrum = sp;
+                            sm.matched         = true;
+                            matched            = true;
+                            break;
+                        }
+                    }
+                }
+            }
+
+            if (sm.matched) dir.matchedSpectra++;
+            dir.specMatches.push_back(std::move(sm));
+        }
+
+        totalMatched += dir.matchedSpectra;
+    }
+
+    LOG_INFO("FitImport", QString("Matching complete: %1 total spectra matched")
+             .arg(totalMatched));
+}
+
+bool SpectralFitImportPage::loadIsisModelData(
+    const QString &filepath, std::vector<double> &wavelengths,
+    std::vector<double> &modelFluxes, std::vector<double> &rebinnedFluxes,
+    std::vector<double> &rebinnedSigmas, std::vector<double> &modelSplines,
+    std::vector<uint8_t> &modelIgnore) {
+    QFile file(filepath);
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    const QByteArray data = file.readAll();
+    file.close();
+
+    wavelengths.clear();
+    modelFluxes.clear();
+    rebinnedFluxes.clear();
+    rebinnedSigmas.clear();
+    modelSplines.clear();
+    modelIgnore.clear();
+
+    const char *p   = data.constData();
+    const char *end = p + data.size();
+
+    auto skipWs = [&] {
+        while (p < end && (*p == ' ' || *p == '\t'))
+            ++p;
+    };
+    auto nextLine = [&] {
+        while (p < end && *p != '\n')
+            ++p;
+        if (p < end)
+            ++p;
+    };
+
+    while (p < end) {
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n'))
+            ++p;
+        if (p >= end)
+            break;
+
+        double wl, model, cont, flux, sig;
+        long   flag;
+        skipWs();
+        if (!parseDouble(p, end, wl)) {
+            nextLine();
+            continue;
+        }
+        skipWs();
+        if (!parseDouble(p, end, model)) {
+            nextLine();
+            continue;
+        }
+        skipWs();
+        if (!parseDouble(p, end, cont)) {
+            nextLine();
+            continue;
+        }
+        skipWs();
+        if (!parseDouble(p, end, flux)) {
+            nextLine();
+            continue;
+        }
+        skipWs();
+        if (!parseDouble(p, end, sig)) {
+            nextLine();
+            continue;
+        }
+        skipWs();
+        if (!parseLong(p, end, flag)) {
+            nextLine();
+            continue;
+        }
+        nextLine();
+
+        wavelengths.push_back(wl);
+        modelFluxes.push_back(model);
+        modelSplines.push_back(cont); // continuum
+        rebinnedFluxes.push_back(flux);
+        rebinnedSigmas.push_back(sig);
+        modelIgnore.push_back(static_cast<uint8_t>(flag != 0 ? 1 : 0));
+    }
+    return !wavelengths.empty();
+}
+
+void SpectralFitImportPage::importIsisFits() {
+    StarImportWizard *importWizard = qobject_cast<StarImportWizard *>(wizard());
+    if (!importWizard || !importWizard->controller())
+        return;
+    auto *controller = importWizard->controller();
+    bool  autoBest   = _markBestFitCheck->isChecked();
+
+    std::vector<IsisFitImportEntry> entries;
+
+    for (const auto &dir : _isisDirs) {
+        if (!dir.parseOk)
+            continue;
+        const QString modelId = dir.grid.isEmpty() ? dir.gridDirName : dir.grid;
+
+        for (const auto &sm : dir.specMatches) {
+            if (!sm.matched || !sm.matchedStar || !sm.matchedSpectrum)
+                continue;
+
+            auto fit                  = std::make_shared<SpectralFit>();
+            fit->teff                 = sm.teff;
+            fit->teffError            = sm.teffError;
+            fit->logg                 = sm.logg;
+            fit->loggError            = sm.loggError;
+            fit->he                   = sm.he;
+            fit->heError              = sm.heError;
+            fit->vsini                = sm.vsini;
+            fit->vsiniError           = sm.vsiniError;
+            fit->macroturbulence      = sm.zeta;
+            fit->macroturbulenceError = sm.zetaError;
+            fit->microturbulence      = sm.xi;
+            fit->microturbulenceError = sm.xiError;
+            fit->metallicity          = sm.z;
+            fit->metallicityError     = sm.zError;
+            fit->radialVelocity       = sm.vrad;
+            fit->radialVelocityError  = sm.vradError;
+            fit->chi2                 = dir.chi2;
+            fit->modelId              = modelId;
+
+            if (sm.hasComp2) {
+                fit->nComponents           = 2;
+                // See importGaelFits(): an absent c2 temperature stays unset
+                // rather than becoming a 0 K component.
+                if (sm.teff2 > 0.0) {
+                    fit->teff2      = sm.teff2;
+                    fit->teff2Error = sm.teff2Error;
+                }
+                fit->logg2                 = sm.logg2;
+                fit->logg2Error            = sm.logg2Error;
+                fit->he2                   = sm.he2;
+                fit->he2Error              = sm.he2Error;
+                fit->vsini2                = sm.vsini2;
+                fit->vsini2Error           = sm.vsini2Error;
+                fit->macroturbulence2      = sm.zeta2;
+                fit->macroturbulence2Error = sm.zeta2Error;
+                fit->microturbulence2      = sm.xi2;
+                fit->microturbulence2Error = sm.xi2Error;
+                fit->metallicity2          = sm.z2;
+                fit->metallicity2Error     = sm.z2Error;
+                fit->radialVelocity2       = sm.vrad2;
+                fit->radialVelocity2Error  = sm.vrad2Error;
+                if (sm.surRatio > 0.0) {
+                    fit->surRatio      = sm.surRatio;
+                    fit->surRatioError = sm.surRatioError;
+                }
+            }
+
+            copyImportedAbundances(sm.abundances, fit->abundances);
+            copyImportedAbundances(sm.abundances2, fit->abundances2);
+            applyImportedTelluric(sm.telluric, *fit);
+
+            IsisFitImportEntry e;
+            e.starId        = sm.matchedStar->getId();
+            e.spectrumId    = sm.matchedSpectrum->getId();
+            e.spectrum      = sm.matchedSpectrum;
+            e.fit           = fit;
+            e.modelDataPath = sm.modelDataFile;
+            entries.push_back(std::move(e));
+        }
+    }
+
+    if (entries.empty()) {
+        _statusLabel->setText("No matched ISIS fits to import.");
+        return;
+    }
+
+    // Auto-best per spectrum (lowest reduced χ²) - identical policy to GAEL
+    if (autoBest) {
+        QHash<QString, std::vector<int>> specGroups;
+        for (int i = 0; i < (int)entries.size(); ++i)
+            specGroups[entries[i].spectrumId].push_back(i);
+
+        for (auto it = specGroups.cbegin(); it != specGroups.cend(); ++it) {
+            double bestChi2 = std::numeric_limits<double>::max();
+            auto existing = entries[it.value().front()].spectrum->getBestFit();
+            if (existing && existing->chi2 > 0.0)
+                bestChi2 = existing->chi2;
+
+            int bestIdx = -1;
+            for (int idx : it.value()) {
+                double c = entries[idx].fit->chi2;
+                if (c > 0.0 && c < bestChi2) {
+                    bestChi2 = c;
+                    bestIdx  = idx;
+                }
+            }
+            if (bestIdx >= 0)
+                entries[bestIdx].fit->isBestFit = true;
+        }
+    }
+
+    int count = static_cast<int>(entries.size());
+    _statusLabel->setText(
+        QString("Queued %1 ISIS spectral fits for background import.")
+            .arg(count));
+    LOG_INFO("FitImport",
+             QString("Queuing %1 ISIS fits for background import").arg(count));
+
+    auto *task = new IsisFitImportTask(std::move(entries), controller);
+    task->setStagingArea(importWizard->stagingArea());
+    controller->backgroundTaskManager()->queueTask(task);
+}
+
+// ════════════════════════════════════════════════════════════════
+// Plotdata loading
+// ════════════════════════════════════════════════════════════════
+
+bool SpectralFitImportPage::loadPlotdata(
+    const QString& filepath,
+    std::vector<double>& wavelengths,
+    std::vector<double>& modelFluxes,
+    std::vector<double>& rebinnedFluxes,
+    std::vector<double>& rebinnedSigmas,
+    std::vector<double>& modelSplines,
+    std::vector<uint8_t>& modelIgnore)
+{
+    QFile file(filepath);
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    const QByteArray data = file.readAll();
+    file.close();
+
+    wavelengths.clear();
+    modelFluxes.clear();
+    rebinnedFluxes.clear();
+    rebinnedSigmas.clear();
+    modelSplines.clear();
+    modelIgnore.clear();
+
+    const char* const begin = data.constData();
+    const char* const end   = begin + data.size();
+
+    // Newline count via raw pointer (no operator[] bounds check)
+    size_t newlines = 0;
+    for (const char* c = begin; c != end; ++c)
+        if (*c == '\n') ++newlines;
+    if (newlines > 1) {
+        wavelengths.reserve(newlines);
+        modelFluxes.reserve(newlines);
+        rebinnedFluxes.reserve(newlines);
+        rebinnedSigmas.reserve(newlines);
+        modelSplines.reserve(newlines);
+        modelIgnore.reserve(newlines);
+    }
+
+    const char* p = begin;
+
+    // Skip header
+    while (p < end && *p != '\n') ++p;
+    if (p < end) ++p;
+
+    auto skipToNextLine = [&]() {
+        while (p < end && *p != '\n') ++p;
+        if (p < end) ++p;
+    };
+
+    while (p < end) {
+        while (p < end && (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n'))
+            ++p;
+        if (p >= end) break;
+
+        double lambda, flux, sigma, model, spline;
+        long   ignore;
+
+        if (!parseDouble(p, end, lambda)) { skipToNextLine(); continue; }
+        if (p < end && *p == ',') ++p;
+        if (!parseDouble(p, end, flux))   { skipToNextLine(); continue; }
+        if (p < end && *p == ',') ++p;
+        if (!parseDouble(p, end, sigma))  { skipToNextLine(); continue; }
+        if (p < end && *p == ',') ++p;
+        if (!parseDouble(p, end, model))  { skipToNextLine(); continue; }
+        if (p < end && *p == ',') ++p;
+        if (!parseDouble(p, end, spline)) { skipToNextLine(); continue; }
+        if (p < end && *p == ',') ++p;
+        if (!parseLong  (p, end, ignore)) { skipToNextLine(); continue; }
+
+        skipToNextLine();
+
+        wavelengths.push_back(lambda);
+        rebinnedFluxes.push_back(flux);
+        rebinnedSigmas.push_back(sigma);
+        modelFluxes.push_back(model);
+        modelSplines.push_back(spline);
+        modelIgnore.push_back(static_cast<uint8_t>(ignore));
+    }
+
+    return !wavelengths.empty();
+}
+
+// ════════════════════════════════════════════════════════════════
+// Preview table - LIMITED rows, no expandAll on large datasets
+// ════════════════════════════════════════════════════════════════
+
+void SpectralFitImportPage::updateGaelPreviewTable()
+{
+    _previewTree->clear();
+    _previewTree->setUpdatesEnabled(false);
+
+    static constexpr int MAX_PREVIEW_DIRS     = 200;
+    static constexpr int MAX_CHILDREN_PER_DIR = 10;
+
+    int totalDirs      = static_cast<int>(_gaelDirs.size());
+    int fullyMatched   = 0;
+    int partialMatched = 0;
+    int unmatched      = 0;
+    int totalSpecMatch = 0;
+    int totalSpecAll   = 0;
+    int twoComponent   = 0;
+    int withElements   = 0;
+
+    // First pass: compute totals (cheap, no widget work)
+    for (const auto& dir : _gaelDirs) {
+        totalSpecAll += dir.totalSpectra;
+        totalSpecMatch += dir.matchedSpectra;
+        if (dir.hasComp2) twoComponent++;
+        if (!dir.abundances.isEmpty() || !dir.abundances2.isEmpty())
+            withElements++;
+
+        if (!dir.parseOk || dir.matchedSpectra == 0)
+            unmatched++;
+        else if (dir.matchedSpectra == dir.totalSpectra)
+            fullyMatched++;
+        else
+            partialMatched++;
+    }
+
+    // Second pass: build limited preview items
+    int dirsShown = 0;
+    for (const auto& dir : _gaelDirs) {
+        if (dirsShown >= MAX_PREVIEW_DIRS) break;
+        dirsShown++;
+
+        QTreeWidgetItem* dirItem = new QTreeWidgetItem;
+
+        // Column 0: relative path
+        QString relPath = dir.dirPath;
+        if (!_gaelRootFolder.isEmpty() &&
+            relPath.startsWith(_gaelRootFolder)) {
+            relPath = relPath.mid(_gaelRootFolder.length());
+            if (relPath.startsWith('/') || relPath.startsWith('\\'))
+                relPath = relPath.mid(1);
+        }
+        if (relPath.isEmpty()) relPath = dir.gridName;
+        dirItem->setText(0, relPath);
+
+        // Column 1: grid
+        dirItem->setText(1, dir.gridName);
+
+        // Column 2: star
+        if (!dir.parseOk) {
+            dirItem->setText(2, "(parse error)");
+            dirItem->setForeground(2, QBrush(Qt::red));
+        } else if (!dir.specMatches.empty() &&
+                   dir.specMatches.front().matchedStar) {
+            auto star = dir.specMatches.front().matchedStar;
+            QString name = star->getAlias();
+            if (name.isEmpty()) name = star->getSourceId();
+            if (name.isEmpty()) name = star->getId();
+            dirItem->setText(2, name);
+        } else {
+            dirItem->setText(2, "(no star found)");
+            dirItem->setForeground(2, QBrush(Qt::red));
+        }
+
+        // Column 3: key parameters
+        if (dir.parseOk) {
+            QStringList params;
+            if (dir.teff > 0)
+                params << QString("Teff=%1").arg(dir.teff, 0, 'f', 0);
+            if (dir.logg > 0)
+                params << QString("logg=%1").arg(dir.logg, 0, 'f', 2);
+            if (dir.he != 0)
+                params << QString("He=%1").arg(dir.he, 0, 'f', 2);
+            if (dir.hasComp2) {
+                params << "2 comp";
+                if (dir.teff2 > 0)
+                    params << QString("Teff₂=%1").arg(dir.teff2, 0, 'f', 0);
+                if (dir.logg2 > 0)
+                    params << QString("logg₂=%1").arg(dir.logg2, 0, 'f', 2);
+                if (dir.surRatio > 0)
+                    params << QString("sur=%1").arg(dir.surRatio, 0, 'f', 3);
+            }
+            if (!dir.abundances.isEmpty())
+                params << QString("%1 elem").arg(dir.abundances.size());
+            if (!dir.abundances2.isEmpty())
+                params << QString("%1 elem₂").arg(dir.abundances2.size());
+            dirItem->setText(3, params.join(", "));
+        }
+
+        // Column 4: match status
+        if (!dir.parseOk) {
+            dirItem->setText(4, dir.parseError);
+            dirItem->setForeground(4, QBrush(Qt::red));
+        } else if (dir.matchedSpectra == dir.totalSpectra &&
+                   dir.totalSpectra > 0) {
+            dirItem->setText(4, QString("%1/%1 matched")
+                                .arg(dir.totalSpectra));
+            dirItem->setForeground(4, QBrush(QColor(0, 150, 0)));
+        } else if (dir.matchedSpectra > 0) {
+            dirItem->setText(4, QString("%1/%2 matched")
+                                .arg(dir.matchedSpectra)
+                                .arg(dir.totalSpectra));
+            dirItem->setForeground(4, QBrush(QColor(200, 150, 0)));
+        } else {
+            dirItem->setText(4, QString("0/%1 matched")
+                                .arg(dir.totalSpectra));
+            dirItem->setForeground(4, QBrush(Qt::red));
+        }
+
+        // Children: limited count per dir
+        int childrenShown = 0;
+        for (const auto& sm : dir.specMatches) {
+            if (childrenShown >= MAX_CHILDREN_PER_DIR) {
+                int remaining = static_cast<int>(dir.specMatches.size()) - childrenShown;
+                QTreeWidgetItem* moreItem = new QTreeWidgetItem;
+                moreItem->setText(0, QString("... and %1 more spectra").arg(remaining));
+                moreItem->setForeground(0, QBrush(Qt::gray));
+                dirItem->addChild(moreItem);
+                break;
+            }
+            childrenShown++;
+
+            QTreeWidgetItem* specItem = new QTreeWidgetItem;
+            specItem->setText(0, QString("spec %1: %2")
+                                 .arg(sm.specIndex).arg(sm.gaelFilename));
+
+            if (sm.matched && sm.matchedSpectrum) {
+                QString specName = QFileInfo(sm.matchedSpectrum->getFile()).fileName();
+                if (specName.isEmpty()) specName = sm.matchedSpectrum->getId();
+                specItem->setText(2, specName);
+            } else {
+                specItem->setText(2, "(no match)");
+                specItem->setForeground(2, QBrush(Qt::red));
+            }
+
+            QString specParams = QString("vrad=%1±%2")
+                                     .arg(sm.vrad, 0, 'f', 1)
+                                     .arg(sm.vradError, 0, 'f', 1);
+            if (dir.hasComp2)
+                specParams += QString(", vrad₂=%1±%2")
+                                  .arg(sm.vrad2, 0, 'f', 1)
+                                  .arg(sm.vrad2Error, 0, 'f', 1);
+            if (sm.telluric.present)
+                specParams += QString(", airmass=%1, pwv=%2")
+                                  .arg(sm.telluric.airmass, 0, 'f', 2)
+                                  .arg(sm.telluric.pwv, 0, 'f', 2);
+            specItem->setText(3, specParams);
+
+            QString status = sm.matched ? "✓" : "✗";
+            status += sm.plotdataFile.isEmpty() ? " plotdata ✗" : " plotdata ✓";
+            specItem->setText(4, status);
+            if (!sm.matched)
+                specItem->setForeground(4, QBrush(Qt::red));
+
+            dirItem->addChild(specItem);
+        }
+
+        _previewTree->addTopLevelItem(dirItem);
+    }
+
+    // Only expand top-level items (don't expand children by default)
+    // Users can click to expand individual dirs
+    // DON'T call expandAll() - it's O(n) widget updates
+
+    // Resize columns once with the limited dataset
+    for (int i = 0; i < _previewTree->columnCount(); ++i)
+        _previewTree->resizeColumnToContents(i);
+
+    _previewTree->setUpdatesEnabled(true);
+
+    // Status with full accurate counts (not limited by preview)
+    QString statusText = QString(
+        "Found %1 GAEL directories - %2 fully matched, "
+        "%3 partial, %4 unmatched (%5/%6 spectra matched)")
+        .arg(totalDirs).arg(fullyMatched).arg(partialMatched)
+        .arg(unmatched).arg(totalSpecMatch).arg(totalSpecAll);
+
+    if (twoComponent > 0 || withElements > 0)
+        statusText += QString(" - %1 two-component, %2 with element abundances")
+                      .arg(twoComponent).arg(withElements);
+
+    if (totalDirs > MAX_PREVIEW_DIRS)
+        statusText += QString(" - showing first %1 directories").arg(MAX_PREVIEW_DIRS);
+
+    _statusLabel->setText(statusText);
+}
+
+// ════════════════════════════════════════════════════════════════
+// Import
+// ════════════════════════════════════════════════════════════════
+
+void SpectralFitImportPage::importGaelFits()
+{
+    StarImportWizard* importWizard = qobject_cast<StarImportWizard*>(wizard());
+    if (!importWizard || !importWizard->controller()) return;
+
+    auto* controller = importWizard->controller();
+    bool autoBest = _markBestFitCheck->isChecked();
+
+    // Build import entries (don't mark best fit yet)
+    std::vector<GaelFitImportEntry> entries;
+
+    for (const auto& dir : _gaelDirs) {
+        if (!dir.parseOk) continue;
+
+        for (const auto& sm : dir.specMatches) {
+            if (!sm.matched || !sm.matchedStar || !sm.matchedSpectrum)
+                continue;
+
+            auto fit = std::make_shared<SpectralFit>();
+            fit->teff                 = dir.teff;
+            fit->teffError            = dir.teffError;
+            fit->logg                 = dir.logg;
+            fit->loggError            = dir.loggError;
+            fit->he                   = dir.he;
+            fit->heError              = dir.heError;
+            fit->vsini                = dir.vsini;
+            fit->vsiniError           = dir.vsiniError;
+            fit->macroturbulence      = dir.zeta;
+            fit->macroturbulenceError = dir.zetaError;
+            fit->microturbulence      = dir.xi;
+            fit->microturbulenceError = dir.xiError;
+            fit->metallicity          = dir.z;
+            fit->metallicityError     = dir.zError;
+            fit->chi2                 = dir.chi2;
+            fit->radialVelocity       = sm.vrad;
+            fit->radialVelocityError  = sm.vradError;
+            fit->modelId              = dir.gridName;
+
+            if (dir.hasComp2) {
+                fit->nComponents           = 2;
+                // Leaving teff2 at its unset default when the report carried
+                // no c2 temperature keeps SpectralFit::hasSecondComponent()
+                // from advertising a 0 K star.
+                if (dir.teff2 > 0.0) {
+                    fit->teff2      = dir.teff2;
+                    fit->teff2Error = dir.teff2Error;
+                }
+                fit->logg2                 = dir.logg2;
+                fit->logg2Error            = dir.logg2Error;
+                fit->he2                   = dir.he2;
+                fit->he2Error              = dir.he2Error;
+                fit->vsini2                = dir.vsini2;
+                fit->vsini2Error           = dir.vsini2Error;
+                fit->macroturbulence2      = dir.zeta2;
+                fit->macroturbulence2Error = dir.zeta2Error;
+                fit->microturbulence2      = dir.xi2;
+                fit->microturbulence2Error = dir.xi2Error;
+                fit->metallicity2          = dir.z2;
+                fit->metallicity2Error     = dir.z2Error;
+                fit->radialVelocity2       = sm.vrad2;
+                fit->radialVelocity2Error  = sm.vrad2Error;
+                if (dir.surRatio > 0.0) {
+                    fit->surRatio      = dir.surRatio;
+                    fit->surRatioError = dir.surRatioError;
+                }
+            }
+
+            copyImportedAbundances(dir.abundances,  fit->abundances);
+            copyImportedAbundances(dir.abundances2, fit->abundances2);
+            applyImportedTelluric(sm.telluric, *fit);
+
+            GaelFitImportEntry entry;
+            entry.starId       = sm.matchedStar->getId();
+            entry.spectrumId   = sm.matchedSpectrum->getId();
+            entry.spectrum     = sm.matchedSpectrum;
+            entry.fit          = fit;
+            entry.plotdataPath = sm.plotdataFile;
+            entries.push_back(std::move(entry));
+        }
+    }
+
+    if (entries.empty()) {
+        _statusLabel->setText("No matched fits to import.");
+        return;
+    }
+
+    // Auto-determine best fit per spectrum (lowest reduced χ²)
+    if (autoBest) {
+        QHash<QString, std::vector<int>> specGroups;
+        for (int i = 0; i < static_cast<int>(entries.size()); ++i)
+            specGroups[entries[i].spectrumId].push_back(i);
+
+        int bestCount = 0;
+
+        for (auto it = specGroups.cbegin(); it != specGroups.cend(); ++it) {
+            const auto& indices = it.value();
+
+            // Start from the existing best fit's chi² (if any)
+            double bestChi2 = std::numeric_limits<double>::max();
+            auto existingBest = entries[indices.front()].spectrum->getBestFit();
+            if (existingBest && existingBest->chi2 > 0.0)
+                bestChi2 = existingBest->chi2;
+
+            // Find the new fit with the lowest chi²
+            int bestIdx = -1;
+            for (int idx : indices) {
+                double chi2 = entries[idx].fit->chi2;
+                if (chi2 > 0.0 && chi2 < bestChi2) {
+                    bestChi2 = chi2;
+                    bestIdx = idx;
+                }
+            }
+
+            // Only mark if a new fit actually beats everything existing
+            if (bestIdx >= 0) {
+                entries[bestIdx].fit->isBestFit = true;
+                bestCount++;
+            }
+        }
+
+        LOG_INFO("FitImport",
+                 QString("Auto-best: marked %1 fits as best across %2 spectra")
+                 .arg(bestCount).arg(specGroups.size()));
+    }
+
+    int count = static_cast<int>(entries.size());
+    _statusLabel->setText(
+        QString("Queued %1 spectral fits for background import.").arg(count));
+
+    LOG_INFO("FitImport",
+             QString("Queuing %1 fits for background import").arg(count));
+
+    auto* task = new GaelFitImportTask(std::move(entries), controller);
+    task->setStagingArea(importWizard->stagingArea());
+    controller->backgroundTaskManager()->queueTask(task);
+}
+
+// ════════════════════════════════════════════════════════════════
+// Validation (Next button)
+// ════════════════════════════════════════════════════════════════
+
+bool SpectralFitImportPage::validatePage() {
+    if (_asyncBusy) {
+        QMessageBox::information(
+            this, "Processing",
+            "Background scanning is still running. Please wait.");
+        return false;
+    }
+
+    if (_isisRadio->isChecked()) {
+        if (_isisDirs.empty()) {
+            auto reply = QMessageBox::question(
+                this, "No Fits Scanned",
+                "No ISIS fit directories have been scanned.\n\n"
+                "Skip this step and continue?",
+                QMessageBox::Yes | QMessageBox::No);
+            return reply == QMessageBox::Yes;
+        }
+        int matched = 0, unmatched = 0, total = 0;
+        for (const auto &dir : _isisDirs)
+            for (const auto &sm : dir.specMatches) {
+                ++total;
+                sm.matched ? ++matched : ++unmatched;
+            }
+        QString msg =
+            QString("%1 ISIS directories scanned, %2 total spectra.\n\n"
+                    "• %3 matched (will receive fit data)\n"
+                    "• %4 unmatched (skipped)\n\n"
+                    "Import will run in the background. Continue?")
+                .arg(_isisDirs.size())
+                .arg(total)
+                .arg(matched)
+                .arg(unmatched);
+        if (QMessageBox::question(this, "Confirm Import", msg,
+                                  QMessageBox::Yes | QMessageBox::No) !=
+            QMessageBox::Yes)
+            return false;
+        importIsisFits();
+        return true;
+    }
+
+    if (!_gaelRadio->isChecked())
+        return true;
+
+    if (_gaelDirs.empty()) {
+        auto reply = QMessageBox::question(this, "No Fits Scanned",
+            "No spectral fit directories have been scanned.\n\n"
+            "Do you want to skip this step and continue?",
+            QMessageBox::Yes | QMessageBox::No);
+        return reply == QMessageBox::Yes;
+    }
+
+    int totalMatched = 0, totalUnmatched = 0, totalSpectra = 0;
+    for (const auto& dir : _gaelDirs) {
+        for (const auto& sm : dir.specMatches) {
+            totalSpectra++;
+            if (sm.matched) totalMatched++;
+            else            totalUnmatched++;
+        }
+    }
+
+    QString msg = QString(
+        "%1 GAEL directories scanned, %2 total spectra.\n\n"
+        "• %3 spectra matched (will receive fit data)\n"
+        "• %4 spectra unmatched (will be skipped)\n\n"
+        "Import will run in the background. Continue?")
+        .arg(_gaelDirs.size()).arg(totalSpectra)
+        .arg(totalMatched).arg(totalUnmatched);
+
+    if (QMessageBox::question(this, "Confirm Import", msg,
+            QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
+        return false;
+
+    importGaelFits();
+    return true;
+}
+
+int SpectralFitImportPage::nextId() const
+{
+    return StarImportWizard::Page_RadialVelocity;
+}

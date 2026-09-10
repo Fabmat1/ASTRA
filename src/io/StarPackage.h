@@ -85,9 +85,6 @@ class StarPackage {
                                        const ProgressFn &progress = {});
 
     // ── Probing ────────────────────────────────────────────────────────────
-    static bool isStarPackage(const QString &filepath);
-    static bool peekVersion(const QString &filepath, quint16 &major,
-                            quint16 &minor);
 };
 
 #endif // STARPACKAGE_H

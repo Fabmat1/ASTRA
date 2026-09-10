@@ -1,13 +1,13 @@
 #include "io/StarPackage.h"
 
-#include "models/ElementAbundances.h"
-#include "models/Instrument.h"
-#include "models/InstrumentMode.h"
-#include "models/Photometry.h"
-#include "models/RadialVelocity.h"
-#include "models/Spectrum.h"
-#include "models/Star.h"
-#include "models/Time.h"
+#include "fitting/ElementAbundances.h"
+#include "core/Instrument.h"
+#include "core/InstrumentMode.h"
+#include "lightcurve/Photometry.h"
+#include "rv/RadialVelocity.h"
+#include "spectra/Spectrum.h"
+#include "core/Star.h"
+#include "core/Time.h"
 
 #include <QDateTime>
 #include <QFile>
@@ -1805,27 +1805,3 @@ StarPackage::ImportResult StarPackage::readFromFile(const QString    &filepath,
     return readFromBuffer(f.readAll(), progress);
 }
 
-bool StarPackage::isStarPackage(const QString &filepath) {
-    QFile f(filepath);
-    if (!f.open(QIODevice::ReadOnly))
-        return false;
-    char magic[8];
-    return f.read(magic, 8) == 8 && std::memcmp(magic, MAGIC, 8) == 0;
-}
-
-bool StarPackage::peekVersion(const QString &filepath, quint16 &major,
-                              quint16 &minor) {
-    QFile f(filepath);
-    if (!f.open(QIODevice::ReadOnly))
-        return false;
-    QByteArray head = f.read(HEADER_SIZE);
-    if (head.size() < HEADER_SIZE ||
-        std::memcmp(head.constData(), MAGIC, 8) != 0)
-        return false;
-    QDataStream ds(head);
-    ds.setByteOrder(QDataStream::LittleEndian);
-    char m[8];
-    ds.readRawData(m, 8);
-    ds >> major >> minor;
-    return true;
-}

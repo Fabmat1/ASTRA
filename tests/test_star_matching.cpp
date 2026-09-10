@@ -5,7 +5,7 @@
 // The cone index is exercised through ConeIndex<int> so the test links against
 // nothing but Qt Core.
 
-#include "utils/StarMatching.h"
+#include "catalog/StarMatching.h"
 
 #include <QStringList>
 #include <QtGlobal>

@@ -26,8 +26,8 @@
 // inside the requested radius, each spectrum is attributed to exactly one
 // star, and progress is reported monotonically to completion.
 // ─────────────────────────────────────────────────────────────────────────────
-#include "utils/spectrafetch/SdssOpticalArchiveClient.h"
-#include "utils/spectrafetch/SpectrumArchiveTypes.h"
+#include "spectra/fetch/SdssOpticalArchiveClient.h"
+#include "spectra/fetch/SpectrumArchiveTypes.h"
 
 #include <QCoreApplication>
 #include <QNetworkAccessManager>

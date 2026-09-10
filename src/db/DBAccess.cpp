@@ -1,4 +1,4 @@
-#include "DBAccess.h"
+#include "db/DBAccess.h"
 #include <QCoreApplication>
 #include <QSqlQuery>
 #include <QSqlError>

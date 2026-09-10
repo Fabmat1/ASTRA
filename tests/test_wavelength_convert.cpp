@@ -5,7 +5,7 @@
 // a wrong conversion here silently shifts every fetched SDSS/LAMOST/APOGEE
 // spectrum by ~1-2 Angstrom, which is a catastrophic RV error.
 // ─────────────────────────────────────────────────────────────────────────────
-#include "utils/spectrafetch/WavelengthConvert.h"
+#include "spectra/fetch/WavelengthConvert.h"
 
 #include <cmath>
 #include <cstdio>

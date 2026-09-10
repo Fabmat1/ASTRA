@@ -1,9 +1,9 @@
-#include "RadialVelocityRepository.h"
-#include "utils/Logger.h"
-#include "DBAccess.h"
-#include "SqlValue.h"
-#include "models/Star.h"
-#include "models/RadialVelocity.h"
+#include "db/RadialVelocityRepository.h"
+#include "app/Logger.h"
+#include "db/DBAccess.h"
+#include "db/SqlValue.h"
+#include "core/Star.h"
+#include "rv/RadialVelocity.h"
 #include <QSqlQuery>
 #include <QSqlError>
 

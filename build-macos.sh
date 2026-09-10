@@ -303,10 +303,10 @@ ln -sf "${DEPS_INC}/ankerl/unordered_dense.h" "${DEPS_INC}/unordered_dense.h"
 # ── 7. Idempotent source patches (no-op if already fixed/committed) ──────────
 # BSD-safe in-place edits via perl. Mirrors build-appimage.sh's self-healing.
 # (a) Missing standard includes some toolchains need.
-PHOTO="${SRC_DIR}/src/models/Photometry.cpp"
+PHOTO="${SRC_DIR}/src/lightcurve/Photometry.cpp"
 grep -q '#include <unordered_set>' "${PHOTO}" || \
   perl -0pi -e 's/(#include <QJsonObject>\n)/$1#include <unordered_set>\n/' "${PHOTO}" || true
-SFIP="${SRC_DIR}/src/importWizard/SpectralFitImportPage.cpp"
+SFIP="${SRC_DIR}/src/importwizard/SpectralFitImportPage.cpp"
 grep -q '#include <charconv>' "${SFIP}" || \
   perl -0pi -e 's/(#include )/#include <charconv>\n$1/' "${SFIP}" || true
 # (b) Strip the x86-only baseline-ISA flags from the top-level CMakeLists —
@@ -718,7 +718,7 @@ fi
 # ISIS only *reads* its tree at runtime, so it ships as data under
 # Contents/share/astra/isis and runs in place. ASTRA points it there via
 # ISIS_SRCDIR / SLSH_PATH / SLANG_MODULE_PATH / PGPLOT_DIR and a private
-# .isisrc (src/utils/IsisEnvironment.cpp) — the reldir CMake bakes in resolves
+# .isisrc (src/fitting/IsisEnvironment.cpp) — the reldir CMake bakes in resolves
 # to Contents/share/astra/isis from Contents/MacOS, and the isis binary is
 # found via IsisEnvironment's <root>/bin/isis fallback.
 if [[ "${ASTRA_BUNDLE_ISIS}" == "1" ]]; then

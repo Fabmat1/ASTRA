@@ -81,7 +81,7 @@ PACMAN_PKGS=(
   mingw-w64-ucrt-x86_64-openblas        # BLAS + LAPACKE for EIGEN_USE_BLAS
   mingw-w64-ucrt-x86_64-boost
   mingw-w64-ucrt-x86_64-tbb
-  mingw-w64-ucrt-x86_64-fftw            # src/fitting/Periodogram.cpp
+  mingw-w64-ucrt-x86_64-fftw            # src/rv/Periodogram.cpp
   mingw-w64-ucrt-x86_64-cfitsio
   mingw-w64-ucrt-x86_64-nlohmann-json
   mingw-w64-ucrt-x86_64-cxxopts

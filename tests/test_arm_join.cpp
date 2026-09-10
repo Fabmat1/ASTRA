@@ -6,7 +6,7 @@
 // a splice that keeps both sides of an overlap hands the fitters a grid that
 // is not monotonic.
 // ─────────────────────────────────────────────────────────────────────────────
-#include "utils/spectrafetch/SpectrumArmJoin.h"
+#include "spectra/fetch/SpectrumArmJoin.h"
 
 #include <cmath>
 #include <cstdio>

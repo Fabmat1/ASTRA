@@ -8,7 +8,7 @@
 // ascending node. Getting that backwards puts a reflection effect's peak half a
 // cycle out, which is exactly wrong and looks entirely plausible on a plot.
 
-#include "utils/LCFitPhysics.h"
+#include "lightcurve/LCFitPhysics.h"
 
 #include <cmath>
 #include <cstdio>

@@ -17,8 +17,8 @@
 // budget, every returned product really is within the match radius of the star
 // it was attributed to, and progress is reported monotonically to completion.
 // ─────────────────────────────────────────────────────────────────────────────
-#include "utils/spectrafetch/EsoArchiveClient.h"
-#include "utils/spectrafetch/SpectrumArchiveTypes.h"
+#include "spectra/fetch/EsoArchiveClient.h"
+#include "spectra/fetch/SpectrumArchiveTypes.h"
 
 #include <QCoreApplication>
 #include <QElapsedTimer>

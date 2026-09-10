@@ -1,6 +1,6 @@
-#include "FitWorker.h"
-#include "FitBackendRegistry.h"
-#include "StdStreamRedirector.h"
+#include "fitting/FitWorker.h"
+#include "fitting/FitBackendRegistry.h"
+#include "fitting/StdStreamRedirector.h"
 
 namespace astra::fitting {
 

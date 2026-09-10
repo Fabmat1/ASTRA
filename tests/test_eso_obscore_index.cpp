@@ -23,10 +23,10 @@
 // The cache lands under this target's own ASTRA_DATA_DIR, not the user's, so
 // running it never replaces a real mirror with a one-collection one.
 // ─────────────────────────────────────────────────────────────────────────────
-#include "utils/AppPaths.h"
-#include "utils/spectrafetch/EsoArchiveClient.h"
-#include "utils/spectrafetch/EsoObsCoreIndex.h"
-#include "utils/spectrafetch/SpectrumArchiveTypes.h"
+#include "app/AppPaths.h"
+#include "spectra/fetch/EsoArchiveClient.h"
+#include "spectra/fetch/EsoObsCoreIndex.h"
+#include "spectra/fetch/SpectrumArchiveTypes.h"
 
 #include <QCoreApplication>
 #include <QElapsedTimer>

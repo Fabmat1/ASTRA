@@ -90,10 +90,10 @@ export DEBIAN_FRONTEND=noninteractive
 
 # ---------- 1. Idempotent source patches (no-op if already committed) ----------
 cd /src
-grep -q '#include <unordered_set>' src/models/Photometry.cpp || \
-  sed -i '/^#include <QJsonObject>/a #include <unordered_set>' src/models/Photometry.cpp
-grep -q '#include <charconv>' src/importWizard/SpectralFitImportPage.cpp || \
-  sed -i '0,/^#include /{s|^#include |#include <charconv>\n#include |}' src/importWizard/SpectralFitImportPage.cpp
+grep -q '#include <unordered_set>' src/lightcurve/Photometry.cpp || \
+  sed -i '/^#include <QJsonObject>/a #include <unordered_set>' src/lightcurve/Photometry.cpp
+grep -q '#include <charconv>' src/importwizard/SpectralFitImportPage.cpp || \
+  sed -i '0,/^#include /{s|^#include |#include <charconv>\n#include |}' src/importwizard/SpectralFitImportPage.cpp
 
 # ---------- 2. Configure & build ASTRA ----------
 rm -rf build AppDir
@@ -168,7 +168,7 @@ cd /src
 # run — their `make` is cheap. ISIS only *reads* its tree at runtime, so it is
 # shipped as data under usr/share/astra/isis and runs in place; ASTRA points it
 # there via ISIS_SRCDIR / SLSH_PATH / SLANG_MODULE_PATH and a private .isisrc
-# (see src/utils/IsisEnvironment.cpp). Set ASTRA_BUNDLE_ISIS=0 to skip.
+# (see src/fitting/IsisEnvironment.cpp). Set ASTRA_BUNDLE_ISIS=0 to skip.
 ISIS_BIN=""
 ISIS_EXTRA_LIBS=()
 if [[ "${ASTRA_BUNDLE_ISIS:-1}" == "1" ]]; then

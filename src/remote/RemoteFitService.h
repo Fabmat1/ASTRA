@@ -1,7 +1,7 @@
 #pragma once
 
 #include "fitting/FitTypes.h"
-#include "models/RemoteHost.h"
+#include "remote/RemoteHost.h"
 
 #include <QMutex>
 #include <QObject>

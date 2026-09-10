@@ -1,6 +1,6 @@
 #pragma once
 
-#include "models/RemoteHost.h"
+#include "remote/RemoteHost.h"
 
 #include <QByteArray>
 #include <QMutex>
@@ -45,7 +45,6 @@ public:
      *  credentials via askpass when allowPrompt is true.  Returns false with
      *  a message when the host is unreachable or auth failed.               */
     bool ensureMaster(QString* err = nullptr, bool allowPrompt = true);
-    bool masterAlive() const;
 
     struct ExecResult {
         int        exitCode = -1;

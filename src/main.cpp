@@ -1,21 +1,21 @@
 #include <QApplication>
-#include "views/MainWindow.h"
-#include "controllers/ApplicationController.h"
-#include "utils/Logger.h"
-#include "utils/AppPaths.h"
+#include "app/ui/MainWindow.h"
+#include "app/ui/ApplicationController.h"
+#include "app/Logger.h"
+#include "app/AppPaths.h"
 #include "db/DatabaseManager.h"
 #include <QMessageBox>
-#include "utils/UiIcons.h"
-#include "utils/UiStyle.h"
-#include "utils/WindowSizing.h"
+#include "app/ui/UiIcons.h"
+#include "app/ui/UiStyle.h"
+#include "app/ui/WindowSizing.h"
 #include "fitting/FitTypes.h"
 #include "fitting/FitBackendRegistry.h"
 #include <QDebug>
 #include <QFont>
 #include <QFontDatabase>
 #include "astra_version.h"
-#include "remote/AskPass.h"
-#include "remote/RemoteSelfTest.h"
+#include "remote/ui/AskPass.h"
+#include "remote/ui/RemoteSelfTest.h"
 
 int main(int argc, char *argv[])
 {

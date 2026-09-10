@@ -2,7 +2,7 @@
 
 #include <QObject>
 #include <QString>
-#include "FitTypes.h"
+#include "fitting/FitTypes.h"
 
 namespace astra::fitting {
 

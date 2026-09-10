@@ -119,19 +119,6 @@ bool SshConnection::checkMaster(bool withOverride) const
     return p.exitCode() == 0;
 }
 
-bool SshConnection::masterAlive() const
-{
-    QMutexLocker lk(&_mtx);
-    const MasterMode m = _mode;
-    lk.unlock();
-    switch (m) {
-        case MasterMode::UserConfig:  return checkMaster(false);
-        case MasterMode::AstraMaster: return checkMaster(true);
-        case MasterMode::Unknown:     return false;
-    }
-    return false;
-}
-
 bool SshConnection::ensureMaster(QString* err, bool allowPrompt)
 {
     /*  A live master from the user's own ssh config (the astro hosts keep an

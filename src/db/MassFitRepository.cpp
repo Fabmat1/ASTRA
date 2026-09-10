@@ -1,7 +1,7 @@
-#include "MassFitRepository.h"
-#include "DBAccess.h"
-#include "SqlValue.h"
-#include "utils/Logger.h"
+#include "db/MassFitRepository.h"
+#include "db/DBAccess.h"
+#include "db/SqlValue.h"
+#include "app/Logger.h"
 
 #include <QSqlQuery>
 #include <QSqlError>
@@ -13,14 +13,11 @@
 
 namespace {
 
+using SqlValue::textOrNull;
+
 // Empty strings are written as NULL so that "never set" and "set to nothing"
 // stay distinguishable in the table, the way the rest of the schema treats
 // optional text columns.
-QVariant textOrNull(const QString& s)
-{
-    return s.isEmpty() ? QVariant(QMetaType(QMetaType::QString)) : QVariant(s);
-}
-
 MassFitRunRow readRun(const QSqlQuery& q)
 {
     MassFitRunRow r;

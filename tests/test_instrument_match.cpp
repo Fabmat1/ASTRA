@@ -12,8 +12,8 @@
 // spectrum is not a guess, the archive states the instrument and often its
 // resolving power, and those must beat whatever the wavelength shape says.
 // ─────────────────────────────────────────────────────────────────────────────
-#include "models/Instrument.h"
-#include "utils/matchSpectraToInstrument.h"
+#include "core/Instrument.h"
+#include "spectra/matchSpectraToInstrument.h"
 
 #include <QFile>
 #include <QJsonArray>
