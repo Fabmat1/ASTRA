@@ -51,6 +51,18 @@ jobs:
           path: ~/.cache/astra-build-macos-isis
           key: astra-macos-isis-${{ runner.arch }}-${{ hashFiles('build-macos-isis.sh') }}
 
+      # Snapshot of the last isisscripts/stellar_isisscripts clone that worked,
+      # written on the default branch by .github/workflows/isis-scripts-cache.yml.
+      # Restore only: a save from a tag build would be scoped to that tag and
+      # never read again. If their server is down, this is what keeps ISIS in
+      # the bundle (build scripts annotate the run when they fall back to it).
+      - name: Restore ISIS scripts snapshot
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/astra-isis-scripts
+          key: astra-isis-scripts-
+          restore-keys: astra-isis-scripts-
+
       - name: Resolve version
         id: ver
         run: |

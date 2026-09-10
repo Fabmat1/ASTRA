@@ -12,6 +12,10 @@
 #                                                         # (refreshes git HEADs
 #                                                         # baked into the image)
 # Env overrides: QT_VERSION, OPENBLAS_VERSION, ASTRA_BUNDLE_ISIS,
+#                ASTRA_REQUIRE_ISIS=1 (fail instead of shipping without ISIS),
+#                ASTRA_ISIS_SCRIPTS_CACHE / ASTRA_ISIS_SCRIPTS_DIR (snapshot and
+#                  local-install fallbacks for the ISIS script libraries, see
+#                  scripts/isis-scripts.sh),
 #                LCURVE_REPO, LCURVE_REF, LCURVE_ARCH (-march for the bundled
 #                  lcurve solvers; default x86-64-v3, same baseline as ASTRA),
 #                ASTRA_BUILDER_IMAGE (use a prebuilt/published image, e.g. from
@@ -32,6 +36,9 @@ VERSION="${1:-0.1.0}"
 export QT_VERSION="${QT_VERSION:-6.11.1}"
 export OPENBLAS_VERSION="${OPENBLAS_VERSION:-0.3.27}"
 export ASTRA_BUNDLE_ISIS="${ASTRA_BUNDLE_ISIS:-1}"
+# A failed ISIS bundle only warns and ships an AppImage that falls back to a
+# user-installed isis on PATH; set this to 1 to make it fatal instead.
+export ASTRA_REQUIRE_ISIS="${ASTRA_REQUIRE_ISIS:-0}"
 SRC_DIR="$(pwd)"
 DOCKERFILE="${SRC_DIR}/docker/appimage-builder.Dockerfile"
 
@@ -74,12 +81,38 @@ fi
 CCACHE_DIR_HOST="${HOME}/.cache/astra-build/ccache"
 mkdir -p "${CCACHE_DIR_HOST}"
 
+# Snapshot of the last isisscripts/stellar_isisscripts clone that worked, plus
+# an optional local ISIS install to fall back on when their server is down (see
+# scripts/isis-scripts.sh). Both are mounted rather than fetched inside the
+# container, so a build with no network for that host still produces a complete
+# AppImage. On a runner the snapshot dir is filled by actions/cache.
+ISIS_SCRIPTS_CACHE_HOST="${ASTRA_ISIS_SCRIPTS_CACHE:-${HOME}/.cache/astra-isis-scripts}"
+mkdir -p "${ISIS_SCRIPTS_CACHE_HOST}"
+ISIS_SCRIPTS_LOCAL_MOUNT=()
+ISIS_SCRIPTS_LOCAL_HOST="${ASTRA_ISIS_SCRIPTS_DIR:-}"
+if [[ -z "${ISIS_SCRIPTS_LOCAL_HOST}" ]]; then
+  for d in "${HOME}/Projects/ISIS_install/src" "${HOME}/ISIS_install/src" \
+           "${HOME}/isis_install/src"; do
+    [[ -d "${d}" ]] && { ISIS_SCRIPTS_LOCAL_HOST="${d}"; break; }
+  done
+fi
+if [[ -n "${ISIS_SCRIPTS_LOCAL_HOST}" && -d "${ISIS_SCRIPTS_LOCAL_HOST}" ]]; then
+  echo ">>> Local ISIS scripts available as a fallback: ${ISIS_SCRIPTS_LOCAL_HOST}"
+  ISIS_SCRIPTS_LOCAL_MOUNT=(-v "${ISIS_SCRIPTS_LOCAL_HOST}:/isis-scripts-local:ro"
+                            -e ASTRA_ISIS_SCRIPTS_DIR=/isis-scripts-local)
+fi
+
 docker run --rm -i \
   -v "${SRC_DIR}:/src" \
   -v "${CCACHE_DIR_HOST}:/root/.ccache" \
+  -v "${ISIS_SCRIPTS_CACHE_HOST}:/isis-scripts-cache" \
+  "${ISIS_SCRIPTS_LOCAL_MOUNT[@]}" \
   -w /src \
   -e VERSION="${VERSION}" \
   -e ASTRA_BUNDLE_ISIS="${ASTRA_BUNDLE_ISIS}" \
+  -e ASTRA_REQUIRE_ISIS="${ASTRA_REQUIRE_ISIS}" \
+  -e ASTRA_ISIS_SCRIPTS_CACHE=/isis-scripts-cache \
+  -e ASTRA_ISIS_SCRIPTS_OFFLINE="${ASTRA_ISIS_SCRIPTS_OFFLINE:-0}" \
   -e LCURVE_REPO="${LCURVE_REPO:-}" \
   -e LCURVE_REF="${LCURVE_REF:-}" \
   -e LCURVE_ARCH="${LCURVE_ARCH:-}" \
@@ -164,13 +197,15 @@ cd /src
 # ---------- 3c. Stage ISIS (core prebuilt in the image at /opt/isis) ----------
 # The S-Lang/ISIS core (slang, isis, modules, jed, slirp) is compiled at
 # image-build time. The script libraries (isisscripts, stellar_isisscripts)
-# change often, so they are cloned at their latest HEAD and built here on every
-# run — their `make` is cheap. ISIS only *reads* its tree at runtime, so it is
+# change often, so they are fetched at the freshest HEAD available and built
+# here on every run (their `make` is cheap); scripts/isis-scripts.sh handles the
+# fetch and its fallbacks. ISIS only *reads* its tree at runtime, so it is
 # shipped as data under usr/share/astra/isis and runs in place; ASTRA points it
 # there via ISIS_SRCDIR / SLSH_PATH / SLANG_MODULE_PATH and a private .isisrc
 # (see src/fitting/IsisEnvironment.cpp). Set ASTRA_BUNDLE_ISIS=0 to skip.
 ISIS_BIN=""
 ISIS_EXTRA_LIBS=()
+ISIS_STAGE=/src/AppDir/usr/share/astra/isis
 if [[ "${ASTRA_BUNDLE_ISIS:-1}" == "1" ]]; then
   ISIS_PREFIX=/opt/isis
   [[ -d "${ISIS_PREFIX}/isis" ]] \
@@ -180,67 +215,107 @@ if [[ "${ASTRA_BUNDLE_ISIS:-1}" == "1" ]]; then
   PGPLOT_LIB="$(dirname "$(dpkg -L pgplot5 | grep -m1 '/libcpgplot\.so')")"
   PGPLOT_DATA="$(dirname "$(dpkg -L pgplot5 | grep -m1 '/grfont\.dat$')")"
 
-  # --- Script libraries: always latest HEAD, built fresh each run ---
-  ISIS_SCRIPTS_SRC=/tmp/isis_scripts
-  rm -rf "${ISIS_SCRIPTS_SRC}"
-  mkdir -p "${ISIS_SCRIPTS_SRC}"
-  cd "${ISIS_SCRIPTS_SRC}"
+  # Everything below is non-fatal, exactly as in build-macos.sh step 11c: the
+  # script libraries come off one university server, and when it answered every
+  # clone with HTTP 403 on 2026-09-10 a bare `git clone` under errexit took the
+  # whole 0.8.0 AppImage down with it. An AppImage without ISIS still runs (it
+  # falls back to a user-installed isis on PATH), so warn loudly and ship.
+  #
+  # The subshell must be a *standalone* command with errexit disabled around it:
+  # bash propagates "errexit is ignored here" into a subshell used as an `if`
+  # condition or as an operand of &&/||, which would silently run on past every
+  # failure inside it.
+  set +e
+  (
+    set -e
+    # --- Script libraries: freshest HEAD obtainable, built fresh each run ---
+    # scripts/isis-scripts.sh tries upstream first and falls back to a cached
+    # snapshot or a local ISIS install; /src is the repo, mounted by the caller.
+    ISIS_SCRIPTS_SRC=/tmp/isis_scripts
+    rm -rf "${ISIS_SCRIPTS_SRC}"
+    mkdir -p "${ISIS_SCRIPTS_SRC}"
+    source /src/scripts/isis-scripts.sh
+    isis_scripts_fetch "${ISIS_SCRIPTS_SRC}"
+    cd "${ISIS_SCRIPTS_SRC}"
 
-  # isisscripts (Remeis) — `make` builds share/ in the clone (not installed).
-  # Moved off the old /git.public gitweb (dumb HTTP, now 404) to the Remeis
-  # GitLab, which speaks smart HTTP — so --depth 1 works here.
-  git clone --depth 1 \
-    https://www.sternwarte.uni-erlangen.de/gitlab/remeis/isisscripts.git isisscripts
-  ( cd isisscripts && make )
+    # isisscripts (Remeis) - `make` builds share/ in the clone (not installed).
+    ( cd isisscripts && make )
 
-  # stellar_isisscripts (Irrgang) + its slirp C-function module
-  git clone --depth 1 http://www.sternwarte.uni-erlangen.de/gitlab/irrgang/stellar.git stellar_isisscripts
-  ( cd stellar_isisscripts && make )
-  if [[ -f stellar_isisscripts/slirp/c_functions.h ]]; then
-    ( cd stellar_isisscripts/slirp
-      "${ISIS_PREFIX}/bin/slirp" -make -lm -lgsl -lgslcblas -lpthread c_functions.h c_functions.o
-      [[ -f Makefile ]] && make ) || echo "WARN: stellar c_functions build failed (continuing)"
-  fi
+    # stellar_isisscripts (Irrgang) + its slirp C-function module
+    ( cd stellar_isisscripts && make )
+    if [[ -f stellar_isisscripts/slirp/c_functions.h ]]; then
+      ( cd stellar_isisscripts/slirp
+        "${ISIS_PREFIX}/bin/slirp" -make -lm -lgsl -lgslcblas -lpthread c_functions.h c_functions.o
+        [[ -f Makefile ]] && make ) || echo "WARN: stellar c_functions build failed (continuing)"
+    fi
+    cd /src
+
+    rm -rf "${ISIS_STAGE}"
+    mkdir -p "${ISIS_STAGE}/srcdir"
+    cp -a "${ISIS_PREFIX}"/isis/*/.  "${ISIS_STAGE}/srcdir/"   # ISIS_SRCDIR (etc, share, lib/modules)
+    cp -a "${ISIS_PREFIX}/lib"       "${ISIS_STAGE}/"          # libslang + slang/v2/modules
+    cp -a "${ISIS_PREFIX}/share"     "${ISIS_STAGE}/"          # share/slsh (+ local-packages)
+    mkdir -p "${ISIS_STAGE}/share/slsh/local-packages"
+    # Script libraries live in the clones, not the prefix - copy them whole
+    # (minus VCS) so require("isisscripts") / require("stellar_isisscripts")
+    # resolve.
+    for s in isisscripts stellar_isisscripts; do
+      cp -a "${ISIS_SCRIPTS_SRC}/${s}" "${ISIS_STAGE}/${s}"
+      rm -rf "${ISIS_STAGE}/${s}/.git"
+    done
+    # PGPLOT runtime data (grfont.dat + rgb.txt); ISIS finds it via PGPLOT_DIR,
+    # which ASTRA exports from IsisEnvironment when launching the bundled isis.
+    mkdir -p "${ISIS_STAGE}/pgplot"
+    cp -a "${PGPLOT_DATA}/grfont.dat" "${ISIS_STAGE}/pgplot/"
+    [[ -f "${PGPLOT_DATA}/rgb.txt" ]] && cp -a "${PGPLOT_DATA}/rgb.txt" "${ISIS_STAGE}/pgplot/"
+    find "${ISIS_STAGE}" -name '*.o' -delete 2>/dev/null || true
+    # Both libraries must actually have built, or the stage is decoration.
+    [[ -f "${ISIS_STAGE}/isisscripts/share/isisscripts.sl" ]] \
+      || { echo "isisscripts did not build share/isisscripts.sl"; exit 1; }
+    [[ -f "${ISIS_STAGE}/stellar_isisscripts/share/stellar_isisscripts.sl" ]] \
+      || { echo "stellar_isisscripts did not build share/stellar_isisscripts.sl"; exit 1; }
+  )
+  ISIS_STATUS=$?
+  set -e
   cd /src
 
-  ISIS_STAGE=/src/AppDir/usr/share/astra/isis
-  rm -rf "${ISIS_STAGE}"
-  mkdir -p "${ISIS_STAGE}/srcdir"
-  cp -a "${ISIS_PREFIX}"/isis/*/.  "${ISIS_STAGE}/srcdir/"   # ISIS_SRCDIR (etc, share, lib/modules)
-  cp -a "${ISIS_PREFIX}/lib"       "${ISIS_STAGE}/"          # libslang + slang/v2/modules
-  cp -a "${ISIS_PREFIX}/share"     "${ISIS_STAGE}/"          # share/slsh (+ local-packages)
-  mkdir -p "${ISIS_STAGE}/share/slsh/local-packages"
-  # Script libraries live in the clones, not the prefix — copy them whole
-  # (minus VCS) so require("isisscripts") / require("stellar_isisscripts")
-  # resolve.
-  for s in isisscripts stellar_isisscripts; do
-    cp -a "${ISIS_SCRIPTS_SRC}/${s}" "${ISIS_STAGE}/${s}"
-    rm -rf "${ISIS_STAGE}/${s}/.git"
-  done
-  # PGPLOT runtime data (grfont.dat + rgb.txt); ISIS finds it via PGPLOT_DIR,
-  # which ASTRA exports from IsisEnvironment when launching the bundled isis.
-  mkdir -p "${ISIS_STAGE}/pgplot"
-  cp -a "${PGPLOT_DATA}/grfont.dat" "${ISIS_STAGE}/pgplot/"
-  [[ -f "${PGPLOT_DATA}/rgb.txt" ]] && cp -a "${PGPLOT_DATA}/rgb.txt" "${ISIS_STAGE}/pgplot/"
-  find "${ISIS_STAGE}" -name '*.o' -delete 2>/dev/null || true
-
-  # Binary (for linuxdeploy -e) + module-only libs (gsl) it can't discover.
-  ISIS_BIN="${ISIS_PREFIX}/bin/isis"             # symlink -> isis/<ver>/bin/isis
-  [[ -x "${ISIS_BIN}" ]] || { echo "image's ISIS has no isis binary"; exit 1; }
-  for lib in libgsl libgslcblas; do
-    for p in /usr/lib/x86_64-linux-gnu/${lib}.so.*; do
+  if (( ISIS_STATUS == 0 )); then
+    # Binary (for linuxdeploy -e) + module-only libs (gsl) it can't discover.
+    ISIS_BIN="${ISIS_PREFIX}/bin/isis"             # symlink -> isis/<ver>/bin/isis
+    [[ -x "${ISIS_BIN}" ]] || { echo "image's ISIS has no isis binary"; exit 1; }
+    for lib in libgsl libgslcblas; do
+      for p in /usr/lib/x86_64-linux-gnu/${lib}.so.*; do
+        [[ -f "${p}" ]] && ISIS_EXTRA_LIBS+=("-l" "${p}")
+      done
+    done
+    # PGPLOT libs are dlopened via the isis pgplot module, so linuxdeploy can't
+    # discover them from the isis binary - hand them over explicitly (their own
+    # deps, e.g. libpng, get pulled in transitively).
+    for p in "${PGPLOT_LIB}"/libpgplot.so* "${PGPLOT_LIB}"/libcpgplot.so*; do
       [[ -f "${p}" ]] && ISIS_EXTRA_LIBS+=("-l" "${p}")
     done
-  done
-  # PGPLOT libs are dlopened via the isis pgplot module, so linuxdeploy can't
-  # discover them from the isis binary — hand them over explicitly (their own
-  # deps, e.g. libpng, get pulled in transitively).
-  for p in "${PGPLOT_LIB}"/libpgplot.so* "${PGPLOT_LIB}"/libcpgplot.so*; do
-    [[ -f "${p}" ]] && ISIS_EXTRA_LIBS+=("-l" "${p}")
-  done
-  echo ">>> ISIS staged at ${ISIS_STAGE} ($(du -sh ${ISIS_STAGE} | cut -f1))"
+    echo ">>> ISIS staged at ${ISIS_STAGE} ($(du -sh ${ISIS_STAGE} | cut -f1))"
+  else
+    echo "!!! ISIS build/bundle failed (exit ${ISIS_STATUS}) - the AppImage has NO bundled ISIS."
+    echo "!!! ISIS-backed fitting would fall back to a user-installed isis on PATH."
+    rm -rf "${ISIS_STAGE}"
+    # The AppImage still ships, so the only thing standing between an ISIS-less
+    # release and nobody noticing is this annotation.
+    if [[ -n "${GITHUB_ACTIONS:-}" ]]; then
+      echo "::warning title=AppImage built without ISIS::The ISIS stack failed to build (exit ${ISIS_STATUS}); this .AppImage ships WITHOUT bundled ISIS and falls back to a user-installed isis on PATH."
+      if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
+        echo "⚠️ **This \`.AppImage\` was packaged without bundled ISIS** (ISIS build exited ${ISIS_STATUS})." \
+          >> "${GITHUB_STEP_SUMMARY}"
+      fi
+    fi
+    # Opt-in hard failure: refuse to package at all rather than ship degraded.
+    if [[ "${ASTRA_REQUIRE_ISIS:-0}" == "1" ]]; then
+      echo "!!! ASTRA_REQUIRE_ISIS=1 - refusing to package an AppImage without ISIS."
+      exit 1
+    fi
+  fi
 else
-  echo ">>> ASTRA_BUNDLE_ISIS=0 — skipping ISIS bundling"
+  echo ">>> ASTRA_BUNDLE_ISIS=0 - skipping ISIS bundling"
 fi
 
 cd /src

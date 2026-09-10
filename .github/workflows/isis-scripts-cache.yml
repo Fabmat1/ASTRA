@@ -1,0 +1,82 @@
+name: ISIS scripts snapshot
+
+# Keeps a known-good copy of isisscripts + stellar_isisscripts in the Actions
+# cache so a release does not depend on one university server being up at that
+# exact minute. On 2026-09-10 it answered every git-upload-pack POST with
+# HTTP 403: the 0.8.0 AppImage job died outright and the .dmg shipped with no
+# script libraries at all.
+#
+# This job must run on the default branch, and only there. A cache written by a
+# tag build is scoped to that tag (refs/tags/v0.8.0) and is invisible to the
+# next one, which is why the existing ccache entries never hit across releases;
+# caches written on the default branch are readable from every ref. Scheduled
+# runs always use the default branch, so the cron below is what makes the
+# snapshot reachable from the release builds.
+#
+# Twice a week also keeps it alive: GitHub evicts cache entries that go 7 days
+# without being read.
+
+on:
+  schedule:
+    - cron: "17 4 * * 1,4"    # Mon + Thu, 04:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: isis-scripts-snapshot
+  cancel-in-progress: false
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      # Restoring first serves two purposes: it refreshes the entry's
+      # last-accessed time, and it leaves the previous snapshot in place so a
+      # failed fetch below cannot lose what we already had.
+      - name: Restore previous snapshot
+        id: restore
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/.cache/astra-isis-scripts
+          key: astra-isis-scripts-
+          restore-keys: astra-isis-scripts-
+
+      - name: Clone upstream and refresh the snapshot
+        run: |
+          set -euo pipefail
+          source scripts/isis-scripts.sh
+          isis_scripts_fetch "${RUNNER_TEMP}/isis_scripts"
+          ls -lh ~/.cache/astra-isis-scripts
+
+      # The key carries both upstream commits, so an unchanged upstream matches
+      # what was restored and the save below is skipped (cache keys are
+      # immutable; re-saving the same one is an error).
+      - name: Compute cache key
+        id: key
+        run: |
+          set -euo pipefail
+          revs="$(cat ~/.cache/astra-isis-scripts/*.rev | awk '{print $2}' | tr '\n' '-')"
+          echo "key=astra-isis-scripts-${revs%-}" >> "$GITHUB_OUTPUT"
+
+      - name: Save snapshot
+        if: steps.key.outputs.key != steps.restore.outputs.cache-matched-key
+        uses: actions/cache/save@v4
+        with:
+          path: ~/.cache/astra-isis-scripts
+          key: ${{ steps.key.outputs.key }}
+
+      - name: Report
+        run: |
+          {
+            echo "### ISIS script snapshot"
+            for f in ~/.cache/astra-isis-scripts/*.rev; do
+              name="$(basename "${f}" .rev)"
+              read -r ts sha < "${f}"
+              echo "- \`${name}\` at \`${sha}\` (HEAD of $(date -d "@${ts}" '+%Y-%m-%d'))"
+            done
+          } >> "${GITHUB_STEP_SUMMARY}"

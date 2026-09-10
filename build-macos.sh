@@ -750,22 +750,12 @@ if [[ "${ASTRA_BUNDLE_ISIS}" == "1" ]]; then
     perl -MFile::Slurp -e1 >/dev/null 2>&1 || cpanm --notest File::Slurp
 
     # Both script libraries live on one university server, and unlike the ISIS
-    # stack they are re-cloned every run (always-latest-HEAD, by design), so a
-    # few minutes of downtime there costs the entire bundle — which is exactly
-    # what happened once the build was otherwise working. Retry briefly rather
-    # than lose it to a blip. A genuine outage still falls through to the
-    # non-fatal path and its annotation.
-    clone_isis_scripts() {
-      local url="$1" dest="$2" n
-      for n in 1 2 3; do
-        if git clone --depth 1 "${url}" "${dest}"; then return 0; fi
-        echo "!!! clone of ${dest} failed (attempt ${n}/3)"
-        rm -rf "${dest}"
-        if [[ ${n} -lt 3 ]]; then sleep $((n * 10)); fi
-      done
-      echo "!!! ${url} unreachable after 3 attempts."
-      return 1
-    }
+    # stack they are re-fetched at HEAD every run (by design), so downtime there
+    # costs the entire bundle. scripts/isis-scripts.sh retries, then falls back
+    # to the newest of a cached snapshot of the last good clone and a local ISIS
+    # install, and annotates the run whenever it has to. A total miss still
+    # falls through to the non-fatal path below.
+    source "${SRC_DIR}/scripts/isis-scripts.sh"
 
     # Both makes concatenate every .sl file and run the result through awk (the
     # `test` target that share/isisscripts.sl depends on). macOS ships the BSD
@@ -793,14 +783,9 @@ if [[ "${ASTRA_BUNDLE_ISIS}" == "1" ]]; then
     # the other side — anything that tries to read stdin gets EOF, not a wait.
     make_bounded() { perl -e 'alarm shift; exec @ARGV' 1200 make "$@" </dev/null; }
 
-    # isisscripts (Remeis) moved off the old /git.public gitweb (dumb HTTP, now
-    # 404) to the Remeis GitLab, which speaks smart HTTP — so --depth 1 works.
+    isis_scripts_fetch "${ISIS_SCRIPTS_SRC}"
     ( cd "${ISIS_SCRIPTS_SRC}"
-      clone_isis_scripts \
-        https://www.sternwarte.uni-erlangen.de/gitlab/remeis/isisscripts.git isisscripts
       ( cd isisscripts && make_bounded isisscripts )
-      clone_isis_scripts \
-        http://www.sternwarte.uni-erlangen.de/gitlab/irrgang/stellar.git stellar_isisscripts
       ( cd stellar_isisscripts && make_bounded isisscripts )
       if [[ -f stellar_isisscripts/slirp/c_functions.h ]]; then
         ( cd stellar_isisscripts/slirp
