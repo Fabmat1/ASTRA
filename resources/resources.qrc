@@ -68,6 +68,8 @@
         <file>icons/close.svg</file>
         <file>icons/refresh.svg</file>
         <file>icons/circle.svg</file>
+        <file>icons/link.svg</file>
+        <file>icons/link-off.svg</file>
         <file>claret_tables/Claret2011_GDC_MS.dat</file>
         <file>claret_tables/Claret2011_MS_multifilter_LDC.dat</file>
         <file>claret_tables/Claret2018_MS_KEPLER_LDC.dat</file>

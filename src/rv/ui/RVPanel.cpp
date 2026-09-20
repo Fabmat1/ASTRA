@@ -338,6 +338,12 @@ void RVPanel::populate()
     }
     if (_resetZoomBtn) _resetZoomBtn->hide();
 
+    // The x-axis semantics are decided again below; until then the panel has
+    // nothing a neighbour could link to.
+    _xKind      = XAxisLink::Kind::None;
+    _xZero      = 0.0;
+    _xSegmented = false;
+
     // Old plots (and their highlight graphs) are destroyed with the layout.
     _highlightTargets.clear();
     astra::clearLayout(_contentLayout);
@@ -385,6 +391,7 @@ void RVPanel::populate()
             .arg(_ctx.star->getSourceId(),
                  rvCurve ? "exists but empty" : "is null"));
         _contentLayout->addWidget(PanelUtils::makePlaceholder("No radial velocity data available yet."));
+        emit plotsRebuilt();
         return;
     }
 
@@ -436,6 +443,7 @@ void RVPanel::populate()
         LOG_ERROR(CAT, QString("Star %1 - ALL %2 RV points dropped")
             .arg(_ctx.star->getSourceId()).arg(points.size()));
         _contentLayout->addWidget(PanelUtils::makePlaceholder("RV points have no valid timestamps."));
+        emit plotsRebuilt();
         return;
     }
 
@@ -449,6 +457,8 @@ void RVPanel::populate()
         // =====================================================================
         double P   = bestFit->getPeriod();
         double phi = bestFit->getPhi();
+
+        _xKind = XAxisLink::Kind::Phase;
 
         std::vector<double> phases, rvs, errs;      // component 1
         std::vector<double> phases2, rvs2, errs2;   // component 2
@@ -565,6 +575,10 @@ void RVPanel::populate()
         // =====================================================================
 
         double t0 = data.front().time;
+
+        _xKind = XAxisLink::Kind::Time;
+        _xZero = t0;                    // plot x == 0 is this BJD
+
         std::vector<double>  times, rvs, errs, epochs;
         std::vector<QString> specIds;            // all parallel to times
         std::vector<int>     comps;
@@ -715,6 +729,7 @@ void RVPanel::populate()
 
         } else {
             // --- Multiple segments: broken-axis widget ---
+            _xSegmented = true;
             auto* brokenAxis = new BrokenAxisWidget;
 
             auto splitRV    = splitAt(rvs,     gapIdx);
@@ -867,6 +882,26 @@ void RVPanel::populate()
 
     // Fill in the highlight markers for the currently shown spectrum (if any).
     applyHighlight();
+
+    emit plotsRebuilt();
+}
+
+DetailPanel::XAxisLink RVPanel::xAxisLink() const
+{
+    XAxisLink link;
+    if (_xKind == XAxisLink::Kind::None) return link;
+
+    // _highlightTargets holds exactly one entry per plot, in the order the
+    // plots were built - which for the broken-axis view is left to right.
+    for (const auto& t : _highlightTargets) {
+        if (!t.plot) continue;
+        link.plots.append({ t.plot.data(), _xZero });
+    }
+    if (link.plots.isEmpty()) return link;
+
+    link.kind      = _xKind;
+    link.segmented = _xSegmented;
+    return link;
 }
 
 void RVPanel::setupUi()

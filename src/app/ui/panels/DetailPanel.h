@@ -5,10 +5,13 @@
 #include <memory>
 #include "app/AppSettings.h"
 
+#include <QVector>
+
 class Star;
 class DatabaseManager;
 class ApplicationController;
 class ShimmerWidget;
+class QCustomPlot;
 
 class DetailPanel : public QWidget
 {
@@ -21,8 +24,36 @@ public:
         QString                projectId;
     };
 
+    /// What a panel exposes so a neighbouring panel can be locked onto the same
+    /// x axis (see PlotAxisLinker). `zero` is added to a plot's own x value to
+    /// get the shared quantity, so two panels that offset their axis
+    /// differently (e.g. "days since the first RV point" vs "BJD - t0 of the
+    /// light curve") can still be put on a common footing.
+    struct XAxisLink {
+        enum class Kind {
+            None,    ///< nothing linkable on screen
+            Phase,   ///< x is orbital phase in cycles
+            Time     ///< x is a time in days, offset by `zero`
+        };
+        struct Entry {
+            QCustomPlot* plot = nullptr;
+            double       zero = 0.0;
+        };
+        Kind           kind = Kind::None;
+        /// Left-to-right for a segmented panel, top-to-bottom otherwise.
+        QVector<Entry> plots;
+        /// True when the panel splits one x axis across several side-by-side
+        /// plots (the RV panel's broken-axis view). Such a panel can have its
+        /// outer edges aligned but not its range synchronised.
+        bool           segmented = false;
+    };
+
     explicit DetailPanel(const Context& ctx, QWidget* parent = nullptr);
     ~DetailPanel() override;
+
+    /// Plots this panel is willing to have x-linked to a neighbour. Default:
+    /// none, i.e. the panel does not take part in x-axis linking.
+    virtual XAxisLink xAxisLink() const { return {}; }
 
     virtual void refreshTheme() {}
 
@@ -47,6 +78,11 @@ signals:
     /// Emitted once the (deferred) populate() has finished and the shimmer is
     /// gone. Hosts wire post-populate steps that depend on populated state here.
     void populated();
+
+    /// Emitted whenever the panel has torn down and rebuilt its plot widgets,
+    /// or changed what their x axes mean, so cross-panel wiring that holds
+    /// QCustomPlot pointers (the RV <-> LC x-axis link) can re-attach.
+    void plotsRebuilt();
 
 protected:
     /// Heavy data load + plot construction. Synchronous panels call this from

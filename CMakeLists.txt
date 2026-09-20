@@ -614,6 +614,7 @@ set(ASTRA_UI_SOURCES
     src/app/ui/panels/DetailPanel.cpp
     src/app/ui/panels/DetailPanelFactory.cpp
     src/app/ui/panels/PanelUtils.cpp
+    src/app/ui/panels/PlotAxisLinker.cpp
     src/app/ui/panels/SummaryPanel.cpp
 
     # catalog/ui
@@ -742,6 +743,7 @@ set(ASTRA_UI_HEADERS
     src/app/ui/panels/DetailPanel.h
     src/app/ui/panels/DetailPanelFactory.h
     src/app/ui/panels/PanelUtils.h
+    src/app/ui/panels/PlotAxisLinker.h
     src/app/ui/panels/SummaryPanel.h
 
     # catalog/ui

@@ -31,6 +31,8 @@ public:
     void refresh() override;
     void refreshTheme() override;
 
+    XAxisLink xAxisLink() const override;
+
     void setFoldPeriod(double period, double t0 = 0.0);
     void setFolded(bool folded);
     void setViewMode(ViewMode mode);
@@ -134,6 +136,9 @@ private:
     /// Refill the period dropdown from availablePeriods() and re-select the
     /// active source (falling back to Auto if it is gone).
     void rebuildPeriodCombo();
+    /// Append the active selection to the period dropdown's tooltip - the box
+    /// is narrow enough to truncate a long label.
+    void updatePeriodComboTooltip();
     /// Phase-0 epoch to pair with a bare period (one carrying no T₀ of its
     /// own): the best fit epoch on record, else 0.
     double fallbackT0() const;
