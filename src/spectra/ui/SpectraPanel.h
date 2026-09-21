@@ -4,6 +4,7 @@
 #include <QMetaObject>
 #include <vector>
 #include "fitting/ui/FitPreviewOverlay.h"
+#include "core/AsymmetricErrors.h"
 
 class Spectrum;
 class SpectralFit;
@@ -97,8 +98,11 @@ private:
     bool starHasAbundances() const;
     /// Fit currently picked in the combo, or null for "None"/no spectrum.
     std::shared_ptr<SpectralFit> currentFit() const;
-    /// "Component 1 (28 500 K)", falling back to "Component 1".
-    static QString componentLabel(const SpectralFit& fit, int which);
+    /// "Component 1 (28 500 K)", falling back to "Component 1".  A finite
+    /// `lightFraction` appends that component's share of the light, which is
+    /// what the diluted overlay curves are scaled by.
+    static QString componentLabel(const SpectralFit& fit, int which,
+                                  double lightFraction = AsymErr::unset);
     /// Show/hide the model-related toolbar widgets for the active view.
     void updateToolbarVisibility();
 

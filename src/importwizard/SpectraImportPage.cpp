@@ -1362,8 +1362,17 @@ void SpectraImportPage::processFullMappingAsync()
                         break;
                     case MatchMethod::Alias:
                         if (!alias.isEmpty()) {
-                            auto it = params->aliasIndex->find(alias.trimmed().toLower());
-                            if (it != params->aliasIndex->end()) { outMethod = "alias"; return it.value(); }
+                            // The key has to be derived exactly as
+                            // buildStarLookupIndex() derived it, i.e. through
+                            // normaliseCatalogName(): upper-cased with spaces,
+                            // underscores and hyphens removed. Looking the
+                            // alias up lower-cased never hit for any name that
+                            // is not purely numeric, so alias matching here
+                            // silently failed and fell through to position.
+                            for (const QString& key : normaliseCatalogName(alias)) {
+                                auto it = params->aliasIndex->find(key);
+                                if (it != params->aliasIndex->end()) { outMethod = "alias"; return it.value(); }
+                            }
                         }
                         break;
                     case MatchMethod::Position:

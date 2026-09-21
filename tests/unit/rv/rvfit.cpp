@@ -48,7 +48,8 @@ RVFit makeEccentricFit(double e = 0.4, double omegaDeg = 75.0,
                        double tRef = 2458000.0)
 {
     RVFit fit = makeCircularFit(period, k, gamma, phi, tRef);
-    fit.setEccentricity(e);       // also flips the fit into eccentric mode
+    fit.setEccentric(true);
+    fit.setEccentricity(e);
     fit.setOmega(omegaDeg);
     return fit;
 }
@@ -177,12 +178,10 @@ TEST_CASE("RVFit: the eccentric model matches the closed form")
 
 TEST_CASE("RVFit: the eccentric model degenerates to the circular one at e = 0")
 {
-    // setEccentricity(0) leaves the fit circular, so force the flag to check
-    // that the two branches agree in the limit.
-    RVFit ecc = makeCircularFit(3.5, 42.0, -11.0, 0.0);
-    ecc.setEccentricity(1e-12);
-    ecc.setOmega(-90.0);      // cos(nu - 90 deg) = sin(nu)
-    REQUIRE(ecc.isEccentric());
+    // Exactly zero, not an epsilon: the Keplerian branch has to stay selected
+    // at e = 0, since falling through to sin(M) would drop omega.
+    RVFit ecc = makeEccentricFit(0.0, -90.0, 3.5, 42.0, -11.0, 0.0);
+    REQUIRE(ecc.isEccentric());   // omega = -90 deg: cos(nu - 90 deg) = sin(nu)
 
     const RVFit circ = makeCircularFit(3.5, 42.0, -11.0, 0.0);
     for (double p = 0.0; p < 1.0; p += 0.05)
@@ -234,6 +233,35 @@ TEST_CASE("RVFit::computePhase folds on the reference epoch")
         CHECK(p >= 0.0);
         CHECK(p < 1.0);
     }
+}
+
+TEST_CASE("RVFit: the eccentric flag survives an eccentricity of zero")
+{
+    // A Keplerian fit ("From Photometry" with Eccentric orbit) is bounded at
+    // e >= 0 and can legitimately converge to the boundary. Its phi was still
+    // fitted under the eccentric convention, so the model choice must not be
+    // re-derived from the value: setEccentricity() used to do exactly that and
+    // silently demoted the fit to circular, folding phi with the wrong sign.
+    const double period = 3.5, tRef = 2458000.0, phi = 0.2;
+
+    RVFit fit = makeCircularFit(period, 42.0, -11.0, phi, tRef);
+    fit.setEccentric(true);
+    fit.setEccentricity(0.0);
+    fit.setOmega(75.0);
+    CHECK(fit.isEccentric());
+    CHECK(fit.getT0BJD() == doctest::Approx(tRef + phi * period));
+
+    // Order must not matter either.
+    RVFit reordered = makeCircularFit(period, 42.0, -11.0, phi, tRef);
+    reordered.setEccentricity(0.0);
+    reordered.setEccentric(true);
+    CHECK(reordered.isEccentric());
+
+    // And a nonzero eccentricity must not promote a circular fit.
+    RVFit circ = makeCircularFit(period, 42.0, -11.0, phi, tRef);
+    circ.setEccentricity(0.4);
+    CHECK_FALSE(circ.isEccentric());
+    CHECK(circ.getT0BJD() == doctest::Approx(tRef - phi * period));
 }
 
 TEST_CASE("RVFit: circular and eccentric fits fold with opposite phase signs")

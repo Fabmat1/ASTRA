@@ -47,13 +47,16 @@ jobs:
 
       # Snapshot of the last isisscripts/stellar_isisscripts clone that worked,
       # written on the default branch by .github/workflows/isis-scripts-cache.yml.
+      # The path must stay inside the workspace: actions/cache stores it relative
+      # to GITHUB_WORKSPACE, and the seeding runner's root can sit at a different
+      # depth than the builders'.
       # Restore only: a save from a tag build would be scoped to that tag and
       # never read again. If their server is down, this is what keeps ISIS in
       # the bundle (build scripts annotate the run when they fall back to it).
       - name: Restore ISIS scripts snapshot
         uses: actions/cache/restore@v4
         with:
-          path: ~/.cache/astra-isis-scripts
+          path: .isis-scripts-cache
           key: astra-isis-scripts-
           restore-keys: astra-isis-scripts-
 
@@ -93,6 +96,7 @@ jobs:
         env:
           ASTRA_BUILDER_IMAGE: ${{ steps.img.outputs.ref }}
           ASTRA_SKIP_SUBMODULE_UPDATE: "1"
+          ASTRA_ISIS_SCRIPTS_CACHE: ${{ github.workspace }}/.isis-scripts-cache
         run: ./build-appimage.sh "${{ steps.ver.outputs.version }}"
 
       # The container runs as root, so the outputs and the ccache tree land
@@ -100,7 +104,7 @@ jobs:
       - name: Reclaim build outputs
         if: always()
         run: |
-          sudo chown -R "$(id -u):$(id -g)" ~/.cache/astra-build ~/.cache/astra-isis-scripts \
+          sudo chown -R "$(id -u):$(id -g)" ~/.cache/astra-build .isis-scripts-cache \
                                             astra-*.AppImage* 2>/dev/null || true
 
       - name: Upload .AppImage artifact

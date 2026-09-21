@@ -16,6 +16,11 @@ name: ISIS scripts snapshot
 # Twice a week also keeps it alive: GitHub evicts cache entries that go 7 days
 # without being read.
 #
+# The cache path must stay INSIDE the workspace. actions/cache records paths
+# relative to it, and a self-hosted runner's _work root sits one level deeper
+# than a hosted runner's, so a ~/.cache path seeded here resolved to /home/.cache
+# on the hosted builders and failed to extract (v0.8.0, 2026-09-10).
+#
 # While upstream is unreachable there is still one way to fill the cache: run
 # this on a self-hosted runner that has a local ISIS install, with
 #   gh workflow run isis-scripts-cache.yml --ref main \
@@ -61,7 +66,7 @@ jobs:
         id: restore
         uses: actions/cache/restore@v4
         with:
-          path: ~/.cache/astra-isis-scripts
+          path: .isis-scripts-cache
           key: astra-isis-scripts-
           restore-keys: astra-isis-scripts-
 
@@ -71,12 +76,13 @@ jobs:
       - name: Fetch the script libraries and refresh the snapshot
         env:
           ASTRA_ISIS_SCRIPTS_OFFLINE: ${{ inputs.source == 'local' && '1' || '0' }}
+          ASTRA_ISIS_SCRIPTS_CACHE: ${{ github.workspace }}/.isis-scripts-cache
         run: |
           set -euo pipefail
           source ./isis-scripts.sh
           isis_scripts_fetch "${RUNNER_TEMP}/isis_scripts"
           isis_scripts_snapshot "${RUNNER_TEMP}/isis_scripts"
-          ls -lh ~/.cache/astra-isis-scripts
+          ls -lh .isis-scripts-cache
 
       # The key carries both upstream commits, so an unchanged upstream matches
       # what was restored and the save below is skipped (cache keys are
@@ -85,21 +91,21 @@ jobs:
         id: key
         run: |
           set -euo pipefail
-          revs="$(cat ~/.cache/astra-isis-scripts/*.rev | awk '{print $2}' | cut -c1-12 | tr '\n' '-')"
+          revs="$(cat .isis-scripts-cache/*.rev | awk '{print $2}' | cut -c1-12 | tr '\n' '-')"
           echo "key=astra-isis-scripts-${revs%-}" >> "$GITHUB_OUTPUT"
 
       - name: Save snapshot
         if: steps.key.outputs.key != steps.restore.outputs.cache-matched-key
         uses: actions/cache/save@v4
         with:
-          path: ~/.cache/astra-isis-scripts
+          path: .isis-scripts-cache
           key: ${{ steps.key.outputs.key }}
 
       - name: Report
         run: |
           {
             echo "### ISIS script snapshot"
-            for f in ~/.cache/astra-isis-scripts/*.rev; do
+            for f in .isis-scripts-cache/*.rev; do
               name="$(basename "${f}" .rev)"
               read -r ts sha < "${f}"
               echo "- \`${name}\` at \`${sha}\` (HEAD of $(date -d "@${ts}" '+%Y-%m-%d'))"

@@ -236,7 +236,10 @@ public:
 
     double getEccentricity() const { return _eccentricity; }
     double getEccentricityError() const { return _eccentricityError; }
-    void setEccentricity(double e) { _eccentricity = e; _isEccentric = (e > 0); }
+    // Value only: the model choice lives in _isEccentric and must stay
+    // independent of it. A Keplerian fit that converges to e = 0 is still an
+    // eccentric fit, and folds with the opposite φ sign (see phaseSign()).
+    void setEccentricity(double e) { _eccentricity = e; }
     void setEccentricityError(double error) { _eccentricityError = error; }
 
     double getOmega() const { return _omega; }

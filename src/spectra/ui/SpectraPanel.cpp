@@ -4,6 +4,7 @@
 #include "core/Star.h"
 #include "core/Quantity.h"
 #include "spectra/Spectrum.h"
+#include "spectra/ComponentDilution.h"
 #include "core/QuantityFormat.h"
 #include "fitting/ElementAbundances.h"
 #include "app/Logger.h"
@@ -16,6 +17,7 @@
 #include <QTabBar>
 #include <QCheckBox>
 #include <QComboBox>
+#include <QStringList>
 #include <QLabel>
 #include <QPushButton>
 #include <QTimer>
@@ -43,13 +45,14 @@ QColor mutedTextColor()
 
 /// Widen `range` so the overlay curves fit inside it.
 ///
-/// The overlays cannot simply be thrown into the main robustRange() call: a
-/// component's model is *undiluted*, so its lines are always deeper than the
-/// composite's, and those few hundred deep samples are a small enough fraction
-/// of the pooled values that the quantile clip cuts them off - the curve then
-/// runs out of the bottom of the plot, which is precisely what the user asked
-/// to be able to see. Giving the overlays their own robust range and taking the
-/// union keeps a genuinely deep line fully on screen.
+/// The overlays cannot simply be thrown into the main robustRange() call: each
+/// component curve rides on its own share of the continuum rather than on the
+/// whole of it, so the fainter of the two runs well below everything else on
+/// the plot, and those samples are a small enough fraction of the pooled values
+/// that the quantile clip cuts them off - the curve then runs out of the bottom
+/// of the plot, which is precisely what the user asked to be able to see.
+/// Giving the overlays their own robust range and taking the union keeps a
+/// faint component, and a genuinely deep line, fully on screen.
 ///
 /// Their true extent is used rather than a quantile: these are synthetic model
 /// curves, smooth by construction and free of the outlier pixels a quantile
@@ -201,8 +204,9 @@ void SpectraPanel::setupUi()
     _componentsCheck = new QCheckBox("Components");
     _componentsCheck->setChecked(true);          // on by default for 2-comp fits
     _componentsCheck->setToolTip(
-        "Overlay each stellar component's own model (undiluted by the other "
-        "component's light)");
+        "Overlay each stellar component's contribution to the model, scaled by "
+        "the share of the light it emits, so the two curves add up to the "
+        "combined model");
     _componentsCheck->setVisible(false);
     tbLayout->addWidget(_componentsCheck);
 
@@ -880,6 +884,23 @@ void SpectraPanel::updateSpectrumDisplay()
     const bool showComponents = hasComponentModels && _componentsCheck->isChecked();
     const bool showTelluric   = hasTelluricCurve   && _telluricCheck->isChecked();
 
+    // Each component is drawn as its *contribution* to the model: its own curve
+    // scaled by the share of the light it emits, so the two overlays add up to
+    // the combined model rather than both running at full line depth. The share
+    // is a ratio of stellar continua, so it varies with wavelength and is not
+    // the stored surface ratio; it is recovered from the three model curves
+    // themselves - see ComponentDilution.h.
+    astra::spectra::LightFractions light;
+    if (showComponents) {
+        light = astra::spectra::lightFractions(
+            selectedFit->modelWavelengths,  selectedFit->modelFluxes,
+            selectedFit->modelFluxesComp1,  selectedFit->modelFluxesComp2,
+            selectedFit->surRatio);
+        // Only a grid too short to solve on gets here; splitting it evenly at
+        // least keeps the two curves summing to the model.
+        if (light.w1.size() != nModel) light.w1.assign(nModel, 0.5);
+    }
+
     // Counts the curves that describe the model (combined + overlays); the
     // legend is only worth its space once there is more than one of them.
     int modelCurveCount = 0;
@@ -926,10 +947,15 @@ void SpectraPanel::updateSpectrumDisplay()
                 lowerVec[i] = dataVec[i] - sig;
                 // The component models live on the same grid and in the same
                 // flux units as the combined one, so they go through the exact
-                // same divisor and stay directly comparable with it.
+                // same divisor and stay directly comparable with it. Weighting
+                // by the light fractions is what makes them contributions: each
+                // curve sits on its own share of the continuum, and the two sum
+                // back to the combined model drawn over them.
                 if (showComponents) {
-                    comp1Vec[i] = selectedFit->modelFluxesComp1[i] / divisor;
-                    comp2Vec[i] = selectedFit->modelFluxesComp2[i] / divisor;
+                    const double w = light.w1[i];
+                    comp1Vec[i] = selectedFit->modelFluxesComp1[i] * w / divisor;
+                    comp2Vec[i] =
+                        selectedFit->modelFluxesComp2[i] * (1.0 - w) / divisor;
                 }
                 // The transmission is a dimensionless factor in [0,1]; riding it
                 // on the local continuum (the fitted spline) is what makes it
@@ -1025,13 +1051,14 @@ void SpectraPanel::updateSpectrumDisplay()
                 QCPGraph* g1 = _mainPlot->addGraph();
                 g1->setData(mWlVec, comp1Vec);
                 g1->setPen(overlayPen(componentColor(0), Qt::DashLine));
-                g1->setName(componentLabel(*selectedFit, 1));
+                g1->setName(componentLabel(*selectedFit, 1, light.meanW1));
                 ++modelCurveCount;
 
                 QCPGraph* g2 = _mainPlot->addGraph();
                 g2->setData(mWlVec, comp2Vec);
                 g2->setPen(overlayPen(componentColor(1), Qt::DashDotLine));
-                g2->setName(componentLabel(*selectedFit, 2));
+                g2->setName(
+                    componentLabel(*selectedFit, 2, 1.0 - light.meanW1));
                 ++modelCurveCount;
             }
 
@@ -1092,15 +1119,19 @@ void SpectraPanel::updateSpectrumDisplay()
             }
 
             // Overlays: the very same renormalization factor the combined model
-            // got, so all model curves stay on one scale.
+            // got, so all model curves stay on one scale, times each
+            // component's share of the light (see above).
             const auto& spl = selectedFit->modelSplines;
             QVector<double> comp1Vec, comp2Vec, tellVec;
             if (showComponents) {
                 comp1Vec.resize(mWl.size());
                 comp2Vec.resize(mWl.size());
                 for (size_t i = 0; i < mWl.size(); ++i) {
-                    comp1Vec[i] = selectedFit->modelFluxesComp1[i] * renormC;
-                    comp2Vec[i] = selectedFit->modelFluxesComp2[i] * renormC;
+                    const double w = light.w1[i];
+                    comp1Vec[i] =
+                        selectedFit->modelFluxesComp1[i] * w * renormC;
+                    comp2Vec[i] =
+                        selectedFit->modelFluxesComp2[i] * (1.0 - w) * renormC;
                 }
             }
             if (showTelluric) {
@@ -1130,13 +1161,14 @@ void SpectraPanel::updateSpectrumDisplay()
                 QCPGraph* g1 = _mainPlot->addGraph();
                 g1->setPen(overlayPen(componentColor(0), Qt::DashLine));
                 g1->setData(mWlVec, comp1Vec);
-                g1->setName(componentLabel(*selectedFit, 1));
+                g1->setName(componentLabel(*selectedFit, 1, light.meanW1));
                 ++modelCurveCount;
 
                 QCPGraph* g2 = _mainPlot->addGraph();
                 g2->setPen(overlayPen(componentColor(1), Qt::DashDotLine));
                 g2->setData(mWlVec, comp2Vec);
-                g2->setName(componentLabel(*selectedFit, 2));
+                g2->setName(
+                    componentLabel(*selectedFit, 2, 1.0 - light.meanW1));
                 ++modelCurveCount;
             }
 
@@ -1313,18 +1345,33 @@ std::shared_ptr<SpectralFit> SpectraPanel::currentFit() const
     return fits[idx];
 }
 
-QString SpectraPanel::componentLabel(const SpectralFit& fit, int which)
+QString SpectraPanel::componentLabel(const SpectralFit& fit, int which,
+                                     double lightFraction)
 {
     const double teff = (which == 2) ? fit.teff2 : fit.teff;
     QString label = QString("Component %1").arg(which);
+
+    QStringList parts;
     if (!std::isnan(teff) && teff > 0) {
         // Thin space between the thousands so "28 500 K" stays readable in the
         // small legend font.
         QString t = QString::number(teff, 'f', 0);
         for (int i = t.size() - 3; i > 0; i -= 3)
             t.insert(i, QChar(0x2009));
-        label += QString(" (%1 K)").arg(t);
+        parts << QString("%1 K").arg(t);
     }
+    if (std::isfinite(lightFraction)) {
+        // A mean over the plotted range, and the curve itself shows how it runs
+        // with wavelength, so one decimal is as much as the number can carry.
+        // Below 0.1 per cent it would round to "0.0 %" and read as "nothing",
+        // which is not what a faint but fitted companion deserves.
+        const double pct = 100.0 * lightFraction;
+        parts << (pct > 0.0 && pct < 0.1 ? QString("< 0.1 % of light")
+                                         : QString("%1 % of light")
+                                               .arg(pct, 0, 'f', 1));
+    }
+    if (!parts.isEmpty())
+        label += QString(" (%1)").arg(parts.join(", "));
     return label;
 }
 

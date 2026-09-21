@@ -644,6 +644,7 @@ bool DatabaseManager::createTables()
           eccentricity_error REAL DEFAULT 0,
           omega REAL DEFAULT 0,
           omega_error REAL DEFAULT 0,
+          is_eccentric INTEGER,
           k_error_up REAL,
           k_error_down REAL,
           k2_error_up REAL,
@@ -1007,6 +1008,10 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE rv_fits ADD COLUMN eccentricity_error_down REAL",
         "ALTER TABLE rv_fits ADD COLUMN omega_error_up REAL",
         "ALTER TABLE rv_fits ADD COLUMN omega_error_down REAL",
+
+        // Which orbit model was fitted. NULL marks a legacy row, for which the
+        // loader falls back to the old eccentricity > 0 guess.
+        "ALTER TABLE rv_fits ADD COLUMN is_eccentric INTEGER",
 
         // SB2: per-point stellar component and secondary semi-amplitude.
         // component DEFAULT 1 makes every legacy point primary; k2 NULL means

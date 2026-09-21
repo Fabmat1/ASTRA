@@ -112,6 +112,7 @@ bool RadialVelocityRepository::saveRVFit(
          t0_error_up, t0_error_down,
          eccentricity_error_up, eccentricity_error_down,
          omega_error_up, omega_error_down,
+         is_eccentric,
          is_best_fit, fit_method, chi2, rms)
         VALUES (:id, :curve_id, :k, :k_error, :k2, :k2_error, :gamma, :gamma_error,
                 :period, :period_error, :phi, :phi_error, :t0, :t0_error,
@@ -122,6 +123,7 @@ bool RadialVelocityRepository::saveRVFit(
                 :t0_error_up, :t0_error_down,
                 :ecc_error_up, :ecc_error_down,
                 :omega_error_up, :omega_error_down,
+                :is_eccentric,
                 :is_best, :method, :chi2, :rms)
     )");
 
@@ -160,6 +162,7 @@ bool RadialVelocityRepository::saveRVFit(
     query.bindValue(":ecc_error_down", SqlValue::fromDouble(fit->getEccentricityErrorDown()));
     query.bindValue(":omega_error_up", SqlValue::fromDouble(fit->getOmegaErrorUp()));
     query.bindValue(":omega_error_down", SqlValue::fromDouble(fit->getOmegaErrorDown()));
+    query.bindValue(":is_eccentric", fit->isEccentric() ? 1 : 0);
     query.bindValue(":is_best", fit->isBestFit() ? 1 : 0);
     query.bindValue(":method", fit->getFitMethod());
     query.bindValue(":chi2", fit->getChi2());
@@ -272,9 +275,15 @@ std::vector<std::shared_ptr<RVFit>> RadialVelocityRepository::loadRVFits(
         fit->setPhiError(query.value("phi_error").toDouble());
         fit->setT0(query.value("t0").toDouble());
         fit->setT0Error(query.value("t0_error").toDouble());
-        fit->setEccentricity(query.value("eccentricity").toDouble());
+        const double ecc = query.value("eccentricity").toDouble();
+        fit->setEccentricity(ecc);
         fit->setEccentricityError(
             query.value("eccentricity_error").toDouble());
+        // Rows written before is_eccentric existed carry NULL; for those the
+        // old eccentricity > 0 guess is the best we have.
+        const QVariant eccFlag = query.value("is_eccentric");
+        fit->setEccentric(eccFlag.isNull() ? (ecc > 0.0)
+                                           : (eccFlag.toInt() != 0));
         fit->setOmega(query.value("omega").toDouble());
         fit->setOmegaError(query.value("omega_error").toDouble());
         fit->setKErrorUp(SqlValue::toDoubleOrNaN(query, "k_error_up"));

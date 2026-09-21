@@ -1581,7 +1581,9 @@ void RadialVelocityImportPage::applyFitParamsToProject()
         if (gammaCol >= 0)  { fit->setGamma(getDouble(row, gammaCol));      fit->setGammaError(getDouble(row, gammaErrCol)); }
         if (periodCol >= 0) { fit->setPeriod(getDouble(row, periodCol));    fit->setPeriodError(getDouble(row, periodErrCol)); }
         if (t0Col >= 0)     { fit->setT0(getDouble(row, t0Col));            fit->setT0Error(getDouble(row, t0ErrCol)); }
-        if (eccCol >= 0)    { fit->setEccentricity(getDouble(row, eccCol)); fit->setEccentricityError(getDouble(row, eccErrCol)); }
+        if (eccCol >= 0)    { fit->setEccentricity(getDouble(row, eccCol)); fit->setEccentricityError(getDouble(row, eccErrCol));
+                              // An imported table carries no model flag, so a nonzero e is the only hint.
+                              fit->setEccentric(fit->getEccentricity() > 0.0); }
         if (omegaCol >= 0)  { fit->setOmega(getDouble(row, omegaCol));      fit->setOmegaError(getDouble(row, omegaErrCol)); }
 
         // In-memory linking

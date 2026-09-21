@@ -16,6 +16,7 @@
 #include "core/Project.h"
 #include "core/Star.h"
 #include "db/DatabaseManager.h"
+#include "rv/RadialVelocity.h"
 
 #include <QSqlDatabase>
 #include <QSqlQuery>
@@ -23,6 +24,7 @@
 #include <QStringList>
 #include <QTemporaryDir>
 
+#include <map>
 #include <memory>
 
 namespace {
@@ -376,6 +378,63 @@ TEST_CASE("Deleting a project takes its stars and all their data with it")
                                  QStringLiteral("rv_points"),
                                  QStringLiteral("periodograms")})
         CHECK_MESSAGE(rowCount(table) == 0, "rows left in " << table.toStdString());
+
+    dbm.closeDatabase();
+}
+
+TEST_CASE("An eccentric RV fit stays eccentric across a save/load round trip")
+{
+    // rv_fits had no is_eccentric column, so the model choice was re-derived on
+    // load from eccentricity > 0. A Keplerian fit that converged to e = 0 came
+    // back circular and folded phi with the wrong sign; a circular fit left
+    // holding a stale nonzero e came back eccentric. Both are checked here.
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+
+    DatabaseManager dbm;
+    REQUIRE(dbm.openDatabase(tmp.filePath("astra_test.db")));
+    REQUIRE(run("INSERT INTO projects (id, name) VALUES ('P1', 'test')"));
+    REQUIRE(run("INSERT INTO stars (id, project_id) VALUES ('S1', 'P1')"));
+    REQUIRE(run("INSERT INTO rv_curves (id, star_id) VALUES ('RC1', 'S1')"));
+
+    auto eccentric = std::make_shared<RVFit>();
+    eccentric->setId("F_ECC");
+    eccentric->setPeriod(3.5);
+    eccentric->setPhi(0.2);
+    eccentric->setReferenceTime(2458000.0, 2458000.0 - 2400000.5);
+    eccentric->setEccentric(true);
+    eccentric->setEccentricity(0.0);      // the LM bound, legitimately reached
+    eccentric->setOmega(75.0);
+    REQUIRE(dbm.saveRVFit(eccentric, "RC1"));
+
+    auto circular = std::make_shared<RVFit>();
+    circular->setId("F_CIRC");
+    circular->setPeriod(3.5);
+    circular->setEccentric(false);
+    circular->setEccentricity(0.4);       // stale value from an earlier edit
+    REQUIRE(dbm.saveRVFit(circular, "RC1"));
+
+    std::map<QString, std::shared_ptr<RVFit>> byId;
+    for (const auto& f : dbm.loadRVFits("RC1")) byId[f->getId()] = f;
+    REQUIRE(byId.size() == 2);
+
+    CHECK(byId["F_ECC"]->isEccentric());
+    CHECK(byId["F_ECC"]->getEccentricity() == doctest::Approx(0.0));
+    CHECK(byId["F_ECC"]->getOmega() == doctest::Approx(75.0));
+    // The eccentric fold is phi = +0.2, not the circular -0.2. The reference
+    // epoch lives on the curve, not the row, so bind it as the loader does.
+    byId["F_ECC"]->setReferenceTime(2458000.0, 2458000.0 - 2400000.5);
+    CHECK(byId["F_ECC"]->getT0BJD() == doctest::Approx(2458000.0 + 0.2 * 3.5));
+
+    CHECK_FALSE(byId["F_CIRC"]->isEccentric());
+    CHECK(byId["F_CIRC"]->getEccentricity() == doctest::Approx(0.4));
+
+    // A row predating the column (NULL) still falls back to the e > 0 guess.
+    REQUIRE(run("UPDATE rv_fits SET is_eccentric = NULL"));
+    for (const auto& f : dbm.loadRVFits("RC1")) {
+        if (f->getId() == "F_ECC")  CHECK_FALSE(f->isEccentric());
+        if (f->getId() == "F_CIRC") CHECK(f->isEccentric());
+    }
 
     dbm.closeDatabase();
 }

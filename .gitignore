@@ -200,3 +200,6 @@ astra-*-setup.exe.sha256
 
 # Platform handover notes, kept out of the shared history
 WINDOWS-HANDOFF.md
+
+# ISIS script-library snapshot restored by actions/cache during CI builds
+.isis-scripts-cache/

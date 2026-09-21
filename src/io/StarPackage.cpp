@@ -1049,7 +1049,9 @@ std::shared_ptr<RVFit> rvFitFromJson(const QJsonObject &o) {
     f->setT0Error(rD(o, "t0Err", 0));
     f->setEccentricity(rD(o, "ecc", 0));
     f->setEccentricityError(rD(o, "eccErr", 0));
-    f->setEccentric(rB(o, "eccentric"));
+    // Packages written before the "eccentric" key existed fall back to the old
+    // eccentricity > 0 guess.
+    f->setEccentric(rB(o, "eccentric", rD(o, "ecc", 0) > 0));
     f->setOmega(rD(o, "omega", 0));
     f->setOmegaError(rD(o, "omegaErr", 0));
     f->setKErrorUp(rD(o, "KErrUp"));

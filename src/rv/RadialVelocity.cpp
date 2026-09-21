@@ -895,7 +895,10 @@ double RVFit::calculateRVAtPhase(double phase, int component) const
     // Both components share the phase; the secondary is the same unit orbit
     // function with a negated amplitude (equivalent to omega + 180 deg).
     double unitTerm;
-    if (_isEccentric && _eccentricity > 0.0 && _eccentricity < 1.0) {
+    // e == 0 stays on the Keplerian branch: it degenerates to cos(M + w), which
+    // is not the circular sin(M), and phaseSign() already folded φ for this
+    // branch. Falling through would desync the curve by ω plus a quarter cycle.
+    if (_isEccentric && _eccentricity >= 0.0 && _eccentricity < 1.0) {
         const double e = _eccentricity;
         const double nu = trueAnomaly(solveKepler(M, e), e);
         const double w = _omega * M_PI / 180.0;

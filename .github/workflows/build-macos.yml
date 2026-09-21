@@ -53,13 +53,16 @@ jobs:
 
       # Snapshot of the last isisscripts/stellar_isisscripts clone that worked,
       # written on the default branch by .github/workflows/isis-scripts-cache.yml.
+      # The path must stay inside the workspace: actions/cache stores it relative
+      # to GITHUB_WORKSPACE, and the seeding runner's root can sit at a different
+      # depth than the builders'.
       # Restore only: a save from a tag build would be scoped to that tag and
       # never read again. If their server is down, this is what keeps ISIS in
       # the bundle (build scripts annotate the run when they fall back to it).
       - name: Restore ISIS scripts snapshot
         uses: actions/cache/restore@v4
         with:
-          path: ~/.cache/astra-isis-scripts
+          path: .isis-scripts-cache
           key: astra-isis-scripts-
           restore-keys: astra-isis-scripts-
 
@@ -80,6 +83,7 @@ jobs:
       - name: Build .app and .dmg
         env:
           ASTRA_VERSION_OVERRIDE: ${{ steps.ver.outputs.stamp }}
+          ASTRA_ISIS_SCRIPTS_CACHE: ${{ github.workspace }}/.isis-scripts-cache
           # Deliberately NOT setting ASTRA_REQUIRE_ISIS=1. It was added after
           # v0.5.5 shipped a silently ISIS-less .dmg, but the cure was worse than
           # the disease: v0.5.6 then shipped no .dmg at all, because one bad
