@@ -26,6 +26,8 @@ public:
     void refresh() override;
     void refreshTheme() override;
 
+    XAxisLink xAxisLink() const override;
+
     void setDisplayedFit(std::shared_ptr<RVFit> fit);
 
 protected:
@@ -104,6 +106,14 @@ private:
     bool       _highlightHasEpoch = false;
 
     bool _foldDefaultApplied = false;
+
+    // What the x axis of the plots built by the last populate() means, for the
+    // cross-panel x-axis link. _xZero is the BJD sitting at plot x == 0 in the
+    // timeline view; _xSegmented marks the broken-axis view, whose segments can
+    // be aligned at their outer edges but not range-synced.
+    XAxisLink::Kind _xKind      = XAxisLink::Kind::None;
+    double          _xZero      = 0.0;
+    bool            _xSegmented = false;
 
     RadialVelocityCurve::ListenerToken _rvChangeToken =
         RadialVelocityCurve::kInvalidToken;

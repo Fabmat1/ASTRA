@@ -81,6 +81,8 @@ QString templateFor(UiIcons::Role role)
     case UiIcons::Role::ToggleOn:            return QStringLiteral(":/icons/check.svg");
     case UiIcons::Role::ToggleOff:           return QStringLiteral(":/icons/circle.svg");
     case UiIcons::Role::Edit:                return QStringLiteral(":/icons/pencil.svg");
+    case UiIcons::Role::LinkOn:              return QStringLiteral(":/icons/link.svg");
+    case UiIcons::Role::LinkOff:             return QStringLiteral(":/icons/link-off.svg");
     }
     return QString();
 }

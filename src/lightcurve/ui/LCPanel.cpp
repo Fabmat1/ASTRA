@@ -10,6 +10,7 @@
 #include "app/Logger.h"
 #include "db/DatabaseManager.h"
 #include "plotting/qcustomplot.h"
+#include "ui/widgets/FlowLayout.h"
 #include "ui/widgets/PlotKeyNavigator.h"
 
 #include <QVBoxLayout>
@@ -46,6 +47,28 @@ inline QString keyFor(const QString& src, const QString& filt)
     return src + "::" + filt;
 }
 
+/// Bundle a caption and the control it names into one widget, so the wrapping
+/// toolbar never breaks the line between "Period:" and its dropdown.
+QWidget* labelled(const QString& caption, QWidget* control)
+{
+    auto* host = new QWidget;
+    auto* lay  = new QHBoxLayout(host);
+    lay->setContentsMargins(0, 0, 0, 0);
+    lay->setSpacing(4);
+    lay->addWidget(new QLabel(caption));
+    lay->addWidget(control);
+    return host;
+}
+
+/// Base text of the period dropdown's tooltip; the active selection is appended
+/// to it, because the dropdown is narrow enough to truncate a long label.
+const char* const kPeriodTip =
+    "Period (and phase-0 epoch) used when folding. Lists every period\n"
+    "saved for this star - fits, the stored best photometric / RV period\n"
+    "and the saved periodogram peaks.\n"
+    "  Auto - the RV fit (keeps the fold in phase with the RV curve),\n"
+    "         else an LC fit, else the stored RV / best photometric\n"
+    "         period, else the strongest periodogram peak";
 
 QVector<std::tuple<double,double,double>>
 binSeries(const QVector<double>& px,
@@ -198,37 +221,47 @@ void LCPanel::setupUi()
     auto* layout = new QVBoxLayout(group);
 
     // ── Toolbar ──
+    // The controls wrap onto as many rows as the panel's width allows. Laid out
+    // in a single QHBoxLayout they demanded ~1050 px before the panel could be
+    // shown at all, which is most of the detail window - far more than the plot
+    // underneath them needs.
     auto* tb = new QHBoxLayout;
     tb->setSpacing(6);
 
-    tb->addWidget(new QLabel("View:"));
+    auto* toolHost = new QWidget;
+    auto* tools    = new FlowLayout(toolHost, 0, 6, 4);
+    {
+        // The enclosing layouts have to ask a wrapping row how tall it is at
+        // the width it was given, or the last row is cut off.
+        QSizePolicy sp = toolHost->sizePolicy();
+        sp.setHeightForWidth(true);
+        sp.setVerticalPolicy(QSizePolicy::Minimum);
+        toolHost->setSizePolicy(sp);
+    }
+
     _viewModeCombo = new QComboBox;
     _viewModeCombo->addItem("Overlay",              static_cast<int>(ViewMode::Overlay));
     _viewModeCombo->addItem("Stacked (per source)", static_cast<int>(ViewMode::StackedBySource));
     _viewModeCombo->addItem("Stacked (per filter)", static_cast<int>(ViewMode::StackedBySourceFilter));
     connect(_viewModeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &LCPanel::onViewModeChanged);
-    tb->addWidget(_viewModeCombo);
-
-    tb->addSpacing(10);
+    tools->addWidget(labelled("View:", _viewModeCombo));
 
     _toggleFoldBtn = new QPushButton("Show Folded");
     _toggleFoldBtn->setCheckable(true);
     _toggleFoldBtn->setMaximumWidth(140);
     connect(_toggleFoldBtn, &QPushButton::clicked, this, &LCPanel::onToggleFolded);
-    tb->addWidget(_toggleFoldBtn);
+    tools->addWidget(_toggleFoldBtn);
 
-    tb->addSpacing(8);
-    tb->addWidget(new QLabel("Period:"));
     _periodSourceCombo = new QComboBox;
-    _periodSourceCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
-    _periodSourceCombo->setToolTip(
-        "Period (and phase-0 epoch) used when folding. Lists every period\n"
-        "saved for this star - fits, the stored best photometric / RV period\n"
-        "and the saved periodogram peaks.\n"
-        "  Auto – the RV fit (keeps the fold in phase with the RV curve),\n"
-        "         else an LC fit, else the stored RV / best photometric\n"
-        "         period, else the strongest periodogram peak");
+    // Sizing to the widest entry ("Periodogram peak  P = 0.0867414 d") made
+    // this one control ~300 px wide. Bounded instead: the closed box may
+    // truncate, the popup still opens wide enough for the full label and the
+    // tooltip carries the active one.
+    _periodSourceCombo->setSizeAdjustPolicy(
+        QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    _periodSourceCombo->setMinimumContentsLength(14);
+    _periodSourceCombo->setToolTip(QString::fromUtf8(kPeriodTip));
     connect(_periodSourceCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &LCPanel::onPeriodSourceChanged);
     // Filled in from the star's saved periods by populate(); a deferred panel
@@ -237,7 +270,7 @@ void LCPanel::setupUi()
         QSignalBlocker b(_periodSourceCombo);
         _periodSourceCombo->addItem("Auto", static_cast<int>(PeriodSource::Auto));
     }
-    tb->addWidget(_periodSourceCombo);
+    tools->addWidget(labelled("Period:", _periodSourceCombo));
 
     _flagBtn = new QToolButton;
     _flagBtn->setText("Flag");
@@ -245,22 +278,22 @@ void LCPanel::setupUi()
     _flagBtn->setToolTip("Drag-select on the timeline to flag points (excluded from folding & fits). "
                          "Wheel zoom remains active for precise selection.");
     connect(_flagBtn, &QToolButton::toggled, this, &LCPanel::onFlagModeToggled);
-    tb->addWidget(_flagBtn);
+    tools->addWidget(_flagBtn);
 
     _clearFlagsBtn = new QToolButton;
     _clearFlagsBtn->setText("Clear Flags");
     _clearFlagsBtn->setToolTip("Un-flag all points across all light curves");
     connect(_clearFlagsBtn, &QToolButton::clicked, this, &LCPanel::onClearFlagsClicked);
-    tb->addWidget(_clearFlagsBtn);
+    tools->addWidget(_clearFlagsBtn);
 
     _resetZoomBtn = new QToolButton;
     _resetZoomBtn->setText("Reset Zoom");
     _resetZoomBtn->setToolTip(
         "Restore default zoom on all plots (or press R over a plot)");
     connect(_resetZoomBtn, &QToolButton::clicked, this, &LCPanel::onResetZoom);
-    tb->addWidget(_resetZoomBtn);
+    tools->addWidget(_resetZoomBtn);
 
-    tb->addStretch();
+    tb->addWidget(toolHost, 1);
 
     _settingsBtn = new QToolButton;
     _settingsBtn->setText(QString::fromUtf8("\xe2\x9a\x99"));  // ⚙
@@ -269,7 +302,8 @@ void LCPanel::setupUi()
     _settingsMenu = new QMenu(this);
     _settingsBtn->setMenu(_settingsMenu);
     connect(_settingsMenu, &QMenu::aboutToShow, this, &LCPanel::buildSettingsMenu);
-    tb->addWidget(_settingsBtn);
+    // Stays pinned to the top right however many rows the tools wrap onto.
+    tb->addWidget(_settingsBtn, 0, Qt::AlignTop);
 
     layout->addLayout(tb);
 
@@ -427,6 +461,18 @@ void LCPanel::rebuildPeriodCombo()
         ? QString("Auto currently folds on: %1").arg(opts[1].label)
         : QString("Auto has no period to fold on yet");
     _periodSourceCombo->setItemData(0, autoTip, Qt::ToolTipRole);
+
+    updatePeriodComboTooltip();
+}
+
+void LCPanel::updatePeriodComboTooltip()
+{
+    if (!_periodSourceCombo) return;
+    const QString current = _periodSourceCombo->currentText();
+    _periodSourceCombo->setToolTip(
+        current.isEmpty()
+            ? QString::fromUtf8(kPeriodTip)
+            : QString::fromUtf8(kPeriodTip) + "\n\nFolding on: " + current);
 }
 
 void LCPanel::resolveAutoFoldParams()
@@ -482,6 +528,7 @@ void LCPanel::onPeriodSourceChanged(int)
     // An explicit pick wins over a period handed to the panel from outside.
     _foldExternal = false;
 
+    updatePeriodComboTooltip();
     resolveAutoFoldParams();
     saveStarSettings();
     if (_toggleFoldBtn && !_series.isEmpty())
@@ -616,7 +663,7 @@ void LCPanel::rebuildPlots()
     _stackedHost = nullptr;
     _stackedLayout = nullptr;
 
-    if (_series.isEmpty()) return;
+    if (_series.isEmpty()) { emit plotsRebuilt(); return; }
 
     auto makePlot = [this](QWidget *parent) -> QCustomPlot * {
         auto *p = new QCustomPlot(parent);
@@ -645,6 +692,7 @@ void LCPanel::rebuildPlots()
         QList<int> all; for (int i = 0; i < _series.size(); ++i) all.append(i);
         _plotSeries[p] = all;
         _contentLayout->addWidget(p);
+        emit plotsRebuilt();
         return;
     }
 
@@ -728,6 +776,8 @@ void LCPanel::rebuildPlots()
                 _syncingXAxis = false;
             });
     }
+
+    emit plotsRebuilt();
 }
 
 // ── Replot ──────────────────────────────────────────────────────────
@@ -756,6 +806,36 @@ void LCPanel::replotAll(bool preserveZoom)
             p->replot(QCustomPlot::rpQueuedReplot);
         }
     }
+
+    // plotSeriesInto() re-derives each plot's x offset (and whether x is a
+    // phase at all), so an x-linked neighbour has to be told even when the
+    // plot widgets themselves survived.
+    emit plotsRebuilt();
+}
+
+DetailPanel::XAxisLink LCPanel::xAxisLink() const
+{
+    XAxisLink link;
+    if (_plots.isEmpty()) return link;
+
+    const bool foldable = _folded && _foldPeriod > 0.0;
+
+    // Stacked plots each subtract their own first epoch, but rebuildPlots()
+    // then mirrors one raw x range across all of them - so as far as anything
+    // outside this panel is concerned they share the first plot's zero point.
+    // Reporting per-plot offsets here would only be undone by that mirroring.
+    double zero = 0.0;
+    for (auto* p : _plots) {
+        if (!p || !p->isVisibleTo(const_cast<LCPanel*>(this))) continue;
+        if (link.plots.isEmpty()) zero = foldable ? 0.0 : _xOffsets.value(p, 0.0);
+        link.plots.append({ p, zero });
+    }
+    if (link.plots.isEmpty()) return link;
+
+    // Stacked plots sit above one another and already share one x range, so
+    // the panel is never "segmented" in the broken-axis sense.
+    link.kind = foldable ? XAxisLink::Kind::Phase : XAxisLink::Kind::Time;
+    return link;
 }
 
 void LCPanel::plotSeriesInto(QCustomPlot* plot, const QList<int>& seriesIdxs)

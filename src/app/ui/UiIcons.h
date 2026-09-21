@@ -68,6 +68,11 @@ enum class Role {
 
     // Edit the thing this button sits next to.
     Edit,
+
+    // Tie two things together / cut them loose. Used by the chain toggle that
+    // locks the RV and light-curve panels onto a common x axis.
+    LinkOn,
+    LinkOff,
 };
 
 // Themed icon for `role`, rendered at `px` logical pixels.
