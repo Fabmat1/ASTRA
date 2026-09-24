@@ -111,11 +111,13 @@ public:
     // Single-orbit trajectory for plotting: nominal input plus (optionally)
     // nSigmaOrbits extra orbits drawn from the MC distribution to visualize
     // the uncertainty band. Trajectories are appended to 'out' (nominal
-    // first). Returns the nominal orbit summary.
-    OrbitSummary computeTrajectories(const KinematicsInput& in,
-                                     double tEndMyr, int nUncertaintyOrbits,
-                                     double tolerance,
-                                     std::vector<Trajectory>& out) const;
+    // first). Returns the nominal orbit summary. 'progress' (0..1, may be
+    // null) is the mean integrated-time fraction over all orbits, called
+    // from worker threads (not necessarily monotonic across threads).
+    OrbitSummary computeTrajectories(
+        const KinematicsInput& in, double tEndMyr, int nUncertaintyOrbits,
+        double tolerance, std::vector<Trajectory>& out,
+        const std::function<void(double)>& progress = nullptr) const;
 
     // helpers
     static ValueDist distFromSamples(double nominal,

@@ -125,6 +125,8 @@ OrbitSummary integrateOrbit(const GalacticPotential& pot,
                 tLastSave = t;
                 record(t);
             }
+            if (options.progress && step % 512 == 0)
+                options.progress(t / tEnd);
         }
 
         // adjust the step (clamped growth/shrink as in Numerical Recipes)

@@ -352,7 +352,8 @@ OrbitStatsResult KinematicsCalculator::computeOrbitStats(
 
 OrbitSummary KinematicsCalculator::computeTrajectories(
     const KinematicsInput& in, double tEndMyr, int nUncertaintyOrbits,
-    double tolerance, std::vector<Trajectory>& out) const
+    double tolerance, std::vector<Trajectory>& out,
+    const std::function<void(double)>& progress) const
 {
     KinematicsInput mcIn = in;
     mcIn.mcSamples = std::max(nUncertaintyOrbits, 1);
@@ -370,12 +371,28 @@ OrbitSummary KinematicsCalculator::computeTrajectories(
     out.resize(nOrbits);
     std::vector<OrbitSummary> summaries(nOrbits);
 
+    // per-orbit time fraction; the reported progress is their mean, so a
+    // single long orbit (e.g. nUncertaintyOrbits == 0) still advances smoothly
+    std::vector<std::atomic<double>> fraction(nOrbits);
+    for (auto& f : fraction) f.store(0.0, std::memory_order_relaxed);
+    auto report = [&](size_t k, double f) {
+        fraction[k].store(f, std::memory_order_relaxed);
+        double sum = 0.0;
+        for (const auto& g : fraction) sum += g.load(std::memory_order_relaxed);
+        progress(sum / double(nOrbits));
+    };
+
     std::vector<size_t> idx(nOrbits);
     for (size_t i = 0; i < nOrbits; ++i) idx[i] = i;
     QtConcurrent::blockingMap(idx, [&](size_t k) {
         const auto& f = frames[std::min(k, frames.size() - 1)];
         const StateVector s0 = celestialToGalactic(samples[k], f);
-        summaries[k] = integrateOrbit(_pot, s0, opt, &out[k]);
+        OrbitOptions o = opt;
+        if (progress)
+            o.progress = [&report, k](double g) { report(k, g); };
+        summaries[k] = integrateOrbit(_pot, s0, o, &out[k]);
+        if (progress)
+            report(k, 1.0);
     });
 
     return summaries.empty() ? OrbitSummary{} : summaries[0];

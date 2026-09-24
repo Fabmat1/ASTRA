@@ -18,6 +18,7 @@
 #include "kinematics/GalacticCoordinates.h"
 #include "kinematics/GalacticPotential.h"
 
+#include <functional>
 #include <vector>
 
 namespace GalKin {
@@ -27,6 +28,9 @@ struct OrbitOptions {
     double tolerance  = 1e-8;    // absolute error control per step
     double recordDtMyr = 0.0;    // min |Δt| between recorded points (0 = all)
     int    maxSteps   = 4000000; // hard safety limit
+    // optional: fraction of |tEnd| covered so far (0..1), called every few
+    // hundred accepted steps from the integrating thread
+    std::function<void(double)> progress;
 };
 
 struct Trajectory {

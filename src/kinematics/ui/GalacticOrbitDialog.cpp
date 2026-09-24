@@ -601,7 +601,7 @@ void GalacticOrbitDialog::onComputeOrbit()
         return;
 
     setBusy(true);
-    _progress->setRange(0, 0); // indeterminate
+    _progress->setRange(0, 100);
 
     const auto model  = selectedModel();
     const double tEnd = signedIntegrationTime();
@@ -635,11 +635,30 @@ void GalacticOrbitDialog::onComputeOrbit()
         replotBoundness();
     });
 
+    // the MC orbits and the Sun's reference orbit each count as one unit;
+    // only forward percentage changes are posted to the GUI thread
+    auto* progressBar = _progress;
+    auto lastPct = std::make_shared<std::atomic<int>>(0);
+    const double units = nOrbits + 2.0;
+    auto report = [progressBar, lastPct](double f) {
+        const int pct = std::clamp(int(f * 100.0), 0, 100);
+        int prev = lastPct->load(std::memory_order_relaxed);
+        while (pct > prev) {
+            if (lastPct->compare_exchange_weak(prev, pct)) {
+                QMetaObject::invokeMethod(progressBar, "setValue",
+                                          Qt::QueuedConnection,
+                                          Q_ARG(int, pct));
+                break;
+            }
+        }
+    };
+
     watcher->setFuture(QtConcurrent::run([=]() {
         KinematicsCalculator calc(model);
         *uvwxyz  = calc.computeUVWXYZ(in);
-        *nominal = calc.computeTrajectories(in, tEnd, nOrbits, 1e-8,
-                                            *trajectories);
+        *nominal = calc.computeTrajectories(
+            in, tEnd, nOrbits, 1e-8, *trajectories,
+            [&](double f) { report(f * (units - 1.0) / units); });
         // the Sun's orbit over the same interval, for context in the plots
         FrameParams fp;
         fp.sunGCDistKpc = calc.potential().sunGCDist();
@@ -648,6 +667,7 @@ void GalacticOrbitDialog::onComputeOrbit()
         OrbitOptions opt;
         opt.tEndMyr     = tEnd;
         opt.recordDtMyr = std::abs(tEnd) / 2000.0;
+        opt.progress    = [&](double f) { report((units - 1.0 + f) / units); };
         integrateOrbit(calc.potential(), sun, opt, sunTraj.get());
     }));
 }
