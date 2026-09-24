@@ -181,6 +181,7 @@ scripts/*
 !scripts/plot_curve.py
 !scripts/plot_periodogram.py
 !scripts/reorganize_src.py
+!scripts/build-worker-bundle.sh
 
 !resources/scripts/out.svg
 

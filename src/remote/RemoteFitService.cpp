@@ -16,6 +16,7 @@
 #include <specfit/GaelAPI.hpp>
 
 #include <QCoreApplication>
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
@@ -219,6 +220,29 @@ QString RemoteFitService::bundlePath()
     return {};
 }
 
+QString RemoteFitService::bundleId(const QString& path)
+{
+    /*  Hashing a bundle takes a moment and every remote fit asks, so the
+     *  answer is kept until the file changes.                               */
+    static QMutex mtx;
+    static QString cachedKey, cachedId;
+
+    const QFileInfo fi(path);
+    const QString key = QStringLiteral("%1|%2|%3").arg(
+        fi.absoluteFilePath(), QString::number(fi.size()),
+        QString::number(fi.lastModified().toMSecsSinceEpoch()));
+    QMutexLocker lk(&mtx);
+    if (key == cachedKey) return cachedId;
+
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return {};
+    QCryptographicHash h(QCryptographicHash::Sha256);
+    if (!h.addData(&f)) return {};
+    cachedKey = key;
+    cachedId  = QString::fromLatin1(h.result().toHex());
+    return cachedId;
+}
+
 bool RemoteFitService::ensureWorker(const RemoteHost& host,
                                     QString* installedVersion, QString* err,
                                     const LogFn& onLog,
@@ -230,45 +254,82 @@ bool RemoteFitService::ensureWorker(const RemoteHost& host,
         return false;
     }
 
+    /*  Remote layout: "bundle" is a symlink to "bundle-<id>", one directory
+     *  per installed build, with the full id in its .astra-bundle-id.  An
+     *  update unpacks next to the running one and swaps the link in one
+     *  rename, so a job that starts mid-update still finds a whole worker
+     *  and a worker that is running keeps its files.  Installs from before
+     *  this scheme have a plain "bundle" directory and no id.               */
     const QString workDir =
         RemoteHostRegistry::instance().resolvedWorkDir(host.id);
     const QString bundleDir = workDir + QLatin1String("/bundle");
     const QString worker = bundleDir + QLatin1String("/bin/gael-worker");
+    const QString idFile = QStringLiteral("/.astra-bundle-id");
 
     // One installer per host: several bulk-fit threads can arrive here at
     // once on the first remote fit of a session.
     QMutexLocker lk(&_installMtx);
 
     auto probe = conn->exec(SshConnection::shellCommand(
-        QStringLiteral("%1 --version 2>/dev/null || echo none").arg(worker)));
-    const QString have = QString::fromUtf8(probe.out).trimmed();
-    if (probe.transportOk && have.startsWith(QLatin1String("GAEL "))) {
-        if (installedVersion) *installedVersion = have;
-        return true;
-    }
+        QStringLiteral("echo ASTRA_VER=$(%1 --version 2>/dev/null); "
+                       "echo ASTRA_ID=$(cat %2%3 2>/dev/null)")
+            .arg(worker, bundleDir, idFile)));
     if (!probe.transportOk) {
         if (err) *err = probe.errorString;
         return false;
     }
+    QString have, haveId;
+    for (const QString& line : QString::fromUtf8(probe.out).split(QLatin1Char('\n'))) {
+        if (line.startsWith(QLatin1String("ASTRA_VER=")))
+            have = line.mid(10).trimmed();
+        else if (line.startsWith(QLatin1String("ASTRA_ID=")))
+            haveId = line.mid(9).trimmed();
+    }
+    const bool haveWorker = have.startsWith(QLatin1String("GAEL "));
 
+    /*  The local bundle decides what is current.  Its hash rather than the
+     *  version string, because a rebuild with uncommitted GAEL changes keeps
+     *  the same "-dirty" version but is a different worker.  Without a local
+     *  bundle there is nothing to update to, so a working install stays.   */
     const QString local = bundlePath();
+    const QString localId = local.isEmpty() ? QString() : bundleId(local);
+    if (haveWorker && (localId.isEmpty() || haveId == localId)) {
+        if (installedVersion) *installedVersion = have;
+        return true;
+    }
+
     if (local.isEmpty()) {
         if (err) *err = QStringLiteral(
             "no worker bundle available to install on %1. Build one with "
             "scripts/build-worker-bundle.sh").arg(host.name);
         return false;
     }
+    if (localId.isEmpty()) {
+        if (err) *err = QStringLiteral("cannot read the worker bundle %1")
+                            .arg(local);
+        return false;
+    }
 
     if (onLog)
-        onLog(QStringLiteral("Installing the fitting worker on %1 ...")
-                  .arg(host.name));
+        onLog(haveWorker
+                  ? QStringLiteral("Updating the fitting worker on %1 "
+                                   "(installed: %2) ...").arg(host.name, have)
+                  : QStringLiteral("Installing the fitting worker on %1 ...")
+                        .arg(host.name));
 
-    const QString remoteTar = workDir + QLatin1String("/worker.tar.zst");
+    const QString tag = localId.left(12);
+    const QString newName = QLatin1String("bundle-") + tag;
+    const QString newDir = workDir + QLatin1Char('/') + newName;
+    // Named after the build: a resumable upload must never append to the
+    // leftover .part of a different bundle.
+    const QString remoteTar =
+        workDir + QLatin1String("/worker-") + tag + QLatin1String(".tar.zst");
+
     auto mk = conn->exec(SshConnection::shellCommand(
-        QStringLiteral("mkdir -p %1 %2/bin").arg(bundleDir, workDir)));
+        QStringLiteral("rm -rf %1 && mkdir -p %1 %2/bin").arg(newDir, workDir)));
     if (!mk.ok()) {
         if (err) *err = QStringLiteral("cannot create %1: %2")
-                            .arg(workDir, QString::fromUtf8(mk.err).trimmed());
+                            .arg(newDir, QString::fromUtf8(mk.err).trimmed());
         return false;
     }
     if (!conn->uploadFileResumable(local, remoteTar, err, progress))
@@ -277,15 +338,17 @@ bool RemoteFitService::ensureWorker(const RemoteHost& host,
     // zstd is not universal; fall back to whatever tar can decompress.
     auto ex = conn->exec(SshConnection::shellCommand(
         QStringLiteral("cd %1 && (tar --zstd -xf %2 || zstd -dc %2 | tar -xf -) "
-                       "&& rm -f %2").arg(bundleDir, remoteTar)), 300000);
+                       "&& rm -f %2").arg(newDir, remoteTar)), 300000);
     if (!ex.ok()) {
         if (err) *err = QStringLiteral("could not unpack the worker on %1: %2")
                             .arg(host.name, QString::fromUtf8(ex.err).trimmed());
         return false;
     }
 
+    // Checked before the swap, so a worker that cannot run there never
+    // replaces one that can.
     auto ver = conn->exec(SshConnection::shellCommand(
-        QStringLiteral("%1 --version").arg(worker)));
+        QStringLiteral("%1/bin/gael-worker --version").arg(newDir)));
     const QString v = QString::fromUtf8(ver.out).trimmed();
     if (!ver.ok() || !v.startsWith(QLatin1String("GAEL "))) {
         if (err) *err = QStringLiteral(
@@ -293,9 +356,38 @@ bool RemoteFitService::ensureWorker(const RemoteHost& host,
                 .arg(host.name, QString::fromUtf8(ver.err).trimmed());
         return false;
     }
+    auto stamp = conn->exec(SshConnection::shellCommand(
+                                QStringLiteral("cat > %1%2").arg(newDir, idFile)),
+                            30000, localId.toLatin1() + '\n');
+    if (!stamp.ok()) {
+        if (err) *err = QStringLiteral("could not record the worker on %1: %2")
+                            .arg(host.name, QString::fromUtf8(stamp.err).trimmed());
+        return false;
+    }
+
+    /*  Swap the link (mv -T renames over it atomically), then drop every
+     *  older build except the one just replaced: a job may still be running
+     *  from that, and deleting it would be safe but pointless.              */
+    auto swap = conn->exec(SshConnection::shellCommand(
+        QStringLiteral(
+            "cd %1 && old=$(readlink bundle 2>/dev/null); "
+            "test -L bundle || { test -d bundle && rm -rf bundle-legacy "
+            "&& mv bundle bundle-legacy && old=bundle-legacy; }; "
+            "ln -sfn %2 bundle.tmp && mv -T bundle.tmp bundle && "
+            "for d in bundle-*; do case $d in %2|\"$old\") ;; *) rm -rf $d ;; "
+            "esac; done")
+            .arg(workDir, newName)));
+    if (!swap.ok()) {
+        if (err) *err = QStringLiteral("could not activate the worker on %1: %2")
+                            .arg(host.name, QString::fromUtf8(swap.err).trimmed());
+        return false;
+    }
+
     if (installedVersion) *installedVersion = v;
-    if (onLog) onLog(QStringLiteral("Worker installed on %1 (%2).")
-                         .arg(host.name, v));
+    if (onLog) onLog(QStringLiteral("Worker %1 on %2 (%3).")
+                         .arg(haveWorker ? QStringLiteral("updated")
+                                         : QStringLiteral("installed"),
+                              host.name, v));
 
     // Remember it, so the settings page can show what is deployed.
     auto hosts = RemoteHostRegistry::instance().hosts();

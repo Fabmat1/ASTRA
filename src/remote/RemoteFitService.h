@@ -82,6 +82,11 @@ public:
      */
     static QString bundlePath();
 
+    /*  SHA-256 of the bundle file at `path`, which is what an installed
+     *  worker is compared against; empty if unreadable.  Cached per file
+     *  size and time, so asking before every fit costs nothing.             */
+    static QString bundleId(const QString& path);
+
     // ── Runs that outlived their session ────────────────────────────────
 
     /*  Take charge of every run left unfinished by an earlier session: watch

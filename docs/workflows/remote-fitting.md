@@ -118,7 +118,15 @@ scripts/build-worker-bundle.sh ~/Projects/GAEL
 
 The result lands in `dist/` and is picked up automatically the next time a
 remote fit needs it. The build runs in a container so the worker also runs on
-machines with older system libraries than yours.
+machines with older system libraries than yours. Without an argument the
+script builds the GAEL checkout under `external/`, the one ASTRA itself uses.
+
+Before each remote fit ASTRA compares the host's worker with the bundle it
+has, and replaces the worker when they differ, so a rebuilt bundle or a new
+release reaches every host on its next fit. The new worker is unpacked next to
+the old one and switched in at once, so fits already running or queued on the
+host are not disturbed. With no bundle available locally, the installed
+worker is kept as it is.
 
 ## Checking a connection from a terminal
 
