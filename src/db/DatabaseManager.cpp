@@ -953,6 +953,8 @@ bool DatabaseManager::runMigrations()
 
         // Normalized identifier for indexed star matching
         "ALTER TABLE stars ADD COLUMN source_id_norm TEXT",
+        // H-alpha core deviation of a mass-fit attempt; see AttemptSummary.
+        "ALTER TABLE mass_fit_attempts ADD COLUMN ha_core REAL",
 
         // Star summary field migrations
         "ALTER TABLE stars ADD COLUMN n_spectra INTEGER DEFAULT 0",

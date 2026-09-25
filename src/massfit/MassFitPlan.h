@@ -118,6 +118,14 @@ struct AttemptSummary {
     double chi2  = AsymErr::unset;
     double chi2r = AsymErr::unset;
 
+    /// How far the fit misses the H-alpha line core, in sigma: the largest,
+    /// over the fitted spectra that cover it, of the summed normalised
+    /// residual of the core's central pixels (see haCoreDeviation). NLTE line
+    /// cores of hot subdwarfs and HB stars are where an LTE-ish grid fails
+    /// first, so this is the number a "refit with the core masked" branch
+    /// tests. Unset when no spectrum covers H-alpha.
+    double haCore = AsymErr::unset;
+
     int  iterations       = 0;
     int  nDataPoints      = 0;
     int  nFreeParameters  = 0;
@@ -214,6 +222,18 @@ struct TreeNode {
     QString id;
     QString setupId;              ///< the FitSetup this node runs
 
+    /// Extra ignore regions in the star's *rest frame* (Angstrom), shifted to
+    /// each spectrum by the radial velocity the previous node fitted for it.
+    /// This is how one setup is rerun with a line core left out, e.g. the
+    /// H-alpha core at 6562.8 +- 4.
+    QVector<fitting::IgnoreRegion> restIgnore;
+
+    /// Adopt this node's result whenever it ran successfully, instead of
+    /// ranking it against the others. Meant for refits of a node with part
+    /// of the spectrum masked, whose chi2 is not comparable to the unmasked
+    /// fits' and would win a chi2 ranking for no other reason.
+    bool preferWhenRun = false;
+
     QVector<Branch> branches;     ///< evaluated in order, first match wins
     QString otherwiseTargetId;    ///< empty = STOP here
 
@@ -244,6 +264,8 @@ struct MassFitPlan {
 
     int parallelStars = 1;
     int threadsPerFit = 0;        ///< 0 = divide the global budget
+    /// Central pixels of the H-alpha core that AttemptSummary::haCore sums.
+    int haCorePixels  = 6;
     int maxDepth      = 8;        ///< cycle guard for the walk itself
 
     // ── Lookups ──────────────────────────────────────────────────────────

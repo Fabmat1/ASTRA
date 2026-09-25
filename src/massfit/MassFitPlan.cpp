@@ -193,7 +193,8 @@ QStringList AttemptSummary::fieldNames()
     return { QStringLiteral("teff"),  QStringLiteral("logg"),
              QStringLiteral("he"),    QStringLiteral("vsini"),
              QStringLiteral("z"),     QStringLiteral("chi2"),
-             QStringLiteral("chi2r"), QStringLiteral("iterations"),
+             QStringLiteral("chi2r"), QStringLiteral("haCore"),
+             QStringLiteral("iterations"),
              QStringLiteral("nDataPoints"),
              QStringLiteral("nFreeParameters"),
              QStringLiteral("nSpectra"),
@@ -219,6 +220,7 @@ double AttemptSummary::value(const QString& field, int component) const
     // Fields that belong to the fit as a whole ignore `component`.
     if (field == QLatin1String("chi2"))            return chi2;
     if (field == QLatin1String("chi2r"))           return chi2r;
+    if (field == QLatin1String("haCore"))          return haCore;
     if (field == QLatin1String("iterations"))      return iterations;
     if (field == QLatin1String("nDataPoints"))     return nDataPoints;
     if (field == QLatin1String("nFreeParameters")) return nFreeParameters;
@@ -275,6 +277,7 @@ QJsonObject AttemptSummary::toJson() const
     o["z"]     = writeDouble(z);
     o["chi2"]  = writeDouble(chi2);
     o["chi2r"] = writeDouble(chi2r);
+    o["haCore"] = writeDouble(haCore);
     o["iterations"]      = iterations;
     o["nDataPoints"]     = nDataPoints;
     o["nFreeParameters"] = nFreeParameters;
@@ -306,6 +309,7 @@ AttemptSummary AttemptSummary::fromJson(const QJsonObject& o)
     v.z     = readNanDouble(o, "z",     v.z);
     v.chi2  = readNanDouble(o, "chi2",  v.chi2);
     v.chi2r = readNanDouble(o, "chi2r", v.chi2r);
+    v.haCore = readNanDouble(o, "haCore", v.haCore);
     v.iterations      = readInt(o, "iterations", v.iterations);
     v.nDataPoints     = readInt(o, "nDataPoints", v.nDataPoints);
     v.nFreeParameters = readInt(o, "nFreeParameters", v.nFreeParameters);
@@ -514,6 +518,10 @@ QJsonObject TreeNode::toJson() const
                             [](const Branch& b) { return b.toJson(); });
     o["otherwiseTargetId"] = otherwiseTargetId;
     o["acceptance"]        = acceptance.toJson();
+    o["restIgnore"] = toArray(restIgnore, [](const fitting::IgnoreRegion& r) {
+        return fitting::toJson(r);
+    });
+    o["preferWhenRun"] = preferWhenRun;
     return o;
 }
 
@@ -528,6 +536,9 @@ TreeNode TreeNode::fromJson(const QJsonObject& o)
                                      v.otherwiseTargetId);
     v.acceptance = RuleGroup::fromJson(
         o.value(QLatin1String("acceptance")).toObject());
+    v.restIgnore = fitting::json::fromArray<fitting::IgnoreRegion>(
+        o, "restIgnore", fitting::ignoreRegionFromJson);
+    v.preferWhenRun = readBool(o, "preferWhenRun", v.preferWhenRun);
     return v;
 }
 
@@ -577,6 +588,7 @@ QJsonObject MassFitPlan::toJson() const
     o["parallelStars"] = parallelStars;
     o["threadsPerFit"] = threadsPerFit;
     o["maxDepth"]      = maxDepth;
+    o["haCorePixels"]  = haCorePixels;
     return o;
 }
 
@@ -602,6 +614,7 @@ MassFitPlan MassFitPlan::fromJson(const QJsonObject& o)
     v.parallelStars = readInt(o, "parallelStars", v.parallelStars);
     v.threadsPerFit = readInt(o, "threadsPerFit", v.threadsPerFit);
     v.maxDepth      = readInt(o, "maxDepth", v.maxDepth);
+    v.haCorePixels  = readInt(o, "haCorePixels", v.haCorePixels);
     return v;
 }
 
@@ -970,6 +983,15 @@ QString describeTree(const MassFitPlan& plan)
 int selectAdopted(const MassFitPlan& plan, const QVector<AttemptRecord>& attempts)
 {
     int best = -1;
+
+    // A node that asks to be adopted whenever it runs wins outright; the
+    // last such in walk order when there are several.
+    for (int i = attempts.size() - 1; i >= 0; --i) {
+        const AttemptRecord& a = attempts[i];
+        if (!a.succeeded) continue;
+        const TreeNode* n = plan.node(a.nodeId);
+        if (n && n->preferWhenRun) return i;
+    }
 
     switch (plan.adoption) {
     case MassFitPlan::Adoption::LowestReducedChi2: {

@@ -15,6 +15,7 @@
 #include "app/ui/WindowSizing.h"
 #include "app/ui/panels/PanelUtils.h"
 #include "massfit/ui/MassFitRuleEditor.h"
+#include "fitting/LineCoreCheck.h"
 #include "fitting/ui/FitComponentsWidget.h"
 
 #include <QCheckBox>
@@ -1439,6 +1440,10 @@ QWidget* MassFitPlanDialog::buildTreeTab()
     addButton(tr("Edit acceptance rule"), &MassFitPlanDialog::onEditAcceptance,
               tr("Only the \"first acceptable result\" adoption rule reads "
                  "this."));
+    addButton(tr("Masks && adoption..."), &MassFitPlanDialog::onEditNodeOptions,
+              tr("Leave line cores or other stretches out of this node's fit "
+                 "(in the star's rest frame), and adopt its result whenever it "
+                 "runs - e.g. a refit with the H-alpha core masked."));
     UiIcons::apply(addButton(tr("Remove"),
                              &MassFitPlanDialog::onRemoveTreeItem),
                    UiIcons::Role::Remove);
@@ -1517,6 +1522,23 @@ void MassFitPlanDialog::refreshTree()
         ai->setText(0, tr("acceptable when %1").arg(n.acceptance.describe()));
         ai->setData(0, kRoleNodeId, n.id);
         ai->setData(0, kRoleRowKind, int(RowAcceptance));
+
+        if (!n.restIgnore.isEmpty() || n.preferWhenRun) {
+            QStringList parts;
+            for (const auto& r : n.restIgnore)
+                parts << QStringLiteral("%1-%2 A").arg(r.wlLow, 0, 'f', 1)
+                                                  .arg(r.wlHigh, 0, 'f', 1);
+            QString text;
+            if (!parts.isEmpty())
+                text = tr("masks (rest frame) %1").arg(parts.join(QStringLiteral(", ")));
+            if (n.preferWhenRun)
+                text += (text.isEmpty() ? QString() : QStringLiteral("; ")) +
+                        tr("adopted whenever it runs");
+            auto* mi = new QTreeWidgetItem(item);
+            mi->setText(0, text);
+            mi->setData(0, kRoleNodeId, n.id);
+            mi->setData(0, kRoleRowKind, int(RowAcceptance));
+        }
 
         item->setExpanded(true);
     }
@@ -1669,6 +1691,79 @@ void MassFitPlanDialog::onEditAcceptance()
     revalidate();
 }
 
+void MassFitPlanDialog::onEditNodeOptions()
+{
+    auto* n = selectedNode();
+    if (!n) return;
+
+    QDialog dlg(this);
+    dlg.setWindowTitle(tr("Node masks and adoption"));
+    auto* v = new QVBoxLayout(&dlg);
+    v->addWidget(makeHint(
+        tr("Stretches this node leaves out of its fit, in the star's rest frame "
+           "(Angstrom, air). Each is shifted to every spectrum by the radial "
+           "velocity the previous node fitted for it; a node that runs first "
+           "widens it to cover +-400 km/s instead.")));
+
+    auto* table = new QTableWidget(0, 2, &dlg);
+    table->setHorizontalHeaderLabels({ tr("From (A)"), tr("To (A)") });
+    table->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
+    table->verticalHeader()->setVisible(false);
+    auto addRow = [table](double lo, double hi) {
+        const int r = table->rowCount();
+        table->insertRow(r);
+        table->setItem(r, 0, new QTableWidgetItem(QString::number(lo, 'f', 2)));
+        table->setItem(r, 1, new QTableWidgetItem(QString::number(hi, 'f', 2)));
+    };
+    for (const auto& r : n->restIgnore) addRow(r.wlLow, r.wlHigh);
+    table->setMinimumHeight(120);
+    v->addWidget(table);
+
+    auto* row = new QHBoxLayout;
+    auto* halfSpin = makeDoubleSpin(0.5, 50.0, 1, 4.0, 0.5, "A");
+    auto* addHa = new QPushButton(tr("Add H-alpha core, half-width"));
+    auto* addOther = new QPushButton(tr("Add region"));
+    auto* remove = new QPushButton(tr("Remove"));
+    row->addWidget(addHa);
+    row->addWidget(halfSpin);
+    row->addStretch();
+    row->addWidget(addOther);
+    row->addWidget(remove);
+    v->addLayout(row);
+    connect(addHa, &QPushButton::clicked, &dlg, [=] {
+        const double w = halfSpin->value();
+        addRow(astra::fitting::kHalphaAir - w, astra::fitting::kHalphaAir + w);
+    });
+    connect(addOther, &QPushButton::clicked, &dlg, [=] { addRow(6550.0, 6575.0); });
+    connect(remove, &QPushButton::clicked, &dlg, [=] {
+        if (table->currentRow() >= 0) table->removeRow(table->currentRow());
+    });
+
+    auto* prefer = new QCheckBox(tr("Adopt this node's result whenever it runs"), &dlg);
+    prefer->setChecked(n->preferWhenRun);
+    prefer->setToolTip(tr("For a refit with part of the spectrum masked: its "
+                          "chi2 is not comparable to the unmasked fits' and "
+                          "would win a chi2 ranking for no other reason."));
+    v->addWidget(prefer);
+
+    auto* bb = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dlg);
+    connect(bb, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(bb, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    v->addWidget(bb);
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    n->restIgnore.clear();
+    for (int r = 0; r < table->rowCount(); ++r) {
+        bool okLo = false, okHi = false;
+        const double lo = table->item(r, 0) ? table->item(r, 0)->text().toDouble(&okLo) : 0.0;
+        const double hi = table->item(r, 1) ? table->item(r, 1)->text().toDouble(&okHi) : 0.0;
+        if (okLo && okHi && hi > lo) n->restIgnore.append({ lo, hi });
+    }
+    n->preferWhenRun = prefer->isChecked();
+    refreshTree();
+    revalidate();
+}
+
 void MassFitPlanDialog::onRemoveTreeItem()
 {
     int bi = -1;
@@ -1753,12 +1848,22 @@ QWidget* MassFitPlanDialog::buildExecutionTab()
            "with different numbers of free parameters; raw chi2 favours the "
            "one with the most freedom.")));
 
-    _parallelSpin = makeIntSpin(1, 64, std::max(1, _plan.parallelStars));
+    _parallelSpin = makeIntSpin(1, 20000, std::max(1, _plan.parallelStars));
     form->addRow(tr("Parallel stars:"), _parallelSpin);
     form->addRow(QString(), makeHint(
-        tr("How many stars are fitted at the same time. Each running fit holds "
-           "its own model grid in memory, so this multiplies peak memory as "
-           "well as speed.")));
+        tr("How many stars are fitted at the same time. Each running local fit "
+           "holds its own model grid in memory, so this multiplies peak memory "
+           "as well as speed. For setups on a host that batches (Settings > "
+           "Remote hosts) a star in flight costs almost nothing here, and this "
+           "is how many fits the host gets to work on at once.")));
+
+    _haPixelsSpin = makeIntSpin(1, 50, std::max(1, _plan.haCorePixels));
+    _haPixelsSpin->setSuffix(tr(" px"));
+    form->addRow(tr("H-alpha core check:"), _haPixelsSpin);
+    form->addRow(QString(), makeHint(
+        tr("Central pixels of the H-alpha core summed into the \"haCore\" "
+           "rule field: their normalised residual, in sigma. Branch on it (e.g. "
+           "haCore > 5) to a node that refits with the core masked.")));
 
     _threadsSpin = makeIntSpin(0, 256, std::max(0, _plan.threadsPerFit));
     _threadsSpin->setSpecialValueText(tr("divide the global budget"));
@@ -1828,6 +1933,10 @@ void MassFitPlanDialog::commitEditors()
     if (_threadsSpin) {
         _threadsSpin->interpretText();
         _plan.threadsPerFit = _threadsSpin->value();
+    }
+    if (_haPixelsSpin) {
+        _haPixelsSpin->interpretText();
+        _plan.haCorePixels = _haPixelsSpin->value();
     }
 }
 

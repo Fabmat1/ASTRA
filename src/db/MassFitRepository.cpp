@@ -339,12 +339,12 @@ bool MassFitRepository::saveAttempt(const MassFitAttemptRow& row)
     q.prepare(R"(
         INSERT OR REPLACE INTO mass_fit_attempts (
             id, run_id, star_id, node_id, setup_id, seq, state,
-            chi2, chi2r, converged, n_data_points, n_free_parameters,
+            chi2, chi2r, ha_core, converged, n_data_points, n_free_parameters,
             at_boundary, teff, logg, he,
             spectral_fit_ids_json, error, started_at, finished_at
         ) VALUES (
             :id, :run_id, :star_id, :node_id, :setup_id, :seq, :state,
-            :chi2, :chi2r, :converged, :n_data_points, :n_free_parameters,
+            :chi2, :chi2r, :ha_core, :converged, :n_data_points, :n_free_parameters,
             :at_boundary, :teff, :logg, :he,
             :spectral_fit_ids_json, :error, :started_at, :finished_at
         )
@@ -358,6 +358,7 @@ bool MassFitRepository::saveAttempt(const MassFitAttemptRow& row)
     q.bindValue(":state", row.state);
     q.bindValue(":chi2", SqlValue::fromDouble(row.chi2));
     q.bindValue(":chi2r", SqlValue::fromDouble(row.chi2r));
+    q.bindValue(":ha_core", SqlValue::fromDouble(row.haCore));
     q.bindValue(":converged", row.converged ? 1 : 0);
     q.bindValue(":n_data_points", row.nDataPoints);
     q.bindValue(":n_free_parameters", row.nFreeParameters);
@@ -412,6 +413,7 @@ MassFitRepository::loadAttempts(const QString& runId, const QString& starId)
         r.state              = q.value("state").toString();
         r.chi2               = SqlValue::toDoubleOrNaN(q, "chi2");
         r.chi2r              = SqlValue::toDoubleOrNaN(q, "chi2r");
+        r.haCore             = SqlValue::toDoubleOrNaN(q, "ha_core");
         r.converged          = q.value("converged").toInt() == 1;
         r.nDataPoints        = q.value("n_data_points").toInt();
         r.nFreeParameters    = q.value("n_free_parameters").toInt();

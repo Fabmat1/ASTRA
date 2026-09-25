@@ -130,6 +130,7 @@ private:
     void    onSetBranchTarget();
     void    onSetOtherwiseTarget();
     void    onEditAcceptance();
+    void    onEditNodeOptions();
     void    onRemoveTreeItem();
 
     // ── Validation ───────────────────────────────────────────────────────
@@ -209,6 +210,7 @@ private:
     QComboBox* _adoptionCombo     = nullptr;
     QSpinBox*  _parallelSpin      = nullptr;
     QSpinBox*  _threadsSpin       = nullptr;
+    QSpinBox*  _haPixelsSpin      = nullptr;
     QComboBox* _existingCombo     = nullptr;
     QPushButton* _poorQualityBtn  = nullptr;
 

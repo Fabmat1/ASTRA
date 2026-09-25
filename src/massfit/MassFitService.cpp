@@ -1,5 +1,6 @@
 #include "massfit/MassFitService.h"
 #include "app/AppPaths.h"
+#include "fitting/LineCoreCheck.h"
 #include "remote/RemoteBatchService.h"
 #include "remote/RemoteHostRegistry.h"
 
@@ -465,6 +466,7 @@ QString MassFitService::resumeRun(const QString& runId)
         rec.succeeded = (a.state == kStarDone);
         rec.summary.chi2            = a.chi2;
         rec.summary.chi2r           = a.chi2r;
+        rec.summary.haCore          = a.haCore;
         rec.summary.converged       = a.converged;
         rec.summary.nDataPoints     = a.nDataPoints;
         rec.summary.nFreeParameters = a.nFreeParameters;
@@ -821,6 +823,9 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
     QVector<QHash<QString, QString>> attemptFits = w.historyFits;
     attemptFits.resize(history.size());   // in step even if a row lost its map
     QVector<fit::StellarComponent>   parentComponents;
+    // Radial velocities the previous node fitted, by spectrum: what a node's
+    // rest-frame masks (restIgnore) are shifted by.
+    QHash<QString, double>           parentVelocities;
 
     const QString startId = w.startNodeId.isEmpty() ? w.plan.rootNodeId
                                                     : w.startNodeId;
@@ -892,6 +897,37 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
         // One job: build, run, persist. Returns false with `error` set when
         // anything went wrong, so the caller can decide whether the node as a
         // whole failed.
+        // A node may leave extra stretches out, given in the star's rest
+        // frame (a line core, say): they are shifted to each spectrum by the
+        // velocity the previous node fitted for it.
+        QHash<QString, fit::SpectrumFitConfig> nodeConfigs = configs;
+        if (!node->restIgnore.isEmpty()) {
+            // A node that runs first has no fitted velocity to go by; the
+            // mask then covers every velocity a star plausibly has.
+            constexpr double kMaxVelocityKms = 400.0;
+            int guessed = 0;
+            for (auto it = nodeConfigs.begin(); it != nodeConfigs.end(); ++it) {
+                const auto v = parentVelocities.constFind(it.key());
+                if (v != parentVelocities.constEnd()) {
+                    it->ignore += fit::shiftRestRegions(node->restIgnore, *v);
+                } else {
+                    ++guessed;
+                    for (const auto& r : node->restIgnore) {
+                        const auto lo = fit::shiftRestRegions({ r }, -kMaxVelocityKms);
+                        const auto hi = fit::shiftRestRegions({ r }, kMaxVelocityKms);
+                        it->ignore.append({ lo[0].wlLow, hi[0].wlHigh });
+                    }
+                }
+            }
+            log(QStringLiteral("node \"%1\" masks %2 rest-frame region(s)%3")
+                    .arg(setup->name).arg(node->restIgnore.size())
+                    .arg(guessed > 0
+                             ? QStringLiteral(", widened by +-%1 km/s on %2 spectrum/spectra "
+                                              "without a fitted velocity")
+                                   .arg(kMaxVelocityKms, 0, 'f', 0).arg(guessed)
+                             : QStringLiteral(" at each spectrum's fitted velocity")));
+        }
+
         struct JobRun {
             bool ok = false;
             bool aborted = false;
@@ -907,7 +943,7 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
             JobRun jr;
             QStringList temps;
             fit::SpectralFitJob job =
-                fit::buildJob(specs, configs, comps, globals, temps);
+                fit::buildJob(specs, nodeConfigs, comps, globals, temps);
 
             if (job.observations.isEmpty()) {
                 AppPaths::cleanupTempPaths(temps);
@@ -996,6 +1032,9 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
                 bestResult   = jr.result;
                 representative = &bestResult;
                 summary      = summarize(bestResult, 0, nEnabled);
+                summary.haCore = fit::lineCoreDeviation(bestResult, w.plan.haCorePixels);
+                for (auto [id, v] : fit::fittedVelocities(bestResult).asKeyValueRange())
+                    parentVelocities.insert(id, v);
                 fitsHere     = jr.persisted.fitIdBySpectrumId;
                 attemptOk    = true;
             }
@@ -1022,7 +1061,10 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
                      it != jr.persisted.fitIdBySpectrumId.cend(); ++it)
                     fitsHere.insert(it.key(), it.value());
 
-                const mf::AttemptSummary one = summarize(jr.result, 0, nEnabled);
+                mf::AttemptSummary one = summarize(jr.result, 0, nEnabled);
+                one.haCore = fit::lineCoreDeviation(jr.result, w.plan.haCorePixels);
+                for (auto [id, v] : fit::fittedVelocities(jr.result).asKeyValueRange())
+                    parentVelocities.insert(id, v);
                 const bool better = !haveBest
                                     || (!std::isnan(one.chi2r)
                                         && (std::isnan(bestScore) || one.chi2r < bestScore));
@@ -1065,6 +1107,7 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
         if (attemptOk) {
             ar.chi2            = summary.chi2;
             ar.chi2r           = summary.chi2r;
+            ar.haCore          = summary.haCore;
             ar.converged       = summary.converged;
             ar.nDataPoints     = summary.nDataPoints;
             ar.nFreeParameters = summary.nFreeParameters;

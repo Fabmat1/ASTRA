@@ -356,6 +356,7 @@ set(ASTRA_CORE_SOURCES
     src/fitting/GaelMapping.cpp
     src/fitting/IsisBackend.cpp
     src/fitting/IsisEnvironment.cpp
+    src/fitting/LineCoreCheck.cpp
     src/fitting/RemoteGaelBackend.cpp
     src/fitting/StdStreamRedirector.cpp
     src/fitting/SystematicErrors.cpp
@@ -506,6 +507,7 @@ set(ASTRA_CORE_HEADERS
     src/fitting/IFitBackend.h
     src/fitting/IsisBackend.h
     src/fitting/IsisEnvironment.h
+    src/fitting/LineCoreCheck.h
     src/fitting/RemoteGaelBackend.h
     src/fitting/StdStreamRedirector.h
     src/fitting/SystematicErrors.h
@@ -1438,6 +1440,8 @@ if(BUILD_TESTING)
             tests/unit/observing/observability.cpp
             tests/unit/fitting/fit_types_json.cpp
             tests/unit/fitting/fit_window.cpp
+            tests/unit/fitting/line_core.cpp
+            tests/unit/massfit/plan_extensions.cpp
             tests/unit/rv/periodogram.cpp
             tests/unit/io/star_package.cpp
             tests/unit/rv/rv_error_mc.cpp

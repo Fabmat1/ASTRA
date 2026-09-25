@@ -73,6 +73,7 @@ struct MassFitAttemptRow {
     // not read back as a chi2 of exactly zero and win every ranking.
     double  chi2  = AsymErr::unset;
     double  chi2r = AsymErr::unset;
+    double  haCore = AsymErr::unset;   ///< see AttemptSummary::haCore
     bool    converged = false;
     int     nDataPoints = 0;
     int     nFreeParameters = 0;
