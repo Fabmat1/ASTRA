@@ -795,6 +795,10 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
         cfg.anchors   = m->anchors;
         cfg.resOffset = m->resOffset;
         cfg.resSlope  = m->resSlope;
+        cfg.trimBlue     = m->trimBlue;
+        cfg.trimRed      = m->trimRed;
+        cfg.maskArmSeams = m->maskArmSeams;
+        cfg.seamPad      = m->seamPad;
         // airmass / pwv stay at their defaults: the telluric seeds are a
         // property of the observation, not of the mode, and the plan has no
         // per-spectrum layer to hold them.

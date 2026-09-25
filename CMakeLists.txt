@@ -1437,6 +1437,7 @@ if(BUILD_TESTING)
             tests/unit/kinematics/galactic.cpp
             tests/unit/observing/observability.cpp
             tests/unit/fitting/fit_types_json.cpp
+            tests/unit/fitting/fit_window.cpp
             tests/unit/rv/periodogram.cpp
             tests/unit/io/star_package.cpp
             tests/unit/rv/rv_error_mc.cpp

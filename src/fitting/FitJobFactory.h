@@ -107,8 +107,44 @@ QVector<StellarComponent> componentsFromResult(
 /// regions rather than left to be silently filled in. Ranges reach to the
 /// midpoint of the neighbouring usable samples and are returned in ascending
 /// wavelength order.
+///
+/// A run of at least eight samples carrying exactly the same flux is also
+/// unusable: no real measurement repeats to the last bit, so such a stretch
+/// is a filled-in value (a reduction's padding or an interpolated gap).
 QVector<IgnoreRegion> unusableRegions(const std::vector<double>& wl,
                                       const std::vector<double>& fl);
+
+/// What a spectrum's fit actually sees, once its own data is taken into
+/// account.
+struct FitWindow {
+    double wlMin = 0.0;               ///< the observation's waveCut
+    double wlMax = 0.0;
+    QVector<IgnoreRegion>    ignore;  ///< merged, sorted, inside the window
+    QVector<ContinuumAnchor> anchors; ///< clipped to what the data can pin
+    bool empty() const { return !(wlMax > wlMin); }
+};
+
+/// Builds the fit window of one spectrum from its config and its data.
+///
+///  1. The window is the config's wlMin..wlMax, cut to the spectrum's own
+///     coverage less cfg.trimBlue / cfg.trimRed.
+///  2. Ignored are the config's regions, the stretches unusableRegions()
+///     finds, and - when cfg.maskArmSeams - each of @p armSeams widened by
+///     cfg.seamPad.
+///  3. An ignored stretch touching an end of the window moves that end
+///     instead: the backend puts a continuum anchor right at each end of the
+///     data, and one there with no usable pixel beside it is frozen at a
+///     value estimated from the very data that was ignored.
+///  4. Anchor ranges are clipped to the window, and every ignored stretch at
+///     least as wide as a range's spacing is cut out of it, for the same
+///     reason: an anchor with no usable pixel between its neighbours cannot
+///     be fitted and would hold the continuum at a guess.
+///
+/// The result is empty when nothing usable is left.
+FitWindow refineFitWindow(const SpectrumFitConfig& cfg,
+                          const std::vector<double>& wl,
+                          const std::vector<double>& fl,
+                          const std::vector<std::pair<double, double>>& armSeams);
 
 /// Writes a spectrum's (wavelength, flux) pairs to an ASCII file in @p dir for
 /// the backend to read. Returns the path, or an empty string when the spectrum

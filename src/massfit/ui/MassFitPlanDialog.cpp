@@ -552,9 +552,46 @@ QWidget* MassFitPlanDialog::buildRegionsTab()
     resRow->addWidget(_resSlopeSpin);
     resRow->addStretch();
     form->addRow(tr("Resolution:"), resRow);
+
+    // Per spectrum, not per mode: where each spectrum's own data really ends
+    // and where its arms were spliced (see SpectrumFitConfig).
+    auto* trimRow = new QHBoxLayout;
+    _trimBlueSpin = makeDoubleSpin(0.0, 5000.0, 1, 0.0, 5.0, "A");
+    _trimRedSpin  = makeDoubleSpin(0.0, 5000.0, 1, 0.0, 5.0, "A");
+    _trimBlueSpin->setToolTip(tr("Cut off the blue end of every spectrum's own "
+                                 "coverage, on top of the fit range. The first "
+                                 "and last few dozen Angstrom of a reduction "
+                                 "are often unreliable."));
+    _trimRedSpin->setToolTip(_trimBlueSpin->toolTip().replace(tr("blue"), tr("red")));
+    trimRow->addWidget(new QLabel(tr("blue")));
+    trimRow->addWidget(_trimBlueSpin);
+    trimRow->addWidget(new QLabel(tr("red")));
+    trimRow->addWidget(_trimRedSpin);
+    trimRow->addStretch();
+    form->addRow(tr("Trim spectrum ends:"), trimRow);
+
+    auto* seamRow = new QHBoxLayout;
+    _maskSeamsCheck = new QCheckBox(tr("Ignore arm seams, widened by"));
+    _maskSeamsCheck->setToolTip(tr("Leave out where the arms of one exposure "
+                                   "were spliced together (recorded when the "
+                                   "spectrum was fetched). Spectra imported from "
+                                   "files carry no such record; add an ignore "
+                                   "region for their seams instead."));
+    _seamPadSpin = makeDoubleSpin(0.0, 1000.0, 1, 10.0, 5.0, "A");
+    seamRow->addWidget(_maskSeamsCheck);
+    seamRow->addWidget(_seamPadSpin);
+    seamRow->addStretch();
+    form->addRow(QString(), seamRow);
     hv->addLayout(form);
 
     auto flush = [this]{ commitRegionEditor(); pushRegionPreview(); };
+    connect(_trimBlueSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
+    connect(_trimRedSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
+    connect(_seamPadSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
+    connect(_maskSeamsCheck, &QCheckBox::toggled, this, [this, flush](bool on) {
+        _seamPadSpin->setEnabled(on);
+        flush();
+    });
     connect(_wlMinSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
     connect(_wlMaxSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
     connect(_resOffsetSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, flush);
@@ -683,6 +720,13 @@ void MassFitPlanDialog::commitRegionEditor()
     m.wlMax     = _wlMaxSpin->value();
     m.resOffset = _resOffsetSpin->value();
     m.resSlope  = _resSlopeSpin->value();
+    _trimBlueSpin->interpretText();
+    _trimRedSpin->interpretText();
+    _seamPadSpin->interpretText();
+    m.trimBlue     = _trimBlueSpin->value();
+    m.trimRed      = _trimRedSpin->value();
+    m.maskArmSeams = _maskSeamsCheck->isChecked();
+    m.seamPad      = _seamPadSpin->value();
 }
 
 void MassFitPlanDialog::loadRegionEditor()
@@ -704,6 +748,11 @@ void MassFitPlanDialog::loadRegionEditor()
     _wlMaxSpin->setValue(m.wlMax);
     _resOffsetSpin->setValue(m.resOffset);
     _resSlopeSpin->setValue(m.resSlope);
+    _trimBlueSpin->setValue(m.trimBlue);
+    _trimRedSpin->setValue(m.trimRed);
+    _maskSeamsCheck->setChecked(m.maskArmSeams);
+    _seamPadSpin->setValue(m.seamPad);
+    _seamPadSpin->setEnabled(m.maskArmSeams);
     _loadingRegion = false;
 
     rebuildIgnoreRows();

@@ -177,6 +177,10 @@ private:
     QDoubleSpinBox* _wlMaxSpin           = nullptr;
     QDoubleSpinBox* _resOffsetSpin       = nullptr;
     QDoubleSpinBox* _resSlopeSpin        = nullptr;
+    QDoubleSpinBox* _trimBlueSpin        = nullptr;
+    QDoubleSpinBox* _trimRedSpin         = nullptr;
+    QCheckBox*      _maskSeamsCheck      = nullptr;
+    QDoubleSpinBox* _seamPadSpin         = nullptr;
     QVBoxLayout*    _ignoreListLayout    = nullptr;
     QVBoxLayout*    _anchorListLayout    = nullptr;
     QWidget*        _regionEditorHost    = nullptr;

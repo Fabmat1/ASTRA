@@ -112,6 +112,10 @@ QJsonObject toJson(const SpectrumFitConfig& v)
     o["resOffset"]     = v.resOffset;
     o["resSlope"]      = v.resSlope;
     o["inferFromFits"] = v.inferFromFits;
+    o["trimBlue"]      = v.trimBlue;
+    o["trimRed"]       = v.trimRed;
+    o["maskArmSeams"]  = v.maskArmSeams;
+    o["seamPad"]       = v.seamPad;
     o["airmass"]       = v.airmass;
     o["pwv"]           = v.pwv;
     return o;

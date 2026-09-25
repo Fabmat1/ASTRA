@@ -152,21 +152,106 @@ QVector<IgnoreRegion> unusableRegions(const std::vector<double>& wl,
         return !std::isfinite(fl[i]) || fl[i] <= 0.0 || !std::isfinite(wl[i]);
     };
 
+    auto addRun = [&](size_t start, size_t end) {   // [start, end)
+        // Widen to the midpoint of the neighbouring good samples so the run's
+        // edge pixels are covered too.
+        const double lo = (start > 0) ? 0.5 * (wl[start - 1] + wl[start])
+                                      : wl[start];
+        const double hi = (end < n) ? 0.5 * (wl[end - 1] + wl[end]) : wl[end - 1];
+        if (hi > lo) out.append(IgnoreRegion{lo, hi});
+    };
+
     size_t i = 0;
     while (i < n) {
         if (!unusable(i)) { ++i; continue; }
         const size_t start = i;
         while (i < n && unusable(i)) ++i;
         if (i - start < kMinRun) continue;
-
-        // Widen to the midpoint of the neighbouring good samples so the run's
-        // edge pixels are covered too.
-        const double lo = (start > 0) ? 0.5 * (wl[start - 1] + wl[start])
-                                      : wl[start];
-        const double hi = (i < n) ? 0.5 * (wl[i - 1] + wl[i]) : wl[i - 1];
-        if (hi > lo) out.append(IgnoreRegion{lo, hi});
+        addRun(start, i);
     }
+
+    // Filled-in values: the same flux, bit for bit, over a stretch no real
+    // measurement would repeat itself for.
+    constexpr size_t kMinConstRun = 8;
+    for (size_t k = 0; k < n;) {
+        size_t e = k + 1;
+        while (e < n && std::isfinite(fl[k]) && fl[e] == fl[k]) ++e;
+        if (e - k >= kMinConstRun && std::isfinite(fl[k]) && fl[k] > 0.0)
+            addRun(k, e);
+        k = e;
+    }
+    std::sort(out.begin(), out.end(), [](const IgnoreRegion& a, const IgnoreRegion& b) {
+        return a.wlLow < b.wlLow;
+    });
     return out;
+}
+
+FitWindow refineFitWindow(const SpectrumFitConfig& cfg,
+                          const std::vector<double>& wl,
+                          const std::vector<double>& fl,
+                          const std::vector<std::pair<double, double>>& armSeams)
+{
+    FitWindow w;
+    w.wlMin = cfg.wlMin;
+    w.wlMax = cfg.wlMax;
+    if (!wl.empty()) {
+        const auto [mn, mx] = std::minmax_element(wl.begin(), wl.end());
+        w.wlMin = std::max(w.wlMin, *mn + std::max(0.0, cfg.trimBlue));
+        w.wlMax = std::min(w.wlMax, *mx - std::max(0.0, cfg.trimRed));
+    }
+    if (w.empty()) return w;
+
+    QVector<IgnoreRegion> all = cfg.ignore;
+    all += unusableRegions(wl, fl);
+    if (cfg.maskArmSeams)
+        for (const auto& [lo, hi] : armSeams)
+            all.append({ lo - std::max(0.0, cfg.seamPad), hi + std::max(0.0, cfg.seamPad) });
+
+    // Merge, then keep what falls inside the window.
+    std::sort(all.begin(), all.end(), [](const IgnoreRegion& a, const IgnoreRegion& b) {
+        return a.wlLow < b.wlLow;
+    });
+    QVector<IgnoreRegion> merged;
+    for (const auto& r : all) {
+        if (!(r.wlHigh > r.wlLow)) continue;
+        if (!merged.isEmpty() && r.wlLow <= merged.back().wlHigh)
+            merged.back().wlHigh = std::max(merged.back().wlHigh, r.wlHigh);
+        else
+            merged.append(r);
+    }
+
+    // An ignored stretch at an end of the window moves the end instead.
+    bool moved = true;
+    while (moved && !w.empty()) {
+        moved = false;
+        for (const auto& r : merged) {
+            if (r.wlLow <= w.wlMin && r.wlHigh > w.wlMin) { w.wlMin = r.wlHigh; moved = true; }
+            if (r.wlLow < w.wlMax && r.wlHigh >= w.wlMax) { w.wlMax = r.wlLow;  moved = true; }
+        }
+    }
+    if (w.empty()) return w;
+    for (const auto& r : merged) {
+        const double lo = std::max(r.wlLow, w.wlMin), hi = std::min(r.wlHigh, w.wlMax);
+        if (hi > lo) w.ignore.append({ lo, hi });
+    }
+
+    // Anchors: clipped to the window, with every ignored stretch at least a
+    // spacing wide cut out, so no anchor sits where nothing can pin it.
+    for (const auto& a : cfg.anchors) {
+        if (!(a.spacing > 0.0)) continue;
+        double lo = std::max(a.wlLow, w.wlMin);
+        const double hi = std::min(a.wlHigh, w.wlMax);
+        if (hi < lo) continue;
+        for (const auto& r : w.ignore) {
+            if (r.wlHigh - r.wlLow < a.spacing) continue;   // narrow: bridged
+            if (r.wlHigh <= lo || r.wlLow >= hi) continue;
+            if (r.wlLow - lo >= 0.25 * a.spacing) w.anchors.append({ lo, r.wlLow, a.spacing });
+            lo = std::max(lo, r.wlHigh);
+        }
+        if (hi - lo >= 0.25 * a.spacing || (hi >= lo && w.anchors.isEmpty()))
+            w.anchors.append({ lo, hi, a.spacing });
+    }
+    return w;
 }
 
 QString exportSpectrumToTemp(const std::shared_ptr<Spectrum>& s,
@@ -320,33 +405,35 @@ SpectralFitJob buildJob(const std::vector<std::shared_ptr<Spectrum>>& spectra,
         QString path = exportSpectrumToTemp(s, dir);
         if (path.isEmpty()) continue;
 
-        Observation obs;
-        obs.waveCut = { cfg.wlMin, cfg.wlMax };
-        obs.ignore  = cfg.ignore;
-        obs.anchors = cfg.anchors;
-
-        // Blocks with no usable flux are excluded on top of whatever the user
-        // ignored; see unusableRegions().
-        const QVector<IgnoreRegion> dead =
-            unusableRegions(s->getWavelengths(), s->getFluxes());
-        if (!dead.isEmpty()) {
-            double covered = 0.0;
-            for (const auto& r : dead) {
-                obs.ignore.append(r);
-                if (r.wlHigh > cfg.wlMin && r.wlLow < cfg.wlMax)
-                    covered += std::min(r.wlHigh, cfg.wlMax) -
-                               std::max(r.wlLow, cfg.wlMin);
-            }
-            if (covered > 0.0)
-                LOG_INFO("FitSetup",
-                    QString("Spectrum %1: %2 block(s) without usable flux, "
-                            "%3 A of the %4-%5 A fit window ignored")
-                        .arg(s->getId())
-                        .arg(dead.size())
-                        .arg(covered, 0, 'f', 1)
-                        .arg(cfg.wlMin, 0, 'f', 0)
-                        .arg(cfg.wlMax, 0, 'f', 0));
+        // The window this spectrum's own data allows: trimmed ends, unusable
+        // stretches and arm seams left out, anchors only where data can pin
+        // them. See refineFitWindow().
+        const FitWindow win = refineFitWindow(
+            cfg, s->getWavelengths(), s->getFluxes(),
+            SpecFetch::armOverlapsFromOriginMeta(s->getOriginMeta()));
+        if (win.empty() || win.anchors.isEmpty()) {
+            LOG_WARNING("FitSetup",
+                QString("Spectrum %1 has nothing usable left in its %2-%3 A "
+                        "fit window - skipping")
+                    .arg(s->getId())
+                    .arg(cfg.wlMin, 0, 'f', 0)
+                    .arg(cfg.wlMax, 0, 'f', 0));
+            continue;
         }
+        if (win.wlMin > cfg.wlMin + 0.5 || win.wlMax < cfg.wlMax - 0.5 ||
+            win.ignore.size() != cfg.ignore.size())
+            LOG_INFO("FitSetup",
+                QString("Spectrum %1: fit window %2-%3 A with %4 ignored "
+                        "stretch(es) after edges, seams and unusable data")
+                    .arg(s->getId())
+                    .arg(win.wlMin, 0, 'f', 1)
+                    .arg(win.wlMax, 0, 'f', 1)
+                    .arg(win.ignore.size()));
+
+        Observation obs;
+        obs.waveCut = { win.wlMin, win.wlMax };
+        obs.ignore  = win.ignore;
+        obs.anchors = win.anchors;
 
         SpectrumFile f;
         f.filename   = path;

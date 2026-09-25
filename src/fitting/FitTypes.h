@@ -71,6 +71,19 @@ struct SpectrumFitConfig {
     double resSlope  = 0.37037;
     bool   inferFromFits = false;
 
+    // ── Where the fit window really starts and ends ─────────────────────
+    // Angstrom cut off each end of the spectrum's *own* coverage, on top of
+    // wlMin/wlMax: the first and last few dozen Angstrom of a reduction are
+    // often unreliable, and where that is depends on the spectrum, not on
+    // the fixed window.
+    double trimBlue = 0.0;
+    double trimRed  = 0.0;
+    // Leave out where arms of one exposure were spliced (recorded in the
+    // spectrum's provenance when it was fetched), widened by seamPad on each
+    // side: a dichroic hand-over is where both arms are at their worst.
+    bool   maskArmSeams = true;
+    double seamPad      = 10.0;
+
     // Telluric seeds; only used when the job fits a telluric component.
     // Genuinely per-observation, so the "copy to …" buttons leave them be.
     double airmass = 1.0;    // 0 = no tellurics in this spectrum

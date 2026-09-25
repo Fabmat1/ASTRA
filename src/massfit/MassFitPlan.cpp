@@ -55,6 +55,10 @@ QJsonObject ModeRegionConfig::toJson() const
     o["anchors"]      = toArray(anchors, [](const fitting::ContinuumAnchor& a) {
         return fitting::toJson(a);
     });
+    o["trimBlue"]     = trimBlue;
+    o["trimRed"]      = trimRed;
+    o["maskArmSeams"] = maskArmSeams;
+    o["seamPad"]      = seamPad;
     o["enabled"]      = enabled;
     return o;
 }
@@ -73,6 +77,10 @@ ModeRegionConfig ModeRegionConfig::fromJson(const QJsonObject& o)
         o, "ignore", fitting::ignoreRegionFromJson);
     v.anchors = fitting::json::fromArray<fitting::ContinuumAnchor>(
         o, "anchors", fitting::continuumAnchorFromJson);
+    v.trimBlue     = readDouble(o, "trimBlue", v.trimBlue);
+    v.trimRed      = readDouble(o, "trimRed", v.trimRed);
+    v.maskArmSeams = readBool(o, "maskArmSeams", v.maskArmSeams);
+    v.seamPad      = readDouble(o, "seamPad", v.seamPad);
     v.enabled = readBool(o, "enabled", v.enabled);
     return v;
 }

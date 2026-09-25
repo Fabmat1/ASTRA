@@ -46,6 +46,13 @@ struct ModeRegionConfig {
     QVector<fitting::IgnoreRegion>    ignore;
     QVector<fitting::ContinuumAnchor> anchors;
 
+    /// See SpectrumFitConfig: trimmed off each spectrum's own ends, and
+    /// whether (and how widely) recorded arm seams are left out.
+    double trimBlue     = 0.0;
+    double trimRed      = 0.0;
+    bool   maskArmSeams = true;
+    double seamPad      = 10.0;
+
     bool enabled = true;          ///< false skips this mode's spectra entirely
 
     QJsonObject toJson() const;

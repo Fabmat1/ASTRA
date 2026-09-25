@@ -4,6 +4,7 @@
 
 #include "core/BarycentricCorrection.h"
 
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 
@@ -225,6 +226,22 @@ double barycorrFromOriginMeta(const QString& originMetaJson) {
         doc.object().value(QLatin1String(kBarycorrMetaKey));
     if (!v.isDouble()) return std::nan("");
     return v.toDouble();
+}
+
+std::vector<std::pair<double, double>> armOverlapsFromOriginMeta(
+    const QString& originMetaJson) {
+    std::vector<std::pair<double, double>> out;
+    if (originMetaJson.isEmpty()) return out;
+    const QJsonDocument doc = QJsonDocument::fromJson(originMetaJson.toUtf8());
+    if (!doc.isObject()) return out;
+    for (const QJsonValue& v :
+         doc.object().value(QLatin1String(kArmOverlapsMetaKey)).toArray()) {
+        const QJsonArray a = v.toArray();
+        if (a.size() < 2 || !a[0].isDouble() || !a[1].isDouble()) continue;
+        const double lo = a[0].toDouble(), hi = a[1].toDouble();
+        if (hi > lo) out.emplace_back(lo, hi);
+    }
+    return out;
 }
 
 void applyRadialVelocityShift(std::vector<double>& wavelengths, double vKms) {

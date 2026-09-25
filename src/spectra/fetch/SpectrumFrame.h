@@ -22,6 +22,7 @@
 #include <QString>
 
 #include <cmath>
+#include <utility>
 #include <vector>
 
 namespace SpecFetch {
@@ -99,6 +100,11 @@ constexpr char kArmOverlapsMetaKey[] = "armOverlaps";
 /// Reads that key back out of a Spectrum's origin metadata [km/s]. NaN for a
 /// spectrum that was not fetched, or one whose frame was never established.
 double barycorrFromOriginMeta(const QString& originMetaJson);
+
+/// The arm seams recorded in a spectrum's provenance (kArmOverlapsMetaKey),
+/// as (lo, hi) pairs in Angstrom; empty when none were recorded.
+std::vector<std::pair<double, double>> armOverlapsFromOriginMeta(
+    const QString& originMetaJson);
 
 }   // namespace SpecFetch
 
