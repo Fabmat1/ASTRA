@@ -96,12 +96,15 @@ int replaceImportedDuplicates(int argc, char** argv)
         return 2;
     }
     const QString projectArg = QString::fromLocal8Bit(argv[2]);
+    // --pairs <tsv>: "<imported id>\t<archive id>" lines replace the epoch
+    // matching, for callers that can pair by an archive's own identifiers.
     const QString instArg    = arg(argc, argv, "--instrument");
     const QString modeArg    = arg(argc, argv, "--mode");
     const double  tolSec     = arg(argc, argv, "--tolerance", QStringLiteral("60")).toDouble();
     const bool    apply      = flag(argc, argv, "--apply");
     const bool    force      = flag(argc, argv, "--force");
     QString backupDir        = arg(argc, argv, "--backup");
+    const QString pairsFile  = arg(argc, argv, "--pairs");
 
     QCoreApplication app(argc, argv);
     app.setApplicationName(QStringLiteral("ASTRA"));
@@ -168,10 +171,42 @@ int replaceImportedDuplicates(int argc, char** argv)
         }
     }
 
-    // Nearest archive exposure within the tolerance, each claimed once.
+    // Nearest archive exposure within the tolerance, each claimed once -
+    // unless the caller knows the pairs better (by instrument-specific ids,
+    // say): then exactly those, each checked to be what it claims.
     std::vector<Match> matches;
     std::vector<Row> unmatched;
     std::map<QString, std::pair<int, int>> perMode;   // label -> (imported, matched)
+    if (!pairsFile.isEmpty()) {
+        QHash<QString, Row> byId;
+        for (auto& [key, rows] : groups)
+            for (const auto& r : rows) byId.insert(r.id, r);
+        QFile pf(pairsFile);
+        if (!pf.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            std::fprintf(stderr, "cannot read %s\n", qPrintable(pairsFile));
+            return 1;
+        }
+        int bad = 0;
+        while (!pf.atEnd()) {
+            const QStringList f = QString::fromUtf8(pf.readLine()).trimmed().split(QLatin1Char('\t'));
+            if (f.size() < 2) continue;
+            const auto im = byId.constFind(f[0]), ar = byId.constFind(f[1]);
+            if (im == byId.constEnd() || ar == byId.constEnd() || !im->origin.isEmpty() ||
+                ar->origin.isEmpty() || im->starId != ar->starId) {
+                ++bad;
+                continue;
+            }
+            matches.push_back({ *im, *ar, std::abs(ar->mjd - im->mjd) * 86400.0 });
+            const QString label = QStringLiteral("%1 / %2").arg(
+                instNames.value(im->instrumentId, QStringLiteral("unknown")), im->modeKey);
+            ++perMode[label].first;
+            ++perMode[label].second;
+        }
+        if (bad > 0)
+            std::printf("%d pair(s) skipped: not a file import and an archive spectrum "
+                        "of the same star in this scope\n", bad);
+        groups.clear();
+    }
     for (auto& [key, rows] : groups) {
         std::vector<Row> archive, imported;
         for (const auto& r : rows) (r.origin.isEmpty() ? imported : archive).push_back(r);

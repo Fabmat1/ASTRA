@@ -260,6 +260,7 @@ int massFit(int argc, char** argv)
                                  QString::number(plan.parallelStars)).toInt();
 
     MassFitService service(&h.ctx);
+    service.setCaptureStdout(false);
     const QString runId = service.startRun(h.ctx.project->getAllStars(),
                                            h.ctx.project->getId(), plan, opt);
     if (runId.isEmpty()) { say(QStringLiteral("the run did not start")); return 1; }
@@ -280,6 +281,7 @@ int massFitResume(int argc, char** argv)
     if (h.ctx.project) h.ctx.project->setStars(h.dbm.loadStars(h.ctx.project->getId()), false);
 
     MassFitService service(&h.ctx);
+    service.setCaptureStdout(false);
     if (service.resumeRun(runId).isEmpty()) { say(QStringLiteral("run %1 cannot be resumed").arg(runId)); return 1; }
     say(QStringLiteral("run %1 resumed").arg(runId));
     watchMassFit(service, runId);
@@ -304,6 +306,9 @@ int runHeadless(int argc, char** argv)
     Logger::initialize(QStringLiteral("ASTRA"));
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
+    // A closed pipe (a log reader gone, a detached terminal) must not end a
+    // campaign that runs for days.
+    std::signal(SIGPIPE, SIG_IGN);
 
     int rc = 0;
     if (std::strcmp(mode, "--fetch-spectra") == 0) rc = fetchSpectra(argc, argv);

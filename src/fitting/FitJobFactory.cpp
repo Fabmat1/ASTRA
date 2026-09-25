@@ -271,8 +271,31 @@ QString exportSpectrumToTemp(const std::shared_ptr<Spectrum>& s,
     if (!f.open(QIODevice::WriteOnly | QIODevice::Text)) return {};
     QTextStream out(&f);
     out.setRealNumberPrecision(10);
-    for (size_t i = 0; i < wl.size(); ++i)
-        out << wl[i] << ' ' << fl[i] << '\n';
+
+    // The backend refuses a spectrum whose wavelengths are not strictly
+    // ascending, and imported spectra are not always: a hand-joined file
+    // may repeat the samples where two arms overlapped, or run backwards.
+    // Written in order here, with samples that share a wavelength averaged,
+    // so such a spectrum is fitted instead of rejected outright.
+    const size_t n = std::min(wl.size(), fl.size());
+    std::vector<size_t> order;
+    order.reserve(n);
+    for (size_t i = 0; i < n; ++i)
+        if (std::isfinite(wl[i])) order.push_back(i);
+    std::stable_sort(order.begin(), order.end(),
+                     [&](size_t a, size_t b) { return wl[a] < wl[b]; });
+    for (size_t k = 0; k < order.size();) {
+        const double w = wl[order[k]];
+        double sum = 0.0;
+        int    cnt = 0;
+        size_t e = k;
+        for (; e < order.size() && wl[order[e]] == w; ++e) {
+            const double v = fl[order[e]];
+            if (std::isfinite(v)) { sum += v; ++cnt; }
+        }
+        out << w << ' ' << (cnt > 0 ? sum / cnt : std::nan("")) << '\n';
+        k = e;
+    }
     return path;
 }
 

@@ -10,6 +10,10 @@
 #include <doctest.h>
 
 #include "fitting/FitJobFactory.h"
+#include "spectra/Spectrum.h"
+
+#include <QFile>
+#include <QTemporaryDir>
 
 #include <cmath>
 
@@ -140,6 +144,27 @@ TEST_CASE("refineFitWindow: narrow masks are bridged, wide ones cut anchors")
     // them. 200 A is not: no anchor inside it.
     CHECK(anchorsAvoid(w, 4600.0 + 1e-6, 4800.0 - 1e-6));
     CHECK(w.anchors.size() == 2);
+}
+
+TEST_CASE("exportSpectrumToTemp: written ascending, shared wavelengths averaged")
+{
+    // A hand-joined spectrum repeating its arm overlap, partly backwards:
+    // the backend would reject it outright.
+    auto s = std::make_shared<Spectrum>();
+    s->setId(QStringLiteral("sp"));
+    s->setData({ 4000.0, 4002.0, 4001.0, 4002.0, 4003.0 },
+               { 1.0, 2.0, 3.0, 4.0, 5.0 }, { 0.1, 0.1, 0.1, 0.1, 0.1 });
+    QTemporaryDir dir;
+    const QString path = exportSpectrumToTemp(s, dir.path());
+    REQUIRE(!path.isEmpty());
+    QFile f(path);
+    REQUIRE(f.open(QIODevice::ReadOnly | QIODevice::Text));
+    const QStringList lines = QString::fromUtf8(f.readAll()).trimmed().split('\n');
+    REQUIRE(lines.size() == 4);
+    CHECK(lines[0] == "4000 1");
+    CHECK(lines[1] == "4001 3");
+    CHECK(lines[2] == "4002 3");          // (2 + 4) / 2
+    CHECK(lines[3] == "4003 5");
 }
 
 TEST_CASE("refineFitWindow: nothing usable leaves an empty window")

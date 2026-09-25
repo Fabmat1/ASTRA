@@ -1589,6 +1589,7 @@ void MassFitService::emitProgress()
 
 void MassFitService::acquireStdoutCapture()
 {
+    if (!_captureStdout) return;
     if (++_stdoutHolders > 1) return;
 
     // StdStreamRedirector replaces the process-wide stdout, so there can only
@@ -1614,6 +1615,7 @@ void MassFitService::acquireStdoutCapture()
 
 void MassFitService::releaseStdoutCapture()
 {
+    if (!_captureStdout) return;
     if (_stdoutHolders <= 0) return;
     if (--_stdoutHolders > 0) return;
     if (_stdoutCapture) {

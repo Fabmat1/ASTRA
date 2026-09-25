@@ -13,7 +13,7 @@
  *
  *      astra --replace-imported-duplicates <project name or id>
  *            [--instrument <name>] [--mode <key>] [--tolerance <seconds>]
- *            [--backup <dir>] [--apply] [--force]
+ *            [--backup <dir>] [--apply] [--force] [--pairs <tsv>]
  *
  *  Finds spectra that were imported from files (no archive origin) and that
  *  an archive fetch has since brought in again: same star, same instrument

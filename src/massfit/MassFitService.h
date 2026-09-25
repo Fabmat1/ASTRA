@@ -137,6 +137,12 @@ public:
     QByteArray runLog(const QString& id) const;
 
     bool hasActiveRuns() const;
+
+    /// Whether fits' console output is captured into the run logs, which
+    /// redirects the process's stdout and stderr while stars run. On by
+    /// default; a headless run turns it off, since its own progress goes to
+    /// stdout and its fits run remotely anyway.
+    void setCaptureStdout(bool on) { _captureStdout = on; }
     int  runningCount() const;
 
     /// Ids of runs this session did not start that a previous session left in
@@ -290,6 +296,7 @@ private:
     ServiceContext* _controller = nullptr;
 
     std::vector<std::unique_ptr<Run>> _runs;
+    bool _captureStdout = true;
     std::shared_ptr<std::atomic<bool>> _shuttingDown =
         std::make_shared<std::atomic<bool>>(false);
 
