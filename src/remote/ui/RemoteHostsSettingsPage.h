@@ -14,8 +14,11 @@ class QPlainTextEdit;
 class QPushButton;
 class QSpinBox;
 class QComboBox;
+class QTabWidget;
 
 namespace astra::remote {
+
+class BatchSettingsWidget;
 
 /*  Settings page: define remote hosts for grid streaming and remote fitting,
  *  plus the local grid-cache location and size cap.  Edits live on a working
@@ -35,6 +38,7 @@ private:
     void onAddHost();
     void onRemoveHost();
     void onTestConnection();
+    void onDetectLimits();
 
     QVector<RemoteHost> _hosts;
     int                 _editing = -1;
@@ -58,6 +62,8 @@ private:
     QLabel*         _bundleLabel = nullptr;
     QPushButton*    _testBtn = nullptr;
     QLabel*         _testResult = nullptr;
+    QTabWidget*          _editorTabs = nullptr;
+    BatchSettingsWidget* _batchWidget = nullptr;
 
     QLineEdit* _cacheDirEdit = nullptr;
     QSpinBox*  _cacheCapSpin = nullptr;

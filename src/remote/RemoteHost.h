@@ -1,5 +1,7 @@
 #pragma once
 
+#include "remote/BatchSettings.h"
+
 #include <QJsonObject>
 #include <QString>
 #include <QStringList>
@@ -39,6 +41,11 @@ struct RemoteHost {
         QString memPerCpu;          // e.g. "4G"; empty = scheduler default
         QString extraSbatchLines;   // verbatim extra #SBATCH lines
     } slurm;
+
+    /*  How the mass fitter packs many fits onto this host; see
+     *  BatchSettings.  The Slurm block above still governs single fits
+     *  started from the fit dialog.                                         */
+    BatchSettings batch;
 
     /*  Verbatim shell lines prepended to every launch script (module loads,
      *  environment tweaks).                                                 */

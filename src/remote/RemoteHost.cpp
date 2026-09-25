@@ -34,6 +34,7 @@ QJsonObject RemoteHost::toJson() const
     s["memPerCpu"]        = slurm.memPerCpu;
     s["extraSbatchLines"] = slurm.extraSbatchLines;
     o["slurm"] = s;
+    o["batch"] = batch.toJson();
 
     o["envSetup"]               = envSetup;
     o["installedBundleVersion"] = installedBundleVersion;
@@ -61,6 +62,7 @@ RemoteHost RemoteHost::fromJson(const QJsonObject& o)
     h.slurm.cpusPerTask      = s.value("cpusPerTask").toInt(16);
     h.slurm.memPerCpu        = s.value("memPerCpu").toString();
     h.slurm.extraSbatchLines = s.value("extraSbatchLines").toString();
+    h.batch = BatchSettings::fromJson(o.value("batch").toObject());
 
     h.envSetup               = o.value("envSetup").toString();
     h.installedBundleVersion = o.value("installedBundleVersion").toString();

@@ -3,6 +3,7 @@
 #include "remote/RemoteHost.h"
 
 #include <QString>
+#include <QStringList>
 
 namespace astra::remote {
 
@@ -78,5 +79,52 @@ public:
                                const QString& jobDir, const QString& runId,
                                int threads);
 };
+
+/*  What a Slurm cluster allows the current user, as far as batching cares.
+ *  0 / -1 mean "no limit found".  Running-job and CPU limits are enforced by
+ *  Slurm itself (excess jobs just wait), so they only inform defaults; the
+ *  submit limit is the one ASTRA must stay under, because sbatch refuses
+ *  jobs past it and every array element counts as one.                      */
+struct SlurmLimits {
+    int       maxArraySize   = 0;   // MaxArraySize (largest index is one less)
+    QString   qos;                  // the QoS the per-user limits come from
+    int       maxSubmit      = 0;   // MaxSubmitPU / association MaxSubmit
+    int       maxRunningJobs = 0;   // MaxJobsPU / association MaxJobs
+    int       maxCpus        = 0;   // cpu= of MaxTRESPU / GrpTRES
+    long long maxMemBytes    = -1;  // mem= of MaxTRESPU / GrpTRES
+    long long maxWallSeconds = -1;  // QoS MaxWall
+    QStringList notes;              // what was assumed, for the user
+
+    /*  One line per limit, for the settings page.                          */
+    QString describe() const;
+};
+
+/*  Parses the output of
+ *    scontrol show config
+ *    sacctmgr -n -P show assoc user=$USER format=cluster,account,partition,qos,defaultqos,maxsubmit,maxjobs,grptres,maxtres
+ *    sacctmgr -n -P show qos format=name,maxsubmitpu,maxjobspu,maxtrespu,maxwall
+ *  `requestedQos` is the --qos the user's extra sbatch lines ask for, empty
+ *  when none; then the association's default QoS applies, and failing that
+ *  Slurm's usual "normal".  `requestedAccount` picks the association when
+ *  the user has several; empty takes the first.  Pure, so it can be tested
+ *  on captured output.                                                      */
+SlurmLimits parseSlurmLimits(const QString& scontrolConfig,
+                             const QString& assocOut, const QString& qosOut,
+                             const QString& requestedQos,
+                             const QString& requestedAccount = {});
+
+/*  The --qos=... value in a block of extra sbatch lines, or empty.          */
+QString qosFromSbatchLines(const QString& lines);
+
+/*  Runs the three commands on `host` and parses them.  False with `err`
+ *  when the host could not be asked at all; a cluster that simply reports
+ *  no limits is a success with everything left at "no limit".              */
+bool detectSlurmLimits(SshConnection& conn, const RemoteHost& host,
+                       SlurmLimits* out, QString* err);
+
+/*  Fills the scheduler-derived fields of `batch` from `limits`: array size,
+ *  the submit ceiling, and a concurrency suggestion that keeps within the
+ *  running-job and CPU limits at the batch's CPUs per task.                */
+void applySlurmLimits(const SlurmLimits& limits, BatchSettings& batch);
 
 } // namespace astra::remote

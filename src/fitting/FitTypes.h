@@ -287,6 +287,19 @@ struct FitProgressInfo {
     double  etaSeconds = -1.0;
 };
 
+/*  What a fit cost the process that ran it, as the GAEL worker measured it.
+ *  Only remote fits run in a process of their own, so only they fill this;
+ *  a local fit leaves every field at "not measured".  Remote batch sizing
+ *  learns its memory and time estimates from these numbers.                */
+struct FitResourceUsage {
+    double    wallSeconds  = -1.0;
+    double    cpuSeconds   = -1.0;
+    long long peakRssBytes = -1;
+    int       threads      = 0;
+
+    bool measured() const { return wallSeconds >= 0.0 || peakRssBytes >= 0; }
+};
+
 struct SpectralFitResult {
     bool   success          = false;
     // Distinguishes "the user pressed Abort" from a genuine failure: both
@@ -303,6 +316,8 @@ struct SpectralFitResult {
     QVector<FittedComponent> components;
     QVector<FittedSpectrum>  spectra;
     QStringList              rejectedFiles;
+
+    FitResourceUsage resources;
 };
 
 } // namespace astra::fitting

@@ -155,6 +155,13 @@ SpectralFitResult fromGaelResult(const specfit::api::FitResult& r,
 {
     SpectralFitResult out;
 
+    // Before the status checks: what a failed or aborted fit used is exactly
+    // what sizing a retry needs.
+    out.resources.wallSeconds  = r.resources.wall_seconds;
+    out.resources.cpuSeconds   = r.resources.cpu_seconds;
+    out.resources.peakRssBytes = r.resources.peak_rss_bytes;
+    out.resources.threads      = r.resources.threads;
+
     if (r.status == specfit::api::Status::Aborted) {
         out.success      = false;
         out.aborted      = true;
@@ -169,7 +176,6 @@ SpectralFitResult fromGaelResult(const specfit::api::FitResult& r,
         return out;
     }
 
-    
     out.success         = true;
     out.finalChi2       = r.final_chi2;
     out.iterations      = r.iterations;

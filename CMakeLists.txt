@@ -390,6 +390,7 @@ set(ASTRA_CORE_SOURCES
     src/observing/ObservabilityCalculator.cpp
 
     # remote
+    src/remote/BatchSettings.cpp
     src/remote/GridDiskCache.cpp
     src/remote/RemoteFitService.cpp
     src/remote/RemoteHost.cpp
@@ -535,6 +536,7 @@ set(ASTRA_CORE_HEADERS
     src/observing/ObservabilityCalculator.h
 
     # remote
+    src/remote/BatchSettings.h
     src/remote/GridDiskCache.h
     src/remote/RemoteFitService.h
     src/remote/RemoteHost.h
@@ -669,6 +671,7 @@ set(ASTRA_UI_SOURCES
 
     # remote/ui
     src/remote/ui/AnsiTerminalWidget.cpp
+    src/remote/ui/BatchSettingsWidget.cpp
     src/remote/ui/AskPass.cpp
     src/remote/ui/RemoteFitsDialog.cpp
     src/remote/ui/RemoteHostsSettingsPage.cpp
@@ -798,6 +801,7 @@ set(ASTRA_UI_HEADERS
 
     # remote/ui
     src/remote/ui/AnsiTerminalWidget.h
+    src/remote/ui/BatchSettingsWidget.h
     src/remote/ui/AskPass.h
     src/remote/ui/RemoteFitsDialog.h
     src/remote/ui/RemoteHostsSettingsPage.h
@@ -1429,6 +1433,8 @@ if(BUILD_TESTING)
             tests/unit/io/star_package.cpp
             tests/unit/rv/rv_error_mc.cpp
             tests/unit/db/delete_star.cpp
+            tests/unit/remote/batch_settings.cpp
+            tests/unit/remote/slurm_limits.cpp
     )
 
     # ── Convenience target ───────────────────────────────────────────────

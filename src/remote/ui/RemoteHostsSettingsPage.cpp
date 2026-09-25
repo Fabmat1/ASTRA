@@ -1,6 +1,9 @@
 #include "remote/ui/RemoteHostsSettingsPage.h"
 
 #include "remote/RemoteHostRegistry.h"
+#include "remote/RemoteScheduler.h"
+#include "remote/SshConnection.h"
+#include "remote/ui/BatchSettingsWidget.h"
 #include "app/AppSettings.h"
 
 #include <QApplication>
@@ -16,6 +19,7 @@
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSpinBox>
+#include <QTabWidget>
 #include <QUuid>
 #include <QVBoxLayout>
 #include <QtConcurrent>
@@ -152,7 +156,18 @@ RemoteHostsSettingsPage::RemoteHostsSettingsPage(QWidget* parent)
     ev->addWidget(_testResult);
 
     ev->addStretch();
-    split->addWidget(editor, 1);
+
+    // Batching gets a tab of its own: it is a whole second set of settings,
+    // and only matters once the host runs mass fits.
+    _batchWidget = new BatchSettingsWidget;
+    auto* batchPage = new QWidget;
+    auto* bv = new QVBoxLayout(batchPage);
+    bv->setContentsMargins(12, 8, 0, 0);
+    bv->addWidget(_batchWidget);
+    _editorTabs = new QTabWidget;
+    _editorTabs->addTab(editor, tr("Host"));
+    _editorTabs->addTab(batchPage, tr("Batched fitting"));
+    split->addWidget(_editorTabs, 1);
     outer->addLayout(split, 1);
 
     // ── Local grid cache ─────────────────────────────────────────────────
@@ -190,9 +205,13 @@ RemoteHostsSettingsPage::RemoteHostsSettingsPage(QWidget* parent)
     connect(_testBtn, &QPushButton::clicked, this,
             &RemoteHostsSettingsPage::onTestConnection);
     connect(_typeCombo, &QComboBox::currentIndexChanged, this, [this](int) {
-        _slurmBox->setVisible(
-            _typeCombo->currentData().toString() == QLatin1String("slurm"));
+        const bool slurm =
+            _typeCombo->currentData().toString() == QLatin1String("slurm");
+        _slurmBox->setVisible(slurm);
+        _batchWidget->setSlurm(slurm);
     });
+    connect(_batchWidget, &BatchSettingsWidget::detectRequested, this,
+            &RemoteHostsSettingsPage::onDetectLimits);
     // The name doubles as the key inside remote grid paths, so keep the list
     // label in step while it is being typed.
     connect(_nameEdit, &QLineEdit::textChanged, this, [this](const QString& t) {
@@ -228,7 +247,8 @@ void RemoteHostsSettingsPage::setEditorEnabled(bool on)
                        static_cast<QWidget*>(_fitCheck),
                        static_cast<QWidget*>(_slurmBox),
                        static_cast<QWidget*>(_envSetupEdit),
-                       static_cast<QWidget*>(_testBtn)})
+                       static_cast<QWidget*>(_testBtn),
+                       static_cast<QWidget*>(_batchWidget)})
         w->setEnabled(on);
     if (!on) {
         _testResult->clear();
@@ -261,6 +281,8 @@ void RemoteHostsSettingsPage::loadEditor(int row)
     _extraSbatchEdit->setPlainText(h.slurm.extraSbatchLines);
     _envSetupEdit->setPlainText(h.envSetup);
     _slurmBox->setVisible(h.type == RemoteHost::Type::Slurm);
+    _batchWidget->setSettings(h.batch);
+    _batchWidget->setSlurm(h.type == RemoteHost::Type::Slurm);
     _bundleLabel->setText(
         h.installedBundleVersion.isEmpty()
             ? QStringLiteral("Worker: not installed yet. Remote fitting "
@@ -297,6 +319,7 @@ void RemoteHostsSettingsPage::storeEditor()
     h.slurm.memPerCpu        = _memPerCpuEdit->text().trimmed();
     h.slurm.extraSbatchLines = _extraSbatchEdit->toPlainText().trimmed();
     h.envSetup               = _envSetupEdit->toPlainText().trimmed();
+    h.batch                  = _batchWidget->settings();
 }
 
 void RemoteHostsSettingsPage::onAddHost()
@@ -354,6 +377,42 @@ void RemoteHostsSettingsPage::onTestConnection()
     });
     watcher->setFuture(QtConcurrent::run([host] {
         return RemoteHostRegistry::instance().probeHost(host);
+    }));
+}
+
+void RemoteHostsSettingsPage::onDetectLimits()
+{
+    storeEditor();
+    if (_editing < 0) return;
+    const RemoteHost host = _hosts[_editing];
+    if (host.destination.isEmpty()) {
+        _batchWidget->showDetectError(tr("set an SSH destination first"));
+        return;
+    }
+    _batchWidget->setDetectBusy(true);
+
+    struct Detected { bool ok = false; SlurmLimits limits; QString error; };
+    // A connection of its own, like the connection test: the host may not
+    // be saved yet, and asking may prompt for credentials, so it runs off
+    // the GUI thread.
+    auto* watcher = new QFutureWatcher<Detected>(this);
+    const int row = _editing;
+    connect(watcher, &QFutureWatcherBase::finished, this, [this, watcher, row] {
+        const Detected d = watcher->result();
+        _batchWidget->setDetectBusy(false);
+        // The user may have moved on to another host meanwhile.
+        if (_editing == row) {
+            if (d.ok) _batchWidget->showDetected(d.limits);
+            else      _batchWidget->showDetectError(d.error);
+        }
+        watcher->deleteLater();
+    });
+    watcher->setFuture(QtConcurrent::run([host] {
+        Detected d;
+        SshConnection conn(host);
+        if (!conn.ensureMaster(&d.error)) return d;
+        d.ok = detectSlurmLimits(conn, host, &d.limits, &d.error);
+        return d;
     }));
 }
 

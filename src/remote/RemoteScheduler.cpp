@@ -4,6 +4,8 @@
 
 #include <QRegularExpression>
 
+#include <algorithm>
+
 namespace astra::remote {
 
 // ─── plain host ──────────────────────────────────────────────────────
@@ -202,6 +204,197 @@ bool SlurmScheduler::cancel(SshConnection& conn, const RemoteHost& host,
         QStringLiteral("scancel %1").arg(h.jobId)), 60000);
     if (!r.transportOk && err) *err = r.errorString;
     return r.transportOk;
+}
+
+} // namespace astra::remote
+
+// ─── Slurm limits ────────────────────────────────────────────────────
+
+namespace astra::remote {
+
+namespace {
+
+/*  "cpu=1000,gres/gpu=20,mem=4T" -> the cpu and mem entries.                */
+void parseTres(const QString& tres, int* cpus, long long* memBytes)
+{
+    for (const QString& item : tres.split(QLatin1Char(','), Qt::SkipEmptyParts)) {
+        const QString key = item.section(QLatin1Char('='), 0, 0).trimmed();
+        const QString val = item.section(QLatin1Char('='), 1).trimmed();
+        if (key == QLatin1String("cpu")) {
+            bool ok = false;
+            const int n = val.toInt(&ok);
+            if (ok && n > 0 && cpus) *cpus = n;
+        } else if (key == QLatin1String("mem")) {
+            // sacctmgr prints TRES memory with a unit, megabytes when bare.
+            const long long b = parseMemorySize(val, /*bareIsMegabytes=*/true);
+            if (b > 0 && memBytes) *memBytes = b;
+        }
+    }
+}
+
+int positiveInt(const QString& s)
+{
+    bool ok = false;
+    const int n = s.trimmed().toInt(&ok);
+    return ok && n > 0 ? n : 0;
+}
+
+/*  The smaller of two limits where 0 means "none".                          */
+int tighter(int a, int b)
+{
+    if (a <= 0) return b;
+    if (b <= 0) return a;
+    return std::min(a, b);
+}
+
+} // namespace
+
+QString SlurmLimits::describe() const
+{
+    auto lim = [](long long v) {
+        return v > 0 ? QString::number(v) : QStringLiteral("no limit");
+    };
+    QStringList l;
+    l << QStringLiteral("Max array size: %1").arg(lim(maxArraySize));
+    l << QStringLiteral("QoS: %1").arg(qos.isEmpty() ? QStringLiteral("(none)") : qos);
+    l << QStringLiteral("Jobs you may submit: %1").arg(lim(maxSubmit));
+    l << QStringLiteral("Jobs you may run at once: %1").arg(lim(maxRunningJobs));
+    l << QStringLiteral("CPUs you may use at once: %1").arg(lim(maxCpus));
+    l << QStringLiteral("Memory you may use at once: %1")
+             .arg(maxMemBytes > 0
+                      ? QStringLiteral("%1 GiB").arg(maxMemBytes / (1024.0 * 1024 * 1024), 0, 'f', 0)
+                      : QStringLiteral("no limit"));
+    l << QStringLiteral("Longest job: %1")
+             .arg(maxWallSeconds > 0
+                      ? QStringLiteral("%1 h").arg(maxWallSeconds / 3600.0, 0, 'f', 1)
+                      : QStringLiteral("no limit"));
+    for (const QString& n : notes) l << n;
+    return l.join(QLatin1Char('\n'));
+}
+
+QString qosFromSbatchLines(const QString& lines)
+{
+    static const QRegularExpression re(
+        QStringLiteral("--qos[= ]\\s*([A-Za-z0-9_.-]+)"));
+    const auto m = re.match(lines);
+    return m.hasMatch() ? m.captured(1) : QString();
+}
+
+SlurmLimits parseSlurmLimits(const QString& scontrolConfig,
+                             const QString& assocOut, const QString& qosOut,
+                             const QString& requestedQos,
+                             const QString& requestedAccount)
+{
+    SlurmLimits out;
+
+    static const QRegularExpression arrayRe(
+        QStringLiteral("^\\s*MaxArraySize\\s*=\\s*(\\d+)"),
+        QRegularExpression::MultilineOption);
+    if (const auto m = arrayRe.match(scontrolConfig); m.hasMatch())
+        out.maxArraySize = m.captured(1).toInt();
+
+    // cluster|account|partition|qos|defaultqos|maxsubmit|maxjobs|grptres|maxtres
+    QStringList assoc;
+    for (const QString& line : assocOut.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        const QStringList f = line.split(QLatin1Char('|'));
+        if (f.size() < 9) continue;
+        if (assoc.isEmpty() ||
+            (!requestedAccount.isEmpty() && f[1] == requestedAccount &&
+             assoc[1] != requestedAccount))
+            assoc = f;
+    }
+    QStringList allowedQos;
+    if (!assoc.isEmpty()) {
+        allowedQos = assoc[3].split(QLatin1Char(','), Qt::SkipEmptyParts);
+        out.maxSubmit      = positiveInt(assoc[5]);
+        out.maxRunningJobs = positiveInt(assoc[6]);
+        // GrpTRES caps the association as a whole. MaxTRES (assoc[8]) is
+        // per job, so it does not bound how many tasks run at once.
+        parseTres(assoc[7], &out.maxCpus, &out.maxMemBytes);
+    }
+
+    out.qos = requestedQos;
+    if (out.qos.isEmpty() && !assoc.isEmpty()) out.qos = assoc[4].trimmed();
+    if (out.qos.isEmpty()) {
+        out.qos = QStringLiteral("normal");
+        out.notes << QStringLiteral("No QoS requested and no default QoS set; "
+                                    "assuming Slurm's usual \"normal\".");
+    }
+    if (!allowedQos.isEmpty() && !allowedQos.contains(out.qos))
+        out.notes << QStringLiteral("QoS \"%1\" is not among those your "
+                                    "account may use (%2).")
+                         .arg(out.qos, allowedQos.join(QStringLiteral(", ")));
+
+    // name|maxsubmitpu|maxjobspu|maxtrespu|maxwall
+    bool foundQos = false;
+    for (const QString& line : qosOut.split(QLatin1Char('\n'), Qt::SkipEmptyParts)) {
+        const QStringList f = line.split(QLatin1Char('|'));
+        if (f.size() < 5 || f[0].trimmed() != out.qos) continue;
+        foundQos = true;
+        out.maxSubmit      = tighter(out.maxSubmit, positiveInt(f[1]));
+        out.maxRunningJobs = tighter(out.maxRunningJobs, positiveInt(f[2]));
+        int c = 0; long long m = -1;
+        parseTres(f[3], &c, &m);
+        out.maxCpus = tighter(out.maxCpus, c);
+        if (m > 0 && (out.maxMemBytes <= 0 || m < out.maxMemBytes))
+            out.maxMemBytes = m;
+        const long long w = parseSlurmTime(f[4]);
+        if (w > 0) out.maxWallSeconds = w;
+        break;
+    }
+    if (!foundQos && !qosOut.trimmed().isEmpty())
+        out.notes << QStringLiteral("The cluster lists no QoS \"%1\"; only "
+                                    "association limits apply.").arg(out.qos);
+    out.notes << QStringLiteral("These limits are shared with any other jobs "
+                                "you run on this cluster.");
+    return out;
+}
+
+bool detectSlurmLimits(SshConnection& conn, const RemoteHost& host,
+                       SlurmLimits* out, QString* err)
+{
+    auto run = [&](const QString& cmd, QString* text) {
+        auto r = conn.exec(SshConnection::shellCommand(cmd), 60000);
+        if (!r.transportOk) {
+            if (err) *err = r.errorString;
+            return false;
+        }
+        *text = QString::fromUtf8(r.out);
+        return true;
+    };
+    QString config, assoc, qos;
+    if (!run(QStringLiteral("scontrol show config 2>/dev/null"), &config))
+        return false;
+    if (!run(QStringLiteral(
+                 "sacctmgr -n -P show assoc user=$USER format=cluster,account,"
+                 "partition,qos,defaultqos,maxsubmit,maxjobs,grptres,maxtres "
+                 "2>/dev/null"), &assoc))
+        return false;
+    if (!run(QStringLiteral(
+                 "sacctmgr -n -P show qos format=name,maxsubmitpu,maxjobspu,"
+                 "maxtrespu,maxwall 2>/dev/null"), &qos))
+        return false;
+    if (config.trimmed().isEmpty()) {
+        if (err) *err = QStringLiteral("%1 did not answer scontrol; is it a "
+                                       "Slurm login node?").arg(host.name);
+        return false;
+    }
+    *out = parseSlurmLimits(config, assoc, qos,
+                            qosFromSbatchLines(host.slurm.extraSbatchLines),
+                            host.slurm.account);
+    return true;
+}
+
+void applySlurmLimits(const SlurmLimits& limits, BatchSettings& batch)
+{
+    batch.maxArraySize   = limits.maxArraySize;
+    batch.maxQueuedTasks = limits.maxSubmit;
+    int concurrent = limits.maxRunningJobs;
+    if (limits.maxCpus > 0)
+        concurrent = tighter(concurrent,
+                             std::max(1, limits.maxCpus /
+                                             std::max(1, batch.cpusPerTask)));
+    batch.maxConcurrentTasks = concurrent;
 }
 
 } // namespace astra::remote
