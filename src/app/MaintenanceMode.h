@@ -1,7 +1,15 @@
 #pragma once
 
-/*  Headless maintenance of the database, run from a terminal with the ASTRA
- *  window closed.
+/*  Headless maintenance, run from a terminal.
+ *
+ *      astra --validate-plan <plan.json>
+ *
+ *  Reads a mass-fitting plan as exported from the manager (or written by
+ *  hand), prints its tree and what would stop it from running.  Touches no
+ *  database.
+ *
+ *  The rest is maintenance of the database, run with the ASTRA window
+ *  closed.
  *
  *      astra --replace-imported-duplicates <project name or id>
  *            [--instrument <name>] [--mode <key>] [--tolerance <seconds>]

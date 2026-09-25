@@ -164,6 +164,8 @@ private slots:
     void onNewPlan();
     void onEditPlan();
     void onDuplicatePlan();
+    void onImportPlan();
+    void onExportPlan();
     void onDeletePlan();
     void onRunPlan();
 
@@ -258,6 +260,8 @@ private:
     QPushButton* _planNewBtn    = nullptr;
     QPushButton* _planEditBtn   = nullptr;
     QPushButton* _planDupBtn    = nullptr;
+    QPushButton* _planImportBtn = nullptr;
+    QPushButton* _planExportBtn = nullptr;
     QPushButton* _planDelBtn    = nullptr;
     QPushButton* _planRunBtn    = nullptr;
     QPlainTextEdit* _planDetail = nullptr;

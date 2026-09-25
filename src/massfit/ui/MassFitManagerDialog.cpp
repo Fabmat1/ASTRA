@@ -1,5 +1,6 @@
 #include "massfit/ui/MassFitManagerDialog.h"
 #include "remote/RemoteBatchService.h"
+#include "remote/RemoteHostRegistry.h"
 #include "core/QuantityFormat.h"
 
 #include "db/DatabaseManager.h"
@@ -13,7 +14,9 @@
 
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QFile>
 #include <QFileDialog>
+#include <QFileInfo>
 #include <QFormLayout>
 #include <QHBoxLayout>
 #include <QHeaderView>
@@ -26,6 +29,7 @@
 #include <QProgressBar>
 #include <QPushButton>
 #include <QSaveFile>
+#include <QSet>
 #include <QSortFilterProxyModel>
 #include <QSpinBox>
 #include <QSplitter>
@@ -440,6 +444,11 @@ QWidget* MassFitManagerDialog::buildPlansTab()
     _planEditBtn = new QPushButton(tr("Edit..."));
     UiIcons::apply(_planEditBtn, UiIcons::Role::Edit);
     _planDupBtn = new QPushButton(tr("Duplicate"));
+    _planImportBtn = new QPushButton(tr("Import..."));
+    _planImportBtn->setToolTip(tr("Add a plan saved as JSON, e.g. from another "
+                                  "project or another ASTRA user."));
+    _planExportBtn = new QPushButton(tr("Export..."));
+    _planExportBtn->setToolTip(tr("Save the selected plan as JSON."));
     _planDelBtn = new QPushButton(tr("Delete"));
     UiIcons::apply(_planDelBtn, UiIcons::Role::Remove);
     _planRunBtn = new QPushButton(tr("Run..."));
@@ -448,6 +457,8 @@ QWidget* MassFitManagerDialog::buildPlansTab()
     row->addWidget(_planNewBtn);
     row->addWidget(_planEditBtn);
     row->addWidget(_planDupBtn);
+    row->addWidget(_planImportBtn);
+    row->addWidget(_planExportBtn);
     row->addWidget(_planDelBtn);
     row->addStretch(1);
     row->addWidget(_planRunBtn);
@@ -459,6 +470,10 @@ QWidget* MassFitManagerDialog::buildPlansTab()
             &MassFitManagerDialog::onEditPlan);
     connect(_planDupBtn, &QPushButton::clicked, this,
             &MassFitManagerDialog::onDuplicatePlan);
+    connect(_planImportBtn, &QPushButton::clicked, this,
+            &MassFitManagerDialog::onImportPlan);
+    connect(_planExportBtn, &QPushButton::clicked, this,
+            &MassFitManagerDialog::onExportPlan);
     connect(_planDelBtn, &QPushButton::clicked, this,
             &MassFitManagerDialog::onDeletePlan);
     connect(_planRunBtn, &QPushButton::clicked, this,
@@ -515,6 +530,7 @@ void MassFitManagerDialog::onPlanSelectionChanged()
 
     _planEditBtn->setEnabled(has);
     _planDupBtn->setEnabled(has);
+    if (_planExportBtn) _planExportBtn->setEnabled(has);
     _planDelBtn->setEnabled(has);
     _planRunBtn->setEnabled(has);
 
@@ -656,6 +672,78 @@ void MassFitManagerDialog::onDuplicatePlan()
         return;
     }
     rebuildPlanList();
+}
+
+void MassFitManagerDialog::onImportPlan()
+{
+    const QString path = QFileDialog::getOpenFileName(
+        this, tr("Import mass fitting plan"), QString(),
+        tr("Mass fitting plans (*.json);;All files (*)"));
+    if (path.isEmpty()) return;
+
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) {
+        QMessageBox::warning(this, tr("Import Plan"),
+                             tr("%1 could not be read.").arg(path));
+        return;
+    }
+    QJsonParseError perr;
+    const QJsonDocument doc = QJsonDocument::fromJson(f.readAll(), &perr);
+    if (!doc.isObject()) {
+        QMessageBox::warning(this, tr("Import Plan"),
+                             tr("%1 is not a plan: %2").arg(path, perr.errorString()));
+        return;
+    }
+
+    // A plan is portable except for where it belongs: it becomes a new plan
+    // of this project. Setup and node ids only refer to each other and stay.
+    mf::MassFitPlan plan = mf::MassFitPlan::fromJson(doc.object());
+    plan.id        = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    plan.projectId = _projectId;
+    if (plan.name.isEmpty()) plan.name = QFileInfo(path).completeBaseName();
+
+    // Hosts and instruments are this machine's; say what does not resolve
+    // here rather than let the first run discover it.
+    QStringList notes;
+    for (const QString& p : mf::validate(plan)) notes << p;
+    QSet<QString> missingHosts;
+    for (const auto& s : plan.setups) {
+        const QString h = s.globals.executionHost;
+        if (!h.isEmpty() && !astra::remote::RemoteHostRegistry::instance().hostById(h))
+            missingHosts.insert(s.name);
+    }
+    if (!missingHosts.isEmpty())
+        notes << tr("These setups run on a remote host this ASTRA does not "
+                    "know; pick a host for them in the plan editor: %1")
+                     .arg(QStringList(missingHosts.begin(), missingHosts.end())
+                              .join(QStringLiteral(", ")));
+
+    if (!storePlan(plan)) {
+        QMessageBox::warning(this, tr("Import Plan"),
+                             tr("The plan could not be saved."));
+        return;
+    }
+    rebuildPlanList();
+    if (!notes.isEmpty())
+        QMessageBox::information(this, tr("Import Plan"),
+                                 tr("Imported \"%1\". Before running it:\n\n- %2")
+                                     .arg(plan.name, notes.join(QStringLiteral("\n- "))));
+}
+
+void MassFitManagerDialog::onExportPlan()
+{
+    mf::MassFitPlan plan;
+    if (!loadPlan(selectedPlanId(), &plan)) return;
+    const QString path = QFileDialog::getSaveFileName(
+        this, tr("Export mass fitting plan"),
+        plan.name + QStringLiteral(".json"),
+        tr("Mass fitting plans (*.json)"));
+    if (path.isEmpty()) return;
+    QSaveFile f(path);
+    if (!f.open(QIODevice::WriteOnly) ||
+        f.write(plan.toJsonString().toUtf8()) < 0 || !f.commit())
+        QMessageBox::warning(this, tr("Export Plan"),
+                             tr("%1 could not be written.").arg(path));
 }
 
 void MassFitManagerDialog::onDeletePlan()
