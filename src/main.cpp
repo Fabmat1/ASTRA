@@ -16,6 +16,7 @@
 #include "astra_version.h"
 #include "remote/ui/AskPass.h"
 #include "remote/ui/RemoteSelfTest.h"
+#include "app/MaintenanceMode.h"
 
 int main(int argc, char *argv[])
 {
@@ -31,6 +32,11 @@ int main(int argc, char *argv[])
 
     // `astra --remote-gridtest ...`: streamed vs local grid comparison.
     if (const int rc = astra::remote::runRemoteGridTest(argc, argv); rc >= 0)
+        return rc;
+
+    // `astra --replace-imported-duplicates ...`: headless database upkeep
+    // (see app/MaintenanceMode.h).
+    if (const int rc = runMaintenanceMode(argc, argv); rc >= 0)
         return rc;
 
     // `astra --remote-batchtest ...`: batched mass fitting on a configured host.

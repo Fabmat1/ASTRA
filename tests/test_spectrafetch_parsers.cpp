@@ -497,6 +497,24 @@ int main(int argc, char** argv) {
             const auto wl = parsed[0].spectrum->getWavelengths();
             check(wl.front() < 4500.0 && wl.back() > 8000.0,
                   "sexp: arms merged into one spectrum");
+
+            // Spliced, not interleaved: the two arms' grids are offset, so a
+            // merge of "equal" pixels leaves hundreds of sub-pixel steps
+            // through the overlap. A splice keeps one arm per side.
+            const double pix = (wl[1] - wl[0]);
+            int tiny = 0;
+            for (size_t i = 1; i < wl.size(); ++i)
+                if (wl[i] - wl[i - 1] < 0.3 * pix) ++tiny;
+            check(tiny <= 2, "sexp: arms spliced, not interleaved (" +
+                                 std::to_string(tiny) + " sub-pixel steps)");
+            check(parsed[0].armOverlaps.size() == 1,
+                  "sexp: the arm seam is recorded");
+            if (!parsed[0].armOverlaps.empty()) {
+                const auto& o = parsed[0].armOverlaps.front();
+                check(o[0] > 5300.0 && o[1] < 6300.0 && o[0] < o[2] && o[2] < o[1],
+                      "sexp: seam at the dichroic (" + std::to_string(o[0]) + "-" +
+                          std::to_string(o[1]) + ")");
+            }
         }
 
         // The sedr5 files carry no per-exposure UTC card - only the MJM

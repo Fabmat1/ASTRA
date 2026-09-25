@@ -1,6 +1,7 @@
 // src/utils/spectrafetch/LamostArchiveClient.cpp
 
 #include "spectra/fetch/LamostArchiveClient.h"
+#include "spectra/fetch/SpectrumArmJoin.h"
 #include "spectra/fetch/TapHelpers.h"
 #include "spectra/fetch/ExposureEpoch.h"
 
@@ -750,7 +751,7 @@ static std::vector<SpecFetch::ParsedSpectrum> parseSexp(
     }
 
     for (const QString& epoch : epochOrder) {
-        std::vector<double> wl, flux, err;
+        std::vector<SpecFetch::ArmSegment> arms;
 
         for (long k : byEpoch[epoch]) {
             std::vector<double> aw, af, ae;
@@ -773,41 +774,45 @@ static std::vector<SpecFetch::ParsedSpectrum> parseSexp(
 
             const std::vector<double> corr =
                 smoothRatioToCoadd(aw, af, coaddWl, coaddFlux);
+            SpecFetch::ArmSegment seg;
+            seg.wavelengths = aw;
+            seg.fluxes.resize(aw.size());
+            seg.errors.resize(aw.size());
             for (size_t i = 0; i < aw.size(); ++i) {
                 const double c = corr.empty() ? 1.0 : corr[i];
-                wl.push_back(aw[i]);
-                flux.push_back(af[i] * c);
-                err.push_back(ae[i] * c);
+                seg.fluxes[i] = af[i] * c;
+                seg.errors[i] = ae[i] * c;
+            }
+            arms.push_back(std::move(seg));
+        }
+        if (arms.empty()) continue;
+
+        // The arms overlap around 5600-5900 A where the dichroic hands over,
+        // on grids that are close but not identical: merging "equal" pixels
+        // leaves the two arms' samples interleaved through the whole overlap,
+        // the blue arm's dying edge alternating with the red arm's rising one.
+        // Splice instead - each arm keeps its half - and record the overlap,
+        // which a fit should leave out whichever arm it comes from.
+        SpecFetch::ArmSegment merged;
+        std::vector<SpecFetch::ArmOverlap> overlaps;
+        if (arms.size() == 1) merged = std::move(arms.front());
+        else if (!SpecFetch::spliceArms(arms, &merged, &overlaps)) continue;
+        if (merged.wavelengths.size() < 100) continue;
+
+        std::vector<double> swl = std::move(merged.wavelengths);
+        std::vector<double> sflux = std::move(merged.fluxes);
+        std::vector<double> serr = std::move(merged.errors);
+        std::vector<std::array<double, 3>> seams;
+        for (const auto& o : overlaps) seams.push_back({ o.lo, o.hi, o.cut });
+
+        if (opt.vacToAir) {
+            SpecFetch::vacToAir(swl);
+            for (auto& s : seams) {
+                std::vector<double> v(s.begin(), s.end());
+                SpecFetch::vacToAir(v);
+                s = { v[0], v[1], v[2] };
             }
         }
-        if (wl.size() < 100) continue;
-
-        // The arms overlap around 5700-5900 A on the same log grid: order the
-        // merged points and combine the arms' duplicate pixels by inverse
-        // variance (both are on the coadd's flux system by now).
-        std::vector<size_t> order(wl.size());
-        for (size_t i = 0; i < order.size(); ++i) order[i] = i;
-        std::sort(order.begin(), order.end(),
-                  [&wl](size_t x, size_t y) { return wl[x] < wl[y]; });
-        std::vector<double> swl, sflux, serr;
-        swl.reserve(wl.size());
-        sflux.reserve(wl.size());
-        serr.reserve(wl.size());
-        for (size_t i = 0; i < order.size();) {
-            const double w = wl[order[i]];
-            double wSum = 0.0, fSum = 0.0;
-            for (; i < order.size() && wl[order[i]] <= w * (1.0 + 1e-9); ++i) {
-                const double e  = err[order[i]];
-                const double wt = e > 0 ? 1.0 / (e * e) : 1.0;
-                wSum += wt;
-                fSum += wt * flux[order[i]];
-            }
-            swl.push_back(w);
-            sflux.push_back(fSum / wSum);
-            serr.push_back(wSum > 0 ? 1.0 / std::sqrt(wSum) : 0.0);
-        }
-
-        if (opt.vacToAir) SpecFetch::vacToAir(swl);
 
         auto spec = std::make_shared<Spectrum>();
         spec->setData(swl, sflux, serr);
@@ -835,6 +840,7 @@ static std::vector<SpecFetch::ParsedSpectrum> parseSexp(
         ps.originId       = r.originId + QStringLiteral("#") + epoch;
         ps.isCoadd        = false;
         ps.instrumentHint = r.instrumentHint;
+        ps.armOverlaps    = std::move(seams);
         out.push_back(std::move(ps));
     }
 

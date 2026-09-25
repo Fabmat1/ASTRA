@@ -92,6 +92,10 @@ void applyRadialVelocityShift(std::vector<double>& wavelengths, double vKms);
 /// barycentric correction its wavelengths carry.
 constexpr char kBarycorrMetaKey[] = "barycorrKms";
 
+// Provenance key of the arm seams of a spliced spectrum: an array of
+// [lo, hi, cut] in Angstrom, one per overlap (see SpecFetch::ArmOverlap).
+constexpr char kArmOverlapsMetaKey[] = "armOverlaps";
+
 /// Reads that key back out of a Spectrum's origin metadata [km/s]. NaN for a
 /// spectrum that was not fetched, or one whose frame was never established.
 double barycorrFromOriginMeta(const QString& originMetaJson);

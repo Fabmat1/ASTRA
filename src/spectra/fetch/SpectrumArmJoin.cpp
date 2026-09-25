@@ -172,8 +172,10 @@ std::vector<std::vector<int>> groupArms(const std::vector<ArmMeta>& metas,
 //  Splicing
 // ─────────────────────────────────────────────────────────────────────────────
 
-bool spliceArms(std::vector<ArmSegment> segments, ArmSegment* out) {
+bool spliceArms(std::vector<ArmSegment> segments, ArmSegment* out,
+                std::vector<ArmOverlap>* overlaps) {
     if (!out) return false;
+    std::vector<ArmOverlap> found;
 
     std::vector<ArmSegment> segs;
     segs.reserve(segments.size());
@@ -198,6 +200,8 @@ bool spliceArms(std::vector<ArmSegment> segments, ArmSegment* out) {
         if (next.wavelengths.front() <= result.wavelengths.back()) {
             // Overlap: each arm keeps the half of it that is its own domain.
             cut = 0.5 * (next.wavelengths.front() + result.wavelengths.back());
+            found.push_back({ next.wavelengths.front(),
+                              result.wavelengths.back(), cut });
 
             const auto keep = std::upper_bound(result.wavelengths.begin(),
                                                result.wavelengths.end(), cut);
@@ -221,6 +225,7 @@ bool spliceArms(std::vector<ArmSegment> segments, ArmSegment* out) {
 
     if (result.wavelengths.size() < 2) return false;
     *out = std::move(result);
+    if (overlaps) *overlaps = std::move(found);
     return true;
 }
 

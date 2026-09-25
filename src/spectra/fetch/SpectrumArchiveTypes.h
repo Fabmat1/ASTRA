@@ -11,8 +11,10 @@
 #include <QUrl>
 #include <QVariantMap>
 
+#include <array>
 #include <cmath>
 #include <memory>
+#include <vector>
 
 class Spectrum;
 
@@ -77,6 +79,12 @@ struct ParsedSpectrum {
     // Written to the row's provenance: the fit needs it to place the telluric
     // lines, which stayed in the observatory's frame while the star's did not.
     double  barycorrKms = std::nan("");
+
+    // Where arms of one exposure were spliced into this spectrum, in the
+    // spectrum's own wavelengths (after any vacuum-to-air conversion). Each
+    // entry is [lo, hi, cut] in Angstrom; see SpecFetch::ArmOverlap. Written
+    // to the row's provenance so fits can leave the seams out.
+    std::vector<std::array<double, 3>> armOverlaps;
 };
 
 // Per-archive knobs from the setup dialog / settings.

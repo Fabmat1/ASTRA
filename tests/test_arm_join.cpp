@@ -174,6 +174,25 @@ int main() {
         for (const double w : out.wavelengths)
             if (w > 5449.0 && w < 5451.0) ++nearCut;
         check(nearCut <= 11, "the overlap is not sampled twice");
+
+        // And the splice says where it was, for the fits to mask.
+        std::vector<ArmOverlap> overlaps;
+        check(spliceArms(segs, &out, &overlaps), "splice with overlaps");
+        check(overlaps.size() == 1, "one overlap reported");
+        if (overlaps.size() == 1) {
+            checkNear(overlaps[0].lo, 5300.0, 1e-9, "overlap starts at the VIS start");
+            checkNear(overlaps[0].hi, 5600.0, 0.2, "overlap ends at the UVB end");
+            checkNear(overlaps[0].cut, 5450.0, 0.2, "overlap cut in its middle");
+        }
+    }
+    {
+        // Disjoint arms report no overlap.
+        std::vector<ArmSegment> segs = {flatArm(3000, 5000, 1.0, 1.0),
+                                        flatArm(5100, 7000, 1.0, 1.0)};
+        ArmSegment out;
+        std::vector<ArmOverlap> overlaps{ ArmOverlap{} };
+        check(spliceArms(segs, &out, &overlaps) && overlaps.empty(),
+              "disjoint arms report no overlap");
     }
     {
         // A segment inside another one adds nothing and must not truncate it.

@@ -785,7 +785,8 @@ void SpectrumFetchService::flushJoinGroup(Session* s, const QString& groupKey) {
         }
 
         SpecFetch::ArmSegment merged;
-        if (!SpecFetch::spliceArms(segments, &merged)) {
+        std::vector<SpecFetch::ArmOverlap> overlaps;
+        if (!SpecFetch::spliceArms(segments, &merged, &overlaps)) {
             appendLog(s, QStringLiteral("%1: arms could not be joined, "
                                         "importing them separately")
                              .arg(memberIds.join(QLatin1Char(' '))));
@@ -822,6 +823,8 @@ void SpectrumFetchService::flushJoinGroup(Session* s, const QString& groupKey) {
         joined.instrumentHint = instrument;
         if (barycorrCount > 0)
             joined.barycorrKms = barycorrSum / barycorrCount;
+        for (const auto& o : overlaps)
+            joined.armOverlaps.push_back({ o.lo, o.hi, o.cut });
 
         // The row stands in for every product it was made of: its provenance
         // is the first arm's, with the members recorded alongside.
@@ -1567,6 +1570,12 @@ int SpectrumFetchService::importParsed(
         if (!std::isnan(p.barycorrKms))
             rowMeta[QLatin1String(SpecFetch::kBarycorrMetaKey)] =
                 p.barycorrKms;
+        if (!p.armOverlaps.empty()) {
+            QJsonArray seams;
+            for (const auto& o : p.armOverlaps)
+                seams.append(QJsonArray{ o[0], o[1], o[2] });
+            rowMeta[QLatin1String(SpecFetch::kArmOverlapsMetaKey)] = seams;
+        }
         spec->setOriginMeta(QString::fromUtf8(
             QJsonDocument(rowMeta).toJson(QJsonDocument::Compact)));
 

@@ -88,11 +88,23 @@ struct ArmSegment {
     std::vector<double> errors;
 };
 
+/// Where two arms met in a splice: the range both covered, and the cut.
+/// The overlap is where each arm's throughput falls off (a dichroic edge),
+/// so it is the stretch a fit should leave out; the joined spectrum records
+/// these in its provenance for exactly that.
+struct ArmOverlap {
+    double lo  = 0.0;   ///< Angstrom, the next arm's first sample
+    double hi  = 0.0;   ///< Angstrom, the previous arm's last sample
+    double cut = 0.0;   ///< Angstrom, where the splice switched arms
+};
+
 /// Splice `segments` into one spectrum, cutting overlaps at their midpoint.
 /// Segments are ordered by wavelength internally, so the caller may pass them
 /// in any order. Returns false when fewer than two usable segments are given
-/// or the result would be empty.
-bool spliceArms(std::vector<ArmSegment> segments, ArmSegment* out);
+/// or the result would be empty. `overlaps`, when given, receives one entry
+/// per pair of arms that overlapped, in wavelength order.
+bool spliceArms(std::vector<ArmSegment> segments, ArmSegment* out,
+                std::vector<ArmOverlap>* overlaps = nullptr);
 
 /// Median flux ratio of `b` over `a` where the two overlap, computed on the
 /// nearest samples of `a`. Returns NaN when they do not overlap in enough
