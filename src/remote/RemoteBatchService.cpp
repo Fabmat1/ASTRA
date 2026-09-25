@@ -1129,7 +1129,18 @@ void RemoteBatchService::poll(Host& h, const RemoteHost& host, Batch& b)
     }
     if (!mine.isEmpty()) {
         QTemporaryDir dl;
-        if (dl.isValid() && conn->downloadDirTar(dir + QLatin1String("/outbox"), dl.path(), &err)) {
+        // The runners keep moving results in while this transfer reads the
+        // folder, and tar then exits non-zero ("file changed as we read
+        // it"). Whatever did arrive is complete - results are renamed into
+        // place - so take it rather than discard the lot; the rest comes
+        // with the next poll.
+        const bool whole = dl.isValid() &&
+                           conn->downloadDirTar(dir + QLatin1String("/outbox"), dl.path(), &err);
+        if (!whole)
+            LOG_INFO("RemoteBatch", QString("%1: partial result transfer for batch %2 (%3); "
+                                            "taking what arrived")
+                                        .arg(host.name, b.row.id, err));
+        if (dl.isValid()) {
             for (const QString& id : mine) {
                 const QString path = dl.filePath(id + QLatin1String(".json"));
                 if (!QFileInfo::exists(path)) continue;   // arrived after the tar
@@ -1268,8 +1279,12 @@ void RemoteBatchService::poll(Host& h, const RemoteHost& host, Batch& b)
                            host);
             b.open.clear();
         }
+        // A result waiting in the outbox is never lost, whatever its task
+        // did afterwards: it just has not been collected yet.
+        const QSet<QString> waiting(probe.outbox.begin(), probe.outbox.end());
         for (const int task : ended) {
             for (const QString& id : openByTask.value(task)) {
+                if (waiting.contains(id)) continue;
                 b.open.remove(id);
                 cleanup << QStringLiteral("items/%1").arg(id) << QStringLiteral("started/%1").arg(id);
                 if (auto it = _items.find(id); it != _items.end())

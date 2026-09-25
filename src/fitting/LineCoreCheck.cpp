@@ -41,12 +41,14 @@ double lineCoreDeviation(const SpectralFitResult& r, int nPixels,
         const double lc = restWavelength * (1.0 + v / kCkms);
         if (lc < s.lambda.front() || lc > s.lambda[n - 1]) continue;
 
-        // The used pixels nearest the centre.
+        // The pixels nearest the centre - whether the fit used them or not.
+        // The backend's outlier clipping drops exactly the core pixels a fit
+        // misses worst, so judging only the pixels it kept would read a
+        // badly missed core as no core at all.
         std::vector<std::pair<double, int>> near;
         near.reserve(size_t(n));
         for (int i = 0; i < n; ++i) {
-            const bool used = i >= s.ignoreFlag.size() || s.ignoreFlag[i] != 0;
-            if (!used || !(s.sigma[i] > 0.0) || !std::isfinite(s.flux[i]) ||
+            if (!(s.sigma[i] > 0.0) || !std::isfinite(s.flux[i]) ||
                 !std::isfinite(s.model[i]))
                 continue;
             near.emplace_back(std::abs(s.lambda[i] - lc), i);
@@ -54,8 +56,8 @@ double lineCoreDeviation(const SpectralFitResult& r, int nPixels,
         if (int(near.size()) < nPixels) continue;
         std::partial_sort(near.begin(), near.begin() + nPixels, near.end());
 
-        // Nearest must really be near: a masked core leaves the closest used
-        // pixels outside it, which is no measurement of the core at all.
+        // Nearest must really be near: a gap in the data there is no
+        // measurement of the core at all.
         const double step = (s.lambda[n - 1] - s.lambda.front()) / std::max(1, n - 1);
         if (near[size_t(nPixels - 1)].first > (nPixels + 1) * 0.5 * step) continue;
 

@@ -13,8 +13,8 @@ constexpr double kHalphaAir = 6562.80;
 
 /// How badly a fit misses a line core, in sigma.
 ///
-/// For every fitted spectrum that covers the line, the `nPixels` used pixels
-/// nearest the line centre - shifted by that spectrum's own fitted radial
+/// For every fitted spectrum that covers the line, the `nPixels` pixels
+/// nearest the line centre (whether the fit used them or clipped them) - shifted by that spectrum's own fitted radial
 /// velocity, component 1 - are taken, and their normalised residuals
 /// (flux - model) / sigma are summed and divided by sqrt(n): a systematic
 /// miss of the core adds up, noise does not. That is then expressed in units
