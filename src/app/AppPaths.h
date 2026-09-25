@@ -11,7 +11,11 @@ class AppPaths
 public:
     static void initialize()
     {
-        QString compiled = QStringLiteral(ASTRA_DATA_DIR);
+        // A runtime ASTRA_DATA_DIR wins over the compiled-in one, so a build
+        // can be pointed at a scratch data root (tests, diagnostics, trying
+        // a new version against a copy) without being rebuilt.
+        const QString env = qEnvironmentVariable("ASTRA_DATA_DIR");
+        QString compiled = env.isEmpty() ? QStringLiteral(ASTRA_DATA_DIR) : env;
         if (compiled.isEmpty()) {
             _root = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
         } else {

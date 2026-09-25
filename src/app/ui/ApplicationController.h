@@ -18,7 +18,7 @@ class AppSettings;
 class LightcurveFetchService;
 class SpectrumFetchService;
 class MassFitService;
-namespace astra::remote { class SshGridProvider; class RemoteFitService; }
+namespace astra::remote { class SshGridProvider; class RemoteFitService; class RemoteBatchService; }
 
 
 class ApplicationController : public QObject, public ServiceContext
@@ -80,6 +80,7 @@ private:
     /// Serves ssh:// grid paths to GAEL; see remote/SshGridProvider.h.
     std::shared_ptr<astra::remote::SshGridProvider> _gridProvider;
     std::unique_ptr<astra::remote::RemoteFitService> _remoteFitService;
+    std::unique_ptr<astra::remote::RemoteBatchService> _remoteBatchService;
 
     void loadProjects();
 };

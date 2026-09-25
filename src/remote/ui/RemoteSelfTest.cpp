@@ -5,6 +5,7 @@
 #include "remote/RemoteHostRegistry.h"
 #include "remote/SshConnection.h"
 #include "remote/SshFileStreamChannel.h"
+#include "remote/RemoteBatchService.h"
 #include "remote/RemoteFitService.h"
 #include "remote/SshGridProvider.h"
 
@@ -718,6 +719,133 @@ int runRemoteGridListTest(int argc, char** argv)
     specfit::set_grid_data_provider(nullptr);
 
     RemoteHostRegistry::instance().setHosts({});
+    std::printf("\n%s\n", allOk ? "ALL PASSED" : "FAILURES ABOVE");
+    return allOk ? 0 : 1;
+}
+
+int runRemoteBatchTest(int argc, char** argv)
+{
+    if (argc < 2 || std::strcmp(argv[1], "--remote-batchtest") != 0) return -1;
+    if (argc < 6) {
+        std::fprintf(stderr, "usage: --remote-batchtest run|start|finish "
+                             "<host name> <grid> <spectrum>...\n");
+        return 2;
+    }
+
+    QCoreApplication app(argc, argv);
+    // The real settings store: the point is to test the host as configured.
+    app.setApplicationName(QStringLiteral("ASTRA"));
+    app.setOrganizationName(QStringLiteral("ASTRA"));
+    AppPaths::initialize();
+
+    const QString phase    = QString::fromLocal8Bit(argv[2]);
+    const QString hostName = QString::fromLocal8Bit(argv[3]);
+    const QString relGrid  = QString::fromLocal8Bit(argv[4]);
+    QStringList spectra;
+    for (int i = 5; i < argc; ++i) spectra << QString::fromLocal8Bit(argv[i]);
+
+    RemoteHost host;
+    bool found = false;
+    for (const auto& h : RemoteHostRegistry::instance().hosts())
+        if (h.name == hostName) { host = h; found = true; }
+    if (!step("host configured", found, hostName)) return 1;
+
+    // ASTRA_BATCHTEST_TIER1_MEM=60M starves the first tier to exercise the
+    // out-of-memory escalation. The changed host goes to a settings store of
+    // its own, so the user's configuration is never touched.
+    if (const QString mem = qEnvironmentVariable("ASTRA_BATCHTEST_TIER1_MEM");
+        !mem.isEmpty() && !host.batch.tiers.isEmpty()) {
+        app.setOrganizationName(QStringLiteral("ASTRA-batchtest"));
+        host.batch.tiers[0].memory = mem;
+        RemoteHostRegistry::instance().setHosts({host});
+        step("tier 1 memory overridden", true, mem);
+    }
+    step("batching enabled", host.batch.enabled,
+         QStringLiteral("%1 tier(s), %2 fits/task, %3 concurrent")
+             .arg(host.batch.tiers.size()).arg(host.batch.fitsPerTask)
+             .arg(host.batch.maxConcurrentTasks));
+
+    DatabaseManager dbm;
+    RemoteFitService fitService(&dbm);        // installs the worker bundle
+    RemoteBatchService service(&dbm);
+    if (phase == QLatin1String("finish")) service.reattachAll();
+
+    const auto batchCount = [&] { return dbm.remoteBatches().countBatches(); };
+    const int batchesBefore = batchCount();
+
+    QElapsedTimer clock;
+    clock.start();
+    std::atomic<int> submitted{0};
+    std::mutex printMtx;
+    std::vector<astra::fitting::SpectralFitResult> results(spectra.size());
+    std::vector<QStringList> logs(spectra.size());
+
+    QVector<QFuture<void>> futures;
+    for (int i = 0; i < spectra.size(); ++i) {
+        futures << QtConcurrent::run([&, i] {
+            // ASTRA_BATCHTEST_JITTER=K makes each fit K+1 times longer, for
+            // runs that must outlast a scheduler's sampling interval.
+            auto job = buildDetachJob(relGrid, spectra[i],
+                                      QStringLiteral("batchtest-%1").arg(i),
+                                      host.id,
+                                      qEnvironmentVariableIntValue("ASTRA_BATCHTEST_JITTER"));
+            job.workerThreads = host.batch.cpusPerTask;
+            RemoteBatchService::Context ctx;
+            ctx.projectId = QStringLiteral("batchtest");
+            ctx.starId    = QStringLiteral("batchtest-star-%1").arg(i);
+            ctx.itemKey   = QStringLiteral("batchtest:%1:0").arg(i);
+            auto onLog = [&, i](const QString& l) {
+                std::lock_guard<std::mutex> lk(printMtx);
+                logs[i] << l;
+                std::printf("  [%d] %s\n", i, qPrintable(l));
+                std::fflush(stdout);
+                if (l.startsWith(QLatin1String("submitted"))) ++submitted;
+            };
+            results[i] = service.runFit(job, ctx, onLog, {});
+        });
+    }
+
+    if (phase == QLatin1String("start")) {
+        for (int i = 0; i < 6000 && submitted.load() < spectra.size(); ++i)
+            QThread::msleep(100);
+        const bool ok = submitted.load() == spectra.size();
+        step("all fits submitted", ok,
+             QStringLiteral("%1 of %2").arg(submitted.load()).arg(spectra.size()));
+        std::printf("\nSubmitted; exiting without waiting (simulating a "
+                    "closed ASTRA).\n");
+        std::fflush(stdout);
+        std::_Exit(ok ? 0 : 1);
+    }
+
+    for (auto& f : futures) f.waitForFinished();
+
+    bool allOk = true;
+    for (int i = 0; i < spectra.size(); ++i) {
+        const auto& r = results[i];
+        QString detail = r.errorMessage;
+        if (r.success && !r.components.isEmpty() && !r.components[0].teff.isEmpty())
+            detail = QStringLiteral("Teff %1  logg %2  chi2 %3  %4 s  %5 MiB")
+                         .arg(r.components[0].teff[0].value, 0, 'f', 0)
+                         .arg(r.components[0].logg.isEmpty() ? 0.0
+                                                             : r.components[0].logg[0].value,
+                              0, 'f', 2)
+                         .arg(r.finalChi2, 0, 'f', 1)
+                         .arg(r.resources.wallSeconds, 0, 'f', 1)
+                         .arg(r.resources.peakRssBytes / 1048576.0, 0, 'f', 0);
+        allOk &= step(qPrintable(QStringLiteral("fit %1").arg(i)), r.success, detail);
+    }
+    if (phase == QLatin1String("finish")) {
+        int collected = 0;
+        for (const auto& l : logs)
+            for (const QString& line : l)
+                if (line.contains(QLatin1String("earlier session"))) { ++collected; break; }
+        allOk &= step("collected, not resubmitted", batchCount() == batchesBefore,
+                      QStringLiteral("%1 fit(s) from the earlier session, %2 new batch(es)")
+                          .arg(collected).arg(batchCount() - batchesBefore));
+    }
+    std::printf("%-28s %lld s\n", "wall clock", (long long)(clock.elapsed() / 1000));
+
+    service.shutdown();
     std::printf("\n%s\n", allOk ? "ALL PASSED" : "FAILURES ABOVE");
     return allOk ? 0 : 1;
 }

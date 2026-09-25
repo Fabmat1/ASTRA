@@ -8,6 +8,7 @@
 #include "lightcurve/LightcurveFetchService.h"
 #include "spectra/SpectrumFetchService.h"
 #include "massfit/MassFitService.h"
+#include "remote/RemoteBatchService.h"
 #include "remote/RemoteFitService.h"
 #include "remote/SshGridProvider.h"
 #include "remote/GridDiskCache.h"
@@ -54,6 +55,12 @@ ApplicationController::ApplicationController(QObject *parent)
     // Remote jobs do not stop when ASTRA does: pick up whatever an earlier
     // session left running, watch it to the end and store its result.
     _remoteFitService->reattachAll();
+    // Batches of mass-fit work, the same way: watched from the start, their
+    // results kept until the mass fit that asked for them is resumed.
+    _remoteBatchService =
+        std::make_unique<astra::remote::RemoteBatchService>(_databaseManager.get(),
+                                                            this);
+    _remoteBatchService->reattachAll();
 
     loadProjects();
     LOG_INFO("Controller", QString("Loaded %1 projects").arg(_projects.size()));
@@ -65,6 +72,16 @@ ApplicationController::ApplicationController(QObject *parent)
 
 ApplicationController::~ApplicationController()
 {
+    // The order matters. Remote work must be let go of before the mass
+    // fitter tears down its workers: their cancel flag would otherwise read
+    // as "stop these fits" and kill jobs meant to outlive this session. And
+    // the mass fitter's workers must be gone before the remote services
+    // they are blocked in are destroyed.
+    if (_remoteBatchService) _remoteBatchService->shutdown();
+    if (_remoteFitService)   _remoteFitService->beginShutdown();
+    _massFitService.reset();
+    _remoteBatchService.reset();
+    _remoteFitService.reset();
 }
 
 LightcurveFetchService* ApplicationController::lightcurveFetchService()

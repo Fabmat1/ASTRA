@@ -33,6 +33,10 @@ int main(int argc, char *argv[])
     if (const int rc = astra::remote::runRemoteGridTest(argc, argv); rc >= 0)
         return rc;
 
+    // `astra --remote-batchtest ...`: batched mass fitting on a configured host.
+    if (const int rc = astra::remote::runRemoteBatchTest(argc, argv); rc >= 0)
+        return rc;
+
     // `astra --remote-fittest ...`: one real fit executed on a remote host.
     if (const int rc = astra::remote::runRemoteFitTest(argc, argv); rc >= 0)
         return rc;

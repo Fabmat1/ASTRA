@@ -59,4 +59,20 @@ int runRemoteDetachTest(int argc, char** argv);
  *  is no display.  Returns -1 when argv is not a grid-list invocation.      */
 int runRemoteGridListTest(int argc, char** argv);
 
+/*  Hidden diagnostic mode, for batched mass fitting on a configured host:
+ *      astra --remote-batchtest run    <host name> <grid> <spectrum>...
+ *      astra --remote-batchtest start  <host name> <grid> <spectrum>...
+ *      astra --remote-batchtest finish <host name> <grid> <spectrum>...
+ *  Uses the host exactly as configured in Settings (its batch settings,
+ *  tiers and limits), so it checks a user's own cluster setup. "run" fits
+ *  every spectrum at once through RemoteBatchService and reports results
+ *  and measured resources. "start" submits them and exits as soon as they
+ *  are in a batch, like an ASTRA closed mid-campaign; "finish" is the next
+ *  session, which must collect the same fits without submitting them again.
+ *  Keep ASTRA_DATA_DIR pointing at a scratch directory: the test writes its
+ *  own database there.
+ *
+ *  Returns -1 when argv is not a batch-test invocation.                     */
+int runRemoteBatchTest(int argc, char** argv);
+
 } // namespace astra::remote

@@ -1,4 +1,5 @@
 #include "massfit/ui/MassFitManagerDialog.h"
+#include "remote/RemoteBatchService.h"
 #include "core/QuantityFormat.h"
 
 #include "db/DatabaseManager.h"
@@ -1263,13 +1264,27 @@ MassFitRunConfirmDialog::MassFitRunConfirmDialog(
     });
     form->addRow(QString(), _poorQualityBtn);
 
+    // When every setup runs on a host that batches, a star in flight is only
+    // a thread waiting for its remote result: it holds no grid here, and the
+    // cluster's own limits (Settings > Remote hosts) decide how much runs.
+    bool remoteOnly = !plan.setups.isEmpty();
+    for (const auto& setup : plan.setups)
+        remoteOnly &= astra::remote::RemoteBatchService::batchesHost(
+            setup.globals.executionHost);
+
     _parallelSpin = new QSpinBox(this);
-    _parallelSpin->setRange(1, 64);
+    _parallelSpin->setRange(1, remoteOnly ? 20000 : 64);
     _parallelSpin->setValue(std::max(1, initialParallel));
     _parallelSpin->setToolTip(
-        tr("How many stars are fitted at the same time. Each running fit holds "
-           "its own model grid in memory, so this multiplies peak memory as "
-           "well as speed."));
+        remoteOnly
+            ? tr("How many stars are in flight at once. Every setup of this "
+                 "plan runs on a host that batches, so a star waiting here "
+                 "costs almost nothing locally; set this to as many fits as "
+                 "the host should have queued, e.g. its concurrent tasks times "
+                 "fits per task.")
+            : tr("How many stars are fitted at the same time. Each running fit "
+                 "holds its own model grid in memory, so this multiplies peak "
+                 "memory as well as speed."));
     form->addRow(tr("Parallel stars:"), _parallelSpin);
 
     v->addLayout(form);

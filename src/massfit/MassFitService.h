@@ -184,6 +184,16 @@ private:
         QStringList basePaths;    ///< grid search paths, read off AppSettings
 
         std::shared_ptr<std::atomic<bool>> cancel;
+        /// Service-wide: set when ASTRA is closing. A cancel that comes with
+        /// it is not the user's, so it must leave the star resumable rather
+        /// than record it as cancelled.
+        std::shared_ptr<std::atomic<bool>> shuttingDown;
+
+        /// An attempt an earlier session started and never finished, to be
+        /// taken up again under the same id: remote batch fits are filed
+        /// under their attempt, so a fresh id would run the fit twice.
+        QString resumeAttemptId;
+        QString resumeAttemptNodeId;
     };
 
     struct StarOutcome {
@@ -215,6 +225,8 @@ private:
         int         startSeq = 0;
         QVector<astra::massfit::AttemptRecord> history;
         QVector<QHash<QString, QString>>       historyFits;
+        QString     resumeAttemptId;      ///< see StarWork
+        QString     resumeAttemptNodeId;
     };
 
     struct Run {
@@ -278,6 +290,8 @@ private:
     ServiceContext* _controller = nullptr;
 
     std::vector<std::unique_ptr<Run>> _runs;
+    std::shared_ptr<std::atomic<bool>> _shuttingDown =
+        std::make_shared<std::atomic<bool>>(false);
 
     std::unique_ptr<astra::fitting::StdStreamRedirector> _stdoutCapture;
     int _stdoutHolders = 0;

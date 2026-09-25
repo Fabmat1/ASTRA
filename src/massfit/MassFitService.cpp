@@ -1,5 +1,6 @@
 #include "massfit/MassFitService.h"
 #include "app/AppPaths.h"
+#include "remote/RemoteBatchService.h"
 #include "remote/RemoteHostRegistry.h"
 
 #include "db/DatabaseManager.h"
@@ -204,6 +205,9 @@ MassFitService::MassFitService(ServiceContext* controller,
 
 MassFitService::~MassFitService()
 {
+    // Closing is not cancelling: workers that see the cancel flag below
+    // check this first and leave their stars resumable.
+    _shuttingDown->store(true);
     // Ask every in-flight fit to abort before the pools are torn down:
     // ~QThreadPool waits for its tasks, and a fit that is not told to stop
     // would hold the application open for the rest of its minimisation.
@@ -444,7 +448,16 @@ QString MassFitService::resumeRun(const QString& runId)
     QHash<QString, QVector<mf::AttemptRecord>>       historyByStar;
     QHash<QString, QVector<QHash<QString, QString>>> historyFitsByStar;
     QHash<QString, int> maxSeqByStar;
+    // An attempt still marked Running was cut off mid-fit. It is not part
+    // of the star's history - it produced nothing to rank - but its id is
+    // taken up again when the star resumes at that node, which is how a
+    // remote batch fit started for it gets collected instead of run twice.
+    QHash<QString, const MassFitAttemptRow*> openAttemptByStar;
     for (const MassFitAttemptRow& a : attempts) {
+        if (a.state == kStarRunning) {
+            openAttemptByStar[a.starId] = &a;
+            continue;
+        }
         mf::AttemptRecord rec;
         rec.nodeId    = a.nodeId;
         rec.setupId   = a.setupId;
@@ -479,6 +492,13 @@ QString MassFitService::resumeRun(const QString& runId)
         t.history       = historyByStar.value(sr.starId);
         t.historyFits   = historyFitsByStar.value(sr.starId);
         t.startSeq      = maxSeqByStar.value(sr.starId, -1) + 1;
+        if (const MassFitAttemptRow* open = openAttemptByStar.value(sr.starId)) {
+            if (open->seq >= t.startSeq) {
+                t.resumeAttemptId     = open->id;
+                t.resumeAttemptNodeId = open->nodeId;
+                t.startSeq            = open->seq;
+            }
+        }
 
         // A star left in Running was interrupted mid-fit; its attempts are on
         // disk, so it restarts from the node it had reached rather than from
@@ -624,6 +644,9 @@ void MassFitService::dispatchStar(Run* r, StarTask& task)
     w.threadsPerFit = r->threadsPerFit;
     w.basePaths     = r->basePaths;
     w.cancel        = r->cancel;
+    w.shuttingDown  = _shuttingDown;
+    w.resumeAttemptId     = task.resumeAttemptId;
+    w.resumeAttemptNodeId = task.resumeAttemptNodeId;
 
     task.state = kStarRunning;
     ++r->running;
@@ -665,6 +688,7 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
         service->appendLogFor(w.runId, QStringLiteral("%1: %2").arg(w.starLabel, line));
     };
     const auto cancelled = [&] { return w.cancel && w.cancel->load(); };
+    const auto closing   = [&] { return w.shuttingDown && w.shuttingDown->load(); };
 
     const QString startedAt = nowIso();
 
@@ -833,6 +857,28 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
         if (globals.basePaths.isEmpty()) globals.basePaths = w.basePaths;
 
         const QString attemptStarted = nowIso();
+
+        // The attempt is on disk before its fit starts, under an id a resume
+        // can take up again: a remote fit is filed under it and keeps running
+        // when this session ends.
+        const bool resuming = seq == w.startSeq && !w.resumeAttemptId.isEmpty() &&
+                              node->id == w.resumeAttemptNodeId;
+        const QString attemptId =
+            resuming ? w.resumeAttemptId
+                     : QUuid::createUuid().toString(QUuid::WithoutBraces);
+        {
+            MassFitAttemptRow open;
+            open.id        = attemptId;
+            open.runId     = w.runId;
+            open.starId    = w.starId;
+            open.nodeId    = node->id;
+            open.setupId   = node->setupId;
+            open.seq       = seq;
+            open.state     = kStarRunning;
+            open.startedAt = attemptStarted;
+            dbm->saveMassFitAttempt(open);
+        }
+
         log(QStringLiteral("node \"%1\" (%2, %3) starting")
                 .arg(setup->name, setup->backend,
                      w.plan.joinMode == mf::JoinMode::Simultaneous
@@ -845,13 +891,15 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
         struct JobRun {
             bool ok = false;
             bool aborted = false;
+            bool deferred = false;    ///< still running remotely; ASTRA closing
             QString error;
             fit::SpectralFitResult result;
             fit::PersistOutcome    persisted;
         };
 
         const auto runOne =
-            [&](const std::vector<std::shared_ptr<Spectrum>>& specs) -> JobRun {
+            [&](const std::vector<std::shared_ptr<Spectrum>>& specs,
+                int ordinal) -> JobRun {
             JobRun jr;
             QStringList temps;
             fit::SpectralFitJob job =
@@ -863,25 +911,45 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
                 return jr;
             }
 
-            auto backend = fit::FitBackendRegistry::instance().createForJob(
-                job, w.projectId, w.starId);
-            if (!backend) {
-                AppPaths::cleanupTempPaths(temps);
-                jr.error = QStringLiteral("unknown backend \"%1\"").arg(globals.backend);
-                return jr;
-            }
-
             auto onLog = [&](const QString& line) {
                 const QString trimmed = line.trimmed();
                 if (!trimmed.isEmpty()) log(trimmed);
             };
             auto shouldAbort = [&] { return cancelled(); };
 
+            // A host that batches takes the fit into its next batch; the call
+            // still blocks until the result is in, like any backend.
+            auto* batches = astra::remote::RemoteBatchService::instance();
+            const bool batched =
+                batches && !job.executionHost.isEmpty() &&
+                job.backend == QLatin1String("GAEL") &&
+                astra::remote::RemoteBatchService::batchesHost(job.executionHost);
+
+            std::unique_ptr<fit::IFitBackend> backend;
+            if (!batched) {
+                backend = fit::FitBackendRegistry::instance().createForJob(
+                    job, w.projectId, w.starId);
+                if (!backend) {
+                    AppPaths::cleanupTempPaths(temps);
+                    jr.error = QStringLiteral("unknown backend \"%1\"").arg(globals.backend);
+                    return jr;
+                }
+            }
+
             try {
-                // IFitBackend::run is synchronous by contract, so it runs
-                // straight on this pool thread; FitWorker would only add a
-                // QThread per job and handle one at a time.
-                jr.result = backend->run(job, onLog, {}, shouldAbort);
+                if (batched) {
+                    astra::remote::RemoteBatchService::Context ctx;
+                    ctx.projectId        = w.projectId;
+                    ctx.starId           = w.starId;
+                    ctx.massFitAttemptId = attemptId;
+                    ctx.itemKey = QStringLiteral("%1:%2").arg(attemptId).arg(ordinal);
+                    jr.result = batches->runFit(job, ctx, onLog, shouldAbort);
+                } else {
+                    // IFitBackend::run is synchronous by contract, so it runs
+                    // straight on this pool thread; FitWorker would only add a
+                    // QThread per job and handle one at a time.
+                    jr.result = backend->run(job, onLog, {}, shouldAbort);
+                }
             } catch (const std::exception& e) {
                 jr.error = QString::fromUtf8(e.what());
             } catch (...) {
@@ -890,6 +958,7 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
             AppPaths::cleanupTempPaths(temps);
 
             if (!jr.error.isEmpty()) return jr;
+            if (jr.result.deferred) { jr.deferred = true; return jr; }
             if (jr.result.aborted) { jr.aborted = true; return jr; }
             if (!jr.result.success) {
                 jr.error = jr.result.errorMessage.isEmpty()
@@ -913,9 +982,11 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
         const fit::SpectralFitResult* representative = nullptr;
         fit::SpectralFitResult        bestResult;
 
+        bool wasDeferred = false;
         if (w.plan.joinMode == mf::JoinMode::Simultaneous) {
-            JobRun jr = runOne(enabled);
-            if (jr.aborted) { wasCancelled = true; }
+            JobRun jr = runOne(enabled, 0);
+            if (jr.deferred) { wasDeferred = true; }
+            else if (jr.aborted) { wasCancelled = true; }
             else if (!jr.ok) { attemptError = jr.error; }
             else {
                 bestResult   = jr.result;
@@ -930,9 +1001,11 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
             // reduced chi2) is the one whose numbers the branches see.
             double bestScore = 0.0;
             bool   haveBest  = false;
+            int    ordinal   = 0;
             for (const auto& s : enabled) {
                 if (cancelled()) { wasCancelled = true; break; }
-                JobRun jr = runOne({ s });
+                JobRun jr = runOne({ s }, ordinal++);
+                if (jr.deferred) { wasDeferred = true; break; }
                 if (jr.aborted) { wasCancelled = true; break; }
                 if (!jr.ok) {
                     if (attemptError.isEmpty()) attemptError = jr.error;
@@ -959,13 +1032,26 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
             if (attemptOk) representative = &bestResult;
         }
 
+        // ASTRA is closing. The attempt stays open (Running) and so does the
+        // star: a resume starts at this node again under the same attempt id,
+        // and collects whatever the remote host finished meanwhile.
+        if (wasDeferred || (wasCancelled && closing())) {
+            log(wasDeferred
+                    ? QStringLiteral("node \"%1\" left running remotely; resume "
+                                     "the run to collect it").arg(setup->name)
+                    : QStringLiteral("interrupted by ASTRA closing"));
+            out.state     = kStarRunning;
+            out.elapsedMs = timer.elapsed();
+            return out;
+        }
+
         // ── Record the attempt ──────────────────────────────────────────
         const QString attemptState = wasCancelled ? kStarCancelled
                                    : attemptOk    ? kStarDone
                                                   : kStarFailed;
 
         MassFitAttemptRow ar;
-        ar.id      = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        ar.id      = attemptId;
         ar.runId   = w.runId;
         ar.starId  = w.starId;
         ar.nodeId  = node->id;
@@ -1037,6 +1123,12 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
                     .arg(w.plan.maxDepth));
     }
 
+    if (wasCancelled && closing()) {
+        // Not the user's cancel: leave the star resumable.
+        out.state     = kStarRunning;
+        out.elapsedMs = timer.elapsed();
+        return out;
+    }
     if (wasCancelled) {
         out.state = kStarCancelled;
         log(QStringLiteral("cancelled"));

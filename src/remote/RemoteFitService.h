@@ -95,6 +95,12 @@ public:
      *  at once; the work happens on background threads.                     */
     void reattachAll();
 
+    /*  Tells every watcher to let go: remote jobs keep running and are
+     *  picked up by the next session, callers waiting in runJob() get a
+     *  deferred result.  Called before the fit workers are torn down; the
+     *  destructor calls it too.                                            */
+    void beginShutdown() { _shuttingDown.store(true); }
+
     /*  What a run is doing, for the Remote Fits window.                    */
     struct RunInfo {
         QString id;
@@ -185,6 +191,10 @@ private:
     std::map<QString, RunInfo> _liveRuns;
     std::map<QString, std::shared_ptr<std::atomic<bool>>> _stopFlags;
     std::atomic<bool>          _shuttingDown{false};
+    /*  Threads inside runJob() or adopt().  The destructor waits for them:
+     *  they poll _shuttingDown between remote calls, and must be out before
+     *  the members they use go away.                                        */
+    std::atomic<int>           _active{0};
 };
 
 } // namespace astra::remote

@@ -305,6 +305,11 @@ struct SpectralFitResult {
     // Distinguishes "the user pressed Abort" from a genuine failure: both
     // leave success == false, but only one deserves an error banner.
     bool   aborted          = false;
+    // The fit was handed to another machine and is still running there when
+    // this process has to stop waiting (ASTRA is closing). Neither a result
+    // nor a failure: the caller records nothing, and a later session
+    // collects the fit under the same key.
+    bool   deferred         = false;
     QString errorMessage;
 
     double finalChi2        = 0.0;

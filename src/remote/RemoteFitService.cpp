@@ -9,6 +9,7 @@
 #include "core/Star.h"
 #include "remote/RemoteHostRegistry.h"
 #include "remote/RemoteScheduler.h"
+#include "remote/RemoteStaging.h"
 #include "remote/SshConnection.h"
 #include "remote/SshFileStreamChannel.h"
 #include "app/Logger.h"
@@ -123,6 +124,9 @@ RemoteFitService::RemoteFitService(DatabaseManager* dbm, QObject* parent)
 RemoteFitService::~RemoteFitService()
 {
     _shuttingDown.store(true);
+    // Watchers leave within one poll interval of seeing the flag; waiting
+    // for them keeps them from touching this object after it is gone.
+    for (int i = 0; i < 600 && _active.load() > 0; ++i) QThread::msleep(100);
     RemoteFitService* self = this;
     g_instance.compare_exchange_strong(self, nullptr);
 }
@@ -420,65 +424,25 @@ bool RemoteFitService::stage(const SpectralFitJob& job, const RemoteHost& host,
         return false;
     }
 
-    // The spectra are the files the job already wrote for a local fit; they
-    // travel next to the config and are referred to by bare name, so the
-    // input is valid wherever the directory ends up.
-    QHash<QString, QString> remap;
-    int index = 0;
-    for (const auto& obs : job.observations) {
-        for (const auto& f : obs.files) {
-            if (f.filename.isEmpty()) continue;
-            const QString suffix = QFileInfo(f.filename).suffix();
-            const QString base =
-                QStringLiteral("spec_%1.%2")
-                    .arg(index++, 4, 10, QLatin1Char('0'))
-                    .arg(suffix.isEmpty() ? QStringLiteral("txt") : suffix);
-            if (!QFile::copy(f.filename, tmp.filePath(base))) {
-                if (err) *err = QStringLiteral("cannot stage %1").arg(f.filename);
-                return false;
-            }
-            remap.insert(f.filename, base);
-        }
-    }
-
-    SpectralFitJob remoteJob = job;
-    remoteJob.basePaths = host.gridBasePaths;   // the host's own grids
-
-    auto gs = astra::fitting::gaelmap::toGaelSettings(remoteJob);
-    auto fi = astra::fitting::gaelmap::toGaelInput(
-        remoteJob, [&remap](const QString& p) -> QString {
-            if (const QString b = remap.value(p); !b.isEmpty()) return b;
-            return QStringLiteral("results");     // the output path
-        });
-
-    try {
-        specfit::api::global_settings_to_json_file(
-            gs, tmp.filePath(QStringLiteral("global_settings.json")).toStdString());
-        specfit::api::fit_input_to_json_file(
-            fi, tmp.filePath(QStringLiteral("fit_input.json")).toStdString());
-    } catch (const std::exception& e) {
-        if (err) *err = QStringLiteral("could not write the fit input: %1")
-                            .arg(QString::fromUtf8(e.what()));
+    if (!writeFitDirectory(job, host.gridBasePaths, tmp.path(), err))
         return false;
-    }
 
     // The grids the fit needs must exist on that machine; saying so now is
     // far better than a failure minutes into a queued cluster job.
     QStringList missing;
-    for (const auto& c : remoteJob.components) {
-        if (c.gridPath.isEmpty()) continue;
+    for (const QString& gridPath : gridsOf(job)) {
         bool found = false;
         for (const QString& b : host.gridBasePaths) {
             auto t = conn.exec(SshConnection::shellCommand(
                 QStringLiteral("test -f %1/%2/grid.fits && echo yes || echo no")
-                    .arg(b, c.gridPath)));
+                    .arg(b, gridPath)));
             if (t.transportOk &&
                 QString::fromUtf8(t.out).contains(QLatin1String("yes"))) {
                 found = true;
                 break;
             }
         }
-        if (!found) missing << c.gridPath;
+        if (!found) missing << gridPath;
     }
     if (!missing.isEmpty()) {
         if (err) *err = QStringLiteral(
@@ -689,6 +653,9 @@ SpectralFitResult RemoteFitService::runJob(const SpectralFitJob& job,
                                            ProgressFn onProgress,
                                            AbortFn shouldAbort)
 {
+    ++_active;
+    struct Leave { std::atomic<int>& n; ~Leave() { --n; } } leave{_active};
+
     RemoteHost host;
     if (!RemoteHostRegistry::instance().hostById(job.executionHost, &host))
         return failure(QStringLiteral(
@@ -795,9 +762,11 @@ SpectralFitResult RemoteFitService::runJob(const SpectralFitJob& job,
         // Leave the row alone: the job is still out there and the next
         // session adopts it.
         retire(runId);
-        return failure(QStringLiteral(
+        SpectralFitResult r = failure(QStringLiteral(
             "ASTRA is closing; the fit keeps running on %1 and will be "
             "collected on the next start").arg(host.name));
+        r.deferred = true;
+        return r;
     }
     if (outcome == Outcome::Aborted) {
         setState(runId, QStringLiteral("aborted"));
@@ -860,6 +829,9 @@ bool RemoteFitService::persistHarvested(const RemoteFitRunRow& row,
 
 void RemoteFitService::adopt(const RemoteFitRunRow& row)
 {
+    ++_active;
+    struct Leave { std::atomic<int>& n; ~Leave() { --n; } } leave{_active};
+
     RemoteHost host;
     if (!RemoteHostRegistry::instance().hostById(row.hostId, &host)) {
         setState(row.id, QStringLiteral("abandoned"),

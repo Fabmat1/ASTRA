@@ -340,6 +340,7 @@ set(ASTRA_CORE_SOURCES
     src/db/PhotometryRepository.cpp
     src/db/ProjectRepository.cpp
     src/db/RadialVelocityRepository.cpp
+    src/db/RemoteBatchRepository.cpp
     src/db/RemoteFitRepository.cpp
     src/db/SpectrumRepository.cpp
     src/db/StarRepository.cpp
@@ -395,7 +396,9 @@ set(ASTRA_CORE_SOURCES
     src/remote/RemoteFitService.cpp
     src/remote/RemoteHost.cpp
     src/remote/RemoteHostRegistry.cpp
+    src/remote/RemoteBatchService.cpp
     src/remote/RemoteScheduler.cpp
+    src/remote/RemoteStaging.cpp
     src/remote/SshConnection.cpp
     src/remote/SshFileStreamChannel.cpp
     src/remote/SshGridProvider.cpp
@@ -483,6 +486,7 @@ set(ASTRA_CORE_HEADERS
     src/db/PhotometryRepository.h
     src/db/ProjectRepository.h
     src/db/RadialVelocityRepository.h
+    src/db/RemoteBatchRepository.h
     src/db/RemoteFitRepository.h
     src/db/SpectrumRepository.h
     src/db/SqlValue.h
@@ -541,7 +545,9 @@ set(ASTRA_CORE_HEADERS
     src/remote/RemoteFitService.h
     src/remote/RemoteHost.h
     src/remote/RemoteHostRegistry.h
+    src/remote/RemoteBatchService.h
     src/remote/RemoteScheduler.h
+    src/remote/RemoteStaging.h
     src/remote/SshConnection.h
     src/remote/SshFileStreamChannel.h
     src/remote/SshGridProvider.h
@@ -1435,6 +1441,7 @@ if(BUILD_TESTING)
             tests/unit/db/delete_star.cpp
             tests/unit/remote/batch_settings.cpp
             tests/unit/remote/slurm_limits.cpp
+            tests/unit/remote/batch_service.cpp
     )
 
     # ── Convenience target ───────────────────────────────────────────────

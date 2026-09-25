@@ -54,6 +54,7 @@ DatabaseManager::DatabaseManager(QObject *parent)
     , _periodograms(std::make_unique<PeriodogramRepository>(*_db))
     , _massFit(std::make_unique<MassFitRepository>(*_db))
     , _remoteFit(std::make_unique<RemoteFitRepository>(*_db))
+    , _remoteBatch(std::make_unique<RemoteBatchRepository>(*_db))
 {
     _db->setDatabasePath(AppPaths::database());
     QDir().mkpath(QFileInfo(_db->databasePath()).absolutePath());
@@ -777,6 +778,57 @@ bool DatabaseManager::createTables()
         )
     )";
 
+    // Batched remote fitting: one row per submission and one per fit in it.
+    // Like remote_fit_runs they are what a later session resumes from, so
+    // they are written before anything is submitted; see
+    // RemoteBatchRepository.
+    QString createRemoteBatchesTable = R"(
+        CREATE TABLE IF NOT EXISTS remote_batches (
+            id TEXT PRIMARY KEY,
+            host_id TEXT NOT NULL,
+            host_name TEXT,
+            remote_dir TEXT,
+            scheduler TEXT,
+            tier INTEGER DEFAULT 0,
+            memory TEXT,
+            time_limit TEXT,
+            task_count INTEGER DEFAULT 0,
+            slurm_job_id TEXT,
+            remote_pid INTEGER DEFAULT 0,
+            state TEXT,
+            bundle_version TEXT,
+            created_at TEXT,
+            updated_at TEXT,
+            error TEXT
+        )
+    )";
+
+    QString createRemoteBatchItemsTable = R"(
+        CREATE TABLE IF NOT EXISTS remote_batch_items (
+            id TEXT PRIMARY KEY,
+            item_key TEXT NOT NULL,
+            batch_id TEXT,
+            host_id TEXT NOT NULL,
+            project_id TEXT,
+            star_id TEXT,
+            mass_fit_attempt_id TEXT,
+            state TEXT,
+            tier INTEGER DEFAULT 0,
+            retries INTEGER DEFAULT 0,
+            n_spectra INTEGER DEFAULT 0,
+            task_index INTEGER,
+            spectrum_ids_json TEXT,
+            job_json TEXT,
+            result_path TEXT,
+            error TEXT,
+            wall_seconds REAL,
+            cpu_seconds REAL,
+            peak_rss_bytes INTEGER,
+            created_at TEXT,
+            updated_at TEXT
+        )
+    )";
+
     QString createMassFitRunStarsTable = R"(
         CREATE TABLE IF NOT EXISTS mass_fit_run_stars (
             id TEXT PRIMARY KEY,
@@ -844,6 +896,8 @@ bool DatabaseManager::createTables()
         createMassFitRunStarsTable,
         createMassFitAttemptsTable,
         createRemoteFitRunsTable,
+        createRemoteBatchesTable,
+        createRemoteBatchItemsTable,
     };
 
     for (const QString& query : queries) {
@@ -1347,6 +1401,10 @@ bool DatabaseManager::createIndexes()
         "CREATE INDEX IF NOT EXISTS idx_lc_fits_lc ON lc_fits(lightcurve_id)",
         "CREATE INDEX IF NOT EXISTS idx_mass_fit_runs_project ON mass_fit_runs(project_id)",
         "CREATE INDEX IF NOT EXISTS idx_remote_fit_runs_state ON remote_fit_runs(state)",
+        "CREATE INDEX IF NOT EXISTS idx_remote_batches_state ON remote_batches(state)",
+        "CREATE INDEX IF NOT EXISTS idx_remote_batch_items_batch ON remote_batch_items(batch_id)",
+        "CREATE INDEX IF NOT EXISTS idx_remote_batch_items_key ON remote_batch_items(item_key)",
+        "CREATE INDEX IF NOT EXISTS idx_remote_batch_items_state ON remote_batch_items(state)",
         "CREATE INDEX IF NOT EXISTS idx_mass_fit_run_stars_run ON mass_fit_run_stars(run_id, state)",
         "CREATE INDEX IF NOT EXISTS idx_mass_fit_attempts_run ON mass_fit_attempts(run_id, star_id)",
     };
@@ -2412,3 +2470,6 @@ std::optional<RemoteFitRunRow> DatabaseManager::loadRemoteFitRun(const QString& 
 
 std::vector<RemoteFitRunRow> DatabaseManager::loadActiveRemoteFitRuns()
 { return _remoteFit->loadActive(); }
+
+RemoteBatchRepository& DatabaseManager::remoteBatches()
+{ return *_remoteBatch; }

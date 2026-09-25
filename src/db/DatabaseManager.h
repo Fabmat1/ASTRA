@@ -9,6 +9,7 @@
 #include <QString>
 #include "db/MassFitRepository.h"
 #include "db/RemoteFitRepository.h"
+#include "db/RemoteBatchRepository.h"
 #include "db/SpectrumRepository.h"
 #include "core/Instrument.h"
 #include "core/InstrumentMode.h"
@@ -187,6 +188,10 @@ public:
     std::optional<RemoteFitRunRow> loadRemoteFitRun(const QString& id);
     std::vector<RemoteFitRunRow> loadActiveRemoteFitRuns();
 
+    // Batched remote fitting; see RemoteBatchRepository. Handed out whole
+    // rather than wrapped method by method: only the batch service uses it.
+    RemoteBatchRepository& remoteBatches();
+
     bool saveMassFitAttempt(const MassFitAttemptRow& row);
     std::vector<MassFitAttemptRow> loadMassFitAttempts(
         const QString& runId, const QString& starId = {});
@@ -209,6 +214,7 @@ public:
     std::unique_ptr<PeriodogramRepository> _periodograms;
     std::unique_ptr<MassFitRepository> _massFit;
     std::unique_ptr<RemoteFitRepository> _remoteFit;
+    std::unique_ptr<RemoteBatchRepository> _remoteBatch;
 };
 
 #endif // DATABASEMANAGER_H
