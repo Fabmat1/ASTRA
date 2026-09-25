@@ -310,6 +310,7 @@ set(ASTRA_CORE_SOURCES
 
     # app
     src/app/AppSettings.cpp
+    src/app/HeadlessRuns.cpp
     src/app/MaintenanceMode.cpp
     src/app/DataStore.cpp
     src/app/Logger.cpp
@@ -450,6 +451,7 @@ set(ASTRA_CORE_HEADERS
     # app
     src/app/AppPaths.h
     src/app/AppSettings.h
+    src/app/HeadlessRuns.h
     src/app/MaintenanceMode.h
     src/app/ServiceContext.h
     src/app/DataStore.h

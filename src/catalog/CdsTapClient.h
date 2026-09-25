@@ -64,6 +64,9 @@ struct Request {
     // Off for UWS: a 3xx is the answer there, not a detour to it, and
     // following it would discard the Location the job lives at.
     bool followRedirects = true;
+    // Off for services whose front end stalls Qt's HTTP/2 negotiation on a
+    // fresh connection (China-VO / LAMOST): they are then spoken to in 1.1.
+    bool allowHttp2 = true;
 
     Request() = default;
     Request(int ms) : timeoutMs(ms) {}   // NOLINT(google-explicit-constructor)

@@ -30,6 +30,12 @@ public:
     // hogs the queue.
     virtual QString hostKey() const = 0;
 
+    /// How many downloads may run against this archive at once, and the
+    /// least time between starting two. Archives answer slowly but in
+    /// parallel differ a lot; the defaults suit a small, fragile service.
+    virtual int maxConcurrentDownloads() const { return 2; }
+    virtual int minDownloadIntervalMs() const { return 400; }
+
     // Batched discovery: find every matching product for the given stars.
     // Runs on a worker thread and may make several chunked synchronous HTTP
     // calls; implementations must poll `cancel` between chunks and report

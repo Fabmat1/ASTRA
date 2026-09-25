@@ -175,7 +175,7 @@ QString SpectrumFetchService::startSession(
     s->projectId       = projectId;
     s->opt             = opt;
     s->opt.maxParallelDownloads =
-        std::clamp(s->opt.maxParallelDownloads, 1, 4);
+        std::clamp(s->opt.maxParallelDownloads, 1, 32);
     s->cancel = std::make_shared<std::atomic<bool>>(false);
 
     int skippedNoPos = 0;
@@ -906,6 +906,11 @@ void SpectrumFetchService::pumpDownloads() {
             const QString hostKey =
                 client ? client->hostKey() : QStringLiteral("default");
             HostState& host = _hosts[hostKey];
+            if (client && !host.configured) {
+                host.maxConcurrent = std::max(1, client->maxConcurrentDownloads());
+                host.minIntervalMs = std::max(0, client->minDownloadIntervalMs());
+                host.configured    = true;
+            }
 
             if (host.inFlight >= host.maxConcurrent) continue;
             if (now < host.nextAllowedMs) {

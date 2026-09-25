@@ -117,6 +117,8 @@ Attempt runAttempt(const QUrl &url,
 
     QNetworkRequest request(url);
     request.setRawHeader("User-Agent", "ASTRA/1.0");
+    if (!req.allowHttp2)
+        request.setAttribute(QNetworkRequest::Http2AllowedAttribute, false);
     request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
                          req.followRedirects
                              ? QNetworkRequest::NoLessSafeRedirectPolicy

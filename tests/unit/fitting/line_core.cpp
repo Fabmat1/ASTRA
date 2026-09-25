@@ -90,6 +90,16 @@ TEST_CASE("lineCoreDeviation: worst spectrum wins, masked or absent reads NaN")
     CHECK(std::isnan(lineCoreDeviation(resultWith({ blue }, { 0.0 }), 6)));
 }
 
+TEST_CASE("lineCoreDeviation: a mis-scaled sigma does not change it")
+{
+    // Reductions estimate sigma differently; relative to the wings' own
+    // scatter the number means the same whatever the scale.
+    auto s = spectrum("a", 4.0, kHalphaAir);
+    const double base = lineCoreDeviation(resultWith({ s }, { 0.0 }), 6);
+    for (auto& x : s.sigma) x *= 3.0;
+    CHECK(lineCoreDeviation(resultWith({ s }, { 0.0 }), 6) == doctest::Approx(base).epsilon(1e-9));
+}
+
 TEST_CASE("fittedVelocities / shiftRestRegions")
 {
     const auto r = resultWith({ spectrum("a", 0, kHalphaAir), spectrum("b", 0, kHalphaAir) },

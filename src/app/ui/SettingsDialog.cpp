@@ -631,7 +631,7 @@ QWidget* SettingsDialog::createSpectraFetchPage()
     form->addRow("Default search radius:", _specRadiusSpin);
 
     _specParallelSpin = new QSpinBox;
-    _specParallelSpin->setRange(1, 4);
+    _specParallelSpin->setRange(1, 32);
     _specParallelSpin->setValue(_settings->specFetchMaxParallel());
     _specParallelSpin->setToolTip(
         "Capped at 4 to avoid hammering the remote archives.");

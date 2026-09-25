@@ -49,6 +49,13 @@ public:
         return QStringLiteral("lamost.org");
     }
 
+    // The single-exposure and product servers take seconds per file but
+    // hold up well under parallel load (16 at once measured, no errors):
+    // throughput is latency-bound, so parallelism is what makes a project of
+    // thousands of stars take minutes rather than a day.
+    int maxConcurrentDownloads() const override { return 16; }
+    int minDownloadIntervalMs() const override { return 50; }
+
     QList<SpecFetch::RemoteSpectrum> discover(
         const std::vector<SpecFetch::StarQuery>& stars,
         const SpecFetch::ArchiveOptions& opt,

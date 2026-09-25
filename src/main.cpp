@@ -17,6 +17,7 @@
 #include "remote/ui/AskPass.h"
 #include "remote/ui/RemoteSelfTest.h"
 #include "app/MaintenanceMode.h"
+#include "app/HeadlessRuns.h"
 
 int main(int argc, char *argv[])
 {
@@ -32,6 +33,11 @@ int main(int argc, char *argv[])
 
     // `astra --remote-gridtest ...`: streamed vs local grid comparison.
     if (const int rc = astra::remote::runRemoteGridTest(argc, argv); rc >= 0)
+        return rc;
+
+    // `astra --fetch-spectra | --mass-fit | --mass-fit-resume ...`: long
+    // jobs without the window (see app/HeadlessRuns.h).
+    if (const int rc = runHeadless(argc, argv); rc >= 0)
         return rc;
 
     // `astra --replace-imported-duplicates ...`: headless database upkeep

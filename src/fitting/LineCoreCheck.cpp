@@ -64,7 +64,24 @@ double lineCoreDeviation(const SpectralFitResult& r, int nPixels,
             const int i = near[size_t(k)].second;
             sum += (s.flux[i] - s.model[i]) / s.sigma[i];
         }
-        const double z = std::abs(sum) / std::sqrt(double(nPixels));
+        double z = std::abs(sum) / std::sqrt(double(nPixels));
+
+        // In units of how the fit does beside the core.
+        std::vector<double> wing;
+        for (const auto& [d, i] : near)
+            if (d > 10.0 && d < 60.0)
+                wing.push_back((s.flux[i] - s.model[i]) / s.sigma[i]);
+        if (wing.size() >= 20) {
+            auto median = [](std::vector<double> v) {
+                const size_t m = v.size() / 2;
+                std::nth_element(v.begin(), v.begin() + m, v.end());
+                return v[m];
+            };
+            const double med = median(wing);
+            for (double& x : wing) x = std::abs(x - med);
+            const double scatter = 1.4826 * median(wing);
+            if (scatter > 0.0) z /= scatter;
+        }
         if (std::isnan(worst) || z > worst) worst = z;
     }
     return worst;

@@ -406,7 +406,7 @@ BatchSpectrumFetchSetupDialog::BatchSpectrumFetchSetupDialog(
     optLay->addRow(tr("Search radius:"), _radiusSpin);
 
     _parallelSpin = new QSpinBox;
-    _parallelSpin->setRange(1, 4);
+    _parallelSpin->setRange(1, 32);
     _parallelSpin->setValue(_settings ? _settings->specFetchMaxParallel() : 2);
     _parallelSpin->setToolTip(
         tr("Capped at 4 to avoid hammering the remote archives."));

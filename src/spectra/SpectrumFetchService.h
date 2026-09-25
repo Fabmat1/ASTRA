@@ -232,6 +232,7 @@ private:
         qint64 nextAllowedMs = 0;
         int    minIntervalMs = 400;
         int    maxConcurrent = 2;
+        bool   configured    = false;   ///< limits taken from the client
     };
 
     Session*       find(const QString& id);

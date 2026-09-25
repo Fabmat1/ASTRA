@@ -153,7 +153,7 @@ void AppSettings::load()
     _specFetchRadiusArcsec =
         s.value(kSpecFetchRadius, _specFetchRadiusArcsec).toDouble();
     _specFetchMaxParallel = std::clamp(
-        s.value(kSpecFetchParallel, _specFetchMaxParallel).toInt(), 1, 4);
+        s.value(kSpecFetchParallel, _specFetchMaxParallel).toInt(), 1, 32);
     _specFetchDir         = s.value(kSpecFetchDir, _specFetchDir).toString();
     _specFetchLamostToken =
         s.value(kSpecFetchLamostToken, _specFetchLamostToken).toString();
@@ -389,7 +389,7 @@ void AppSettings::setSpecFetchRadiusArcsec(double r) {
 }
 
 void AppSettings::setSpecFetchMaxParallel(int n) {
-    n = std::clamp(n, 1, 4);
+    n = std::clamp(n, 1, 32);
     if (_specFetchMaxParallel == n) return;
     _specFetchMaxParallel = n;
     save();

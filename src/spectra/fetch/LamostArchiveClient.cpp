@@ -11,6 +11,14 @@
 #include "catalog/CdsTapClient.h"
 #include "app/Logger.h"
 
+#include <QHttpMultiPart>
+#include <QMutex>
+#include <QNetworkAccessManager>
+#include <QThreadPool>
+
+#include <atomic>
+#include <functional>
+
 #include <QDateTime>
 #include <QDir>
 #include <QEventLoop>
@@ -204,7 +212,6 @@ QList<SpecFetch::RemoteSpectrum> LamostArchiveClient::discover(
     const SpecFetch::ArchiveOptions& opt, QNetworkAccessManager* nam,
     const std::function<void(int, int)>& progress,
     const std::atomic<bool>& cancel, QString* error) {
-    QList<SpecFetch::RemoteSpectrum> out;
     if (error) error->clear();
 
     const QString drName =
@@ -214,7 +221,7 @@ QList<SpecFetch::RemoteSpectrum> LamostArchiveClient::discover(
         if (error)
             *error = QStringLiteral("%1 is not available for %2")
                          .arg(drName, displayName());
-        return out;
+        return {};
     }
 
     const QString coneFmt =
@@ -224,11 +231,113 @@ QList<SpecFetch::RemoteSpectrum> LamostArchiveClient::discover(
     const QString drKey = drName.toLower();
     const double  srDeg = opt.radiusArcsec / 3600.0;
 
-    // No batch API: one cone search per star. The service's per-host throttle
-    // does not apply to discovery, so keep the pace gentle here.
-    int starsDone = 0;
-    for (const auto& q : stars) {
-        if (cancel.load()) break;
+    // No batch API: one cone search per star, plus a HEAD request per
+    // single-exposure candidate - several seconds a star. A project of
+    // thousands would take a day one star at a time, so a few lanes run side
+    // by side, each with a network manager of its own; few enough to stay a
+    // polite load on the archive (the service's per-host throttle does not
+    // apply to discovery).
+    constexpr int kLanes = 6;
+    std::vector<QList<SpecFetch::RemoteSpectrum>> results(stars.size());
+    std::atomic<int>  starsDone{0};
+    QMutex            outMtx;
+
+    // One catalogue row, whichever service it came from.
+    struct Row {
+        QString obsid, obsdate, planid;
+        int     spid = -1, fiberid = -1;
+        double  mjd = NAN, snr = NAN;
+    };
+
+    // The products one row stands for: its coadd, or - with the exposures
+    // option on and the single-exposure release holding it - that instead.
+    auto productsFor = [&](const SpecFetch::StarQuery& q, const Row& row,
+                           QNetworkAccessManager* nam) {
+        QList<SpecFetch::RemoteSpectrum> out;
+        SpecFetch::RemoteSpectrum r;
+        r.archive      = archive();
+        r.archiveLabel = QStringLiteral("LAMOST %1 %2")
+                             .arg(drName.toUpper(),
+                                  _mrs ? QStringLiteral("MRS")
+                                       : QStringLiteral("LRS"));
+        // The obsid is stable across data releases (the DR only picks the
+        // server), so the dedup key must not embed it.
+        r.originId = QStringLiteral("lamost-%1:%2")
+                         .arg(_mrs ? QStringLiteral("mrs") : QStringLiteral("lrs"),
+                              row.obsid);
+        r.starId         = q.starId;
+        r.instrumentHint = _mrs ? QStringLiteral("LAMOST MRS")
+                                : QStringLiteral("LAMOST LRS");
+        r.collection     = r.archiveLabel;
+        r.mjd            = row.mjd;
+        r.snr            = row.snr;
+        r.resolution     = _mrs ? 7500.0 : 1800.0;
+        r.isCoadd        = true;
+
+        QString dl = fitsFmt.arg(row.obsid);
+        if (!opt.token.isEmpty())
+            dl += QStringLiteral("?token=%1").arg(opt.token);
+        r.downloadUrl = QUrl(dl);
+        r.fileName    = QStringLiteral("lamost-%1-%2-%3.fits.gz")
+                         .arg(drKey,
+                              _mrs ? QStringLiteral("mrs") : QStringLiteral("lrs"),
+                              row.obsid);
+
+        // MRS products bundle their exposures; with the exposures option
+        // on, parse() imports those instead of the coadd arms.
+        if (_mrs) r.isCoadd = !opt.fetchExposures;
+
+        // Either/or for LRS: the individual exposures live in the separate
+        // single-exposure release, and when the option is on and that
+        // release has the product, its row replaces the coadd.
+        const bool inSexpWindow =
+            std::isnan(r.mjd) || (r.mjd >= kSexpMjdMin && r.mjd <= kSexpMjdMax);
+        if (!_mrs && opt.fetchExposures && inSexpWindow) {
+            const QString sexpUrl =
+                sexpFileUrl(row.obsdate, row.planid, row.spid, row.fiberid);
+            qint64 size = -1;
+            if (!sexpUrl.isEmpty() && headOk(nam, sexpUrl, &size)) {
+                SpecFetch::RemoteSpectrum rx = r;
+                rx.originId = QString::fromLatin1(kSexpOriginPrefix) + row.obsid;
+                rx.collection =
+                    QStringLiteral("LAMOST LRS single exposures (DR5 sexp)");
+                rx.isCoadd     = false;
+                rx.sizeBytes   = size;
+                rx.downloadUrl = QUrl(sexpUrl);
+                rx.fileName = QStringLiteral("lamost-sexp-%1.fit").arg(row.obsid);
+                // parse() re-anchors each exposure to the coadd's flux
+                // calibration: point it at the sibling coadd download (and
+                // its URL, for when the coadd was never fetched).
+                rx.extras.insert(QStringLiteral("coaddFileName"), r.fileName);
+                rx.extras.insert(QStringLiteral("coaddUrl"), r.downloadUrl.toString());
+                out.append(rx);
+                return out;   // the exposures replace the coadd row
+            }
+        }
+        out.append(r);
+        return out;
+    };
+
+    auto rowsOf = [](const VoTable::Table& t, int i) {
+        Row row;
+        auto col = [&](const char* name) { return columnFor(t, QString::fromLatin1(name)); };
+        const int obsidCol = col("obsid"), mjdCol = col("mjd"), snrgCol = col("snrg"),
+                  obsdateCol = col("obsdate"), planidCol = col("planid"),
+                  spidCol = col("spid"), fiberidCol = col("fiberid");
+        row.obsid = obsidCol >= 0 ? t.value(i, obsidCol) : QString();
+        if (mjdCol >= 0)     row.mjd = toDoubleOr(t.value(i, mjdCol), NAN);
+        if (snrgCol >= 0)    row.snr = toDoubleOr(t.value(i, snrgCol), NAN);
+        if (obsdateCol >= 0) row.obsdate = t.value(i, obsdateCol);
+        if (planidCol >= 0)  row.planid = t.value(i, planidCol);
+        if (spidCol >= 0)    row.spid = int(toDoubleOr(t.value(i, spidCol), -1));
+        if (fiberidCol >= 0) row.fiberid = int(toDoubleOr(t.value(i, fiberidCol), -1));
+        return row;
+    };
+
+    // ── Per star: one cone search each ──────────────────────────────────
+    auto discoverOne = [&](const SpecFetch::StarQuery& q,
+                           QNetworkAccessManager* nam) {
+        QList<SpecFetch::RemoteSpectrum> out;
 
         QString url = coneFmt.arg(q.ra, 0, 'f', 8)
                           .arg(q.dec, 0, 'f', 8)
@@ -238,116 +347,176 @@ QList<SpecFetch::RemoteSpectrum> LamostArchiveClient::discover(
 
         CdsTap::Request request(kConeTimeoutMs);
         request.cancel = &cancel;
+        request.allowHttp2 = false;
         const CdsTap::Response resp = CdsTap::get(nam, url, request);
-        ++starsDone;
-        if (progress) progress(starsDone, int(stars.size()));
+        const int done = ++starsDone;
+        if (progress) progress(done, int(stars.size()));
 
         if (!resp.ok()) {
+            QMutexLocker lk(&outMtx);
             if (error && error->isEmpty()) *error = resp.error;
-            continue;   // one unreachable star should not kill the sweep
+            return out;   // one unreachable star should not kill the sweep
         }
 
         const VoTable::Document doc = VoTable::parse(resp.body);
         const VoTable::Table*   t   = doc.firstTable();
-        if (!t || t->rows.isEmpty()) continue;
-
-        const int obsidCol   = columnFor(*t, QStringLiteral("obsid"));
-        const int mjdCol     = columnFor(*t, QStringLiteral("mjd"));
-        const int snrgCol    = columnFor(*t, QStringLiteral("snrg"));
-        const int obsdateCol = columnFor(*t, QStringLiteral("obsdate"));
-        const int planidCol  = columnFor(*t, QStringLiteral("planid"));
-        const int spidCol    = columnFor(*t, QStringLiteral("spid"));
-        const int fiberidCol = columnFor(*t, QStringLiteral("fiberid"));
-        if (obsidCol < 0) continue;
+        if (!t || t->rows.isEmpty()) return out;
 
         // MRS cone searches return one row per band and exposure of the same
         // obsid; collapse to one product per obsid.
         QSet<QString> seen;
         for (int i = 0; i < t->rows.size(); ++i) {
-            const QString obsid = t->value(i, obsidCol);
-            if (obsid.isEmpty() || seen.contains(obsid)) continue;
-            seen.insert(obsid);
-
-            SpecFetch::RemoteSpectrum r;
-            r.archive      = archive();
-            r.archiveLabel = QStringLiteral("LAMOST %1 %2")
-                                 .arg(drName.toUpper(),
-                                      _mrs ? QStringLiteral("MRS")
-                                           : QStringLiteral("LRS"));
-            // The obsid is stable across data releases (the DR only picks the
-            // server), so the dedup key must not embed it.
-            r.originId = QStringLiteral("lamost-%1:%2")
-                             .arg(_mrs ? QStringLiteral("mrs")
-                                       : QStringLiteral("lrs"),
-                                  obsid);
-            r.starId         = q.starId;
-            r.instrumentHint = _mrs ? QStringLiteral("LAMOST MRS")
-                                    : QStringLiteral("LAMOST LRS");
-            r.collection     = r.archiveLabel;
-            if (mjdCol >= 0)
-                r.mjd = toDoubleOr(t->value(i, mjdCol), NAN);
-            if (snrgCol >= 0)
-                r.snr = toDoubleOr(t->value(i, snrgCol), NAN);
-            r.resolution = _mrs ? 7500.0 : 1800.0;
-            r.isCoadd    = true;
-
-            QString dl = fitsFmt.arg(obsid);
-            if (!opt.token.isEmpty())
-                dl += QStringLiteral("?token=%1").arg(opt.token);
-            r.downloadUrl = QUrl(dl);
-            r.fileName    = QStringLiteral("lamost-%1-%2-%3.fits.gz")
-                             .arg(drKey,
-                                  _mrs ? QStringLiteral("mrs")
-                                       : QStringLiteral("lrs"),
-                                  obsid);
-
-            // MRS products bundle their exposures; with the exposures option
-            // on, parse() imports those instead of the coadd arms.
-            if (_mrs) r.isCoadd = !opt.fetchExposures;
-
-            // Either/or for LRS: the individual exposures live in the
-            // separate single-exposure release, and when the option is on
-            // and that release has the product, its row replaces the coadd.
-            const bool inSexpWindow =
-                std::isnan(r.mjd) ||
-                (r.mjd >= kSexpMjdMin && r.mjd <= kSexpMjdMax);
-            if (!_mrs && opt.fetchExposures && inSexpWindow) {
-                const QString sexpUrl = sexpFileUrl(
-                    obsdateCol >= 0 ? t->value(i, obsdateCol) : QString(),
-                    planidCol >= 0 ? t->value(i, planidCol) : QString(),
-                    spidCol >= 0 ? int(toDoubleOr(t->value(i, spidCol), -1))
-                                 : -1,
-                    fiberidCol >= 0
-                        ? int(toDoubleOr(t->value(i, fiberidCol), -1))
-                        : -1);
-                qint64 size = -1;
-                if (!sexpUrl.isEmpty() && headOk(nam, sexpUrl, &size)) {
-                    SpecFetch::RemoteSpectrum rx = r;
-                    rx.originId =
-                        QString::fromLatin1(kSexpOriginPrefix) + obsid;
-                    rx.collection = QStringLiteral(
-                        "LAMOST LRS single exposures (DR5 sexp)");
-                    rx.isCoadd     = false;
-                    rx.sizeBytes   = size;
-                    rx.downloadUrl = QUrl(sexpUrl);
-                    rx.fileName =
-                        QStringLiteral("lamost-sexp-%1.fit").arg(obsid);
-                    // parse() re-anchors each exposure to the coadd's flux
-                    // calibration: point it at the sibling coadd download
-                    // (and its URL, for when the coadd was never fetched).
-                    rx.extras.insert(QStringLiteral("coaddFileName"),
-                                     r.fileName);
-                    rx.extras.insert(QStringLiteral("coaddUrl"),
-                                     r.downloadUrl.toString());
-                    out.append(rx);
-                    continue;   // the exposures replace the coadd row
-                }
-            }
-
-            out.append(r);
+            const Row row = rowsOf(*t, i);
+            if (row.obsid.isEmpty() || seen.contains(row.obsid)) continue;
+            seen.insert(row.obsid);
+            out += productsFor(q, row, nam);
         }
-    }
+        return out;
+    };
 
+    // Runs `work(i, nam)` for i in [0, n) on `laneCount` lanes. The caller's
+    // manager serves the first lane; the others make their own on their
+    // threads, since a QNetworkAccessManager belongs to one thread.
+    auto inLanes = [&](int n, int laneCount,
+                       const std::function<void(int, QNetworkAccessManager*)>& work) {
+        std::atomic<int> next{0};
+        auto lane = [&](QNetworkAccessManager* own) {
+            for (;;) {
+                if (cancel.load()) return;
+                const int i = next++;
+                if (i >= n) return;
+                work(i, own);
+            }
+        };
+        const int lanes = std::max(1, std::min(laneCount, n));
+        QThreadPool pool;
+        pool.setMaxThreadCount(std::max(1, lanes - 1));
+        for (int l = 1; l < lanes; ++l)
+            pool.start([&] {
+                QNetworkAccessManager own;
+                lane(&own);
+            });
+        lane(nam);
+        pool.waitForDone();
+    };
+
+    auto conePass = [&](const std::vector<int>& which) {
+        inLanes(int(which.size()), kLanes, [&](int k, QNetworkAccessManager* own) {
+            const int i = which[size_t(k)];
+            const auto found = discoverOne(stars[size_t(i)], own);
+            if (found.isEmpty()) return;
+            QMutexLocker lk(&outMtx);
+            results[size_t(i)] = found;
+        });
+    };
+
+    // ── Many stars: one crossmatch against the catalogue ────────────────
+    // DR8 and newer run a TAP service that takes an uploaded position table:
+    // a whole project is one query of seconds instead of a cone search per
+    // star. What stays per row is the HEAD request asking the single-exposure
+    // release for the product, which runs on many lanes since that server
+    // is latency-bound. Anything the bulk path cannot do falls back to cones.
+    constexpr int kBulkMinStars = 20;
+    constexpr int kBulkChunk    = 3000;
+    constexpr int kHeadLanes    = 24;
+    const bool newRelease = drKey.startsWith(QLatin1String("dr")) &&
+                            drKey.mid(2).toInt() >= 8;
+    std::vector<int> viaCones;
+    if (!_mrs && newRelease && int(stars.size()) >= kBulkMinStars) {
+        const QString tapUrl =
+            QStringLiteral("https://www.lamost.org/%1/v2.0/voservice/tap/sync").arg(drKey);
+        struct Hit { int star; Row row; };
+        std::vector<Hit> hits;
+        int covered = 0;
+        for (size_t c0 = 0; c0 < stars.size() && !cancel.load(); c0 += kBulkChunk) {
+            const size_t c1 = std::min(stars.size(), c0 + kBulkChunk);
+            const std::vector<SpecFetch::StarQuery> chunk(stars.begin() + c0,
+                                                          stars.begin() + c1);
+            // The service fails with an internal error on FIELD unit
+            // attributes (verified Sep 2026), so the upload goes without them.
+            QByteArray votable = SpecFetch::buildPositionVOTable(chunk);
+            votable.replace(" unit=\"deg\"", "");
+            const QString adql = QStringLiteral(
+                "SELECT u.idx, c.obsid, c.obsdate, c.planid, c.spid, c.fiberid, "
+                "c.mjd, c.snrg FROM TAP_UPLOAD.stars AS u JOIN public.catalogue AS c "
+                "ON 1=CONTAINS(POINT('ICRS', c.ra, c.dec), "
+                "CIRCLE('ICRS', u.ra, u.dec, %1))").arg(srDeg, 0, 'f', 8);
+            auto makeBody = [&]() {
+                auto* mp = new QHttpMultiPart(QHttpMultiPart::FormDataType);
+                auto field = [mp](const QString& name, const QString& value) {
+                    QHttpPart part;
+                    part.setHeader(QNetworkRequest::ContentDispositionHeader,
+                                   QVariant(QStringLiteral("form-data; name=\"%1\"").arg(name)));
+                    part.setBody(value.toUtf8());
+                    mp->append(part);
+                };
+                field(QStringLiteral("REQUEST"), QStringLiteral("doQuery"));
+                field(QStringLiteral("LANG"), QStringLiteral("ADQL"));
+                field(QStringLiteral("FORMAT"), QStringLiteral("votable"));
+                field(QStringLiteral("UPLOAD"), QStringLiteral("stars,param:upl"));
+                field(QStringLiteral("QUERY"), adql);
+                QHttpPart table;
+                table.setHeader(QNetworkRequest::ContentTypeHeader,
+                                QVariant(QStringLiteral("application/x-votable+xml")));
+                table.setHeader(QNetworkRequest::ContentDispositionHeader,
+                                QVariant(QStringLiteral("form-data; name=\"upl\"; filename=\"upl.xml\"")));
+                table.setBody(votable);
+                mp->append(table);
+                return mp;
+            };
+            CdsTap::Request req(240000);
+            req.cancel = &cancel;
+            req.maxAttempts = 2;
+            req.allowHttp2 = false;   // the China-VO front end stalls on it
+            const CdsTap::Response resp = CdsTap::postMultipart(nam, tapUrl, makeBody, req);
+            const VoTable::Document doc = resp.ok() ? VoTable::parse(resp.body)
+                                                    : VoTable::Document{};
+            const VoTable::Table* t = doc.firstTable();
+            const int idxCol = t ? columnFor(*t, QStringLiteral("idx")) : -1;
+            if (!resp.ok() || !t || idxCol < 0) {
+                LOG_WARNING("SpecFetch",
+                            QStringLiteral("LAMOST %1 crossmatch of %2 stars failed (%3); "
+                                           "searching them one by one")
+                                .arg(drName).arg(chunk.size())
+                                .arg(resp.ok() ? QStringLiteral("unreadable answer") : resp.error));
+                for (size_t i = c0; i < c1; ++i) viaCones.push_back(int(i));
+                continue;
+            }
+            QSet<QString> seen;   // (star, obsid)
+            for (int i = 0; i < t->rows.size(); ++i) {
+                bool ok = false;
+                const int local = t->value(i, idxCol).toInt(&ok);
+                if (!ok || local < 0 || local >= int(chunk.size())) continue;
+                Row row = rowsOf(*t, i);
+                const QString key = QString::number(local) + QLatin1Char('|') + row.obsid;
+                if (row.obsid.isEmpty() || seen.contains(key)) continue;
+                seen.insert(key);
+                hits.push_back({ int(c0) + local, std::move(row) });
+            }
+            covered += int(chunk.size());
+            if (progress) progress(covered, int(stars.size()));
+        }
+
+        // The per-row HEAD requests, many at once.
+        std::vector<QList<SpecFetch::RemoteSpectrum>> perHit(hits.size());
+        std::atomic<int> headsDone{0};
+        inLanes(int(hits.size()), kHeadLanes, [&](int k, QNetworkAccessManager* own) {
+            perHit[size_t(k)] =
+                productsFor(stars[size_t(hits[size_t(k)].star)], hits[size_t(k)].row, own);
+            const int d = ++headsDone;
+            if (progress && (d % 50 == 0 || d == int(hits.size())))
+                progress(d, int(hits.size()));
+        });
+        for (size_t k = 0; k < hits.size(); ++k)
+            results[size_t(hits[k].star)] += perHit[k];
+    } else {
+        for (int i = 0; i < int(stars.size()); ++i) viaCones.push_back(i);
+    }
+    if (!viaCones.empty()) conePass(viaCones);
+
+    // In star order, as before, whatever order the lanes finished in.
+    QList<SpecFetch::RemoteSpectrum> out;
+    for (const auto& r : results) out += r;
     return out;
 }
 
