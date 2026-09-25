@@ -227,6 +227,8 @@ private:
         QHash<QString, int>        joinPending;
     };
 
+    bool _pumpScheduled = false;   ///< a cooldown wake-up is pending
+
     struct HostState {
         int    inFlight      = 0;
         qint64 nextAllowedMs = 0;

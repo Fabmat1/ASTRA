@@ -928,11 +928,17 @@ void SpectrumFetchService::pumpDownloads() {
         }
     }
 
-    // Something is waiting on a host cooldown and nothing else is running:
-    // wake the pump when the earliest cooldown expires.
-    if (active == 0 && earliestNext > 0) {
-        const qint64 delay = std::max<qint64>(50, earliestNext - now);
-        QTimer::singleShot(int(delay), this, &SpectrumFetchService::pumpDownloads);
+    // Something is waiting on a host cooldown: wake the pump when the
+    // earliest one expires. Not only when nothing else runs - then a host
+    // that allows many downloads at once would still get just one new start
+    // per finished download, which serialises the whole session.
+    if (earliestNext > 0 && !_pumpScheduled) {
+        _pumpScheduled = true;
+        const qint64 delay = std::max<qint64>(20, earliestNext - now);
+        QTimer::singleShot(int(delay), this, [this] {
+            _pumpScheduled = false;
+            pumpDownloads();
+        });
     }
 }
 
