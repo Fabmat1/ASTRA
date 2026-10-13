@@ -77,10 +77,21 @@ TEST_CASE("lineCoreDeviation: worst spectrum wins, masked or absent reads NaN")
                                   spectrum("b", 5.0, kHalphaAir) }, { 0.0, 0.0 });
     CHECK(lineCoreDeviation(two, 6) > 10.0);
 
-    auto masked = spectrum("a", 5.0, kHalphaAir);
-    for (int i = 0; i < masked.lambda.size(); ++i)
-        if (std::abs(masked.lambda[i] - kHalphaAir) < 8.0) masked.ignoreFlag[i] = 0;
-    CHECK(std::isnan(lineCoreDeviation(resultWith({ masked }, { 0.0 }), 6)));
+    // Clipped by the backend's outlier rejection, the missed core still
+    // counts: those are the pixels the check is about.
+    auto clipped = spectrum("a", 5.0, kHalphaAir);
+    for (int i = 0; i < clipped.lambda.size(); ++i)
+        if (std::abs(clipped.lambda[i] - kHalphaAir) < 8.0) clipped.ignoreFlag[i] = 0;
+    CHECK(lineCoreDeviation(resultWith({ clipped }, { 0.0 }), 6) > 10.0);
+
+    // A gap in the data at the line is no measurement of it.
+    auto gap = spectrum("a", 5.0, kHalphaAir);
+    for (int i = gap.lambda.size() - 1; i >= 0; --i)
+        if (std::abs(gap.lambda[i] - kHalphaAir) < 8.0) {
+            gap.lambda.remove(i); gap.flux.remove(i); gap.model.remove(i);
+            gap.sigma.remove(i); gap.ignoreFlag.remove(i);
+        }
+    CHECK(std::isnan(lineCoreDeviation(resultWith({ gap }, { 0.0 }), 6)));
 
     FittedSpectrum blue;
     blue.spectrumId = "c";
