@@ -1072,6 +1072,34 @@ std::vector<SpecFetch::ParsedSpectrum> LamostArchiveClient::parse(
         if (fits_read_key(fptr, TDOUBLE, "EXPTIME", &v, nullptr, &st) == 0 &&
             v > 0)
             exptime = v;
+
+        // A coadd's DATE-OBS is not the middle of its exposures; LMJMLIST
+        // names the ones it used (see lamostCoaddMidMjd). Without a usable
+        // list, the span of the sequence (Beijing DATE-BEG to DATE-END) still
+        // beats DATE-OBS, which newer files fill with the sequence start or
+        // even the local DATE-BEG itself.
+        double coaddMid = NAN;
+        char   list[FLEN_VALUE] = {0};
+        st = 0;
+        if (fits_read_key(fptr, TSTRING, "LMJMLIST", list, nullptr, &st) == 0) {
+            auto readDouble = [&](const char* key) {
+                double x = 0;
+                int    s = 0;
+                return fits_read_key(fptr, TDOUBLE, key, &x, nullptr, &s) == 0 ? x : 0.0;
+            };
+            int nexp = int(readDouble("NEXP_B"));
+            if (nexp <= 0) nexp = int(readDouble("NEXP"));
+            coaddMid = SpecFetch::lamostCoaddMidMjd(
+                QString::fromLatin1(list), nexp, readDouble("EXPT_B"),
+                std::isnan(exptime) ? 0.0 : exptime);
+        }
+        if (std::isnan(coaddMid)) {
+            const double beg = mjdFromKey(fptr, "DATE-BEG");
+            const double end = mjdFromKey(fptr, "DATE-END");
+            if (!std::isnan(beg) && !std::isnan(end) && end > beg)
+                coaddMid = 0.5 * (beg + end) - SpecFetch::kLamostBeijingOffsetDays;
+        }
+        if (!std::isnan(coaddMid)) mjd = coaddMid;
     }
     if (std::isnan(mjd)) mjd = r.mjd;
 

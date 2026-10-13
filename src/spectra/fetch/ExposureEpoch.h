@@ -52,6 +52,26 @@ double lamostExposureMidMjd(double obsMjdUtc,
                             double localMinuteStamp,
                             double exposureSec);
 
+/// Mid-exposure UTC MJD of an LRS coadd: the mean midpoint of the exposures
+/// that went into it, or NaN when `lmjmList` holds none.
+///
+/// A coadd's DATE-OBS is *not* that midpoint (it is documented as "the
+/// observation median UTC" but sits a median 8 minutes and up to 24 minutes
+/// early against the coadd's own sedr5 exposures), and DATE-BEG/DATE-END span
+/// every exposure taken, including the ones the coadd rejected.  LMJMLIST
+/// ("82130562-82130587-...") lists the Beijing start minute of each exposure
+/// the coadd actually used.  EXPT_B is normally their *total* duration
+/// (`totalExposureSec`, <= 0 when absent, then filed as -9999); without it the
+/// EXPTIME card holds the per-exposure duration (`exptimeSec`), capped by the
+/// spacing of the starts, since exposures cannot overlap.  A list cut off
+/// by the card length ("...-8600&" or "...-85292", fewer starts than
+/// `nExposures`) is extended along its cadence when that is steady, and
+/// gives NaN when it is not.
+double lamostCoaddMidMjd(const QString& lmjmList,
+                         int            nExposures,
+                         double         totalExposureSec,
+                         double         exptimeSec);
+
 /// How closely DATE-BEG/DATE-END's span may differ from EXPTIME, in seconds.
 inline constexpr double kLamostSpanToleranceSec = 120.0;
 /// How closely their midpoint may differ from the minute-truncated DATE-OBS.

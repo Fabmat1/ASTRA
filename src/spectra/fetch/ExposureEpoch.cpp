@@ -8,7 +8,9 @@
 #include <QTime>
 #include <QTimeZone>
 
+#include <algorithm>
 #include <cmath>
+#include <vector>
 
 namespace SpecFetch {
 
@@ -67,6 +69,56 @@ double lamostExposureMidMjd(double obsMjdUtc,
         return localMinuteStamp / 1440.0 - kLamostBeijingOffsetDays + half;
     }
     return NAN;
+}
+
+double lamostCoaddMidMjd(const QString& lmjmList,
+                         int            nExposures,
+                         double         totalExposureSec,
+                         double         exptimeSec)
+{
+    // A long list is cut off at the 68-character card with no CONTINUE card
+    // after it, sometimes marked ("...-8600&"), sometimes not ("...-85292"):
+    // an entry shorter than the first one is a fragment.
+    QString raw = lmjmList.trimmed();
+    if (raw.endsWith(QLatin1Char('&'))) raw.chop(1);
+    QStringList parts = raw.split(QLatin1Char('-'), Qt::SkipEmptyParts);
+    if (parts.size() > 1 && parts.last().trimmed().size() < parts.first().trimmed().size())
+        parts.removeLast();
+    std::vector<double> starts;
+    for (const QString& part : parts) {
+        bool ok = false;
+        const double m = part.trimmed().toDouble(&ok);
+        if (ok && m > 0.0) starts.push_back(m);
+    }
+    if (starts.empty()) return NAN;
+    std::sort(starts.begin(), starts.end());
+
+    const int n = nExposures > 0 ? nExposures : int(starts.size());
+    if (int(starts.size()) < n) {
+        // The missing starts can only be recovered from a steady cadence.
+        if (starts.size() < 2) return NAN;
+        double lo = 1e300, hi = -1e300;
+        for (size_t i = 1; i < starts.size(); ++i) {
+            lo = std::min(lo, starts[i] - starts[i - 1]);
+            hi = std::max(hi, starts[i] - starts[i - 1]);
+        }
+        if (hi - lo > 1.0) return NAN;
+        const double step = (starts.back() - starts.front()) / double(starts.size() - 1);
+        while (int(starts.size()) < n) starts.push_back(starts.back() + step);
+    }
+    double perExposureSec = 0.0;
+    if (totalExposureSec > 0.0) {
+        perExposureSec = totalExposureSec / n;
+    } else if (exptimeSec > 0.0) {
+        perExposureSec = exptimeSec;
+        for (size_t i = 1; i < starts.size(); ++i)
+            perExposureSec = std::min(perExposureSec, (starts[i] - starts[i - 1]) * 60.0);
+    }
+
+    double sum = 0.0;
+    for (const double m : starts) sum += m / 1440.0;
+    return sum / double(starts.size()) - kLamostBeijingOffsetDays +
+           0.5 * perExposureSec / 86400.0;
 }
 
 double sdssMidExposureMjdUtc(double taiBegSeconds, double exposureSec)

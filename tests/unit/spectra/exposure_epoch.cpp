@@ -127,6 +127,57 @@ TEST_CASE("LAMOST: LMJM is the fallback and carries the same offset")
     CHECK(std::isnan(lamostExposureMidMjd(NAN, NAN, NAN, 0.0, 600.0)));
 }
 
+TEST_CASE("LAMOST: a coadd's epoch is the mean midpoint of the exposures it used")
+{
+    // obsid 297308031: four 600 s exposures, EXPT_B is their total.  The four
+    // sedr5 exposures sit at 57034.782639, .800000, .809722, .818750; DATE-OBS
+    // (2015-01-12T18:52:20) is 24 minutes before their mean.
+    const double got = lamostCoaddMidMjd(QStringLiteral("82130562-82130587-82130601-82130614"),
+                                         4, 2400.0, 2400.0);
+    const double mean = (57034.782639 + 57034.800000 + 57034.809722 + 57034.818750) / 4.0;
+    CHECK(std::abs(got - mean) < 1.0 * kSecond);
+    CHECK(std::abs(got - lamostMjdFromDateString("2015-01-12T18:52:20.04")) > 20.0 * 60.0 * kSecond);
+}
+
+TEST_CASE("LAMOST: a coadd without EXPT_B takes EXPTIME per exposure, capped by the spacing")
+{
+    // obsid 331716157 files EXPT_B = -9999 and EXPTIME = 1800 for three
+    // exposures started 34 and 33 minutes apart: 1800 s each, not 600.
+    const QString list = QStringLiteral("82212197-82212231-82212264");
+    const double starts = (82212197.0 + 82212231.0 + 82212264.0) / 3.0 / 1440.0 - kLamostBeijingOffsetDays;
+    CHECK(lamostCoaddMidMjd(list, 3, -9999.0, 1800.0) == doctest::Approx(starts + 900.0 * kSecond));
+
+    // Starts closer together than EXPTIME: the exposures cannot be longer
+    // than the gap between them.
+    CHECK(lamostCoaddMidMjd(QStringLiteral("100000-100010"), 2, 0.0, 2400.0)
+          == doctest::Approx(100005.0 / 1440.0 - kLamostBeijingOffsetDays + 300.0 * kSecond));
+}
+
+TEST_CASE("LAMOST: a cut-off LMJMLIST is extended along a steady cadence")
+{
+    // An 11-exposure time-domain coadd whose card holds seven starts and a
+    // partial eighth, 12 minutes apart.
+    const QString cut = QStringLiteral("86005466-86005478-86005490-86005502-86005514-86005526-86005538-8600&");
+    double sum = 0.0;
+    for (int i = 0; i < 11; ++i) sum += (86005466.0 + 12.0 * i) / 1440.0;
+    CHECK(lamostCoaddMidMjd(cut, 11, -9999.0, 600.0)
+          == doctest::Approx(sum / 11.0 - kLamostBeijingOffsetDays + 300.0 * kSecond));
+
+    // The same cut without the '&' marker, mid-number.
+    const QString bare = QStringLiteral("86005466-86005478-86005490-86005502-86005514-86005526-86005538-86005");
+    CHECK(lamostCoaddMidMjd(bare, 11, -9999.0, 600.0)
+          == doctest::Approx(sum / 11.0 - kLamostBeijingOffsetDays + 300.0 * kSecond));
+
+    // Irregular starts cannot be extended: leave it to DATE-OBS.
+    CHECK(std::isnan(lamostCoaddMidMjd(QStringLiteral("1000-1012-1030-10&"), 5, 0.0, 600.0)));
+}
+
+TEST_CASE("LAMOST: a coadd with no LMJMLIST gives NaN, so DATE-OBS stays")
+{
+    CHECK(std::isnan(lamostCoaddMidMjd(QString(), 3, 1800.0, 1800.0)));
+    CHECK(std::isnan(lamostCoaddMidMjd(QStringLiteral("-"), 3, 1800.0, 1800.0)));
+}
+
 TEST_CASE("LAMOST: DATE-OBS alone is taken as UTC, untouched")
 {
     const double obsUtc = lamostMjdFromDateString("2013-11-05T11:30:00");
