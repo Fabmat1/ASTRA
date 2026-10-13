@@ -87,6 +87,15 @@ public:
     /// The release searched when none is picked (the newest LRS one).
     static QString defaultDataRelease();
 
+    /// An LRS single-exposure product addressed by its file in the DR5
+    /// single-exposure release (UT date, plan, spectrograph, fiber) instead
+    /// of a catalogue row. For exposures no catalogue lists: there is no
+    /// coadd to anchor them to, so they import with FLUXCORR calibration
+    /// only. Empty originId when the address is incomplete.
+    static SpecFetch::RemoteSpectrum uncataloguedExposure(
+        const QString& starId, const QString& utDate, const QString& planId,
+        int spId, int fiberId);
+
 private:
     bool _mrs = false;
 };

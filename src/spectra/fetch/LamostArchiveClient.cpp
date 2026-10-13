@@ -195,6 +195,28 @@ QString sexpFileUrl(const QString& obsDate, const QString& planId, int spId,
 
 }   // namespace
 
+SpecFetch::RemoteSpectrum LamostArchiveClient::uncataloguedExposure(
+    const QString& starId, const QString& utDate, const QString& planId,
+    int spId, int fiberId) {
+    SpecFetch::RemoteSpectrum r;
+    const QString url = sexpFileUrl(utDate, planId, spId, fiberId);
+    if (url.isEmpty()) return r;
+    const QString name = QUrl(url).fileName().chopped(4);   // minus ".fit"
+    r.archive        = SpecFetch::Archive::LamostLRS;
+    r.archiveLabel   = QStringLiteral("LAMOST LRS");
+    // No obsid to key on: the file name is the stable identity.
+    r.originId       = QString::fromLatin1(kSexpOriginPrefix) + name;
+    r.starId         = starId;
+    r.instrumentHint = QStringLiteral("LAMOST LRS");
+    r.collection     = QStringLiteral("LAMOST LRS single exposures (DR5 sexp), "
+                                      "in no catalogue; FLUXCORR only");
+    r.resolution     = 1800.0;
+    r.isCoadd        = false;
+    r.downloadUrl    = QUrl(url);
+    r.fileName       = QStringLiteral("lamost-sexp-%1.fit").arg(name);
+    return r;
+}
+
 QStringList LamostArchiveClient::knownDataReleases(bool mrs) {
     QStringList out;
     for (const DrEndpoints& e : kEndpoints)

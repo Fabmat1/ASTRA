@@ -1436,6 +1436,7 @@ if(BUILD_TESTING)
             tests/unit/core/barycentric_parts.cpp
             tests/unit/spectra/exposure_epoch.cpp
             tests/unit/spectra/component_dilution.cpp
+            tests/unit/spectra/lamost_uncatalogued.cpp
             tests/unit/rv/rvfit.cpp
             tests/unit/lightcurve/lcfit_physics.cpp
             tests/unit/kinematics/galactic.cpp

@@ -19,6 +19,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QRegularExpression>
+#include <QSet>
 #include <QTimer>
 #include <QUuid>
 
@@ -90,7 +92,8 @@ struct Headless {
         remoteFits->beginShutdown();
     }
 
-    bool openProject(const QString& nameOrId, int limit)
+    // starsFile: one star id per line; the run then covers only those stars.
+    bool openProject(const QString& nameOrId, int limit, const QString& starsFile = {})
     {
         for (const auto& p : dbm.loadProjects())
             if (p->getId() == nameOrId || p->getName() == nameOrId) ctx.project = p;
@@ -99,6 +102,22 @@ struct Headless {
             return false;
         }
         auto stars = dbm.loadStars(ctx.project->getId());
+        if (!starsFile.isEmpty()) {
+            QFile f(starsFile);
+            if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                say(QStringLiteral("cannot read %1").arg(starsFile));
+                return false;
+            }
+            QSet<QString> wanted;
+            while (!f.atEnd()) {
+                const QString id = QString::fromUtf8(f.readLine()).trimmed();
+                if (!id.isEmpty()) wanted.insert(id);
+            }
+            std::erase_if(stars, [&](const auto& s) { return !wanted.contains(s->getId()); });
+            if (int(stars.size()) < wanted.size())
+                say(QStringLiteral("%1 of the %2 listed star(s) are not in the project")
+                        .arg(wanted.size() - int(stars.size())).arg(wanted.size()));
+        }
         if (limit > 0 && int(stars.size()) > limit) stars.resize(size_t(limit));
         ctx.project->setStars(stars, false);
         say(QStringLiteral("project %1: %2 star(s)").arg(ctx.project->getName()).arg(stars.size()));
@@ -110,7 +129,8 @@ int fetchSpectra(int argc, char** argv)
 {
     Headless h;
     if (!h.openProject(QString::fromLocal8Bit(argv[2]),
-                       argValue(argc, argv, "--limit", "0").toInt()))
+                       argValue(argc, argv, "--limit", "0").toInt(),
+                       argValue(argc, argv, "--stars")))
         return 1;
 
     SpectrumFetchService::Options opt;
@@ -119,6 +139,41 @@ int fetchSpectra(int argc, char** argv)
     opt.redownloadExisting   = hasFlag(argc, argv, "--redownload");
     opt.joinArms             = hasFlag(argc, argv, "--join-arms");
     opt.maxParallelDownloads = argValue(argc, argv, "--parallel", "4").toInt();
+    opt.radiusArcsec         = argValue(argc, argv, "--radius", "3").toDouble();
+
+    // --only <file>: download just the discovered products whose origin id is
+    // listed (one per line). --lamost-sexp <tsv>: also queue LAMOST LRS single
+    // exposures that no catalogue lists, one "<star id> <UT date> <plan>
+    // <spectrograph> <fiber>" per line, tab- or space-separated.
+    QSet<QString> only;
+    QList<SpecFetch::RemoteSpectrum> extra;
+    const QString onlyFile = argValue(argc, argv, "--only");
+    const QString sexpFile = argValue(argc, argv, "--lamost-sexp");
+    for (const QString& path : { onlyFile, sexpFile }) {
+        if (path.isEmpty()) continue;
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Text)) {
+            say(QStringLiteral("cannot read %1").arg(path));
+            return 2;
+        }
+        while (!f.atEnd()) {
+            const QString line = QString::fromUtf8(f.readLine()).trimmed();
+            if (line.isEmpty() || line.startsWith(QLatin1Char('#'))) continue;
+            if (path == onlyFile) { only.insert(line); continue; }
+            const QStringList c = line.split(QRegularExpression(QStringLiteral("\\s+")));
+            const auto r = c.size() == 5
+                ? LamostArchiveClient::uncataloguedExposure(c[0], c[1], c[2], c[3].toInt(), c[4].toInt())
+                : SpecFetch::RemoteSpectrum{};
+            if (r.originId.isEmpty()) {
+                say(QStringLiteral("bad --lamost-sexp line: %1").arg(line));
+                return 2;
+            }
+            extra << r;
+        }
+    }
+    const bool picking = !onlyFile.isEmpty() || !sexpFile.isEmpty();
+    if (picking) opt.autoQueueAll = false;
+
     for (const QString& a : argValue(argc, argv, "--archives").split(QLatin1Char(','),
                                                                    Qt::SkipEmptyParts)) {
         bool found = false;
@@ -130,8 +185,11 @@ int fetchSpectra(int argc, char** argv)
             opt.archives << arch;
             SpecFetch::ArchiveOptions ao;
             ao.fetchExposures = hasFlag(argc, argv, "--exposures");
+            // --release picks an older LAMOST release, e.g. DR7 for single
+            // exposures the newer catalogues no longer list.
             if (arch == SpecFetch::Archive::LamostLRS)
-                ao.dataRelease = LamostArchiveClient::defaultDataRelease();
+                ao.dataRelease = argValue(argc, argv, "--release",
+                                          LamostArchiveClient::defaultDataRelease());
             opt.perArchive.insert(arch, ao);
         }
         if (!found) {
@@ -151,6 +209,22 @@ int fetchSpectra(int argc, char** argv)
                                             h.ctx.project->getId(), opt);
     if (id.isEmpty()) { say(QStringLiteral("no star has usable coordinates")); return 1; }
     say(QStringLiteral("session %1 started").arg(id));
+
+    if (picking && !discoverOnly) {
+        QObject::connect(&service, &SpectrumFetchService::discoveryFinished, &service,
+                         [&](const QString& sid, const QList<SpecFetch::RemoteSpectrum>& found) {
+            if (sid != id) return;
+            QList<SpecFetch::RemoteSpectrum> picks = extra;
+            QSet<QString> matched;
+            for (const auto& r : found)
+                if (only.contains(r.originId)) { picks << r; matched.insert(r.originId); }
+            for (const QString& o : only)
+                if (!matched.contains(o)) say(QStringLiteral("not found by the search: %1").arg(o));
+            say(QStringLiteral("queueing %1 of %2 found product(s) and %3 listed exposure(s)")
+                    .arg(matched.size()).arg(found.size()).arg(extra.size()));
+            service.queueDownloads(id, picks);
+        });
+    }
 
     int rc = 0;
     QTimer ticker;
@@ -231,7 +305,8 @@ int massFit(int argc, char** argv)
     namespace mf = astra::massfit;
     Headless h;
     if (!h.openProject(QString::fromLocal8Bit(argv[2]),
-                       argValue(argc, argv, "--limit", "0").toInt()))
+                       argValue(argc, argv, "--limit", "0").toInt(),
+                       argValue(argc, argv, "--stars")))
         return 1;
 
     const QString planPath = argValue(argc, argv, "--plan");
