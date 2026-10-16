@@ -5,6 +5,14 @@
 #include <specfit/GaelAPI.hpp>
 
 #include <QString>
+
+#include <CCfits/CCfits>
+
+#include <cstdlib>
+#include <typeinfo>
+#if defined(__GNUC__)
+#include <cxxabi.h>
+#endif
 #include <stdexcept>
 
 namespace astra::fitting {
@@ -51,13 +59,32 @@ SpectralFitResult GaelBackend::run(const SpectralFitJob& job,
 
         out = gaelmap::fromGaelResult(session.run(), job, onLog);
 
+    } catch (const CCfits::FitsException& e) {
+        // CCfits' exceptions are not std::exceptions; their message names the
+        // file that could not be read.
+        out.success       = false;
+        out.errorMessage  = QStringLiteral("FITS error: %1")
+                                .arg(QString::fromStdString(e.message()).trimmed());
+        if (onLog) onLog(QStringLiteral("GAEL error: %1").arg(out.errorMessage));
     } catch (const std::exception& e) {
         out.success       = false;
         out.errorMessage  = QString::fromUtf8(e.what());
         if (onLog) onLog(QStringLiteral("GAEL error: %1").arg(out.errorMessage));
     } catch (...) {
+        // Not a std::exception (e.g. CCfits' FitsException): name its type,
+        // which is all there is to go on.
         out.success       = false;
         out.errorMessage  = "Unknown error in GAEL backend";
+#if defined(__GNUC__)
+        if (const std::type_info* t = abi::__cxa_current_exception_type()) {
+            int status = 0;
+            char* name = abi::__cxa_demangle(t->name(), nullptr, nullptr, &status);
+            out.errorMessage += QStringLiteral(" (exception of type %1)")
+                .arg(QString::fromLatin1(status == 0 && name ? name : t->name()));
+            std::free(name);
+        }
+#endif
+        if (onLog) onLog(QStringLiteral("GAEL error: %1").arg(out.errorMessage));
     }
 
     return out;
