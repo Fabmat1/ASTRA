@@ -204,3 +204,6 @@ WINDOWS-HANDOFF.md
 
 # ISIS script-library snapshot restored by actions/cache during CI builds
 .isis-scripts-cache/
+
+# RVVD fit review site (local tooling)
+tools/fit_review/
