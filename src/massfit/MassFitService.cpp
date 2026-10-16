@@ -773,8 +773,12 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
     QHash<QString, fit::SpectrumFitConfig>  configs;
     std::vector<std::shared_ptr<Spectrum>>  enabled;
     QHash<QString, int>                     droppedByMode;
+    int                                     droppedFlagged = 0;
 
     for (const auto& s : spectra) {
+        // Flagging a spectrum is how the user says it is unusable; the fit
+        // dialog never fits a flagged one, and neither does a mass fit.
+        if (s->isFlagged()) { ++droppedFlagged; continue; }
         QString modeKey;
         const auto inst = fit::instrumentForSpectrum(s, dbm, &modeKey);
         const QString instId = inst ? inst->getId() : QString();
@@ -808,6 +812,8 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
         enabled.push_back(s);
     }
 
+    if (droppedFlagged > 0)
+        log(QStringLiteral("%1 flagged spectrum/spectra skipped").arg(droppedFlagged));
     for (auto it = droppedByMode.cbegin(); it != droppedByMode.cend(); ++it)
         log(QStringLiteral("%1 spectrum/spectra in mode %2 skipped - the plan "
                            "does not enable it").arg(it.value()).arg(it.key()));
@@ -922,8 +928,9 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
             log(QStringLiteral("node \"%1\" masks %2 rest-frame region(s)%3")
                     .arg(setup->name).arg(node->restIgnore.size())
                     .arg(guessed > 0
-                             ? QStringLiteral(", widened by +-%1 km/s on %2 spectrum/spectra "
-                                              "without a fitted velocity")
+                             ? QStringLiteral(" at each fitted spectrum's velocity, widened by "
+                                              "+-%1 km/s on %2 spectrum/spectra the previous "
+                                              "node did not fit")
                                    .arg(kMaxVelocityKms, 0, 'f', 0).arg(guessed)
                              : QStringLiteral(" at each spectrum's fitted velocity")));
         }
