@@ -11,6 +11,7 @@
 #include "massfit/MassFitService.h"
 #include "remote/RemoteBatchService.h"
 #include "remote/RemoteFitService.h"
+#include "remote/SshGridProvider.h"
 #include "spectra/SpectrumFetchService.h"
 #include "spectra/fetch/LamostArchiveClient.h"
 
@@ -75,11 +76,22 @@ struct Headless {
     HeadlessContext ctx;
     std::unique_ptr<astra::remote::RemoteFitService>   remoteFits;
     std::unique_ptr<astra::remote::RemoteBatchService> remoteBatches;
+    std::shared_ptr<astra::remote::SshGridProvider>    gridProvider;
 
     Headless()
     {
         ctx.dbm = &dbm;
         ctx.appSettings = &settings;
+        // As in ApplicationController: grid paths of the form ssh://<host>/...
+        // (hosts that stream their grids) are served by this provider from
+        // inside GAEL. Without it a local fit on a streamed grid fails as soon
+        // as GAEL opens the grid.
+        gridProvider = std::make_shared<astra::remote::SshGridProvider>(
+            std::make_shared<astra::remote::GridDiskCache>(
+                settings.effectiveRemoteGridCacheDir(),
+                qint64(settings.remoteGridCacheCapGb()) << 30));
+        gridProvider->setLogCallback([](const QString& m) { LOG_INFO("GridStream", m); });
+        specfit::set_grid_data_provider(gridProvider);
         remoteFits = std::make_unique<astra::remote::RemoteFitService>(&dbm);
         remoteFits->reattachAll();
         remoteBatches = std::make_unique<astra::remote::RemoteBatchService>(&dbm);
@@ -90,6 +102,7 @@ struct Headless {
         // Same order as ApplicationController: let remote work go first.
         remoteBatches->shutdown();
         remoteFits->beginShutdown();
+        specfit::set_grid_data_provider(nullptr);
     }
 
     // starsFile: one star id per line; the run then covers only those stars.
