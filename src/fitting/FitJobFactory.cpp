@@ -382,6 +382,7 @@ SpectralFitJob buildJob(const std::vector<std::shared_ptr<Spectrum>>& spectra,
     job.filterSnr      = globals.filterSnr;
     job.requireBlue    = globals.requireBlue;
     job.nitNoiseMax    = globals.nitNoiseMax;
+    job.lmIterationScale = globals.lmIterationScale;
     job.outlierSigmaLo = globals.outlierSigmaLo;
     job.outlierSigmaHi = globals.outlierSigmaHi;
     job.verbose        = globals.verbose;

@@ -254,6 +254,7 @@ QJsonObject toJson(const JobGlobals& v)
     o["filterSnr"]      = v.filterSnr;
     o["requireBlue"]    = v.requireBlue;
     o["nitNoiseMax"]    = v.nitNoiseMax;
+    o["lmIterationScale"] = v.lmIterationScale;
     o["outlierSigmaLo"] = v.outlierSigmaLo;
     o["outlierSigmaHi"] = v.outlierSigmaHi;
     o["verbose"]        = v.verbose;
@@ -282,6 +283,7 @@ JobGlobals jobGlobalsFromJson(const QJsonObject& o)
     v.filterSnr      = json::readDouble(o, "filterSnr", v.filterSnr);
     v.requireBlue    = json::readDouble(o, "requireBlue", v.requireBlue);
     v.nitNoiseMax    = json::readInt(o, "nitNoiseMax", v.nitNoiseMax);
+    v.lmIterationScale = json::readDouble(o, "lmIterationScale", v.lmIterationScale);
     v.outlierSigmaLo = json::readDouble(o, "outlierSigmaLo", v.outlierSigmaLo);
     v.outlierSigmaHi = json::readDouble(o, "outlierSigmaHi", v.outlierSigmaHi);
     v.verbose        = json::readBool(o, "verbose", v.verbose);
@@ -409,6 +411,7 @@ QJsonObject toJson(const SpectralFitJob& v)
     o["filterSnr"]      = v.filterSnr;
     o["requireBlue"]    = v.requireBlue;
     o["nitNoiseMax"]    = v.nitNoiseMax;
+    o["lmIterationScale"] = v.lmIterationScale;
     o["outlierSigmaLo"] = v.outlierSigmaLo;
     o["outlierSigmaHi"] = v.outlierSigmaHi;
     o["verbose"]        = v.verbose;
@@ -441,6 +444,7 @@ SpectralFitJob spectralFitJobFromJson(const QJsonObject& o)
     v.filterSnr      = json::readDouble(o, "filterSnr", v.filterSnr);
     v.requireBlue    = json::readDouble(o, "requireBlue", v.requireBlue);
     v.nitNoiseMax    = json::readInt(o, "nitNoiseMax", v.nitNoiseMax);
+    v.lmIterationScale = json::readDouble(o, "lmIterationScale", v.lmIterationScale);
     v.outlierSigmaLo = json::readDouble(o, "outlierSigmaLo", v.outlierSigmaLo);
     v.outlierSigmaHi = json::readDouble(o, "outlierSigmaHi", v.outlierSigmaHi);
     v.verbose        = json::readBool(o, "verbose", v.verbose);

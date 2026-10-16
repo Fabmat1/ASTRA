@@ -1207,6 +1207,14 @@ QWidget* MassFitPlanDialog::buildSetupsTab()
            "a large campaign this is the single most expensive setting; 0 "
            "turns it off."));
     gform->addRow(tr("Continuum jitter:"), _contJitterSpin);
+
+    _lmScaleSpin = makeDoubleSpin(1.0, 20.0, 1, fit::jobDefaults().lmIterationScale, 0.5, "x");
+    _lmScaleSpin->setToolTip(
+        tr("Multiplies the fit's Levenberg-Marquardt iteration budget per stage "
+           "(GAEL: 100-200 iterations at 1). Joint fits of many spectra often run "
+           "out of it and are reported as not converged; a fit that does not need "
+           "the extra iterations costs nothing more."));
+    gform->addRow(tr("Iteration budget:"), _lmScaleSpin);
     v->addWidget(globBox);
     v->addStretch();
 
@@ -1227,6 +1235,7 @@ QWidget* MassFitPlanDialog::buildSetupsTab()
     connect(_outlierHiSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, commit);
     connect(_telluricCheck, &QCheckBox::toggled, this, commit);
     connect(_contJitterSpin, QOverload<int>::of(&QSpinBox::valueChanged), this, commit);
+    connect(_lmScaleSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, commit);
 
     scroll->setWidget(host);
     h->addWidget(scroll, 1);
@@ -1264,6 +1273,7 @@ void MassFitPlanDialog::commitSetupEditor()
     _outlierLoSpin->interpretText();
     _outlierHiSpin->interpretText();
     _contJitterSpin->interpretText();
+    _lmScaleSpin->interpretText();
 
     auto& s = _plan.setups[_currentSetupRow];
     s.name    = _setupNameEdit->text();
@@ -1283,6 +1293,7 @@ void MassFitPlanDialog::commitSetupEditor()
     s.globals.outlierSigmaHi = _outlierHiSpin->value();
     s.globals.addTelluricModel = _telluricCheck->isChecked();
     s.globals.contJitterK    = _contJitterSpin->value();
+    s.globals.lmIterationScale = _lmScaleSpin->value();
     // basePaths and workerThreads stay empty/zero on purpose: the service fills
     // them from the machine's own settings, so a plan never freezes one
     // installation's grid paths into another's.
@@ -1315,6 +1326,7 @@ void MassFitPlanDialog::loadSetupEditor()
     _outlierHiSpin->setValue(s.globals.outlierSigmaHi);
     _telluricCheck->setChecked(s.globals.addTelluricModel);
     _contJitterSpin->setValue(s.globals.contJitterK);
+    _lmScaleSpin->setValue(s.globals.lmIterationScale);
     _loadingSetup = false;
 }
 

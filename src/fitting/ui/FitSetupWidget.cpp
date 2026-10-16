@@ -495,6 +495,14 @@ QGroupBox* FitSetupWidget::buildGlobalSection()
         "scatter into the errors (0 = off, and faster).");
     form->addRow("Continuum jitter:", _contJitterKSpin);
 
+    _lmScaleSpin = makeDoubleSpin(1.0, 20.0, 1, 1.0, 0.5, "x");
+    _lmScaleSpin->setToolTip(
+        "Multiplies the fit's Levenberg-Marquardt iteration budget per stage "
+        "(GAEL: 100-200 iterations at 1). Joint fits of many spectra often run "
+        "out of it and are reported as not converged; a fit that does not need "
+        "the extra iterations costs nothing more.");
+    form->addRow("Iteration budget:", _lmScaleSpin);
+
     _telluricCheck = new QCheckBox("Fit telluric transmission");
     _telluricCheck->setToolTip(
         "Model the Earth's atmosphere as a multiplicative component. Needs the "
@@ -1151,6 +1159,7 @@ fit::JobGlobals FitSetupWidget::collectGlobals() const
     g.verbose        = _verboseCheck->isChecked();
     g.addTelluricModel   = _telluricCheck->isChecked();
     g.contJitterK        = _contJitterKSpin->value();
+    g.lmIterationScale   = _lmScaleSpin->value();
     g.autoFreezeSurRatio = _autoFreezeSurCheck->isChecked();
     g.surRatioThres      = _surRatioThresSpin->value();
     g.c2DetectionThres   = _c2DetectThresSpin->value();

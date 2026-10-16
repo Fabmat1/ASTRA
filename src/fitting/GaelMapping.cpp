@@ -113,6 +113,7 @@ specfit::api::GlobalSettings toGaelSettings(const SpectralFitJob& job)
     gs.filter_snr       = job.filterSnr;
     gs.require_blue     = job.requireBlue;
     gs.nit_noise_max    = job.nitNoiseMax;
+    gs.lm_iteration_scale = job.lmIterationScale;
     gs.outlier_sigma_lo = job.outlierSigmaLo;
     gs.outlier_sigma_hi = job.outlierSigmaHi;
     gs.verbose          = job.verbose;

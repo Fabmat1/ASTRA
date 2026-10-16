@@ -181,6 +181,7 @@ private:
     QCheckBox*      _verboseCheck       = nullptr;
     QCheckBox*      _telluricCheck      = nullptr;   // backend-neutral
     QSpinBox*       _contJitterKSpin    = nullptr;
+    QDoubleSpinBox* _lmScaleSpin        = nullptr;
     QCheckBox*      _autoFreezeSurCheck = nullptr;
     QDoubleSpinBox* _surRatioThresSpin  = nullptr;
     QDoubleSpinBox* _c2DetectThresSpin  = nullptr;

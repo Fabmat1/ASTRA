@@ -199,6 +199,7 @@ private:
     QDoubleSpinBox*      _outlierHiSpin   = nullptr;
     QCheckBox*           _telluricCheck   = nullptr;
     QSpinBox*            _contJitterSpin  = nullptr;
+    QDoubleSpinBox*      _lmScaleSpin     = nullptr;
     QWidget*             _setupEditorHost = nullptr;
 
     // Tree

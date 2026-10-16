@@ -152,6 +152,9 @@ struct SpectralFitJob {
     double filterSnr       = 5.0;
     double requireBlue     = 0.0;
     int    nitNoiseMax     = 5;
+    // Multiplies the backend's LM iteration budget per stage (GAEL: 100-200
+    // iterations at 1.0); a fit that runs out of it is not converged.
+    double lmIterationScale = 1.0;
     double outlierSigmaLo  = 3.0;
     double outlierSigmaHi  = 3.0;
     bool   verbose         = true;
@@ -207,6 +210,7 @@ struct JobGlobals {
     double filterSnr      = jobDefaults().filterSnr;
     double requireBlue    = jobDefaults().requireBlue;
     int    nitNoiseMax    = jobDefaults().nitNoiseMax;
+    double lmIterationScale = jobDefaults().lmIterationScale;
     double outlierSigmaLo = jobDefaults().outlierSigmaLo;
     double outlierSigmaHi = jobDefaults().outlierSigmaHi;
     bool   verbose        = jobDefaults().verbose;
