@@ -138,7 +138,10 @@ struct FitWindow {
 ///  4. Anchor ranges are clipped to the window, and every ignored stretch at
 ///     least as wide as a range's spacing is cut out of it, for the same
 ///     reason: an anchor with no usable pixel between its neighbours cannot
-///     be fitted and would hold the continuum at a guess.
+///     be fitted and would hold the continuum at a guess. A range with equal
+///     ends is a single knot: kept unchanged when it lies inside the window,
+///     at least 5 A from either end and outside every ignored stretch,
+///     dropped otherwise.
 ///
 /// The result is empty when nothing usable is left.
 FitWindow refineFitWindow(const SpectrumFitConfig& cfg,

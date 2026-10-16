@@ -239,6 +239,20 @@ FitWindow refineFitWindow(const SpectrumFitConfig& cfg,
     // spacing wide cut out, so no anchor sits where nothing can pin it.
     for (const auto& a : cfg.anchors) {
         if (!(a.spacing > 0.0)) continue;
+        // A range whose ends coincide is one knot at a chosen wavelength, e.g.
+        // between two lines. Clipping would move it, so it is kept as it is or
+        // not at all: not inside an ignored stretch, and not right beside an
+        // end of the window, where the backend's own end knot sits 1 A outside
+        // the data and a second knot next to it only lets the end wobble.
+        if (a.wlHigh == a.wlLow) {
+            constexpr double kEndClearance = 5.0;   // Angstrom
+            const double x = a.wlLow;
+            if (x < w.wlMin + kEndClearance || x > w.wlMax - kEndClearance) continue;
+            const bool masked = std::any_of(w.ignore.begin(), w.ignore.end(),
+                [x](const IgnoreRegion& r) { return x >= r.wlLow && x <= r.wlHigh; });
+            if (!masked) w.anchors.append({ x, x, a.spacing });
+            continue;
+        }
         double lo = std::max(a.wlLow, w.wlMin);
         const double hi = std::min(a.wlHigh, w.wlMax);
         if (hi < lo) continue;

@@ -508,8 +508,11 @@ QString IsisBackend::generateScript(const SpectralFitJob& job)
             if (!anchorList.isEmpty()) {
                 QStringList parts;
                 for (const auto& a : anchorList)
-                    parts << QString("[%1:%2:%3]")
-                                 .arg(a.wlLow).arg(a.wlHigh).arg(a.spacing);
+                    // A single knot: S-Lang's [x:x:step] range may come out empty.
+                    parts << (a.wlHigh == a.wlLow
+                                  ? QString("[%1]").arg(a.wlLow)
+                                  : QString("[%1:%2:%3]")
+                                        .arg(a.wlLow).arg(a.wlHigh).arg(a.spacing));
                 es << "     cspline_anchorpoints = [" << parts.join(",") << "],\n";
             }
             es << "     res_offset = " << f.resOffset << ",\n";

@@ -146,6 +146,27 @@ TEST_CASE("refineFitWindow: narrow masks are bridged, wide ones cut anchors")
     CHECK(w.anchors.size() == 2);
 }
 
+TEST_CASE("refineFitWindow: single knots stay where they are put")
+{
+    std::vector<double> wl, fl;
+    grid(3700.0, 9000.0, 1.0, wl, fl);
+    noisy(fl);
+    SpectrumFitConfig c = baseConfig();
+    c.trimBlue = 4.0;                                   // window 3704-7000
+    c.ignore  = { { 4610.0, 4655.0 } };
+    // A knot before the window, one too close to its end, one in an ignored
+    // stretch, two usable ones, and an ordinary range after them.
+    c.anchors = { { 3690.0, 3690.0, 1.0 }, { 3706.0, 3706.0, 1.0 }, { 4630.0, 4630.0, 1.0 },
+                  { 3720.0, 3720.0, 1.0 }, { 4220.0, 4220.0, 1.0 }, { 5000.0, 5400.0, 200.0 } };
+    const FitWindow w = refineFitWindow(c, wl, fl, {});
+    REQUIRE(w.anchors.size() == 3);
+    CHECK(w.anchors[0].wlLow == doctest::Approx(3720.0));
+    CHECK(w.anchors[0].wlHigh == doctest::Approx(3720.0));   // not clipped or widened
+    CHECK(w.anchors[1].wlLow == doctest::Approx(4220.0));
+    CHECK(w.anchors[2].wlLow == doctest::Approx(5000.0));
+    CHECK(w.anchors[2].wlHigh == doctest::Approx(5400.0));
+}
+
 TEST_CASE("exportSpectrumToTemp: written ascending, shared wavelengths averaged")
 {
     // A hand-joined spectrum repeating its arm overlap, partly backwards:
