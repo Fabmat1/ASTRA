@@ -263,7 +263,16 @@ SshConnection::ExecResult SshConnection::runSsh(const QStringList& fullArgs,
             }
         }
 
-        if (p.waitForReadyRead(200)) activity = true;
+        /*  While stdin is still being fed, block on the write side instead.
+         *  ssh prints nothing during an upload, so waiting 200 ms for output
+         *  after every source chunk (one 64 KiB pipe's worth) capped uploads
+         *  at about 0.25 MB/s.                                              */
+        if (!stdinDone) {
+            if (p.bytesToWrite() >= (1 << 20)) p.waitForBytesWritten(200);
+            if (p.waitForReadyRead(0)) activity = true;
+        } else if (p.waitForReadyRead(200)) {
+            activity = true;
+        }
         const QByteArray out = p.readAllStandardOutput();
         if (!out.isEmpty()) {
             activity = true;

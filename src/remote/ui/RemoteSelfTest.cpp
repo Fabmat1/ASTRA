@@ -183,6 +183,46 @@ int runRemoteSelfTest(int argc, char** argv)
             QStringLiteral("rm -rf %1").arg(rdir)));
     }
 
+    /*  Tar throughput: 32 MiB of incompressible data each way. Batched fits
+     *  ship every batch this way, so a slow pump shows up here first.       */
+    {
+        QDir(tmp.path()).mkpath(QStringLiteral("bulk"));
+        QFile f(tmp.filePath(QStringLiteral("bulk/noise.bin")));
+        f.open(QIODevice::WriteOnly);
+        QByteArray block(1 << 20, Qt::Uninitialized);
+        quint32 x = 2463534242u;
+        for (int mb = 0; mb < 32; ++mb) {
+            for (char& c : block) {
+                x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+                c = char(x);
+            }
+            f.write(block);
+        }
+        f.close();
+        const double mib = 32.0;
+        const QString rdir = QStringLiteral("$HOME/.astra/selftest_bulk");
+        QElapsedTimer t;
+        t.start();
+        bool up = conn.uploadDirTar(tmp.filePath(QStringLiteral("bulk")), rdir, &err);
+        const double upSecs = t.elapsed() / 1000.0;
+        allOk &= step("uploadDirTar 32 MiB", up,
+                      up ? QStringLiteral("%1 s (%2 MiB/s)")
+                               .arg(upSecs, 0, 'f', 2)
+                               .arg(mib / std::max(upSecs, 0.001), 0, 'f', 1)
+                         : err);
+        t.restart();
+        bool down = up && conn.downloadDirTar(rdir, tmp.filePath(QStringLiteral("bulk_back")),
+                                              &err);
+        const double downSecs = t.elapsed() / 1000.0;
+        allOk &= step("downloadDirTar 32 MiB", down,
+                      down ? QStringLiteral("%1 s (%2 MiB/s)")
+                                 .arg(downSecs, 0, 'f', 2)
+                                 .arg(mib / std::max(downSecs, 0.001), 0, 'f', 1)
+                           : err);
+        conn.exec(SshConnection::shellCommand(
+            QStringLiteral("rm -rf %1").arg(rdir)));
+    }
+
     chan.shutdown();
     std::printf("\n%s\n", allOk ? "ALL PASSED" : "FAILURES ABOVE");
     return allOk ? 0 : 1;
