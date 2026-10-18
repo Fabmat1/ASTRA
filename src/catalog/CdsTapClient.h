@@ -41,6 +41,11 @@ struct Response {
     // the job URL in Location and nothing in the body, so that header is the
     // only handle on the job.
     QString    redirectUrl;
+    // Every attempt failed for reasons of the service rather than the query
+    // (busy, down, timed out), so the same request may work elsewhere.
+    bool       unavailable = false;
+    // Answered by a VizieR ASU mirror because TAPVizieR was unavailable.
+    bool       viaAsu = false;
 
     bool ok() const { return error.isEmpty(); }
 };
@@ -97,6 +102,49 @@ Response postMultipart(QNetworkAccessManager                     *nam,
 
 Response get(QNetworkAccessManager *nam, const QString &url,
              const Request &req);
+
+// The rows of one VizieR table whose integer `keyColumn` is one of `keys`:
+// the Gaia DR3 by-source_id lookups. Unlike free ADQL this has an ASU
+// (viz-bin) equivalent, and the ASU front ends are separate services from the
+// TAP cluster - on 2026-10-18 TAPVizieR answered every request with a 503
+// while CDS's ASU kept working.
+struct VizierLookup {
+    QString     table;       // "I/355/gaiadr3"
+    QStringList columns;     // output columns, VizieR names
+    QString     keyColumn;   // "Source"
+    QStringList keys;        // decimal integers
+};
+
+struct AsuMirror {
+    QString url;
+    // The CfA mirror answers a comma-separated list with no rows at all (or
+    // not at all), so it is asked one key per request.
+    bool    acceptsLists;
+};
+
+// CDS first, CfA second. The other VizieR mirrors (IDIA, NAOJ, IUCAA,
+// China-VO, INASAN) timed out or refused connections when this was written.
+const QList<AsuMirror> &vizierAsuMirrors();
+
+// Runs the lookup on TAPVizieR and, when TAP is unavailable, repeats it on
+// the ASU mirrors. Either way the body is CSV with `columns` as the header,
+// so callers parse one format. A query TAP rejects is not retried on ASU.
+Response lookupVizier(QNetworkAccessManager *nam, const VizierLookup &lookup,
+                      const Request &req);
+
+// --- Exposed for tests ---------------------------------------------------
+
+// Splits keys into comma-joined lists of at most `maxChars` characters. CDS's
+// ASU answers a constraint past about 4000 characters with an empty table
+// rather than an error, so the lists must stay below that.
+QStringList chunkKeys(const QStringList &keys, int maxChars);
+
+// Converts an asu-tsv reply into CSV with exactly `columns`, in that order;
+// columns the reply lacks come out empty and are named in `missing`. Returns
+// false when the reply holds no table at all, which is how ASU reports an
+// unknown catalogue or a constraint it cannot parse.
+bool asuTsvToCsv(const QByteArray &tsv, const QStringList &columns,
+                 QByteArray &csv, QStringList *missing = nullptr);
 
 }   // namespace CdsTap
 

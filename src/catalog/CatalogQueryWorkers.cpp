@@ -12,7 +12,6 @@
 #include <QHttpPart>
 #include <QEventLoop>
 #include <QTimer>
-#include <QUrlQuery>
 #include <QRegularExpression>
 #include <QDebug>
 
@@ -226,7 +225,7 @@ bool GaiaWorker::starNeedsGaiaData(const std::shared_ptr<Star>& star) const
            star->getPlxPmraCorr() == 0.0;
 }
 
-QString GaiaWorker::buildADQLQuery()
+QStringList GaiaWorker::sourceIdsToQuery()
 {
     QStringList sourceIds;
     
@@ -247,19 +246,7 @@ QString GaiaWorker::buildADQLQuery()
         }
     }
     
-    if (sourceIds.isEmpty()) {
-        return QString();
-    }
-    
-    QString query = "SELECT Source, RA_ICRS, DE_ICRS, pmRA, pmDE, e_pmRA, e_pmDE, "
-                   "Plx, e_Plx, Gmag, BPmag, RPmag, "
-                   "pmRApmDEcor, PlxpmRAcor, PlxpmDEcor "
-                   "FROM \"I/355/gaiadr3\" WHERE Source IN (";
-    
-    query += sourceIds.join(",");
-    query += ")";
-    
-    return query;
+    return sourceIds;
 }
 
 void GaiaWorker::process()
@@ -281,23 +268,22 @@ void GaiaWorker::process()
     
     emit progress(5, 100, QString("Building query for %1 stars...").arg(starsNeedingData));
     
-    QString adqlQuery = buildADQLQuery();
-    if (adqlQuery.isEmpty()) {
+    CdsTap::VizierLookup lookup;
+    lookup.table     = "I/355/gaiadr3";
+    lookup.columns   = {"Source", "RA_ICRS", "DE_ICRS", "pmRA", "pmDE",
+                        "e_pmRA", "e_pmDE", "Plx", "e_Plx",
+                        "Gmag", "BPmag", "RPmag",
+                        "pmRApmDEcor", "PlxpmRAcor", "PlxpmDEcor"};
+    lookup.keyColumn = "Source";
+    lookup.keys      = sourceIdsToQuery();
+    if (lookup.keys.isEmpty()) {
         emit progress(100, 100, "No valid source IDs to query");
         emit finished(0);
         return;
     }
     
-    qDebug() << "Gaia ADQL query:" << adqlQuery.left(500) << "...";
-    
     emit progress(10, 100, "Sending query to VizieR TAP...");
     
-    QUrlQuery postParams;
-    postParams.addQueryItem("REQUEST", "doQuery");
-    postParams.addQueryItem("LANG", "ADQL");
-    postParams.addQueryItem("FORMAT", "csv");
-    postParams.addQueryItem("QUERY", adqlQuery);
-
     CdsTap::Request tapRequest(300000);
     tapRequest.onProgress = [this](qint64 received, qint64 total) {
         if (total > 0) {
@@ -306,7 +292,7 @@ void GaiaWorker::process()
         }
     };
     const CdsTap::Response tapResponse =
-        CdsTap::postVizierForm(_networkManager, postParams, tapRequest);
+        CdsTap::lookupVizier(_networkManager, lookup, tapRequest);
 
     if (!tapResponse.ok()) {
         emit error(QString("VizieR error: %1").arg(tapResponse.error));

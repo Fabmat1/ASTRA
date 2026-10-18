@@ -28,7 +28,6 @@
 #include <QStatusBar>
 #include <QTextStream>
 #include <QTimer>
-#include <QUrlQuery>
 #include <QUuid>
 #include <QtConcurrent>
 #include <cmath>
@@ -402,12 +401,12 @@ void GaiaQueryTask::execute() {
                           .arg(end)
                           .arg(idStars.size()));
 
-        QString adql = buildSourceIdQuery(batch);
-        if (adql.isEmpty())
+        const QStringList sourceIds = sourceIdsOf(batch);
+        if (sourceIds.isEmpty())
             continue;
 
         QString err;
-        QString response = sendSyncQuery(adql, err);
+        QString response = sendSourceIdLookup(sourceIds, err);
         if (!err.isEmpty()) {
             lastError = err;
             continue;
@@ -474,15 +473,19 @@ void GaiaQueryTask::execute() {
     _networkManager->deleteLater();
 }
 
-QString GaiaQueryTask::sendSyncQuery(const QString &adql, QString &error) {
-    QUrlQuery postParams;
-    postParams.addQueryItem("REQUEST", "doQuery");
-    postParams.addQueryItem("LANG", "ADQL");
-    postParams.addQueryItem("FORMAT", "csv");
-    postParams.addQueryItem("QUERY", adql);
+QString GaiaQueryTask::sendSourceIdLookup(const QStringList &sourceIds,
+                                          QString           &error) {
+    CdsTap::VizierLookup lookup;
+    lookup.table     = "I/355/gaiadr3";
+    lookup.columns   = {"Source", "RA_ICRS", "DE_ICRS", "pmRA", "pmDE",
+                        "e_pmRA", "e_pmDE", "Plx", "e_Plx",
+                        "Gmag", "e_Gmag", "BPmag", "e_BPmag", "RPmag", "e_RPmag",
+                        "pmRApmDEcor", "PlxpmRAcor", "PlxpmDEcor"};
+    lookup.keyColumn = "Source";
+    lookup.keys      = sourceIds;
 
     const CdsTap::Response resp =
-        CdsTap::postVizierForm(_networkManager, postParams, 300000);
+        CdsTap::lookupVizier(_networkManager, lookup, 300000);
     if (!resp.ok()) {
         error = resp.error;
         return QString();
@@ -533,7 +536,7 @@ QString GaiaQueryTask::sendUploadQuery(const QString    &adql,
     return QString::fromUtf8(resp.body);
 }
 
-QString GaiaQueryTask::buildSourceIdQuery(
+QStringList GaiaQueryTask::sourceIdsOf(
     const std::vector<std::shared_ptr<Star>> &stars) const {
     QStringList sourceIds;
     for (const auto &star : stars) {
@@ -547,17 +550,7 @@ QString GaiaQueryTask::buildSourceIdQuery(
         if (!sourceId.isEmpty())
             sourceIds << sourceId;
     }
-    if (sourceIds.isEmpty())
-        return QString();
-
-    QString query =
-        "SELECT Source, RA_ICRS, DE_ICRS, pmRA, pmDE, e_pmRA, e_pmDE, "
-        "Plx, e_Plx, Gmag, e_Gmag, BPmag, e_BPmag, RPmag, e_RPmag, "
-        "pmRApmDEcor, PlxpmRAcor, PlxpmDEcor "
-        "FROM \"I/355/gaiadr3\" WHERE Source IN (";
-    query += sourceIds.join(",");
-    query += ")";
-    return query;
+    return sourceIds;
 }
 
 QString GaiaQueryTask::buildPositionalQuery() const {

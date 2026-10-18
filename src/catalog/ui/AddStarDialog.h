@@ -51,7 +51,7 @@ private:
 
     // Synchronous query helpers (use QEventLoop with a timeout).
     bool resolveSimbad(const QString& queryStr, ResolvedIds& out, QString& err);
-    bool fetchGaiaDR3(const QString& sourceId, QString& err);
+    bool fetchGaiaDR3(const QString& sourceId, QString& err, bool& viaAsu);
 
     // Misc helpers
     static double  parseDoubleOrNaN(QLineEdit* le);

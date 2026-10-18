@@ -1452,6 +1452,7 @@ if(BUILD_TESTING)
             tests/unit/remote/batch_settings.cpp
             tests/unit/remote/slurm_limits.cpp
             tests/unit/remote/batch_service.cpp
+            tests/unit/catalog/vizier_asu.cpp
     )
 
     # ── Convenience target ───────────────────────────────────────────────

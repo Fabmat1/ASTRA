@@ -638,21 +638,17 @@ bool ReidentifyStarDialog::resolveSimbad(const QString &queryStr,
 // ─────────────────────────────────────────────────────────────────────────────
 bool ReidentifyStarDialog::fetchGaiaFull(const QString &sourceId, GaiaData &out,
                                          QString &err) {
-    const QString adql =
-        "SELECT Source, RA_ICRS, DE_ICRS, pmRA, pmDE, e_pmRA, e_pmDE, "
-        "Plx, e_Plx, Gmag, BPmag, RPmag, "
-        "FG, e_FG, FBP, e_FBP, FRP, e_FRP, "
-        "pmRApmDEcor, PlxpmRAcor, PlxpmDEcor "
-        "FROM \"I/355/gaiadr3\" WHERE Source=" +
-        sourceId;
+    CdsTap::VizierLookup lookup;
+    lookup.table     = "I/355/gaiadr3";
+    lookup.columns   = {"Source", "RA_ICRS", "DE_ICRS", "pmRA", "pmDE",
+                        "e_pmRA", "e_pmDE", "Plx", "e_Plx",
+                        "Gmag", "BPmag", "RPmag",
+                        "FG", "e_FG", "FBP", "e_FBP", "FRP", "e_FRP",
+                        "pmRApmDEcor", "PlxpmRAcor", "PlxpmDEcor"};
+    lookup.keyColumn = "Source";
+    lookup.keys      = {sourceId};
 
-    QUrlQuery post;
-    post.addQueryItem("REQUEST", "doQuery");
-    post.addQueryItem("LANG", "ADQL");
-    post.addQueryItem("FORMAT", "csv");
-    post.addQueryItem("QUERY", adql);
-
-    const CdsTap::Response resp = CdsTap::postVizierForm(_network, post, 30000);
+    const CdsTap::Response resp = CdsTap::lookupVizier(_network, lookup, 30000);
     if (!resp.ok()) {
         err = resp.error;
         return false;

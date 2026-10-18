@@ -54,7 +54,7 @@ private:
     std::vector<std::shared_ptr<Star>>& _stars;
     QNetworkAccessManager* _networkManager;
     
-    QString buildADQLQuery();
+    QStringList sourceIdsToQuery();
     void parseVizierResponse(const QString& response);
     bool starNeedsGaiaData(const std::shared_ptr<Star>& star) const;
 };

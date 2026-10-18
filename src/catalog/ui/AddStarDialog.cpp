@@ -22,7 +22,6 @@
 #include <QNetworkRequest>
 #include <QNetworkReply>
 #include <QHttpMultiPart>
-#include <QUrlQuery>
 #include <QEventLoop>
 #include <QTimer>
 #include <QRegularExpression>
@@ -391,9 +390,10 @@ void AddStarDialog::onResolve()
 
     if (!sourceIdForGaia.isEmpty()) {
         QString gaiaErr;
+        bool    gaiaViaAsu = false;
         LOG_INFO("AddStarDialog",
             QString("Querying Gaia DR3 / VizieR for source_id=%1").arg(sourceIdForGaia));
-        if (!fetchGaiaDR3(sourceIdForGaia, gaiaErr)) {
+        if (!fetchGaiaDR3(sourceIdForGaia, gaiaErr, gaiaViaAsu)) {
             LOG_WARNING("AddStarDialog", QString("Gaia DR3 failed: %1").arg(gaiaErr));
             setStatus(QString("%1Gaia: %2")
                           .arg(simbadOk ? "Resolved IDs; " : "")
@@ -401,7 +401,11 @@ void AddStarDialog::onResolve()
             setBusy(false);
             return;
         }
-        setStatus("Resolved IDs and Gaia DR3 astrometry/photometry.", false);
+        setStatus(gaiaViaAsu
+                      ? "Resolved IDs and Gaia DR3 astrometry/photometry "
+                        "(VizieR TAP down; used the ASU interface)."
+                      : "Resolved IDs and Gaia DR3 astrometry/photometry.",
+                  false);
     } else {
         setStatus(simbadOk
             ? "Resolved IDs (no Gaia DR3 source_id; Gaia data skipped)."
@@ -547,28 +551,24 @@ bool AddStarDialog::resolveSimbad(const QString& queryStr, ResolvedIds& out, QSt
 // VizieR / Gaia DR3
 // ------------------------------------------------------------------
 
-bool AddStarDialog::fetchGaiaDR3(const QString& sourceId, QString& err)
+bool AddStarDialog::fetchGaiaDR3(const QString& sourceId, QString& err, bool& viaAsu)
 {
-    const QString adql =
-        "SELECT Source, RA_ICRS, DE_ICRS, pmRA, pmDE, e_pmRA, e_pmDE, "
-        "Plx, e_Plx, Gmag, BPmag, RPmag, "
-        "FG, e_FG, FBP, e_FBP, FRP, e_FRP, "
-        "pmRApmDEcor, PlxpmRAcor, PlxpmDEcor "
-        "FROM \"I/355/gaiadr3\" WHERE Source=" + sourceId;
+    CdsTap::VizierLookup lookup;
+    lookup.table     = "I/355/gaiadr3";
+    lookup.columns   = {"Source", "RA_ICRS", "DE_ICRS", "pmRA", "pmDE",
+                        "e_pmRA", "e_pmDE", "Plx", "e_Plx",
+                        "Gmag", "BPmag", "RPmag",
+                        "FG", "e_FG", "FBP", "e_FBP", "FRP", "e_FRP",
+                        "pmRApmDEcor", "PlxpmRAcor", "PlxpmDEcor"};
+    lookup.keyColumn = "Source";
+    lookup.keys      = {sourceId};
 
-    LOG_DEBUG("AddStarDialog", QString("VizieR ADQL: %1").arg(adql));
-
-    QUrlQuery post;
-    post.addQueryItem("REQUEST", "doQuery");
-    post.addQueryItem("LANG", "ADQL");
-    post.addQueryItem("FORMAT", "csv");
-    post.addQueryItem("QUERY", adql);
-
-    const CdsTap::Response resp = CdsTap::postVizierForm(_network, post, 30000);
+    const CdsTap::Response resp = CdsTap::lookupVizier(_network, lookup, 30000);
     if (!resp.ok()) {
         err = resp.error;
         return false;
     }
+    viaAsu = resp.viaAsu;
 
     QString body = QString::fromUtf8(resp.body);
 

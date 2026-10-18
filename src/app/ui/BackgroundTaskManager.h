@@ -89,8 +89,9 @@ private:
     bool starNeedsGaiaData(const std::shared_ptr<Star> &star) const;
 
     // Source-id based query (batched)
-    QString
-    buildSourceIdQuery(const std::vector<std::shared_ptr<Star>> &stars) const;
+    QStringList
+    sourceIdsOf(const std::vector<std::shared_ptr<Star>> &stars) const;
+    QString sendSourceIdLookup(const QStringList &sourceIds, QString &error);
     int parseSourceIdResponse(const QString &response,
                               const std::vector<std::shared_ptr<Star>> &stars,
                               std::vector<std::shared_ptr<Star>> &modified);
@@ -108,7 +109,6 @@ private:
     bool    applyGaiaRow(const std::shared_ptr<Star> &star,
                          const QMap<QString, int>    &colIndex,
                          const QStringList &values, bool setSourceId);
-    QString sendSyncQuery(const QString &adql, QString &error);
     QString sendUploadQuery(const QString &adql, const QByteArray &votable,
                             QString &error);
 

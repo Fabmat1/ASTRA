@@ -5,6 +5,7 @@
 
 #include <QEventLoop>
 #include <QHttpMultiPart>
+#include <QMap>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
@@ -279,6 +280,7 @@ CdsTap::Response postWithFailoverTo(
     response.error = QString("Service unavailable after %1 attempts (%2)")
                          .arg(maxAttempts)
                          .arg(response.error);
+    response.unavailable = true;
     return response;
 }
 
@@ -373,6 +375,317 @@ Response get(QNetworkAccessManager *nam, const QString &url,
     return postWithFailoverTo(
         nam, {url},
         [nam](const QNetworkRequest &base) { return nam->get(base); }, req);
+}
+
+}   // namespace CdsTap
+
+// ---------------------------------------------------------------------------
+// VizieR lookups with an ASU fallback
+// ---------------------------------------------------------------------------
+
+namespace {
+
+// 200 Gaia ids (3999 characters) came back in full, 300 (5999) as an empty
+// table, so stay well clear of the cut-off.
+constexpr int kAsuMaxListChars = 3000;
+
+// The single-key mirror costs ~0.7 s per key. Past this many, a bulk fill
+// would sit on it for minutes, so the keys are reported as not looked up.
+constexpr int kAsuMaxSingleKeyLookups = 100;
+
+bool isDecimalKey(const QString &key) {
+    if (key.isEmpty())
+        return false;
+    for (const QChar c : key)
+        if (!c.isDigit())
+            return false;
+    return true;
+}
+
+// The "-----	-----" line between the header and the rows.
+bool isRule(const QString &line) {
+    bool dash = false;
+    for (const QChar c : line) {
+        if (c == '-')
+            dash = true;
+        else if (c != '\t' && c != ' ')
+            return false;
+    }
+    return dash;
+}
+
+QUrlQuery asuForm(const CdsTap::VizierLookup &lookup, const QString &keyList) {
+    QUrlQuery form;
+    form.addQueryItem(QStringLiteral("-source"), lookup.table);
+    form.addQueryItem(QStringLiteral("-out"), lookup.columns.join(','));
+    form.addQueryItem(lookup.keyColumn, keyList);
+    // The default is 50 rows.
+    form.addQueryItem(QStringLiteral("-out.max"), QStringLiteral("unlimited"));
+    // Column names only, no units line.
+    form.addQueryItem(QStringLiteral("-out.meta"), QStringLiteral("h"));
+    return form;
+}
+
+}   // namespace
+
+namespace CdsTap {
+
+const QList<AsuMirror> &vizierAsuMirrors() {
+    static const QList<AsuMirror> kMirrors{
+        {QStringLiteral("https://vizier.cds.unistra.fr/viz-bin/asu-tsv"), true},
+        {QStringLiteral("https://vizier.cfa.harvard.edu/viz-bin/asu-tsv"), false},
+    };
+    return kMirrors;
+}
+
+QStringList chunkKeys(const QStringList &keys, int maxChars) {
+    QStringList chunks;
+    QString     current;
+    for (const QString &key : keys) {
+        if (!current.isEmpty() && current.size() + 1 + key.size() > maxChars) {
+            chunks << current;
+            current.clear();
+        }
+        if (!current.isEmpty())
+            current += ',';
+        current += key;
+    }
+    if (!current.isEmpty())
+        chunks << current;
+    return chunks;
+}
+
+bool asuTsvToCsv(const QByteArray &tsv, const QStringList &columns,
+                 QByteArray &csv, QStringList *missing) {
+    const QStringList lines = QString::fromUtf8(tsv).remove('\r').split('\n');
+
+    bool sawTable = false;
+    int  headerAt = -1;
+    for (int i = 0; i < lines.size(); ++i) {
+        const QString line = lines[i].trimmed();
+        if (line.startsWith('#')) {
+            if (line.startsWith(QStringLiteral("#Table")))
+                sawTable = true;
+            continue;
+        }
+        if (!line.isEmpty()) {
+            headerAt = i;
+            break;
+        }
+    }
+    // A matching table with no rows has a "#Table" block but no header.
+    if (headerAt < 0 && !sawTable)
+        return false;
+
+    QMap<QString, int> index;
+    QList<QStringList> rows;
+    if (headerAt >= 0) {
+        const QStringList header = lines[headerAt].split('\t');
+        for (int c = 0; c < header.size(); ++c)
+            index.insert(header[c].trimmed().toLower(), c);
+
+        // The rule follows the header, or the units line when that was not
+        // switched off.
+        int first = headerAt + 1;
+        for (int j = headerAt + 1; j < qMin(headerAt + 3, int(lines.size())); ++j) {
+            if (isRule(lines[j])) {
+                first = j + 1;
+                break;
+            }
+        }
+        for (int i = first; i < lines.size(); ++i) {
+            // Not trimmed as a whole: an empty first field is a leading tab.
+            const QString &line = lines[i];
+            if (line.trimmed().isEmpty() || line.startsWith('#') || isRule(line))
+                continue;
+            QStringList fields = line.split('\t');
+            for (QString &f : fields)
+                f = f.trimmed();
+            rows << fields;
+        }
+    }
+
+    QList<int> source;
+    for (const QString &col : columns) {
+        const int c = index.value(col.toLower(), -1);
+        if (c < 0 && missing && headerAt >= 0)
+            *missing << col;
+        source << c;
+    }
+
+    auto field = [](const QString &value) {
+        return value.contains(',') ? QStringLiteral("\"%1\"").arg(value) : value;
+    };
+
+    QStringList out;
+    out << columns.join(',');
+    for (const QStringList &row : rows) {
+        QStringList values;
+        for (const int c : source)
+            values << field(c >= 0 && c < row.size() ? row[c] : QString());
+        out << values.join(',');
+    }
+    csv = out.join('\n').toUtf8() + '\n';
+    return true;
+}
+
+Response lookupVizier(QNetworkAccessManager *nam, const VizierLookup &lookup,
+                      const Request &req) {
+    Response response;
+    if (lookup.keys.isEmpty() || lookup.columns.isEmpty()) {
+        response.error = QStringLiteral("empty VizieR lookup");
+        return response;
+    }
+    for (const QString &key : lookup.keys) {
+        if (!isDecimalKey(key)) {
+            response.error =
+                QString("'%1' is not a numeric %2").arg(key, lookup.keyColumn);
+            return response;
+        }
+    }
+
+    const QString where =
+        lookup.keys.size() == 1
+            ? QString("%1=%2").arg(lookup.keyColumn, lookup.keys.first())
+            : QString("%1 IN (%2)").arg(lookup.keyColumn, lookup.keys.join(','));
+    const QString adql = QString("SELECT %1 FROM \"%2\" WHERE %3")
+                             .arg(lookup.columns.join(", "), lookup.table, where);
+    LOG_DEBUG("CdsTap", QString("VizieR ADQL: %1").arg(adql.left(500)));
+
+    QUrlQuery tap;
+    tap.addQueryItem(QStringLiteral("REQUEST"), QStringLiteral("doQuery"));
+    tap.addQueryItem(QStringLiteral("LANG"), QStringLiteral("ADQL"));
+    tap.addQueryItem(QStringLiteral("FORMAT"), QStringLiteral("csv"));
+    tap.addQueryItem(QStringLiteral("QUERY"), adql);
+
+    response = postVizierForm(nam, tap, req);
+    if (response.ok() || !response.unavailable)
+        return response;
+
+    const QString tapError = response.error;
+    LOG_WARNING("CdsTap",
+                QString("TAPVizieR unavailable (%1); trying VizieR ASU for %2 "
+                        "%3 value(s)")
+                    .arg(tapError)
+                    .arg(lookup.keys.size())
+                    .arg(lookup.keyColumn));
+
+    // One retry per mirror: TAP has already used up the backoff budget.
+    Request asuReq     = req;
+    asuReq.maxAttempts = 2;
+
+    QList<QByteArray> rows;
+    QStringList       missingColumns;
+    QStringList       pending   = lookup.keys;
+    QString           lastError;
+    QString           answeredBy;
+    int               answered  = 0;
+    int               attempts  = response.attempts;
+    bool              cancelled = false;
+
+    auto runOne = [&](const AsuMirror &mirror, const QString &keyList) {
+        const Response r =
+            postForm(nam, mirror.url, asuForm(lookup, keyList), asuReq);
+        attempts += r.attempts;
+        if (r.cancelled) {
+            cancelled = true;
+            return false;
+        }
+        if (!r.ok()) {
+            lastError = QString("%1: %2").arg(mirror.url, r.error);
+            return false;
+        }
+        QByteArray  csv;
+        QStringList missing;
+        if (!asuTsvToCsv(r.body, lookup.columns, csv, &missing)) {
+            lastError = QString("%1: no table in the reply").arg(mirror.url);
+            LOG_WARNING("CdsTap", QString("No table from %1; reply starts:\n%2")
+                                      .arg(mirror.url,
+                                           QString::fromUtf8(r.body.left(500))));
+            return false;
+        }
+        const QList<QByteArray> lines = csv.split('\n');
+        for (int i = 1; i < lines.size(); ++i)
+            if (!lines[i].isEmpty())
+                rows << lines[i];
+        for (const QString &col : missing)
+            if (!missingColumns.contains(col))
+                missingColumns << col;
+        ++answered;
+        answeredBy = mirror.url;
+        return true;
+    };
+
+    for (const AsuMirror &mirror : vizierAsuMirrors()) {
+        if (pending.isEmpty() || cancelled)
+            break;
+
+        QStringList failed;
+        if (mirror.acceptsLists) {
+            for (const QString &chunk : chunkKeys(pending, kAsuMaxListChars)) {
+                if (cancelled)
+                    break;
+                if (!runOne(mirror, chunk))
+                    failed << chunk.split(',');
+            }
+        } else if (pending.size() > kAsuMaxSingleKeyLookups) {
+            lastError = QString("%1 values left, more than the %2 that %3 is "
+                                "asked one at a time")
+                            .arg(pending.size())
+                            .arg(kAsuMaxSingleKeyLookups)
+                            .arg(mirror.url);
+            failed = pending;
+        } else {
+            for (const QString &key : pending) {
+                if (cancelled)
+                    break;
+                if (!runOne(mirror, key))
+                    failed << key;
+            }
+        }
+        pending = failed;
+    }
+
+    response.attempts = attempts;
+    if (cancelled) {
+        response.cancelled = true;
+        response.error     = QStringLiteral("cancelled");
+        return response;
+    }
+    if (answered == 0) {
+        response.error = QString("VizieR TAP and ASU both unavailable "
+                                 "(TAP: %1; ASU: %2)")
+                             .arg(tapError, lastError);
+        return response;
+    }
+
+    if (!pending.isEmpty()) {
+        LOG_WARNING("CdsTap",
+                    QString("VizieR ASU could not look up %1 of %2 %3 values "
+                            "(%4)")
+                        .arg(pending.size())
+                        .arg(lookup.keys.size())
+                        .arg(lookup.keyColumn, lastError));
+    }
+    if (!missingColumns.isEmpty()) {
+        LOG_WARNING("CdsTap", QString("VizieR ASU has no column(s) %1 in %2")
+                                  .arg(missingColumns.join(", "), lookup.table));
+    }
+    LOG_INFO("CdsTap", QString("VizieR ASU answered the lookup: %1 row(s), "
+                               "last from %2")
+                           .arg(rows.size())
+                           .arg(answeredBy));
+
+    QByteArray body = lookup.columns.join(',').toUtf8() + '\n';
+    for (const QByteArray &row : rows)
+        body += row + '\n';
+
+    response.body        = body;
+    response.url         = answeredBy;
+    response.error.clear();
+    response.unavailable = false;
+    response.viaAsu      = true;
+    return response;
 }
 
 }   // namespace CdsTap
