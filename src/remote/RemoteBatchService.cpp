@@ -1082,8 +1082,13 @@ void RemoteBatchService::poll(Host& h, const RemoteHost& host, Batch& b)
 {
     auto* conn = RemoteHostRegistry::instance().connection(host.id);
     QString err;
-    // Never prompts: polling runs unattended, often right after startup.
-    if (!conn || !conn->ensureMaster(&err, /*allowPrompt=*/false)) return;
+    // Never prompts: polling runs unattended, often right after startup. A
+    // failure goes into the host's status, where a stalled run shows why.
+    if (!conn || !conn->ensureMaster(&err, /*allowPrompt=*/false)) {
+        std::lock_guard<std::mutex> lk(_mtx);
+        h.lastError = conn ? err : QStringLiteral("no connection");
+        return;
+    }
 
     const QString dir = b.row.remoteDir;
     const bool slurm  = b.row.scheduler == QLatin1String("slurm");
@@ -1115,6 +1120,11 @@ void RemoteBatchService::poll(Host& h, const RemoteHost& host, Batch& b)
         "echo ASTRA_END").arg(dir);
     auto pr = conn->exec(SshConnection::shellCommand(probeCmd), 60000);
     if (!pr.transportOk) return;
+    {
+        // The host answers again: an older connection error is history.
+        std::lock_guard<std::mutex> lk(_mtx);
+        h.lastError.clear();
+    }
     const BatchProbe probe = parseBatchProbe(QString::fromUtf8(pr.out));
 
     QStringList cleanup;    // relative paths inside the batch to remove

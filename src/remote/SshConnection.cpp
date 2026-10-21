@@ -134,17 +134,18 @@ bool SshConnection::ensureMaster(QString* err, bool allowPrompt)
         _mode = MasterMode::AstraMaster;
         return true;
     }
-    if (!allowPrompt) {
-        if (err) *err = tr("no live SSH connection to %1 and prompting "
-                           "is disabled").arg(_host.destination);
-        return false;
-    }
-
-    /*  Start ASTRA's own master.  This is the one call that may prompt (via
-     *  askpass), so it gets a generous timeout for the user to type.        */
+    /*  Start ASTRA's own master.  With prompting allowed this is the one call
+     *  that may ask (via askpass), so it gets a generous timeout for the user
+     *  to type.  Without it the master is still opened when the host takes a
+     *  key: BatchMode makes ssh fail at once where it would have to ask.  An
+     *  unattended poll that found its socket gone (the master died, the
+     *  connection dropped, someone cleared the sockets) used to give up for
+     *  good, which left every remote fit of a running mass fit uncollected. */
     QProcess p;
     prepareSshProcess(p);
-    QStringList args{
+    QStringList args;
+    if (!allowPrompt) args << QStringLiteral("-o") << QStringLiteral("BatchMode=yes");
+    args << QStringList{
         QStringLiteral("-o"), QStringLiteral("ControlMaster=auto"),
         QStringLiteral("-o"), QStringLiteral("ControlPersist=8h"),
         QStringLiteral("-o"),
@@ -154,14 +155,17 @@ bool SshConnection::ensureMaster(QString* err, bool allowPrompt)
         QStringLiteral("-o"), QStringLiteral("StrictHostKeyChecking=accept-new"),
         QStringLiteral("-fN"), _host.destination};
     p.start(sshProgram(), args);
-    if (!p.waitForFinished(180000)) {
+    if (!p.waitForFinished(allowPrompt ? 180000 : 30000)) {
         p.kill();
         p.waitForFinished(1000);
         if (err) *err = tr("timed out connecting to %1").arg(_host.destination);
         return false;
     }
     if (p.exitCode() != 0) {
-        if (err) *err = QString::fromUtf8(p.readAllStandardError()).trimmed();
+        const QString why = QString::fromUtf8(p.readAllStandardError()).trimmed();
+        if (err) *err = allowPrompt ? why
+                                    : tr("no live SSH connection to %1, and it needs a "
+                                         "password (%2)").arg(_host.destination, why);
         return false;
     }
     QMutexLocker lk(&_mtx);
