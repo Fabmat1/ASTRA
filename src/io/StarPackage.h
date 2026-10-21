@@ -81,6 +81,13 @@ class StarPackage {
     // ── Read ─────────────────────────────────────────────────────────────────
     static ImportResult readFromFile(const QString    &filepath,
                                      const ProgressFn &progress = {});
+    // Hands each star to the sink as soon as it is read, instead of
+    // collecting them in ImportResult::stars, so a large package is never
+    // held in memory whole. Returning false stops the read (an error).
+    using StarSink = std::function<bool(std::shared_ptr<Star>)>;
+    static ImportResult readFromFile(const QString    &filepath,
+                                     const StarSink   &onStar,
+                                     const ProgressFn &progress = {});
     static ImportResult readFromBuffer(const QByteArray &bytes,
                                        const ProgressFn &progress = {});
 

@@ -9,19 +9,32 @@
 #include "core/Star.h"
 #include "core/Time.h"
 
+#include <QBuffer>
 #include <QDateTime>
+#include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSaveFile>
+#include <QStandardPaths>
 #include <QSysInfo>
+#include <QTemporaryFile>
+#include <QThreadPool>
+#include <QtConcurrent>
 #include <QtEndian>
 
+#include <zlib.h>
+
+#include <algorithm>
 #include <cmath>
 #include <cstring>
+#include <deque>
+#include <functional>
 #include <limits>
 #include <map>
+#include <memory>
 #include <set>
 
 namespace {
@@ -75,39 +88,35 @@ QDateTime dtFromIso(const QString &s) {
 }
 
 // ── Blob pool (writer) ──────────────────────────────────────────────────────
+// One star's blobs. Stars are serialised in parallel, each into a pool of its
+// own; writePackage() then appends them to the package in order, moving each
+// star's blob indices past those of the stars before it.
 struct BlobPool {
     QByteArray data;
     QJsonArray dir;
 
-    int addDoubles(const std::vector<double> &v) {
-        if (v.empty())
+    int add(const char *p, qint64 len) {
+        if (len <= 0)
             return -1;
-        const qint64 off = data.size();
-        const qint64 len = qint64(v.size()) * 8;
-        data.append(reinterpret_cast<const char *>(v.data()), int(len));
         QJsonObject e;
-        e["o"] = double(off);
+        e["o"] = double(data.size());
         e["l"] = double(len);
+        data.append(p, qsizetype(len));
         dir.append(e);
         return dir.size() - 1;
     }
+    int addDoubles(const std::vector<double> &v) {
+        return add(reinterpret_cast<const char *>(v.data()), qint64(v.size()) * 8);
+    }
     int addBytes(const std::vector<uint8_t> &v) {
-        if (v.empty())
-            return -1;
-        const qint64 off = data.size();
-        const qint64 len = qint64(v.size());
-        data.append(reinterpret_cast<const char *>(v.data()), int(len));
-        QJsonObject e;
-        e["o"] = double(off);
-        e["l"] = double(len);
-        dir.append(e);
-        return dir.size() - 1;
+        return add(reinterpret_cast<const char *>(v.data()), qint64(v.size()));
     }
 };
 
 // ── Blob pool (reader) ──────────────────────────────────────────────────────
+// Reads blobs from `pool` on demand (a temporary file for a large package).
 struct BlobReader {
-    QByteArray   pool;
+    QIODevice   *pool     = nullptr;
     QJsonArray   dir;
     bool         swap     = false;
     QStringList *warnings = nullptr;
@@ -117,47 +126,49 @@ struct BlobReader {
             *warnings << w;
     }
 
-    std::vector<double> getDoubles(int idx) {
-        if (idx < 0)
-            return {};
+    // Offset and length of blob `idx`, or false (with a warning) when the
+    // entry does not fit the pool or is not a whole number of `unit`s.
+    bool entry(int idx, qint64 unit, qint64 &off, qint64 &len, const char *what) {
         if (idx >= dir.size()) {
-            warn("blob index out of range (doubles)");
+            warn(QStringLiteral("blob index out of range (%1)").arg(what));
+            return false;
+        }
+        const QJsonObject e = dir.at(idx).toObject();
+        off                 = qint64(e.value("o").toDouble());
+        len                 = qint64(e.value("l").toDouble());
+        if (off < 0 || len < 0 || off + len > pool->size() || (len % unit) != 0) {
+            warn(QStringLiteral("corrupt blob entry (%1)").arg(what));
+            return false;
+        }
+        return true;
+    }
+    bool readAt(qint64 off, char *dst, qint64 len) {
+        return len == 0 || (pool->seek(off) && pool->read(dst, len) == len);
+    }
+
+    std::vector<double> getDoubles(int idx) {
+        qint64 off = 0, len = 0;
+        if (idx < 0 || !entry(idx, 8, off, len, "doubles"))
+            return {};
+        std::vector<double> v(static_cast<size_t>(len / 8));
+        if (!readAt(off, reinterpret_cast<char *>(v.data()), len)) {
+            warn("short read in blob pool");
             return {};
         }
-        const QJsonObject e   = dir.at(idx).toObject();
-        const qint64      off = qint64(e.value("o").toDouble());
-        const qint64      len = qint64(e.value("l").toDouble());
-        if (off < 0 || len < 0 || off + len > pool.size() || (len % 8) != 0) {
-            warn("corrupt blob entry (doubles)");
-            return {};
-        }
-        const int           n = int(len / 8);
-        std::vector<double> v(n);
-        if (n)
-            std::memcpy(v.data(), pool.constData() + off, size_t(len));
         if (swap)
             for (auto &x : v)
                 x = bswapD(x);
         return v;
     }
     std::vector<uint8_t> getBytes(int idx) {
-        if (idx < 0)
+        qint64 off = 0, len = 0;
+        if (idx < 0 || !entry(idx, 1, off, len, "bytes"))
             return {};
-        if (idx >= dir.size()) {
-            warn("blob index out of range (bytes)");
-            return {};
-        }
-        const QJsonObject e   = dir.at(idx).toObject();
-        const qint64      off = qint64(e.value("o").toDouble());
-        const qint64      len = qint64(e.value("l").toDouble());
-        if (off < 0 || len < 0 || off + len > pool.size()) {
-            warn("corrupt blob entry (bytes)");
+        std::vector<uint8_t> v(static_cast<size_t>(len));
+        if (!readAt(off, reinterpret_cast<char *>(v.data()), len)) {
+            warn("short read in blob pool");
             return {};
         }
-        std::vector<uint8_t> v;
-        v.resize(size_t(len));
-        if (len)
-            std::memcpy(v.data(), pool.constData() + off, size_t(len));
         return v;
     }
 };
@@ -922,9 +933,19 @@ QJsonObject photometryToJson(Photometry &ph, BlobPool &bp,
     o["points"] = pts;
 
     if (opt.includeLightcurves) {
+        // A lightcurve not loaded yet is read into a temporary: loading it
+        // through the live photometry would keep every exported lightcurve
+        // in memory for as long as the project stays open.
         QJsonObject lcs;
-        for (const QString &src : ph.getLightcurveSources())
-            lcs[src] = lightcurveToJson(ph.getLightcurve(src), bp);
+        for (const QString &src : ph.getLightcurveSources()) {
+            if (ph.hasLightcurveLoaded(src)) {
+                lcs[src] = lightcurveToJson(ph.getLightcurve(src), bp);
+                continue;
+            }
+            Photometry tmp;
+            tmp.loadLightcurveFromFile(src, ph.getLightcurveFile(src));
+            lcs[src] = lightcurveToJson(tmp.getLightcurve(src), bp);
+        }
         o["lightcurves"] = lcs;
     }
     if (opt.includeSEDModels) {
@@ -1556,32 +1577,296 @@ starFromJson(const QJsonObject &o, BlobReader &br,
     return s;
 }
 
-} // anonymous namespace
-
 // ═════════════════════════════════════════════════════════════════════════════
-//  Public API
+//  Container
 // ═════════════════════════════════════════════════════════════════════════════
-QByteArray
-StarPackage::writeToBuffer(const std::vector<std::shared_ptr<Star>> &stars,
-                           const ExportOptions &opts, QString *error,
-                           const InstrumentResolver &resolver,
-                           const ProgressFn         &progress) {
-    BlobPool          bp;
-    std::set<QString> referencedInstIds;
+//
+//  [header][u32 BE inner size][zlib stream of inner]
+//  inner = [u32 LE manifest length][manifest JSON][blob pool]
+//
+//  The size word and the zlib stream are exactly what qCompress produces, so
+//  every package, old or new, opens with qUncompress. The writer and reader
+//  here stream that block instead: the blob pool goes through a temporary
+//  file, and the writer compresses it in parallel chunks that still form one
+//  ordinary zlib stream (each chunk a raw deflate run ended by a sync flush,
+//  the last one by the final block, as pigz does). A package used to be built
+//  and compressed whole in memory, several copies of it at once, on one core.
 
-    QJsonArray starArr;
-    const int  nStars = int(stars.size());
-    int        si     = 0;
-    for (const auto &s : stars) {
-        ++si;
-        if (s)
-            starArr.append(starToJson(*s, bp, opts, referencedInstIds));
-        if (progress)
-            progress(nStars > 0 ? int(85.0 * si / nStars) : 85,
-                     QStringLiteral("Serializing star %1 of %2")
-                         .arg(si)
-                         .arg(nStars));
+constexpr qint64 kZChunk = qint64(4) << 20;
+
+// Pools larger than this are kept in a temporary file while a package is
+// read; smaller ones stay in memory.
+constexpr qint64 kPoolInMemory = qint64(256) << 20;
+
+QByteArray headerBytes() {
+    QByteArray  out;
+    QDataStream ds(&out, QIODevice::WriteOnly);
+    ds.setByteOrder(QDataStream::LittleEndian);
+    ds.writeRawData(MAGIC, 8);
+    ds << quint16(StarPackage::VERSION_MAJOR) << quint16(StarPackage::VERSION_MINOR);
+    ds << quint8(hostByteOrderCode()) << quint8(0) << quint16(0) << quint32(0);
+    return out;
+}
+
+/// Checks a package header; fills the version fields of `r` and returns the
+/// writer's byte-order code, or -1 with r.error set.
+int parseHeader(const QByteArray &h, StarPackage::ImportResult &r) {
+    if (h.size() < HEADER_SIZE || std::memcmp(h.constData(), MAGIC, 8) != 0) {
+        r.error = "Not an ASTRA package (bad magic).";
+        return -1;
     }
+    QDataStream ds(h);
+    ds.setByteOrder(QDataStream::LittleEndian);
+    ds.skipRawData(8);
+    quint16 vMaj, vMin;
+    quint8  bo, rsv0;
+    quint16 rsv1;
+    quint32 flags;
+    ds >> vMaj >> vMin >> bo >> rsv0 >> rsv1 >> flags;
+    r.fileVersionMajor = vMaj;
+    r.fileVersionMinor = vMin;
+    if (vMaj > StarPackage::VERSION_MAJOR) {
+        r.error =
+            QStringLiteral("File format v%1.%2 is newer than supported v%3.%4. "
+                           "Please update ASTRA.")
+                .arg(vMaj)
+                .arg(vMin)
+                .arg(StarPackage::VERSION_MAJOR)
+                .arg(StarPackage::VERSION_MINOR);
+        return -1;
+    }
+    if (vMaj < StarPackage::VERSION_MAJOR)
+        r.warnings << QStringLiteral("Reading older package format v%1.%2.")
+                          .arg(vMaj)
+                          .arg(vMin);
+    return bo;
+}
+
+struct DeflateChunk {
+    QByteArray in, out;
+    uLong      adler = 1;
+    bool       last  = false;
+    bool       ok    = false;
+};
+
+void deflateChunk(DeflateChunk &c) {
+    c.adler = adler32(1L, reinterpret_cast<const Bytef *>(c.in.constData()),
+                      uInt(c.in.size()));
+    z_stream zs{};
+    if (deflateInit2(&zs, COMPRESS_LVL, Z_DEFLATED, -15, 8, Z_DEFAULT_STRATEGY) != Z_OK)
+        return;
+    c.out.resize(qsizetype(deflateBound(&zs, uLong(c.in.size())) + 64));
+    zs.next_in  = reinterpret_cast<Bytef *>(c.in.data());
+    zs.avail_in = uInt(c.in.size());
+    const int flush = c.last ? Z_FINISH : Z_SYNC_FLUSH;
+    for (;;) {
+        zs.next_out  = reinterpret_cast<Bytef *>(c.out.data()) + zs.total_out;
+        zs.avail_out = uInt(c.out.size() - qsizetype(zs.total_out));
+        const int ret = deflate(&zs, flush);
+        if (ret == Z_STREAM_ERROR)
+            break;
+        if (c.last ? ret == Z_STREAM_END : (zs.avail_in == 0 && zs.avail_out > 0)) {
+            c.ok = true;
+            break;
+        }
+        c.out.resize(c.out.size() * 2);   // out of room: give it more and go on
+    }
+    c.out.resize(qsizetype(zs.total_out));
+    deflateEnd(&zs);
+}
+
+/// A zlib stream body written in independently compressed chunks: write()
+/// collects input and hands each full chunk to the thread pool, and the
+/// compressed chunks reach `out` in order. finish() ends the stream with the
+/// final block (or, for a run that something else will follow, a sync flush).
+class ChunkedDeflater {
+  public:
+    explicit ChunkedDeflater(QIODevice *out)
+        : _out(out),
+          _maxInFlight(std::max(2, QThreadPool::globalInstance()->maxThreadCount())) {}
+    ~ChunkedDeflater() { drain(0); }
+
+    bool write(const char *p, qint64 n) {
+        while (n > 0 && !_failed) {
+            const qint64 k = std::min(n, kZChunk - _stage.size());
+            _stage.append(p, qsizetype(k));
+            p += k;
+            n -= k;
+            if (_stage.size() == kZChunk)
+                dispatch(false);
+        }
+        return !_failed;
+    }
+    bool finish(bool last) {
+        if (last || !_stage.isEmpty())
+            dispatch(last);
+        drain(0);
+        return !_failed;
+    }
+    uLong   adler() const { return _adler; }
+    qint64  rawSize() const { return _raw; }
+    QString error() const { return _error; }
+
+  private:
+    void dispatch(bool last) {
+        DeflateChunk c;
+        c.in   = std::move(_stage);
+        c.last = last;
+        _stage = QByteArray();
+        _stage.reserve(qsizetype(kZChunk));
+        _inFlight.push_back(QtConcurrent::run([c = std::move(c)]() mutable {
+            deflateChunk(c);
+            return c;
+        }));
+        drain(_maxInFlight);
+    }
+    // Writes finished chunks, in order, until at most `keep` are pending.
+    void drain(int keep) {
+        while (int(_inFlight.size()) > keep) {
+            const DeflateChunk c = _inFlight.front().result();
+            _inFlight.pop_front();
+            if (_failed)
+                continue;
+            if (!c.ok) {
+                _failed = true;
+                _error  = QStringLiteral("compression failed");
+            } else if (_out->write(c.out) != c.out.size()) {
+                _failed = true;
+                _error  = _out->errorString();
+            }
+            _adler = adler32_combine(_adler, c.adler, z_off_t(c.in.size()));
+            _raw += c.in.size();
+        }
+    }
+
+    QIODevice                      *_out;
+    const int                       _maxInFlight;
+    QByteArray                      _stage;
+    std::deque<QFuture<DeflateChunk>> _inFlight;
+    uLong                           _adler  = 1;
+    qint64                          _raw    = 0;
+    bool                            _failed = false;
+    QString                         _error;
+};
+
+/// Adds `base` to every blob index in a star's JSON (keys starting "b_",
+/// holding an index or an array of them; -1 means "no blob" and stays).
+void rebaseBlobRefs(QJsonObject &o, int base);
+void rebaseBlobRefs(QJsonArray &a, int base, bool indices) {
+    for (auto v = a.begin(); v != a.end(); ++v) {
+        if (indices && v->isDouble()) {
+            if (const int i = v->toInt(); i >= 0)
+                *v = i + base;
+        } else if (v->isObject()) {
+            QJsonObject c = v->toObject();
+            rebaseBlobRefs(c, base);
+            *v = c;
+        } else if (v->isArray()) {
+            QJsonArray c = v->toArray();
+            rebaseBlobRefs(c, base, indices);
+            *v = c;
+        }
+    }
+}
+void rebaseBlobRefs(QJsonObject &o, int base) {
+    for (auto it = o.begin(); it != o.end(); ++it) {
+        const bool blob = it.key().startsWith(QLatin1String("b_"));
+        if (blob && it->isDouble()) {
+            if (const int i = it->toInt(); i >= 0)
+                *it = i + base;
+        } else if (it->isArray()) {
+            QJsonArray c = it->toArray();
+            rebaseBlobRefs(c, base, blob);
+            *it = c;
+        } else if (it->isObject()) {
+            QJsonObject c = it->toObject();
+            rebaseBlobRefs(c, base);
+            *it = c;
+        }
+    }
+}
+
+struct PreparedStar {
+    QJsonObject       json;
+    BlobPool          blobs;
+    std::set<QString> instIds;
+};
+
+/// Serialises the stars into `out`. The blob pool is compressed as the stars
+/// are serialised and staged, compressed, in `pool` (an empty, open
+/// read-write device); the manifest, which has to come first in the stream
+/// but is only complete at the end, is compressed last and written ahead of
+/// it.
+bool writePackage(QIODevice &out, QIODevice &pool,
+                  const std::vector<std::shared_ptr<Star>> &stars,
+                  const StarPackage::ExportOptions &opts, QString *error,
+                  const StarPackage::InstrumentResolver &resolver,
+                  const StarPackage::ProgressFn &progress) {
+    auto fail = [error](const QString &why) {
+        if (error)
+            *error = why;
+        return false;
+    };
+
+    ChunkedDeflater   poolZ(&pool);
+    QJsonArray        dir;
+    qint64            poolSize = 0;
+    std::set<QString> referencedInstIds;
+    QJsonArray        starArr;
+
+    // Stars go in rounds. Loading what a star lazily loads (its spectra,
+    // photometry and RV curve objects) changes the star, so that happens
+    // here, one star after the other as it always has; serialising, which
+    // reads the data files into temporaries and builds the JSON, only reads
+    // the star and runs in parallel.
+    const int nStars = int(stars.size());
+    const int round  = 2 * std::max(1, QThreadPool::globalInstance()->maxThreadCount());
+    for (int from = 0; from < nStars; from += round) {
+        const int to = std::min(nStars, from + round);
+        std::vector<std::shared_ptr<Star>> batch(stars.begin() + from, stars.begin() + to);
+        for (const auto &s : batch) {
+            if (!s)
+                continue;
+            if (opts.includeSpectra)
+                (void)s->getSpectra();
+            if (opts.includePhotometry)
+                (void)s->getPhotometry();
+            if (opts.includeRV)
+                (void)s->getRVCurve();
+        }
+        const std::vector<PreparedStar> prepared = QtConcurrent::blockingMapped(
+            batch, [&opts](const std::shared_ptr<Star> &s) {
+                PreparedStar p;
+                if (s)
+                    p.json = starToJson(*s, p.blobs, opts, p.instIds);
+                return p;
+            });
+
+        for (size_t k = 0; k < prepared.size(); ++k) {
+            const PreparedStar &p = prepared[k];
+            if (!batch[k])
+                continue;
+            QJsonObject json = p.json;
+            rebaseBlobRefs(json, dir.size());
+            for (const QJsonValue &v : p.blobs.dir) {
+                QJsonObject e = v.toObject();
+                e["o"]        = double(poolSize + qint64(e.value("o").toDouble()));
+                dir.append(e);
+            }
+            poolSize += p.blobs.data.size();
+            if (!poolZ.write(p.blobs.data.constData(), p.blobs.data.size()))
+                return fail(QStringLiteral("Could not write temporary package data: %1")
+                                .arg(poolZ.error()));
+            starArr.append(json);
+            referencedInstIds.insert(p.instIds.begin(), p.instIds.end());
+        }
+        if (progress)
+            progress(int(95.0 * to / nStars),
+                     QStringLiteral("Serializing star %1 of %2").arg(to).arg(nStars));
+    }
+    if (!poolZ.finish(true))
+        return fail(QStringLiteral("Could not write temporary package data: %1")
+                        .arg(poolZ.error()));
 
     // Instruments - from RV-point objects directly + resolver for the rest.
     QJsonArray instArr;
@@ -1608,10 +1893,12 @@ StarPackage::writeToBuffer(const std::vector<std::shared_ptr<Star>> &stars,
             instArr.append(kv.second);
     }
 
+    if (progress)
+        progress(96, QStringLiteral("Compressing…"));
     QJsonObject manifest;
     manifest["format"]       = "astra-package";
-    manifest["versionMajor"] = VERSION_MAJOR;
-    manifest["versionMinor"] = VERSION_MINOR;
+    manifest["versionMajor"] = StarPackage::VERSION_MAJOR;
+    manifest["versionMinor"] = StarPackage::VERSION_MINOR;
     manifest["createdBy"]    = "ASTRA";
     manifest["createdAt"] =
         QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
@@ -1619,152 +1906,175 @@ StarPackage::writeToBuffer(const std::vector<std::shared_ptr<Star>> &stars,
         manifest["note"] = opts.creatorNote;
     manifest["stars"]       = starArr;
     manifest["instruments"] = instArr;
-    manifest["blobs"]       = bp.dir;
+    manifest["blobs"]       = dir;
 
     const QByteArray manifestBytes =
         QJsonDocument(manifest).toJson(QJsonDocument::Compact);
-
-    // inner = [manifestLen u32 LE][manifest][blob pool]
-    QByteArray    inner;
+    QByteArray    prefix(4, '\0');
     const quint32 mlen = quint32(manifestBytes.size());
-    inner.append(char(mlen & 0xff));
-    inner.append(char((mlen >> 8) & 0xff));
-    inner.append(char((mlen >> 16) & 0xff));
-    inner.append(char((mlen >> 24) & 0xff));
-    inner.append(manifestBytes);
-    inner.append(bp.data);
+    for (int i = 0; i < 4; ++i)
+        prefix[i] = char((mlen >> (8 * i)) & 0xff);
+    prefix.append(manifestBytes);
 
-    if (progress)
-        progress(90, QStringLiteral("Compressing…"));
-    const QByteArray body = qCompress(inner, COMPRESS_LVL);
-    if (progress)
-        progress(95, QStringLiteral("Finalizing…"));
+    QByteArray prefixZ;
+    {
+        QBuffer         b(&prefixZ);
+        b.open(QIODevice::WriteOnly);
+        ChunkedDeflater z(&b);
+        if (!z.write(prefix.constData(), prefix.size()) || !z.finish(false))
+            return fail(QStringLiteral("compression failed"));
+        // inner = prefix then pool; one adler32 over both
+        const uLong   adler    = adler32_combine(z.adler(), poolZ.adler(), z_off_t(poolSize));
+        const qint64  total    = prefix.size() + poolSize;
+        const quint32 sizeWord = quint32(std::min<qint64>(total, 0xFFFFFFFFLL));
+        const char    pre[6]   = {char(sizeWord >> 24), char(sizeWord >> 16),
+                                  char(sizeWord >> 8),  char(sizeWord),
+                                  char(0x78), char(0x9C)};   // zlib header, level 6
+        const char    post[4]  = {char(adler >> 24), char(adler >> 16),
+                                  char(adler >> 8),  char(adler)};
 
-    QByteArray  out;
-    QDataStream ds(&out, QIODevice::WriteOnly);
-    ds.setByteOrder(QDataStream::LittleEndian);
-    ds.writeRawData(MAGIC, 8);
-    ds << quint16(VERSION_MAJOR) << quint16(VERSION_MINOR);
-    ds << quint8(hostByteOrderCode()) << quint8(0) << quint16(0) << quint32(0);
-    ds.writeRawData(body.constData(), body.size());
-
-    if (error)
-        error->clear();
-    return out;
-}
-
-bool StarPackage::writeToFile(const QString &filepath,
-                              const std::vector<std::shared_ptr<Star>> &stars,
-                              const ExportOptions &opts, QString *error,
-                              const InstrumentResolver &resolver,
-                              const ProgressFn         &progress) {
-    const QByteArray bytes =
-        writeToBuffer(stars, opts, error, resolver, progress);
-    if (bytes.isEmpty()) {
-        if (error && error->isEmpty())
-            *error = "Nothing to write.";
-        return false;
+        if (out.write(headerBytes()) != HEADER_SIZE || out.write(pre, 6) != 6 ||
+            out.write(prefixZ) != prefixZ.size())
+            return fail(out.errorString());
+        if (!pool.seek(0))
+            return fail(pool.errorString());
+        QByteArray buf(qsizetype(4) << 20, Qt::Uninitialized);
+        for (qint64 n; (n = pool.read(buf.data(), buf.size())) > 0;)
+            if (out.write(buf.constData(), n) != n)
+                return fail(out.errorString());
+        if (out.write(post, 4) != 4)
+            return fail(out.errorString());
     }
-
-    QSaveFile f(filepath);
-    if (!f.open(QIODevice::WriteOnly)) {
-        if (error)
-            *error = QStringLiteral("Cannot open '%1' for writing: %2")
-                         .arg(filepath, f.errorString());
-        return false;
-    }
-    if (f.write(bytes) != bytes.size()) {
-        if (error)
-            *error = QStringLiteral("Short write to '%1'.").arg(filepath);
-        return false;
-    }
-    if (!f.commit()) {
-        if (error)
-            *error = QStringLiteral("Failed to commit '%1': %2")
-                         .arg(filepath, f.errorString());
-        return false;
-    }
-    if (progress)
-        progress(100, QStringLiteral("Done"));
     return true;
 }
 
-StarPackage::ImportResult StarPackage::readFromBuffer(const QByteArray &data,
-                                                      const ProgressFn &progress) {
-    ImportResult r;
-    if (data.size() < HEADER_SIZE ||
-        std::memcmp(data.constData(), MAGIC, 8) != 0) {
-        r.error = "Not an ASTRA package (bad magic).";
-        return r;
+/// Where a large package's blob pool is staged while it is read.
+std::unique_ptr<QIODevice> makePoolDevice(qint64 expectedSize) {
+    if (expectedSize > kPoolInMemory) {
+        QString dir = QStandardPaths::writableLocation(QStandardPaths::CacheLocation);
+        if (dir.isEmpty() || !QDir().mkpath(dir))
+            dir = QDir::tempPath();
+        auto f = std::make_unique<QTemporaryFile>(dir + "/astra-package-XXXXXX.pool");
+        if (f->open())
+            return f;
     }
-    QDataStream ds(data);
-    ds.setByteOrder(QDataStream::LittleEndian);
-    char magic[8];
-    ds.readRawData(magic, 8);
-    quint16 vMaj, vMin;
-    ds >> vMaj >> vMin;
-    quint8  bo, rsv0;
-    quint16 rsv1;
-    quint32 flags;
-    ds >> bo >> rsv0 >> rsv1 >> flags;
-    r.fileVersionMajor = vMaj;
-    r.fileVersionMinor = vMin;
+    auto b = std::make_unique<QBuffer>();
+    b->open(QIODevice::ReadWrite);
+    return b;
+}
 
-    if (vMaj > VERSION_MAJOR) {
-        r.error =
-            QStringLiteral("File format v%1.%2 is newer than supported v%3.%4. "
-                           "Please update ASTRA.")
-                .arg(vMaj)
-                .arg(vMin)
-                .arg(VERSION_MAJOR)
-                .arg(VERSION_MINOR);
+/// Reads a package from `in`, handing each star to `onStar` (or collecting
+/// them in r.stars without one). The manifest is parsed whole; the blob
+/// pool, the package's bulk, is inflated into a pool device and read from
+/// there star by star.
+StarPackage::ImportResult readPackage(QIODevice &in, const StarPackage::StarSink &onStar,
+                                      const StarPackage::ProgressFn &progress) {
+    StarPackage::ImportResult r;
+    const int bo = parseHeader(in.read(HEADER_SIZE), r);
+    if (bo < 0)
         return r;
-    }
-    if (vMaj < VERSION_MAJOR)
-        r.warnings << QStringLiteral("Reading older package format v%1.%2.")
-                          .arg(vMaj)
-                          .arg(vMin);
 
-    if (progress)
-        progress(5, QStringLiteral("Decompressing…"));
-    const QByteArray body  = data.mid(HEADER_SIZE);
-    const QByteArray inner = qUncompress(body);
-    if (inner.size() < 4) {
+    const QByteArray sizeWord = in.read(4);
+    if (sizeWord.size() != 4) {
         r.error = "Corrupt or empty package body.";
         return r;
     }
+    const qint64 innerHint = qFromBigEndian<quint32>(sizeWord.constData());
+    const qint64 inSize    = std::max<qint64>(1, in.size());
 
-    const uchar  *ip   = reinterpret_cast<const uchar *>(inner.constData());
-    const quint32 mlen = quint32(ip[0]) | (quint32(ip[1]) << 8) |
-                         (quint32(ip[2]) << 16) | (quint32(ip[3]) << 24);
-    if (qint64(4) + mlen > inner.size()) {
-        r.error = "Corrupt manifest length.";
+    if (progress)
+        progress(5, QStringLiteral("Decompressing…"));
+
+    z_stream zs{};
+    if (inflateInit(&zs) != Z_OK) {
+        r.error = "Could not start decompression.";
         return r;
     }
+    QByteArray                 head;           // length word + manifest
+    qint64                     mlen = -1;
+    std::unique_ptr<QIODevice> pool;
+    QByteArray                 inBuf(qsizetype(1) << 20, Qt::Uninitialized);
+    QByteArray                 outBuf(qsizetype(4) << 20, Qt::Uninitialized);
+    int                        ret = Z_OK;
+    bool                       ok  = true;
 
-    const QByteArray manifestBytes = inner.mid(4, int(mlen));
-    const QByteArray pool          = inner.mid(4 + int(mlen));
+    // Splits inflated bytes into the head and the pool.
+    auto take = [&](const char *p, qint64 n) {
+        while (n > 0) {
+            if (!pool) {
+                const qint64 want = (mlen < 0 ? 4 : 4 + mlen) - head.size();
+                const qint64 k    = std::min(n, want);
+                head.append(p, qsizetype(k));
+                p += k;
+                n -= k;
+                if (mlen < 0 && head.size() == 4) {
+                    const uchar *h = reinterpret_cast<const uchar *>(head.constData());
+                    mlen = qint64(h[0]) | (qint64(h[1]) << 8) | (qint64(h[2]) << 16) |
+                           (qint64(h[3]) << 24);
+                }
+                if (mlen >= 0 && head.size() == 4 + mlen)
+                    pool = makePoolDevice(innerHint - 4 - mlen);
+                continue;
+            }
+            if (pool->write(p, n) != n)
+                return false;
+            n = 0;
+        }
+        return true;
+    };
+
+    while (ok && ret != Z_STREAM_END) {
+        if (zs.avail_in == 0) {
+            const qint64 n = in.read(inBuf.data(), inBuf.size());
+            if (n <= 0) {
+                ok = false;
+                break;
+            }
+            zs.next_in  = reinterpret_cast<Bytef *>(inBuf.data());
+            zs.avail_in = uInt(n);
+        }
+        zs.next_out  = reinterpret_cast<Bytef *>(outBuf.data());
+        zs.avail_out = uInt(outBuf.size());
+        ret = inflate(&zs, Z_NO_FLUSH);
+        if (ret != Z_OK && ret != Z_STREAM_END) {
+            ok = false;
+            break;
+        }
+        if (!take(outBuf.constData(), outBuf.size() - qint64(zs.avail_out)))
+            ok = false;
+        if (progress)
+            progress(5 + int(25.0 * double(in.pos()) / double(inSize)),
+                     QStringLiteral("Decompressing…"));
+    }
+    inflateEnd(&zs);
+    if (!ok || mlen < 0) {
+        r.error = "Corrupt or truncated package body.";
+        return r;
+    }
+    if (!pool)   // an empty pool still needs a device to read nothing from
+        pool = makePoolDevice(0);
 
     QJsonParseError     perr;
-    const QJsonDocument doc = QJsonDocument::fromJson(manifestBytes, &perr);
+    const QJsonDocument doc = QJsonDocument::fromJson(head.mid(4), &perr);
     if (perr.error != QJsonParseError::NoError || !doc.isObject()) {
         r.error =
             QStringLiteral("Manifest JSON error: %1").arg(perr.errorString());
         return r;
     }
+    head.clear();
     const QJsonObject manifest = doc.object();
     r.creatorApp               = manifest.value("createdBy").toString();
     r.createdAtIso             = manifest.value("createdAt").toString();
     r.creatorNote              = manifest.value("note").toString();
 
     BlobReader br;
-    br.pool     = pool;
+    br.pool     = pool.get();
     br.dir      = manifest.value("blobs").toArray();
     br.swap     = (bo != hostByteOrderCode());
     br.warnings = &r.warnings;
 
     if (progress)
-        progress(10, QStringLiteral("Reading instruments…"));
+        progress(30, QStringLiteral("Reading instruments…"));
     // Instruments first (RV points link to them by id)
     std::map<QString, std::shared_ptr<Instrument>> instById;
     for (const QJsonValue &v : manifest.value("instruments").toArray()) {
@@ -1778,13 +2088,19 @@ StarPackage::ImportResult StarPackage::readFromBuffer(const QByteArray &data,
     const int        nStars   = starsArr.size();
     int              si       = 0;
     for (const QJsonValue &v : starsArr) {
-        r.stars.push_back(starFromJson(v.toObject(), br, instById));
+        auto star = starFromJson(v.toObject(), br, instById);
         ++si;
+        if (onStar) {
+            if (!onStar(std::move(star))) {
+                r.error = QStringLiteral("Stopped at star %1 of %2.").arg(si).arg(nStars);
+                return r;
+            }
+        } else {
+            r.stars.push_back(std::move(star));
+        }
         if (progress)
-            progress(nStars > 0 ? 10 + int(85.0 * si / nStars) : 95,
-                     QStringLiteral("Reading star %1 of %2")
-                         .arg(si)
-                         .arg(nStars));
+            progress(nStars > 0 ? 30 + int(70.0 * si / nStars) : 100,
+                     QStringLiteral("Reading star %1 of %2").arg(si).arg(nStars));
     }
 
     if (progress)
@@ -1793,17 +2109,92 @@ StarPackage::ImportResult StarPackage::readFromBuffer(const QByteArray &data,
     return r;
 }
 
+} // anonymous namespace
+
+// ═════════════════════════════════════════════════════════════════════════════
+//  Public API
+// ═════════════════════════════════════════════════════════════════════════════
+QByteArray
+StarPackage::writeToBuffer(const std::vector<std::shared_ptr<Star>> &stars,
+                           const ExportOptions &opts, QString *error,
+                           const InstrumentResolver &resolver,
+                           const ProgressFn         &progress) {
+    QByteArray bytes;
+    QBuffer    out(&bytes);
+    QBuffer    pool;
+    out.open(QIODevice::WriteOnly);
+    pool.open(QIODevice::ReadWrite);
+    if (!writePackage(out, pool, stars, opts, error, resolver, progress))
+        return {};
+    if (error)
+        error->clear();
+    return bytes;
+}
+
+bool StarPackage::writeToFile(const QString &filepath,
+                              const std::vector<std::shared_ptr<Star>> &stars,
+                              const ExportOptions &opts, QString *error,
+                              const InstrumentResolver &resolver,
+                              const ProgressFn         &progress) {
+    // The pool is staged next to the package, on the disk it is going to
+    // anyway; the system temp directory may be memory.
+    QTemporaryFile pool(QFileInfo(filepath).absolutePath() + "/.astra-package-XXXXXX.pool");
+    if (!pool.open()) {
+        pool.setFileTemplate(QDir::tempPath() + "/astra-package-XXXXXX.pool");
+        if (!pool.open()) {
+            if (error)
+                *error = QStringLiteral("Cannot create a temporary file: %1")
+                             .arg(pool.errorString());
+            return false;
+        }
+    }
+
+    QSaveFile f(filepath);
+    if (!f.open(QIODevice::WriteOnly)) {
+        if (error)
+            *error = QStringLiteral("Cannot open '%1' for writing: %2")
+                         .arg(filepath, f.errorString());
+        return false;
+    }
+    if (!writePackage(f, pool, stars, opts, error, resolver, progress)) {
+        f.cancelWriting();
+        return false;
+    }
+    if (!f.commit()) {
+        if (error)
+            *error = QStringLiteral("Failed to commit '%1': %2")
+                         .arg(filepath, f.errorString());
+        return false;
+    }
+    if (error)
+        error->clear();
+    if (progress)
+        progress(100, QStringLiteral("Done"));
+    return true;
+}
+
+StarPackage::ImportResult StarPackage::readFromBuffer(const QByteArray &data,
+                                                      const ProgressFn &progress) {
+    QBuffer in;
+    in.setData(data);
+    in.open(QIODevice::ReadOnly);
+    return readPackage(in, {}, progress);
+}
+
 StarPackage::ImportResult StarPackage::readFromFile(const QString    &filepath,
                                                     const ProgressFn &progress) {
-    ImportResult r;
-    QFile        f(filepath);
+    return readFromFile(filepath, {}, progress);
+}
+
+StarPackage::ImportResult StarPackage::readFromFile(const QString    &filepath,
+                                                    const StarSink   &onStar,
+                                                    const ProgressFn &progress) {
+    QFile f(filepath);
     if (!f.open(QIODevice::ReadOnly)) {
+        ImportResult r;
         r.error = QStringLiteral("Cannot open '%1': %2")
                       .arg(filepath, f.errorString());
         return r;
     }
-    if (progress)
-        progress(2, QStringLiteral("Reading file…"));
-    return readFromBuffer(f.readAll(), progress);
+    return readPackage(f, onStar, progress);
 }
-

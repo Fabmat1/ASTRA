@@ -8,10 +8,16 @@
 #include <doctest.h>
 
 #include "core/Star.h"
+#include "core/Time.h"
 #include "io/StarPackage.h"
 #include "kinematics/PopulationClassifier.h"
+#include "lightcurve/Photometry.h"
+#include "spectra/Spectrum.h"
 
 #include <QByteArray>
+#include <QDir>
+#include <QTemporaryDir>
+#include <QtEndian>
 
 #include <cmath>
 #include <memory>
@@ -153,6 +159,193 @@ TEST_CASE("StarPackage: the format is compressed")
     CHECK(result.stars.size() == many.size());
     // Well under a kilobyte per star for this much repetition.
     CHECK(bytes.size() < 100 * 1024);
+}
+
+namespace {
+
+/// A star whose spectra are big enough that the package spans several of the
+/// writer's 4 MB compression chunks.
+std::shared_ptr<Star> makeHeavyStar(int nSpectra, int nPoints)
+{
+    auto star = makeStar("H1", "Heavy", 1.0, 2.0);
+    std::mt19937 rng(7);
+    std::normal_distribution<double> g(1.0, 0.1);
+    std::vector<std::shared_ptr<Spectrum>> spectra;
+    for (int k = 0; k < nSpectra; ++k) {
+        auto sp = std::make_shared<Spectrum>();
+        sp->setId(QString("SP%1").arg(k));
+        const size_t n = static_cast<size_t>(nPoints);
+        std::vector<double> wl(n), fl(n), er(n);
+        for (int i = 0; i < nPoints; ++i) {
+            wl[size_t(i)] = 3500.0 + 0.01 * i;
+            fl[size_t(i)] = g(rng);
+            er[size_t(i)] = 0.01 * g(rng);
+        }
+        sp->setData(wl, fl, er);
+        spectra.push_back(sp);
+    }
+    star->setSpectra(spectra);
+    return star;
+}
+
+}   // namespace
+
+TEST_CASE("StarPackage: a package of many compression chunks round-trips exactly")
+{
+    const auto star = makeHeavyStar(3, 150000);     // ~10.8 MB of doubles
+    QString error;
+    const QByteArray bytes =
+        StarPackage::writeToBuffer({star}, StarPackage::ExportOptions{}, &error);
+    INFO("write error: " << error.toStdString());
+    REQUIRE(!bytes.isEmpty());
+
+    const auto result = StarPackage::readFromBuffer(bytes);
+    INFO("read error: " << result.error.toStdString());
+    REQUIRE(result.success);
+    CHECK(result.warnings.isEmpty());
+    REQUIRE(result.stars.size() == 1);
+    const auto in  = star->getSpectra();
+    const auto out = result.stars.front()->getSpectra();
+    REQUIRE(out.size() == in.size());
+    for (size_t k = 0; k < in.size(); ++k) {
+        CHECK(out[k]->getWavelengths() == in[k]->getWavelengths());
+        CHECK(out[k]->getFluxes() == in[k]->getFluxes());
+        CHECK(out[k]->getFluxErrors() == in[k]->getFluxErrors());
+    }
+}
+
+TEST_CASE("StarPackage: every star of a large selection gets its own data back")
+{
+    // Stars are serialised in parallel rounds and their blobs renumbered as
+    // they are put together; a slip there hands one star another's spectrum.
+    std::vector<std::shared_ptr<Star>> stars;
+    for (int i = 0; i < 40; ++i) {
+        auto s = makeStar(QString("S%1").arg(i), QString("Star %1").arg(i), i, -i);
+        auto sp = std::make_shared<Spectrum>();
+        sp->setId(QString("SP%1").arg(i));
+        const size_t n = size_t(100 + i);      // a length of its own, too
+        std::vector<double> wl(n), fl(n), er(n);
+        for (size_t j = 0; j < n; ++j) {
+            wl[j] = 4000.0 + double(j);
+            fl[j] = double(i) + 0.001 * double(j);
+            er[j] = 0.01;
+        }
+        sp->setData(wl, fl, er);
+        s->setSpectra({sp});
+        stars.push_back(s);
+        if (i % 7 == 3)
+            stars.push_back(makeStar(QString("E%1").arg(i), "no data", 0, 0));
+    }
+    QString error;
+    const QByteArray bytes =
+        StarPackage::writeToBuffer(stars, StarPackage::ExportOptions{}, &error);
+    REQUIRE(!bytes.isEmpty());
+    const auto result = StarPackage::readFromBuffer(bytes);
+    REQUIRE(result.success);
+    CHECK(result.warnings.isEmpty());
+    REQUIRE(result.stars.size() == stars.size());
+    for (size_t k = 0; k < stars.size(); ++k) {
+        INFO("star " << k);
+        const auto in  = stars[k]->getSpectra();
+        const auto out = result.stars[k]->getSpectra();
+        REQUIRE(out.size() == in.size());
+        if (!in.empty())
+            CHECK(out[0]->getFluxes() == in[0]->getFluxes());
+    }
+}
+
+TEST_CASE("StarPackage: packages stay readable by qUncompress, both ways")
+{
+    // The body after the 20-byte header is what qCompress produces, so an
+    // ASTRA that reads packages with qUncompress opens one written now, and
+    // a package written by qCompress (every earlier ASTRA) opens here.
+    const auto star = makeHeavyStar(2, 150000);
+    QString error;
+    const QByteArray bytes =
+        StarPackage::writeToBuffer({star}, StarPackage::ExportOptions{}, &error);
+    REQUIRE(!bytes.isEmpty());
+
+    const QByteArray inner = qUncompress(bytes.mid(20));
+    REQUIRE(inner.size() > 7000000);           // spans two 4 MiB chunks
+    const quint32 declared = qFromBigEndian<quint32>(bytes.constData() + 20);
+    CHECK(declared == quint32(inner.size()));
+
+    const QByteArray legacy = bytes.left(20) + qCompress(inner, 6);
+    const auto result = StarPackage::readFromBuffer(legacy);
+    INFO("read error: " << result.error.toStdString());
+    REQUIRE(result.success);
+    REQUIRE(result.stars.size() == 1);
+    CHECK(result.stars.front()->getSpectra().at(1)->getFluxes() ==
+          star->getSpectra().at(1)->getFluxes());
+}
+
+TEST_CASE("StarPackage: a file is written, then read star by star")
+{
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString path = tmp.filePath("pkg.astra");
+
+    std::vector<std::shared_ptr<Star>> stars = {
+        makeHeavyStar(2, 100000), makeStar("B", "Beta", 200.0, -60.0)};
+    QString error;
+    REQUIRE(StarPackage::writeToFile(path, stars, StarPackage::ExportOptions{}, &error));
+    CHECK(error.isEmpty());
+    // The staging file next to the package is gone again.
+    CHECK(QDir(tmp.path()).entryList(QDir::Files | QDir::Hidden).size() == 1);
+
+    std::vector<QString> seen;
+    const auto r = StarPackage::readFromFile(path, [&](std::shared_ptr<Star> s) {
+        seen.push_back(s->getAlias());
+        return true;
+    });
+    REQUIRE(r.success);
+    CHECK(r.stars.empty());     // handed over, not collected
+    CHECK(seen == std::vector<QString>{"Heavy", "Beta"});
+
+    // A sink that says stop ends the read with an error.
+    const auto stopped = StarPackage::readFromFile(path, [](std::shared_ptr<Star>) {
+        return false;
+    });
+    CHECK_FALSE(stopped.success);
+}
+
+TEST_CASE("StarPackage: exporting does not leave lightcurves loaded on the star")
+{
+    // A project's stars load lightcurves lazily and keep what they load. An
+    // export reading them through the live photometry kept every exported
+    // lightcurve in memory for the rest of the session.
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString file = tmp.filePath("lc.asd");
+    {
+        Photometry src;
+        std::vector<LightcurvePoint> pts(3);
+        for (int i = 0; i < 3; ++i) {
+            pts[size_t(i)].time = Time(60000.0 + i, TimeScale::BJD);
+            pts[size_t(i)].flux = 1.0 + i;
+            pts[size_t(i)].filter = "TESS";
+        }
+        src.addLightcurve("TESS", pts);
+        REQUIRE(src.saveLightcurveToFile("TESS", file));
+    }
+    auto ph = std::make_shared<Photometry>();
+    ph->setLightcurveFile("TESS", file);
+    auto star = makeStar("L1", "Lc", 3.0, 4.0);
+    // Attached the way a project's stars get it: through the lazy loader.
+    star->setPhotometryLoader([ph](const QString&) { return ph; });
+    REQUIRE_FALSE(ph->hasLightcurveLoaded("TESS"));
+
+    QString error;
+    const QByteArray bytes =
+        StarPackage::writeToBuffer({star}, StarPackage::ExportOptions{}, &error);
+    REQUIRE(!bytes.isEmpty());
+    CHECK_FALSE(ph->hasLightcurveLoaded("TESS"));
+
+    const auto result = StarPackage::readFromBuffer(bytes);
+    REQUIRE(result.success);
+    const auto back = result.stars.front()->getPhotometry()->getLightcurve("TESS");
+    REQUIRE(back.size() == 3);
+    CHECK(back[2].flux == doctest::Approx(3.0));
 }
 
 }   // TEST_SUITE("io")

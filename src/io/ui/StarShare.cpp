@@ -261,69 +261,53 @@ int StarShare::importFileInteractive(QWidget                 *parent,
         bool        empty     = false;
         QString     readError;
         QString     creatorNote;
-        std::vector<std::shared_ptr<Star>> stars;
     };
 
-    // Read the package and persist its stars on a worker thread. Reading
-    // (decompress + JSON + blobs) and saving (DB transaction + side-file
-    // writes) are both heavy; doing them here keeps the UI responsive behind a
-    // modal progress dialog. All DB work runs on this single worker thread, so
-    // the per-thread connection and the surrounding transaction stay coherent.
+    // Read the package and persist its stars on a worker thread, one star at
+    // a time: each is saved as soon as it is read and then let go, so a large
+    // package never has to fit in memory. All DB work runs on this single
+    // worker thread, so the per-thread connection and the surrounding
+    // transaction stay coherent.
     const ImportOutcome out = runWithProgress<ImportOutcome>(
         parent, QStringLiteral("Receiving stars…"),
         [dbm, projectId, path](const StarPackage::ProgressFn &report)
             -> ImportOutcome {
             ImportOutcome o;
-
-            // Read → progress 0..40 of the overall bar.
+            dbm->beginTransaction();
             auto pkg = StarPackage::readFromFile(
-                path, [&report](int p, const QString &ph) {
-                    report(int(p * 0.40), ph);
-                });
-            o.readOk      = pkg.success;
+                path,
+                [&](std::shared_ptr<Star> star) {
+                    if (!star)
+                        return true;
+                    remapIdsForImport(star);
+                    if (!persistImportedStar(dbm, projectId, star)) {
+                        o.saveOk = false;
+                        return false;
+                    }
+                    ++o.saved;
+                    return true;
+                },
+                report);
+            o.readOk      = pkg.success || !o.saveOk;
             o.readError   = pkg.error;
             o.creatorNote = pkg.creatorNote;
-            if (!pkg.success)
-                return o;
-            if (pkg.stars.empty()) {
-                o.empty = true;
-                return o;
-            }
+            o.empty       = pkg.success && o.saved == 0;
 
-            // Ensure referenced instruments exist (never clobber the user's).
-            report(42, QStringLiteral("Saving instruments…"));
-            for (auto &inst : pkg.instruments) {
-                if (!inst)
-                    continue;
-                if (!dbm->getInstrumentById(inst->getId()) &&
-                    !dbm->getInstrumentByName(inst->getName()))
-                    dbm->saveInstrument(inst);
-            }
-
-            // Persist stars → progress 45..100.
-            dbm->beginTransaction();
-            const int n = int(pkg.stars.size());
-            int       i = 0;
-            for (auto &star : pkg.stars) {
-                ++i;
-                if (!star)
-                    continue;
-                remapIdsForImport(star);
-                if (!persistImportedStar(dbm, projectId, star)) {
-                    o.saveOk = false;
-                    break;
+            // Referenced instruments, never clobbering the user's own. Rows
+            // only point at them by id, so after the stars is as good as before.
+            if (pkg.success && o.saveOk)
+                for (auto &inst : pkg.instruments) {
+                    if (!inst)
+                        continue;
+                    if (!dbm->getInstrumentById(inst->getId()) &&
+                        !dbm->getInstrumentByName(inst->getName()))
+                        dbm->saveInstrument(inst);
                 }
-                ++o.saved;
-                report(45 + int(55.0 * i / n),
-                       QStringLiteral("Saving star %1 of %2").arg(i).arg(n));
-            }
-            if (o.saveOk)
+
+            if (pkg.success && o.saveOk && !o.empty)
                 dbm->commitTransaction();
             else
                 dbm->rollbackTransaction();
-
-            if (o.saveOk)
-                o.stars = std::move(pkg.stars);
             return o;
         });
 
@@ -345,9 +329,10 @@ int StarShare::importFileInteractive(QWidget                 *parent,
         return -1;
     }
 
-    for (auto &star : out.stars)
-        if (star)
-            project->addStar(star);
+    // The imported stars were saved and released; the project reloads its
+    // stars (with their lazy loaders) the next time it is opened, which the
+    // caller does right away.
+    project->setStars({}, false);
 
     QString extra;
     if (!out.creatorNote.isEmpty())

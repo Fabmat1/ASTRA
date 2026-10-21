@@ -881,6 +881,12 @@ target_link_libraries(astra_core PUBLIC
     Qt6::Concurrent
     GAEL::core
 )
+
+# StarPackage writes its zlib stream itself (chunks compressed in parallel)
+# instead of through qCompress. cfitsio needs zlib too, so every platform that
+# builds ASTRA already has it.
+find_package(ZLIB REQUIRED)
+target_link_libraries(astra_core PRIVATE ZLIB::ZLIB)
 set_target_properties(astra_core PROPERTIES AUTOMOC ON)
 
 # ── Create executable: main + everything under a ui/ folder ──────────────────

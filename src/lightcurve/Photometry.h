@@ -402,6 +402,11 @@ public:
 
     void addLightcurve(const QString& source, const std::vector<LightcurvePoint>& points);
     std::vector<LightcurvePoint> getLightcurve(const QString& source) const;
+    /// Whether getLightcurve(source) would answer from memory, without
+    /// reading the lightcurve's file.
+    bool hasLightcurveLoaded(const QString& source) const {
+        return _lightcurves.count(source) > 0;
+    }
     std::vector<QString> getLightcurveSources() const;
     enum class MergeResult { Identical, Replaced, Merged, Added };
     MergeResult mergeLightcurve(const QString& source, const std::vector<LightcurvePoint>& newPoints);
