@@ -4,6 +4,9 @@
 #include <QStringList>
 #include <QVector>
 #include <QWidget>
+#include <atomic>
+#include <functional>
+#include <memory>
 #include <optional>
 
 class QProgressBar;
@@ -80,15 +83,23 @@ private:
     void populateCategoryCombo();
     void populateGridCombo();
 
-    void    startScan();
+    // localOnly drops every remote ("ssh://") base path from this scan.
+    void    startScan(bool localOnly = false);
     void    onScanFinished();
+    void    onRemoteScanProgress(const QString &hostName);
+    void    abandonScanForLocalOnly();
     void    finishPopulate(); 
     void    setLoading(bool on);
     void    applySelection(const QString &category, const QString &rel);
     void    applyDefaultSelection();   // prefer sdB / "sdB standard" if present
-    static QVector<DiscoveredGrid> performScan( // runs on worker thread
+    // Runs on a worker thread. `onRemoteHost` is called with the host name
+    // before each remote listing and with an empty string after it; remote
+    // bases not yet started are skipped once `skipRemote` is set.
+    static QVector<DiscoveredGrid> performScan(
         const QStringList &basePaths, const QStringList &markers,
-        const QStringList &skipTokens, const QVector<GridPreset> &presets);
+        const QStringList &skipTokens, const QVector<GridPreset> &presets,
+        const std::function<void(const QString &)> &onRemoteHost,
+        const std::atomic_bool &skipRemote);
 
     QStringList _skipTokens{"raw"};
 
@@ -104,9 +115,12 @@ private:
     QLabel*      _statusLabel  = nullptr;
     QPushButton* _refreshBtn   = nullptr;
     QPushButton* _configBtn    = nullptr;
+    QPushButton* _localOnlyBtn = nullptr;
 
     QFutureWatcher<QVector<DiscoveredGrid>> *_scanWatcher = nullptr;
     QProgressBar                            *_spinner     = nullptr;
+    std::shared_ptr<std::atomic_bool>        _scanSkipRemote;
+    bool                                     _scanIsLocalOnly = false;
 
     QString _pendingCat, _pendingSel;
 

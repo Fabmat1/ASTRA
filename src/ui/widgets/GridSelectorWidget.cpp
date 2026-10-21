@@ -4,6 +4,7 @@
 #include "app/ui/UiIcons.h"
 
 #include "app/Logger.h"
+#include <QApplication>
 #include <QComboBox>
 #include <QDir>
 #include <QDirIterator>
@@ -18,8 +19,10 @@
 #include <QHash>
 #include <QLabel>
 #include <QLineEdit>
+#include <QPointer>
 #include <QProgressBar>
 #include <QPushButton>
+#include <QScopeGuard>
 #include <QSet>
 #include <QVBoxLayout>
 #include <functional>
@@ -298,6 +301,13 @@ void GridSelectorWidget::buildUi()
     _spinner->setVisible(false);
     bar->addWidget(_spinner);
 
+    _localOnlyBtn = new QPushButton("Local only");
+    _localOnlyBtn->setToolTip(
+        "Stop waiting for the remote host and list local grids only.\n"
+        "Refresh scans the remote hosts again.");
+    _localOnlyBtn->setVisible(false);
+    bar->addWidget(_localOnlyBtn);
+
     _refreshBtn = new QPushButton;
     UiIcons::apply(_refreshBtn, UiIcons::Role::Refresh);
     _refreshBtn->setToolTip("Rescan grid base paths");
@@ -326,6 +336,8 @@ void GridSelectorWidget::buildUi()
     });
     connect(_configBtn, &QPushButton::clicked,
             this, &GridSelectorWidget::configurePathsRequested);
+    connect(_localOnlyBtn, &QPushButton::clicked,
+            this, &GridSelectorWidget::abandonScanForLocalOnly);
 }
 
 void GridSelectorWidget::setBasePaths(const QStringList& paths)
@@ -345,14 +357,16 @@ void GridSelectorWidget::setShowConfigureButton(bool show)
 
 void GridSelectorWidget::refresh() { startScan(); }
 
-void GridSelectorWidget::startScan() {
+void GridSelectorWidget::startScan(bool localOnly) {
     const QString cacheKey = _basePaths.join('|') + "##" + _markers.join('|') +
                              "##" + _skipTokens.join('|');
 
-    // Cache hit -> synchronous, instant.
+    // Cache hit -> synchronous, instant. A local-only scan never reads the
+    // cache: the cached entry covers the remote hosts it is meant to skip.
     auto it = gridScanCache().constFind(cacheKey);
-    if (it != gridScanCache().constEnd()) {
-        _discovered = it.value();
+    if (!localOnly && it != gridScanCache().constEnd()) {
+        _discovered      = it.value();
+        _scanIsLocalOnly = false;
         LOG_DEBUG(
             "GridScan",
             QString("Using cached scan (%1 grids)").arg(_discovered.size()));
@@ -363,6 +377,7 @@ void GridSelectorWidget::startScan() {
     if (_scanWatcher && _scanWatcher->isRunning())
         return; // a scan is already in flight
 
+    _scanIsLocalOnly = localOnly;
     setLoading(true);
 
     auto *watcher = new QFutureWatcher<QVector<DiscoveredGrid>>(this);
@@ -371,14 +386,66 @@ void GridSelectorWidget::startScan() {
             &GridSelectorWidget::onScanFinished);
 
     // Snapshot inputs by value so the worker touches nothing on `this`.
-    const QStringList         basePaths = _basePaths;
+    QStringList basePaths;
+    for (const QString &b : _basePaths)
+        if (!localOnly || !astra::remote::isRemoteGridUrl(b.trimmed()))
+            basePaths << b;
     const QStringList         markers   = _markers;
     const QStringList         skip      = _skipTokens;
     const QVector<GridPreset> presets   = _presets;
 
-    watcher->setFuture(QtConcurrent::run([basePaths, markers, skip, presets] {
-        return performScan(basePaths, markers, skip, presets);
-    }));
+    // The flag doubles as this scan's identity: progress posted by a scan
+    // that has since been abandoned no longer matches _scanSkipRemote.
+    auto skipRemote = std::make_shared<std::atomic_bool>(false);
+    _scanSkipRemote = skipRemote;
+
+    // Posted through qApp, which outlives every worker; the widget itself may
+    // be gone by the time a slow remote listing reports back.
+    QPointer<GridSelectorWidget> self(this);
+    auto onRemoteHost = [self, skipRemote](const QString &hostName) {
+        QMetaObject::invokeMethod(
+            qApp,
+            [self, skipRemote, hostName] {
+                if (self && self->_scanSkipRemote == skipRemote)
+                    self->onRemoteScanProgress(hostName);
+            },
+            Qt::QueuedConnection);
+    };
+
+    watcher->setFuture(QtConcurrent::run(
+        [basePaths, markers, skip, presets, onRemoteHost, skipRemote] {
+            return performScan(basePaths, markers, skip, presets, onRemoteHost,
+                               *skipRemote);
+        }));
+}
+
+void GridSelectorWidget::onRemoteScanProgress(const QString &hostName) {
+    if (!_scanWatcher)
+        return;
+    _localOnlyBtn->setVisible(!hostName.isEmpty());
+    _statusLabel->setText(
+        hostName.isEmpty() ? QString("Scanning grids…")
+                           : QString("Scanning grids on %1…").arg(hostName));
+}
+
+void GridSelectorWidget::abandonScanForLocalOnly() {
+    if (!_scanWatcher)
+        return;
+
+    // A remote listing cannot be interrupted mid-call, so the running scan is
+    // left to finish on its own and its result dropped. The flag makes it skip
+    // any remote base it has not reached yet.
+    _scanSkipRemote->store(true);
+    _scanSkipRemote.reset();
+
+    auto *old = _scanWatcher;
+    _scanWatcher = nullptr;
+    disconnect(old, nullptr, this, nullptr);
+    connect(old, &QFutureWatcher<QVector<DiscoveredGrid>>::finished, old,
+            &QObject::deleteLater);
+
+    LOG_INFO("GridScan", "Remote grid scan abandoned, rescanning local only");
+    startScan(true);
 }
 
 void GridSelectorWidget::onScanFinished() {
@@ -386,13 +453,19 @@ void GridSelectorWidget::onScanFinished() {
         return;
     _discovered = _scanWatcher->result();
 
-    const QString cacheKey = _basePaths.join('|') + "##" + _markers.join('|') +
-                             "##" + _skipTokens.join('|');
-    gridScanCache().insert(cacheKey,
-                           _discovered); // main thread: QHash safe here
+    // A local-only result is not what the full key describes, so caching it
+    // would hide the remote grids from every other selector.
+    if (!_scanIsLocalOnly) {
+        const QString cacheKey = _basePaths.join('|') + "##" +
+                                 _markers.join('|') + "##" +
+                                 _skipTokens.join('|');
+        gridScanCache().insert(cacheKey,
+                               _discovered); // main thread: QHash safe here
+    }
 
     _scanWatcher->deleteLater();
     _scanWatcher = nullptr;
+    _scanSkipRemote.reset();
 
     setLoading(false);
     finishPopulate();
@@ -400,6 +473,7 @@ void GridSelectorWidget::onScanFinished() {
 
 void GridSelectorWidget::setLoading(bool on) {
     _spinner->setVisible(on);
+    _localOnlyBtn->setVisible(false);
     _catCombo->setEnabled(!on);
     _gridCombo->setEnabled(!on);
     _overrideEdit->setEnabled(!on);
@@ -419,9 +493,10 @@ void GridSelectorWidget::finishPopulate() {
                                   .arg(_basePaths.size())
                                   .arg(_basePaths.size() == 1 ? "" : "s"));
     else
-        _statusLabel->setText(QString("%1 grid%2 found")
+        _statusLabel->setText(QString("%1 grid%2 found%3")
                                   .arg(_discovered.size())
-                                  .arg(_discovered.size() == 1 ? "" : "s"));
+                                  .arg(_discovered.size() == 1 ? "" : "s")
+                                  .arg(_scanIsLocalOnly ? " (local only)" : ""));
 
     // Apply any selection requested before the scan completed.
     if (_scanPending) {
@@ -458,7 +533,9 @@ void GridSelectorWidget::applyDefaultSelection()
 
 QVector<DiscoveredGrid> GridSelectorWidget::performScan(
     const QStringList &basePaths, const QStringList &markers,
-    const QStringList &skipTokens, const QVector<GridPreset> &presets) {
+    const QStringList &skipTokens, const QVector<GridPreset> &presets,
+    const std::function<void(const QString &)> &onRemoteHost,
+    const std::atomic_bool &skipRemote) {
     QElapsedTimer timer;
     timer.start();
     int  dirsVisited = 0, dirsPruned = 0, dirsSkipped = 0;
@@ -485,9 +562,18 @@ QVector<DiscoveredGrid> GridSelectorWidget::performScan(
         // streaming channel instead of being walked locally: one round trip
         // for the whole tree rather than a directory listing per level.
         if (astra::remote::isRemoteGridUrl(base)) {
+            if (skipRemote.load()) {
+                LOG_DEBUG("GridScan",
+                          QString("Skipping remote base %1 (local only)")
+                              .arg(base));
+                continue;
+            }
             QString hostName, remoteDir;
             if (!astra::remote::parseRemoteGridUrl(base, &hostName, &remoteDir))
                 continue;
+            onRemoteHost(hostName);
+            const auto remoteDone =
+                qScopeGuard([&onRemoteHost] { onRemoteHost(QString()); });
             auto *chan =
                 astra::remote::RemoteHostRegistry::instance().channelByName(
                     hostName);
