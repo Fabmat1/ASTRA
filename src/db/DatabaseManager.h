@@ -2,6 +2,7 @@
 #define DATABASEMANAGER_H
 
 #include <QObject>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <vector>
@@ -65,6 +66,16 @@ public:
     bool saveStar(const QString& projectId, std::shared_ptr<Star> star);
     bool saveStars(const QString& projectId, const std::vector<std::shared_ptr<Star>>& stars);
     bool moveStarsToProject(const std::vector<QString>& starIds, const QString& targetProjectId);
+    /// See StarRepository::copyStarsToProject. Returns the copies' ids, parallel
+    /// to @p starIds; ok is false (and nothing was copied) on failure.
+    struct StarCopyResult {
+        bool                 ok = false;
+        std::vector<QString> newStarIds;
+        QString              error;
+    };
+    StarCopyResult copyStarsToProject(
+        const std::vector<QString>& starIds, const QString& targetProjectId,
+        const std::function<void(int percent, const QString& phase)>& progress = {});
     std::vector<std::shared_ptr<Star>> loadStars(const QString& projectId);
     bool updateStar(const QString& projectId, std::shared_ptr<Star> star);
     bool deleteStar(const QString& projectId, const QString& starId);

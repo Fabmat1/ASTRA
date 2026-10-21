@@ -2,6 +2,7 @@
 #include "core/Star.h"
 #include <QUuid>
 #include <algorithm>
+#include <unordered_set>
 
 Project::Project(const QString& name, const QString& description, const QString& thumbnailPath)
     : _name(name)
@@ -102,9 +103,17 @@ void Project::removeStar(std::shared_ptr<Star> star)
 
 void Project::removeStars(const std::vector<std::shared_ptr<Star>>& stars)
 {
-    for (const auto& star : stars) {
-        removeStar(star);
-    }
+    // One pass: removing them one at a time searched and shifted the whole
+    // list per star, which a move of thousands of stars spent seconds on.
+    const std::unordered_set<const Star*> gone = [&stars] {
+        std::unordered_set<const Star*> s;
+        s.reserve(stars.size());
+        for (const auto& star : stars) s.insert(star.get());
+        return s;
+    }();
+    std::erase_if(_stars, [&gone](const std::shared_ptr<Star>& s) {
+        return gone.count(s.get()) > 0;
+    });
 }
 
 std::shared_ptr<Star> Project::getStar(const QString& sourceId) const

@@ -20,7 +20,12 @@
 #include "spectra/Spectrum.h"
 #include "rv/RadialVelocity.h"
 #include <QFile>
+#include <QHash>
 #include <QTextStream>
+#include <QtConcurrent>
+
+#include <algorithm>
+#include <utility>
 
 StarRepository::StarRepository(DBAccess& db) : _db(db) {}
 
@@ -226,6 +231,367 @@ bool StarRepository::moveStarsToProject(const std::vector<QString>& starIds,
     }
     db.commit();
     return true;
+}
+
+// ── Copying stars ─────────────────────────────────────────────────────────────
+//
+// A copy used to go through StarPackage: serialise the selection with every
+// spectrum, fit and lightcurve loaded into memory, parse that buffer back into
+// a second set of objects, then save those star by star. A large selection
+// held its data twice over and could exhaust memory before the first row was
+// written. Here no star is ever loaded: rows are duplicated inside SQLite with
+// INSERT ... SELECT, ids are swapped through a temporary old -> new map, and
+// the data files are copied on disk (QFile::copy clones them where the file
+// system can).
+
+namespace {
+
+// A version-4 UUID in the form DBAccess::generateUUID() produces.
+const QString kSqlUuid = QStringLiteral(
+    "lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || "
+    "substr(lower(hex(randomblob(2))), 2) || '-' || "
+    "substr('89ab', 1 + (abs(random()) % 4), 1) || "
+    "substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))");
+
+// Stars copied per round. Bounds the id map and the file list held at once.
+constexpr int kCopyChunk = 250;
+
+/// A table of a star's tree. Its rows are the ones whose `parentCol` points at
+/// a copied row of kind `parentKind`; `remap` names further columns that
+/// refer into the tree and follow it to the copy (a reference outside the
+/// copied stars is kept as it is).
+struct CopyTable {
+    QString                        table;
+    QString                        kind;
+    QString                        parentCol;
+    QString                        parentKind;
+    QList<QPair<QString, QString>> remap;   // column, kind
+};
+
+// Parents before children: each table's map is built from its parent's.
+const QList<CopyTable>& copyTables()
+{
+    static const QList<CopyTable> t = {
+        {"spectra",            "spectrum",          "star_id",       "star",       {}},
+        {"spectral_fits",      "spectral_fit",      "spectrum_id",   "spectrum",   {}},
+        {"photometry",         "photometry",        "star_id",       "star",       {}},
+        {"photometric_points", "photometric_point", "photometry_id", "photometry", {}},
+        {"lightcurves",        "lightcurve",        "photometry_id", "photometry", {}},
+        {"lc_fits",            "lc_fit",            "lightcurve_id", "lightcurve", {}},
+        {"sed_models",         "sed_model",         "photometry_id", "photometry", {}},
+        {"rv_curves",          "rv_curve",          "star_id",       "star",       {}},
+        {"rv_points",          "rv_point",          "curve_id",      "rv_curve",
+         {{"spectrum_id", "spectrum"}, {"spectral_fit_id", "spectral_fit"}}},
+        {"rv_fits",            "rv_fit",            "curve_id",      "rv_curve",   {}},
+        {"periodograms",       "periodogram",       "star_id",       "star",       {}},
+        {"rv_periodograms",    "rv_periodogram",    "curve_id",      "rv_curve",
+         {{"star_id", "star"}}},
+    };
+    return t;
+}
+
+/// A data-file column and where the copy's file belongs. `select` lists the
+/// copied rows of `kind` as (id, current path, ...) and `path` turns one
+/// result row into the file's canonical location, the one the repository
+/// would write (a later save of the copy then rewrites that file instead of
+/// deleting it in favour of its own).
+struct FileColumn {
+    QString table;
+    QString column;
+    QString select;
+    std::function<QString(const QString& base, const QSqlQuery& q)> path;
+};
+
+const QList<FileColumn>& fileColumns()
+{
+    // %1 is the copied rows' kind in the map; every select starts from it.
+    static const QString from =
+        QStringLiteral(" FROM temp.astra_copy_map m JOIN %1 x ON x.id = m.new ");
+    static const QList<FileColumn> f = {
+        {"spectra", "data_file",
+         "SELECT x.id, x.data_file, x.star_id" + from.arg("spectra") +
+             "WHERE m.kind = 'spectrum'",
+         [](const QString& b, const QSqlQuery& q) {
+             return DataStore::spectrumPath(b, q.value(2).toString(), q.value(0).toString());
+         }},
+        {"spectral_fits", "model_data_file",
+         "SELECT x.id, x.model_data_file, s.star_id, x.spectrum_id" +
+             from.arg("spectral_fits") +
+             "JOIN spectra s ON s.id = x.spectrum_id WHERE m.kind = 'spectral_fit'",
+         [](const QString& b, const QSqlQuery& q) {
+             return DataStore::spectralFitPath(b, q.value(2).toString(),
+                                               q.value(3).toString(), q.value(0).toString());
+         }},
+        {"photometry", "photometric_points_file",
+         "SELECT x.id, x.photometric_points_file, x.star_id" + from.arg("photometry") +
+             "WHERE m.kind = 'photometry'",
+         [](const QString& b, const QSqlQuery& q) {
+             return DataStore::photometricPointsPath(b, q.value(2).toString(),
+                                                     q.value(0).toString());
+         }},
+        {"photometry", "sed_points_file",
+         "SELECT x.id, x.sed_points_file, x.star_id" + from.arg("photometry") +
+             "WHERE m.kind = 'photometry'",
+         [](const QString& b, const QSqlQuery& q) {
+             return DataStore::sedPhotometryPointsPath(b, q.value(2).toString(),
+                                                       q.value(0).toString());
+         }},
+        {"lightcurves", "data_file",
+         "SELECT x.id, x.data_file, p.star_id, x.photometry_id, x.source" +
+             from.arg("lightcurves") +
+             "JOIN photometry p ON p.id = x.photometry_id WHERE m.kind = 'lightcurve'",
+         [](const QString& b, const QSqlQuery& q) {
+             return DataStore::lightcurvePath(b, q.value(2).toString(),
+                                              q.value(3).toString(), q.value(4).toString());
+         }},
+        {"lc_fits", "data_file",
+         "SELECT x.id, x.data_file, p.star_id, l.photometry_id" + from.arg("lc_fits") +
+             "JOIN lightcurves l ON l.id = x.lightcurve_id "
+             "JOIN photometry p ON p.id = l.photometry_id WHERE m.kind = 'lc_fit'",
+         [](const QString& b, const QSqlQuery& q) {
+             return DataStore::lcFitPath(b, q.value(2).toString(),
+                                         q.value(3).toString(), q.value(0).toString());
+         }},
+        {"sed_models", "model_data_file",
+         "SELECT x.id, x.model_data_file, p.star_id, x.photometry_id" +
+             from.arg("sed_models") +
+             "JOIN photometry p ON p.id = x.photometry_id WHERE m.kind = 'sed_model'",
+         [](const QString& b, const QSqlQuery& q) {
+             return DataStore::sedModelPath(b, q.value(2).toString(),
+                                            q.value(3).toString(), q.value(0).toString());
+         }},
+        {"periodograms", "data_file",
+         "SELECT x.id, x.data_file, x.star_id" + from.arg("periodograms") +
+             "WHERE m.kind = 'periodogram'",
+         [](const QString& b, const QSqlQuery& q) {
+             return DataStore::periodogramPath(b, q.value(2).toString(), q.value(0).toString());
+         }},
+        {"rv_periodograms", "data_file",
+         "SELECT x.id, x.data_file, c.star_id" + from.arg("rv_periodograms") +
+             "JOIN rv_curves c ON c.id = x.curve_id WHERE m.kind = 'rv_periodogram'",
+         [](const QString& b, const QSqlQuery& q) {
+             return DataStore::periodogramPath(b, q.value(2).toString(),
+                                               "rv_" + q.value(0).toString());
+         }},
+    };
+    return f;
+}
+
+struct FileJob {
+    QString table, column, id, src, dst;
+    bool    failed = false;
+};
+
+QString quoted(const QString& identifier)
+{
+    return '"' + QString(identifier).replace('"', "\"\"") + '"';
+}
+
+/// INSERT INTO table SELECT ... for the copied rows of `kind`: every column
+/// is taken over as it is unless `exprFor` gives it another expression over
+/// the source row `src` and its map entry `m`.
+QString copyInsertSql(const QString& table, const QStringList& columns,
+                      const QString& kind, const QHash<QString, QString>& exprFor)
+{
+    QStringList cols, exprs;
+    for (const QString& c : columns) {
+        cols << quoted(c);
+        exprs << exprFor.value(c, "src." + quoted(c));
+    }
+    return QStringLiteral(
+               "INSERT INTO %1 (%2) SELECT %3 FROM temp.astra_copy_map m "
+               "JOIN %1 src ON src.id = m.old WHERE m.kind = '%4'")
+        .arg(quoted(table), cols.join(", "), exprs.join(", "), kind);
+}
+
+QString mappedExpr(const QString& column, const QString& kind, bool keepUnmapped)
+{
+    const QString lookup =
+        QStringLiteral("(SELECT new FROM temp.astra_copy_map WHERE kind = '%1' "
+                       "AND old = src.%2)").arg(kind, quoted(column));
+    return keepUnmapped ? QStringLiteral("COALESCE(%1, src.%2)").arg(lookup, quoted(column))
+                        : lookup;
+}
+
+}   // namespace
+
+StarRepository::CopyResult
+StarRepository::copyStarsToProject(const std::vector<QString>& starIds,
+                                   const QString& targetProjectId,
+                                   const CopyProgress& progress)
+{
+    CopyResult r;
+    if (starIds.empty() || targetProjectId.isEmpty()) {
+        r.error = QStringLiteral("nothing to copy");
+        return r;
+    }
+    auto report = [&progress](int pct, const QString& phase) {
+        if (progress) progress(pct, phase);
+    };
+
+    QSqlDatabase db  = _db.threadConnection();
+    const QString base = QFileInfo(_db.databasePath()).absolutePath() + "/data";
+
+    // Columns per table, read from the schema so a column a later migration
+    // adds is copied without anyone having to list it here. A table created
+    // lazily (rv_periodograms) may not exist yet and is skipped.
+    QHash<QString, QStringList> columns;
+    {
+        QSqlQuery q(db);
+        QStringList tables{"stars"};
+        for (const CopyTable& t : copyTables()) tables << t.table;
+        for (const QString& t : tables) {
+            if (!q.exec(QStringLiteral("PRAGMA table_info(%1)").arg(quoted(t)))) continue;
+            QStringList cols;
+            while (q.next()) cols << q.value(1).toString();
+            if (!cols.isEmpty()) columns.insert(t, cols);
+        }
+    }
+
+    auto fail = [&r, &db](const QString& what, const QSqlQuery& q) {
+        r.error = QStringLiteral("%1: %2").arg(what, q.lastError().text());
+        LOG_WARNING("DB", "copyStarsToProject: " + r.error);
+        return false;
+    };
+
+    QSqlQuery q(db);
+    q.exec("DROP TABLE IF EXISTS temp.astra_copy_map");
+    q.exec("DROP TABLE IF EXISTS temp.astra_copy_src");
+    if (!q.exec("CREATE TEMP TABLE astra_copy_map (kind TEXT NOT NULL, old TEXT NOT NULL, "
+                "new TEXT NOT NULL, PRIMARY KEY (kind, old))") ||
+        !q.exec("CREATE TEMP TABLE astra_copy_src (id TEXT PRIMARY KEY)")) {
+        fail("temporary tables", q);
+        return r;
+    }
+
+    // The statements of one round, built once.
+    QStringList mapSql, insertSql;
+    mapSql << QStringLiteral(
+                  "INSERT INTO temp.astra_copy_map (kind, old, new) SELECT 'star', s.id, %1 "
+                  "FROM temp.astra_copy_src c JOIN stars s ON s.id = c.id").arg(kSqlUuid);
+    insertSql << copyInsertSql("stars", columns.value("stars"), "star",
+                               {{"id", "m.new"}, {"project_id", ":target"}});
+    for (const CopyTable& t : copyTables()) {
+        if (!columns.contains(t.table)) continue;
+        mapSql << QStringLiteral(
+                      "INSERT INTO temp.astra_copy_map (kind, old, new) "
+                      "SELECT '%1', c.id, %2 FROM temp.astra_copy_map p "
+                      "JOIN %3 c ON c.%4 = p.old WHERE p.kind = '%5'")
+                      .arg(t.kind, kSqlUuid, quoted(t.table), quoted(t.parentCol), t.parentKind);
+        QHash<QString, QString> expr{{"id", "m.new"},
+                                     {t.parentCol, mappedExpr(t.parentCol, t.parentKind, false)}};
+        for (const auto& [col, kind] : t.remap)
+            if (columns.value(t.table).contains(col))
+                expr.insert(col, mappedExpr(col, kind, true));
+        insertSql << copyInsertSql(t.table, columns.value(t.table), t.kind, expr);
+    }
+
+    if (!db.transaction()) {
+        r.error = QStringLiteral("could not start a transaction: %1")
+                      .arg(db.lastError().text());
+        return r;
+    }
+
+    QHash<QString, QString> newIdOf;     // old star id -> copy
+    bool ok = true;
+    const int total = int(starIds.size());
+
+    for (int from = 0; ok && from < total; from += kCopyChunk) {
+        const int to = std::min(total, from + kCopyChunk);
+        report(int(100.0 * from / total),
+               QStringLiteral("Copying stars %1-%2 of %3").arg(from + 1).arg(to).arg(total));
+
+        ok = q.exec("DELETE FROM temp.astra_copy_map") && q.exec("DELETE FROM temp.astra_copy_src");
+        if (!ok) { fail("clearing the id map", q); break; }
+
+        QSqlQuery add(db);
+        add.prepare("INSERT OR IGNORE INTO temp.astra_copy_src (id) VALUES (?)");
+        for (int i = from; ok && i < to; ++i) {
+            add.bindValue(0, starIds[size_t(i)]);
+            if (!add.exec()) ok = fail("listing the stars", add);
+        }
+
+        // Ids first (every table's map is drawn from its parent's), then the
+        // rows themselves, which look their parents' new ids up in that map.
+        for (const QString& sql : mapSql)
+            if (ok && !q.exec(sql)) ok = fail("mapping ids", q);
+        for (const QString& sql : insertSql) {
+            if (!ok) break;
+            QSqlQuery ins(db);
+            ins.prepare(sql);
+            if (sql.contains(":target")) ins.bindValue(":target", targetProjectId);
+            if (!ins.exec()) ok = fail("copying rows", ins);
+        }
+        if (!ok) break;
+
+        if (q.exec("SELECT old, new FROM temp.astra_copy_map WHERE kind = 'star'"))
+            while (q.next()) newIdOf.insert(q.value(0).toString(), q.value(1).toString());
+
+        // The copied rows still name the originals' files. Give each its own
+        // file at the place the repository would put it.
+        std::vector<FileJob> jobs;
+        for (const FileColumn& f : fileColumns()) {
+            if (!columns.value(f.table).contains(f.column)) continue;
+            if (!q.exec(f.select)) { ok = fail("listing data files", q); break; }
+            while (q.next()) {
+                const QString src = q.value(1).toString();
+                if (src.isEmpty()) continue;
+                jobs.push_back({f.table, f.column, q.value(0).toString(), src,
+                                f.path(base, q)});
+            }
+        }
+        if (!ok) break;
+
+        QtConcurrent::blockingMap(jobs, [](FileJob& j) {
+            if (!QFile::exists(j.src)) {     // the original has lost it too
+                j.dst.clear();
+                return;
+            }
+            DataStore::ensureDirForFile(j.dst);
+            QFile::remove(j.dst);
+            j.failed = !QFile::copy(j.src, j.dst);
+        });
+
+        QHash<QString, QSqlQuery> updates;   // one prepared UPDATE per column
+        for (const FileJob& j : jobs) {
+            if (j.failed) {
+                r.error = QStringLiteral("could not copy %1 to %2").arg(j.src, j.dst);
+                ok = false;
+                break;
+            }
+            const QString key = j.table + '.' + j.column;
+            auto it = updates.find(key);
+            if (it == updates.end()) {
+                it = updates.insert(key, QSqlQuery(db));
+                it->prepare(QStringLiteral("UPDATE %1 SET %2 = ? WHERE id = ?")
+                                .arg(quoted(j.table), quoted(j.column)));
+            }
+            QSqlQuery& up = *it;
+            up.bindValue(0, j.dst.isEmpty() ? QVariant() : QVariant(j.dst));
+            up.bindValue(1, j.id);
+            if (!up.exec()) { ok = fail("pointing a copy at its file", up); break; }
+        }
+    }
+
+    if (ok && !db.commit()) {
+        r.error = QStringLiteral("commit failed: %1").arg(db.lastError().text());
+        ok = false;
+    }
+    if (!ok) {
+        db.rollback();
+        // Whatever files were copied belong to rows that no longer exist.
+        for (const QString& id : std::as_const(newIdOf))
+            DataStore::removeStarData(base, id);
+        newIdOf.clear();
+    }
+    q.exec("DROP TABLE IF EXISTS temp.astra_copy_map");
+    q.exec("DROP TABLE IF EXISTS temp.astra_copy_src");
+
+    r.ok = ok;
+    r.newStarIds.reserve(starIds.size());
+    for (const QString& id : starIds) r.newStarIds.push_back(newIdOf.value(id));
+    report(100, QStringLiteral("Done"));
+    return r;
 }
 
 // %1 / %2 are the generated element abundance columns and placeholders.

@@ -441,74 +441,25 @@ int copyStarsToProject(QWidget *parent, ApplicationController *controller,
     DatabaseManager *dbm      = controller->databaseManager();
     const QString    targetId = target->getId();
 
-    struct CopyOutcome {
-        bool    ok    = false;
-        int     saved = 0;
-        QString error;
-    };
+    std::vector<QString> ids;
+    ids.reserve(stars.size());
+    for (const auto &s : stars)
+        if (s && !s->getId().isEmpty())
+            ids.push_back(s->getId());
+    if (ids.empty())
+        return 0;
 
-    // The whole pipeline runs off the GUI thread behind a modal progress bar:
-    // serializing to a buffer deep-loads lazy side-files, reading it back yields
-    // detached star objects holding all their data in memory, and persisting
-    // (with remapped IDs + cleared data-file paths) writes fresh DataStore
-    // files so the copies never share storage with the originals.
-    const CopyOutcome out = runWithProgress<CopyOutcome>(
+    // Row-to-row in the database and file-to-file on disk, off the GUI
+    // thread: no star is loaded, so the cost is the size of the data, not of
+    // the objects it would have become (see StarRepository).
+    const auto out = runWithProgress<DatabaseManager::StarCopyResult>(
         parent, QStringLiteral("Copying stars…"),
-        [dbm, targetId, stars](const StarPackage::ProgressFn &report)
-            -> CopyOutcome {
-            CopyOutcome o;
-
-            // Serialize → progress 0..45.
-            QString          err;
-            const QByteArray buf = StarPackage::writeToBuffer(
-                stars, StarPackage::ExportOptions{}, &err,
-                StarPackage::InstrumentResolver{},
-                [&report](int p, const QString &ph) {
-                    report(int(p * 0.45), ph);
-                });
-            if (buf.isEmpty()) {
-                o.error = err.isEmpty()
-                              ? QStringLiteral("Failed to serialize stars.")
-                              : err;
-                return o;
-            }
-
-            // Read back → progress 45..55.
-            auto pkg = StarPackage::readFromBuffer(
-                buf, [&report](int p, const QString &ph) {
-                    report(45 + int(p * 0.10), ph);
-                });
-            if (!pkg.success) {
-                o.error = pkg.error;
-                return o;
-            }
-
-            // Persist into the target project → progress 55..100. Instruments
-            // are referenced by id and live in the same database, so there is
-            // nothing to import for them here.
-            dbm->beginTransaction();
-            const int n = int(pkg.stars.size());
-            int       i = 0;
-            o.ok        = true;
-            for (auto &star : pkg.stars) {
-                ++i;
-                if (!star)
-                    continue;
-                remapIdsForImport(star);
-                if (!persistImportedStar(dbm, targetId, star)) {
-                    o.ok = false;
-                    break;
-                }
-                ++o.saved;
-                report(55 + int(45.0 * i / std::max(1, n)),
-                       QStringLiteral("Saving star %1 of %2").arg(i).arg(n));
-            }
-            if (o.ok)
-                dbm->commitTransaction();
-            else
-                dbm->rollbackTransaction();
-            return o;
+        [dbm, targetId, ids](const StarPackage::ProgressFn &report) {
+            return dbm->copyStarsToProject(ids, targetId, report);
         });
+    int saved = 0;
+    for (const QString &id : out.newStarIds)
+        saved += !id.isEmpty();
 
     if (!out.ok) {
         QMessageBox::critical(
@@ -525,10 +476,10 @@ int copyStarsToProject(QWidget *parent, ApplicationController *controller,
     QMessageBox::information(
         parent, "Stars Copied",
         QString("Copied %1 star%2 to project \"%3\".")
-            .arg(out.saved)
-            .arg(out.saved != 1 ? "s" : "")
+            .arg(saved)
+            .arg(saved != 1 ? "s" : "")
             .arg(target->getName()));
-    return out.saved;
+    return saved;
 }
 
 int moveStarsToProject(QWidget *parent, ApplicationController *controller,

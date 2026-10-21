@@ -1449,6 +1449,7 @@ if(BUILD_TESTING)
             tests/unit/io/star_package.cpp
             tests/unit/rv/rv_error_mc.cpp
             tests/unit/db/delete_star.cpp
+            tests/unit/db/copy_stars.cpp
             tests/unit/remote/batch_settings.cpp
             tests/unit/remote/slurm_limits.cpp
             tests/unit/remote/batch_service.cpp

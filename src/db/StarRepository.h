@@ -1,6 +1,7 @@
 #ifndef STARREPOSITORY_H
 #define STARREPOSITORY_H
 
+#include <functional>
 #include <memory>
 #include <vector>
 #include <QString>
@@ -11,6 +12,15 @@ class Star;
 
 class StarRepository {
 public:
+    /// Outcome of copyStarsToProject(). newStarIds is parallel to the ids
+    /// that were asked for (empty where a star did not exist).
+    struct CopyResult {
+        bool                 ok = false;
+        std::vector<QString> newStarIds;
+        QString              error;
+    };
+    using CopyProgress = std::function<void(int percent, const QString& phase)>;
+
     explicit StarRepository(DBAccess& db);
 
     bool saveStar(const QString& projectId, std::shared_ptr<Star> star);
@@ -19,6 +29,16 @@ public:
     // (spectra, photometry, SEDs, RV, periodograms) is linked by star_id and
     // therefore moves with the star automatically. Runs in one transaction.
     bool moveStarsToProject(const std::vector<QString>& starIds, const QString& targetProjectId);
+    // Duplicates the given stars into another project with fresh ids: every
+    // row that hangs off them (spectra and fits, photometry with its points,
+    // lightcurves, LC fits and SED models, RV curves with points and fits,
+    // periodograms) and every data file those rows point at, so the copies
+    // share nothing with the originals. Works row-to-row in SQL and file-to-
+    // file on disk, never loading a star into memory. Runs in one transaction;
+    // on failure nothing is left behind.
+    CopyResult copyStarsToProject(const std::vector<QString>& starIds,
+                                  const QString& targetProjectId,
+                                  const CopyProgress& progress = {});
     bool updateStar(const QString& projectId, std::shared_ptr<Star> star);
     bool deleteStar(const QString& projectId, const QString& starId);
     size_t getStarCountForProject(const QString& projectId);

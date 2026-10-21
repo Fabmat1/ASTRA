@@ -2025,6 +2025,14 @@ bool DatabaseManager::moveStarsToProject(const std::vector<QString>& starIds, co
     return _stars->moveStarsToProject(starIds, targetProjectId);
 }
 
+DatabaseManager::StarCopyResult DatabaseManager::copyStarsToProject(
+    const std::vector<QString>& starIds, const QString& targetProjectId,
+    const std::function<void(int, const QString&)>& progress)
+{
+    auto c = _stars->copyStarsToProject(starIds, targetProjectId, progress);
+    return {c.ok, std::move(c.newStarIds), std::move(c.error)};
+}
+
 bool DatabaseManager::updateStar(const QString& projectId, std::shared_ptr<Star> star)
 {
     return _stars->updateStar(projectId, star);
