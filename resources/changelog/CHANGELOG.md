@@ -21,6 +21,29 @@
     implemented.
 -->
 
+## v0.9.0 (2026-10-21)
+
+### Added
+- **Mass fitting on a cluster is much faster.** Many fits now go out together as one job instead of one job each.
+- Spectrum downloads and mass fits can run from the command line, without opening the ASTRA window.
+- Mass-fitting plans can be saved to a file and loaded into another project or by another user.
+- Spectral fits leave out each spectrum's unreliable edges and the joins between spectrograph arms.
+- Plots in the star detail window can be linked to share their axes.
+- Composite fits show each component's light contribution.
+
+### Faster
+- **Copy to Project and sharing** handle thousands of stars in seconds instead of minutes or hours, without filling memory.
+- Querying and fetching LAMOST spectra for many stars became much faster.
+
+### Fixed
+- Saving a star no longer duplicates its light curves or doubles its photometry. Affected stars are cleaned up when they are next saved.
+- LAMOST: single-exposure arms are joined instead of interleaved, and coadds are dated by the exposures they contain.
+- Mass fits skip flagged spectra, as the fit dialog does.
+- Gaia lookups keep working when the VizieR TAP service is down.
+- A lost SSH connection is reopened during unattended polls.
+- The grid selector no longer hangs on an unresponsive host.
+- The orbit integration progress bar no longer gets stuck.
+
 ## v0.8.0 (2026-09-10)
 
 ### Added
