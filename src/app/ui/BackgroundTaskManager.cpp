@@ -2447,7 +2447,10 @@ void RVExtractionTask::saveResultsToDatabase()
                 curve->setLogP(curve->computeLogP());
                 canonical->setRVCurve(curve);
                 canonical->updateRVMetricsFromCurve();
-                dbm->saveStar(_projectId, canonical);
+                // Curve, points and fit are saved above; the star's row takes
+                // the new RV metrics. saveStar() would rewrite every spectrum
+                // and lightcurve of the star, here on the GUI thread.
+                dbm->updateStarRow(_projectId, canonical);
             }
         }, Qt::BlockingQueuedConnection);
     }

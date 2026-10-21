@@ -1620,7 +1620,10 @@ void SEDFitDialog::onSetBestFit()
         for (auto& m : _fits) {
             _dbm->saveSEDModelForStar(_star->getId(), m);
         }
-        _dbm->saveStar(_projectId, _star);
+        // The models and the SED points are saved on their own; what is left
+        // is the star's row (the best fit's radii, masses, luminosities).
+        // saveStar() would rewrite every spectrum and lightcurve of the star.
+        _dbm->updateStarRow(_projectId, _star);
     }
 
     updateFitSelector();
@@ -1666,7 +1669,7 @@ void SEDFitDialog::onDeleteFit()
 
         if (_dbm) {
             _dbm->saveSEDModelForStar(_star->getId(), _fits[0]);
-            _dbm->saveStar(_projectId, _star);
+            _dbm->updateStarRow(_projectId, _star);
         }
     }
 
@@ -2712,7 +2715,7 @@ void SEDFitDialog::importFitResults(const QString& workDir)
         _dbm->saveSEDModelForStar(_star->getId(), newModel);
         if (newModel->isBestFit) {
             applyBestFitToStar(newModel);
-            _dbm->saveStar(_projectId, _star);
+            _dbm->updateStarRow(_projectId, _star);
         }
     }
 
