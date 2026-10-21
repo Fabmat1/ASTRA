@@ -328,6 +328,17 @@ def load_best_fit(conn, curve_id):
 # --------------------------------------------------------------------
 
 def fit_is_eccentric(fit):
+    """Whether the fit folds and evaluates on the Keplerian branch.
+
+    Mirrors RVFit::_isEccentric in src/rv/RadialVelocity.cpp: a Keplerian fit
+    that converged to e = 0 is still an eccentric fit -- it degenerates to
+    cos(M + omega), not the circular sin(M), and phaseSign() already folded phi
+    for that branch. The stored is_eccentric flag, not the eccentricity value,
+    therefore decides. A command-line --ecc override on a circular fit still
+    switches the model over.
+    """
+    if fit.get("is_eccentric"):
+        return True
     return fit.get("eccentricity", 0.0) > 0.0
 
 
@@ -358,7 +369,7 @@ def rv_at_phase(fit, phase):
     phase = np.asarray(phase, dtype=float)
     M = 2.0 * np.pi * phase
     e = fit.get("eccentricity", 0.0)
-    if 0.0 < e < 1.0:
+    if fit_is_eccentric(fit) and 0.0 <= e < 1.0:
         E = solve_kepler(np.mod(M, 2.0 * np.pi), e)
         nu = 2.0 * np.arctan2(np.sqrt(1 + e) * np.sin(E / 2),
                               np.sqrt(1 - e) * np.cos(E / 2))
@@ -425,8 +436,16 @@ def load_lc_fits(conn, star_id, best_only=True):
            "WHERE ph.star_id = ?")
     if best_only:
         sql += " AND lf.is_best_fit = 1"
+    sql += " ORDER BY lf.creation_date DESC"
     out = []
+    seen = set()                                # newest best fit per curve+filter
     for r in conn.execute(sql, (star_id,)):
+        # ASTRA allows several fits of one lightcurve to carry is_best_fit=1
+        # (re-fits do not clear the flag on their predecessors). Overlaying all
+        # of them draws one model line per stale fit, so keep only the newest.
+        key = (r["source"].upper(), (r["filter"] or "").upper())
+        if best_only and key in seen:
+            continue
         path = r["data_file"]
         if not path or not os.path.exists(path) or r["period"] <= 0:
             continue
@@ -438,6 +457,7 @@ def load_lc_fits(conn, star_id, best_only=True):
             continue
         if len(mph) == 0:
             continue
+        seen.add(key)
         out.append(dict(source=r["source"].upper(), filter=r["filter"],
                         label=r["label"], period=r["period"],
                         t0_bjd=r["t0_bjd"], is_best_fit=r["is_best_fit"],
