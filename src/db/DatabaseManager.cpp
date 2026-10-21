@@ -2076,7 +2076,7 @@ bool DatabaseManager::saveSpectrum(const QString            &starId,
                                    std::shared_ptr<Spectrum> spectrum,
                                    bool cascadeFits)
 {
-    return _spectra->saveSpectrum(starId, spectrum);
+    return _spectra->saveSpectrum(starId, spectrum, cascadeFits);
 }
 
 bool DatabaseManager::updateSpectraCounts(const QString& starId, int nSpectra,

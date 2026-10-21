@@ -203,31 +203,12 @@ void remapIdsForImport(const std::shared_ptr<Star> &star) {
     }
 }
 
+// saveStar() writes the star's whole tree: its photometry, its spectra with
+// their fits, and its RV curve with points and fits. This used to save all of
+// them a second time on top, every lightcurve and spectrum file included.
 bool persistImportedStar(DatabaseManager *dbm, const QString &projectId,
                          const std::shared_ptr<Star> &star) {
-    const QString starId = star->getId();
-    if (!dbm->saveStar(projectId, star))
-        return false;
-
-    for (auto &sp : star->getSpectra())
-        if (sp && !dbm->saveSpectrum(starId, sp, true))
-            return false;
-
-    if (auto ph = star->getPhotometry())
-        if (!dbm->savePhotometry(starId, ph))
-            return false;
-
-    if (auto curve = star->getRVCurve()) {
-        if (!dbm->saveRadialVelocityCurve(curve, starId))
-            return false;
-        for (auto &p : curve->getRVPoints())
-            if (p)
-                dbm->saveRadialVelocityPoint(p, curve->getId());
-        for (auto &f : curve->getRVFits())
-            if (f)
-                dbm->saveRVFit(f, curve->getId());
-    }
-    return true;
+    return dbm->saveStar(projectId, star);
 }
 
 } // anonymous namespace
