@@ -589,6 +589,7 @@ QJsonObject MassFitPlan::toJson() const
     o["threadsPerFit"] = threadsPerFit;
     o["maxDepth"]      = maxDepth;
     o["haCorePixels"]  = haCorePixels;
+    o["seedFromBestFit"] = seedFromBestFit;
     return o;
 }
 
@@ -615,6 +616,7 @@ MassFitPlan MassFitPlan::fromJson(const QJsonObject& o)
     v.threadsPerFit = readInt(o, "threadsPerFit", v.threadsPerFit);
     v.maxDepth      = readInt(o, "maxDepth", v.maxDepth);
     v.haCorePixels  = readInt(o, "haCorePixels", v.haCorePixels);
+    v.seedFromBestFit = readBool(o, "seedFromBestFit", v.seedFromBestFit);
     return v;
 }
 

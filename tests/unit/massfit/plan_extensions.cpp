@@ -7,6 +7,7 @@
 #include <doctest.h>
 
 #include "massfit/MassFitPlan.h"
+#include "fitting/FitJobFactory.h"
 
 using namespace astra::massfit;
 
@@ -53,6 +54,44 @@ TEST_CASE("a node's rest-frame masks and preference survive the plan JSON")
     CHECK_FALSE(plain.preferWhenRun);
     CHECK(plain.restIgnore.isEmpty());
     CHECK(MassFitPlan::fromJson(QJsonObject{}).haCorePixels == 6);
+}
+
+TEST_CASE("seeding from the best fit: plan flag survives JSON, older plans keep it off")
+{
+    MassFitPlan p;
+    p.seedFromBestFit = true;
+    CHECK(MassFitPlan::fromJsonString(p.toJsonString()).seedFromBestFit);
+    CHECK_FALSE(MassFitPlan::fromJson(QJsonObject{}).seedFromBestFit);
+}
+
+TEST_CASE("seedAtmosphereFrom: Teff, log g and free helium only")
+{
+    using astra::fitting::StellarComponent;
+    StellarComponent sd;                 // free helium, vsini frozen at 0
+    sd.teff = 25000; sd.logg = 5.5; sd.he = -3.5; sd.vsini = 0; sd.freezeHe = false;
+    StellarComponent da = sd;            // a DA: helium frozen at "none"
+    da.he = -100; da.freezeHe = true;
+
+    QVector<StellarComponent> a{ sd };
+    astra::fitting::seedAtmosphereFrom(a, 9867, 4.03, -2.5);
+    CHECK(a[0].teff == doctest::Approx(9867));
+    CHECK(a[0].logg == doctest::Approx(4.03));
+    CHECK(a[0].he == doctest::Approx(-2.5));
+    CHECK(a[0].vsini == doctest::Approx(0));     // never seeded
+
+    QVector<StellarComponent> b{ da };
+    astra::fitting::seedAtmosphereFrom(b, 30000, 7.8, -2.5);
+    CHECK(b[0].he == doctest::Approx(-100));     // frozen helium stays the setup's
+
+    QVector<StellarComponent> c{ sd };           // an earlier DA fit: no helium to give
+    astra::fitting::seedAtmosphereFrom(c, 30000, 7.8, -100);
+    CHECK(c[0].he == doctest::Approx(-3.5));
+    CHECK(c[0].teff == doctest::Approx(30000));
+
+    QVector<StellarComponent> d{ sd };           // unknown values change nothing
+    astra::fitting::seedAtmosphereFrom(d, std::nan(""), std::nan(""), std::nan(""));
+    CHECK(d[0].teff == doctest::Approx(25000));
+    CHECK(d[0].logg == doctest::Approx(5.5));
 }
 
 TEST_CASE("selectAdopted: a node that asks to be adopted wins when it ran")

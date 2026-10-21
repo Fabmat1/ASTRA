@@ -86,6 +86,14 @@ double pickFittedValue(const QVector<FittedParameter>& v, int idx);
 void seedComponentsFrom(QVector<StellarComponent>& components,
                         const QVector<StellarComponent>& source);
 
+/// Starts the first component at an earlier fit's atmosphere: its Teff and
+/// log g, and its log y where the component fits helium (a frozen helium
+/// value belongs to the setup, e.g. a DA's "no helium"). Unknown values, and a
+/// log y below -50 (that same "no helium" in the earlier fit), are left alone;
+/// vsini, z and the rest stay as configured, since most setups freeze them.
+void seedAtmosphereFrom(QVector<StellarComponent>& components,
+                        double teff, double logg, double he);
+
 /// The fitted values of a finished job, in the shape seedComponentsFrom()
 /// wants them: @p asRun is the component list the job was run with, and
 /// @p specIndex picks the spectrum whose values to read for untied

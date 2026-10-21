@@ -267,6 +267,11 @@ struct MassFitPlan {
     /// Central pixels of the H-alpha core that AttemptSummary::haCore sums.
     int haCorePixels  = 6;
     int maxDepth      = 8;        ///< cycle guard for the walk itself
+    /// Start every node that does not inherit from its parent at the star's
+    /// current best fit (Teff, log g, and log y where the setup fits helium;
+    /// see fitting::seedAtmosphereFrom) instead of the setup's own values.
+    /// Grids clamp a value outside their range.
+    bool seedFromBestFit = false;
 
     // ── Lookups ──────────────────────────────────────────────────────────
     const TreeNode* node(const QString& id) const;

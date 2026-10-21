@@ -1877,6 +1877,14 @@ QWidget* MassFitPlanDialog::buildExecutionTab()
            "rule field: their normalised residual, in sigma. Branch on it (e.g. "
            "haCore > 5) to a node that refits with the core masked.")));
 
+    _seedBestCheck = new QCheckBox(tr("Start from each star's current best fit"));
+    _seedBestCheck->setChecked(_plan.seedFromBestFit);
+    form->addRow(QString(), _seedBestCheck);
+    form->addRow(QString(), makeHint(
+        tr("Nodes that do not inherit from the previous node start at the star's "
+           "current best fit (Teff, log g, and log y where the setup fits helium) "
+           "instead of the setup's own values. Flagged spectra's fits are not used.")));
+
     _threadsSpin = makeIntSpin(0, 256, std::max(0, _plan.threadsPerFit));
     _threadsSpin->setSpecialValueText(tr("divide the global budget"));
     form->addRow(tr("Threads per fit:"), _threadsSpin);
@@ -1950,6 +1958,7 @@ void MassFitPlanDialog::commitEditors()
         _haPixelsSpin->interpretText();
         _plan.haCorePixels = _haPixelsSpin->value();
     }
+    if (_seedBestCheck) _plan.seedFromBestFit = _seedBestCheck->isChecked();
 }
 
 void MassFitPlanDialog::revalidate()

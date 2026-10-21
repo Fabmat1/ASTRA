@@ -359,6 +359,16 @@ void seedComponentsFrom(QVector<StellarComponent>& components,
     }
 }
 
+void seedAtmosphereFrom(QVector<StellarComponent>& components,
+                        double teff, double logg, double he)
+{
+    if (components.isEmpty()) return;
+    auto& c = components.first();
+    if (std::isfinite(teff) && teff > 0.0) c.teff = teff;
+    if (std::isfinite(logg)) c.logg = logg;
+    if (!c.freezeHe && std::isfinite(he) && he > -50.0) c.he = he;
+}
+
 QVector<StellarComponent> componentsFromResult(
     const SpectralFitResult& r,
     const QVector<StellarComponent>& asRun,

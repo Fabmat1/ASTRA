@@ -212,6 +212,7 @@ private:
     QSpinBox*  _parallelSpin      = nullptr;
     QSpinBox*  _threadsSpin       = nullptr;
     QSpinBox*  _haPixelsSpin      = nullptr;
+    QCheckBox* _seedBestCheck     = nullptr;
     QComboBox* _existingCombo     = nullptr;
     QPushButton* _poorQualityBtn  = nullptr;
 

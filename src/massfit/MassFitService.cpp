@@ -736,21 +736,27 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
         return fail(QStringLiteral("no spectra in the database"));
     star->setSpectra(spectra);
 
+    // The star's current best fit: what the existing-fit policy judges, and
+    // where nodes start when the plan seeds from it.
+    bool hasFits = false;
+    std::shared_ptr<SpectralFit> currentBest;
+    for (const auto& s : spectra) {
+        if (!s->getSpectralFits().empty()) hasFits = true;
+        // A flagged spectrum's fit is not evidence of anything; with its
+        // often absurd errors it would also win the reduced-chi2 ranking.
+        if (s->isFlagged()) continue;
+        const auto b = s->getBestFit();
+        if (!b) continue;
+        if (!currentBest) { currentBest = b; continue; }
+        const double a = b->reducedChi2();
+        const double c = currentBest->reducedChi2();
+        if (!std::isnan(a) && (std::isnan(c) || a < c)) currentBest = b;
+    }
+
     // ── Existing-fit policy ─────────────────────────────────────────────
     // Only on a star's first visit: after a resume the star's own earlier
     // attempts are in the database and would make it look "already fitted".
     if (w.history.isEmpty()) {
-        bool hasFits = false;
-        std::shared_ptr<SpectralFit> currentBest;
-        for (const auto& s : spectra) {
-            if (!s->getSpectralFits().empty()) hasFits = true;
-            const auto b = s->getBestFit();
-            if (!b) continue;
-            if (!currentBest) { currentBest = b; continue; }
-            const double a = b->reducedChi2();
-            const double c = currentBest->reducedChi2();
-            if (!std::isnan(a) && (std::isnan(c) || a < c)) currentBest = b;
-        }
 
         const mf::AttemptSummary bestSummary =
             currentBest ? summarizeFit(*currentBest, int(spectra.size()))
@@ -864,6 +870,17 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
             fit::seedComponentsFrom(comps, parentComponents);
             log(QStringLiteral("setup \"%1\" seeded from the previous node's "
                                "result").arg(setup->name));
+        } else if (w.plan.seedFromBestFit && currentBest) {
+            fit::seedAtmosphereFrom(comps, currentBest->teff, currentBest->logg,
+                                    currentBest->he);
+            log(QStringLiteral("setup \"%1\" starts at the current best fit: "
+                               "Teff %2, log g %3%4")
+                    .arg(setup->name)
+                    .arg(comps.isEmpty() ? 0.0 : comps.first().teff, 0, 'f', 0)
+                    .arg(comps.isEmpty() ? 0.0 : comps.first().logg, 0, 'f', 3)
+                    .arg(comps.isEmpty() || comps.first().freezeHe
+                             ? QString()
+                             : QStringLiteral(", log y %1").arg(comps.first().he, 0, 'f', 2)));
         }
 
         fit::JobGlobals globals = setup->globals;
