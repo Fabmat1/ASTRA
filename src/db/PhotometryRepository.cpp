@@ -6,7 +6,9 @@
 #include <QSqlError>
 #include <QFile>
 #include <QFileInfo>
+#include <QHash>
 #include <QJsonDocument>
+#include <QSet>
 #include "app/DataStore.h"
 #include "app/Logger.h"
 
@@ -59,8 +61,34 @@ bool PhotometryRepository::savePhotometry(const QString& starId,
         }
     }
 
-    // Save individual photometric points metadata to database
+    // Photometric points: the in-memory list is the whole set (loadPhotometry
+    // reads every row), so the rows are replaced. They used to be inserted
+    // under fresh ids next to the ones already there, and the next load read
+    // both back: every save and reload doubled a star's points. Copies that
+    // doubling left behind are written once.
+    {
+        QSqlQuery del(_db.threadConnection());
+        del.prepare("DELETE FROM photometric_points WHERE photometry_id = :id");
+        del.bindValue(":id", photometry->getId());
+        if (!del.exec()) {
+            LOG_ERROR("Photometry", QString("Failed to replace photometric points: %1")
+                                        .arg(del.lastError().text()));
+            return false;
+        }
+    }
+    QSet<QString> pointsSeen;
     for (const auto& point : photometry->getPhotometricPoints()) {
+        const QString key = QStringLiteral("%1|%2|%3|%4|%5|%6|%7")
+                                .arg(point.instrument, point.filter)
+                                .arg(point.magnitude, 0, 'g', 17)
+                                .arg(point.magnitudeError, 0, 'g', 17)
+                                .arg(point.flux, 0, 'g', 17)
+                                .arg(point.fluxError, 0, 'g', 17)
+                                .arg(point.wavelength, 0, 'g', 17);
+        if (pointsSeen.contains(key))
+            continue;
+        pointsSeen.insert(key);
+
         QSqlQuery pointQuery(_db.threadConnection());
         pointQuery.prepare(R"(
             INSERT OR REPLACE INTO photometric_points (
@@ -87,12 +115,61 @@ bool PhotometryRepository::savePhotometry(const QString& starId,
         }
     }
 
-    // Save lightcurves
+    // Lightcurves: one row per source, kept from save to save. A fresh id on
+    // every save used to add a row each time (the LC fits moving on to the
+    // newest one). Existing rows are reused; duplicates such saves left
+    // behind hand their fits to the row that is kept and go.
+    QHash<QString, QString> lightcurveIdOf;   // source -> row id
+    {
+        QSqlDatabase db = _db.threadConnection();
+        QSqlQuery q(db);
+        q.prepare("SELECT id, source FROM lightcurves WHERE photometry_id = :pid "
+                  "ORDER BY rowid");
+        q.bindValue(":pid", photometry->getId());
+        QList<QPair<QString, QString>> duplicates;   // duplicate id, kept id
+        if (q.exec())
+            while (q.next()) {
+                const QString id = q.value(0).toString(), src = q.value(1).toString();
+                if (lightcurveIdOf.contains(src))
+                    duplicates.append({id, lightcurveIdOf.value(src)});
+                else
+                    lightcurveIdOf.insert(src, id);
+            }
+        for (const auto& [dup, keep] : duplicates) {
+            QSqlQuery mv(db);
+            mv.prepare("UPDATE lc_fits SET lightcurve_id = :keep WHERE lightcurve_id = :dup");
+            mv.bindValue(":keep", keep);
+            mv.bindValue(":dup", dup);
+            QSqlQuery del(db);
+            del.prepare("DELETE FROM lightcurves WHERE id = :dup");
+            del.bindValue(":dup", dup);
+            if (!mv.exec() || !del.exec()) {
+                LOG_ERROR("Photometry", QString("Failed to merge duplicate lightcurve rows: %1")
+                                            .arg(mv.lastError().text() + del.lastError().text()));
+                return false;
+            }
+        }
+    }
+
     for (const auto& source : photometry->getLightcurveSources()) {
-        QString lightcurveId = _db.generateUUID();
-        QString lcFile = DataStore::lightcurvePath(dataDir, starId,
-                                                    photometry->getId(), source);
-        photometry->saveLightcurveToFile(source, lcFile);
+        QString lightcurveId = lightcurveIdOf.value(source);
+        if (lightcurveId.isEmpty())
+            lightcurveId = _db.generateUUID();
+
+        // A lightcurve that was never loaded has not changed: its row keeps
+        // the file it has. Writing to the canonical path only when the data
+        // is in memory is what keeps a row from naming a file never written.
+        QString lcFile = photometry->getLightcurveFile(source);
+        if (photometry->hasLightcurveLoaded(source) || lcFile.isEmpty()) {
+            const QString canonical = DataStore::lightcurvePath(dataDir, starId,
+                                                                photometry->getId(), source);
+            if (photometry->saveLightcurveToFile(source, canonical)) {
+                if (!lcFile.isEmpty() && lcFile != canonical && QFile::exists(lcFile))
+                    QFile::remove(lcFile);
+                lcFile = canonical;
+                photometry->setLightcurveFile(source, lcFile);
+            }
+        }
 
         QSqlQuery lcQuery(_db.threadConnection());
         lcQuery.prepare(R"(
@@ -111,7 +188,7 @@ bool PhotometryRepository::savePhotometry(const QString& starId,
 
         for (const auto& fit : photometry->getLCFits(source))
             saveLCFit(starId, photometry->getId(), lightcurveId, fit);
-        }
+    }
 
     // Save SED models
     for (const auto& model : photometry->getSEDModels()) {

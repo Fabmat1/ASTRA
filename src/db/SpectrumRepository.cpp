@@ -175,11 +175,19 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
     QString dataDir  = QFileInfo(_db.databasePath()).absolutePath() + "/data";
     QString modelFile = DataStore::spectralFitPath(dataDir, starId,
                                                    spectrumId, fit->getId());
-    fit->saveDataToFile(modelFile);
 
-    QString oldFile = fit->getModelDataFile();
-    if (!oldFile.isEmpty() && oldFile != modelFile && QFile::exists(oldFile)) {
-        QFile::remove(oldFile);
+    // Model arrays load lazily, so a fit saved for its values alone usually
+    // has none in memory: it keeps the file it has. Writing it anyway was
+    // refused (with an error in the log on every save), and when the file
+    // was not at the canonical path it was then deleted with nothing written
+    // in its place.
+    const QString oldFile = fit->getModelDataFile();
+    if (!fit->hasData()) {
+        modelFile = oldFile;     // empty for a fit that never had model arrays
+    } else if (fit->saveDataToFile(modelFile)) {
+        if (!oldFile.isEmpty() && oldFile != modelFile && QFile::exists(oldFile))
+            QFile::remove(oldFile);
+        fit->setModelDataFile(modelFile);
     }
 
     QSqlQuery query(_db.threadConnection());
