@@ -48,7 +48,9 @@ def get_filter_color(tel, filt):
           "ZTF":  {"zg": p["green"], "zr": p["rose"], "zi": p["wine"]},
           "ATLAS": {"c": p["cyan"], "o": PAUL_TOL_COLORS["vibrant"]["orange"]},
           "TESS": PAUL_TOL_COLORS["bright"]["blue"],
-          "BLACKGEM": p["olive"]}
+          "BLACKGEM": p["olive"],
+          "CAHA": {"U": p["olive"], "B": p["indigo"], "V": p["green"],
+                   "R": p["rose"], "I": p["wine"]}}
     if tel in cm:
         return cm[tel].get(filt, p["purple"]) if isinstance(cm[tel], dict) else cm[tel]
     return "#808080"
@@ -128,6 +130,7 @@ def plot_rv_and_lightcurves(
         show_lightcurves=True, selected_lightcurves=None,
         show_lc_fits=True, lc_fit_shift=None,
         lc_bins=None, binning_config=None,
+        chi_ylim=4.0, chi_lc_ylim=4.0,
         show_rv_legend=True, show_lc_legend=True,
         legend_loc="upper right", figsize=None, fontsize=None,
         marker_scale=1.0, lc_marker_scale=1.0,
@@ -162,7 +165,9 @@ def plot_rv_and_lightcurves(
         return None
 
     period = fit["period"]
-    t_ref = rv["t"].min()                       # earliest point, as in ASTRA
+    # earliest point of the curve *including* flagged ones, as in ASTRA --
+    # rv["t"].min() drops flagged points and would shift the whole fold
+    t_ref = ad.curve_reference_epoch(conn, curve_id)
     t0 = ad.fit_t0(fit, t_ref)
 
     print(f"Star: {label}   (project: {star['project_name']})")
@@ -262,7 +267,7 @@ def plot_rv_and_lightcurves(
                             markeredgewidth=0.4)
     ax_res.axhline(0, color="grey", ls="--", lw=0.8, zorder=3)
     ax_res.set_ylabel(r"$\chi_{\mathrm{RV}}$")
-    ax_res.set_ylim(-4, 4)
+    ax_res.set_ylim(-chi_ylim, chi_ylim)
     if npan == 0:
         ax_res.set_xlabel("Phase")
     else:
@@ -358,7 +363,7 @@ def plot_rv_and_lightcurves(
         if ax_chi is not None:
             ax_chi.axhline(0, color="grey", ls="--", lw=0.8, zorder=3)
             ax_chi.set_ylabel(r"$\chi_{\mathrm{LC}}$")
-            ax_chi.set_ylim(-4, 4)
+            ax_chi.set_ylim(-chi_lc_ylim, chi_lc_ylim)
         bottom_ax = ax_chi if ax_chi is not None else ax_lc
         if ii == npan - 1:
             if ax_chi is not None:
@@ -416,6 +421,10 @@ if __name__ == "__main__":
     p.add_argument("--binning", type=str, default=None,
                    help="Per-survey binning, e.g. 'TESS:100,ZTF:none'")
 
+    p.add_argument("--chi-ylim", type=float, default=4.0,
+                   help="Half-range of the chi_RV residual panel (default 4)")
+    p.add_argument("--chi-lc-ylim", type=float, default=4.0,
+                   help="Half-range of the chi_LC residual panels (default 4)")
     p.add_argument("--marker-scale", type=float, default=1.0,
                    help="Scale factor for all marker sizes (default 1.0)")
     p.add_argument("--lc-marker-scale", type=float, default=1.0,
@@ -474,6 +483,7 @@ if __name__ == "__main__":
         lc_fit_shift=parse_lc_fit_shift(args.lc_fit_shift),
         lc_bins=args.lc_bins,
         binning_config=parse_binning_config(args.binning),
+        chi_ylim=args.chi_ylim, chi_lc_ylim=args.chi_lc_ylim,
         show_rv_legend=not args.no_rv_legend,
         show_lc_legend=not args.no_lc_legend,
         legend_loc=args.legend_loc, figsize=fs, fontsize=fsd,
