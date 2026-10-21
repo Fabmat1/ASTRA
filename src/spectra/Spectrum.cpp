@@ -16,7 +16,8 @@
 // finds anything else (or nothing) after modelIgnore is looking at a file
 // written before the extension existed.
 static constexpr quint32 kFitExtMagic   = 0xA57EA001;
-static constexpr quint32 kFitExtVersion = 1;
+// v2 appends lightFractionComp1 after the v1 arrays.
+static constexpr quint32 kFitExtVersion = 2;
 
 // SpectralFit implementation
 SpectralFit::SpectralFit()
@@ -257,6 +258,7 @@ bool SpectralFit::saveDataToFile(const QString &filepath) {
         writeArray(modelFluxesComp1);
         writeArray(modelFluxesComp2);
         writeArray(telluricTransmission);
+        writeArray(lightFractionComp1);
     }
     return DataStore::writeCompressed(filepath, DataStore::SpectralFitData,
                                       buffer);
@@ -325,6 +327,7 @@ bool SpectralFit::loadDataFromFile(const QString& filepath)
         modelFluxesComp1.clear();
         modelFluxesComp2.clear();
         telluricTransmission.clear();
+        lightFractionComp1.clear();
 
         if (!s.atEnd()) {
             quint32 magic = 0;
@@ -356,6 +359,12 @@ bool SpectralFit::loadDataFromFile(const QString& filepath)
                     modelFluxesComp1.clear();
                     modelFluxesComp2.clear();
                     telluricTransmission.clear();
+                } else if (version >= 2 && !readExtArray(lightFractionComp1)) {
+                    // The v1 arrays are complete; only the fractions are lost,
+                    // which just hides the component overlays.
+                    LOG_WARNING("SpectralFit",
+                        "Truncated light fractions; component overlays hidden");
+                    lightFractionComp1.clear();
                 }
             }
         }

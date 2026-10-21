@@ -350,6 +350,7 @@ QJsonObject fitToJson(const SpectralFit &f, BlobPool &bp) {
         o["b_ignore"]    = bp.addBytes(src->modelIgnore);
         o["b_modelC1"]   = bp.addDoubles(src->modelFluxesComp1);
         o["b_modelC2"]   = bp.addDoubles(src->modelFluxesComp2);
+        o["b_lightC1"]   = bp.addDoubles(src->lightFractionComp1);
         o["b_telluric"]  = bp.addDoubles(src->telluricTransmission);
     }
     return o;
@@ -440,6 +441,7 @@ std::shared_ptr<SpectralFit> fitFromJson(const QJsonObject &o, BlobReader &br) {
     f->modelIgnore      = br.getBytes(rI(o, "b_ignore", -1));
     f->modelFluxesComp1 = br.getDoubles(rI(o, "b_modelC1", -1));
     f->modelFluxesComp2 = br.getDoubles(rI(o, "b_modelC2", -1));
+    f->lightFractionComp1 = br.getDoubles(rI(o, "b_lightC1", -1));
     f->telluricTransmission = br.getDoubles(rI(o, "b_telluric", -1));
     return f;
 }

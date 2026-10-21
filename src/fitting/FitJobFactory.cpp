@@ -695,6 +695,12 @@ PersistOutcome persistFitResult(const std::shared_ptr<Star>& star,
             const auto& m2 = fs.componentModels[1];
             fit->modelFluxesComp2.assign(m2.begin(), m2.end());
         }
+        // Component 2's share is 1 minus this one; only a composite has a
+        // share worth keeping.
+        if (fs.lightFractions.size() > 1) {
+            const auto& w1 = fs.lightFractions[0];
+            fit->lightFractionComp1.assign(w1.begin(), w1.end());
+        }
         fit->telluricTransmission.assign(fs.telluric.begin(), fs.telluric.end());
 
         fit->hasTelluric = fs.hasTelluric;

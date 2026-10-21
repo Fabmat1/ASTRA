@@ -273,6 +273,8 @@ SpectralFitResult fromGaelResult(const specfit::api::FitResult& r,
 
         for (const auto& cm : sp.component_models)
             fs.componentModels.append(QVector<double>(cm.begin(), cm.end()));
+        for (const auto& lf : sp.light_fractions)
+            fs.lightFractions.append(QVector<double>(lf.begin(), lf.end()));
 
         fs.telluric    = QVector<double>(sp.telluric.begin(), sp.telluric.end());
         fs.hasTelluric = !fs.telluric.isEmpty();

@@ -284,6 +284,13 @@ struct FittedSpectrum {
     // for a single-component fit the entry equals `model`.
     QVector<QVector<double>> componentModels;
 
+    // Each component's share of the light on the same grid, in component
+    // order: s_k C_k / sum_j s_j C_j from the surface ratios and the models'
+    // own continua, the weights the composite is built with. They sum to 1 at
+    // every point, so sum_k lightFractions[k] * componentModels[k] == model.
+    // Empty when the result predates GAEL exporting them.
+    QVector<QVector<double>> lightFractions;
+
     // Fitted telluric transmission on the same lambda grid; empty when this
     // spectrum had no telluric component. `model` already includes it.
     QVector<double>     telluric;

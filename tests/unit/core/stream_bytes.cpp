@@ -237,6 +237,7 @@ TEST_CASE("Spectrum, fit and LC fit files: the same bytes as the stream wrote")
     fit.modelIgnore          = std::vector<uint8_t>(400, 1);
     fit.modelFluxesComp1     = arr(500);
     fit.telluricTransmission = arr(500);
+    fit.lightFractionComp1   = arr(500);
     const QString fitFile = tmp.filePath("fit.asd");
     REQUIRE(fit.saveDataToFile(fitFile));
     SpectralFit fitBack;
@@ -247,6 +248,7 @@ TEST_CASE("Spectrum, fit and LC fit files: the same bytes as the stream wrote")
     CHECK(fitBack.modelFluxesComp1 == fit.modelFluxesComp1);
     CHECK(fitBack.modelFluxesComp2.empty());
     CHECK(fitBack.telluricTransmission == fit.telluricTransmission);
+    CHECK(fitBack.lightFractionComp1 == fit.lightFractionComp1);
 
     // LC fit
     LCFit lcf;

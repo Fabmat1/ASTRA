@@ -4,7 +4,6 @@
 #include "core/Star.h"
 #include "core/Quantity.h"
 #include "spectra/Spectrum.h"
-#include "spectra/ComponentDilution.h"
 #include "core/QuantityFormat.h"
 #include "fitting/ElementAbundances.h"
 #include "app/Logger.h"
@@ -25,6 +24,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <numeric>
 #include <limits>
 
 namespace {
@@ -868,12 +868,15 @@ void SpectraPanel::updateSpectrumDisplay()
     // ── Subordinate model curves ────────────────────────────────────────────
     // Component models only make sense for a two-component fit: for a
     // one-component fit modelFluxesComp1 *is* modelFluxes, and drawing it again
-    // would just be a duplicate on top of the primary curve.
+    // would just be a duplicate on top of the primary curve. They also need
+    // GAEL's light fractions: a fit stored before those were kept has no way
+    // to say how the light divides, and is shown without overlays until refit.
     const size_t nModel = selectedFit ? selectedFit->modelWavelengths.size() : 0;
     const bool hasComponentModels =
         selectedFit && selectedFit->hasSecondComponent() && nModel > 0 &&
         selectedFit->modelFluxesComp1.size() == nModel &&
-        selectedFit->modelFluxesComp2.size() == nModel;
+        selectedFit->modelFluxesComp2.size() == nModel &&
+        selectedFit->lightFractionComp1.size() == nModel;
     const bool hasTelluricCurve =
         selectedFit && nModel > 0 &&
         selectedFit->telluricTransmission.size() == nModel;
@@ -887,19 +890,15 @@ void SpectraPanel::updateSpectrumDisplay()
     // Each component is drawn as its *contribution* to the model: its own curve
     // scaled by the share of the light it emits, so the two overlays add up to
     // the combined model rather than both running at full line depth. The share
-    // is a ratio of stellar continua, so it varies with wavelength and is not
-    // the stored surface ratio; it is recovered from the three model curves
-    // themselves - see ComponentDilution.h.
-    astra::spectra::LightFractions light;
-    if (showComponents) {
-        light = astra::spectra::lightFractions(
-            selectedFit->modelWavelengths,  selectedFit->modelFluxes,
-            selectedFit->modelFluxesComp1,  selectedFit->modelFluxesComp2,
-            selectedFit->surRatio);
-        // Only a grid too short to solve on gets here; splitting it evenly at
-        // least keeps the two curves summing to the model.
-        if (light.w1.size() != nModel) light.w1.assign(nModel, 0.5);
-    }
+    // is GAEL's s_k C_k / sum_j s_j C_j - the surface ratio times the models'
+    // own flux-calibrated continua, exactly what the fit mixed the components
+    // with - so it varies with wavelength only as the two continua do.
+    static const std::vector<double> kNoFractions;
+    const std::vector<double>& w1 =
+        showComponents ? selectedFit->lightFractionComp1 : kNoFractions;
+    const double meanW1 =
+        w1.empty() ? 0.5
+                   : std::accumulate(w1.begin(), w1.end(), 0.0) / double(w1.size());
 
     // Counts the curves that describe the model (combined + overlays); the
     // legend is only worth its space once there is more than one of them.
@@ -952,7 +951,7 @@ void SpectraPanel::updateSpectrumDisplay()
                 // curve sits on its own share of the continuum, and the two sum
                 // back to the combined model drawn over them.
                 if (showComponents) {
-                    const double w = light.w1[i];
+                    const double w = w1[i];
                     comp1Vec[i] = selectedFit->modelFluxesComp1[i] * w / divisor;
                     comp2Vec[i] =
                         selectedFit->modelFluxesComp2[i] * (1.0 - w) / divisor;
@@ -1051,14 +1050,14 @@ void SpectraPanel::updateSpectrumDisplay()
                 QCPGraph* g1 = _mainPlot->addGraph();
                 g1->setData(mWlVec, comp1Vec);
                 g1->setPen(overlayPen(componentColor(0), Qt::DashLine));
-                g1->setName(componentLabel(*selectedFit, 1, light.meanW1));
+                g1->setName(componentLabel(*selectedFit, 1, meanW1));
                 ++modelCurveCount;
 
                 QCPGraph* g2 = _mainPlot->addGraph();
                 g2->setData(mWlVec, comp2Vec);
                 g2->setPen(overlayPen(componentColor(1), Qt::DashDotLine));
                 g2->setName(
-                    componentLabel(*selectedFit, 2, 1.0 - light.meanW1));
+                    componentLabel(*selectedFit, 2, 1.0 - meanW1));
                 ++modelCurveCount;
             }
 
@@ -1127,7 +1126,7 @@ void SpectraPanel::updateSpectrumDisplay()
                 comp1Vec.resize(mWl.size());
                 comp2Vec.resize(mWl.size());
                 for (size_t i = 0; i < mWl.size(); ++i) {
-                    const double w = light.w1[i];
+                    const double w = w1[i];
                     comp1Vec[i] =
                         selectedFit->modelFluxesComp1[i] * w * renormC;
                     comp2Vec[i] =
@@ -1161,14 +1160,14 @@ void SpectraPanel::updateSpectrumDisplay()
                 QCPGraph* g1 = _mainPlot->addGraph();
                 g1->setPen(overlayPen(componentColor(0), Qt::DashLine));
                 g1->setData(mWlVec, comp1Vec);
-                g1->setName(componentLabel(*selectedFit, 1, light.meanW1));
+                g1->setName(componentLabel(*selectedFit, 1, meanW1));
                 ++modelCurveCount;
 
                 QCPGraph* g2 = _mainPlot->addGraph();
                 g2->setPen(overlayPen(componentColor(1), Qt::DashDotLine));
                 g2->setData(mWlVec, comp2Vec);
                 g2->setName(
-                    componentLabel(*selectedFit, 2, 1.0 - light.meanW1));
+                    componentLabel(*selectedFit, 2, 1.0 - meanW1));
                 ++modelCurveCount;
             }
 

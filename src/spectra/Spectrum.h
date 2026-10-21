@@ -59,6 +59,7 @@ public:
                !rebinnedFluxes.empty() || !rebinnedSigmas.empty() ||
                !modelSplines.empty() || !modelIgnore.empty() ||
                !modelFluxesComp1.empty() || !modelFluxesComp2.empty() ||
+               !lightFractionComp1.empty() ||
                !telluricTransmission.empty();
     }
 
@@ -82,6 +83,12 @@ public:
     // one-component fit comp1 is the same curve as modelFluxes.
     std::vector<double> modelFluxesComp1;
     std::vector<double> modelFluxesComp2;
+
+    // Component 1's share of the light on the same grid, as GAEL computed it
+    // from the surface ratio and the models' own continua; component 2's is
+    // 1 minus it. Only set for a two-component fit, and empty for fits that
+    // predate it - those have no component overlays until they are refit.
+    std::vector<double> lightFractionComp1;
 
     // Fitted telluric transmission on the same grid; empty when the fit had no
     // telluric component. modelFluxes already includes it.

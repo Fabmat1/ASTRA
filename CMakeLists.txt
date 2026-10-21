@@ -420,7 +420,6 @@ set(ASTRA_CORE_SOURCES
     src/sed/SedFitEnvironment.cpp
 
     # spectra
-    src/spectra/ComponentDilution.cpp
     src/spectra/Spectrum.cpp
     src/spectra/SpectrumCoadder.cpp
     src/spectra/SpectrumFetchService.cpp
@@ -572,7 +571,6 @@ set(ASTRA_CORE_HEADERS
     src/sed/SedFitEnvironment.h
 
     # spectra
-    src/spectra/ComponentDilution.h
     src/spectra/Spectrum.h
     src/spectra/SpectrumCoadder.h
     src/spectra/SpectrumFetchService.h
@@ -1442,7 +1440,6 @@ if(BUILD_TESTING)
             tests/unit/core/filter_expression.cpp
             tests/unit/core/barycentric_parts.cpp
             tests/unit/spectra/exposure_epoch.cpp
-            tests/unit/spectra/component_dilution.cpp
             tests/unit/spectra/lamost_uncatalogued.cpp
             tests/unit/rv/rvfit.cpp
             tests/unit/lightcurve/lcfit_physics.cpp
