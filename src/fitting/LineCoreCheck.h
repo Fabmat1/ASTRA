@@ -24,8 +24,8 @@ constexpr double kHalphaAir = 6562.80;
 /// different instruments and reductions; relative to the wings, one threshold
 /// means the same for all of them. The largest absolute value over the
 /// spectra is returned, NaN when no spectrum covers the line. Checked by eye
-/// on RVVD fits: cores past about 2.5 are visibly mis-modelled (NLTE core
-/// depth or emission in hot subdwarfs and HB stars).
+/// on fits of hot subdwarfs and HB stars: cores past about 2.5 are visibly
+/// mis-modelled (NLTE core depth or emission).
 double lineCoreDeviation(const SpectralFitResult& r, int nPixels,
                          double restWavelength = kHalphaAir);
 

@@ -40,7 +40,7 @@ int main(int argc, char *argv[])
     if (const int rc = runHeadless(argc, argv); rc >= 0)
         return rc;
 
-    // `astra --replace-imported-duplicates ...`: headless database upkeep
+    // `astra --validate-plan <plan.json>`: check a mass-fitting plan offline
     // (see app/MaintenanceMode.h).
     if (const int rc = runMaintenanceMode(argc, argv); rc >= 0)
         return rc;
