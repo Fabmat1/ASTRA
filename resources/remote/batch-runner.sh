@@ -43,6 +43,13 @@ trap on_term TERM INT
 memarg=
 [ "$mem" != "-" ] && memarg="--mem-budget $mem"
 
+# --threads sizes GAEL's own parallel stages, but OpenMP regions it does not
+# size take every core the machine has. A Slurm job sets this in its script;
+# on a plain host nothing else would, and each fit would spread over all of
+# them.
+OMP_NUM_THREADS=$threads
+export OMP_NUM_THREADS
+
 start=$(date +%s)
 state running
 stopped=0
