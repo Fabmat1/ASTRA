@@ -78,14 +78,21 @@ TEST_CASE("packTasks: the task cap leaves the rest for later")
     CHECK(packTasks({}, 5, 0, 0.0, 0).isEmpty());
 }
 
-TEST_CASE("classifyExit: kills escalate, other exits retry")
+TEST_CASE("classifyExit: kills and crashes escalate, other exits retry")
 {
     CHECK(classifyExit(137).fate == ItemFate::Escalate);
     CHECK(classifyExit(137).reason.contains("memory"));
     CHECK(classifyExit(143).fate == ItemFate::Escalate);
     CHECK(classifyExit(143).reason.contains("time"));
+    CHECK(classifyExit(134).fate == ItemFate::Escalate);
+    CHECK(classifyExit(134).reason.contains("crashed"));
+    CHECK(classifyExit(139).fate == ItemFate::Escalate);
     CHECK(classifyExit(1).fate == ItemFate::Retry);
-    CHECK(classifyExit(139).fate == ItemFate::Retry);
+
+    const auto v = classifyExit(134, { "terminate called after throwing an instance "
+                                       "of 'std::bad_alloc'", "  what():  std::bad_alloc" });
+    CHECK(v.reason.contains("exit 134"));
+    CHECK(v.reason.contains("std::bad_alloc' |   what()"));
 }
 
 TEST_CASE("classifyTaskEnd: never started requeues, kills escalate")
@@ -139,6 +146,31 @@ TEST_CASE("parseBatchProbe: every section is read")
     CHECK_FALSE(p.poolFinished);
 
     CHECK(parseBatchProbe("ASTRA_GONE\n").dirMissing);
+}
+
+TEST_CASE("parseBatchProbe: the stderr tail of fits that left no result")
+{
+    const QString a = "aaaaaaaa-1111-2222-3333-444455556666";
+    const QString b = "bbbbbbbb-1111-2222-3333-444455556666";
+    const QString out =
+        "ASTRA_EXIT\n" + a + " 134\n" + b + " 1\n"
+        "ASTRA_EXITLOG\n"
+        "@" + a + "\n"
+        "| ing 4 spectra\n"
+        "| [memory] budget 3072 MiB (set)\n"
+        "| step 3\rstep 4\rstep 5\n"
+        "| ASTRA_END\n"
+        "| terminate called after throwing an instance of 'std::bad_alloc'\n"
+        "@" + b + "\n"
+        "ASTRA_STARTED\n" + a + "\n"
+        "ASTRA_END\n";
+    const BatchProbe p = parseBatchProbe(out);
+    CHECK(p.exits.value(a) == 134);
+    CHECK(p.exitLogs.value(a) == QStringList{
+              "step 5", "ASTRA_END",
+              "terminate called after throwing an instance of 'std::bad_alloc'" });
+    CHECK(p.exitLogs.value(b).isEmpty());   // no stderr left behind
+    CHECK(p.started == QStringList{ a });   // a log line is not a marker
 }
 
 TEST_CASE("parseSqueueArray / parseSacctArray read array tasks")

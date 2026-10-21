@@ -175,20 +175,36 @@ QVector<QVector<int>> packTasks(const QVector<double>& est, int fitsPerTask,
     return tasks;
 }
 
-ItemVerdict classifyExit(int exitCode)
+ItemVerdict classifyExit(int exitCode, const QStringList& logTail)
 {
+    ItemVerdict v;
     // 128 + signal: SIGKILL is what the kernel's and Slurm's OOM killers
     // send, SIGTERM what Slurm sends at the time limit.
-    if (exitCode == 137)
-        return { ItemFate::Escalate,
-                 QStringLiteral("killed (exit 137), most likely for running "
-                                "out of memory") };
-    if (exitCode == 143)
-        return { ItemFate::Escalate,
-                 QStringLiteral("stopped when its task ran out of time") };
-    return { ItemFate::Retry,
-             QStringLiteral("the worker exited with status %1 without a result")
-                 .arg(exitCode) };
+    if (exitCode == 137) {
+        v = { ItemFate::Escalate,
+              QStringLiteral("killed (exit 137), most likely for running "
+                             "out of memory") };
+    } else if (exitCode == 143) {
+        v = { ItemFate::Escalate,
+              QStringLiteral("stopped when its task ran out of time") };
+    } else if (exitCode > 128) {
+        // Any other signal is a crash, and the worker's crashes are mostly
+        // allocations: a std::bad_alloc thrown inside an OpenMP region
+        // aborts (134) instead of reaching the worker's own error handling.
+        // A larger tier also gets a larger cache budget, so it is the retry
+        // most likely to help; a crash that has nothing to do with memory
+        // costs one bigger slot before maxRetries ends it.
+        v = { ItemFate::Escalate,
+              QStringLiteral("the worker crashed (exit %1) without a result")
+                  .arg(exitCode) };
+    } else {
+        v = { ItemFate::Retry,
+              QStringLiteral("the worker exited with status %1 without a result")
+                  .arg(exitCode) };
+    }
+    if (!logTail.isEmpty())
+        v.reason += QStringLiteral(" [%1]").arg(logTail.join(QStringLiteral(" | ")));
+    return v;
 }
 
 ItemVerdict classifyTaskEnd(const QString& taskState, bool started)
@@ -226,13 +242,15 @@ double estimateFitSeconds(const std::vector<RemoteFitUsage>& usage, int nSpectra
 BatchProbe parseBatchProbe(const QString& out)
 {
     BatchProbe p;
-    enum { None, Outbox, Exit, Started, Tasks, Pool } section = None;
+    enum { None, Outbox, Exit, ExitLog, Started, Tasks, Pool } section = None;
+    QString logItem;    // ExitLog: whose stderr the "| " lines are
     for (const QString& raw : out.split(QLatin1Char('\n'))) {
         const QString line = raw.trimmed();
         if (line.isEmpty()) continue;
         if (line == QLatin1String("ASTRA_GONE"))    { p.dirMissing = true; continue; }
         if (line == QLatin1String("ASTRA_OUTBOX"))  { section = Outbox; continue; }
         if (line == QLatin1String("ASTRA_EXIT"))    { section = Exit; continue; }
+        if (line == QLatin1String("ASTRA_EXITLOG")) { section = ExitLog; continue; }
         if (line == QLatin1String("ASTRA_STARTED")) { section = Started; continue; }
         if (line == QLatin1String("ASTRA_TASKS"))   { section = Tasks; continue; }
         if (line == QLatin1String("ASTRA_POOL"))    { section = Pool; continue; }
@@ -248,6 +266,23 @@ BatchProbe parseBatchProbe(const QString& out)
             if (ok) p.exits.insert(line.section(QLatin1Char(' '), 0, 0), code);
             break;
         }
+        case ExitLog:
+            // "@<item>" starts an item; its lines come prefixed with "| " so
+            // that nothing a worker printed can pass for a section marker.
+            // The tail is cut by bytes and may hold carriage-return progress
+            // lines, so it is split again here and only the last few kept.
+            if (line.startsWith(QLatin1Char('@'))) {
+                logItem = line.mid(1);
+            } else if (line.startsWith(QLatin1Char('|')) && !logItem.isEmpty()) {
+                QStringList& tail = p.exitLogs[logItem];
+                for (const QString& part : line.mid(1).split(QLatin1Char('\r'))) {
+                    const QString t = part.trimmed();
+                    if (t.isEmpty()) continue;
+                    tail << (t.size() > 200 ? t.left(200) + QStringLiteral("...") : t);
+                }
+                while (tail.size() > 3) tail.removeFirst();
+            }
+            break;
         case Started:
             p.started << line;
             break;
@@ -782,8 +817,12 @@ void RemoteBatchService::flush(Host& h, const RemoteHost& host)
         for (const char* name : { "batch-runner.sh", "batch-pool.sh" }) {
             QFile res(QStringLiteral(":/remote/%1").arg(QLatin1String(name)));
             if (!res.open(QIODevice::ReadOnly)) continue;
+            // Written aside and renamed into place: runners of an earlier
+            // session may still be executing the old copy, and sh reads its
+            // script as it goes, so rewriting that file in place would hand
+            // them the new script's bytes at the old offsets.
             auto w = conn->exec(SshConnection::shellCommand(
-                                    QStringLiteral("cat > %1/bin/%2")
+                                    QStringLiteral("cat > %1/bin/%2.part && mv %1/bin/%2.part %1/bin/%2")
                                         .arg(workDir, QLatin1String(name))),
                                 60000, res.readAll());
             if (!w.ok()) {
@@ -1113,6 +1152,8 @@ void RemoteBatchService::poll(Host& h, const RemoteHost& host, Batch& b)
         "cd %1 2>/dev/null || { echo ASTRA_GONE; exit 0; }; "
         "echo ASTRA_OUTBOX; ls outbox 2>/dev/null; "
         "echo ASTRA_EXIT; for f in exit/*; do [ -f \"$f\" ] && echo \"${f#exit/} $(cat \"$f\")\"; done; "
+        "echo ASTRA_EXITLOG; for f in exit/*; do [ -f \"$f\" ] || continue; i=${f#exit/}; "
+        "echo \"@$i\"; tail -c 1500 \"items/$i/progress.log\" 2>/dev/null | sed \"s/^/| /\"; done; "
         "echo ASTRA_STARTED; ls started 2>/dev/null; "
         "echo ASTRA_TASKS; for f in tasks/*.state; do [ -f \"$f\" ] && echo \"$(basename \"$f\" .state) $(cat \"$f\")\"; done; "
         "echo ASTRA_POOL; [ -f pool.finished ] && echo finished; "
@@ -1214,7 +1255,7 @@ void RemoteBatchService::poll(Host& h, const RemoteHost& host, Batch& b)
             if (!b.open.contains(id)) continue;
             b.open.remove(id);
             if (auto it = _items.find(id); it != _items.end())
-                settle(*it->second, classifyExit(e.value()), host);
+                settle(*it->second, classifyExit(e.value(), probe.exitLogs.value(id)), host);
         }
     }
 

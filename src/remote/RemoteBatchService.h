@@ -38,7 +38,7 @@ QVector<QVector<int>> packTasks(const QVector<double>& estSeconds,
 enum class ItemFate {
     Requeue,    ///< never started: batch it again as it is
     Retry,      ///< died for no reason of its own: again, same tier
-    Escalate,   ///< ran out of memory or time: again, one tier up
+    Escalate,   ///< ran out of memory or time, or crashed: again, one tier up
 };
 
 struct ItemVerdict {
@@ -46,8 +46,11 @@ struct ItemVerdict {
     QString  reason;
 };
 
-/*  From the exit status the runner recorded for a fit.                     */
-ItemVerdict classifyExit(int exitCode);
+/*  From the exit status the runner recorded for a fit.  `logTail` is the
+ *  end of the worker's stderr, which names the cause of a crash (an uncaught
+ *  std::bad_alloc, a failed assertion); it goes into the reason because the
+ *  fit's folder, log included, is removed once the exit is collected.      */
+ItemVerdict classifyExit(int exitCode, const QStringList& logTail = {});
 
 /*  For a fit that was still unresolved when its task ended.  `taskState` is
  *  the scheduler's final state of the task (Slurm's sacct State, e.g.
@@ -63,6 +66,7 @@ struct BatchProbe {
     bool        dirMissing = false;
     QStringList outbox;                ///< item ids with a result waiting
     QHash<QString, int> exits;         ///< item id -> exit status, no result
+    QHash<QString, QStringList> exitLogs;  ///< item id -> last stderr lines
     QStringList started;               ///< item ids a runner began
     QHash<int, QString> taskStates;    ///< task -> runner state
     bool        poolAlive = false;     ///< plain hosts: runner pool running
