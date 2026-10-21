@@ -22,6 +22,8 @@ enum class TimeScale
 };
 
 // ─── Time ────────────────────────────────────────────────────────────────────
+namespace StreamBytes { struct Reader; }
+
 class Time
 {
 public:
@@ -119,6 +121,11 @@ public:
     // ── Serialisation ───────────────────────────────────────────────────────
     friend QDataStream& operator<<(QDataStream& s, const Time& t);
     friend QDataStream& operator>>(QDataStream& s, Time& t);
+    /// The bytes operator<< writes, appended straight to `out`, and read back
+    /// from `r` (see core/StreamBytes.h). For files that hold one Time per
+    /// point, where going through a QDataStream cost more than the data.
+    void appendStreamBytes(QByteArray& out) const;
+    void readStreamBytes(StreamBytes::Reader& r);
 
     // ── Pretty‑printing & scale string conversion ───────────────────────────
     QString toString() const;

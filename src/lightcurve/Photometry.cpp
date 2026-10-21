@@ -1,4 +1,5 @@
 #include "lightcurve/Photometry.h"
+#include "core/StreamBytes.h"
 #include "app/DataStore.h"
 #include "app/Logger.h"
 #include <algorithm>
@@ -667,10 +668,12 @@ bool LCFit::saveDataToFile(const QString &filepath) {
 
     auto writePts = [&](const std::vector<LCFitDataPoint> &v) {
         out << static_cast<quint32>(v.size());
-        for (const auto &p : v) {
-            out << p.phase << p.dPhase << p.flux << p.fluxError << p.weight
-                << p.factor;
-        }
+        std::vector<double> flat;   // six doubles a point, in this order
+        flat.reserve(v.size() * 6);
+        for (const auto &p : v)
+            flat.insert(flat.end(), {p.phase, p.dPhase, p.flux, p.fluxError,
+                                     p.weight, p.factor});
+        StreamBytes::writeF64s(out, flat);
     };
 
     writePts(inputPoints);
@@ -694,12 +697,21 @@ bool LCFit::loadDataFromFile(const QString &filepath) {
         quint32 n = 0;
         in >> n;
         v.clear();
-        v.reserve(n);
+        if (n > quint32(0xFFFFFFFFu / 6))
+            return;
+        std::vector<double> flat;
+        StreamBytes::readF64s(in, flat, n * 6);
+        if (flat.size() != size_t(n) * 6)
+            return;
+        v.resize(n);
         for (quint32 i = 0; i < n; ++i) {
-            LCFitDataPoint p;
-            in >> p.phase >> p.dPhase >> p.flux >> p.fluxError >> p.weight >>
-                p.factor;
-            v.push_back(p);
+            const double *f = flat.data() + size_t(i) * 6;
+            v[i].phase      = f[0];
+            v[i].dPhase     = f[1];
+            v[i].flux       = f[2];
+            v[i].fluxError  = f[3];
+            v[i].weight     = f[4];
+            v[i].factor     = f[5];
         }
     };
 
@@ -863,19 +875,28 @@ bool Photometry::saveLightcurveToFile(const QString& source, const QString& file
         return false;
     }
 
-    QByteArray buffer;
-    {
-        const auto& lc = it->second;
-        QDataStream s(&buffer, QIODevice::WriteOnly);
-        s.setVersion(QDataStream::Qt_6_0);
-        // New format: magic sentinel + version + count + per-point payload incl. userFlagged
-        s << static_cast<quint32>(0xFFFFFFFFu);
-        s << static_cast<quint32>(2);
-        s << static_cast<quint32>(lc.size());
-        for (const auto& p : lc) {
-            s << p.time << p.flux << p.fluxError << p.filter;
-            s << static_cast<quint8>(p.userFlagged ? 1 : 0);
+    // magic sentinel + version + count + per point: time, flux, error, filter
+    // and the userFlagged byte, in QDataStream's layout (core/StreamBytes.h)
+    const auto& lc = it->second;
+    QByteArray  buffer;
+    buffer.reserve(qsizetype(12 + lc.size() * 64));
+    StreamBytes::putU32(buffer, 0xFFFFFFFFu);
+    StreamBytes::putU32(buffer, 2);
+    StreamBytes::putU32(buffer, quint32(lc.size()));
+    QString    lastFilter;
+    QByteArray lastFilterBytes;
+    StreamBytes::putString(lastFilterBytes, lastFilter);
+    for (const auto& p : lc) {
+        p.time.appendStreamBytes(buffer);
+        StreamBytes::putF64(buffer, p.flux);
+        StreamBytes::putF64(buffer, p.fluxError);
+        if (p.filter != lastFilter || p.filter.isNull() != lastFilter.isNull()) {
+            lastFilter = p.filter;
+            lastFilterBytes.clear();
+            StreamBytes::putString(lastFilterBytes, lastFilter);
         }
+        buffer.append(lastFilterBytes);
+        StreamBytes::putU8(buffer, p.userFlagged ? 1 : 0);
     }
     return DataStore::writeCompressed(filepath, DataStore::LightcurveData, buffer);
 }
@@ -908,9 +929,29 @@ bool Photometry::loadLightcurveFromFile(const QString& source, const QString& fi
 
     QByteArray buf;
     if (DataStore::readCompressed(filepath, DataStore::LightcurveData, buf)) {
-        QDataStream s(&buf, QIODevice::ReadOnly);
-        s.setVersion(QDataStream::Qt_6_0);
-        return parse(s);
+        // The same layout parse() reads, without a stream call per value.
+        StreamBytes::Reader r(buf);
+        const quint32 first   = r.u32();
+        quint32       version = 1;
+        quint32       n       = first;
+        if (first == 0xFFFFFFFFu) {
+            version = r.u32();
+            n       = r.u32();
+        }
+        std::vector<LightcurvePoint> lc;
+        lc.reserve(std::min<quint32>(n, quint32(buf.size() / 40 + 1)));
+        for (quint32 i = 0; i < n && r.ok; ++i) {
+            LightcurvePoint p;
+            p.time.readStreamBytes(r);
+            p.flux      = r.f64();
+            p.fluxError = r.f64();
+            p.filter    = r.string();
+            if (version >= 2)
+                p.userFlagged = r.u8() != 0;
+            lc.push_back(std::move(p));
+        }
+        _lightcurves[source] = std::move(lc);
+        return r.ok;
     }
     QFile file(filepath);
     if (!file.open(QIODevice::ReadOnly)) return false;

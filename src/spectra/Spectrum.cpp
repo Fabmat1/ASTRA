@@ -1,4 +1,5 @@
 #include "spectra/Spectrum.h"
+#include "core/StreamBytes.h"
 #include "app/DataStore.h"
 
 #include <algorithm>
@@ -178,9 +179,9 @@ bool Spectrum::saveDataToFile(const QString& filepath)
         s << static_cast<quint32>(_fluxes.size());
         s << static_cast<quint32>(_fluxErrors.size());
 
-        for (const auto& v : _wavelengths) s << v;
-        for (const auto& v : _fluxes)      s << v;
-        for (const auto& v : _fluxErrors)  s << v;
+        StreamBytes::writeF64s(s, _wavelengths);
+        StreamBytes::writeF64s(s, _fluxes);
+        StreamBytes::writeF64s(s, _fluxErrors);
     }
     return DataStore::writeCompressed(filepath, DataStore::SpectrumData, buffer);
 }
@@ -192,14 +193,9 @@ bool Spectrum::loadDataFromFile(const QString& filepath)
         quint32 wlN, fN, eN;
         s >> wlN >> fN >> eN;
 
-        _wavelengths.clear();  _wavelengths.reserve(wlN);
-        for (quint32 i = 0; i < wlN; ++i) { double v; s >> v; _wavelengths.push_back(v); }
-
-        _fluxes.clear();  _fluxes.reserve(fN);
-        for (quint32 i = 0; i < fN; ++i) { double v; s >> v; _fluxes.push_back(v); }
-
-        _fluxErrors.clear();  _fluxErrors.reserve(eN);
-        for (quint32 i = 0; i < eN; ++i) { double v; s >> v; _fluxErrors.push_back(v); }
+        StreamBytes::readF64s(s, _wavelengths, wlN);
+        StreamBytes::readF64s(s, _fluxes, fN);
+        StreamBytes::readF64s(s, _fluxErrors, eN);
 
         return s.status() == QDataStream::Ok;
     };
@@ -243,11 +239,11 @@ bool SpectralFit::saveDataToFile(const QString &filepath) {
         s << static_cast<quint32>(modelSplines.size());
         s << static_cast<quint32>(modelIgnore.size());
 
-        for (const auto& v : modelWavelengths) s << v;
-        for (const auto& v : modelFluxes)      s << v;
-        for (const auto& v : rebinnedFluxes)   s << v;
-        for (const auto& v : rebinnedSigmas)   s << v;
-        for (const auto& v : modelSplines)     s << v;
+        StreamBytes::writeF64s(s, modelWavelengths);
+        StreamBytes::writeF64s(s, modelFluxes);
+        StreamBytes::writeF64s(s, rebinnedFluxes);
+        StreamBytes::writeF64s(s, rebinnedSigmas);
+        StreamBytes::writeF64s(s, modelSplines);
         for (const auto& v : modelIgnore)      s << static_cast<quint8>(v);
 
         // Extension: per-component models and the fitted telluric transmission.
@@ -256,7 +252,7 @@ bool SpectralFit::saveDataToFile(const QString &filepath) {
         s << kFitExtMagic << kFitExtVersion;
         auto writeArray = [&s](const std::vector<double>& v) {
             s << static_cast<quint32>(v.size());
-            for (const auto& x : v) s << x;
+            StreamBytes::writeF64s(s, v);
         };
         writeArray(modelFluxesComp1);
         writeArray(modelFluxesComp2);
@@ -271,8 +267,7 @@ bool SpectralFit::loadDataFromFile(const QString& filepath)
     LOG_INFO_F("SpectralFit", QString("loadDataFromFile: %1").arg(filepath));
 
     auto readDoubles = [](QDataStream& s, std::vector<double>& vec, quint32 n) {
-        vec.clear(); vec.reserve(n);
-        for (quint32 i = 0; i < n; ++i) { double v; s >> v; vec.push_back(v); }
+        StreamBytes::readF64s(s, vec, n);
     };
 
     auto parse = [this, &readDoubles](QDataStream& s, qint64 bufferSize, bool legacy = false) -> bool {

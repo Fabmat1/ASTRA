@@ -1435,6 +1435,7 @@ if(BUILD_TESTING)
             resources/resources.qrc
             tests/doctest_main.cpp
             tests/unit/core/time.cpp
+            tests/unit/core/stream_bytes.cpp
             tests/unit/core/stats.cpp
             tests/unit/core/delimited_table.cpp
             tests/unit/core/asymmetric_errors.cpp

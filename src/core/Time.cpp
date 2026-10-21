@@ -1,4 +1,5 @@
 #include "core/Time.h"
+#include "core/StreamBytes.h"
 #include "core/BarycentricCorrection.h"
 #include "core/Instrument.h"
 
@@ -321,6 +322,40 @@ QDataStream& operator>>(QDataStream& s, Time& t)
     }
 
     return s;
+}
+
+// Field for field what operator<< and operator>> above write and read; the
+// StarStream tests hold the two to the same bytes.
+void Time::appendStreamBytes(QByteArray& out) const
+{
+    StreamBytes::putI32(out, static_cast<qint32>(_nativeScale));
+    StreamBytes::putF64(out, _nativeValue);
+    for (const auto* o : {&_jd, &_mjd, &_bjd, &_hjd}) {
+        StreamBytes::putBool(out, o->has_value());
+        if (o->has_value()) StreamBytes::putF64(out, **o);
+    }
+    StreamBytes::putF64(out, _exposureSec);
+    const bool hasAuto = (_autoInst != nullptr);
+    StreamBytes::putBool(out, hasAuto);
+    if (hasAuto) {
+        StreamBytes::putF64(out, _autoRA);
+        StreamBytes::putF64(out, _autoDec);
+    }
+}
+
+void Time::readStreamBytes(StreamBytes::Reader& r)
+{
+    _nativeScale = static_cast<TimeScale>(r.i32());
+    _nativeValue = r.f64();
+    for (auto* o : {&_jd, &_mjd, &_bjd, &_hjd}) {
+        if (r.boolean()) *o = r.f64();
+        else             o->reset();
+    }
+    _exposureSec = r.f64();
+    if (r.boolean()) {
+        _autoRA  = r.f64();
+        _autoDec = r.f64();
+    }
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
