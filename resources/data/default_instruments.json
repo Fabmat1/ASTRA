@@ -622,7 +622,7 @@
                     "data_type": "spectroscopy",
                     "spectral": {
                         "disperser": "Gr18",
-                        "resolution_coefficients": [1000.0],
+                        "resolution_coefficients": [0.0, 0.455],
                         "wavelength_min": 3500.0,
                         "wavelength_max": 5050.0
                     }
