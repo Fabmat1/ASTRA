@@ -14,8 +14,7 @@
 #   1. clone upstream HEAD (3 attempts, backing off)
 #   2. the newest of
 #        - the snapshot cache: a tarball of the last clone that worked, kept in
-#          a GitHub Actions cache on the default branch (see
-#          .github/workflows/isis-scripts-cache.yml) or in ~/.cache locally
+#          ~/.cache locally
 #        - a local ISIS install, e.g. the src/ dir of an ISIS_install tree
 #   3. nothing, and the caller drops into its non-fatal path
 #
