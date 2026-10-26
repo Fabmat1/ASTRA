@@ -52,7 +52,15 @@ BUILD_DIR="${SRC_DIR}/build-windows"
 STAGE_DIR="${SRC_DIR}/stage-windows"
 CCFITS_PREFIX="${CACHE}/ccfits/install"
 CCFITS_STAMP="${CACHE}/ccfits/2.7.stamp"
-CCFITS_URL="https://heasarc.gsfc.nasa.gov/FTP/software/fitsio/ccfits/CCfits.tar.gz"
+# Pinned by hash, so a mirror is as good as the original. HEASARC served a
+# certificate for the wrong host name in 2026-10, which failed every cold
+# build; Fedora's source cache keeps the identical file (SHA-256 matches
+# Homebrew's ccfits formula).
+CCFITS_SHA256="f63546d2feecbf732cc08aaaa80a2eb5334ada37fb2530181b7363a5dbdeb01a"
+CCFITS_URLS=(
+  "https://heasarc.gsfc.nasa.gov/FTP/software/fitsio/ccfits/v2.7/CCfits-2.7.tar.gz"
+  "https://src.fedoraproject.org/repo/pkgs/CCfits/CCfits-2.7.tar.gz/sha512/5cb802f41cf0695d0e49924ee163151ee657b93158246766d04c192518c7bed30383405d87b5fb312f5f44af26d5ede3104fab90d93cc232e950f8ae66050fde/CCfits-2.7.tar.gz"
+)
 OUT_BASENAME="astra-${VERSION}-x86_64-setup"
 
 # ── 0. Sanity checks ────────────────────────────────────────────────────────
@@ -176,7 +184,16 @@ else
   rm -f "${CCFITS_STAMP}"
   rm -rf "${CACHE}/ccfits/src" "${CCFITS_PREFIX}"
   mkdir -p "${CACHE}/ccfits/src"
-  curl -fsSL -o "${CACHE}/ccfits/src.tgz" "${CCFITS_URL}"
+  ccfits_ok=0
+  for url in "${CCFITS_URLS[@]}"; do
+    if curl -fsSL -o "${CACHE}/ccfits/src.tgz" "${url}" &&
+       echo "${CCFITS_SHA256}  ${CACHE}/ccfits/src.tgz" | sha256sum -c --status; then
+      ccfits_ok=1
+      break
+    fi
+    echo "!!! CCfits download failed or did not match its checksum: ${url}"
+  done
+  [[ "${ccfits_ok}" == "1" ]] || { echo "No CCfits source could be fetched"; exit 1; }
   tar xzf "${CACHE}/ccfits/src.tgz" -C "${CACHE}/ccfits/src"
   CCFITS_SD="$(find "${CACHE}/ccfits/src" -maxdepth 2 -name CMakeLists.txt -printf '%h\n' -quit)"
   [[ -n "${CCFITS_SD}" ]] || { echo "CCfits tarball has no CMakeLists.txt"; exit 1; }
