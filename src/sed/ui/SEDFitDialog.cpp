@@ -63,6 +63,8 @@
 #include <QUuid>
 #include <QVBoxLayout>
 #include <QtConcurrent>
+#include "fitting/AdoptedFit.h"
+#include "sed/SedSeeds.h"
 #include <algorithm>
 #include <cmath>
 
@@ -126,17 +128,23 @@ QStringList reachableGridPaths(const QStringList &paths) {
     return ok;
 }
 
-std::shared_ptr<SpectralFit>
-findBestSpectralFit(const std::shared_ptr<Star> &star) {
-    if (!star)
-        return nullptr;
-    for (auto &spec : star->getSpectra()) {
-        if (!spec)
-            continue;
-        if (auto bf = spec->getBestFit())
-            return bf;
-    }
-    return nullptr;
+// One SED row: value, freeze switch and the [min, max] window around it.
+struct SeedRow {
+    double value;
+    bool   frozen;
+    double min, max;
+    bool   hasRange;
+};
+
+// A spectroscopic value becomes a frozen row with its window, clamped to
+// what the SED grids can hold; without one the fallback is used as given.
+SeedRow seedRow(const astra::sed::SedParamSeed &seed, double lo, double hi,
+                const SeedRow &fallback) {
+    if (!seed.isSet())
+        return fallback;
+    const double hw = std::isfinite(seed.halfWidth) ? seed.halfWidth : 0.0;
+    return {seed.value, true, std::max(seed.value - hw, lo),
+            std::min(seed.value + hw, hi), true};
 }
 
 } // namespace
@@ -1053,6 +1061,10 @@ void SEDFitDialog::populateParamsFromFit() {
                                           : QString()));
     };
 
+    QVector<astra::sed::SedComponentSeed> specSeeds;
+    if (auto sf = astra::fitting::adoptedSpectralFit(*_star))
+        specSeeds = astra::sed::seedsFromSpectralFit(*sf);
+
     for (int ci = 0; ci < static_cast<int>(model->components.size()); ++ci) {
         const auto &c      = model->components[ci];
         QString     prefix = multi ? QString("c%1_").arg(ci + 1) : "c*_";
@@ -1062,9 +1074,9 @@ void SEDFitDialog::populateParamsFromFit() {
         double he   = c.heAbundance;
         double z    = c.metallicity;
 
-        // For the first (or single) component prefer the Star's spectroscopic
-        // values/errors so that re-fitting is anchored to the spectroscopic
-        // prior rather than the previous fit's posterior.
+        // Re-fitting is anchored to the spectroscopic values rather than to
+        // the previous fit's posterior: the star's own for the first (or
+        // single) component, the adopted spectral fit's for the others.
         double eTeff = (c.teffErrUp + c.teffErrDown) * 0.5;
         double eLogg = (c.loggErrUp + c.loggErrDown) * 0.5;
         double eHe   = (c.heAbundanceErrUp + c.heAbundanceErrDown) * 0.5;
@@ -1084,13 +1096,33 @@ void SEDFitDialog::populateParamsFromFit() {
                 he  = _star->getHe();
                 eHe = Star::isSet(_star->getEHe()) ? _star->getEHe() : 0.0;
             }
+        } else if (ci < specSeeds.size()) {
+            const auto &sd = specSeeds[ci];
+            if (sd.teff.isSet()) { teff = sd.teff.value; eTeff = 0.0; }
+            if (sd.logg.isSet()) { logg = sd.logg.value; eLogg = 0.0; }
+            if (sd.he.isSet())   { he = sd.he.value;     eHe = 0.0; }
+            if (std::isfinite(sd.metallicity)) z = sd.metallicity;
         }
 
-        bool heRich = (he > -1.0);
-
-        double totTeff = teffError(teff, eTeff, heRich);
-        double totLogg = loggError(teff, logg, eLogg, heRich);
-        double totHe   = heError(teff, he, eHe, heRich);
+        // The windows: statistical error and the sdB systematic error model
+        // (the spectral fit's statistical errors are already folded into
+        // its seed's half widths, hence the zeros above).
+        auto win = astra::sed::makeComponentSeed(teff, eTeff, logg, eLogg,
+                                                 he, eHe, z);
+        if (ci > 0 && ci < specSeeds.size()) {
+            const auto &sd = specSeeds[ci];
+            if (sd.teff.isSet()) win.teff = sd.teff;
+            if (sd.logg.isSet()) win.logg = sd.logg;
+            if (sd.he.isSet())   win.he   = sd.he;
+        }
+        const double totTeff = win.teff.isSet() ? win.teff.halfWidth : 0.0;
+        const double totLogg = win.logg.isSet() ? win.logg.halfWidth : 0.0;
+        // He at exactly 0 counts as unset, but a free He row still needs
+        // its window.
+        const double totHe =
+            win.he.isSet() ? win.he.halfWidth
+                           : heError(std::clamp(teff, 20000.0, 50000.0), he,
+                                     eHe, he > -1.0);
 
         bool frozenTeff = (c.teffStatus != SEDParamStatus::Fitted);
         bool frozenLogg = (c.loggStatus != SEDParamStatus::Fitted);
@@ -1257,28 +1289,27 @@ void SEDFitDialog::initDefaultFitParams() {
         heFromValue = true;
     }
 
-    // ── Highest priority: best-fit spectrum ────────────────────────────
-    if (auto sf = findBestSpectralFit(_star)) {
-        if (sf->teff > 0) {
-            teff          = sf->teff;
-            eTeff         = sf->teffError;
-            teffFromValue = true;
-        }
-        if (sf->logg > 0) {
-            logg          = sf->logg;
-            eLogg         = sf->loggError;
-            loggFromValue = true;
-        }
-        if (Star::isSet(sf->he) && sf->he != 0.0) {
-            he          = sf->he;
-            eHe         = sf->heError;
-            heFromValue = true;
-        }
-        if (sf->metallicity != 0.0)
-            z = sf->metallicity;
+    // ── Highest priority: the adopted spectral fit ─────────────────────
+    // Its seed carries the statistical errors (the larger side of an
+    // asymmetric interval) already combined with the systematic model.
+    astra::sed::SedComponentSeed fitSeed;
+    if (auto sf = astra::fitting::adoptedSpectralFit(*_star)) {
+        const auto seeds = astra::sed::seedsFromSpectralFit(*sf);
+        if (!seeds.isEmpty()) fitSeed = seeds.first();
     }
+    if (fitSeed.teff.isSet()) { teff = fitSeed.teff.value; teffFromValue = true; }
+    if (fitSeed.logg.isSet()) { logg = fitSeed.logg.value; loggFromValue = true; }
+    if (fitSeed.he.isSet())   { he = fitSeed.he.value;     heFromValue = true; }
+    if (std::isfinite(fitSeed.metallicity) && fitSeed.metallicity != 0.0)
+        z = fitSeed.metallicity;
 
-    bool heRich = (he > -1.0);
+    // Windows from the statistical error and the sdB systematic error model;
+    // the fit's own seed already holds both.
+    auto win = astra::sed::makeComponentSeed(teff, eTeff, logg, eLogg, he,
+                                             eHe, z);
+    if (fitSeed.teff.isSet()) win.teff = fitSeed.teff;
+    if (fitSeed.logg.isSet()) win.logg = fitSeed.logg;
+    if (fitSeed.he.isSet())   win.he   = fitSeed.he;
 
     // ── Resolve range + freeze state per parameter ─────────────────────
     double teffMin = 0, teffMax = 0;
@@ -1291,24 +1322,24 @@ void SEDFitDialog::initDefaultFitParams() {
     // When we have a real fitted/spectroscopic value, freeze it within its
     // uncertainty range. Otherwise (only grid midpoints or plain defaults)
     // leave Teff/logg/He free with no min/max so the fit can explore them.
-    if (teffFromValue) {
-        double tot = teffError(teff, eTeff, heRich);
+    if (teffFromValue && win.teff.isSet()) {
+        const double tot = win.teff.halfWidth;
         teffMin    = std::max(teff - tot, 3000.0);
         teffMax    = teff + tot;
         teffRange  = true;
         teffFrozen = true;
     }
 
-    if (loggFromValue) {
-        double tot = loggError(teff, logg, eLogg, heRich);
+    if (loggFromValue && win.logg.isSet()) {
+        const double tot = win.logg.halfWidth;
         loggMin    = std::max(logg - tot, 0.0);
         loggMax    = std::min(logg + tot, 9.5);
         loggRange  = true;
         loggFrozen = true;
     }
 
-    if (heFromValue) {
-        double tot = heError(teff, he, eHe, heRich);
+    if (heFromValue && win.he.isSet()) {
+        const double tot = win.he.halfWidth;
         heMin      = std::max(he - tot, -5.0);
         heMax      = std::min(he + tot, 0.0);
         heRange    = true;
@@ -1415,17 +1446,32 @@ void SEDFitDialog::onComp2Toggled(bool enabled)
                 item->setText("c1_" + name.mid(3));
         }
 
-        // Add generic c2 parameters
+        // c2 parameters: the adopted spectral fit's second component when it
+        // has one, each frozen within its window like component 1; generic
+        // cool-companion values otherwise.
+        astra::sed::SedComponentSeed seed2;
+        if (auto sf = astra::fitting::adoptedSpectralFit(*_star)) {
+            const auto seeds = astra::sed::seedsFromSpectralFit(*sf);
+            if (seeds.size() > 1) seed2 = seeds[1];
+        }
         struct C2Param {
             QString name; double value; bool frozen;
             double min; double max; bool hasRange;
         };
+        const auto row = [](const QString& name, const SeedRow& r) {
+            return C2Param{name, r.value, r.frozen, r.min, r.max, r.hasRange};
+        };
+        const double z2 =
+            std::isfinite(seed2.metallicity) ? seed2.metallicity : 0.0;
         std::vector<C2Param> c2 = {
             {"c2_xi",   0.0,   true,   0,      0,      false},
-            {"c2_z",    0.0,   true,   0,      0,      false},
-            {"c2_HE",  -1.0,   true,  -5.0,    0.0,    true},
-            {"c2_logg", 4.5,   true,   3.0,    5.5,    true},
-            {"c2_teff", 6000,  true,   3500,   10000,  true},
+            {"c2_z",    z2,    true,   0,      0,      false},
+            row("c2_HE",   seedRow(seed2.he,   -5.0,   0.0,
+                                   {-1.0, true, -5.0, 0.0, true})),
+            row("c2_logg", seedRow(seed2.logg,  0.0,   9.5,
+                                   {4.5, true, 3.0, 5.5, true})),
+            row("c2_teff", seedRow(seed2.teff, 3000.0, 1e6,
+                                   {6000, true, 3500, 10000, true})),
         };
 
         for (const auto& p : c2) {

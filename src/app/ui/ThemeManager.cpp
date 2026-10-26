@@ -63,6 +63,18 @@ void publishThemeColors(const QString& styleSheet, bool isDark)
     qApp->setProperty("themeBg", bg);
     qApp->setProperty("themeFg", fg);
     qApp->setProperty("themeSurface", deriveSurface(bg, isDark));
+
+    // The accent: what a checked tool button is filled with, and its text.
+    // Every theme defines that rule, so C++-built toggles can use the same
+    // colours. Unset when a theme does not, and the readers fall back.
+    static const QRegularExpression accentRe(QStringLiteral(
+        "QToolButton:checked\\s*\\{[^}]*?[\\s;{]background-color\\s*:\\s*(#[0-9a-fA-F]{3,8})"));
+    static const QRegularExpression accentFgRe(QStringLiteral(
+        "QToolButton:checked\\s*\\{[^}]*?[\\s;{]color\\s*:\\s*(#[0-9a-fA-F]{3,8})"));
+    const auto ma = accentRe.match(styleSheet);
+    const auto mf = accentFgRe.match(styleSheet);
+    qApp->setProperty("themeAccent", ma.hasMatch() ? QVariant(QColor(ma.captured(1))) : QVariant());
+    qApp->setProperty("themeAccentText", mf.hasMatch() ? QVariant(QColor(mf.captured(1))) : QVariant());
 }
 
 } // namespace

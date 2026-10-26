@@ -49,6 +49,13 @@ void FlowLayout::setExpandsTrailingItem(bool on)
     invalidate();
 }
 
+void FlowLayout::setCentersItemsVertically(bool on)
+{
+    if (_vCenter == on) return;
+    _vCenter = on;
+    invalidate();
+}
+
 void FlowLayout::addItem(QLayoutItem* item) { _items.append(item); }
 
 int FlowLayout::count() const { return _items.size(); }
@@ -199,9 +206,11 @@ int FlowLayout::doLayout(const QRect& rect, bool testOnly) const
         // ---- pass 2: place them ----
         int x = eff.x() + (_centerRows ? qMax(0, (avail - rowW) / 2) : 0);
         for (int k = i; k < j; ++k) {
-            if (!testOnly)
+            if (!testOnly) {
+                const int h = itemHeightFor(live[k], w[k]);
                 live[k]->setGeometry(
-                    QRect(x, y, w[k], itemHeightFor(live[k], w[k])));
+                    QRect(x, y + (_vCenter ? (rowH - h) / 2 : 0), w[k], h));
+            }
             x += w[k] + hs;
         }
         y += rowH + vs;

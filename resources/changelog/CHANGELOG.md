@@ -21,6 +21,17 @@
     implemented.
 -->
 
+## v0.9.2 (2026-10-26)
+
+### Added
+- The spectrum panel switches between Normalized, Flux and Raw with one click, can show the fitted continuum, and has toggles for model, components and errors.
+- A new Panels view shows line cut-outs above an overview of the spectrum; which panels appear is set per instrument mode.
+- The star summary lists every spectral and SED parameter of each component under **Show all**.
+- SED fits start from all components of the spectral fit, with errors from the hot-subdwarf systematic error model.
+
+### Changed
+- The spectrum legend no longer shows a component's share of the light.
+
 ## v0.9.1 (2026-10-26)
 
 ### Added

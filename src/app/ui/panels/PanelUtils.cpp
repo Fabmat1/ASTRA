@@ -118,6 +118,20 @@ QColor themeSurface()
     return isDarkTheme() ? QColor(50, 50, 55) : QColor(248, 248, 250);
 }
 
+QColor themeAccent()
+{
+    QVariant v = qApp->property("themeAccent");
+    if (v.isValid()) return v.value<QColor>();
+    return qApp->palette().color(QPalette::Highlight);
+}
+
+QColor themeAccentText()
+{
+    QVariant v = qApp->property("themeAccentText");
+    if (v.isValid()) return v.value<QColor>();
+    return qApp->palette().color(QPalette::HighlightedText);
+}
+
 // --- Colour algebra --------------------------------------------------------
 
 QColor mix(const QColor& a, const QColor& b, double t)

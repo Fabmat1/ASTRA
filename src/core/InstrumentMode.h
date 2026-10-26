@@ -73,6 +73,23 @@ struct GaelFitDefaults {
     static GaelFitDefaults fromJson(const QJsonObject& o);
 };
 
+/// One cut-out of the spectrum panel's "Panels" view: a labelled wavelength
+/// window, and whether it is drawn normalized, in flux, or in whatever the
+/// panel's Normalized / Flux switch says.
+struct SpectrumViewPanel {
+    enum class Scale { Auto, Normalized, Flux };
+
+    QString label;
+    double  wlLow  = 0.0;
+    double  wlHigh = 0.0;
+    Scale   scale  = Scale::Auto;
+
+    QJsonObject toJson() const;
+    static SpectrumViewPanel fromJson(const QJsonObject& o);
+    static QString scaleToString(Scale s);
+    static Scale   scaleFromString(const QString& s);
+};
+
 // ── NEW: range of periods to whiten in periodograms ────────────────────────
 struct PeriodAliasRange {
     double low  = 0.0;   // days
@@ -91,6 +108,9 @@ struct SpectralProperties {
     double                      wavelengthMax = 0.0;
     QVector<WavelengthSetup>    commonSetups;
     GaelFitDefaults            fitDefaults;
+    /// Panels of the spectrum panel's "Panels" view. Unset: the built-in set
+    /// (astra::spectra::builtInViewPanels()); set but empty: overview only.
+    std::optional<QVector<SpectrumViewPanel>> viewPanels;
 
     // Optional explicit systematic RV error (km/s).  When not set,
     // a default is inferred from the resolution (see helpers below).

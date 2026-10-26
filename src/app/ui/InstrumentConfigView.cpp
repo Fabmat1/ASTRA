@@ -4,6 +4,8 @@
 #include "app/ui/UiIcons.h"
 #include "fitting/FitJobFactory.h"
 #include "spectra/Spectrum.h"
+#include "spectra/SpectrumPanelPlan.h"
+#include "spectra/ui/SpectrumPanelsEditor.h"
 #include "ui/widgets/RangeListEditor.h"
 
 #include <algorithm>
@@ -1042,8 +1044,38 @@ bool InstrumentConfigView::editModeDialog(InstrumentMode& mode, bool isNew)
 
     const int fitTab = tabs->addTab(fitPage, tr("Spectral Fit Defaults"));
     tabs->setTabEnabled(fitTab, specGroup->isChecked());
-    connect(specGroup, &QGroupBox::toggled, &dlg,
-            [=](bool on) { tabs->setTabEnabled(fitTab, on); });
+
+    // ── Spectrum view tab ───────────────────────────────────────────────
+    // The cut-outs of the spectrum panel's Panels view for this mode.
+    const std::optional<QVector<SpectrumViewPanel>> savedPanels =
+        mode.hasSpectralProperties() ? mode.spectral().viewPanels
+                                     : std::nullopt;
+    auto* viewPage = new QWidget;
+    auto* viewLayout = new QVBoxLayout(viewPage);
+    auto* viewIntro = new QLabel(tr(
+        "The panels the spectrum panel's Panels view shows below its "
+        "overview for spectra of this mode. A panel wider than %1 Å is "
+        "drawn two columns wide; a spectrum gets only the panels it covers. "
+        "Unticked: ASTRA's built-in set, shown greyed out.")
+        .arg(astra::spectra::kWidePanelAngstrom, 0, 'f', 0));
+    viewIntro->setWordWrap(true);
+    viewLayout->addWidget(viewIntro);
+    auto* panelsGroup = new QGroupBox(tr("Mode-specific panels"));
+    panelsGroup->setCheckable(true);
+    panelsGroup->setChecked(savedPanels.has_value());
+    auto* panelsLay = new QVBoxLayout(panelsGroup);
+    auto* panelsEditor = new SpectrumPanelsEditor;
+    panelsEditor->setPanels(savedPanels ? *savedPanels
+                                        : astra::spectra::builtInViewPanels());
+    panelsLay->addWidget(panelsEditor);
+    viewLayout->addWidget(panelsGroup, 1);
+    const int viewTab = tabs->addTab(viewPage, tr("Spectrum View"));
+    tabs->setTabEnabled(viewTab, specGroup->isChecked());
+
+    connect(specGroup, &QGroupBox::toggled, &dlg, [=](bool on) {
+        tabs->setTabEnabled(fitTab, on);
+        tabs->setTabEnabled(viewTab, on);
+    });
 
     // ── Dialog buttons ──────────────────────────────────────────────────
     auto* buttons = new QDialogButtonBox(
@@ -1100,6 +1132,8 @@ bool InstrumentConfigView::editModeDialog(InstrumentMode& mode, bool isNew)
                         {r.value(0), r.value(1), r.value(2, 50.0)});
         if (sysRvCheck->isChecked())
             sp.systematicRVError = sysRvSpin->value();
+        if (panelsGroup->isChecked())
+            sp.viewPanels = panelsEditor->panels();
         mode.setSpectralProperties(sp);
     } else {
         mode.clearSpectralProperties();

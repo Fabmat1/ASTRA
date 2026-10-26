@@ -8,7 +8,12 @@
 #include "fitting/ElementAbundances.h"
 #include "app/Logger.h"
 #include "plotting/qcustomplot.h"
+#include "ui/widgets/FlowLayout.h"
 #include "ui/widgets/PlotKeyNavigator.h"
+#include "ui/widgets/SegmentedControl.h"
+#include "fitting/FitJobFactory.h"
+#include "core/Instrument.h"
+#include "spectra/SpectrumPanelPlan.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -21,6 +26,13 @@
 #include <QPushButton>
 #include <QTimer>
 #include <QApplication>
+#include <QButtonGroup>
+#include <QMenu>
+#include <QPainter>
+#include <QScrollArea>
+#include <QSettings>
+#include <QResizeEvent>
+#include <QWheelEvent>
 
 #include <algorithm>
 #include <cmath>
@@ -37,6 +49,9 @@ QColor componentColor(int which)          // 0 = component 1, 1 = component 2
 
 QColor telluricColor()
 { return PanelUtils::lcColor(5); }                    // cyan
+
+QColor continuumColor()
+{ return PanelUtils::lcColor(2); }                    // green
 
 QColor mutedTextColor()
 {
@@ -129,6 +144,7 @@ void SpectraPanel::styleAbundanceAxes()
 void SpectraPanel::refreshTheme()
 {
     PanelUtils::styleFlatTextButton(_resetZoomButton);
+    updateToggleSwatches();
     PanelUtils::stylePlot(_mainPlot);
     PanelUtils::stylePlot(_residualPlot);
     PanelUtils::stylePlot(_abundancePlot);
@@ -163,10 +179,10 @@ void SpectraPanel::setupUi()
     _tabBar->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
     layout->addWidget(_tabBar, 0);
 
-    // ── Toolbar: fit selector + renorm checkbox ──
+    // ── Toolbar: fit selector ──
     _toolbar = new QWidget;
     QHBoxLayout* tbLayout = new QHBoxLayout(_toolbar);
-    tbLayout->setContentsMargins(0, 2, 0, 2);
+    tbLayout->setContentsMargins(0, 2, 0, 0);
     tbLayout->setSpacing(8);
     _resetZoomButton = new QPushButton("⟲ Reset Zoom");
     _resetZoomButton->setToolTip(
@@ -188,36 +204,6 @@ void SpectraPanel::setupUi()
     _fitCombo->setMaximumWidth(350);
     tbLayout->addWidget(_fitCombo);
 
-    _displayMode = new QComboBox;
-    _displayMode->addItem("Normalized",  DisplayNormalized);
-    _displayMode->addItem("Rebinned",    DisplayRebinned);
-    _displayMode->addItem("Raw + renorm",DisplayRaw);
-    _displayMode->setToolTip(
-        "Normalized: rebinned flux / spline vs model / spline\n"
-        "Rebinned:   rebinned flux vs model flux (no spline division)\n"
-        "Raw + renorm: instrument spectrum with model scaled to match");
-    tbLayout->addWidget(_displayMode);
-
-    // ── Overlay toggles ──
-    // Shown only when the selected fit actually carries the extra curves; the
-    // state itself is per session and is never reset behind the user's back.
-    _componentsCheck = new QCheckBox("Components");
-    _componentsCheck->setChecked(true);          // on by default for 2-comp fits
-    _componentsCheck->setToolTip(
-        "Overlay each stellar component's contribution to the model, scaled by "
-        "the share of the light it emits, so the two curves add up to the "
-        "combined model");
-    _componentsCheck->setVisible(false);
-    tbLayout->addWidget(_componentsCheck);
-
-    _telluricCheck = new QCheckBox("Telluric");
-    _telluricCheck->setChecked(false);
-    _telluricCheck->setToolTip(
-        "Overlay the fitted telluric transmission, scaled onto the local "
-        "continuum so it is comparable with the model in every display mode");
-    _telluricCheck->setVisible(false);
-    tbLayout->addWidget(_telluricCheck);
-
     _solarRelCheck = new QCheckBox("[X/H]");
     _solarRelCheck->setToolTip(
         "Show abundances relative to solar ([X/H]) instead of the stored "
@@ -226,6 +212,77 @@ void SpectraPanel::setupUi()
     tbLayout->addWidget(_solarRelCheck);
 
     layout->addWidget(_toolbar, 0);
+
+    // ── View bar: mode, layout and what is drawn ──
+    // A flow layout, so a narrow panel wraps the toggles instead of clipping.
+    QSettings settings;
+    settings.beginGroup(QStringLiteral("SpectraPanel"));
+
+    _viewBar = new QWidget;
+    auto* flow = new FlowLayout(_viewBar, 0, 10, 2);
+    flow->setCentersItemsVertically(true);
+
+    // Either-or switches: joined segments, the chosen one in the theme's
+    // accent.
+    const auto segmented = [&](const QList<QPair<QString, QString>>& items) {
+        auto* seg = new astra::SegmentedControl;
+        for (const auto& [text, tip] : items) seg->addSegment(text, tip);
+        flow->addWidget(seg);
+        return seg->group();
+    };
+
+    _modeGroup = segmented({
+        {"Normalized", "Data and model divided by the fitted continuum"},
+        {"Flux", "The fit's rebinned flux, model and continuum, undivided"},
+        {"Raw", "The spectrum as observed, with the model scaled onto it"},
+    });
+    const QString savedMode = settings.value("mode", "norm").toString();
+    _preferredMode = savedMode == "flux" ? DisplayRebinned
+                   : savedMode == "raw"  ? DisplayRaw : DisplayNormalized;
+    setModeButton(_preferredMode);
+
+    _layoutGroup = segmented({
+        {"Panels", "Overview with the Balmer jump, Paschen and line cut-outs; "
+                   "the panels and their ranges are set per instrument mode "
+                   "(Data / Instruments...). Wheel zooms a panel (Ctrl: flux), "
+                   "double-click resets it, double-click its title opens it "
+                   "in the full view"},
+        {"Full", "The whole spectrum with the residuals below"},
+    });
+    // Full by default: the built-in panels are hot-subdwarf lines, of little
+    // use for most other stars.
+    _layoutGroup->button(settings.value("layout", "full").toString() == "panels"
+                             ? 0 : 1)->setChecked(true);
+
+    const auto toggle = [&](const QString& text, const QString& key, bool def,
+                            const QString& tip) {
+        auto* c = new QCheckBox(text);
+        c->setChecked(settings.value(key, def).toBool());
+        c->setToolTip(tip);
+        c->setFocusPolicy(Qt::NoFocus);
+        flow->addWidget(c);
+        return c;
+    };
+    _modelCheck = toggle("Model", "showModel", true, "The fitted model");
+    _contCheck = toggle("Continuum", "showContinuum", true,
+        "The continuum the fit divided by. In the normalized view it is 1 "
+        "everywhere, so it shows only in flux and raw views and in panels "
+        "drawn in flux");
+    _componentsCheck = toggle("Components", "showComponents", true,
+        "Overlay each stellar component's contribution to the model, so the "
+        "two curves add up to the combined model");
+    _telluricCheck = toggle("Telluric", "showTelluric", false,
+        "Overlay the fitted telluric transmission, scaled onto the local "
+        "continuum so it is comparable with the model in every display mode");
+    _errCheck = toggle("Errors", "showErrors", true, "The 1 sigma error band");
+    _residCheck = toggle("Residuals", "showResiduals", true,
+        "Data minus model below the full view");
+    _componentsCheck->setVisible(false);
+    _telluricCheck->setVisible(false);
+    settings.endGroup();
+    updateToggleSwatches();
+
+    layout->addWidget(_viewBar, 0);
 
     // ── Main spectrum plot (QCustomPlot) ──
     _mainPlot = new QCustomPlot;
@@ -279,6 +336,55 @@ void SpectraPanel::setupUi()
                              QCustomPlot::limBelow);
     _abundancePlot->setVisible(false);
     layout->addWidget(_abundancePlot, 7);
+
+    // ── Panels view: one plot, one axis rect per panel ──
+    // A single QCustomPlot keeps a dozen panels cheap to build and to redraw;
+    // it sits in a scroll area for when the panel is too short for all of
+    // them at a readable height.
+    _panelScroll = new QScrollArea;
+    _panelScroll->setWidgetResizable(true);
+    _panelScroll->setFrameShape(QFrame::NoFrame);
+    _panelScroll->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    _panelPlot = new QCustomPlot;
+    _panelPlot->setInteractions(QCP::iRangeDrag | QCP::iRangeZoom);
+    _panelPlot->setContextMenuPolicy(Qt::CustomContextMenu);
+    _panelPlot->setToolTip(
+        "Wheel: zoom a panel's wavelengths (Ctrl: its flux). Drag: pan.\n"
+        "Double-click: reset that panel. Double-click a title: open the "
+        "range in the full view.\nRight-click for the same.");
+    _panelScroll->setWidget(_panelPlot);
+    _panelScroll->viewport()->installEventFilter(this);
+    _panelScroll->setVisible(false);
+    layout->addWidget(_panelScroll, 7);
+
+    connect(_panelPlot, &QCustomPlot::mouseWheel, this, [this](QWheelEvent* ev) {
+        const int k = panelAt(ev->position().toPoint());
+        if (k < 0) return;
+        auto* r = _panelInfos[k].rect;
+        r->setRangeZoom(ev->modifiers() & Qt::ControlModifier ? Qt::Vertical
+                                                              : Qt::Horizontal);
+        _panelInfos[k].custom = true;
+        markCustomZoom();
+    });
+    connect(_panelPlot, &QCustomPlot::mouseMove, this, [this](QMouseEvent* ev) {
+        if (!(ev->buttons() & Qt::LeftButton)) return;
+        const int k = panelAt(ev->pos());
+        if (k < 0) return;
+        _panelInfos[k].custom = true;
+        markCustomZoom();
+    });
+    connect(_panelPlot, &QCustomPlot::mouseDoubleClick, this,
+            [this](QMouseEvent* ev) {
+        bool onTitle = false;
+        const int k = panelAt(ev->pos(), &onTitle);
+        if (k < 0) return;
+        if (onTitle)
+            openInFull(_panelInfos[k].wlLow, _panelInfos[k].wlHigh);
+        else
+            resetPanel(k);
+    });
+    connect(_panelPlot, &QWidget::customContextMenuRequested,
+            this, &SpectraPanel::showPanelMenu);
 
     // ── Detect user zoom interactions ──
     connect(_mainPlot, &QCustomPlot::mouseWheel, this,
@@ -360,12 +466,25 @@ void SpectraPanel::setupUi()
         updateSpectrumDisplay();
         emit selectionChanged(currentSpectrumId(), currentFitId());
     });
-    connect(_displayMode, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int) { updateSpectrumDisplay(); });
-    connect(_componentsCheck, &QCheckBox::toggled,
-            this, [this](bool) { updateSpectrumDisplay(); });
-    connect(_telluricCheck, &QCheckBox::toggled,
-            this, [this](bool) { updateSpectrumDisplay(); });
+    connect(_modeGroup, &QButtonGroup::idClicked, this, [this](int id) {
+        _preferredMode = id;
+        _modeForced    = false;
+        _hasCustomZoom = false;     // the flux scale changes entirely
+        _panelZoom.clear();
+        saveViewSettings();
+        updateSpectrumDisplay();
+    });
+    connect(_layoutGroup, &QButtonGroup::idClicked, this, [this](int) {
+        saveViewSettings();
+        updateSpectrumDisplay();
+    });
+    for (auto* c : {_modelCheck, _contCheck, _componentsCheck, _telluricCheck,
+                    _errCheck, _residCheck}) {
+        connect(c, &QCheckBox::toggled, this, [this](bool) {
+            saveViewSettings();
+            updateSpectrumDisplay();
+        });
+    }
     connect(_solarRelCheck, &QCheckBox::toggled, this, [this](bool) {
         _hasCustomZoom = false;      // the y scale changes entirely
         updateAbundanceDisplay();
@@ -375,6 +494,8 @@ void SpectraPanel::setupUi()
 void SpectraPanel::resetZoomView()
 {
     _hasCustomZoom = false;
+    _panelZoom.clear();
+    for (auto& P : _panelInfos) P.custom = false;
     if (_resetZoomButton) _resetZoomButton->setVisible(false);
     updateSpectrumDisplay();   // routes to the co-add view when one is shown
 }
@@ -402,6 +523,8 @@ void SpectraPanel::populate()
     auto spectra = _ctx.star->getSpectra();
 
     if (spectra.empty()) {
+        _panelScroll->setVisible(false);
+        _mainPlot->setVisible(true);
         _mainPlot->clearPlottables();
         _mainPlot->replot();
         _infoLabel->setText(
@@ -563,19 +686,11 @@ void SpectraPanel::displaySpectrum(int index)
     _fitCombo->setCurrentIndex(selectIdx);
     _fitCombo->blockSignals(false);
 
-    // ── Set default display mode based on what data is available ──
-    _displayMode->blockSignals(true);
-    if (selectIdx > 0) {
-        int fitArrayIdx = _fitCombo->itemData(selectIdx).toInt();
-        bool hasRebinned = (fitArrayIdx >= 0 &&
-                            fitArrayIdx < static_cast<int>(fits.size()) &&
-                            !fits[fitArrayIdx]->rebinnedFluxes.empty() &&
-                            !fits[fitArrayIdx]->modelSplines.empty());
-        _displayMode->setCurrentIndex(hasRebinned ? DisplayNormalized : DisplayRaw);
-    } else {
-        _displayMode->setCurrentIndex(DisplayRaw);
-    }
-    _displayMode->blockSignals(false);
+    // A new spectrum is shown in the user's own mode again (or Raw when its
+    // fit has no rebinned arrays), with every panel at its home window.
+    _modeForced = false;
+    _panelZoom.clear();
+    for (auto& P : _panelInfos) P.custom = false;
 
     _infoLabel->setText(formatInfo(spec));
 
@@ -629,6 +744,7 @@ void SpectraPanel::clearCoadd()
 
 void SpectraPanel::updateCoaddDisplay()
 {
+    applyPlotVisibility();
     _axisSyncTimer->stop();
     disconnect(_axisSyncConn1);
     disconnect(_axisSyncConn2);
@@ -751,6 +867,219 @@ void SpectraPanel::updateCoaddDisplay()
         _resetZoomButton->setVisible(_hasCustomZoom);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Per-spectrum view
+// ─────────────────────────────────────────────────────────────────────────────
+
+struct SpectraPanel::Series {
+    std::vector<double>  x, f, s;   ///< data and its error (s may be empty)
+    std::vector<uint8_t> used;      ///< fit mask; empty: every pixel counts
+    // Model curves on the same grid, in the same flux units; empty: none.
+    std::vector<double>  m, c, comp1, comp2, tell;
+
+    bool usedAt(size_t i) const { return used.empty() || used[i] != 0; }
+};
+
+struct SpectraPanel::SliceCurves {
+    std::vector<double>  x, y;      ///< displayed data, every pixel
+    std::vector<uint8_t> used;
+    std::vector<double>  active;    ///< finite displayed data the fit used
+    std::vector<double>  model;     ///< displayed model; empty when hidden
+    std::vector<double>  overlay;   ///< components, telluric and continuum
+    QCPGraph* modelGraph  = nullptr;
+    int       modelCurves = 0;
+};
+
+SpectraPanel::Series SpectraPanel::buildSeries(
+    const std::shared_ptr<Spectrum>& spec, const SpectralFit* fit, int mode)
+{
+    Series S;
+    const size_t N = fit ? fit->modelWavelengths.size() : 0;
+    const bool haveModel = N > 0 && fit->modelFluxes.size() == N;
+    const bool haveSpl   = haveModel && fit->modelSplines.size() == N;
+
+    // Each component is drawn as its *contribution* to the model: its own
+    // curve times the share of the light it emits (GAEL's s_k C_k / sum_j
+    // s_j C_j), so the two add up to the combined model. Only two-component
+    // fits that kept their light fractions have them.
+    std::vector<double> comp1, comp2, tell;
+    if (haveModel && fit->hasSecondComponent() &&
+        fit->modelFluxesComp1.size() == N && fit->modelFluxesComp2.size() == N &&
+        fit->lightFractionComp1.size() == N) {
+        comp1.resize(N);
+        comp2.resize(N);
+        for (size_t i = 0; i < N; ++i) {
+            const double w = fit->lightFractionComp1[i];
+            comp1[i] = fit->modelFluxesComp1[i] * w;
+            comp2[i] = fit->modelFluxesComp2[i] * (1.0 - w);
+        }
+    }
+    // The transmission is a factor in [0, 1]; riding it on the local
+    // continuum makes it read as absorption next to the model in every mode
+    // (divided by that continuum it is a dip from 1, like the model's).
+    if (haveModel && fit->telluricTransmission.size() == N) {
+        tell.resize(N);
+        for (size_t i = 0; i < N; ++i) {
+            const double cont =
+                haveSpl && fit->modelSplines[i] != 0.0 ? fit->modelSplines[i] : 1.0;
+            tell[i] = fit->telluricTransmission[i] * cont;
+        }
+    }
+
+    // Normalized / Flux: the fit's own rebinned arrays, which share the model
+    // grid, so nothing needs interpolating.
+    if (mode != DisplayRaw && haveSpl && fit->rebinnedFluxes.size() == N) {
+        S.x = fit->modelWavelengths;
+        S.f = fit->rebinnedFluxes;
+        if (fit->rebinnedSigmas.size() == N) S.s = fit->rebinnedSigmas;
+        if (fit->modelIgnore.size() == N)    S.used = fit->modelIgnore;
+        S.m = fit->modelFluxes;
+        S.c = fit->modelSplines;
+        S.comp1 = std::move(comp1);
+        S.comp2 = std::move(comp2);
+        S.tell  = std::move(tell);
+        return S;
+    }
+
+    // Raw: the spectrum as observed, every model curve brought onto its grid
+    // and scaled by the one factor that best matches the model to the data.
+    S.x = spec->getWavelengths();
+    S.f = spec->getFluxes();
+    const auto err = spec->getFluxErrors();
+    if (err.size() == S.x.size()) S.s = err;
+    if (!haveModel || S.x.empty()) return S;
+
+    const auto& mw = fit->modelWavelengths;
+    const auto onData = [&](const std::vector<double>& v) {
+        return v.empty() ? v : interpolateModel(mw, v, S.x);
+    };
+    S.m = onData(fit->modelFluxes);
+    std::vector<double> dValid, mValid;
+    for (size_t i = 0; i < S.x.size() && i < S.f.size(); ++i) {
+        if (std::isnan(S.m[i]) || std::isnan(S.f[i])) continue;
+        dValid.push_back(S.f[i]);
+        mValid.push_back(S.m[i]);
+    }
+    const double C = computeRenormFactor(dValid, mValid);
+    const auto scaled = [C](std::vector<double> v) {
+        for (double& x : v) x *= C;
+        return v;
+    };
+    S.m     = scaled(std::move(S.m));
+    if (haveSpl) S.c = scaled(onData(fit->modelSplines));
+    S.comp1 = scaled(onData(comp1));
+    S.comp2 = scaled(onData(comp2));
+    S.tell  = scaled(onData(tell));
+    return S;
+}
+
+SpectraPanel::SliceCurves SpectraPanel::drawSlice(
+    QCustomPlot* plot, QCPAxis* xa, QCPAxis* ya, const Series& S, int i0,
+    int i1, const std::vector<double>& div, bool showCont,
+    const SpectralFit* fit)
+{
+    SliceCurves out;
+    const int n = std::max(0, i1 - i0);
+    const auto dv = [&](int j) {
+        if (div.empty()) return 1.0;
+        const double d = div[j];
+        return std::isfinite(d) && d != 0.0 ? d : qQNaN();
+    };
+    const auto shown = [&](const std::vector<double>& v) {
+        std::vector<double> o(n);
+        for (int j = 0; j < n; ++j) o[j] = v[i0 + j] / dv(j);
+        return o;
+    };
+
+    QVector<double> keys(n);
+    out.x.resize(n);
+    out.used.resize(n);
+    for (int j = 0; j < n; ++j) {
+        keys[j] = out.x[j] = S.x[i0 + j];
+        out.used[j] = S.usedAt(i0 + j) ? 1 : 0;
+    }
+    out.y = shown(S.f);
+
+    const bool onMain = plot == _mainPlot;
+    const auto addGraph = [&](const std::vector<double>& v, const QPen& pen) {
+        QCPGraph* g = plot->addGraph(xa, ya);
+        g->setData(keys, QVector<double>(v.begin(), v.end()), true);
+        g->setPen(pen);
+        g->removeFromLegend();
+        return g;
+    };
+    const QColor dataColor = PanelUtils::dataLineColor();
+
+    // ── Error band ──
+    if (_errCheck->isChecked() && S.s.size() == S.x.size()) {
+        std::vector<double> up(n), lo(n);
+        for (int j = 0; j < n; ++j) {
+            double e = S.s[i0 + j];
+            e = (std::isfinite(e) && e > 0.0 ? e : 0.0) / dv(j);
+            up[j] = out.y[j] + e;
+            lo[j] = out.y[j] - e;
+        }
+        QCPGraph* upper = addGraph(up, Qt::NoPen);
+        QCPGraph* lower = addGraph(lo, Qt::NoPen);
+        upper->setBrush(QBrush(PanelUtils::errorBandFor(dataColor)));
+        upper->setChannelFillGraph(lower);
+    }
+
+    // ── Data: used pixels solid, excluded ones dotted ──
+    const bool haveMask = !S.used.empty();
+    // Both share the boundary points so the line stays continuous; NaN is a
+    // gap to QCPGraph.
+    if (haveMask) {
+        std::vector<double> act(n), exc(n);
+        for (int j = 0; j < n; ++j) {
+            const bool u = out.used[j];
+            const bool edge = (j > 0 && out.used[j - 1] != out.used[j]) ||
+                              (j < n - 1 && out.used[j + 1] != out.used[j]);
+            act[j] = u || edge ? out.y[j] : qQNaN();
+            exc[j] = !u || edge ? out.y[j] : qQNaN();
+            if (u && std::isfinite(out.y[j])) out.active.push_back(out.y[j]);
+        }
+        QPen ep(dataColor, 1.0);
+        ep.setStyle(Qt::DotLine);
+        addGraph(exc, ep);
+        addGraph(act, QPen(dataColor, 1.2));
+    } else {
+        addGraph(out.y, QPen(dataColor, 1.2));
+        for (double v : out.y) if (std::isfinite(v)) out.active.push_back(v);
+    }
+
+    // ── Model curves: the subordinate ones first, the model on top ──
+    const auto overlay = [&](const std::vector<double>& v, const QPen& pen,
+                             const QString& name) {
+        const auto d = shown(v);
+        QCPGraph* g = addGraph(d, pen);
+        g->setName(name);
+        if (onMain) g->addToLegend();
+        for (double x : d) if (std::isfinite(x)) out.overlay.push_back(x);
+        ++out.modelCurves;
+    };
+    if (_telluricCheck->isChecked() && !S.tell.empty())
+        overlay(S.tell, overlayPen(telluricColor(), Qt::DotLine), "Telluric");
+    if (_componentsCheck->isChecked() && !S.comp1.empty() && fit) {
+        overlay(S.comp1, overlayPen(componentColor(0), Qt::DashLine),
+                componentLabel(*fit, 1));
+        overlay(S.comp2, overlayPen(componentColor(1), Qt::DashDotLine),
+                componentLabel(*fit, 2));
+    }
+    if (showCont && _contCheck->isChecked() && !S.c.empty()) {
+        QPen cp(continuumColor(), 1.4);
+        cp.setStyle(Qt::DashLine);
+        overlay(S.c, cp, "Continuum");
+    }
+    if (_modelCheck->isChecked() && !S.m.empty()) {
+        out.model = shown(S.m);
+        out.modelGraph = addGraph(out.model, QPen(PanelUtils::fitCurveColor(), 1.5));
+        out.modelGraph->setName("Model");
+        ++out.modelCurves;
+    }
+    return out;
+}
+
 void SpectraPanel::updateSpectrumDisplay()
 {
     if (_coaddActive) { updateCoaddDisplay(); return; }
@@ -759,573 +1088,587 @@ void SpectraPanel::updateSpectrumDisplay()
     if (_currentSpectrumIndex < 0 ||
         _currentSpectrumIndex >= static_cast<int>(_sortedSpectra.size()))
         return;
+    auto spec = _sortedSpectra[_currentSpectrumIndex];
+    if (!spec) return;
 
+    const auto fitPtr = currentFit();
+    const SpectralFit* fit =
+        fitPtr && !fitPtr->modelWavelengths.empty() ? fitPtr.get() : nullptr;
+    const int mode = currentMode();
+    const Series S = buildSeries(spec, fit, mode);
+
+    // ── What the view bar offers for this spectrum and fit ──
+    const bool rebinned = fit && !fit->rebinnedFluxes.empty() &&
+                          !fit->modelSplines.empty();
+    setModeButton(mode);
+    _modeGroup->button(DisplayNormalized)->setEnabled(rebinned);
+    _modeGroup->button(DisplayRebinned)->setEnabled(rebinned);
+    _modeGroup->button(DisplayNormalized)->parentWidget()->setVisible(fit);
+    const bool panels = panelsShown();
+    const bool normalized = mode == DisplayNormalized;
+    _modelCheck->setVisible(!S.m.empty());
+    _contCheck->setVisible(!S.c.empty());
+    _contCheck->setEnabled(panels || !normalized);
+    _componentsCheck->setVisible(!S.comp1.empty());
+    _telluricCheck->setVisible(!S.tell.empty());
+    _errCheck->setVisible(!S.s.empty());
+    _residCheck->setVisible(!S.m.empty() && !panels);
+    const bool previewing = _fitOverlay && _fitOverlay->config().active;
+    for (auto* b : _layoutGroup->buttons()) b->setEnabled(!previewing);
+
+    applyPlotVisibility();
+    if (panels)
+        renderPanels(S, fit, normalized, spec);
+    else
+        renderFull(S, fit, normalized);
+
+    if (_resetZoomButton)
+        _resetZoomButton->setVisible(_hasCustomZoom);
+}
+
+void SpectraPanel::renderFull(const Series& S, const SpectralFit* fit,
+                              bool normalized)
+{
     _axisSyncTimer->stop();
 
-    // Save current zoom state before rebuilding
+    // Save the zoom before rebuilding, and put it back before the first
+    // replot so the full range never flashes up for a frame.
     QCPRange savedXRange, savedMainYRange;
-    bool restoreZoom = _hasCustomZoom && _mainPlot->graphCount() > 0;
+    const bool restoreZoom = _hasCustomZoom && _mainPlot->graphCount() > 0;
     if (restoreZoom) {
         savedXRange     = _mainPlot->xAxis->range();
         savedMainYRange = _mainPlot->yAxis->range();
     }
 
-    auto spec = _sortedSpectra[_currentSpectrumIndex];
-    if (!spec) return;
-
-    auto wavelengths = spec->getWavelengths();
-    auto fluxes      = spec->getFluxes();
-    auto errors      = spec->getFluxErrors();
-
     // Disconnect only the axis sync connections (preserve zoom detection)
     disconnect(_axisSyncConn1);
     disconnect(_axisSyncConn2);
 
-    // ──────────────────────────────────────────────────────────────
-    // Main chart
-    // ──────────────────────────────────────────────────────────────
     _mainPlot->clearPlottables();
     _mainPlot->legend->setVisible(false);
 
-    if (wavelengths.empty()) {
+    if (S.x.empty()) {
         _mainPlot->xAxis->setLabel("Wavelength [Å]");
-        _mainPlot->yAxis->setLabel("Normalized Flux");
+        _mainPlot->yAxis->setLabel("Flux");
         _mainPlot->replot();
         _residualPlot->setVisible(false);
         return;
     }
 
-    QVector<double> wlVec = PanelUtils::toQVec(wavelengths);
-    QVector<double> flVec = PanelUtils::toQVec(fluxes);
+    const int n = int(S.x.size());
+    const SliceCurves C =
+        drawSlice(_mainPlot, _mainPlot->xAxis, _mainPlot->yAxis, S, 0, n,
+                  normalized ? S.c : std::vector<double>{},
+                  /*showCont=*/!normalized, fit);
 
-    double xMin =  std::numeric_limits<double>::max();
-    double xMax =  std::numeric_limits<double>::lowest();
-    double yMin =  std::numeric_limits<double>::max();
-    double yMax =  std::numeric_limits<double>::lowest();
+    // Y range from the used data and the model, widened to the overlays (see
+    // includeOverlayRange). Excluded pixels set nothing: a continuum crossing
+    // zero there turns them into huge spikes once normalized.
+    std::vector<double> allY = C.active;
+    for (double v : C.model) if (std::isfinite(v)) allY.push_back(v);
+    if (allY.empty())
+        for (double v : C.y) if (std::isfinite(v)) allY.push_back(v);
+    auto [yLo, yHi] = PanelUtils::robustRange(allY, 0.98, 0.15);
+    includeOverlayRange(yLo, yHi, C.overlay);
+    _mainPlot->yAxis->setLabel(normalized ? "Normalized Flux" : "Flux");
+    _mainPlot->yAxis->setRange(yLo, yHi);
 
-    // ── Error band (filled area between upper and lower bounds) ──
-    bool hasErrors = !errors.empty() && errors.size() == wavelengths.size();
-
-    if (hasErrors) {
-        QVector<double> upper(wlVec.size()), lower(wlVec.size());
-        for (int i = 0; i < wlVec.size(); ++i) {
-            double e = (std::isnan(errors[i]) || errors[i] <= 0) ? 0.0 : errors[i];
-            upper[i] = fluxes[i] + e;
-            lower[i] = fluxes[i] - e;
-            xMin = std::min(xMin, wlVec[i]);
-            xMax = std::max(xMax, wlVec[i]);
-            yMin = std::min(yMin, lower[i]);
-            yMax = std::max(yMax, upper[i]);
-        }
-
-        QCPGraph* upperGraph = _mainPlot->addGraph();
-        upperGraph->setData(wlVec, upper);
-        upperGraph->setPen(Qt::NoPen);
-        upperGraph->removeFromLegend();
-
-        QCPGraph* lowerGraph = _mainPlot->addGraph();
-        lowerGraph->setData(wlVec, lower);
-        lowerGraph->setPen(Qt::NoPen);
-        lowerGraph->removeFromLegend();
-
-        // Fill the region between upper and lower
-        upperGraph->setBrush(QBrush(PanelUtils::errorBandFor(PanelUtils::dataLineColor())));
-        upperGraph->setChannelFillGraph(lowerGraph);
+    double xMin = std::numeric_limits<double>::max();
+    double xMax = std::numeric_limits<double>::lowest();
+    for (double x : S.x) {
+        if (!std::isfinite(x)) continue;
+        xMin = std::min(xMin, x);
+        xMax = std::max(xMax, x);
     }
-
-    // ── Observed spectrum line ──
-    QColor dataColor = PanelUtils::dataLineColor();
-
-    QCPGraph* dataGraph = _mainPlot->addGraph();
-    dataGraph->setPen(QPen(dataColor, 1.2));
-    dataGraph->setData(wlVec, flVec);
-    dataGraph->removeFromLegend();
-
-    if (!hasErrors) {
-        for (int i = 0; i < wlVec.size(); ++i) {
-            xMin = std::min(xMin, wlVec[i]);
-            xMax = std::max(xMax, wlVec[i]);
-            yMin = std::min(yMin, flVec[i]);
-            yMax = std::max(yMax, flVec[i]);
-        }
-    }
-
-    // ──────────────────────────────────────────────────────────────
-    // Selected model fit overlay
-    // ──────────────────────────────────────────────────────────────
-    int fitArrayIdx = _fitCombo->currentData().toInt();
-    auto fits = spec->getSpectralFits();
-    std::shared_ptr<SpectralFit> selectedFit;
-    if (fitArrayIdx >= 0 && fitArrayIdx < static_cast<int>(fits.size()))
-        selectedFit = fits[fitArrayIdx];
-
-    int displayMode = _displayMode->currentData().toInt();
-    // Fall back to Raw if fit lacks rebinned data
-    if (displayMode != DisplayRaw && selectedFit &&
-        (selectedFit->rebinnedFluxes.empty() || selectedFit->modelSplines.empty()))
-        displayMode = DisplayRaw;
-
-    // ── Subordinate model curves ────────────────────────────────────────────
-    // Component models only make sense for a two-component fit: for a
-    // one-component fit modelFluxesComp1 *is* modelFluxes, and drawing it again
-    // would just be a duplicate on top of the primary curve. They also need
-    // GAEL's light fractions: a fit stored before those were kept has no way
-    // to say how the light divides, and is shown without overlays until refit.
-    const size_t nModel = selectedFit ? selectedFit->modelWavelengths.size() : 0;
-    const bool hasComponentModels =
-        selectedFit && selectedFit->hasSecondComponent() && nModel > 0 &&
-        selectedFit->modelFluxesComp1.size() == nModel &&
-        selectedFit->modelFluxesComp2.size() == nModel &&
-        selectedFit->lightFractionComp1.size() == nModel;
-    const bool hasTelluricCurve =
-        selectedFit && nModel > 0 &&
-        selectedFit->telluricTransmission.size() == nModel;
-
-    _componentsCheck->setVisible(hasComponentModels);
-    _telluricCheck->setVisible(hasTelluricCurve);
-
-    const bool showComponents = hasComponentModels && _componentsCheck->isChecked();
-    const bool showTelluric   = hasTelluricCurve   && _telluricCheck->isChecked();
-
-    // Each component is drawn as its *contribution* to the model: its own curve
-    // scaled by the share of the light it emits, so the two overlays add up to
-    // the combined model rather than both running at full line depth. The share
-    // is GAEL's s_k C_k / sum_j s_j C_j - the surface ratio times the models'
-    // own flux-calibrated continua, exactly what the fit mixed the components
-    // with - so it varies with wavelength only as the two continua do.
-    static const std::vector<double> kNoFractions;
-    const std::vector<double>& w1 =
-        showComponents ? selectedFit->lightFractionComp1 : kNoFractions;
-    const double meanW1 =
-        w1.empty() ? 0.5
-                   : std::accumulate(w1.begin(), w1.end(), 0.0) / double(w1.size());
-
-    // Counts the curves that describe the model (combined + overlays); the
-    // legend is only worth its space once there is more than one of them.
-    int modelCurveCount = 0;
-    QCPGraph* modelGraph = nullptr;
-
-    std::vector<double> residualWl;
-    std::vector<double> residualVal;
-
-    if (selectedFit && !selectedFit->modelWavelengths.empty()) {
-
-        if (displayMode == DisplayNormalized || displayMode == DisplayRebinned) {
-            // ── Normalized / Rebinned modes ──
-            // Data comes from the fit's pre-computed rebinned arrays -
-            // no interpolation needed since they share the model wavelength grid.
-            const auto& mWl  = selectedFit->modelWavelengths;
-            const size_t N   = mWl.size();
-            const auto& mF   = selectedFit->modelFluxes;
-            const auto& rbF  = selectedFit->rebinnedFluxes;
-            const auto& rbS  = selectedFit->rebinnedSigmas;
-            const auto& spl  = selectedFit->modelSplines;
-            const auto& ign  = selectedFit->modelIgnore;
-
-            // Replace the raw-spectrum error band + data line already drawn
-            // with the rebinned spectrum, then overlay model.
-            // (We clear and redraw so the raw data drawn above is replaced.)
-            _mainPlot->clearPlottables();
-
-            QVector<double> mWlVec = PanelUtils::toQVec(mWl);
-            QVector<double> dataVec(N), modelVec(N), upperVec(N), lowerVec(N);
-            QVector<double> comp1Vec, comp2Vec, tellVec;
-            if (showComponents) { comp1Vec.resize(N); comp2Vec.resize(N); }
-            if (showTelluric)   { tellVec.resize(N); }
-
-            xMin =  std::numeric_limits<double>::max();
-            xMax =  std::numeric_limits<double>::lowest();
-
-            for (size_t i = 0; i < N; ++i) {
-                double divisor = (displayMode == DisplayNormalized && spl[i] != 0.0)
-                                 ? spl[i] : 1.0;
-                dataVec[i]  = rbF[i]  / divisor;
-                modelVec[i] = mF[i]   / divisor;
-                double sig  = (rbS.size() == N) ? rbS[i] / divisor : 0.0;
-                upperVec[i] = dataVec[i] + sig;
-                lowerVec[i] = dataVec[i] - sig;
-                // The component models live on the same grid and in the same
-                // flux units as the combined one, so they go through the exact
-                // same divisor and stay directly comparable with it. Weighting
-                // by the light fractions is what makes them contributions: each
-                // curve sits on its own share of the continuum, and the two sum
-                // back to the combined model drawn over them.
-                if (showComponents) {
-                    const double w = w1[i];
-                    comp1Vec[i] = selectedFit->modelFluxesComp1[i] * w / divisor;
-                    comp2Vec[i] =
-                        selectedFit->modelFluxesComp2[i] * (1.0 - w) / divisor;
-                }
-                // The transmission is a dimensionless factor in [0,1]; riding it
-                // on the local continuum (the fitted spline) is what makes it
-                // read correctly in both modes: in Normalized mode the spline
-                // cancels against the divisor so it is drawn straight, as a dip
-                // from 1 exactly like the normalized model's; in Rebinned mode
-                // it rides on the continuum, like the un-normalized model does.
-                if (showTelluric) {
-                    const double cont = (spl[i] != 0.0) ? spl[i] : 1.0;
-                    tellVec[i] = selectedFit->telluricTransmission[i] * cont / divisor;
-                }
-                xMin = std::min(xMin, mWl[i]);
-                xMax = std::max(xMax, mWl[i]);
-            }
-
-            // Error band
-            if (rbS.size() == N) {
-                QCPGraph* upper = _mainPlot->addGraph();
-                upper->setData(mWlVec, upperVec);
-                upper->setPen(Qt::NoPen);
-                upper->removeFromLegend();
-
-                QCPGraph* lower = _mainPlot->addGraph();
-                lower->setData(mWlVec, lowerVec);
-                lower->setPen(Qt::NoPen);
-                lower->removeFromLegend();
-
-                upper->setBrush(QBrush(PanelUtils::errorBandFor(PanelUtils::dataLineColor())));
-                upper->setChannelFillGraph(lower);
-            }
-
-            // Rebinned spectrum - split into ignored / active segments
-            // so ignored points are shown dimmed
-            QVector<double> activeWl, activeD;
-
-            if (ign.empty()) {
-                activeWl = mWlVec;
-                activeD  = QVector<double>(dataVec.begin(), dataVec.end());
-            } else {
-                // Active series: valid key everywhere, NaN value over ignored points
-                for (size_t i = 0; i < N; ++i) {
-                    activeWl.push_back(mWl[i]);
-                    activeD.push_back(ign[i] != 0 ? dataVec[i] : qQNaN());
-                }
-
-                // One graph per contiguous ignored run, each bracketed by its neighbors
-                size_t i = 0;
-                while (i < N) {
-                    if (ign[i] == 0) {
-                        QVector<double> segWl, segD;
-
-                        if (i > 0) {                          // left active neighbor
-                            segWl.push_back(mWl[i - 1]);
-                            segD.push_back(dataVec[i - 1]);
-                        }
-                        while (i < N && ign[i] == 0) {        // ignored run
-                            segWl.push_back(mWl[i]);
-                            segD.push_back(dataVec[i]);
-                            ++i;
-                        }
-                        if (i < N) {                          // right active neighbor
-                            segWl.push_back(mWl[i]);
-                            segD.push_back(dataVec[i]);
-                        }
-
-                        QCPGraph* ignSeg = _mainPlot->addGraph();
-                        QPen ignPen(dataColor, 1.0);
-                        ignPen.setStyle(Qt::DotLine);
-                        ignSeg->setPen(ignPen);
-                        ignSeg->setData(segWl, segD);
-                        ignSeg->removeFromLegend();
-                    } else {
-                        ++i;
-                    }
-                }
-            }
-
-            QCPGraph* dataGraph2 = _mainPlot->addGraph();
-            dataGraph2->setData(activeWl, activeD);
-            dataGraph2->setPen(QPen(dataColor, 1.2));
-            dataGraph2->removeFromLegend();
-
-            // Subordinate curves go in *before* the combined model so that the
-            // combined one keeps its place as the topmost, primary curve.
-            if (showTelluric) {
-                QCPGraph* g = _mainPlot->addGraph();
-                g->setData(mWlVec, tellVec);
-                g->setPen(overlayPen(telluricColor(), Qt::DotLine));
-                g->setName("Telluric");
-                ++modelCurveCount;
-            }
-            if (showComponents) {
-                QCPGraph* g1 = _mainPlot->addGraph();
-                g1->setData(mWlVec, comp1Vec);
-                g1->setPen(overlayPen(componentColor(0), Qt::DashLine));
-                g1->setName(componentLabel(*selectedFit, 1, meanW1));
-                ++modelCurveCount;
-
-                QCPGraph* g2 = _mainPlot->addGraph();
-                g2->setData(mWlVec, comp2Vec);
-                g2->setPen(overlayPen(componentColor(1), Qt::DashDotLine));
-                g2->setName(
-                    componentLabel(*selectedFit, 2, 1.0 - meanW1));
-                ++modelCurveCount;
-            }
-
-            // Model line
-            modelGraph = _mainPlot->addGraph();
-            modelGraph->setData(mWlVec, modelVec);
-            modelGraph->setPen(QPen(PanelUtils::fitCurveColor(), 1.5));
-            ++modelCurveCount;
-
-            // Residuals - only over non-ignored points
-            for (size_t i = 0; i < N; ++i) {
-                if (!ign.empty() && ign[i] == 0) continue;
-                residualWl.push_back(mWl[i]);
-                residualVal.push_back(dataVec[i] - modelVec[i]);
-            }
-
-            // Y range from the active data + the combined model, then widened
-            // to fit the overlays (see includeOverlayRange).
-            std::vector<double> allY;
-            allY.insert(allY.end(), activeD.begin(), activeD.end());
-            for (double v : modelVec) allY.push_back(v);
-
-            std::vector<double> overlayY;
-            for (double v : comp1Vec) overlayY.push_back(v);
-            for (double v : comp2Vec) overlayY.push_back(v);
-            for (double v : tellVec)  overlayY.push_back(v);
-
-            _mainPlot->yAxis->setLabel(
-                displayMode == DisplayNormalized ? "Normalized Flux" : "Flux");
-
-            auto [yLo, yHi] = PanelUtils::robustRange(allY, 0.98, 0.15);
-            includeOverlayRange(yLo, yHi, overlayY);
-            _mainPlot->yAxis->setRange(yLo, yHi);
-
-        } else {
-            // ── Raw + renorm mode - existing behaviour ──
-            const auto& mWl   = selectedFit->modelWavelengths;
-            const auto& mFlux = selectedFit->modelFluxes;
-
-            std::vector<double> modelOnDataGrid =
-                interpolateModel(mWl, mFlux, wavelengths);
-
-            std::vector<double> dValid, mValid;
-            for (size_t i = 0; i < wavelengths.size(); ++i) {
-                if (!std::isnan(modelOnDataGrid[i]) && !std::isnan(fluxes[i])) {
-                    dValid.push_back(fluxes[i]);
-                    mValid.push_back(modelOnDataGrid[i]);
-                }
-            }
-            double renormC = computeRenormFactor(dValid, mValid);
-
-            QVector<double> mWlVec = PanelUtils::toQVec(mWl);
-            QVector<double> mFlVec(mWl.size());
-            for (size_t i = 0; i < mWl.size(); ++i) {
-                mFlVec[i] = mFlux[i] * renormC;
-                yMin = std::min(yMin, mFlVec[i]);
-                yMax = std::max(yMax, mFlVec[i]);
-            }
-
-            // Overlays: the very same renormalization factor the combined model
-            // got, so all model curves stay on one scale, times each
-            // component's share of the light (see above).
-            const auto& spl = selectedFit->modelSplines;
-            QVector<double> comp1Vec, comp2Vec, tellVec;
-            if (showComponents) {
-                comp1Vec.resize(mWl.size());
-                comp2Vec.resize(mWl.size());
-                for (size_t i = 0; i < mWl.size(); ++i) {
-                    const double w = w1[i];
-                    comp1Vec[i] =
-                        selectedFit->modelFluxesComp1[i] * w * renormC;
-                    comp2Vec[i] =
-                        selectedFit->modelFluxesComp2[i] * (1.0 - w) * renormC;
-                }
-            }
-            if (showTelluric) {
-                tellVec.resize(mWl.size());
-                for (size_t i = 0; i < mWl.size(); ++i) {
-                    // renormC puts the model on the data's scale, and the fitted
-                    // spline is the model's continuum, so spline * renormC is
-                    // the data's continuum - which is where a transmission of 1
-                    // has to sit for the curve to read as absorption. Without a
-                    // spline the model is already continuum-normalized, and
-                    // renormC alone is that continuum.
-                    const double cont =
-                        (spl.size() == mWl.size() && spl[i] != 0.0) ? spl[i] : 1.0;
-                    tellVec[i] = selectedFit->telluricTransmission[i] * cont * renormC;
-                }
-            }
-
-            // Subordinate curves first, so the combined model stays on top.
-            if (showTelluric) {
-                QCPGraph* g = _mainPlot->addGraph();
-                g->setPen(overlayPen(telluricColor(), Qt::DotLine));
-                g->setData(mWlVec, tellVec);
-                g->setName("Telluric");
-                ++modelCurveCount;
-            }
-            if (showComponents) {
-                QCPGraph* g1 = _mainPlot->addGraph();
-                g1->setPen(overlayPen(componentColor(0), Qt::DashLine));
-                g1->setData(mWlVec, comp1Vec);
-                g1->setName(componentLabel(*selectedFit, 1, meanW1));
-                ++modelCurveCount;
-
-                QCPGraph* g2 = _mainPlot->addGraph();
-                g2->setPen(overlayPen(componentColor(1), Qt::DashDotLine));
-                g2->setData(mWlVec, comp2Vec);
-                g2->setName(
-                    componentLabel(*selectedFit, 2, 1.0 - meanW1));
-                ++modelCurveCount;
-            }
-
-            modelGraph = _mainPlot->addGraph();
-            modelGraph->setPen(QPen(PanelUtils::fitCurveColor(), 1.5));
-            modelGraph->setData(mWlVec, mFlVec);
-            ++modelCurveCount;
-
-            for (size_t i = 0; i < wavelengths.size(); ++i) {
-                if (std::isnan(modelOnDataGrid[i])) continue;
-                residualWl.push_back(wavelengths[i]);
-                residualVal.push_back(fluxes[i] - modelOnDataGrid[i] * renormC);
-            }
-
-            // Y range from the data + the combined model, then widened to fit
-            // the overlays (see includeOverlayRange).
-            std::vector<double> allMainY;
-            for (size_t i = 0; i < fluxes.size(); ++i)
-                if (!std::isnan(fluxes[i])) allMainY.push_back(fluxes[i]);
-            for (double mf : mFlVec) if (!std::isnan(mf)) allMainY.push_back(mf);
-
-            std::vector<double> overlayY;
-            for (double v : comp1Vec) if (!std::isnan(v)) overlayY.push_back(v);
-            for (double v : comp2Vec) if (!std::isnan(v)) overlayY.push_back(v);
-            for (double v : tellVec)  if (!std::isnan(v)) overlayY.push_back(v);
-
-            auto [mainYLo, mainYHi] = PanelUtils::robustRange(allMainY, 0.95, 0.15);
-            includeOverlayRange(mainYLo, mainYHi, overlayY);
-            _mainPlot->yAxis->setLabel("Normalized Flux");
-            _mainPlot->yAxis->setRange(mainYLo, mainYHi);
-        }
-    } else {
-        // No fit - just set Y range from raw data
-        std::vector<double> allMainY;
-        for (size_t i = 0; i < fluxes.size(); ++i)
-            if (!std::isnan(fluxes[i])) allMainY.push_back(fluxes[i]);
-        auto [mainYLo, mainYHi] = PanelUtils::robustRange(allMainY, 0.95, 0.15);
-        _mainPlot->yAxis->setLabel("Flux");
-        _mainPlot->yAxis->setRange(mainYLo, mainYHi);
-    }
-
-    // ── Main axes ──
     double xSpan = xMax - xMin;
-    if (xSpan <= 0) xSpan = 100;
-    double xLo = xMin - xSpan * 0.01;
-    double xHi = xMax + xSpan * 0.01;
+    if (!(xSpan > 0)) xSpan = 100;
+    const double xLo = xMin - xSpan * 0.01;
+    const double xHi = xMax + xSpan * 0.01;
 
-    bool showResiduals = !residualWl.empty();
+    // Residuals over the used pixels only.
+    std::vector<double> residualWl, residualVal;
+    if (_residCheck->isChecked() && !C.model.empty()) {
+        for (int j = 0; j < n; ++j) {
+            if (!C.used[j] || !std::isfinite(C.y[j]) || !std::isfinite(C.model[j]))
+                continue;
+            residualWl.push_back(C.x[j]);
+            residualVal.push_back(C.y[j] - C.model[j]);
+        }
+    }
+    const bool showResiduals = !residualWl.empty();
 
-    // Apply the target view range BEFORE replotting. When the user has a custom
-    // zoom active we restore it directly here, so the full-range view is never
-    // painted for a frame (which caused a visible "flash" while scrolling fast).
     if (restoreZoom) {
         _mainPlot->xAxis->setRange(savedXRange);
         _mainPlot->yAxis->setRange(savedMainYRange);
     } else {
         _mainPlot->xAxis->setRange(xLo, xHi);
     }
-    if (showResiduals) {
-        _mainPlot->xAxis->setTickLabels(false);
-        _mainPlot->xAxis->setLabel("");
-    } else {
-        _mainPlot->xAxis->setTickLabels(true);
-        _mainPlot->xAxis->setLabel("Wavelength [Å]");
-    }
+    _mainPlot->xAxis->setTickLabels(!showResiduals);
+    _mainPlot->xAxis->setLabel(showResiduals ? QString() : QString("Wavelength [Å]"));
 
     // ── Legend ──
-    // Only worth showing once there is more than one model curve to tell apart;
-    // the data, error-band and ignored-region graphs all took themselves out of
-    // it above, so it lists model curves only.
-    {
-        const bool showLegend = (modelCurveCount > 1);
-        if (modelGraph) {
-            modelGraph->setName("Model");
-            if (!showLegend) modelGraph->removeFromLegend();
-        }
-        _mainPlot->legend->setVisible(showLegend);
-    }
+    // Only worth its space once there is more than one model curve to tell
+    // apart; every data and band graph took itself out of it already.
+    const bool showLegend = C.modelCurves > 1;
+    if (C.modelGraph && showLegend) C.modelGraph->addToLegend();
+    _mainPlot->legend->setVisible(showLegend);
 
     _mainPlot->replot();
 
-    // ──────────────────────────────────────────────────────────────
-    // Residual chart
-    // ──────────────────────────────────────────────────────────────
-    if (showResiduals) {
-        _residualPlot->clearPlottables();
-
-        QVector<double> rWlVec = PanelUtils::toQVec(residualWl);
-        QVector<double> rValVec = PanelUtils::toQVec(residualVal);
-
-        QCPGraph* resGraph = _residualPlot->addGraph();
-        // The residual is a diagnostic, not the primary trace, and it is packed
-        // into a strip a fraction of the main plot's height - so the same ink
-        // that reads as a line up there reads as a solid block down here. Take
-        // it a step back toward the background to restore the ranking.
-        resGraph->setPen(QPen(PanelUtils::towardBg(dataColor, 0.30), 1.0));
-        resGraph->setData(rWlVec, rValVec);
-
-        // Zero line
-        QCPGraph* zeroLine = _residualPlot->addGraph();
-        zeroLine->setPen(QPen(PanelUtils::plotAnnotationColor(), 1.0, Qt::DashLine));
-        zeroLine->setData(QVector<double>{xLo, xHi}, QVector<double>{0.0, 0.0});
-
-        // X axis - match the (possibly zoomed) main plot range so the residual
-        // plot doesn't briefly show the full range either.
-        _residualPlot->xAxis->setLabel("Wavelength [Å]");
-        _residualPlot->xAxis->setRange(restoreZoom ? savedXRange
-                                                   : QCPRange(xLo, xHi));
-
-        QSharedPointer<QCPAxisTicker> xResTicker(new QCPAxisTicker);
-        xResTicker->setTickCount(6);
-        _residualPlot->xAxis->setTicker(xResTicker);
-
-        // Robust Y range for residuals - clip outlier residuals
-        auto [resYLo, resYHi] = PanelUtils::robustRange(residualVal, 0.95, 0.15);
-
-        _residualPlot->yAxis->setLabel("Residual");
-        _residualPlot->yAxis->setRange(resYLo, resYHi);
-
-        QSharedPointer<QCPAxisTicker> yResTicker(new QCPAxisTicker);
-        yResTicker->setTickCount(3);
-        yResTicker->setTickStepStrategy(QCPAxisTicker::tssReadability);
-        _residualPlot->yAxis->setTicker(yResTicker);
-        _residualPlot->yAxis->setSubTicks(false);
-
-        PanelUtils::stylePlot(_residualPlot);
-        _residualPlot->setVisible(true);
-        _residualPlot->replot();
-
-        // ── Link X axes: main ↔ residual (debounced) ──
-        _axisSyncConn1 = connect(_mainPlot->xAxis,
-                QOverload<const QCPRange&>::of(&QCPAxis::rangeChanged),
-                this, [this](const QCPRange& range) {
-            if (_axisSyncInProgress) return;
-            _pendingSyncRangeMin = range.lower;
-            _pendingSyncRangeMax = range.upper;
-            _syncFromMain = true;
-            _axisSyncTimer->start();
-        });
-
-        _axisSyncConn2 = connect(_residualPlot->xAxis,
-                QOverload<const QCPRange&>::of(&QCPAxis::rangeChanged),
-                this, [this](const QCPRange& range) {
-            if (_axisSyncInProgress) return;
-            _pendingSyncRangeMin = range.lower;
-            _pendingSyncRangeMax = range.upper;
-            _syncFromMain = false;
-            _axisSyncTimer->start();
-        });
-
-    } else {
+    if (!showResiduals) {
         _residualPlot->setVisible(false);
+        return;
     }
 
-    // (Zoom was already applied above, before the replots, to avoid a flash.)
+    _residualPlot->clearPlottables();
+    QCPGraph* resGraph = _residualPlot->addGraph();
+    // The residual is a diagnostic, not the primary trace, and it is packed
+    // into a strip a fraction of the main plot's height - so the same ink
+    // that reads as a line up there reads as a solid block down here. Take
+    // it a step back toward the background to restore the ranking.
+    resGraph->setPen(QPen(PanelUtils::towardBg(PanelUtils::dataLineColor(), 0.30), 1.0));
+    resGraph->setData(PanelUtils::toQVec(residualWl), PanelUtils::toQVec(residualVal),
+                      true);
 
-    if (_resetZoomButton)
-        _resetZoomButton->setVisible(_hasCustomZoom);
+    QCPGraph* zeroLine = _residualPlot->addGraph();
+    zeroLine->setPen(QPen(PanelUtils::plotAnnotationColor(), 1.0, Qt::DashLine));
+    zeroLine->setData(QVector<double>{xLo, xHi}, QVector<double>{0.0, 0.0});
+
+    // Match the (possibly zoomed) main plot range so the residual plot doesn't
+    // briefly show the full range either.
+    _residualPlot->xAxis->setLabel("Wavelength [Å]");
+    _residualPlot->xAxis->setRange(restoreZoom ? savedXRange : QCPRange(xLo, xHi));
+
+    QSharedPointer<QCPAxisTicker> xResTicker(new QCPAxisTicker);
+    xResTicker->setTickCount(6);
+    _residualPlot->xAxis->setTicker(xResTicker);
+
+    auto [resYLo, resYHi] = PanelUtils::robustRange(residualVal, 0.95, 0.15);
+    _residualPlot->yAxis->setLabel("Residual");
+    _residualPlot->yAxis->setRange(resYLo, resYHi);
+
+    QSharedPointer<QCPAxisTicker> yResTicker(new QCPAxisTicker);
+    yResTicker->setTickCount(3);
+    yResTicker->setTickStepStrategy(QCPAxisTicker::tssReadability);
+    _residualPlot->yAxis->setTicker(yResTicker);
+    _residualPlot->yAxis->setSubTicks(false);
+
+    PanelUtils::stylePlot(_residualPlot);
+    _residualPlot->setVisible(true);
+    _residualPlot->replot();
+
+    // ── Link X axes: main <-> residual (debounced) ──
+    _axisSyncConn1 = connect(_mainPlot->xAxis,
+            QOverload<const QCPRange&>::of(&QCPAxis::rangeChanged),
+            this, [this](const QCPRange& range) {
+        if (_axisSyncInProgress) return;
+        _pendingSyncRangeMin = range.lower;
+        _pendingSyncRangeMax = range.upper;
+        _syncFromMain = true;
+        _axisSyncTimer->start();
+    });
+    _axisSyncConn2 = connect(_residualPlot->xAxis,
+            QOverload<const QCPRange&>::of(&QCPAxis::rangeChanged),
+            this, [this](const QCPRange& range) {
+        if (_axisSyncInProgress) return;
+        _pendingSyncRangeMin = range.lower;
+        _pendingSyncRangeMax = range.upper;
+        _syncFromMain = false;
+        _axisSyncTimer->start();
+    });
+}
+
+// ── Panels view ─────────────────────────────────────────────────────────────
+
+namespace {
+
+// Minimum heights (px, title included) of the three kinds of panel row; the
+// rows share any height beyond that in fixed proportions.
+constexpr int    kOverviewMinH = 150, kWideMinH = 125, kLineMinH = 110;
+constexpr double kOverviewStretch = 1.25, kWideStretch = 1.15, kLineStretch = 1.0;
+constexpr int    kPanelGap = 6;
+constexpr double kSpeedOfLight = 299792.458;   // km/s
+
+// stylePlot() for one axis rect of the Panels plot, with smaller tick labels.
+void stylePanelRect(QCPAxisRect* rect, const QFont& tickFont)
+{
+    const QColor text = PanelUtils::plotTextColor();
+    const QColor axis = PanelUtils::plotAxisColor();
+    const QColor grid = PanelUtils::plotGridColor();
+    rect->setBackground(QBrush(PanelUtils::themeBg()));
+    for (auto* a : rect->axes()) {
+        a->setBasePen(QPen(axis, 1));
+        a->setTickPen(QPen(axis, 1));
+        a->setSubTickPen(QPen(grid, 1));
+        a->setTickLabelColor(text);
+        a->setTickLabelFont(tickFont);
+        a->setPadding(2);
+        a->setTickLabelPadding(2);
+        a->grid()->setPen(QPen(grid, 0.5, Qt::DotLine));
+        a->grid()->setZeroLinePen(Qt::NoPen);
+        a->grid()->setSubGridVisible(false);
+    }
+    rect->axis(QCPAxis::atBottom)->ticker()->setTickCount(4);
+    rect->axis(QCPAxis::atLeft)->ticker()->setTickCount(3);
+    rect->setRangeDrag(Qt::Horizontal | Qt::Vertical);
+    rect->setRangeZoom(Qt::Horizontal);
+    rect->setRangeDragAxes(rect->axis(QCPAxis::atBottom), rect->axis(QCPAxis::atLeft));
+    rect->setRangeZoomAxes(rect->axis(QCPAxis::atBottom), rect->axis(QCPAxis::atLeft));
+}
+
+}   // namespace
+
+void SpectraPanel::renderPanels(const Series& S, const SpectralFit* fit,
+                                bool normalized,
+                                const std::shared_ptr<Spectrum>& spec)
+{
+    namespace sp = astra::spectra;
+    using Scale = SpectrumViewPanel::Scale;
+
+    // Panels the user zoomed keep their window through the rebuild.
+    for (const auto& P : _panelInfos) {
+        if (!P.custom || !P.rect) continue;
+        const auto xr = P.rect->axis(QCPAxis::atBottom)->range();
+        const auto yr = P.rect->axis(QCPAxis::atLeft)->range();
+        _panelZoom[P.key] = {xr.lower, xr.upper, yr.lower, yr.upper};
+    }
+    _panelInfos.clear();
+    _panelPlot->clearItems();
+    _panelPlot->clearPlottables();
+    _panelPlot->plotLayout()->clear();
+    _panelPlot->setBackground(QBrush(PanelUtils::themeBg()));
+    if (S.x.empty()) {
+        _panelPlot->setMinimumHeight(0);
+        _panelPlot->replot();
+        return;
+    }
+
+    // The panel set of this spectrum's instrument mode.
+    const InstrumentMode* mode = nullptr;
+    std::shared_ptr<Instrument> inst;
+    if (_ctx.dbm) {
+        QString modeKey;
+        inst = astra::fitting::instrumentForSpectrum(spec, _ctx.dbm, &modeKey);
+        if (inst) mode = inst->mode(modeKey);
+    }
+    const auto plan = sp::planPanels(S.x, S.used, sp::viewPanelsFor(mode));
+
+    const int ncol = _panelScroll->viewport()->width() < 640 ? 2 : 4;
+    _panelCols = ncol;
+
+    // Line cores move with the fitted RV; without one the windows around
+    // them that always count for the y range are wider.
+    const bool haveRv = fit && std::isfinite(fit->radialVelocity) &&
+                        fit->radialVelocity != 0.0;
+    const double half  = haveRv ? 4.0 : 12.0;
+    const double shift = 1.0 + (haveRv ? fit->radialVelocity : 0.0) / kSpeedOfLight;
+
+    QFont titleFont = font();
+    titleFont.setPointSizeF(titleFont.pointSizeF() * 0.9);
+    titleFont.setBold(true);
+    QFont tickFont = font();
+    tickFont.setPointSizeF(tickFont.pointSizeF() * 0.8);
+
+    auto* root = _panelPlot->plotLayout();
+    root->setRowSpacing(kPanelGap);
+    int rowCount = 0, minHeight = 0;
+    const auto newRow = [&](double stretch, int minH) {
+        auto* rg = new QCPLayoutGrid;
+        root->addElement(rowCount, 0, rg);
+        root->setRowStretchFactor(rowCount, stretch);
+        rg->setColumnSpacing(10);
+        ++rowCount;
+        minHeight += minH + kPanelGap;
+        return rg;
+    };
+
+    const auto addPanel = [&](QCPLayoutGrid* row, int col, const QString& key,
+                              const QString& title, int i0, int i1,
+                              const std::vector<double>& div, bool contAllowed,
+                              double lo, double hi, bool overview) {
+        auto* cell = new QCPLayoutGrid;
+        row->addElement(0, col, cell);
+        cell->setRowSpacing(0);
+        auto* t = new QCPTextElement(_panelPlot, title, titleFont);
+        t->setTextColor(PanelUtils::plotTextColor());
+        t->setMargins(QMargins(0, 0, 0, 0));
+        cell->addElement(0, 0, t);
+        auto* rect = new QCPAxisRect(_panelPlot);
+        cell->addElement(1, 0, rect);
+        cell->setRowStretchFactor(0, 0.001);
+        stylePanelRect(rect, tickFont);
+        QCPAxis* xa = rect->axis(QCPAxis::atBottom);
+        QCPAxis* ya = rect->axis(QCPAxis::atLeft);
+
+        const SliceCurves C =
+            drawSlice(_panelPlot, xa, ya, S, i0, i1, div, contAllowed, fit);
+
+        PanelInfo P;
+        P.key = key;
+        P.rect = rect;
+        P.title = t;
+        P.wlLow = lo;
+        P.wlHigh = hi;
+        std::pair<double, double> yr;
+        if (overview) {
+            const double span = std::max(1.0, C.x.back() - C.x.front());
+            P.homeX0 = C.x.front() - 0.01 * span;
+            P.homeX1 = C.x.back()  + 0.01 * span;
+            std::vector<double> allY = C.active;
+            for (double v : C.model) if (std::isfinite(v)) allY.push_back(v);
+            const auto r = PanelUtils::robustRange(allY, 0.98, 0.15);
+            yr = {r.first, r.second};
+            includeOverlayRange(yr.first, yr.second, C.overlay);
+        } else {
+            P.homeX0 = lo;
+            P.homeX1 = hi;
+            std::vector<double> cores;
+            for (const auto& L : sp::knownLines())
+                if (L.wavelength >= lo && L.wavelength <= hi)
+                    cores.push_back(L.wavelength * shift);
+            yr = sp::panelYRange(C.x, C.y, C.used, C.model, cores, half);
+            if (!std::isfinite(yr.first)) {
+                const auto r = PanelUtils::robustRange(C.y, 0.98, 0.15);
+                yr = {r.first, r.second};
+            }
+            // A continuum drawn in flux is part of the picture (the Balmer
+            // jump panel is about exactly that).
+            if (!C.overlay.empty() && contAllowed && _contCheck->isChecked())
+                includeOverlayRange(yr.first, yr.second, C.overlay);
+        }
+        P.homeY0 = yr.first;
+        P.homeY1 = yr.second;
+
+        const auto z = _panelZoom.constFind(key);
+        if (z != _panelZoom.constEnd()) {
+            xa->setRange(z->x0, z->x1);
+            ya->setRange(z->y0, z->y1);
+            P.custom = true;
+        } else {
+            xa->setRange(P.homeX0, P.homeX1);
+            ya->setRange(P.homeY0, P.homeY1);
+        }
+        _panelInfos.append(P);
+    };
+
+    // ── Cut-outs: wide ones two columns wide, then the line panels ──
+    const auto drawGroup = [&](bool wide) {
+        const int perRow = wide ? ncol / 2 : ncol;
+        QCPLayoutGrid* row = nullptr;
+        int col = 0;
+        for (const auto& p : plan) {
+            if (p.wide != wide) continue;
+            if (!row || col == perRow) {
+                if (row) col = 0;
+                row = newRow(wide ? kWideStretch : kLineStretch,
+                             wide ? kWideMinH : kLineMinH);
+            }
+            const Scale scale = p.scale == Scale::Auto
+                ? (normalized ? Scale::Normalized : Scale::Flux) : p.scale;
+            std::vector<double> div;
+            if (scale == Scale::Normalized) {
+                bool contOk = false;
+                for (int i = p.i0; i < p.i1 && !S.c.empty() && !contOk; ++i)
+                    contOk = std::isfinite(S.c[i]) && S.c[i] != 0.0;
+                div = contOk ? std::vector<double>(S.c.begin() + p.i0,
+                                                   S.c.begin() + p.i1)
+                             : sp::edgeLine(S.x, S.f, p.i0, p.i1);
+            }
+            QString title = p.label;
+            if (wide)
+                title += scale == Scale::Normalized ? " (normalized)" : " (flux)";
+            addPanel(row, col++, QString("%1|%2").arg(p.source).arg(p.label),
+                     title, p.i0, p.i1, div, scale == Scale::Flux, p.wlLow,
+                     p.wlHigh, false);
+        }
+        // Empty cells keep the last row's panels as wide as the others.
+        for (; row && col < perRow; ++col)
+            row->addElement(0, col, new QCPLayoutElement(_panelPlot));
+    };
+    drawGroup(true);
+    drawGroup(false);
+
+    // ── Overview, at the bottom: the cut-outs are what this view is for ──
+    {
+        auto* row = newRow(kOverviewStretch, kOverviewMinH);
+        const bool canNorm = normalized && !S.c.empty();
+        const QString title = canNorm ? "Full spectrum (normalized)"
+                            : fit     ? "Full spectrum (flux)"
+                                      : "Full spectrum";
+        addPanel(row, 0, QStringLiteral("__overview"), title, 0, int(S.x.size()),
+                 canNorm ? S.c : std::vector<double>{}, !canNorm, S.x.front(),
+                 S.x.back(), true);
+    }
+
+    _panelPlot->setMinimumHeight(minHeight);
+    _panelPlot->replot();
+}
+
+int SpectraPanel::panelAt(const QPoint& pos, bool* onTitle) const
+{
+    for (int k = 0; k < _panelInfos.size(); ++k) {
+        const auto& P = _panelInfos[k];
+        if (P.title && P.title->outerRect().contains(pos)) {
+            if (onTitle) *onTitle = true;
+            return k;
+        }
+        if (P.rect && P.rect->outerRect().contains(pos)) {
+            if (onTitle) *onTitle = false;
+            return k;
+        }
+    }
+    return -1;
+}
+
+void SpectraPanel::resetPanel(int k)
+{
+    if (k < 0 || k >= _panelInfos.size()) return;
+    auto& P = _panelInfos[k];
+    P.custom = false;
+    _panelZoom.remove(P.key);
+    P.rect->axis(QCPAxis::atBottom)->setRange(P.homeX0, P.homeX1);
+    P.rect->axis(QCPAxis::atLeft)->setRange(P.homeY0, P.homeY1);
+    _panelPlot->replot();
+    const bool any = std::any_of(_panelInfos.begin(), _panelInfos.end(),
+                                 [](const PanelInfo& p) { return p.custom; });
+    if (!any) {
+        _hasCustomZoom = false;
+        _resetZoomButton->setVisible(false);
+    }
+}
+
+void SpectraPanel::openInFull(double lo, double hi)
+{
+    _layoutGroup->button(1)->setChecked(true);
+    saveViewSettings();
+    _hasCustomZoom = false;
+    updateSpectrumDisplay();
+
+    // Flux range over that window, from what is drawn.
+    double yLo = std::numeric_limits<double>::max(), yHi = -yLo;
+    for (int g = 0; g < _mainPlot->graphCount(); ++g) {
+        QCPGraph* gr = _mainPlot->graph(g);
+        if (gr->pen().style() == Qt::NoPen) continue;   // error band edges
+        bool found = false;
+        const QCPRange r = gr->getValueRange(found, QCP::sdBoth, QCPRange(lo, hi));
+        if (!found) continue;
+        yLo = std::min(yLo, r.lower);
+        yHi = std::max(yHi, r.upper);
+    }
+    _mainPlot->xAxis->setRange(lo, hi);
+    if (yHi > yLo) {
+        const double pad = 0.06 * (yHi - yLo);
+        _mainPlot->yAxis->setRange(yLo - pad, yHi + pad);
+    }
+    _mainPlot->replot();
+    markCustomZoom();
+}
+
+void SpectraPanel::showPanelMenu(const QPoint& pos)
+{
+    const int k = panelAt(pos);
+    QMenu menu(this);
+    if (k >= 0) {
+        const auto P = _panelInfos[k];
+        menu.addAction("Open in full spectrum", this, [this, P] {
+            openInFull(P.wlLow, P.wlHigh);
+        });
+        menu.addAction("Reset this panel", this, [this, k] { resetPanel(k); });
+        menu.addSeparator();
+    }
+    menu.addAction("Reset all panels", this, [this] { resetZoomView(); });
+    menu.exec(_panelPlot->mapToGlobal(pos));
+}
+
+bool SpectraPanel::panelsShown() const
+{
+    const bool previewing = _fitOverlay && _fitOverlay->config().active;
+    return _layoutGroup && _layoutGroup->checkedId() == 0 && !_coaddActive &&
+           !_showingAbundances && !previewing;
+}
+
+void SpectraPanel::applyPlotVisibility()
+{
+    const bool panels = panelsShown();
+    _panelScroll->setVisible(panels);
+    _mainPlot->setVisible(!panels && !_showingAbundances);
+    if (panels || _showingAbundances) _residualPlot->setVisible(false);
+}
+
+int SpectraPanel::currentMode() const
+{
+    // Normalized and Flux need the fit's rebinned arrays and continuum.
+    const auto fit = currentFit();
+    const bool rebinned = fit && !fit->modelWavelengths.empty() &&
+                          !fit->rebinnedFluxes.empty() && !fit->modelSplines.empty();
+    const int want = _modeForced ? _modeGroup->checkedId() : _preferredMode;
+    return want != DisplayRaw && !rebinned ? int(DisplayRaw) : want;
+}
+
+void SpectraPanel::setModeButton(int mode)
+{
+    if (auto* b = _modeGroup->button(mode)) b->setChecked(true);
+}
+
+void SpectraPanel::saveViewSettings() const
+{
+    QSettings s;
+    s.beginGroup(QStringLiteral("SpectraPanel"));
+    s.setValue("mode", _preferredMode == DisplayRebinned ? "flux"
+                     : _preferredMode == DisplayRaw      ? "raw" : "norm");
+    s.setValue("layout", _layoutGroup->checkedId() == 1 ? "full" : "panels");
+    s.setValue("showModel",      _modelCheck->isChecked());
+    s.setValue("showContinuum",  _contCheck->isChecked());
+    s.setValue("showComponents", _componentsCheck->isChecked());
+    s.setValue("showTelluric",   _telluricCheck->isChecked());
+    s.setValue("showErrors",     _errCheck->isChecked());
+    s.setValue("showResiduals",  _residCheck->isChecked());
+    s.endGroup();
+}
+
+void SpectraPanel::updateToggleSwatches()
+{
+    // Each curve's toggle carries a sample of the curve, which is the
+    // legend in the Panels view.
+    const auto swatch = [](const QColor& c, Qt::PenStyle style, bool band) {
+        const qreal dpr = qApp->devicePixelRatio();
+        QPixmap pm(QSize(18, 10) * dpr);
+        pm.setDevicePixelRatio(dpr);
+        pm.fill(Qt::transparent);
+        QPainter p(&pm);
+        p.setRenderHint(QPainter::Antialiasing);
+        if (band) {
+            p.fillRect(QRectF(0, 1, 18, 8), c);
+        } else {
+            QPen pen(c, 1.6);
+            pen.setStyle(style);
+            p.setPen(pen);
+            p.drawLine(QPointF(0, 5), QPointF(18, 5));
+        }
+        return QIcon(pm);
+    };
+    _modelCheck->setIcon(swatch(PanelUtils::fitCurveColor(), Qt::SolidLine, false));
+    _contCheck->setIcon(swatch(continuumColor(), Qt::DashLine, false));
+    _componentsCheck->setIcon(swatch(componentColor(0), Qt::DashLine, false));
+    _telluricCheck->setIcon(swatch(telluricColor(), Qt::DotLine, false));
+    _errCheck->setIcon(swatch(PanelUtils::errorBandFor(PanelUtils::dataLineColor()),
+                              Qt::SolidLine, true));
+    _residCheck->setIcon(swatch(PanelUtils::towardBg(PanelUtils::dataLineColor(), 0.3),
+                                Qt::SolidLine, false));
+}
+
+bool SpectraPanel::eventFilter(QObject* watched, QEvent* ev)
+{
+    // The panel grid has 4 columns when wide and 2 when narrow; only a change
+    // of that needs a rebuild, QCustomPlot handles every other resize.
+    if (_panelScroll && watched == _panelScroll->viewport() &&
+        ev->type() == QEvent::Resize && panelsShown()) {
+        const int w = static_cast<QResizeEvent*>(ev)->size().width();
+        const int ncol = w < 640 ? 2 : 4;
+        if (ncol != _panelCols)
+            QTimer::singleShot(0, this, [this] { updateSpectrumDisplay(); });
+    }
+    return DetailPanel::eventFilter(watched, ev);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1344,33 +1687,21 @@ std::shared_ptr<SpectralFit> SpectraPanel::currentFit() const
     return fits[idx];
 }
 
-QString SpectraPanel::componentLabel(const SpectralFit& fit, int which,
-                                     double lightFraction)
+QString SpectraPanel::componentLabel(const SpectralFit& fit, int which)
 {
+    // No share of the light here: the curve shows how it runs with
+    // wavelength, and a single mean percentage of it read as more exact
+    // than it is.
     const double teff = (which == 2) ? fit.teff2 : fit.teff;
     QString label = QString("Component %1").arg(which);
-
-    QStringList parts;
     if (!std::isnan(teff) && teff > 0) {
         // Thin space between the thousands so "28 500 K" stays readable in the
         // small legend font.
         QString t = QString::number(teff, 'f', 0);
         for (int i = t.size() - 3; i > 0; i -= 3)
             t.insert(i, QChar(0x2009));
-        parts << QString("%1 K").arg(t);
+        label += QString(" (%1 K)").arg(t);
     }
-    if (std::isfinite(lightFraction)) {
-        // A mean over the plotted range, and the curve itself shows how it runs
-        // with wavelength, so one decimal is as much as the number can carry.
-        // Below 0.1 per cent it would round to "0.0 %" and read as "nothing",
-        // which is not what a faint but fitted companion deserves.
-        const double pct = 100.0 * lightFraction;
-        parts << (pct > 0.0 && pct < 0.1 ? QString("< 0.1 % of light")
-                                         : QString("%1 % of light")
-                                               .arg(pct, 0, 'f', 1));
-    }
-    if (!parts.isEmpty())
-        label += QString(" (%1)").arg(parts.join(", "));
     return label;
 }
 
@@ -1392,16 +1723,10 @@ void SpectraPanel::updateToolbarVisibility()
 {
     _modelLabel->setVisible(_toolbarHasFits);
     _fitCombo->setVisible(_toolbarHasFits);
-    _displayMode->setVisible(_toolbarHasFits && !_showingAbundances);
     _solarRelCheck->setVisible(_showingAbundances);
-
-    // The overlay toggles belong to the spectrum view and are only revealed
-    // there, by updateSpectrumDisplay(), once the selected fit carries the
-    // curves they switch.
-    if (_showingAbundances || !_toolbarHasFits) {
-        _componentsCheck->setVisible(false);
-        _telluricCheck->setVisible(false);
-    }
+    // The view bar belongs to the per-spectrum view; which of its toggles
+    // show is decided by updateSpectrumDisplay() from the selected fit.
+    _viewBar->setVisible(!_showingAbundances && !_coaddActive);
 }
 
 void SpectraPanel::setAbundanceViewActive(bool on)
@@ -1416,9 +1741,8 @@ void SpectraPanel::setAbundanceViewActive(bool on)
     // land nowhere useful in the other.
     _hasCustomZoom = false;
 
-    _mainPlot->setVisible(!on);
-    if (on) _residualPlot->setVisible(false);
     _abundancePlot->setVisible(on);
+    applyPlotVisibility();
 
     updateToolbarVisibility();
 
@@ -1849,15 +2173,20 @@ void SpectraPanel::selectFitById(const QString& fitId)
             break;
         }
     }
-    setDisplayMode(DisplayNormalized);
+    // Shown in the user's own mode (Normalized unless they picked another).
+    _modeForced    = false;
+    _hasCustomZoom = false;
+    updateSpectrumDisplay();
 }
 
 void SpectraPanel::setDisplayMode(DisplayMode mode)
 {
-    if (mode != _displayMode->currentIndex()) {
+    // A caller's override (the fit setup shows the raw spectrum): it holds
+    // until the user picks a mode or another spectrum, and is not saved.
+    if (mode != currentMode())
         _hasCustomZoom = false;          // forget user zoom - we're changing views
-    }
-    _displayMode->setCurrentIndex(static_cast<int>(mode));
+    _modeForced = true;
+    setModeButton(mode);
     updateSpectrumDisplay();
 }
 
@@ -1893,12 +2222,21 @@ void SpectraPanel::refreshCurrentView()
 void SpectraPanel::setFitPreview(const FitPreviewConfig& cfg)
 {
     if (!_fitOverlay) return;
-    refreshFitPreviewData();     
-    _fitOverlay->setConfig(cfg);  
+    // The overlay edits the full plot, so a preview switches the Panels view
+    // off while it lasts.
+    const bool panelsBefore = panelsShown();
+    refreshFitPreviewData();
+    _fitOverlay->setConfig(cfg);
+    if (panelsBefore != panelsShown()) updateSpectrumDisplay();
 }
 
 void SpectraPanel::clearFitPreview()
-{ if (_fitOverlay) _fitOverlay->clearConfig(); }
+{
+    if (!_fitOverlay) return;
+    const bool panelsBefore = panelsShown();
+    _fitOverlay->clearConfig();
+    if (panelsBefore != panelsShown()) updateSpectrumDisplay();
+}
 
 void SpectraPanel::refreshFitPreviewData()
 {

@@ -39,6 +39,10 @@ public:
     /// is stretched to the end of the row, instead of stopping at the width
     /// its size hint happens to report. Off by default.
     void setExpandsTrailingItem(bool on);
+    /// Items shorter than their row are centred in it vertically (a row of
+    /// buttons and checkboxes) instead of sitting at its top. Natural-width
+    /// mode only; off by default.
+    void setCentersItemsVertically(bool on);
 
     void addItem(QLayoutItem* item) override;
     int count() const override;
@@ -64,6 +68,7 @@ private:
     int  _preferredItemW = 0;
     int  _maxColumns     = 0;
     bool _expandTrailing = false;
+    bool _vCenter        = false;
 };
 
 #endif   // FLOWLAYOUT_H

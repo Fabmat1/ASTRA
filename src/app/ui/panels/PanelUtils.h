@@ -67,6 +67,8 @@ QColor  plotAnnotationColor();// zero lines, guides, muted annotations
 QColor  themeBg();
 QColor  themeFg();
 QColor  themeSurface();
+QColor  themeAccent();     // checked-toggle fill (the theme's QToolButton:checked)
+QColor  themeAccentText(); // text on themeAccent()
 
 QLabel* makePlaceholder(const QString& text);
 

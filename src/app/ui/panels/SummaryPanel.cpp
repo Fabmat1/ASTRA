@@ -4,6 +4,7 @@
 #include "app/ui/ApplicationController.h"
 #include "catalog/ui/ReidentifyStarDialog.h"
 #include "core/AsymmetricErrors.h"
+#include "fitting/AdoptedFit.h"
 #include "lightcurve/Photometry.h"
 #include "core/Quantity.h"
 #include "rv/RadialVelocity.h"
@@ -453,6 +454,170 @@ QWidget *buildPropertyGrid(const std::vector<PropRow> &rows,
         gl->addPair(lbl, val);
     }
     return grid;
+}
+
+// Several property grids under small headings ("Component 1", ...): the
+// expanded view of a section that reports more than one set of values.
+// Empty blocks are left out; a block without a title gets no heading.
+using PropBlocks = std::vector<std::pair<QString, std::vector<PropRow>>>;
+
+QWidget *buildPropertyBlocks(const PropBlocks &blocks, const QColor &valCol,
+                             const QColor &labelCol) {
+    QWidget *host = new QWidget;
+    auto    *v    = new QVBoxLayout(host);
+    v->setContentsMargins(0, 0, 0, 0);
+    v->setSpacing(4);
+    bool first = true;
+    for (const auto &[title, rows] : blocks) {
+        if (rows.empty())
+            continue;
+        if (!title.isEmpty()) {
+            auto *h = new QLabel(title);
+            h->setStyleSheet(
+                QString("font-size: 10px; font-weight: 700; color: %1; "
+                        "background: transparent; border: none; "
+                        "padding-top: %2px;")
+                    .arg(labelCol.name())
+                    .arg(first ? 0 : 4));
+            v->addWidget(h);
+        }
+        v->addWidget(buildPropertyGrid(rows, valCol, labelCol));
+        first = false;
+    }
+    return host;
+}
+
+bool sameValue(double a, double b) {
+    return std::isfinite(a) && std::isfinite(b) &&
+           std::abs(a - b) <= 1e-6 * std::max(std::abs(a), std::abs(b)) + 1e-9;
+}
+
+// Every fitted quantity of one stellar component of a spectral fit
+// (`which` = 1 or 2). Frozen parameters are listed too: they are part of
+// the solution, and carry no error.
+std::vector<PropRow> spectralComponentRows(const SpectralFit &f, int which) {
+    std::vector<PropRow> rows;
+    const bool    c2  = which == 2;
+    const QString sub = QString::number(which);
+    const auto add = [&](const QString &label, double v, double e, int prec,
+                         const QString &unit, double up, double down,
+                         const QString &name, bool zeroIsUnset) {
+        if (!std::isfinite(v) || (zeroIsUnset && v == 0.0))
+            return;
+        rows.push_back(qRow(label, v, e, prec, unit, up, down, name));
+    };
+    const double u = AsymErr::unset;
+    add("T_eff", c2 ? f.teff2 : f.teff, c2 ? f.teff2Error : f.teffError, 0,
+        "K", c2 ? u : f.teffErrorUp, c2 ? u : f.teffErrorDown,
+        "T_{eff," + sub + "}", true);
+    add("log g", c2 ? f.logg2 : f.logg, c2 ? f.logg2Error : f.loggError, 3,
+        "dex", c2 ? u : f.loggErrorUp, c2 ? u : f.loggErrorDown,
+        "\\log g_" + sub, true);
+    add("log(He/H)", c2 ? f.he2 : f.he, c2 ? f.he2Error : f.heError, 3, "",
+        c2 ? u : f.heErrorUp, c2 ? u : f.heErrorDown,
+        "\\log(He/H)_" + sub, true);
+    add("[M/H]", c2 ? f.metallicity2 : f.metallicity,
+        c2 ? f.metallicity2Error : f.metallicityError, 2, "dex",
+        c2 ? u : f.metallicityErrorUp, c2 ? u : f.metallicityErrorDown,
+        "[M/H]_" + sub, false);
+    add("v sin i", c2 ? f.vsini2 : f.vsini, c2 ? f.vsini2Error : f.vsiniError,
+        1, "km/s", c2 ? u : f.vsiniErrorUp, c2 ? u : f.vsiniErrorDown,
+        "v\\sin i_" + sub, false);
+    add("RV", c2 ? f.radialVelocity2 : f.radialVelocity,
+        c2 ? f.radialVelocity2Error : f.radialVelocityError, 2, "km/s",
+        c2 ? u : f.radialVelocityErrorUp, c2 ? u : f.radialVelocityErrorDown,
+        "v_{rad," + sub + "}", true);
+    add("ζ macro", c2 ? f.macroturbulence2 : f.macroturbulence,
+        c2 ? f.macroturbulence2Error : f.macroturbulenceError, 1, "km/s",
+        c2 ? u : f.macroturbulenceErrorUp, c2 ? u : f.macroturbulenceErrorDown,
+        "\\zeta_" + sub, true);
+    add("ξ micro", c2 ? f.microturbulence2 : f.microturbulence,
+        c2 ? f.microturbulence2Error : f.microturbulenceError, 1, "km/s",
+        c2 ? u : f.microturbulenceErrorUp, c2 ? u : f.microturbulenceErrorDown,
+        "\\xi_" + sub, true);
+
+    // Element abundances the fit actually measured (log10 of the fractional
+    // particle number); a value pinned at its grid edge is a limit.
+    const auto &ab = c2 ? f.abundances2 : f.abundances;
+    for (auto it = ab.cbegin(); it != ab.cend(); ++it) {
+        const auto &a = it.value();
+        if (!a.isSet() || a.frozen)
+            continue;
+        QString el = it.key().toLower();
+        if (!el.isEmpty())
+            el[0] = el[0].toUpper();
+        const QString label = QString("log n(%1)").arg(el);
+        if (a.limitSide != 0) {
+            const QString n = QString::number(a.value, 'f', 2);
+            rows.push_back(
+                {label, (a.limitSide < 0 ? "< " : "> ") + n, n});
+        } else {
+            rows.push_back(qRow(label, a.value, a.error, 2, "", u, u,
+                                "\\log n_{" + el + "," + sub + "}"));
+        }
+    }
+    return rows;
+}
+
+// Every quantity of one SED component (`which` = 1, 2, ...).
+std::vector<PropRow> sedComponentRows(const SEDComponentParams &c, int which) {
+    std::vector<PropRow> rows;
+    const QString sub = QString::number(which);
+    const double  u   = AsymErr::unset;
+    const auto asym = [&](const QString &label, double v, double up,
+                          double down, int prec, const QString &unit,
+                          const QString &name) {
+        if (!std::isfinite(v) || v == 0.0)
+            return;
+        rows.push_back(qRow(label, v, u, prec, unit, up, down, name));
+    };
+    const auto value = [&](const QString &label, const AsymmetricValue &a,
+                           int prec, const QString &unit,
+                           const QString &name) {
+        if (!a.isValid())
+            return;
+        asym(label, a.value, a.errUp, a.errDown, prec, unit, name);
+    };
+    const auto plain = [&](const QString &label, double v, int prec,
+                           const QString &unit, SEDParamStatus st) {
+        if (!std::isfinite(v))
+            return;
+        QString n = QString::number(v, 'f', prec);
+        QString shown = unit.isEmpty() ? n : n + " " + unit;
+        if (st != SEDParamStatus::Fitted)
+            shown += st == SEDParamStatus::Fixed ? " (fixed)" : " (prescribed)";
+        rows.push_back({label, shown, n});
+    };
+
+    if (c.teffStatus == SEDParamStatus::Fitted)
+        asym("T_eff", c.teff, c.teffErrUp, c.teffErrDown, 0, "K",
+             "T_{eff," + sub + "}");
+    else if (c.teff > 0)
+        plain("T_eff", c.teff, 0, "K", c.teffStatus);
+    if (c.loggStatus == SEDParamStatus::Fitted)
+        asym("log g", c.logg, c.loggErrUp, c.loggErrDown, 3, "dex",
+             "\\log g_" + sub);
+    else if (c.logg > 0)
+        plain("log g", c.logg, 3, "dex", c.loggStatus);
+    if (c.heAbundanceStatus == SEDParamStatus::Fitted)
+        asym("log(He/H)", c.heAbundance, c.heAbundanceErrUp,
+             c.heAbundanceErrDown, 3, "", "\\log(He/H)_" + sub);
+    else
+        plain("log(He/H)", c.heAbundance, 3, "", c.heAbundanceStatus);
+    plain("[M/H]", c.metallicity, 2, "dex", c.metallicityStatus);
+    plain("ξ micro", c.microturbulence, 1, "km/s", c.microturbulenceStatus);
+    if (which > 1)
+        asym("Surface ratio", c.surfaceRatio, c.surfaceRatioErrUp,
+             c.surfaceRatioErrDown, 4, "", "A_" + sub + "/A_1");
+    value("R", c.radius, 3, "R☉", "R_" + sub);
+    value("R (median)", c.radiusMedian, 3, "R☉", "R_" + sub);
+    value("M", c.mass, 3, "M☉", "M_" + sub);
+    value("M (median)", c.massMedian, 3, "M☉", "M_" + sub);
+    value("L", c.luminosity, 2, "L☉", "L_" + sub);
+    value("L (median)", c.luminosityMedian, 2, "L☉", "L_" + sub);
+    value("v_grav", c.vGrav, 1, "km/s", "v_{grav," + sub + "}");
+    value("v_esc", c.vEsc, 0, "km/s", "v_{esc," + sub + "}");
+    return rows;
 }
 
 } // anonymous namespace
@@ -1095,9 +1260,120 @@ QWidget *SummaryPanel::createPropertiesSection() {
             createExpandableSectionFrame(title, compactGrid, fullGrid));
     };
 
+    // The atmospheric parameters, expanded to every component of the
+    // spectral fit they came from.
+    auto addAtmospheric = [&](std::vector<PropRow> c, std::vector<PropRow> f) {
+        const auto fit = astra::fitting::adoptedSpectralFit(S);
+        if (!fit) {
+            addSub("Atmospheric Parameters", c, f);
+            return;
+        }
+        const bool two = fit->hasSecondComponent();
+        if (two) {
+            addV(c, "T_eff,2", fit->teff2, fit->teff2Error, 0, "K");
+            addV(c, "log g,2", fit->logg2, fit->logg2Error, 2, "dex");
+        }
+        if (c.empty())
+            c = spectralComponentRows(*fit, 1);
+
+        // The star's own Teff / log g / He are component 1's when they came
+        // from this fit; listing them twice would only invite comparison.
+        std::vector<PropRow> general;
+        const bool fromFit = sameValue(fit->teff, S.getTeff()) &&
+                             sameValue(fit->logg, S.getLogg());
+        for (const auto &r : f) {
+            const bool starParam = r.label == "T_eff" || r.label == "log g" ||
+                                   r.label == "log(He/H)";
+            if (!(fromFit && starParam))
+                general.push_back(r);
+        }
+        std::vector<PropRow> fitRows;
+        if (!fit->modelId.isEmpty())
+            fitRows.push_back({"Model", fit->modelId, fit->modelId});
+        if (two)
+            addV(fitRows, "Surface ratio", fit->surRatio, fit->surRatioError, 4);
+        addPlain(fitRows, "χ²_red", fit->reducedChi2(), 2);
+        if (fit->hasTelluric) {
+            addV(fitRows, "PWV", fit->telluricPwv, fit->telluricPwvError, 2, "mm");
+            addV(fitRows, "Airmass", fit->telluricAirmass,
+                 fit->telluricAirmassError, 2);
+        }
+
+        PropBlocks blocks;
+        blocks.push_back({QString(), general});
+        blocks.push_back({two ? "Component 1" : "Spectral fit",
+                          spectralComponentRows(*fit, 1)});
+        if (two)
+            blocks.push_back({"Component 2", spectralComponentRows(*fit, 2)});
+        blocks.push_back({two ? "Fit" : QString(), fitRows});
+        vLayout->addWidget(createExpandableSectionFrame(
+            "Atmospheric Parameters", buildPropertyGrid(c, valCol, labelCol),
+            buildPropertyBlocks(blocks, valCol, labelCol)));
+    };
+
+    // The best SED fit, expanded to all of its parameters per component.
+    auto addSED = [&]() {
+        auto phot = S.getPhotometry();
+        auto sed  = phot ? phot->getBestSEDModel() : nullptr;
+        if (!sed || sed->components.empty())
+            return;
+        std::vector<PropRow> compact;
+        const int n = std::min<int>(std::max(1, sed->numComponents),
+                                    int(sed->components.size()));
+        for (int i = 0; i < n; ++i) {
+            const auto   &k   = sed->components[i];
+            const QString sfx = n > 1 ? QString(",%1").arg(i + 1) : QString();
+            const QString tex = QString::number(i + 1);
+            if (k.teff > 0)
+                compact.push_back(qRow("T_eff" + sfx, k.teff, AsymErr::unset,
+                                       0, "K", k.teffErrUp, k.teffErrDown,
+                                       "T_{eff," + tex + "}"));
+            if (k.radius.isValid())
+                compact.push_back(qRow("R" + sfx, k.radius.value,
+                                       AsymErr::unset, 3, "R☉",
+                                       k.radius.errUp, k.radius.errDown,
+                                       "R_" + tex));
+            if (k.mass.isValid())
+                compact.push_back(qRow("M" + sfx, k.mass.value, AsymErr::unset,
+                                       3, "M☉", k.mass.errUp, k.mass.errDown,
+                                       "M_" + tex));
+        }
+        addV(compact, "Distance", sed->distanceMode, sed->distanceModeError,
+             0, "pc");
+
+        std::vector<PropRow> general;
+        if (!sed->modelId.isEmpty())
+            general.push_back({"Model", sed->modelId, sed->modelId});
+        addV(general, "E(44−55)", sed->e4455, sed->e4455Error, 3, "mag");
+        addPlain(general, "R(55)", sed->r55, 2);
+        addV(general, "E(B−V) SFD", sed->ebvSFD, sed->ebvSFDError, 3, "mag");
+        addV(general, "E(B−V) S&F", sed->ebvSF, sed->ebvSFError, 3, "mag");
+        addV(general, "log Θ", sed->logTheta, sed->logThetaError, 4);
+        addV(general, "Distance", sed->distanceMode, sed->distanceModeError,
+             0, "pc");
+        addV(general, "Distance (median)", sed->distanceMedian,
+             sed->distanceMedianError, 0, "pc");
+        addV(general, "Parallax", sed->parallax, sed->parallaxError, 4, "mas");
+        addPlain(general, "Parallax ZP", sed->parallaxZpo, 4, "mas");
+        addPlain(general, "RUWE", sed->parallaxRuwe, 2);
+        addPlain(general, "χ²_red", sed->chi2Reduced, 2);
+        addPlain(general, "Excess noise", sed->excessNoise, 3, "mag");
+
+        PropBlocks blocks;
+        blocks.push_back({QString(), general});
+        for (int i = 0; i < n; ++i)
+            blocks.push_back({n > 1 ? QString("Component %1").arg(i + 1)
+                                    : QString("Star"),
+                              sedComponentRows(sed->components[i], i + 1)});
+        vLayout->addWidget(createExpandableSectionFrame(
+            "SED Fit", buildPropertyGrid(compact, valCol, labelCol),
+            buildPropertyBlocks(blocks, valCol, labelCol)));
+    };
+
     addSub("Astrometry", astroC, astroF);
     addSub("Photometry", photoC, photoF);
-    addSub("Atmospheric Parameters", atmosC, atmosF);
+    addAtmospheric(atmosC, atmosF);
+    addSED();
     addSub("Radial Velocity", rvC, rvF);
 
     if (vLayout->count() == 0) {

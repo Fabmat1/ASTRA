@@ -120,8 +120,11 @@ under **Preferences → Star Detail View**; the default is a 2×2 grid.
 
 - **Summary** - key metric cards (`log(p)`, `ΔRV_max`, spectra and RV-point
   counts) and collapsible sections for astrometry, photometry, atmospheric
-  parameters, RV results, data inventory, companion constraints, galactic
-  kinematics, and literature references (resolved via CrossRef / NASA ADS).
+  parameters, the SED fit, RV results, data inventory, companion constraints,
+  galactic kinematics, and literature references (resolved via CrossRef /
+  NASA ADS). **Show all** under the atmospheric parameters lists every
+  parameter of the adopted spectral fit for each stellar component; under
+  the SED fit, every SED parameter per component.
   The spectral-class badge next to the star name is click-to-edit.
   Every measured value is click-to-copy; see
   [Copying parameters](#copying-parameters).
@@ -130,9 +133,17 @@ under **Preferences → Star Detail View**; the default is a 2×2 grid.
   shown in the Spectra panel.
 - **Light Curves** - overlay or stacked views, period folding, drag-to-flag
   bad points, per-series binning/normalization via the ⚙ menu.
-- **Spectra** - one tab per spectrum plus an Abundances tab; overlay fitted
-  models, toggle components and telluric lines, and switch between
-  normalized/rebinned/raw display.
+- **Spectra** - one tab per spectrum plus an Abundances tab. In the view
+  bar, **Normalized / Flux / Raw** switches the scale, **Panels / Full**
+  switches between cut-outs (Balmer jump, Paschen region and line profiles,
+  made for hot subdwarfs) above a small overview and the whole spectrum with
+  residuals (the default), and checkboxes show or hide the model, the fitted
+  continuum, the stellar components, the telluric transmission and the error
+  band. In Panels, the wheel zooms one panel (Ctrl:
+  its flux), double-click resets it and double-click on a title opens that
+  range in Full. Which panels appear, their ranges and whether each is drawn
+  normalized or in flux are set per instrument mode under **Data /
+  Instruments... > Spectrum View**.
 
 <div class="media-placeholder screenshot">
   <div class="mp-icon">🖼️</div>

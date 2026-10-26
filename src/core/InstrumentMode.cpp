@@ -76,6 +76,11 @@ QJsonObject SpectralProperties::toJson() const
         obj["systematic_rv_error_kms"] = *systematicRVError;
 
     if (!fitDefaults.isEmpty()) obj["fitDefaults"] = fitDefaults.toJson();
+    if (viewPanels) {
+        QJsonArray arr;
+        for (const auto& p : *viewPanels) arr.append(p.toJson());
+        obj["viewPanels"] = arr;
+    }
 
     if (!commonSetups.isEmpty()) {
         QJsonArray arr;
@@ -99,6 +104,12 @@ SpectralProperties SpectralProperties::fromJson(const QJsonObject& obj)
 
     if (obj.contains("fitDefaults"))
         sp.fitDefaults = GaelFitDefaults::fromJson(obj["fitDefaults"].toObject());
+    if (obj.contains("viewPanels")) {
+        QVector<SpectrumViewPanel> panels;
+        for (const auto& v : obj["viewPanels"].toArray())
+            panels.append(SpectrumViewPanel::fromJson(v.toObject()));
+        sp.viewPanels = panels;
+    }
 
     for (const auto& v : obj["common_setups"].toArray())
         sp.commonSetups.append(WavelengthSetup::fromJson(v.toObject()));
@@ -274,4 +285,36 @@ GaelFitDefaults GaelFitDefaults::fromJson(const QJsonObject& o)
     for (const auto& v : o["anchors"].toArray())
         d.anchors.append(AnchorRange::fromJson(v.toObject()));
     return d;
+}
+QJsonObject SpectrumViewPanel::toJson() const
+{
+    return { {"label", label}, {"wlLow", wlLow}, {"wlHigh", wlHigh},
+             {"scale", scaleToString(scale)} };
+}
+
+SpectrumViewPanel SpectrumViewPanel::fromJson(const QJsonObject& o)
+{
+    SpectrumViewPanel p;
+    p.label  = o["label"].toString();
+    p.wlLow  = o["wlLow"].toDouble();
+    p.wlHigh = o["wlHigh"].toDouble();
+    p.scale  = scaleFromString(o["scale"].toString());
+    return p;
+}
+
+QString SpectrumViewPanel::scaleToString(Scale s)
+{
+    switch (s) {
+    case Scale::Normalized: return QStringLiteral("normalized");
+    case Scale::Flux:       return QStringLiteral("flux");
+    case Scale::Auto:       break;
+    }
+    return QStringLiteral("auto");
+}
+
+SpectrumViewPanel::Scale SpectrumViewPanel::scaleFromString(const QString& s)
+{
+    if (s == QLatin1String("normalized")) return Scale::Normalized;
+    if (s == QLatin1String("flux"))       return Scale::Flux;
+    return Scale::Auto;
 }

@@ -353,6 +353,7 @@ set(ASTRA_CORE_SOURCES
     src/fitting/FitJobFactory.cpp
     src/fitting/FitTypesJson.cpp
     src/fitting/UserFitDefaults.cpp
+    src/fitting/AdoptedFit.cpp
     src/fitting/FitWorker.cpp
     src/fitting/GaelBackend.cpp
     src/fitting/GaelMapping.cpp
@@ -420,10 +421,12 @@ set(ASTRA_CORE_SOURCES
     src/sed/FilterWavelength.cpp
     src/sed/SedFitEnvironment.cpp
     src/sed/SedGridBroker.cpp
+    src/sed/SedSeeds.cpp
 
     # spectra
     src/spectra/Spectrum.cpp
     src/spectra/SpectrumCoadder.cpp
+    src/spectra/SpectrumPanelPlan.cpp
     src/spectra/SpectrumFetchService.cpp
     src/spectra/SpectrumReader.cpp
 
@@ -505,6 +508,7 @@ set(ASTRA_CORE_HEADERS
     src/fitting/FitTypes.h
     src/fitting/FitTypesJson.h
     src/fitting/UserFitDefaults.h
+    src/fitting/AdoptedFit.h
     src/fitting/FitWorker.h
     src/fitting/GaelBackend.h
     src/fitting/GaelMapping.h
@@ -573,10 +577,12 @@ set(ASTRA_CORE_HEADERS
     src/sed/FilterWavelength.h
     src/sed/SedFitEnvironment.h
     src/sed/SedGridBroker.h
+    src/sed/SedSeeds.h
 
     # spectra
     src/spectra/Spectrum.h
     src/spectra/SpectrumCoadder.h
+    src/spectra/SpectrumPanelPlan.h
     src/spectra/SpectrumFetchService.h
     src/spectra/SpectrumReader.h
 
@@ -711,6 +717,7 @@ set(ASTRA_UI_SOURCES
     src/spectra/ui/ArchiveFetchWidget.cpp
     src/spectra/ui/CoAddWidget.cpp
     src/spectra/ui/SpectraPanel.cpp
+    src/spectra/ui/SpectrumPanelsEditor.cpp
     src/spectra/ui/SpectrumDetailsDialog.cpp
     src/spectra/ui/SpectrumFetchSessionsDialog.cpp
 
@@ -731,6 +738,7 @@ set(ASTRA_UI_SOURCES
     src/ui/widgets/WheelGuard.cpp
     src/ui/widgets/WidgetFactory.cpp
     src/ui/widgets/RangeListEditor.cpp
+    src/ui/widgets/SegmentedControl.cpp
 )
 
 set(ASTRA_UI_HEADERS
@@ -843,6 +851,7 @@ set(ASTRA_UI_HEADERS
     src/spectra/ui/ArchiveFetchWidget.h
     src/spectra/ui/CoAddWidget.h
     src/spectra/ui/SpectraPanel.h
+    src/spectra/ui/SpectrumPanelsEditor.h
     src/spectra/ui/SpectrumDetailsDialog.h
     src/spectra/ui/SpectrumFetchSessionsDialog.h
 
@@ -865,6 +874,7 @@ set(ASTRA_UI_HEADERS
     src/ui/widgets/WheelGuard.h
     src/ui/widgets/WidgetFactory.h
     src/ui/widgets/RangeListEditor.h
+    src/ui/widgets/SegmentedControl.h
 )
 
 # ── astra_core: every Core-only translation unit ─────────────────────────────
@@ -1469,6 +1479,9 @@ if(BUILD_TESTING)
             tests/unit/catalog/vizier_asu.cpp
             tests/unit/sed/grid_broker.cpp
             tests/unit/fitting/user_fit_defaults.cpp
+            tests/unit/fitting/adopted_fit.cpp
+            tests/unit/sed/sed_seeds.cpp
+            tests/unit/spectra/panel_plan.cpp
     )
 
     # ── Convenience target ───────────────────────────────────────────────

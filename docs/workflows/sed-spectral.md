@@ -92,6 +92,12 @@ into ASTRA.
 - **Preview Config…** shows the generated configuration; **▶ Run Fit**
   executes it.
 
+The starting values come from the spectral fit the star's atmospheric
+parameters were adopted from, for every component it has: Teff, log g and
+log(He/H) are frozen within a window of the fit's error combined with the
+hot-subdwarf systematic error model. Enabling the second component grid
+seeds it from the fit's second star when there is one.
+
 Fitted masses, radii, and luminosities feed the SED columns of the star
 table.
 
