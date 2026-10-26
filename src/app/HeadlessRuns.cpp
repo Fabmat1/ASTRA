@@ -395,8 +395,10 @@ int runHeadless(int argc, char** argv)
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
     // A closed pipe (a log reader gone, a detached terminal) must not end a
-    // campaign that runs for days.
+    // campaign that runs for days. Windows has no SIGPIPE.
+#ifdef SIGPIPE
     std::signal(SIGPIPE, SIG_IGN);
+#endif
 
     int rc = 0;
     if (std::strcmp(mode, "--fetch-spectra") == 0) rc = fetchSpectra(argc, argv);
