@@ -12,11 +12,13 @@
 #include "fitting/FitWorker.h"
 #include "fitting/IsisBackend.h"
 #include "fitting/FitBackendRegistry.h"
+#include "fitting/UserFitDefaults.h"
 #include "app/Logger.h"
 #include "app/AppSettings.h"
 #include "fitting/ui/FitComponentsWidget.h"
 #include "fitting/ui/InteractiveIsisDialog.h"
 #include "ui/widgets/CheckStateDragger.h"
+#include "ui/widgets/RangeListEditor.h"
 #include "ui/widgets/WheelGuard.h"
 #include "ui/widgets/WidgetFactory.h"
 #include "app/ui/UiIcons.h"
@@ -85,6 +87,36 @@ QString attributionKey(const std::shared_ptr<Spectrum>& s)
 {
     const QChar sep(0x1f);   // unit separator: never part of a name
     return s->getInstrumentId() + sep + s->getModeKey() + sep + s->getInstrument();
+}
+
+using RangeRows = QVector<astra::RangeListEditor::Row>;
+
+RangeRows ignoreToRows(const QVector<fit::IgnoreRegion>& v)
+{
+    RangeRows rows;
+    for (const auto& r : v) rows.append({r.wlLow, r.wlHigh});
+    return rows;
+}
+
+QVector<fit::IgnoreRegion> ignoreFromRows(const RangeRows& rows)
+{
+    QVector<fit::IgnoreRegion> v;
+    for (const auto& r : rows) v.append({r.value(0), r.value(1)});
+    return v;
+}
+
+RangeRows anchorsToRows(const QVector<fit::ContinuumAnchor>& v)
+{
+    RangeRows rows;
+    for (const auto& a : v) rows.append({a.wlLow, a.wlHigh, a.spacing});
+    return rows;
+}
+
+QVector<fit::ContinuumAnchor> anchorsFromRows(const RangeRows& rows)
+{
+    QVector<fit::ContinuumAnchor> v;
+    for (const auto& r : rows) v.append({r.value(0), r.value(1), r.value(2, 50.0)});
+    return v;
 }
 
 } // namespace
@@ -186,6 +218,22 @@ QGroupBox* FitSetupWidget::buildComponentsSection()
 
     _componentsWidget = new FitComponentsWidget(box);
     v->addWidget(_componentsWidget);
+
+    const auto userDefaults = fit::UserFitDefaults::load(AppSettings());
+    if (!userDefaults.components.isEmpty())
+        _componentsWidget->setComponents(userDefaults.components);
+
+    auto* defaultsRow = new QHBoxLayout;
+    _saveAsDefaultBtn = new QPushButton(tr("Save as default"));
+    _saveAsDefaultBtn->setToolTip(
+        tr("Start every new fit window, for any star, from these components "
+           "(grids, parameters, freeze switches, abundances).\n"
+           "Edit or reset them under Settings > Spectral Fitting."));
+    connect(_saveAsDefaultBtn, &QPushButton::clicked,
+            this, &FitSetupWidget::onSaveAsUserDefault);
+    defaultsRow->addStretch();
+    defaultsRow->addWidget(_saveAsDefaultBtn);
+    v->addLayout(defaultsRow);
 
     return box;
 }
@@ -348,37 +396,41 @@ QGroupBox* FitSetupWidget::buildPerSpectrumSection()
     auto* igHeader = new QLabel("<b>Ignore regions</b>");
     igHeader->setContentsMargins(0, 6, 0, 2);
     v->addWidget(igHeader);
-    _ignoreListLayout = new QVBoxLayout;
-    _ignoreListLayout->setSpacing(2);
-    v->addLayout(_ignoreListLayout);
-    _addIgnoreBtn = new QPushButton("+ Add ignore region");
-    connect(_addIgnoreBtn, &QPushButton::clicked, this, [this]{
+    _ignoreEditor = new astra::RangeListEditor(
+        {{"From", 0, 100000, 2, 0.5, "Å"}, {"To", 0, 100000, 2, 0.5, "Å"}},
+        "+ Add ignore region");
+    _ignoreEditor->setNewRowFactory([this](const QVector<astra::RangeListEditor::Row>&) {
+        const PerSpec cfg = _configs.value(_currentId);
+        const double mid = (cfg.wlMin + cfg.wlMax) * 0.5;
+        return astra::RangeListEditor::Row{mid - 5.0, mid + 5.0};
+    });
+    connect(_ignoreEditor, &astra::RangeListEditor::rowsChanged, this, [this]{
         if (_currentId.isEmpty()) return;
-        auto& cfg = _configs[_currentId];
-        double mid = (cfg.wlMin + cfg.wlMax) * 0.5;
-        cfg.ignore.append({mid - 5.0, mid + 5.0});
-        rebuildIgnoreRows();
+        _configs[_currentId].ignore = ignoreFromRows(_ignoreEditor->rows());
         pushPreviewToPanel();
     });
-    v->addWidget(_addIgnoreBtn);
+    v->addWidget(_ignoreEditor);
 
     // Continuum anchors
     auto* anHeader = new QLabel("<b>Continuum-spline anchor ranges</b>");
     anHeader->setContentsMargins(0, 6, 0, 2);
     v->addWidget(anHeader);
-    _anchorListLayout = new QVBoxLayout;
-    _anchorListLayout->setSpacing(2);
-    v->addLayout(_anchorListLayout);
-    _addAnchorBtn = new QPushButton("+ Add anchor range");
-    connect(_addAnchorBtn, &QPushButton::clicked, this, [this]{
+    _anchorEditor = new astra::RangeListEditor(
+        {{"From", 0, 100000, 1, 0.5, "Å"}, {"To", 0, 100000, 1, 0.5, "Å"},
+         {"Spacing", 1, 10000, 0, 1.0, "Å"}},
+        "+ Add anchor range");
+    _anchorEditor->setNewRowFactory([this](const QVector<astra::RangeListEditor::Row>&) {
+        const PerSpec cfg = _configs.value(_currentId);
+        const double span = cfg.wlMax - cfg.wlMin;
+        return astra::RangeListEditor::Row{cfg.wlMin, cfg.wlMax,
+                                           std::max(10.0, span / 20.0)};
+    });
+    connect(_anchorEditor, &astra::RangeListEditor::rowsChanged, this, [this]{
         if (_currentId.isEmpty()) return;
-        auto& cfg = _configs[_currentId];
-        double span = (cfg.wlMax - cfg.wlMin);
-        cfg.anchors.append({cfg.wlMin, cfg.wlMax, std::max(10.0, span / 20.0)});
-        rebuildAnchorRows();
+        _configs[_currentId].anchors = anchorsFromRows(_anchorEditor->rows());
         pushPreviewToPanel();
     });
-    v->addWidget(_addAnchorBtn);
+    v->addWidget(_anchorEditor);
 
     auto* copyRow = new QHBoxLayout;
     _copyToAllBtn = new QPushButton("Copy to all spectra");
@@ -877,81 +929,16 @@ void FitSetupWidget::loadStateToEditor()
 
 void FitSetupWidget::rebuildIgnoreRows()
 {
-    clearLayout(_ignoreListLayout);
-    if (!_configs.contains(_currentId)) return;
-    auto& cfg = _configs[_currentId];
-
-    for (int i = 0; i < cfg.ignore.size(); ++i) {
-        auto* row = new QHBoxLayout;
-        auto* lo = makeDoubleSpin(0, 100000, 2, cfg.ignore[i].wlLow,  0.5, "Å");
-        auto* hi = makeDoubleSpin(0, 100000, 2, cfg.ignore[i].wlHigh, 0.5, "Å");
-        auto* rm = new QPushButton;
-        UiIcons::apply(rm, UiIcons::Role::Remove);
-        rm->setMaximumWidth(28);
-        rm->setToolTip("Remove this ignore region");
-        connect(lo, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                this, [this, i](double v){
-            _configs[_currentId].ignore[i].wlLow = v;
-            pushPreviewToPanel();
-        });
-        connect(hi, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                this, [this, i](double v){
-            _configs[_currentId].ignore[i].wlHigh = v;
-            pushPreviewToPanel();
-        });
-        connect(rm, &QPushButton::clicked, this, [this, i]{
-            _configs[_currentId].ignore.removeAt(i);
-            rebuildIgnoreRows();
-            pushPreviewToPanel();
-        });
-        row->addWidget(lo);
-        row->addWidget(new QLabel("–"));
-        row->addWidget(hi);
-        row->addWidget(rm);
-        auto* w = new QWidget; w->setLayout(row);
-        _ignoreListLayout->addWidget(w);
-    }
+    _ignoreEditor->setRows(_configs.contains(_currentId)
+                               ? ignoreToRows(_configs[_currentId].ignore)
+                               : QVector<astra::RangeListEditor::Row>{});
 }
 
 void FitSetupWidget::rebuildAnchorRows()
 {
-    clearLayout(_anchorListLayout);
-    if (!_configs.contains(_currentId)) return;
-    auto& cfg = _configs[_currentId];
-
-    for (int i = 0; i < cfg.anchors.size(); ++i) {
-        auto* row = new QHBoxLayout;
-        auto* lo = makeDoubleSpin(0, 100000, 1, cfg.anchors[i].wlLow,   0.5, "Å");
-        auto* hi = makeDoubleSpin(0, 100000, 1, cfg.anchors[i].wlHigh,  0.5, "Å");
-        auto* sp = makeDoubleSpin(1, 10000,  0, cfg.anchors[i].spacing, 1.0, "Å");
-        sp->setPrefix("Δ ");
-        auto* rm = new QPushButton;
-        UiIcons::apply(rm, UiIcons::Role::Remove);
-        rm->setMaximumWidth(28);
-        rm->setToolTip("Remove this anchor region");
-        connect(lo, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                this, [this, i](double v){
-            _configs[_currentId].anchors[i].wlLow = v;  pushPreviewToPanel();
-        });
-        connect(hi, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                this, [this, i](double v){
-            _configs[_currentId].anchors[i].wlHigh = v; pushPreviewToPanel();
-        });
-        connect(sp, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
-                this, [this, i](double v){
-            _configs[_currentId].anchors[i].spacing = v; pushPreviewToPanel();
-        });
-        connect(rm, &QPushButton::clicked, this, [this, i]{
-            _configs[_currentId].anchors.removeAt(i);
-            rebuildAnchorRows();
-            pushPreviewToPanel();
-        });
-        row->addWidget(lo); row->addWidget(new QLabel("–"));
-        row->addWidget(hi); row->addWidget(sp);
-        row->addWidget(rm);
-        auto* w = new QWidget; w->setLayout(row);
-        _anchorListLayout->addWidget(w);
-    }
+    _anchorEditor->setRows(_configs.contains(_currentId)
+                               ? anchorsToRows(_configs[_currentId].anchors)
+                               : QVector<astra::RangeListEditor::Row>{});
 }
 
 void FitSetupWidget::onCopyToAll()
@@ -1028,6 +1015,20 @@ FitSetupWidget::PerSpec FitSetupWidget::makeDefaultConfig(
     QString modeKey;
     auto inst = instrumentForSpectrum(s, &modeKey);
     return fit::makeDefaultConfig(s, inst, modeKey);
+}
+
+void FitSetupWidget::onSaveAsUserDefault()
+{
+    fit::UserFitDefaults d;
+    d.components = _componentsWidget->components();
+    AppSettings settings;
+    d.save(settings);
+
+    LOG_INFO("FitSetup", "Saved user spectral fit defaults");
+    QMessageBox::information(this, tr("Defaults saved"),
+        tr("New fit windows will start from these %n component(s).\n\n"
+           "Settings > Spectral Fitting edits or resets them.",
+           nullptr, int(d.components.size())));
 }
 
 void FitSetupWidget::onSaveAsModeDefault()

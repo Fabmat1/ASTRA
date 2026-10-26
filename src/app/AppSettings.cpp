@@ -38,6 +38,7 @@ constexpr const char* kSpecFetchParallel    = "specfetch/maxParallel";
 constexpr const char* kSpecFetchDir         = "specfetch/downloadDir";
 constexpr const char* kSpecFetchLamostToken = "specfetch/lamostToken";
 constexpr const char* kSpecFetchLastOptions = "specfetch/lastOptions";
+constexpr const char* kSpecFitDefaults      = "fitting/spectralDefaults";
 constexpr const char* kRemoteHosts          = "remote/hosts";
 constexpr const char* kRemoteGridCacheDir   = "remote/gridCacheDir";
 constexpr const char* kRemoteGridCacheCapGb = "remote/gridCacheCapGb";
@@ -414,6 +415,19 @@ void AppSettings::setSpecFetchLastOptions(const QString& json) {
     if (_specFetchLastOptions == json) return;
     _specFetchLastOptions = json;
     save();
+}
+
+QString AppSettings::spectralFitDefaultsJson() const {
+    QSettings s;
+    s.beginGroup(kGroup);
+    return s.value(kSpecFitDefaults).toString();
+}
+
+void AppSettings::setSpectralFitDefaultsJson(const QString& json) {
+    QSettings s;
+    s.beginGroup(kGroup);
+    if (json.isEmpty()) s.remove(kSpecFitDefaults);
+    else                s.setValue(kSpecFitDefaults, json);
 }
 
 void AppSettings::setRemoteHostsJson(const QString& json) {

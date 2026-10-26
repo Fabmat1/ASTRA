@@ -47,6 +47,14 @@ Open a star's detail window and click **View / Fit Spectra** to open
   window stay per spectrum, since the anchor points are rarely the same
   twice, and so does the radial velocity. Grids and freeze switches are never
   touched.
+- **Save as default** (under the stellar components) remembers the
+  components: grids, parameters, freeze switches and abundances. Every fit
+  window opened afterwards, for any star, starts from them, and **Settings /
+  Spectral Fitting** edits or resets them. Fit range, ignore regions and
+  continuum-spline anchors depend on the spectrograph instead, so they are
+  stored per instrument mode: **Save as mode default** in the fit window, or
+  the **Spectral Fit Defaults** tab when editing a mode under **Data /
+  Instruments...**.
 - **Co-Add** tab - stack spectra (optionally shifted to rest frame using the
   fitted RVs) and save the co-added spectrum.
 
@@ -76,7 +84,8 @@ into ASTRA.
   **★ Set as Best Fit**.
 - The photometry used is listed under **Photometry Points**.
 - **New Fit Configuration** - choose grids (optionally a second component
-  grid), fix or fit the distance, select fit parameters, and set options
+  grid; grids streamed from a remote host are offered too, see
+  [Remote Fitting](remote-fitting.md#streamed-grids)), fix or fit the distance, select fit parameters, and set options
   (confidence level, Monte-Carlo trials, outlier rejection, zero-point
   offsets). Advanced options include Stilism reddening, canonical-mass
   assumptions, and deriving log g from the (IA)HB.

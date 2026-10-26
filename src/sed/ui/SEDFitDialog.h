@@ -30,6 +30,7 @@ class QScrollArea;
 class QToolButton;
 class QTextEdit;
 class QProgressBar;
+class SedGridBroker;
 class QLineEdit;
 
 struct FitParameterRow
@@ -189,6 +190,7 @@ private:
     QTextEdit*    _fitOutput      = nullptr;
     QProgressBar* _fitProgress    = nullptr;
     QProcess*     _fitProcess     = nullptr;
+    SedGridBroker* _gridBroker    = nullptr;
     QString       _workDir;
 
     QDoubleSpinBox *_rejectionSpin = nullptr;

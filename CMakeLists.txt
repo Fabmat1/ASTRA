@@ -352,6 +352,7 @@ set(ASTRA_CORE_SOURCES
     src/fitting/FitBackendRegistry.cpp
     src/fitting/FitJobFactory.cpp
     src/fitting/FitTypesJson.cpp
+    src/fitting/UserFitDefaults.cpp
     src/fitting/FitWorker.cpp
     src/fitting/GaelBackend.cpp
     src/fitting/GaelMapping.cpp
@@ -418,6 +419,7 @@ set(ASTRA_CORE_SOURCES
     src/sed/ExtractSED.cpp
     src/sed/FilterWavelength.cpp
     src/sed/SedFitEnvironment.cpp
+    src/sed/SedGridBroker.cpp
 
     # spectra
     src/spectra/Spectrum.cpp
@@ -502,6 +504,7 @@ set(ASTRA_CORE_HEADERS
     src/fitting/FitJobFactory.h
     src/fitting/FitTypes.h
     src/fitting/FitTypesJson.h
+    src/fitting/UserFitDefaults.h
     src/fitting/FitWorker.h
     src/fitting/GaelBackend.h
     src/fitting/GaelMapping.h
@@ -569,6 +572,7 @@ set(ASTRA_CORE_HEADERS
     src/sed/ExtractSED.h
     src/sed/FilterWavelength.h
     src/sed/SedFitEnvironment.h
+    src/sed/SedGridBroker.h
 
     # spectra
     src/spectra/Spectrum.h
@@ -641,6 +645,7 @@ set(ASTRA_UI_SOURCES
     src/fitting/ui/FitPreviewOverlay.cpp
     src/fitting/ui/FitProgressDialog.cpp
     src/fitting/ui/FitSetupWidget.cpp
+    src/fitting/ui/SpectralFitDefaultsPage.cpp
     src/fitting/ui/InteractiveIsisDialog.cpp
     src/fitting/ui/IsisMacroPanel.cpp
     src/fitting/ui/SpectraFitDialog.cpp
@@ -725,6 +730,7 @@ set(ASTRA_UI_SOURCES
     src/ui/widgets/SquarePlotFrame.cpp
     src/ui/widgets/WheelGuard.cpp
     src/ui/widgets/WidgetFactory.cpp
+    src/ui/widgets/RangeListEditor.cpp
 )
 
 set(ASTRA_UI_HEADERS
@@ -771,6 +777,7 @@ set(ASTRA_UI_HEADERS
     src/fitting/ui/FitPreviewOverlay.h
     src/fitting/ui/FitProgressDialog.h
     src/fitting/ui/FitSetupWidget.h
+    src/fitting/ui/SpectralFitDefaultsPage.h
     src/fitting/ui/InteractiveIsisDialog.h
     src/fitting/ui/IsisMacroPanel.h
     src/fitting/ui/SpectraFitDialog.h
@@ -857,6 +864,7 @@ set(ASTRA_UI_HEADERS
     src/ui/widgets/SquarePlotFrame.h
     src/ui/widgets/WheelGuard.h
     src/ui/widgets/WidgetFactory.h
+    src/ui/widgets/RangeListEditor.h
 )
 
 # ── astra_core: every Core-only translation unit ─────────────────────────────
@@ -1459,6 +1467,8 @@ if(BUILD_TESTING)
             tests/unit/remote/slurm_limits.cpp
             tests/unit/remote/batch_service.cpp
             tests/unit/catalog/vizier_asu.cpp
+            tests/unit/sed/grid_broker.cpp
+            tests/unit/fitting/user_fit_defaults.cpp
     )
 
     # ── Convenience target ───────────────────────────────────────────────

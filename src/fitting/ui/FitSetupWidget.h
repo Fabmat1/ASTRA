@@ -33,6 +33,7 @@ class QLabel;
 class FitProgressDialog;
 
 namespace astra::fitting { class FitWorker; }
+namespace astra { class RangeListEditor; }
 
 class FitSetupWidget : public QWidget
 {
@@ -66,6 +67,7 @@ private slots:
     void onCopyToSameInstrument();
     void onSaveAsModeDefault();
     void onResetToModeDefault();
+    void onSaveAsUserDefault();
     void onFitPreviewEdited(const FitPreviewConfig& pc);
     void onPreviewScript();
     void onPanelSelectionChanged(const QString& spectrumId, const QString& fitId);
@@ -155,10 +157,8 @@ private:
     QDoubleSpinBox* _wlMinSpin           = nullptr;
     QDoubleSpinBox* _wlMaxSpin           = nullptr;
     QCheckBox*      _inferCheck          = nullptr;
-    QVBoxLayout*    _ignoreListLayout    = nullptr;
-    QPushButton*    _addIgnoreBtn        = nullptr;
-    QVBoxLayout*    _anchorListLayout    = nullptr;
-    QPushButton*    _addAnchorBtn        = nullptr;
+    astra::RangeListEditor* _ignoreEditor = nullptr;
+    astra::RangeListEditor* _anchorEditor = nullptr;
     QDoubleSpinBox* _resOffsetSpin       = nullptr;
     QDoubleSpinBox* _resSlopeSpin        = nullptr;
     QWidget*        _telluricSeedRow     = nullptr;   // enabled with the job flag
@@ -196,6 +196,7 @@ private:
     QCheckBox*      _isisMaskCb         = nullptr;
     QSpinBox*       _isisXfigIgnoreSpin = nullptr;
     QPushButton*      _previewScriptBtn = nullptr;
+    QPushButton*      _saveAsDefaultBtn = nullptr;
 
     QGroupBox* buildIsisOptionsSection();
     void       updateBackendSpecificUi();

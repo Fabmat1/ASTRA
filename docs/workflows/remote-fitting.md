@@ -40,7 +40,7 @@ directories (the ones holding the `grid.fits` markers), one per line.
 Those grids then appear in every grid selector alongside the local ones,
 labelled `<grid> @ <host>`, and a fit that uses one behaves exactly like a
 local fit: the results are identical, only the first read of each model point
-waits for a download.
+waits for a download. This holds for spectral fits and SED fits alike.
 
 Files are kept in a local cache (**Settings / Remote Hosts**, bottom), so a
 second fit against the same grid region is as fast as a local one. The cache

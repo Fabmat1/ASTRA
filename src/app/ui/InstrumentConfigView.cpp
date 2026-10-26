@@ -2,6 +2,9 @@
 #include "db/DatabaseManager.h"
 #include "observing/ui/CoastlineData.h"
 #include "app/ui/UiIcons.h"
+#include "fitting/FitJobFactory.h"
+#include "spectra/Spectrum.h"
+#include "ui/widgets/RangeListEditor.h"
 
 #include <algorithm>
 #include <QPainter>
@@ -17,6 +20,7 @@
 #include <QDialog>
 #include <QDialogButtonBox>
 #include <QComboBox>
+#include <QTabWidget>
 #include <QToolTip>
 #include <QUuid>
 #include <QtMath>
@@ -742,7 +746,12 @@ bool InstrumentConfigView::editModeDialog(InstrumentMode& mode, bool isNew)
     QDialog dlg(this);
     dlg.setWindowTitle(isNew ? tr("Add Mode") : tr("Edit Mode"));
     dlg.setMinimumWidth(560);
-    auto* layout = new QVBoxLayout(&dlg);
+    auto* outerLayout = new QVBoxLayout(&dlg);
+    auto* tabs = new QTabWidget;
+    outerLayout->addWidget(tabs);
+    auto* propsPage = new QWidget;
+    auto* layout = new QVBoxLayout(propsPage);
+    tabs->addTab(propsPage, tr("Properties"));
 
     // ── Basic fields ────────────────────────────────────────────────────
     auto* basicForm = new QFormLayout;
@@ -954,12 +963,94 @@ bool InstrumentConfigView::editModeDialog(InstrumentMode& mode, bool isNew)
     connect(typeCombo, &QComboBox::currentTextChanged, &dlg, syncGroups);
     if (isNew) syncGroups();
 
+    // ── Spectral fit defaults tab ───────────────────────────────────────
+    // What the spectral fit window starts from for spectra of this mode.
+    // An empty list means "not set": the fit falls back to the built-in one,
+    // which is what an unticked group shows.
+    const astra::fitting::SpectrumFitConfig builtin =
+        astra::fitting::makeDefaultConfig(std::make_shared<Spectrum>(), nullptr, {});
+    const GaelFitDefaults savedFit = mode.hasSpectralProperties()
+                                         ? mode.spectral().fitDefaults
+                                         : GaelFitDefaults{};
+
+    auto* fitPage = new QWidget;
+    auto* fitLayout = new QVBoxLayout(fitPage);
+    auto* fitIntro = new QLabel(tr(
+        "Starting point of the spectral fit window for spectra of this mode. "
+        "\"Save as mode default\" in the fit window writes the same values. "
+        "An unticked list uses ASTRA's built-in one, shown greyed out."));
+    fitIntro->setWordWrap(true);
+    fitLayout->addWidget(fitIntro);
+
+    using Row = astra::RangeListEditor::Row;
+
+    auto* ignoreGroup = new QGroupBox(tr("Mode-specific ignore regions"));
+    ignoreGroup->setCheckable(true);
+    ignoreGroup->setChecked(!savedFit.ignore.isEmpty());
+    auto* ignoreLay = new QVBoxLayout(ignoreGroup);
+    auto* ignoreEditor = new astra::RangeListEditor(
+        {{tr("From"), 0, 100000, 2, 0.5, QStringLiteral("\u00C5")},
+         {tr("To"),   0, 100000, 2, 0.5, QStringLiteral("\u00C5")}},
+        tr("+ Add ignore region"));
+    ignoreEditor->setEmptyText(tr("No regions: the built-in list applies."));
+    auto builtinIgnore = [&builtin] {
+        QVector<Row> rows;
+        for (const auto& r : builtin.ignore) rows.append({r.wlLow, r.wlHigh});
+        return rows;
+    };
+    {
+        QVector<Row> rows;
+        for (const auto& r : savedFit.ignore) rows.append({r.wlLow, r.wlHigh});
+        ignoreEditor->setRows(savedFit.ignore.isEmpty() ? builtinIgnore() : rows);
+    }
+    auto* ignoreBuiltinBtn = new QPushButton(tr("Load built-in list"));
+    connect(ignoreBuiltinBtn, &QPushButton::clicked, &dlg,
+            [=] { ignoreEditor->setRows(builtinIgnore()); });
+    ignoreEditor->addButton(ignoreBuiltinBtn);
+    ignoreLay->addWidget(ignoreEditor);
+    fitLayout->addWidget(ignoreGroup);
+
+    auto* anchorGroup = new QGroupBox(tr("Mode-specific continuum-spline anchors"));
+    anchorGroup->setCheckable(true);
+    anchorGroup->setChecked(!savedFit.anchors.isEmpty());
+    auto* anchorLay = new QVBoxLayout(anchorGroup);
+    auto* anchorEditor = new astra::RangeListEditor(
+        {{tr("From"),    0, 100000, 1, 0.5, QStringLiteral("\u00C5")},
+         {tr("To"),      0, 100000, 1, 0.5, QStringLiteral("\u00C5")},
+         {tr("Spacing"), 1, 10000,  0, 1.0, QStringLiteral("\u00C5")}},
+        tr("+ Add anchor range"));
+    anchorEditor->setEmptyText(tr("No ranges: the built-in list applies."));
+    auto builtinAnchors = [&builtin] {
+        QVector<Row> rows;
+        for (const auto& a : builtin.anchors)
+            rows.append({a.wlLow, a.wlHigh, a.spacing});
+        return rows;
+    };
+    {
+        QVector<Row> rows;
+        for (const auto& a : savedFit.anchors)
+            rows.append({a.wlLow, a.wlHigh, a.spacing});
+        anchorEditor->setRows(savedFit.anchors.isEmpty() ? builtinAnchors() : rows);
+    }
+    auto* anchorBuiltinBtn = new QPushButton(tr("Load built-in list"));
+    connect(anchorBuiltinBtn, &QPushButton::clicked, &dlg,
+            [=] { anchorEditor->setRows(builtinAnchors()); });
+    anchorEditor->addButton(anchorBuiltinBtn);
+    anchorLay->addWidget(anchorEditor);
+    fitLayout->addWidget(anchorGroup);
+    fitLayout->addStretch();
+
+    const int fitTab = tabs->addTab(fitPage, tr("Spectral Fit Defaults"));
+    tabs->setTabEnabled(fitTab, specGroup->isChecked());
+    connect(specGroup, &QGroupBox::toggled, &dlg,
+            [=](bool on) { tabs->setTabEnabled(fitTab, on); });
+
     // ── Dialog buttons ──────────────────────────────────────────────────
     auto* buttons = new QDialogButtonBox(
         QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
     connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
     connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
-    layout->addWidget(buttons);
+    outerLayout->addWidget(buttons);
 
     if (dlg.exec() != QDialog::Accepted)
         return false;
@@ -996,6 +1087,17 @@ bool InstrumentConfigView::editModeDialog(InstrumentMode& mode, bool isNew)
             sp.commonSetups = mode.spectral().commonSetups;
             sp.fitDefaults  = mode.spectral().fitDefaults;
         }
+        sp.fitDefaults.ignore.clear();
+        if (ignoreGroup->isChecked())
+            for (const auto& r : ignoreEditor->rows())
+                if (r.value(1) > r.value(0))
+                    sp.fitDefaults.ignore.append({r.value(0), r.value(1)});
+        sp.fitDefaults.anchors.clear();
+        if (anchorGroup->isChecked())
+            for (const auto& r : anchorEditor->rows())
+                if (r.value(1) > r.value(0))
+                    sp.fitDefaults.anchors.append(
+                        {r.value(0), r.value(1), r.value(2, 50.0)});
         if (sysRvCheck->isChecked())
             sp.systematicRVError = sysRvSpin->value();
         mode.setSpectralProperties(sp);

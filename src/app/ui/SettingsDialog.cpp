@@ -1,5 +1,6 @@
 #include "app/ui/SettingsDialog.h"
 #include "remote/ui/RemoteHostsSettingsPage.h"
+#include "fitting/ui/SpectralFitDefaultsPage.h"
 #include "app/AppSettings.h"
 #include "fitting/IsisEnvironment.h"
 #include "sed/SedFitEnvironment.h"
@@ -193,6 +194,7 @@ void SettingsDialog::setupUi()
     _topicList->addItem("Lightcurve Fetching");
     _topicList->addItem("Lightcurve Fitting");
     _topicList->addItem("Spectra Fetching");
+    _topicList->addItem("Spectral Fitting");
     _topicList->addItem("Remote Hosts");
     _topicList->addItem("Updates");
 
@@ -204,6 +206,8 @@ void SettingsDialog::setupUi()
     _pages->addWidget(createLightcurveFetchPage());
     _pages->addWidget(createLightcurveFitPage());
     _pages->addWidget(createSpectraFetchPage());
+    _specFitDefaultsPage = new SpectralFitDefaultsPage;
+    _pages->addWidget(_specFitDefaultsPage);
     _pages->addWidget(createRemoteHostsPage());
     _pages->addWidget(createUpdatesPage());
 
@@ -244,8 +248,9 @@ QWidget* SettingsDialog::createGridPathsPage()
 
     auto* intro = new QLabel(
         "Base directories searched recursively for stellar model grids. "
-        "Both the SED fit (ISIS) and spectral fit (GAEL) tools scan these "
-        "paths for <code>grid.fits</code> markers.");
+        "Both the SED fit (sedfit) and spectral fit (GAEL) tools scan these "
+        "paths for <code>grid.fits</code> markers. Grids on remote hosts "
+        "marked for streaming (Remote Hosts) are offered as well.");
     intro->setWordWrap(true);
     outer->addWidget(intro);
 
@@ -698,6 +703,7 @@ void SettingsDialog::apply()
         _settings->setStarSearchRadiusArcsec(_starSearchRadiusSpin->value());
 
     if (_remoteHostsPage) _remoteHostsPage->apply();
+    if (_specFitDefaultsPage) _specFitDefaultsPage->apply();
 
     if (_updateOnStartup)
         _settings->setCheckUpdatesOnStartup(_updateOnStartup->isChecked());

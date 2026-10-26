@@ -11,6 +11,8 @@
 #include "sed/ExtractSED.h"
 #include "app/Logger.h"
 #include "sed/SedFitEnvironment.h"
+#include "sed/SedGridBroker.h"
+#include "remote/RemoteHostRegistry.h"
 #include "fitting/SystematicErrors.h"
 #include "app/ui/UiIcons.h"
 #include "ui/widgets/GridSelectorWidget.h"
@@ -405,11 +407,9 @@ QWidget* SEDFitDialog::createNewFitPanel()
     nfLay->addWidget(headerLabel);
 
     // ── Grid - Component 1 ─────────────────────────────────
-    AppSettings       settings;
-
     _gridSelector1 = new GridSelectorWidget;
     _gridSelector1->setTitle("Model Grid - Component 1");
-    _gridSelector1->setBasePaths(settings.gridBasePaths());
+    _gridSelector1->setBasePaths(astra::remote::gridBasePathsIncludingRemote());
     _gridSelector1->setShowConfigureButton(true);
     nfLay->addWidget(_gridSelector1);
 
@@ -419,7 +419,7 @@ QWidget* SEDFitDialog::createNewFitPanel()
 
     _gridSelector2 = new GridSelectorWidget;
     _gridSelector2->setTitle("Model Grid - Component 2");
-    _gridSelector2->setBasePaths(settings.gridBasePaths());
+    _gridSelector2->setBasePaths(astra::remote::gridBasePathsIncludingRemote());
     _gridSelector2->setShowConfigureButton(true);
     _gridSelector2->setVisible(false);
     nfLay->addWidget(_gridSelector2);
@@ -433,9 +433,10 @@ QWidget* SEDFitDialog::createNewFitPanel()
         AppSettings    s;
         SettingsDialog dlg(&s, this);
         if (dlg.exec() == QDialog::Accepted) {
-            AppSettings fresh;
-            _gridSelector1->setBasePaths(fresh.gridBasePaths());
-            _gridSelector2->setBasePaths(fresh.gridBasePaths());
+            const QStringList fresh =
+                astra::remote::gridBasePathsIncludingRemote();
+            _gridSelector1->setBasePaths(fresh);
+            _gridSelector2->setBasePaths(fresh);
         }
     };
     connect(_gridSelector1, &GridSelectorWidget::configurePathsRequested,
@@ -2528,8 +2529,8 @@ QString SEDFitDialog::generateConfigJson() const
     };
     addBase("./");
     for (const auto& bp : extraBases) addBase(bp);
-    AppSettings sGrid;
-    for (const auto& p : sGrid.gridBasePaths()) addBase(p);
+    for (const auto& p : astra::remote::gridBasePathsIncludingRemote())
+        addBase(p);
     cfg["bpaths"] = bpaths;
 
     // ── Options ──────────────────────────────────────────────
@@ -2640,13 +2641,13 @@ void SEDFitDialog::onRunFit()
 
     _fitProcess = new QProcess(this);
     _fitProcess->setWorkingDirectory(_workDir);
-    _fitProcess->setProcessEnvironment(
-        SedFitEnvironment::environmentFor(sedFitBinary));
-
-    connect(_fitProcess, &QProcess::readyReadStandardOutput, this, [this] {
-        _fitOutput->append(
-            QString::fromLocal8Bit(_fitProcess->readAllStandardOutput()));
-    });
+    QProcessEnvironment env = SedFitEnvironment::environmentFor(sedFitBinary);
+    // Streamed (ssh://) grids are fetched by ASTRA on sedfit's behalf; the
+    // broker owns stdout and passes the log lines on.
+    SedGridBroker::enableIn(env);
+    _fitProcess->setProcessEnvironment(env);
+    _gridBroker = new SedGridBroker(_fitProcess, _fitProcess);
+    connect(_gridBroker, &SedGridBroker::output, _fitOutput, &QTextEdit::append);
     connect(_fitProcess, &QProcess::readyReadStandardError, this, [this] {
         _fitOutput->append(
             QString::fromLocal8Bit(_fitProcess->readAllStandardError()));
@@ -2662,6 +2663,7 @@ void SEDFitDialog::onFitProcessFinished(int exitCode, QProcess::ExitStatus statu
 {
     _fitProgress->setVisible(false);
     _runFitBtn->setEnabled(true);
+    if (_gridBroker) _gridBroker->flush();
 
     if (status != QProcess::NormalExit || exitCode != 0) {
         _fitOutput->append(QString("\n⚠ sedfit exited with code %1").arg(exitCode));

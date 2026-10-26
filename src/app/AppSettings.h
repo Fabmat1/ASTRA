@@ -132,6 +132,15 @@ public:
     QString specFetchLastOptions() const { return _specFetchLastOptions; }
     void    setSpecFetchLastOptions(const QString& json);
 
+    // ── Spectral fitting defaults ────────────────────────────────────────
+    /// What a new spectrum fit window starts from (component grids and
+    /// parameters), as a JSON blob; "" = built-in defaults.
+    /// Read and written through astra::fitting::UserFitDefaults. Goes to
+    /// QSettings directly instead of through the cached copy save() writes
+    /// back, so a long-lived AppSettings cannot revert a newer value.
+    QString spectralFitDefaultsJson() const;
+    void    setSpectralFitDefaultsJson(const QString& json);
+
     // ── Remote hosts (SSH grid streaming + remote fitting) ──────────────
     /// The user-defined remote hosts, as a JSON array (see RemoteHost).
     QString remoteHostsJson() const { return _remoteHostsJson; }
