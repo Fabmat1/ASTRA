@@ -21,6 +21,16 @@
     implemented.
 -->
 
+## v0.9.1 (2026-10-26)
+
+### Added
+- SED fits can use model grids streamed from a remote host, like spectral fits.
+- **Save as default** in the spectral fit window remembers your grids and parameters for every new fit (editable under Settings / Spectral Fitting).
+- Ignore regions and continuum-spline anchors can be edited per instrument mode under Data / Instruments.
+
+### Fixed
+- Two-component fit overlays show each component's exact light fraction.
+
 ## v0.9.0 (2026-10-21)
 
 ### Added
