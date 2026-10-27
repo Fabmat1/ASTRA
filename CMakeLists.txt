@@ -312,7 +312,9 @@ set(ASTRA_CORE_SOURCES
     src/app/AppSettings.cpp
     src/app/HeadlessRuns.cpp
     src/app/MaintenanceMode.cpp
+    src/app/ArrayCodec.cpp
     src/app/DataStore.cpp
+    src/app/StoreMigration.cpp
     src/app/Logger.cpp
 
     # catalog
@@ -458,7 +460,9 @@ set(ASTRA_CORE_HEADERS
     src/app/HeadlessRuns.h
     src/app/MaintenanceMode.h
     src/app/ServiceContext.h
+    src/app/ArrayCodec.h
     src/app/DataStore.h
+    src/app/StoreMigration.h
     src/app/Logger.h
     src/app/PerfTimer.h
 
@@ -903,6 +907,26 @@ target_link_libraries(astra_core PUBLIC
 # builds ASTRA already has it.
 find_package(ZLIB REQUIRED)
 target_link_libraries(astra_core PRIVATE ZLIB::ZLIB)
+
+# zstd compresses the data files (src/app/ArrayCodec.cpp). Same lookup as FFTW3:
+# pkg-config first, then a plain header/library search.
+if(PkgConfig_FOUND)
+    pkg_check_modules(ZSTD libzstd)
+endif()
+if(ZSTD_FOUND)
+    target_include_directories(astra_core PRIVATE ${ZSTD_INCLUDE_DIRS})
+    target_link_directories(astra_core PUBLIC ${ZSTD_LIBRARY_DIRS})
+    target_link_libraries(astra_core PRIVATE ${ZSTD_LIBRARIES})
+else()
+    find_path(ZSTD_INCLUDE_DIR zstd.h)
+    find_library(ZSTD_LIBRARY NAMES zstd libzstd zstd_static)
+    if(NOT ZSTD_INCLUDE_DIR OR NOT ZSTD_LIBRARY)
+        message(FATAL_ERROR "zstd not found - required by src/app/ArrayCodec.cpp")
+    endif()
+    message(STATUS "Found zstd: ${ZSTD_LIBRARY}")
+    target_include_directories(astra_core PRIVATE ${ZSTD_INCLUDE_DIR})
+    target_link_libraries(astra_core PRIVATE ${ZSTD_LIBRARY})
+endif()
 set_target_properties(astra_core PROPERTIES AUTOMOC ON)
 
 # ── Create executable: main + everything under a ui/ folder ──────────────────
@@ -1450,6 +1474,7 @@ if(BUILD_TESTING)
             # libraries need explicit resource initialisation.
             resources/resources.qrc
             tests/doctest_main.cpp
+            tests/unit/app/array_codec.cpp
             tests/unit/core/time.cpp
             tests/unit/core/stream_bytes.cpp
             tests/unit/core/stats.cpp
@@ -1468,6 +1493,7 @@ if(BUILD_TESTING)
             tests/unit/fitting/line_core.cpp
             tests/unit/massfit/plan_extensions.cpp
             tests/unit/rv/periodogram.cpp
+            tests/unit/rv/periodogram_store.cpp
             tests/unit/io/star_package.cpp
             tests/unit/rv/rv_error_mc.cpp
             tests/unit/db/delete_star.cpp

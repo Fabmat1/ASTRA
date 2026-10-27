@@ -157,6 +157,13 @@ public:
     int  remoteGridCacheCapGb() const { return _remoteGridCacheCapGb; }
     void setRemoteGridCacheCapGb(int gb);
 
+    // ── Periodograms ─────────────────────────────────────────────────────
+    /// Keep every frequency of a computed periodogram on disk. Off: only the
+    /// windows around the strongest peaks exactly, plus a coarse envelope
+    /// (PeriodogramRecord); Compute brings back full resolution.
+    bool storeFullPeriodograms() const { return _storeFullPeriodograms; }
+    void setStoreFullPeriodograms(bool on);
+
     // ── Updates ──────────────────────────────────────────────────────────
     bool checkUpdatesOnStartup() const { return _checkUpdatesOnStartup; }
     void setCheckUpdatesOnStartup(bool on);
@@ -216,6 +223,7 @@ signals:
     QString _specFetchLastOptions;
 
     bool    _checkUpdatesOnStartup = true;
+    bool    _storeFullPeriodograms = false;
     QString _skippedUpdateVersion;
 
     QString _remoteHostsJson;

@@ -560,6 +560,14 @@ QWidget* SettingsDialog::createLightcurveFetchPage()
 
     outer->addLayout(form);
 
+    _fullPeriodograms = new QCheckBox("Keep full-resolution periodograms on disk");
+    _fullPeriodograms->setToolTip(
+        "Off: a saved periodogram keeps the strongest peaks at full resolution and "
+        "a coarse envelope elsewhere, a few hundred kB instead of up to hundreds "
+        "of MB. Compute brings back full resolution whenever it is needed.");
+    _fullPeriodograms->setChecked(_settings->storeFullPeriodograms());
+    outer->addWidget(_fullPeriodograms);
+
     // ── Test row ────────────────────────────────────────────────────
     auto* testRow = new QHBoxLayout;
     auto* testBtn = new QPushButton("Test setup");
@@ -707,6 +715,8 @@ void SettingsDialog::apply()
 
     if (_updateOnStartup)
         _settings->setCheckUpdatesOnStartup(_updateOnStartup->isChecked());
+    if (_fullPeriodograms)
+        _settings->setStoreFullPeriodograms(_fullPeriodograms->isChecked());
 
     // Numbers & copying
     if (_copyContentCombo) {

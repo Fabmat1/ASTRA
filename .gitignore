@@ -178,6 +178,7 @@ perf.data*
 
 scripts/*
 !scripts/astra_data.py
+!scripts/asd_format.py
 !scripts/plot_curve.py
 !scripts/plot_periodogram.py
 !scripts/reorganize_src.py

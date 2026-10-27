@@ -4,11 +4,8 @@ Read-only Python access to an ASTRA database and its .asd data files.
 
 Used by plot_curve.py and plot_periodogram.py.
 
-The .asd container format (see src/app/DataStore.cpp):
-    4 bytes  magic "ASTR"
-    quint16  format version (big-endian, QDataStream Qt_6_0)
-    quint16  data type      (DataStore::DataType)
-    QByteArray  qCompress()'d payload (quint32 length + 4-byte size + zlib)
+The .asd container (format versions 1 and 2) is read by asd_format.py beside
+this file; see there and src/app/DataStore.cpp.
 
 Payload layouts follow the QDataStream serialisation in
 src/lightcurve/Photometry.cpp (lightcurves), src/rv/PeriodogramRecord.cpp
@@ -19,9 +16,11 @@ import os
 import sqlite3
 import struct
 import sys
-import zlib
 
 import numpy as np
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import asd_format  # noqa: E402
 
 DEFAULT_DB = os.path.expanduser("~/data/ASTRA/astra.db")
 
@@ -96,19 +95,12 @@ class _Reader:
 
 
 def read_asd(filepath, expected_type):
-    """Decompress an .asd file, returning the raw payload bytes."""
-    with open(filepath, "rb") as f:
-        buf = f.read()
-    if buf[:4] != b"ASTR":
-        raise ValueError(f"{filepath}: not an ASTRA data file")
-    version, dtype = struct.unpack(">HH", buf[4:8])
-    if version > 1:
-        raise ValueError(f"{filepath}: unsupported format version {version}")
-    if dtype != expected_type:
-        raise ValueError(f"{filepath}: type {dtype}, expected {expected_type}")
-    blen, = struct.unpack(">I", buf[8:12])
-    compressed = buf[12:12 + blen]
-    return zlib.decompress(compressed[4:])      # skip qCompress size header
+    """Decompress an .asd file (format version 1 or 2), returning the raw
+    payload bytes in the classic layout."""
+    payload, coded = asd_format.read_payload(filepath, expected_type)
+    if coded:
+        raise ValueError(f"{filepath}: coded layout; read it with asd_format")
+    return payload
 
 
 # ====================================================================
@@ -176,18 +168,13 @@ def parse_lc_fit(filepath):
 
 
 def parse_periodogram(filepath):
-    """Parse a PeriodogramData .asd file -> (frequency, power, label)."""
-    r = _Reader(read_asd(filepath, PERIODOGRAM_DATA))
-    version = r.u32()
-    if version != 1:
-        raise ValueError(f"{filepath}: periodogram payload version {version}")
-    f0 = r.f64()
-    df = r.f64()
-    nf = r.u32()
-    r.i32()                                     # nPoints
-    label = r.qstring()
-    power = np.frombuffer(r.buf, dtype=">f8", count=nf, offset=r.off).astype(float)
-    freq = f0 + df * np.arange(nf)
+    """Parse a PeriodogramData .asd file -> (frequency, power, label).
+
+    A summary record (format version 2) comes back on its full grid with the
+    strongest peaks exact and the pool maxima elsewhere; see
+    asd_format.read_periodogram.
+    """
+    freq, power, label, _exact = asd_format.read_periodogram(filepath)
     return freq, power, label
 
 

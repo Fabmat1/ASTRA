@@ -33,6 +33,13 @@ inline void putU32(QByteArray& o, quint32 v)
 }
 inline void putI32(QByteArray& o, qint32 v) { putU32(o, quint32(v)); }
 
+inline void putU64(QByteArray& o, quint64 v)
+{
+    char b[8];
+    qToBigEndian(v, b);
+    o.append(b, 8);
+}
+
 inline void putF64(QByteArray& o, double v)
 {
     quint64 u;
@@ -93,6 +100,13 @@ struct Reader {
         return v;
     }
     qint32 i32() { return qint32(u32()); }
+    quint64 u64()
+    {
+        if (!take(8)) return 0;
+        const quint64 v = qFromBigEndian<quint64>(p);
+        p += 8;
+        return v;
+    }
     double f64()
     {
         if (!take(8)) return 0.0;

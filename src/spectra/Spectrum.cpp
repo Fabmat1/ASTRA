@@ -1,9 +1,15 @@
 #include "spectra/Spectrum.h"
 #include "core/StreamBytes.h"
+#include "app/ArrayCodec.h"
 #include "app/DataStore.h"
 
 #include <algorithm>
+#include <cstring>
+#include <QDateTime>
+#include <QDir>
+#include <QSet>
 #include <QFile>
+#include <QFileInfo>
 #include <QTextStream>
 #include <QRegularExpression>
 #include <QDataStream>
@@ -18,6 +24,103 @@
 static constexpr quint32 kFitExtMagic   = 0xA57EA001;
 // v2 appends lightFractionComp1 after the v1 arrays.
 static constexpr quint32 kFitExtVersion = 2;
+
+/*  Coded layouts (DataStore version 2; arrays through ArrayCodec).
+ *
+ *  Spectrum: u8 layout, wavelengths, fluxes, errors.
+ *
+ *  Fit: u8 layout, u8 flags, u64 base hash when FitHasBase, then
+ *  [wavelengths, rebinned fluxes unless FitHasBase], model fluxes, rebinned
+ *  sigmas, splines, ignore mask, [comp1 unless FitComp1IsModel], comp2,
+ *  telluric transmission, component 1's light fraction.
+ *
+ *  Every fit of a spectrum has the same wavelength grid and rebinned fluxes,
+ *  so those two arrays live once per star directory in a base file named
+ *  after their hash (fitbase_<hash>.asd, layout: u8 layout, wavelengths,
+ *  rebinned fluxes). Identical arrays share one file, so writing needs no
+ *  bookkeeping; pruneFitBases() removes the ones no fit refers to.          */
+static constexpr quint8 kCodedLayout = 1;
+enum : quint8 { FitComp1IsModel = 1, FitHasBase = 2 };
+
+namespace {
+
+bool bitEqual(const std::vector<double>& a, const std::vector<double>& b)
+{
+    return a.size() == b.size() &&
+           (a.empty() || std::memcmp(a.data(), b.data(), a.size() * 8) == 0);
+}
+
+quint64 baseHash(const std::vector<double>& wl, const std::vector<double>& rbf)
+{
+    QByteArray b;
+    StreamBytes::putU32(b, quint32(wl.size()));
+    StreamBytes::putF64s(b, wl);
+    StreamBytes::putU32(b, quint32(rbf.size()));
+    StreamBytes::putF64s(b, rbf);
+    return ArrayCodec::hash64(b.constData(), b.size());
+}
+
+QString basePath(const QString& fitPath, quint64 hash)
+{
+    return QFileInfo(fitPath).absolutePath() + QStringLiteral("/fitbase_") +
+           QStringLiteral("%1").arg(hash, 16, 16, QLatin1Char('0')) + DataStore::FILE_EXT;
+}
+
+bool readBase(const QString& path, std::vector<double>& wl, std::vector<double>& rbf)
+{
+    QByteArray buf;
+    bool coded = false;
+    if (!DataStore::readCompressed(path, DataStore::FitBaseData, buf, &coded) || !coded)
+        return false;
+    StreamBytes::Reader r(buf);
+    if (r.u8() != kCodedLayout) return false;
+    ArrayCodec::getF64s(r, wl);
+    ArrayCodec::getF64s(r, rbf);
+    return r.ok;
+}
+
+/// Makes sure the base file for (wl, rbf) exists beside `fitPath` and holds
+/// exactly these arrays. False when it can't: the fit then keeps them itself.
+bool ensureBase(const QString& fitPath, quint64 hash,
+                const std::vector<double>& wl, const std::vector<double>& rbf)
+{
+    const QString path = basePath(fitPath, hash);
+    if (QFile::exists(path)) {
+        std::vector<double> w, f;
+        if (readBase(path, w, f) && bitEqual(w, wl) && bitEqual(f, rbf)) return true;
+        LOG_WARNING("SpectralFit", QString("base file %1 does not hold this fit's arrays; "
+                                           "the fit keeps its own").arg(path));
+        return false;
+    }
+    QByteArray b;
+    StreamBytes::putU8(b, kCodedLayout);
+    ArrayCodec::putF64s(b, wl);
+    ArrayCodec::putF64s(b, rbf);
+    return DataStore::writeCoded(path, DataStore::FitBaseData, b);
+}
+
+/// The header of a coded fit file without reading the rest: its flags and
+/// base hash. False for anything else.
+bool fitHead(const QString& path, quint8& flags, quint64& hash)
+{
+    QFile f(path);
+    if (!f.open(QIODevice::ReadOnly)) return false;
+    const QByteArray h = f.read(4 + 2 + 2 + 1 + 4 + 1 + 1 + 8);
+    if (h.size() < 15 || !h.startsWith("ASTR")) return false;
+    StreamBytes::Reader r(h);
+    r.p += 4;
+    const quint16 version = quint16(r.u8() << 8 | r.u8());
+    const quint16 type    = quint16(r.u8() << 8 | r.u8());
+    if (version < 2 || type != DataStore::SpectralFitData) return false;
+    if (r.u8() != 0) return false;                  // codec: coded payloads are stored as they are
+    r.u32();                                        // payload length
+    if (r.u8() != kCodedLayout) return false;
+    flags = r.u8();
+    hash  = (flags & FitHasBase) ? r.u64() : 0;
+    return r.ok;
+}
+
+}   // namespace
 
 // SpectralFit implementation
 SpectralFit::SpectralFit()
@@ -171,20 +274,12 @@ bool Spectrum::saveDataToFile(const QString& filepath)
         // Print a stack trace or breakpoint here
         return false;
     }
-    QByteArray buffer;
-    {
-        QDataStream s(&buffer, QIODevice::WriteOnly);
-        s.setVersion(QDataStream::Qt_6_0);
-
-        s << static_cast<quint32>(_wavelengths.size());
-        s << static_cast<quint32>(_fluxes.size());
-        s << static_cast<quint32>(_fluxErrors.size());
-
-        StreamBytes::writeF64s(s, _wavelengths);
-        StreamBytes::writeF64s(s, _fluxes);
-        StreamBytes::writeF64s(s, _fluxErrors);
-    }
-    return DataStore::writeCompressed(filepath, DataStore::SpectrumData, buffer);
+    QByteArray b;
+    StreamBytes::putU8(b, kCodedLayout);
+    ArrayCodec::putF64s(b, _wavelengths);
+    ArrayCodec::putF64s(b, _fluxes);
+    ArrayCodec::putF64s(b, _fluxErrors);
+    return DataStore::writeCoded(filepath, DataStore::SpectrumData, b);
 }
 
 
@@ -203,7 +298,16 @@ bool Spectrum::loadDataFromFile(const QString& filepath)
 
     // Try new compressed format
     QByteArray buf;
-    if (DataStore::readCompressed(filepath, DataStore::SpectrumData, buf)) {
+    bool coded = false;
+    if (DataStore::readCompressed(filepath, DataStore::SpectrumData, buf, &coded)) {
+        if (coded) {
+            StreamBytes::Reader r(buf);
+            if (r.u8() != kCodedLayout) return false;
+            ArrayCodec::getF64s(r, _wavelengths);
+            ArrayCodec::getF64s(r, _fluxes);
+            ArrayCodec::getF64s(r, _fluxErrors);
+            return r.ok;
+        }
         QDataStream s(&buf, QIODevice::ReadOnly);
         s.setVersion(QDataStream::Qt_6_0);
         return parse(s);
@@ -228,40 +332,106 @@ bool SpectralFit::saveDataToFile(const QString &filepath) {
                       .arg(_id));
         return false;
     }
-    QByteArray buffer;
-    {
-        QDataStream s(&buffer, QIODevice::WriteOnly);
-        s.setVersion(QDataStream::Qt_6_0);
 
-        s << static_cast<quint32>(modelWavelengths.size());
-        s << static_cast<quint32>(modelFluxes.size());
-        s << static_cast<quint32>(rebinnedFluxes.size());
-        s << static_cast<quint32>(rebinnedSigmas.size());
-        s << static_cast<quint32>(modelSplines.size());
-        s << static_cast<quint32>(modelIgnore.size());
-
-        StreamBytes::writeF64s(s, modelWavelengths);
-        StreamBytes::writeF64s(s, modelFluxes);
-        StreamBytes::writeF64s(s, rebinnedFluxes);
-        StreamBytes::writeF64s(s, rebinnedSigmas);
-        StreamBytes::writeF64s(s, modelSplines);
-        for (const auto& v : modelIgnore)      s << static_cast<quint8>(v);
-
-        // Extension: per-component models and the fitted telluric transmission.
-        // Appended after the original six arrays so an older reader simply
-        // stops before it.
-        s << kFitExtMagic << kFitExtVersion;
-        auto writeArray = [&s](const std::vector<double>& v) {
-            s << static_cast<quint32>(v.size());
-            StreamBytes::writeF64s(s, v);
-        };
-        writeArray(modelFluxesComp1);
-        writeArray(modelFluxesComp2);
-        writeArray(telluricTransmission);
-        writeArray(lightFractionComp1);
+    quint8 flags = 0;
+    // For a one-component fit comp1 is the combined model, bit for bit.
+    if (!modelFluxesComp1.empty() && bitEqual(modelFluxesComp1, modelFluxes))
+        flags |= FitComp1IsModel;
+    quint64 hash = 0;
+    if (!modelWavelengths.empty()) {
+        hash = baseHash(modelWavelengths, rebinnedFluxes);
+        if (ensureBase(filepath, hash, modelWavelengths, rebinnedFluxes))
+            flags |= FitHasBase;
     }
-    return DataStore::writeCompressed(filepath, DataStore::SpectralFitData,
-                                      buffer);
+
+    QByteArray b;
+    StreamBytes::putU8(b, kCodedLayout);
+    StreamBytes::putU8(b, flags);
+    if (flags & FitHasBase) {
+        StreamBytes::putU64(b, hash);
+    } else {
+        ArrayCodec::putF64s(b, modelWavelengths);
+        ArrayCodec::putF64s(b, rebinnedFluxes);
+    }
+    ArrayCodec::putF64s(b, modelFluxes);
+    ArrayCodec::putF64s(b, rebinnedSigmas);
+    ArrayCodec::putF64s(b, modelSplines);
+    ArrayCodec::putMask(b, modelIgnore);
+    if (!(flags & FitComp1IsModel)) ArrayCodec::putF64s(b, modelFluxesComp1);
+    ArrayCodec::putF64s(b, modelFluxesComp2);
+    ArrayCodec::putF64s(b, telluricTransmission);
+    ArrayCodec::putF64s(b, lightFractionComp1);
+    return DataStore::writeCoded(filepath, DataStore::SpectralFitData, b);
+}
+
+QString SpectralFit::basePathOf(const QString& filepath)
+{
+    quint8 flags = 0;
+    quint64 hash = 0;
+    if (!fitHead(filepath, flags, hash) || !(flags & FitHasBase)) return {};
+    return basePath(filepath, hash);
+}
+
+int SpectralFit::pruneFitBases(const QString& spectraDir, int minAgeSecs)
+{
+    QDir dir(spectraDir);
+    const QStringList bases = dir.entryList({QStringLiteral("fitbase_*") + DataStore::FILE_EXT},
+                                            QDir::Files);
+    if (bases.isEmpty()) return 0;
+
+    QSet<QString> used;
+    for (const QString& f : dir.entryList({QStringLiteral("fit_*") + DataStore::FILE_EXT},
+                                          QDir::Files)) {
+        const QString b = basePathOf(dir.filePath(f));
+        if (!b.isEmpty()) used.insert(QFileInfo(b).fileName());
+    }
+    const QDateTime recent = QDateTime::currentDateTime().addSecs(-minAgeSecs);
+    int removed = 0;
+    for (const QString& b : bases) {
+        if (used.contains(b)) continue;
+        if (minAgeSecs > 0 && QFileInfo(dir.filePath(b)).lastModified() > recent) continue;
+        if (QFile::remove(dir.filePath(b))) ++removed;
+    }
+    return removed;
+}
+
+static bool parseCodedFit(SpectralFit& fit, const QByteArray& buf, const QString& filepath)
+{
+    StreamBytes::Reader r(buf);
+    if (r.u8() != kCodedLayout) {
+        LOG_ERROR_F("SpectralFit", QString("unknown layout in %1").arg(filepath));
+        return false;
+    }
+    const quint8 flags = r.u8();
+    if (flags & FitHasBase) {
+        const quint64 hash = r.u64();
+        const QString base = basePath(filepath, hash);
+        if (!r.ok || !readBase(base, fit.modelWavelengths, fit.rebinnedFluxes) ||
+            baseHash(fit.modelWavelengths, fit.rebinnedFluxes) != hash) {
+            LOG_ERROR_F("SpectralFit", QString("%1 needs the base file %2, which is missing "
+                                               "or damaged").arg(filepath, base));
+            fit.modelWavelengths.clear();
+            fit.rebinnedFluxes.clear();
+            return false;
+        }
+    } else {
+        ArrayCodec::getF64s(r, fit.modelWavelengths);
+        ArrayCodec::getF64s(r, fit.rebinnedFluxes);
+    }
+    ArrayCodec::getF64s(r, fit.modelFluxes);
+    ArrayCodec::getF64s(r, fit.rebinnedSigmas);
+    ArrayCodec::getF64s(r, fit.modelSplines);
+    ArrayCodec::getMask(r, fit.modelIgnore);
+    if (flags & FitComp1IsModel) fit.modelFluxesComp1 = fit.modelFluxes;
+    else ArrayCodec::getF64s(r, fit.modelFluxesComp1);
+    ArrayCodec::getF64s(r, fit.modelFluxesComp2);
+    ArrayCodec::getF64s(r, fit.telluricTransmission);
+    ArrayCodec::getF64s(r, fit.lightFractionComp1);
+    if (!r.ok) {
+        LOG_ERROR_F("SpectralFit", QString("damaged fit file %1").arg(filepath));
+        return false;
+    }
+    return true;
 }
 
 bool SpectralFit::loadDataFromFile(const QString& filepath)
@@ -373,8 +543,10 @@ bool SpectralFit::loadDataFromFile(const QString& filepath)
     };
 
     QByteArray buf;
-    if (DataStore::readCompressed(filepath, DataStore::SpectralFitData, buf)) {
+    bool coded = false;
+    if (DataStore::readCompressed(filepath, DataStore::SpectralFitData, buf, &coded)) {
         LOG_DEBUG_F("SpectralFit", QString("readCompressed succeeded, buffer size=%1 bytes").arg(buf.size()));
+        if (coded) return parseCodedFit(*this, buf, filepath);
 
         // Try new 6-header format first
         QDataStream s(&buf, QIODevice::ReadOnly);

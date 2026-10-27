@@ -8,5 +8,9 @@
  *  hand), prints its tree and what would stop it from running.  Touches no
  *  database.
  *
+ *      astra --migrate-store <root> [--dry-run] ...
+ *
+ *  Rewrites a data store's files in format version 2 (app/StoreMigration.h).
+ *
  *  Returns -1 when argv is not a maintenance invocation.                    */
 int runMaintenanceMode(int argc, char** argv);

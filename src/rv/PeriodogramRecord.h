@@ -18,7 +18,15 @@ public:
     void    setDataFile(const QString& f) { _dataFile = f; }
     QString getDataFile() const { return _dataFile; }
 
-    bool saveDataToFile(const QString& filepath);
+    /// How `result` is written. Summary keeps the windows around the
+    /// strongest peaks exactly and a coarse envelope elsewhere (see
+    /// Periodogram::Result::isSummary); Full keeps every frequency; Classic is
+    /// the uncompressed layout of format version 1 in a version 2 container.
+    /// Default follows the storeFullPeriodograms setting. A periodogram small
+    /// enough to need no envelope is always kept in full.
+    enum class StoreMode { Default, Summary, Full, Classic };
+
+    bool saveDataToFile(const QString& filepath, StoreMode mode = StoreMode::Default);
     bool loadDataFromFile(const QString& filepath);
 
     QString   source;        // empty for a future "combined" record (unused now)

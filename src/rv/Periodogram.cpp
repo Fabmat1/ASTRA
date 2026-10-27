@@ -846,15 +846,65 @@ Result weightedSum(const QList<Result>& parts, const QString& label)
     out.power.fill(0.0, ref.Nf);
 
     double totalW = 0.0;
+    QList<const Result*> used;
     for (const auto& p : parts) {
         if (p.grid.Nf != ref.Nf) continue;
         const double w = static_cast<double>(std::max(1, p.nPoints));
         totalW += w;
         for (int i = 0; i < ref.Nf; ++i) out.power[i] += w * p.power[i];
         out.nPoints += p.nPoints;
+        used.append(&p);
     }
     if (totalW > 0.0) for (auto& v : out.power) v /= totalW;
+
+    // Summaries: the sum is exact only where every part is, and its pool
+    // means are the weighted means when all parts were pooled alike.
+    bool anySummary = false;
+    for (const Result* p : used) anySummary = anySummary || p->isSummary();
+    if (anySummary) {
+        bool alike = true;
+        for (const Result* p : used)
+            alike = alike && p->pool == used.first()->pool &&
+                    p->poolMean.size() == used.first()->poolMean.size() &&
+                    !p->poolMean.isEmpty();
+        out.pool = 1;
+        for (const Result* p : used) out.pool = std::max(out.pool, p->pool);
+        if (alike) {
+            out.poolMean.fill(0.0, used.first()->poolMean.size());
+            for (const Result* p : used) {
+                const double w = static_cast<double>(std::max(1, p->nPoints)) / totalW;
+                for (int j = 0; j < out.poolMean.size(); ++j) out.poolMean[j] += w * p->poolMean[j];
+            }
+        }
+        QVector<char> exact(ref.Nf, 1);
+        for (const Result* p : used) {
+            if (!p->isSummary()) continue;
+            QVector<char> mine(ref.Nf, 0);
+            for (const auto& r : p->exact)
+                for (int i = std::max(0, r.first); i < std::min(ref.Nf, r.second); ++i) mine[i] = 1;
+            for (int i = 0; i < ref.Nf; ++i) exact[i] = char(exact[i] && mine[i]);
+        }
+        for (int i = 0; i < ref.Nf;) {
+            if (!exact[i]) { ++i; continue; }
+            int j = i;
+            while (j < ref.Nf && exact[j]) ++j;
+            out.exact.append({i, j});
+            i = j;
+        }
+    }
     return out;
+}
+
+QVector<double> meanLevelPower(const Result& r)
+{
+    if (!r.isSummary() || r.poolMean.isEmpty() || r.pool <= 0) return r.power;
+    QVector<double> v(r.power.size());
+    for (int i = 0; i < v.size(); ++i)
+        v[i] = r.poolMean.value(i / r.pool, r.power[i]);
+    for (const auto& e : r.exact)
+        for (int i = std::max(0, e.first); i < std::min(int(v.size()), e.second); ++i)
+            v[i] = r.power[i];
+    return v;
 }
 
 Result multiplied(const QList<Result>& parts, const QString& label)
@@ -902,6 +952,10 @@ Result multiplied(const QList<Result>& parts, const QString& label)
         const double inv = 1.0 / nUsed;
         for (auto& v : out.power) v = std::pow(std::max(0.0, v), inv);
     }
+    // A product of summaries is only approximate; it has no pool means or
+    // exact ranges of its own (its grid is a new one).
+    for (const auto& p : parts)
+        if (p.isValid() && p.isSummary()) out.pool = std::max(out.pool, p.pool);
     return out;
 }
 

@@ -52,6 +52,16 @@ public:
     bool saveDataToFile(const QString& filepath);
     bool loadDataFromFile(const QString& filepath);
 
+    /// The shared base file (wavelengths + rebinned fluxes, `fitbase_<hash>.asd`
+    /// beside the fit) that the fit file at `filepath` refers to, or an empty
+    /// string when it holds its arrays itself.
+    static QString basePathOf(const QString& filepath);
+
+    /// Deletes the base files in `spectraDir` that no fit file there refers to
+    /// any more. Bases younger than `minAgeSecs` are kept, since a fit being
+    /// saved writes its base first. Returns how many were deleted.
+    static int pruneFitBases(const QString& spectraDir, int minAgeSecs = 600);
+
     void setFlagged(bool f) { isFlagged = f; }   // ← delete from Spectrum
 
     bool hasData() const {

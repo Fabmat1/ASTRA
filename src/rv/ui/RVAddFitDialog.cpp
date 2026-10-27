@@ -770,12 +770,14 @@ RVMCMC::LCPrior makeLCPriorData(
     const Periodogram::Result& res, bool ellipsoidal)
 {
     RVMCMC::LCPrior out;
-    const size_t N = std::min(res.frequency.size(), res.power.size());
+    // A summary's envelope is the per-pool maximum; the prior wants the level.
+    const QVector<double> power = Periodogram::meanLevelPower(res);
+    const size_t N = std::min(res.frequency.size(), power.size());
     out.periods.reserve(N);
     out.powers.reserve(N);
     for (size_t i = 0; i < N; ++i) {
         const double f = res.frequency[i];
-        const double p = res.power[i];
+        const double p = power[i];
         if (!(f > 0.0) || std::isnan(f) || std::isnan(p)) continue;
         double P = 1.0 / f;
         if (ellipsoidal) P *= 2.0;
@@ -2740,16 +2742,12 @@ void RVAddFitDialog::pgPersist()
 {
     if (!_dbm || !_curve || !_star) return;
     std::vector<std::shared_ptr<PeriodogramRecord>> recs;
+    // The RV x LC product is derived from records stored elsewhere and is
+    // rebuilt from the LC selection, so only the RV periodogram is kept.
     if (_pgRV.isValid()) {
         auto r = std::make_shared<PeriodogramRecord>();
         r->source = "rv";
         r->result = _pgRV;
-        recs.push_back(r);
-    }
-    if (_pgProduct.isValid()) {
-        auto r = std::make_shared<PeriodogramRecord>();
-        r->source = "product";
-        r->result = _pgProduct;
         recs.push_back(r);
     }
     if (!recs.empty())

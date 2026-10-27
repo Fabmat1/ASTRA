@@ -314,4 +314,45 @@ TEST_CASE("copyStarsToProject: a real spectrum loads from the copy")
     dbm.closeDatabase();
 }
 
+TEST_CASE("copyStarsToProject: a fit's shared base file goes along")
+{
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    DatabaseManager dbm;
+    REQUIRE(dbm.openDatabase(tmp.filePath("astra_test.db")));
+    REQUIRE(run("INSERT INTO projects (id, name) VALUES ('P1', 'a'), ('P2', 'b')"));
+    REQUIRE(run("INSERT INTO stars (id, project_id, alias) VALUES ('S1', 'P1', 'HD 1')"));
+
+    auto sp = std::make_shared<Spectrum>();
+    sp->setId("SP1");
+    sp->setData({4000.0, 4000.5, 4001.0}, {1.0, 0.9, 1.1}, {0.01, 0.02, 0.01});
+    for (double scale : {1.0, 1.01}) {
+        auto fit = std::make_shared<SpectralFit>();
+        fit->modelWavelengths = {4000.0, 4000.5, 4001.0};
+        fit->rebinnedFluxes   = {1.0, 0.9, 1.1};
+        fit->modelFluxes      = {1.0 * scale, 0.95 * scale, 1.05 * scale};
+        fit->rebinnedSigmas   = {0.01, 0.02, 0.01};
+        sp->addSpectralFit(fit);
+    }
+    REQUIRE(dbm.saveSpectrum("S1", sp, true));
+
+    const auto r = dbm.copyStarsToProject({"S1"}, "P2");
+    REQUIRE(r.ok);
+    const auto spectra = dbm.loadSpectra(r.newStarIds[0]);
+    REQUIRE(spectra.size() == 1);
+    const auto fits = spectra.front()->getSpectralFits();
+    REQUIRE(fits.size() == 2);
+    for (const auto& f : fits) {
+        CHECK_FALSE(SpectralFit::basePathOf(f->getModelDataFile()).isEmpty());
+        CHECK(SpectralFit::basePathOf(f->getModelDataFile())
+                  .contains(r.newStarIds[0]));
+        REQUIRE(f->loadDataFromFile(f->getModelDataFile()));
+        CHECK(f->rebinnedFluxes == std::vector<double>{1.0, 0.9, 1.1});
+    }
+    const QDir copyDir(QFileInfo(fits.front()->getModelDataFile()).absolutePath());
+    CHECK(copyDir.entryList({"fitbase_*.asd"}, QDir::Files).size() == 1);
+
+    dbm.closeDatabase();
+}
+
 }   // TEST_SUITE("db")

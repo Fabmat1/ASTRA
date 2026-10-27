@@ -492,7 +492,10 @@ void PeriodogramPanel::computeAll(bool force)
         const quint64 dh = Periodogram::hashData(s.t, s.y, s.e);
         const quint64 gh = effectiveGridHash(ghBase, seriesPreWhitenConfig(k));
         const auto tag   = _cachedTags.constFind(k);
+        // A series loaded from a summary record is exact only around its
+        // strongest peaks: computing again restores full resolution.
         const bool ok = _perSeries.contains(k)
+                     && !_perSeries.value(k).isSummary()
                      && tag != _cachedTags.constEnd()
                      && tag->dataHash == dh
                      && tag->gridHash == gh;
@@ -1261,7 +1264,7 @@ struct LoadPayload {
     QHash<QString, Periodogram::Result>              perSource;
     Periodogram::Result                              combined;
     QHash<QString, PeriodogramPanel::DisplayCurve>   display;
-    int loaded = 0, stale = 0;
+    int loaded = 0, stale = 0, summaries = 0;
 };
 // Worker payload for the aggregate-only path (fresh compute / axis toggle).
 struct AggPayload {
@@ -1313,9 +1316,12 @@ void PeriodogramPanel::loadFromCacheAsync()
             _combined  = p.combined;
             _display   = p.display;
             replotAll();
-            const QString msg = p.stale > 0
+            QString msg = p.stale > 0
                 ? QString("Loaded cache · %1 series (%2 stale - recompute to refresh)").arg(p.loaded).arg(p.stale)
                 : QString("Loaded cache · %1 series").arg(p.loaded);
+            if (p.summaries > 0)
+                msg += QString(" · %1 saved as summary: strongest peaks exact, "
+                               "Compute for full resolution").arg(p.summaries);
             _statusLabel->setText(msg);
             emit statusMessage(msg);
         } else {
@@ -1344,6 +1350,7 @@ void PeriodogramPanel::loadFromCacheAsync()
                 p.perSeries.insert(k, res);
                 p.tags.insert(k, qMakePair(r->dataHash, r->gridHash));
                 ++p.loaded;
+                if (res.isSummary()) ++p.summaries;
                 for (const auto& s : series) {
                     if (makeKey(s.source, s.filter) != k) continue;
                     if (Periodogram::hashData(s.t, s.y, s.e) != r->dataHash) ++p.stale;

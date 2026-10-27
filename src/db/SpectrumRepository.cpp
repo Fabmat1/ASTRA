@@ -582,11 +582,17 @@ bool SpectrumRepository::deleteSpectrum(const QString& spectrumId)
         LOG_ERROR("Spectra", QString("Failed to delete spectral fits: %1").arg(query.lastError().text()));
         return false;
     }
+    QSet<QString> fitDirs;
     for (const auto& fit : fits) {
         const QString& modelFile = fit->getModelDataFile();
-        if (!modelFile.isEmpty() && QFile::exists(modelFile))
+        if (!modelFile.isEmpty() && QFile::exists(modelFile)) {
             QFile::remove(modelFile);
+            fitDirs.insert(QFileInfo(modelFile).absolutePath());
+        }
     }
+    // The fits' shared base files that nothing refers to any more.
+    for (const QString& dir : fitDirs)
+        SpectralFit::pruneFitBases(dir);
 
     query.prepare("SELECT data_file FROM spectra WHERE id = :id");
     query.bindValue(":id", spectrumId);
@@ -718,8 +724,10 @@ bool SpectrumRepository::deleteSpectralFit(const QString& fitId)
         return false;
     }
 
-    if (!modelFile.isEmpty() && QFile::exists(modelFile))
+    if (!modelFile.isEmpty() && QFile::exists(modelFile)) {
         QFile::remove(modelFile);
+        SpectralFit::pruneFitBases(QFileInfo(modelFile).absolutePath());
+    }
 
     return true;
 }

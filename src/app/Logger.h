@@ -51,6 +51,9 @@ public:
     
     // Configuration
     void setLogDirectory(const QString& path);
+
+    // Entries below `level` are dropped (default: everything is kept).
+    void setMinLevel(LogLevel level) { _minLogLevel = level; }
     
     // Logging methods
     void log(LogLevel level, const QString& category, const QString& message,

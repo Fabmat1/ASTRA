@@ -119,7 +119,23 @@ struct Result {
     int             nPoints = 0; ///< input series size
     QString         label;
     bool isValid() const { return power.size() == grid.Nf && grid.isValid(); }
+
+    /// Set when the result was read from a summary record, or combined from
+    /// one (see PeriodogramRecord): `power` is exact only inside the index
+    /// ranges `exact` ([first, second), around the strongest peaks) and
+    /// elsewhere the maximum over consecutive pools of `pool` bins, so it
+    /// never shows a peak that is not there. `poolMean` holds each pool's
+    /// mean power when known (empty after a product of several results).
+    int                     pool = 0;
+    QVector<double>         poolMean;
+    QVector<QPair<int,int>> exact;
+    bool isSummary() const { return pool > 0; }
 };
+
+/// The power to use where the level away from the peaks matters (the RV-MCMC
+/// period prior): `power` for a full result; for a summary the pool means,
+/// with the exact ranges spliced in.
+QVector<double> meanLevelPower(const Result& r);
 
 /// Build a frequency grid. Any zero parameter is auto-filled.
 /// Wraps the (later-supplied) `gen_optimal_samples` external.

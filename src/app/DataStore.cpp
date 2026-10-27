@@ -1,4 +1,6 @@
 #include "app/DataStore.h"
+#include "app/ArrayCodec.h"
+
 #include <QDataStream>
 #include <QDebug>
 #include <QDir>
@@ -6,14 +8,24 @@
 #include <QFileInfo>
 #include <QRegularExpression>
 #include <QSaveFile>
+#include <QtEndian>
 #include <cstring>
 
 // ── Compressed I/O ──────────────────────────────────────────────
 
 
 
-bool DataStore::writeCompressed(const QString &filepath, DataType type,
-                                const QByteArray &payload) {
+/*  File layout. Version 1: "ASTR", u16 version, u16 type, then a QByteArray
+ *  (u32 length + bytes) holding qCompress(payload) - zlib, which gains almost
+ *  nothing on the raw doubles these files mostly hold. Version 2 adds a u8
+ *  codec after the type: CodecZstd holds the classic payload zstd-compressed,
+ *  CodecNone a payload whose arrays ArrayCodec has already compressed (the
+ *  coded layout of spectra, fits and their shared bases). Version 1 files stay
+ *  readable; a build that knows only version 1 rejects version 2 cleanly.     */
+
+bool DataStore::write(const QString& filepath, DataType type, Codec codec,
+                      const QByteArray& body)
+{
     if (!ensureDirForFile(filepath)) {
         qWarning() << "DataStore: cannot create directory for" << filepath;
         return false;
@@ -32,11 +44,8 @@ bool DataStore::writeCompressed(const QString &filepath, DataType type,
     out.setVersion(QDataStream::Qt_6_0);
     out << FORMAT_VERSION;
     out << static_cast<quint16>(type);
-
-    QByteArray compressed = (payload.size() < 256)
-                                ? qCompress(payload, 1)
-                                : qCompress(payload, COMPRESSION_LEVEL);
-    out << compressed;
+    out << static_cast<quint8>(codec);
+    out << body;
 
     if (out.status() != QDataStream::Ok) {
         file.cancelWriting(); // original preserved
@@ -51,8 +60,36 @@ bool DataStore::writeCompressed(const QString &filepath, DataType type,
     return true;
 }
 
+bool DataStore::writeCompressed(const QString &filepath, DataType type,
+                                const QByteArray &payload) {
+    const QByteArray body = ArrayCodec::compress(payload);
+    if (body.isEmpty()) {
+        qWarning() << "DataStore: compression failed for" << filepath;
+        return false;
+    }
+    return write(filepath, type, CodecZstd, body);
+}
+
+bool DataStore::writeCoded(const QString& filepath, DataType type, const QByteArray& payload)
+{
+    return write(filepath, type, CodecNone, payload);
+}
+
+bool DataStore::readHeader(const QString& filepath, quint16& version, quint16& type)
+{
+    QFile file(filepath);
+    if (!file.open(QIODevice::ReadOnly))
+        return false;
+    char head[8];
+    if (file.read(head, 8) != 8 || std::memcmp(head, MAGIC, 4) != 0)
+        return false;
+    version = qFromBigEndian<quint16>(head + 4);
+    type    = qFromBigEndian<quint16>(head + 6);
+    return true;
+}
+
 bool DataStore::readCompressed(const QString& filepath, DataType expectedType,
-                               QByteArray& payload)
+                               QByteArray& payload, bool* coded)
 {
     QFile file(filepath);
     if (!file.open(QIODevice::ReadOnly))
@@ -79,13 +116,37 @@ bool DataStore::readCompressed(const QString& filepath, DataType expectedType,
         return false;
     }
 
-    QByteArray compressed;
-    in >> compressed;
+    quint8 codec = CodecZstd;
+    if (version >= 2) in >> codec;
 
-    payload = qUncompress(compressed);
-    if (payload.isEmpty() && compressed.size() > 4) {
-        // qCompress of empty data produces a 4-byte header;
-        // anything larger that decompresses to empty → corruption.
+    QByteArray body;
+    in >> body;
+    if (in.status() != QDataStream::Ok) {
+        qWarning() << "DataStore: truncated file" << filepath;
+        return false;
+    }
+
+    if (coded) *coded = false;
+    if (version < 2) {
+        payload = qUncompress(body);
+        if (payload.isEmpty() && body.size() > 4) {
+            // qCompress of empty data produces a 4-byte header;
+            // anything larger that decompresses to empty → corruption.
+            qWarning() << "DataStore: decompression failed for" << filepath;
+            return false;
+        }
+        return true;
+    }
+    if (codec == CodecNone) {
+        if (!coded) {
+            qWarning() << "DataStore: coded layout not expected in" << filepath;
+            return false;
+        }
+        *coded = true;
+        payload = body;
+        return true;
+    }
+    if (codec != CodecZstd || !ArrayCodec::decompress(body.constData(), body.size(), payload)) {
         qWarning() << "DataStore: decompression failed for" << filepath;
         return false;
     }

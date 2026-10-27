@@ -86,7 +86,7 @@ git -C "${SRC_DIR}" submodule update --init --recursive
 #   they must come from brew (keg-only; their prefixes are added to
 #   CMAKE_PREFIX_PATH below, which CMake forwards to PKG_CONFIG_PATH).
 # cxxopts -> GAEL (its brew formula ships the CMake config GAEL looks for)
-BREW_PKGS=(cmake pkg-config wget gcc libomp eigen boost fftw nlohmann-json tbb cfitsio ccfits gsl curl zlib cxxopts openblas python numpy)
+BREW_PKGS=(cmake pkg-config wget gcc libomp eigen boost fftw nlohmann-json tbb cfitsio ccfits gsl curl zlib zstd cxxopts openblas python numpy)
 # dylibbundler self-contains the non-Qt helper binaries' dylibs (sedfit always;
 # lcurve when bundled) — macdeployqt only handles the main Qt app, not
 # arbitrary executables.

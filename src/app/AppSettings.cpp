@@ -32,6 +32,7 @@ constexpr const char* kCopyName      = "format/latexIncludeName";
 constexpr const char* kCopyRound     = "format/roundOnCopy";
 constexpr const char* kUpdateCheck   = "update/checkOnStartup";
 constexpr const char* kUpdateSkipped = "update/skippedVersion";
+constexpr const char* kFullPeriodograms = "periodogram/storeFull";
 constexpr const char* kStarSearchRadius     = "starsearch/radiusFloorArcsec";
 constexpr const char* kSpecFetchRadius      = "specfetch/radiusArcsec";
 constexpr const char* kSpecFetchParallel    = "specfetch/maxParallel";
@@ -148,6 +149,7 @@ void AppSettings::load()
     _copy.roundOnCopy      = s.value(kCopyRound,    _copy.roundOnCopy).toBool();
     _checkUpdatesOnStartup = s.value(kUpdateCheck,   _checkUpdatesOnStartup).toBool();
     _skippedUpdateVersion  = s.value(kUpdateSkipped, _skippedUpdateVersion ).toString();
+    _storeFullPeriodograms = s.value(kFullPeriodograms, _storeFullPeriodograms).toBool();
     _starSearchRadiusArcsec = std::clamp(
         s.value(kStarSearchRadius, _starSearchRadiusArcsec).toDouble(), 0.0,
         3600.0);
@@ -214,6 +216,7 @@ void AppSettings::save() const
     s.setValue(kCopyRound,    _copy.roundOnCopy);
     s.setValue(kUpdateCheck,   _checkUpdatesOnStartup);
     s.setValue(kUpdateSkipped, _skippedUpdateVersion);
+    s.setValue(kFullPeriodograms, _storeFullPeriodograms);
     s.setValue(kStarSearchRadius,     _starSearchRadiusArcsec);
     s.setValue(kSpecFetchRadius,      _specFetchRadiusArcsec);
     s.setValue(kSpecFetchParallel,    _specFetchMaxParallel);
@@ -461,6 +464,12 @@ void AppSettings::setCheckUpdatesOnStartup(bool on) {
   _checkUpdatesOnStartup = on;
   save();
   emit updateSettingsChanged();
+}
+
+void AppSettings::setStoreFullPeriodograms(bool on) {
+  if (_storeFullPeriodograms == on) return;
+  _storeFullPeriodograms = on;
+  save();
 }
 
 void AppSettings::setSkippedUpdateVersion(const QString &version) {

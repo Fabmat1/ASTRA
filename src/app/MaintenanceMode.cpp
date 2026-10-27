@@ -1,5 +1,6 @@
 #include "app/MaintenanceMode.h"
 
+#include "app/StoreMigration.h"
 #include "massfit/MassFitPlan.h"
 
 #include <QCoreApplication>
@@ -34,5 +35,7 @@ int runMaintenanceMode(int argc, char** argv)
 {
     if (argc >= 2 && std::strcmp(argv[1], "--validate-plan") == 0)
         return validatePlan(argc, argv);
+    if (argc >= 2 && std::strcmp(argv[1], "--migrate-store") == 0)
+        return runStoreMigration(argc, argv);
     return -1;
 }

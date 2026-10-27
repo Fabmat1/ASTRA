@@ -198,7 +198,7 @@ TEST_CASE("Lightcurve files: written and read as before")
     CHECK_FALSE(bad.loadLightcurveFromFile("TESS", cut));
 }
 
-TEST_CASE("Spectrum, fit and LC fit files: the same bytes as the stream wrote")
+TEST_CASE("Spectrum, fit and LC fit files round-trip; LC fits keep the stream's bytes")
 {
     QTemporaryDir tmp;
     REQUIRE(tmp.isValid());
@@ -216,12 +216,12 @@ TEST_CASE("Spectrum, fit and LC fit files: the same bytes as the stream wrote")
     sp.setData(wl, fl, er);
     const QString spFile = tmp.filePath("sp.asd");
     REQUIRE(sp.saveDataToFile(spFile));
-    CHECK(payloadOf(spFile, DataStore::SpectrumData) == streamed([&](QDataStream& s) {
-              s << quint32(wl.size()) << quint32(fl.size()) << quint32(er.size());
-              for (double v : wl) s << v;
-              for (double v : fl) s << v;
-              for (double v : er) s << v;
-          }));
+    // Spectra and fits are written in the coded layout of format version 2
+    // (tests/unit/app/array_codec.cpp); the classic one is read back below.
+    QByteArray coded;
+    bool isCoded = false;
+    REQUIRE(DataStore::readCompressed(spFile, DataStore::SpectrumData, coded, &isCoded));
+    CHECK(isCoded);
     Spectrum spBack;
     REQUIRE(spBack.loadDataFromFile(spFile));
     CHECK(spBack.getWavelengths() == wl);

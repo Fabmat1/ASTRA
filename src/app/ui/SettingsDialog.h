@@ -89,6 +89,7 @@ private:
 
     // Updates page
     QCheckBox*       _updateOnStartup  = nullptr;
+    QCheckBox*       _fullPeriodograms = nullptr;
     QLabel*          _updateStatus     = nullptr;
     QPushButton*     _updateCheckBtn   = nullptr;
     QPushButton*     _updateInstallBtn = nullptr;

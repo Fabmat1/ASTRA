@@ -97,6 +97,7 @@ PACMAN_PKGS=(
   mingw-w64-ucrt-x86_64-gsl             # SEDplusplus (sedfit)
   mingw-w64-ucrt-x86_64-curl            #   "
   mingw-w64-ucrt-x86_64-zlib            #   "
+  mingw-w64-ucrt-x86_64-zstd            # src/app/ArrayCodec.cpp (data files)
   mingw-w64-ucrt-x86_64-python          # GAEL: find_package(Python3 ... REQUIRED)
   mingw-w64-ucrt-x86_64-python-numpy    #   "
 )
@@ -152,7 +153,7 @@ export PKG_CONFIG_PATH="${PC_DIR}"
 
 # Fail here rather than in CMake's generate step, where the message names a
 # target instead of the cause.
-for _mod in cfitsio gsl libcurl zlib nlohmann_json fftw3; do
+for _mod in cfitsio gsl libcurl zlib libzstd nlohmann_json fftw3; do
   _flags="$(pkg-config --cflags --libs "${_mod}" 2>&1)" || {
     echo "::error::pkg-config cannot resolve ${_mod}: ${_flags}"; exit 1; }
   case "${_flags}" in

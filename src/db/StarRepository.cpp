@@ -550,6 +550,18 @@ StarRepository::copyStarsToProject(const std::vector<QString>& starIds,
             DataStore::ensureDirForFile(j.dst);
             QFile::remove(j.dst);
             j.failed = !QFile::copy(j.src, j.dst);
+            // A fit's shared base file goes along, under the same name (the
+            // name is the hash of its contents). Fits of one spectrum share
+            // it, so another job may have copied it already.
+            if (!j.failed && j.table == QLatin1String("spectral_fits")) {
+                const QString base = SpectralFit::basePathOf(j.src);
+                if (!base.isEmpty()) {
+                    const QString to = QFileInfo(j.dst).absolutePath() + '/' +
+                                       QFileInfo(base).fileName();
+                    j.failed = !QFile::exists(to) && !QFile::copy(base, to) &&
+                               !QFile::exists(to);
+                }
+            }
         });
 
         QHash<QString, QSqlQuery> updates;   // one prepared UPDATE per column

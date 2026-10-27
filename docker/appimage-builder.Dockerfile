@@ -36,7 +36,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-pip python3-dev python3-numpy \
       libreadline-dev libncurses-dev libgsl-dev \
       libx11-dev libxext-dev libpng-dev libcurl4-openssl-dev \
-      zlib1g-dev libpcre3-dev libonig-dev fig2dev perl curl \
+      zlib1g-dev libzstd-dev libpcre3-dev libonig-dev fig2dev perl curl \
       pgplot5 libfile-slurp-perl \
     && rm -rf /var/lib/apt/lists/* \
     && git config --global --add safe.directory '*'
