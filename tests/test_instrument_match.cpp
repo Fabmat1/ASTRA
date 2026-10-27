@@ -182,7 +182,7 @@ int main() {
             const char* want;        // the configured instrument it belongs to
             const char* wantMode;
             double      lo, hi, step, reportedR;
-            const char* looseGets;   // what shape alone claimed, "" if right
+            const char* looseGets;   // what shape alone claimed when measured, "" if right
             const char* label;
         };
         static const Case kCases[] = {
@@ -236,12 +236,16 @@ int main() {
             // And the half of the story that makes the restriction worth
             // having: without it, shape alone reached for another instrument
             // and did so confidently enough to be written to the database.
+            // Which one depends on the configured defaults (GIRAFFE LR went
+            // from SOAR to ALFOSC when ALFOSC Gr18's resolution became
+            // wavelength-dependent), so only "another one, confidently" is
+            // checked; looseGets records what was measured.
             if (c.looseGets[0] != '\0') {
                 const InstrumentMatch loose = matchSpectrumToInstrument(
                     instruments, QString::fromLatin1(c.hint), wl);
                 const QString looseName =
                     loose.instrument ? loose.instrument->getName() : QString();
-                check(looseName == QString::fromLatin1(c.looseGets) &&
+                check(!looseName.isEmpty() && looseName != QString::fromLatin1(c.want) &&
                           loose.confidence >= 0.25,
                       std::string(c.label) +
                           ": shape alone still misreads it as '" +
