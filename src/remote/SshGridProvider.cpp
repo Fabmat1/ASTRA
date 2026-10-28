@@ -71,10 +71,20 @@ bool SshGridProvider::exists(const std::string& virtualPath)
     const QString local = _cache->localPathFor(host, remote);
     if (_cache->has(local)) return true;
 
+    /*  false tells GAEL the file definitely does not exist, and it then
+     *  interpolates across that grid point as a hole. A failed probe (no
+     *  channel to the host, lost channel, unreadable directory on the host)
+     *  must throw instead, or an outage would silently change the models.  */
     auto* chan = RemoteHostRegistry::instance().channelByName(host);
-    if (!chan) return false;
+    if (!chan)
+        throw std::runtime_error(QStringLiteral("grid file on %1: no connection to that host")
+                                     .arg(host).toStdString());
     QString err;
-    return chan->stat(remote, &err) >= 0;
+    if (chan->stat(remote, &err) >= 0) return true;
+    if (!err.isEmpty())
+        throw std::runtime_error(QStringLiteral("grid file on %1: %2")
+                                     .arg(host, err).toStdString());
+    return false;
 }
 
 QStringList SshGridProvider::fetchBatch(const QString& hostName,

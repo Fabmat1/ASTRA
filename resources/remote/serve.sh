@@ -24,10 +24,16 @@ while read -r cmd a b; do
     PING)
       printf 'PONG\n' ;;
     STAT)
+      # 404 only when the file is definitely absent: its directory can be
+      # read and the file is not in it. A dead mount or an unreadable
+      # directory is 503, so the caller does not take an outage for a hole
+      # in a model grid.
       if [ -f "$a" ]; then
         printf 'SIZE %s\n' "$(wc -c < "$a")"
-      else
+      elif [ -r "${a%/*}" ] && ls "${a%/*}" >/dev/null 2>&1; then
         printf 'ERR 404 %s\n' "$a"
+      else
+        printf 'ERR 503 %s\n' "$a"
       fi ;;
     GET)
       if [ -f "$a" ] && cp "$a" "$tmp" 2>/dev/null; then

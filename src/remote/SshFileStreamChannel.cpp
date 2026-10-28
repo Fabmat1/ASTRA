@@ -206,7 +206,12 @@ qint64 SshFileStreamChannel::stat(const QString& remotePath, QString* err)
         return -1;
     }
     if (line.startsWith("SIZE ")) return line.mid(5).toLongLong();
-    return -1;   // ERR 404: err deliberately left empty
+    // ERR 404 leaves err empty: the file definitely does not exist. Anything
+    // else (ERR 503, a garbled reply) means the answer is not known.
+    if (!line.startsWith("ERR 404") && err)
+        *err = QStringLiteral("cannot tell whether %1 exists: %2")
+                   .arg(remotePath, QString::fromUtf8(line.trimmed()));
+    return -1;
 }
 
 bool SshFileStreamChannel::getFiles(const QVector<FileRequest>& files,
