@@ -14,6 +14,10 @@ namespace UiStyle {
 // painted four pixels wide - a solid block in a line edit. Nothing to correct on
 // X11 or macOS, where the platform theme reports a plain 1.
 //
+// And spin boxes: Qt 6.12's stylesheet style ignores the themes' spin box
+// padding and draws the text against the left border, so the editor gets that
+// indent as a text margin instead, only while Qt leaves it flush.
+//
 // Install once on the QApplication before any window is shown.
 void installMetricFixes(QApplication* app);
 

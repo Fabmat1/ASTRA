@@ -44,6 +44,9 @@ constexpr double kAbundanceUnset = -30.0;
 // element's solar value instead of being taken literally.
 constexpr double kAbundanceFloor = -20.0;
 
+// The start values take any number; this only keeps the spin boxes finite.
+constexpr double kAnyStartValue = 1e9;
+
 } // namespace
 
 // =====================================================================
@@ -158,20 +161,24 @@ void FitComponentsWidget::rebuildComponentRows()
         astra::blockWheelScrollingRecursive(selector);   // its grid combos
         form->addRow("Grid:", selector);
 
+        // Any start value: grids differ in their extent (some reach far
+        // beyond the usual He or log g range), and the backend works out
+        // what the chosen grid covers.
         struct P { const char* label; double* val; bool* freeze;
-                   double min, max; int decimals; double step; };
+                   int decimals; double step; };
         std::vector<P> params = {
-            { "Teff [K]",     &c.teff,  &c.freezeTeff,  1000.0, 200000.0, 0, 100.0 },
-            { "log g",        &c.logg,  &c.freezeLogg,     0.0,      7.0, 2,  0.05 },
-            { "vsini [km/s]", &c.vsini, &c.freezeVsini,    0.0,   2000.0, 2,  1.0  },
-            { "log(He/H)",    &c.he,    &c.freezeHe,      -5.0,      2.0, 3,  0.05 },
-            { "ζ",            &c.zeta,  &c.freezeZeta,    -5.0,     50.0, 3,  0.1  },
-            { "ξ",            &c.xi,    &c.freezeXi,      -5.0,     50.0, 3,  0.1  },
-            { "[M/H]",        &c.z,     &c.freezeZ,       -5.0,      5.0, 3,  0.05 },
+            { "Teff [K]",     &c.teff,  &c.freezeTeff,  0, 100.0 },
+            { "log g",        &c.logg,  &c.freezeLogg,  2,  0.05 },
+            { "vsini [km/s]", &c.vsini, &c.freezeVsini, 2,  1.0  },
+            { "log(He/H)",    &c.he,    &c.freezeHe,    3,  0.05 },
+            { "ζ",            &c.zeta,  &c.freezeZeta,  3,  0.1  },
+            { "ξ",            &c.xi,    &c.freezeXi,    3,  0.1  },
+            { "[M/H]",        &c.z,     &c.freezeZ,     3,  0.05 },
         };
 
         for (auto& p : params) {
-            auto* spin = makeDoubleSpin(p.min, p.max, p.decimals, *p.val, p.step);
+            auto* spin = makeDoubleSpin(-kAnyStartValue, kAnyStartValue,
+                                        p.decimals, *p.val, p.step);
             auto* cb   = new QCheckBox("freeze");
             cb->setChecked(*p.freeze);
             auto* row2 = new QHBoxLayout;

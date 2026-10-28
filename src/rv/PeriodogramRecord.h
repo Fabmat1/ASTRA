@@ -22,8 +22,10 @@ public:
     /// strongest peaks exactly and a coarse envelope elsewhere (see
     /// Periodogram::Result::isSummary); Full keeps every frequency; Classic is
     /// the uncompressed layout of format version 1 in a version 2 container.
-    /// Default follows the storeFullPeriodograms setting. A periodogram small
-    /// enough to need no envelope is always kept in full.
+    /// Default is Full: disk use is bounded by the periodogram store
+    /// (PeriodogramRepository::enforceStore) instead. Summaries written by
+    /// earlier versions still load, and a summary is never re-saved as Full.
+    /// A periodogram small enough to need no envelope is always kept in full.
     enum class StoreMode { Default, Summary, Full, Classic };
 
     bool saveDataToFile(const QString& filepath, StoreMode mode = StoreMode::Default);

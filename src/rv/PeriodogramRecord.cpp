@@ -1,5 +1,4 @@
 #include "rv/PeriodogramRecord.h"
-#include "app/AppSettings.h"
 #include "app/ArrayCodec.h"
 #include "app/DataStore.h"
 #include "core/StreamBytes.h"
@@ -156,7 +155,7 @@ bool PeriodogramRecord::saveDataToFile(const QString& filepath, StoreMode mode)
         return DataStore::writeCompressed(filepath, DataStore::PeriodogramData, buf);
     }
     if (mode == StoreMode::Default)
-        mode = AppSettings().storeFullPeriodograms() ? StoreMode::Full : StoreMode::Summary;
+        mode = StoreMode::Full;
 
     const int pool = std::max(1, (result.grid.Nf + kTargetPools - 1) / kTargetPools);
     // A summary can't be widened back to full resolution.

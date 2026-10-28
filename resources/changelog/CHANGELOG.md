@@ -24,9 +24,9 @@
 ## v0.9.3 (2026-10-27)
 
 ### Changed
-- **Your data takes about a third of the disk space.** Spectra, fits and their models are stored in a new, smaller format. Nothing is rounded: every value reads back exactly as it was saved.
-- Saved periodograms keep their strongest peaks at full resolution and a coarse outline elsewhere, a few hundred kB instead of up to hundreds of MB. Peak periods and their errors are unchanged. **Compute** brings back full resolution, and Settings / Lightcurve Fetching can keep every periodogram in full instead.
-- Existing data can be converted with `ASTRA --migrate-store <data folder>`, with ASTRA closed. Every file is checked against the original before it is replaced; `--dry-run` shows the savings first.
+- **Better Data Storage** Data on disk now only takes about 30% of the space that it used to, at no loss to quality!
+- We now only keep the 100 most-looked at periodograms and the 25 most recently created. You can always recompute non cached periodograms. They take up a lot of disk space! (like, a LOT)
+- Existing data can be converted with `ASTRA --migrate-store <data folder>`, with ASTRA closed.
 
 ### Important
 - Older ASTRA versions cannot open data saved by this one. If several computers share one data folder, or ASTRA also runs on a remote host, update every copy of ASTRA before using this version.

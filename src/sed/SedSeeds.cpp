@@ -61,16 +61,23 @@ SedComponentSeed makeComponentSeed(double teff, double eTeff,
 
 QVector<SedComponentSeed> seedsFromSpectralFit(const SpectralFit& f)
 {
+    const auto withLimits = [&f](SedComponentSeed s, const QString& suffix) {
+        s.teff.limit = f.limitOf("teff" + suffix);
+        s.logg.limit = f.limitOf("logg" + suffix);
+        s.he.limit   = f.limitOf("he" + suffix);
+        return s;
+    };
     QVector<SedComponentSeed> out;
-    out.append(makeComponentSeed(
+    out.append(withLimits(makeComponentSeed(
         f.teff, statError(f.teffError, f.teffErrorUp, f.teffErrorDown),
         f.logg, statError(f.loggError, f.loggErrorUp, f.loggErrorDown),
         f.he,   statError(f.heError, f.heErrorUp, f.heErrorDown),
-        f.metallicity));
+        f.metallicity), QString()));
     if (f.hasSecondComponent())
-        out.append(makeComponentSeed(f.teff2, f.teff2Error, f.logg2,
-                                     f.logg2Error, f.he2, f.he2Error,
-                                     f.metallicity2));
+        out.append(withLimits(makeComponentSeed(f.teff2, f.teff2Error, f.logg2,
+                                                f.logg2Error, f.he2, f.he2Error,
+                                                f.metallicity2),
+                              QStringLiteral("2")));
     return out;
 }
 

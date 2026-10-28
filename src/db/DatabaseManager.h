@@ -11,6 +11,7 @@
 #include "db/MassFitRepository.h"
 #include "db/RemoteFitRepository.h"
 #include "db/RemoteBatchRepository.h"
+#include "db/PeriodogramRepository.h"
 #include "db/SpectrumRepository.h"
 #include "core/Instrument.h"
 #include "core/InstrumentMode.h"
@@ -146,14 +147,28 @@ public:
     void restoreDefaultInstruments();
     bool deleteRVFit(const QString& fitId);
     bool deleteRadialVelocityPoint(const QString& pointId);
-    bool saveStarPeriodograms(const QString& starId, const std::vector<std::shared_ptr<PeriodogramRecord>>& records);
+    /// Saves and then applies the periodogram store limits from the settings
+    /// (see enforcePeriodogramStore). `settingsJson`: PeriodogramSettings.
+    bool saveStarPeriodograms(const QString& starId, const std::vector<std::shared_ptr<PeriodogramRecord>>& records,
+                              const QString& settingsJson = {});
     std::vector<std::shared_ptr<PeriodogramRecord>> loadStarPeriodograms(const QString& starId);
     std::shared_ptr<PeriodogramRecord> loadPeriodogram(const QString& starId, const QString& source, const QString& filter = {});
     bool deleteStarPeriodograms(const QString& starId);
     bool saveCurveRVPeriodograms(const QString& starId, const QString& curveId,
-        const std::vector<std::shared_ptr<PeriodogramRecord>>& records);
+        const std::vector<std::shared_ptr<PeriodogramRecord>>& records,
+        const QString& settingsJson = {});
     std::vector<std::shared_ptr<PeriodogramRecord>> loadCurveRVPeriodograms(const QString& curveId);
     bool deleteCurveRVPeriodograms(const QString& curveId);
+
+    // Periodogram store (PeriodogramRepository): kind is
+    // PeriodogramStoreEntry::kLightcurve (owner = star) or kRV (owner = RV curve).
+    std::optional<PeriodogramStoreEntry> periodogramStoreEntry(const QString& kind,
+                                                               const QString& ownerId);
+    void markPeriodogramViewed(const QString& kind, const QString& ownerId);
+    /// Deletes the data of periodograms outside the store; returns how many.
+    int  enforcePeriodogramStore(int keepViewed, int keepRecent);
+    /// The same with the limits from AppSettings.
+    int  enforcePeriodogramStore();
     bool    saveStarPhotPeaks(const QString& starId, const QString& peaksJson);
     QString loadStarPhotPeaks(const QString& starId);
     bool   saveStarTessCrowdsap(const QString& starId, double value);
@@ -212,6 +227,7 @@ public:
     bool createTables();
     bool createIndexes();
     bool runMigrations();
+    void prefetchDatabaseFile();
 
     QString _integrityError;
 

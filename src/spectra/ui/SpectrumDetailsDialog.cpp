@@ -108,7 +108,25 @@ void addQ(std::vector<Row>& rows, const QString& label, double value,
 }
 
 void addText(std::vector<Row>& rows, const QString& label, const QString& text,
-             const QString& copy = QString())
+             const QString& copy = QString());
+
+// A fitted parameter that may have been left at a grid edge (`limit` from
+// SpectralFit::limitOf): then it reads as the limit it is, without an error.
+void addFitted(std::vector<Row>& rows, int limit, const QString& label,
+               double value, double error, int precision,
+               const QString& unit = QString(), double errUp = AsymErr::unset,
+               double errDown = AsymErr::unset, const QString& name = QString())
+{
+    if (limit != 0 && std::isfinite(value)) {
+        addText(rows, label, QuantityFormat::limitText(value, precision, limit, unit),
+                QuantityFormat::number(value, precision));
+        return;
+    }
+    addQ(rows, label, value, error, precision, unit, errUp, errDown, name);
+}
+
+void addText(std::vector<Row>& rows, const QString& label, const QString& text,
+             const QString& copy)
 {
     if (text.isEmpty()) return;
     Row r;
@@ -637,19 +655,20 @@ void SpectrumDetailsDialog::buildFit(const std::shared_ptr<SpectralFit>& fit)
     // ── Component 1 ──
     {
         std::vector<Row> rows;
-        addQ(rows, "T_eff", fit->teff, fit->teffError, 0, "K",
-             fit->teffErrorUp, fit->teffErrorDown, "T_{\\rm eff}");
-        addQ(rows, "log g", fit->logg, fit->loggError, 3, "dex",
-             fit->loggErrorUp, fit->loggErrorDown, "\\log g");
-        addQ(rows, "log(He/H)", fit->he, fit->heError, 3, QString(),
-             fit->heErrorUp, fit->heErrorDown, "\\log(He/H)");
+        addFitted(rows, fit->limitOf("teff"), "T_eff", fit->teff, fit->teffError, 0, "K",
+                  fit->teffErrorUp, fit->teffErrorDown, "T_{\\rm eff}");
+        addFitted(rows, fit->limitOf("logg"), "log g", fit->logg, fit->loggError, 3, "dex",
+                  fit->loggErrorUp, fit->loggErrorDown, "\\log g");
+        addFitted(rows, fit->limitOf("he"), "log(He/H)", fit->he, fit->heError, 3, QString(),
+                  fit->heErrorUp, fit->heErrorDown, "\\log(He/H)");
         addQ(rows, "v sin i", fit->vsini, fit->vsiniError, 2, "km/s",
              fit->vsiniErrorUp, fit->vsiniErrorDown, "v\\sin i");
         addQ(rows, "RV", fit->radialVelocity, fit->radialVelocityError, 2,
              "km/s", fit->radialVelocityErrorUp, fit->radialVelocityErrorDown,
              "v_{\\rm rad}");
-        addQ(rows, "[M/H]", fit->metallicity, fit->metallicityError, 3, "dex",
-             fit->metallicityErrorUp, fit->metallicityErrorDown, "[M/H]");
+        addFitted(rows, fit->limitOf("z"), "[M/H]", fit->metallicity,
+                  fit->metallicityError, 3, "dex", fit->metallicityErrorUp,
+                  fit->metallicityErrorDown, "[M/H]");
         addQ(rows, "ζ (macroturbulence)", fit->macroturbulence,
              fit->macroturbulenceError, 2, "km/s", fit->macroturbulenceErrorUp,
              fit->macroturbulenceErrorDown, "\\zeta");
@@ -663,15 +682,16 @@ void SpectrumDetailsDialog::buildFit(const std::shared_ptr<SpectralFit>& fit)
     // ── Component 2 ──
     if (fit->nComponents >= 2) {
         std::vector<Row> rows;
-        addQ(rows, "T_eff", fit->teff2, fit->teff2Error, 0, "K",
-             AsymErr::unset, AsymErr::unset, "T_{\\rm eff,2}");
-        addQ(rows, "log g", fit->logg2, fit->logg2Error, 3, "dex",
-             AsymErr::unset, AsymErr::unset, "\\log g_2");
-        addQ(rows, "log(He/H)", fit->he2, fit->he2Error, 3);
+        addFitted(rows, fit->limitOf("teff2"), "T_eff", fit->teff2, fit->teff2Error, 0, "K",
+                  AsymErr::unset, AsymErr::unset, "T_{\\rm eff,2}");
+        addFitted(rows, fit->limitOf("logg2"), "log g", fit->logg2, fit->logg2Error, 3, "dex",
+                  AsymErr::unset, AsymErr::unset, "\\log g_2");
+        addFitted(rows, fit->limitOf("he2"), "log(He/H)", fit->he2, fit->he2Error, 3);
         addQ(rows, "v sin i", fit->vsini2, fit->vsini2Error, 2, "km/s");
         addQ(rows, "RV", fit->radialVelocity2, fit->radialVelocity2Error, 2,
              "km/s", AsymErr::unset, AsymErr::unset, "v_{\\rm rad,2}");
-        addQ(rows, "[M/H]", fit->metallicity2, fit->metallicity2Error, 3, "dex");
+        addFitted(rows, fit->limitOf("z2"), "[M/H]", fit->metallicity2,
+                  fit->metallicity2Error, 3, "dex");
         addQ(rows, "ζ (macroturbulence)", fit->macroturbulence2,
              fit->macroturbulence2Error, 2, "km/s");
         addQ(rows, "ξ (microturbulence)", fit->microturbulence2,

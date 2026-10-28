@@ -17,6 +17,7 @@
 #include "app/ui/UiIcons.h"
 #include "ui/widgets/GridSelectorWidget.h"
 #include "ui/widgets/QuantityLabel.h"
+#include "app/ui/panels/PanelUtils.h"
 
 #include <QApplication>
 #include <QCheckBox>
@@ -66,6 +67,8 @@
 #include "fitting/AdoptedFit.h"
 #include "sed/SedSeeds.h"
 #include <algorithm>
+#include <limits>
+#include <tuple>
 #include <cmath>
 
 // ═══════════════════════════════════════════════════════════════════
@@ -138,13 +141,41 @@ struct SeedRow {
 
 // A spectroscopic value becomes a frozen row with its window, clamped to
 // what the SED grids can hold; without one the fallback is used as given.
+// How far the selected SED grid reaches along Teff, log g and He, which is
+// all a spectroscopic window is kept within. NaN where the grid is not a known
+// one: users bring grids of any extent, so nothing is assumed then.
+struct GridExtent {
+    static constexpr double kUnknown = std::numeric_limits<double>::quiet_NaN();
+    double teffLo = kUnknown, teffHi = kUnknown;
+    double loggLo = kUnknown, loggHi = kUnknown;
+    double heLo   = kUnknown, heHi   = kUnknown;
+};
+
+GridExtent gridExtent(const GridSelectorWidget *selector) {
+    GridExtent e;
+    const auto g = selector ? selector->selectedGrid() : std::nullopt;
+    if (!g) return e;
+    if (g->teffMax > g->teffMin) { e.teffLo = g->teffMin; e.teffHi = g->teffMax; }
+    if (g->loggMax > g->loggMin) { e.loggLo = g->loggMin; e.loggHi = g->loggMax; }
+    if (g->heMax > g->heMin)     { e.heLo   = g->heMin;   e.heHi   = g->heMax; }
+    return e;
+}
+
+// A companion nothing is known about starts as a generic cool star, free
+// over the whole SED grid when its extent is known, else within a guess.
+SeedRow fallbackRow(double value, double guessLo, double guessHi,
+                    double gridLo, double gridHi) {
+    const bool grid = std::isfinite(gridLo) && std::isfinite(gridHi);
+    return {grid ? std::clamp(value, gridLo, gridHi) : value, true,
+            grid ? gridLo : guessLo, grid ? gridHi : guessHi, true};
+}
+
 SeedRow seedRow(const astra::sed::SedParamSeed &seed, double lo, double hi,
                 const SeedRow &fallback) {
     if (!seed.isSet())
         return fallback;
-    const double hw = std::isfinite(seed.halfWidth) ? seed.halfWidth : 0.0;
-    return {seed.value, true, std::max(seed.value - hw, lo),
-            std::min(seed.value + hw, hi), true};
+    const auto [min, max] = seed.window(lo, hi);
+    return {seed.value, true, min, max, true};
 }
 
 } // namespace
@@ -1109,20 +1140,32 @@ void SEDFitDialog::populateParamsFromFit() {
         // its seed's half widths, hence the zeros above).
         auto win = astra::sed::makeComponentSeed(teff, eTeff, logg, eLogg,
                                                  he, eHe, z);
+        if (ci == 0) {
+            // The star's values: limits where its fit hit a grid edge.
+            if (Star::isSet(_star->getTeff())) win.teff.limit = _star->getTeffLimit();
+            if (Star::isSet(_star->getLogg())) win.logg.limit = _star->getLoggLimit();
+            if (Star::isSet(_star->getHe()))   win.he.limit   = _star->getHeLimit();
+        }
         if (ci > 0 && ci < specSeeds.size()) {
             const auto &sd = specSeeds[ci];
             if (sd.teff.isSet()) win.teff = sd.teff;
             if (sd.logg.isSet()) win.logg = sd.logg;
             if (sd.he.isSet())   win.he   = sd.he;
         }
-        const double totTeff = win.teff.isSet() ? win.teff.halfWidth : 0.0;
-        const double totLogg = win.logg.isSet() ? win.logg.halfWidth : 0.0;
         // He at exactly 0 counts as unset, but a free He row still needs
         // its window.
-        const double totHe =
-            win.he.isSet() ? win.he.halfWidth
-                           : heError(std::clamp(teff, 20000.0, 50000.0), he,
-                                     eHe, he > -1.0);
+        if (!win.he.isSet()) {
+            win.he.value     = he;
+            win.he.halfWidth = heError(std::clamp(teff, 20000.0, 50000.0), he,
+                                       eHe, he > -1.0);
+        }
+        if (!win.teff.isSet()) { win.teff.value = teff; win.teff.halfWidth = 0.0; }
+        if (!win.logg.isSet()) { win.logg.value = logg; win.logg.halfWidth = 0.0; }
+        const GridExtent ext =
+            gridExtent(ci == 0 ? _gridSelector1 : _gridSelector2);
+        const auto [heMin, heMax]     = win.he.window(ext.heLo, ext.heHi);
+        const auto [loggMin, loggMax] = win.logg.window(ext.loggLo, ext.loggHi);
+        const auto [teffMin, teffMax] = win.teff.window(ext.teffLo, ext.teffHi);
 
         bool frozenTeff = (c.teffStatus != SEDParamStatus::Fitted);
         bool frozenLogg = (c.loggStatus != SEDParamStatus::Fitted);
@@ -1132,12 +1175,9 @@ void SEDFitDialog::populateParamsFromFit() {
 
         addRow(prefix + "xi", c.microturbulence, frozenXi, 0, 0, false);
         addRow(prefix + "z", z, frozenZ, 0, 0, false);
-        addRow(prefix + "HE", he, frozenHe, std::max(he - totHe, -5.0),
-               std::min(he + totHe, 0.0), !frozenHe);
-        addRow(prefix + "logg", logg, frozenLogg, std::max(logg - totLogg, 0.0),
-               std::min(logg + totLogg, 9.5), !frozenLogg);
-        addRow(prefix + "teff", teff, frozenTeff,
-               std::max(teff - totTeff, 3000.0), teff + totTeff, !frozenTeff);
+        addRow(prefix + "HE", he, frozenHe, heMin, heMax, !frozenHe);
+        addRow(prefix + "logg", logg, frozenLogg, loggMin, loggMax, !frozenLogg);
+        addRow(prefix + "teff", teff, frozenTeff, teffMin, teffMax, !frozenTeff);
     }
 
     double r55 = model->r55 > 0 ? model->r55 : 3.02;
@@ -1202,7 +1242,7 @@ QWidget* SEDFitDialog::createAdvancedOptions()
     aLay->addWidget(_deriveLoggC2Cb, r, 0);
     aLay->addWidget(new QLabel("Z_c2:"), r, 1);
     _zC2Spin = new QDoubleSpinBox;
-    _zC2Spin->setRange(-5, 5);
+    _zC2Spin->setRange(-1e9, 1e9);   // any value: grids differ
     _zC2Spin->setDecimals(2);
     _zC2Spin->setValue(-0.9);
     aLay->addWidget(_zC2Spin, r++, 2);
@@ -1307,6 +1347,10 @@ void SEDFitDialog::initDefaultFitParams() {
     // the fit's own seed already holds both.
     auto win = astra::sed::makeComponentSeed(teff, eTeff, logg, eLogg, he,
                                              eHe, z);
+    // The star's own values are limits where its fit hit a grid edge.
+    win.teff.limit = _star->getTeffLimit();
+    win.logg.limit = _star->getLoggLimit();
+    win.he.limit   = _star->getHeLimit();
     if (fitSeed.teff.isSet()) win.teff = fitSeed.teff;
     if (fitSeed.logg.isSet()) win.logg = fitSeed.logg;
     if (fitSeed.he.isSet())   win.he   = fitSeed.he;
@@ -1322,26 +1366,21 @@ void SEDFitDialog::initDefaultFitParams() {
     // When we have a real fitted/spectroscopic value, freeze it within its
     // uncertainty range. Otherwise (only grid midpoints or plain defaults)
     // leave Teff/logg/He free with no min/max so the fit can explore them.
+    const GridExtent ext = gridExtent(_gridSelector1);
     if (teffFromValue && win.teff.isSet()) {
-        const double tot = win.teff.halfWidth;
-        teffMin    = std::max(teff - tot, 3000.0);
-        teffMax    = teff + tot;
+        std::tie(teffMin, teffMax) = win.teff.window(ext.teffLo, ext.teffHi);
         teffRange  = true;
         teffFrozen = true;
     }
 
     if (loggFromValue && win.logg.isSet()) {
-        const double tot = win.logg.halfWidth;
-        loggMin    = std::max(logg - tot, 0.0);
-        loggMax    = std::min(logg + tot, 9.5);
+        std::tie(loggMin, loggMax) = win.logg.window(ext.loggLo, ext.loggHi);
         loggRange  = true;
         loggFrozen = true;
     }
 
     if (heFromValue && win.he.isSet()) {
-        const double tot = win.he.halfWidth;
-        heMin      = std::max(he - tot, -5.0);
-        heMax      = std::min(he + tot, 0.0);
+        std::tie(heMin, heMax) = win.he.window(ext.heLo, ext.heHi);
         heRange    = true;
         heFrozen   = true;
     }
@@ -1463,15 +1502,16 @@ void SEDFitDialog::onComp2Toggled(bool enabled)
         };
         const double z2 =
             std::isfinite(seed2.metallicity) ? seed2.metallicity : 0.0;
+        const GridExtent ext2 = gridExtent(_gridSelector2);
         std::vector<C2Param> c2 = {
             {"c2_xi",   0.0,   true,   0,      0,      false},
             {"c2_z",    z2,    true,   0,      0,      false},
-            row("c2_HE",   seedRow(seed2.he,   -5.0,   0.0,
-                                   {-1.0, true, -5.0, 0.0, true})),
-            row("c2_logg", seedRow(seed2.logg,  0.0,   9.5,
-                                   {4.5, true, 3.0, 5.5, true})),
-            row("c2_teff", seedRow(seed2.teff, 3000.0, 1e6,
-                                   {6000, true, 3500, 10000, true})),
+            row("c2_HE",   seedRow(seed2.he,   ext2.heLo,   ext2.heHi,
+                                   fallbackRow(-1.0, -5.0, 0.0, ext2.heLo, ext2.heHi))),
+            row("c2_logg", seedRow(seed2.logg, ext2.loggLo, ext2.loggHi,
+                                   fallbackRow(4.5, 3.0, 5.5, ext2.loggLo, ext2.loggHi))),
+            row("c2_teff", seedRow(seed2.teff, ext2.teffLo, ext2.teffHi,
+                                   fallbackRow(6000, 3500, 10000, ext2.teffLo, ext2.teffHi))),
         };
 
         for (const auto& p : c2) {
@@ -2091,7 +2131,10 @@ void SEDFitDialog::updateParameterDisplay()
     QColor c1col   = comp1Color();
     QColor c2col   = comp2Color();
     QColor distcol = isDarkTheme() ? QColor("#A3D977") : QColor("#27AE60");
-    QColor valCol  = palette().color(QPalette::WindowText);
+    // The theme's text colour, not the palette's: until the dialog is shown
+    // its palette is the desktop's, which may be a dark scheme under a light
+    // ASTRA theme (light grey values on a light background).
+    QColor valCol  = PanelUtils::themeFg();
     QColor lblCol  = isDarkTheme() ? QColor(150, 150, 155) : QColor(110, 110, 115);
 
     QGridLayout* grid = nullptr;

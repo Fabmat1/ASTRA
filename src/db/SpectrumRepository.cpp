@@ -67,6 +67,28 @@ static QString abundancesColumnValue(const SpectralFit& fit)
     return QString::fromUtf8(QJsonDocument(root).toJson(QJsonDocument::Compact));
 }
 
+// ── Grid-edge limits ⇄ param_limits ─────────────────────────────────────────
+// {"teff":1,"he":-1}: only the parameters at an edge; NULL when there are none.
+static QVariant limitsColumnValue(const SpectralFit& fit)
+{
+    QJsonObject o;
+    for (auto it = fit.limits.constBegin(); it != fit.limits.constEnd(); ++it)
+        if (it.value() != 0) o.insert(it.key(), it.value());
+    if (o.isEmpty()) return QVariant();
+    return QString::fromUtf8(QJsonDocument(o).toJson(QJsonDocument::Compact));
+}
+
+static QMap<QString, int> limitsFromColumn(const QString& json)
+{
+    QMap<QString, int> limits;
+    if (json.isEmpty()) return limits;
+    const QJsonObject o = QJsonDocument::fromJson(json.toUtf8()).object();
+    for (auto it = o.constBegin(); it != o.constEnd(); ++it)
+        if (const int side = it.value().toInt(0); side != 0)
+            limits.insert(it.key(), side < 0 ? -1 : 1);
+    return limits;
+}
+
 bool SpectrumRepository::saveSpectrum(const QString            &starId,
                                     std::shared_ptr<Spectrum> spectrum,
                                     bool cascadeFits) {
@@ -214,7 +236,7 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
             macroturbulence2, macroturbulence2_error,
             microturbulence2, microturbulence2_error,
             sur_ratio, sur_ratio_error,
-            abundances_json,
+            abundances_json, param_limits,
             has_telluric, telluric_airmass, telluric_airmass_error,
             telluric_pwv, telluric_pwv_error, telluric_barycorr,
             n_data_points, n_free_parameters, converged, iterations,
@@ -241,7 +263,7 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
             :macroturbulence2, :macroturbulence2_error,
             :microturbulence2, :microturbulence2_error,
             :sur_ratio, :sur_ratio_error,
-            :abundances_json,
+            :abundances_json, :param_limits,
             :has_telluric, :telluric_airmass, :telluric_airmass_error,
             :telluric_pwv, :telluric_pwv_error, :telluric_barycorr,
             :n_data_points, :n_free_parameters, :converged, :iterations,
@@ -314,6 +336,7 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
     const QString abundancesJson = abundancesColumnValue(*fit);
     query.bindValue(":abundances_json",
                     abundancesJson.isEmpty() ? QVariant() : QVariant(abundancesJson));
+    query.bindValue(":param_limits", limitsColumnValue(*fit));
 
     query.bindValue(":has_telluric", fit->hasTelluric ? 1 : 0);
     query.bindValue(":telluric_airmass", SqlValue::fromDouble(fit->telluricAirmass));
@@ -499,6 +522,7 @@ std::vector<std::shared_ptr<SpectralFit>> SpectrumRepository::loadSpectralFits(c
             fit->abundances  = abundancesFromJson(root.value("c1").toObject());
             fit->abundances2 = abundancesFromJson(root.value("c2").toObject());
         }
+        fit->limits = limitsFromColumn(query.value("param_limits").toString());
 
         fit->hasTelluric          = query.value("has_telluric").toInt() == 1;
         fit->telluricAirmass      = SqlValue::toDoubleOrNaN(query, "telluric_airmass");

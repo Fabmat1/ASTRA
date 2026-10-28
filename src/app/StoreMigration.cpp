@@ -32,8 +32,8 @@ struct Options {
     bool    dryRun = false;
     bool    live   = false;
     int     threads = 0;
-    QString periodograms = QStringLiteral("summary");
-    PeriodogramRecord::StoreMode pgMode = PeriodogramRecord::StoreMode::Summary;
+    QString periodograms = QStringLiteral("full");
+    PeriodogramRecord::StoreMode pgMode = PeriodogramRecord::StoreMode::Full;
 };
 
 /// What happened to the files of one kind.
@@ -277,7 +277,7 @@ int usage()
 {
     std::fprintf(stderr,
                  "usage: --migrate-store <root> [--dry-run] [--threads N]\n"
-                 "                       [--periodograms summary|full|keep]\n"
+                 "                       [--periodograms full|summary|keep]\n"
                  "                       [--i-know-this-is-live]\n");
     return 2;
 }

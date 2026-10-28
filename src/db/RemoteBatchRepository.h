@@ -95,6 +95,9 @@ public:
     std::vector<RemoteBatchItemRow> loadItemsForBatch(const QString& batchId);
     /// Items that were harvested but whose result nobody collected yet.
     std::vector<RemoteBatchItemRow> loadUnconsumedItems();
+    /// Clears the stored job of every settled item (its result is stored or
+    /// never coming); returns how many rows were cleared.
+    int dropSettledJobs();
 
     /// The most recent measured fits on a host, newest first.
     std::vector<RemoteFitUsage> loadUsage(const QString& hostId, int limit);

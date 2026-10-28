@@ -544,6 +544,11 @@ bool applyFitParamsToStar(const std::shared_ptr<Star>& star,
     setIf(fit->he, &Star::setHe, &Star::setEHe, fit->heError,
           &Star::setEHeUp, fit->heErrorUp,
           &Star::setEHeDown, fit->heErrorDown);
+    if (changed) {
+        star->setTeffLimit(fit->limitOf(QStringLiteral("teff")));
+        star->setLoggLimit(fit->limitOf(QStringLiteral("logg")));
+        star->setHeLimit(fit->limitOf(QStringLiteral("he")));
+    }
 
     return changed;
 }
@@ -659,6 +664,29 @@ PersistOutcome persistFitResult(const std::shared_ptr<Star>& star,
                 fit->surRatio      = P(comp2->surRatio).value;
                 fit->surRatioError = P(comp2->surRatio).error;
             }
+        }
+
+        // A grid axis left at its edge is a limit, not a measurement: the
+        // true value lies beyond the grid, and the backend's error there is
+        // meaningless (GAEL freezes such a parameter and refits, leaving 0, or
+        // its covariance blows up against the edge). Only the grid axes:
+        // v sin i or ζ resting on zero says nothing about a grid.
+        const auto edge = [&](const QString& name, const QVector<FittedParameter>& v,
+                              double& error) {
+            const int side = P(v).boundarySide;
+            if (side == 0) return;
+            fit->limits.insert(name, side < 0 ? -1 : 1);
+            error = 0.0;
+        };
+        edge(QStringLiteral("teff"), comp.teff, fit->teffError);
+        edge(QStringLiteral("logg"), comp.logg, fit->loggError);
+        edge(QStringLiteral("he"),   comp.he,   fit->heError);
+        edge(QStringLiteral("z"),    comp.z,    fit->metallicityError);
+        if (comp2) {
+            edge(QStringLiteral("teff2"), comp2->teff, fit->teff2Error);
+            edge(QStringLiteral("logg2"), comp2->logg, fit->logg2Error);
+            edge(QStringLiteral("he2"),   comp2->he,   fit->he2Error);
+            edge(QStringLiteral("z2"),    comp2->z,    fit->metallicity2Error);
         }
 
         // An element switched out of the model (value ≥ 10) is not a

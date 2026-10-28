@@ -32,7 +32,8 @@ constexpr const char* kCopyName      = "format/latexIncludeName";
 constexpr const char* kCopyRound     = "format/roundOnCopy";
 constexpr const char* kUpdateCheck   = "update/checkOnStartup";
 constexpr const char* kUpdateSkipped = "update/skippedVersion";
-constexpr const char* kFullPeriodograms = "periodogram/storeFull";
+constexpr const char* kPgStoreViewed = "periodogram/storeMostViewed";
+constexpr const char* kPgStoreRecent = "periodogram/storeMostRecent";
 constexpr const char* kStarSearchRadius     = "starsearch/radiusFloorArcsec";
 constexpr const char* kSpecFetchRadius      = "specfetch/radiusArcsec";
 constexpr const char* kSpecFetchParallel    = "specfetch/maxParallel";
@@ -149,7 +150,8 @@ void AppSettings::load()
     _copy.roundOnCopy      = s.value(kCopyRound,    _copy.roundOnCopy).toBool();
     _checkUpdatesOnStartup = s.value(kUpdateCheck,   _checkUpdatesOnStartup).toBool();
     _skippedUpdateVersion  = s.value(kUpdateSkipped, _skippedUpdateVersion ).toString();
-    _storeFullPeriodograms = s.value(kFullPeriodograms, _storeFullPeriodograms).toBool();
+    _pgStoreViewed = std::clamp(s.value(kPgStoreViewed, _pgStoreViewed).toInt(), 0, 100000);
+    _pgStoreRecent = std::clamp(s.value(kPgStoreRecent, _pgStoreRecent).toInt(), 1, 100000);
     _starSearchRadiusArcsec = std::clamp(
         s.value(kStarSearchRadius, _starSearchRadiusArcsec).toDouble(), 0.0,
         3600.0);
@@ -216,7 +218,8 @@ void AppSettings::save() const
     s.setValue(kCopyRound,    _copy.roundOnCopy);
     s.setValue(kUpdateCheck,   _checkUpdatesOnStartup);
     s.setValue(kUpdateSkipped, _skippedUpdateVersion);
-    s.setValue(kFullPeriodograms, _storeFullPeriodograms);
+    s.setValue(kPgStoreViewed, _pgStoreViewed);
+    s.setValue(kPgStoreRecent, _pgStoreRecent);
     s.setValue(kStarSearchRadius,     _starSearchRadiusArcsec);
     s.setValue(kSpecFetchRadius,      _specFetchRadiusArcsec);
     s.setValue(kSpecFetchParallel,    _specFetchMaxParallel);
@@ -466,9 +469,12 @@ void AppSettings::setCheckUpdatesOnStartup(bool on) {
   emit updateSettingsChanged();
 }
 
-void AppSettings::setStoreFullPeriodograms(bool on) {
-  if (_storeFullPeriodograms == on) return;
-  _storeFullPeriodograms = on;
+void AppSettings::setPeriodogramStoreLimits(int mostViewed, int mostRecent) {
+  mostViewed = std::clamp(mostViewed, 0, 100000);
+  mostRecent = std::clamp(mostRecent, 1, 100000);
+  if (_pgStoreViewed == mostViewed && _pgStoreRecent == mostRecent) return;
+  _pgStoreViewed = mostViewed;
+  _pgStoreRecent = mostRecent;
   save();
 }
 

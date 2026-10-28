@@ -2,8 +2,11 @@
 
 #include "app/Logger.h"
 
+#include <QAbstractSpinBox>
 #include <QApplication>
+#include <QEvent>
 #include <QGuiApplication>
+#include <QLineEdit>
 #include <QProxyStyle>
 #include <QScreen>
 #include <QStyle>
@@ -12,6 +15,31 @@
 #include <algorithm>
 
 namespace {
+
+/// The left padding every theme gives spin boxes (`padding: 4px 8px`).
+constexpr int kSpinBoxTextIndent = 8;
+
+/// Qt 6.12's stylesheet style ignores a spin box's padding and puts its
+/// editor flush against the border. The editor's position tells: Qt places
+/// it, so this checks again whenever it moves, and stays out of the way of a
+/// Qt that honours the padding again.
+class SpinBoxIndent : public QObject
+{
+public:
+    using QObject::QObject;
+
+    bool eventFilter(QObject* watched, QEvent* event) override
+    {
+        if (event->type() == QEvent::Move || event->type() == QEvent::Resize) {
+            if (auto* edit = qobject_cast<QLineEdit*>(watched)) {
+                const int left = edit->x() < kSpinBoxTextIndent / 2 ? kSpinBoxTextIndent : 0;
+                if (edit->textMargins().left() != left)
+                    edit->setTextMargins(left, 0, 0, 0);
+            }
+        }
+        return false;
+    }
+};
 
 /// Wraps whatever style the platform picked and rewrites the metrics listed in
 /// UiStyle.h. Everything else is forwarded untouched, so the native look is
@@ -34,6 +62,18 @@ public:
         // the ratio is divided out, not the value clamped.
         const qreal dpr = widget ? widget->devicePixelRatio() : screenScale();
         return std::max(1, qRound(base / std::max(dpr, qreal(1.0))));
+    }
+
+    void polish(QWidget* widget) override
+    {
+        QProxyStyle::polish(widget);
+        if (!qobject_cast<QAbstractSpinBox*>(widget)) return;
+        static SpinBoxIndent* const indent = new SpinBoxIndent(qApp);
+        // A spin box's editor is its only QLineEdit child.
+        if (auto* edit = widget->findChild<QLineEdit*>(QString(), Qt::FindDirectChildrenOnly)) {
+            edit->removeEventFilter(indent);   // polished again on a theme change
+            edit->installEventFilter(indent);
+        }
     }
 
 private:

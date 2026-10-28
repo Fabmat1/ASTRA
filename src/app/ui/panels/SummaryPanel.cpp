@@ -501,25 +501,32 @@ std::vector<PropRow> spectralComponentRows(const SpectralFit &f, int which) {
     const QString sub = QString::number(which);
     const auto add = [&](const QString &label, double v, double e, int prec,
                          const QString &unit, double up, double down,
-                         const QString &name, bool zeroIsUnset) {
+                         const QString &name, bool zeroIsUnset,
+                         const QString &limitKey = QString()) {
         if (!std::isfinite(v) || (zeroIsUnset && v == 0.0))
             return;
+        // Left at a grid edge: a limit, with no error to show.
+        if (const int side = limitKey.isEmpty() ? 0 : f.limitOf(limitKey + (c2 ? "2" : ""))) {
+            const QString n = QuantityFormat::number(v, prec);
+            rows.push_back({label, QuantityFormat::limitText(v, prec, side, unit), n});
+            return;
+        }
         rows.push_back(qRow(label, v, e, prec, unit, up, down, name));
     };
     const double u = AsymErr::unset;
     add("T_eff", c2 ? f.teff2 : f.teff, c2 ? f.teff2Error : f.teffError, 0,
         "K", c2 ? u : f.teffErrorUp, c2 ? u : f.teffErrorDown,
-        "T_{eff," + sub + "}", true);
+        "T_{eff," + sub + "}", true, "teff");
     add("log g", c2 ? f.logg2 : f.logg, c2 ? f.logg2Error : f.loggError, 3,
         "dex", c2 ? u : f.loggErrorUp, c2 ? u : f.loggErrorDown,
-        "\\log g_" + sub, true);
+        "\\log g_" + sub, true, "logg");
     add("log(He/H)", c2 ? f.he2 : f.he, c2 ? f.he2Error : f.heError, 3, "",
         c2 ? u : f.heErrorUp, c2 ? u : f.heErrorDown,
-        "\\log(He/H)_" + sub, true);
+        "\\log(He/H)_" + sub, true, "he");
     add("[M/H]", c2 ? f.metallicity2 : f.metallicity,
         c2 ? f.metallicity2Error : f.metallicityError, 2, "dex",
         c2 ? u : f.metallicityErrorUp, c2 ? u : f.metallicityErrorDown,
-        "[M/H]_" + sub, false);
+        "[M/H]_" + sub, false, "z");
     add("v sin i", c2 ? f.vsini2 : f.vsini, c2 ? f.vsini2Error : f.vsiniError,
         1, "km/s", c2 ? u : f.vsiniErrorUp, c2 ? u : f.vsiniErrorDown,
         "v\\sin i_" + sub, false);
@@ -1188,22 +1195,35 @@ QWidget *SummaryPanel::createPropertiesSection() {
     }
 
     // ── Atmospheric ────────────────────────────────────────────────────────
+    // A value the fit left at a grid edge shows as the limit it is.
+    auto addAtmos = [&](std::vector<PropRow> &rows, const QString &l, double v,
+                        double err, int prec, const QString &unit, double up,
+                        double down, int limit) {
+        if (!has(v))
+            return;
+        if (limit != 0) {
+            rows.push_back({l, QuantityFormat::limitText(v, prec, limit, unit),
+                            QuantityFormat::number(v, prec)});
+            return;
+        }
+        addV(rows, l, v, err, prec, unit, up, down);
+    };
     std::vector<PropRow> atmosC, atmosF;
-    addV(atmosC, "T_eff", S.getTeff(), S.getETeff(), 0, "K",
-         S.getETeffUp(), S.getETeffDown());
-    addV(atmosC, "log g", S.getLogg(), S.getELogg(), 2, "dex",
-         S.getELoggUp(), S.getELoggDown());
-    addV(atmosC, "log(He/H)", S.getHe(), S.getEHe(), 2, "",
-         S.getEHeUp(), S.getEHeDown());
+    addAtmos(atmosC, "T_eff", S.getTeff(), S.getETeff(), 0, "K",
+             S.getETeffUp(), S.getETeffDown(), S.getTeffLimit());
+    addAtmos(atmosC, "log g", S.getLogg(), S.getELogg(), 2, "dex",
+             S.getELoggUp(), S.getELoggDown(), S.getLoggLimit());
+    addAtmos(atmosC, "log(He/H)", S.getHe(), S.getEHe(), 2, "",
+             S.getEHeUp(), S.getEHeDown(), S.getHeLimit());
 
     if (!S.getSpecClass().isEmpty())
         atmosF.push_back({"Spec. Class", S.getSpecClass(), S.getSpecClass()});
-    addV(atmosF, "T_eff", S.getTeff(), S.getETeff(), 0, "K",
-         S.getETeffUp(), S.getETeffDown());
-    addV(atmosF, "log g", S.getLogg(), S.getELogg(), 3, "dex",
-         S.getELoggUp(), S.getELoggDown());
-    addV(atmosF, "log(He/H)", S.getHe(), S.getEHe(), 3, "",
-         S.getEHeUp(), S.getEHeDown());
+    addAtmos(atmosF, "T_eff", S.getTeff(), S.getETeff(), 0, "K",
+             S.getETeffUp(), S.getETeffDown(), S.getTeffLimit());
+    addAtmos(atmosF, "log g", S.getLogg(), S.getELogg(), 3, "dex",
+             S.getELoggUp(), S.getELoggDown(), S.getLoggLimit());
+    addAtmos(atmosF, "log(He/H)", S.getHe(), S.getEHe(), 3, "",
+             S.getEHeUp(), S.getEHeDown(), S.getHeLimit());
     if (S.getNSpectra() > 0)
         atmosF.push_back({"N Spectra", QString::number(S.getNSpectra()),
                           QString::number(S.getNSpectra())});

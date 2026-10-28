@@ -7,6 +7,7 @@
 #include <QMessageBox>
 #include "app/ui/UiIcons.h"
 #include "app/ui/UiStyle.h"
+#include "ui/widgets/PlotRightDragZoom.h"
 #include "app/ui/WindowSizing.h"
 #include "fitting/FitTypes.h"
 #include "fitting/FitBackendRegistry.h"
@@ -77,6 +78,7 @@ int main(int argc, char *argv[])
     // Wraps the platform style; the theme stylesheet is applied later and
     // layers on top of it.
     UiStyle::installMetricFixes(&app);
+    PlotRightDragZoom::install(&app);
 
     QFontDatabase::addApplicationFont(":/fonts/FiraCode-Regular.ttf");
     QFontDatabase::addApplicationFont(":/fonts/FiraCode-Medium.ttf");

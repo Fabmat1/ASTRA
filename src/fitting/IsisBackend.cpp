@@ -4,6 +4,7 @@
 #include "fitting/IsisEnvironment.h"
 
 #include <algorithm>
+#include <cmath>
 #include <QByteArray>
 #include <QDir>
 #include <QFile>
@@ -343,8 +344,19 @@ bool parseIsisOutputs(SpectralFitResult& out,
                         if (r.values.contains(colMin) &&
                             r.values.contains(colMax))
                         {
-                            fp.error = 0.5 *
-                                (r.values[colMax] - r.values[colMin]);
+                            const double lo = r.values[colMin];
+                            const double hi = r.values[colMax];
+                            fp.error = 0.5 * (hi - lo);
+                            // ISIS's confidence search stops at the
+                            // parameter's limit, the grid edge: a side that
+                            // collapsed onto the value means the fit sits
+                            // there.
+                            const double tol = 1e-9 * (std::abs(fp.value) + 1.0);
+                            if (!fp.frozen && hi - lo > tol) {
+                                if (std::abs(fp.value - lo) <= tol)      fp.boundarySide = -1;
+                                else if (std::abs(hi - fp.value) <= tol) fp.boundarySide = +1;
+                                fp.atBoundary = fp.boundarySide != 0;
+                            }
                         }
                     }
                     dest.append(fp);

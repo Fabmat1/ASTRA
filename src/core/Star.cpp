@@ -32,6 +32,7 @@ std::vector<double> captureSummaryValues(const Star& s) {
         s.getTeff(), s.getETeff(), s.getLogg(), s.getELogg(), s.getHe(), s.getEHe(),
         s.getETeffUp(), s.getETeffDown(), s.getELoggUp(), s.getELoggDown(),
         s.getEHeUp(), s.getEHeDown(),
+        double(s.getTeffLimit()), double(s.getLoggLimit()), double(s.getHeLimit()),
         double(s.getHasTess()), double(s.getHasGaia()), double(s.getHasZtf()),
         double(s.getHasAtlas()), double(s.getHasBlackgem()),
         s.getSedMass1(), s.getSedEMass1(), s.getSedRadius1(), s.getSedERadius1(),
@@ -238,6 +239,9 @@ const std::unordered_map<QString, Star::FieldGetter>& Star::getFieldMap()
         { "he",           [](const Star* s) { return dblVar(s->getHe()); } },
         { "e_he",         [](const Star* s) { return dblVar(s->getEHe()); } },
         { "e_he_up",      [](const Star* s) { return dblVar(s->getEHeUp()); } },
+        { "teff_limit",   [](const Star* s) { return QVariant(s->getTeffLimit()); } },
+        { "logg_limit",   [](const Star* s) { return QVariant(s->getLoggLimit()); } },
+        { "he_limit",     [](const Star* s) { return QVariant(s->getHeLimit()); } },
         { "e_he_down",    [](const Star* s) { return dblVar(s->getEHeDown()); } },
         { "n_spectra",    [](const Star* s) { return intVar(s->getNSpectra()); } },
         { "n_fit_spectra",[](const Star* s) { return intVar(s->getNFitSpectra()); } },
@@ -598,6 +602,7 @@ void Star::recomputeSpectraMetrics()
     _e_teff_up = AsymErr::unset; _e_teff_down = AsymErr::unset;
     _e_logg_up = AsymErr::unset; _e_logg_down = AsymErr::unset;
     _e_he_up   = AsymErr::unset; _e_he_down   = AsymErr::unset;
+    _teff_limit = 0; _logg_limit = 0; _he_limit = 0;
     clearAbundances();
 
     for (const auto& spec : _spectra) {
@@ -620,6 +625,9 @@ void Star::recomputeSpectraMetrics()
             _e_logg_down = fit->loggErrorDown;
             _e_he_up     = fit->heErrorUp;
             _e_he_down   = fit->heErrorDown;
+            _teff_limit  = fit->limitOf(QStringLiteral("teff"));
+            _logg_limit  = fit->limitOf(QStringLiteral("logg"));
+            _he_limit    = fit->limitOf(QStringLiteral("he"));
 
             // The star reports component 1, so only that component's
             // abundances land on it. Elements the grid resolves but ASTRA has

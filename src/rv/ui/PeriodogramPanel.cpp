@@ -327,6 +327,26 @@ void PeriodogramPanel::setBackend(Periodogram::Backend b, int fpwBins)
     _fpwBins = std::max(2, fpwBins);
 }
 
+PeriodogramSettings PeriodogramPanel::currentSettings() const
+{
+    PeriodogramSettings s;
+    s.minPeriod  = _minPeriod;
+    s.maxPeriod  = _maxPeriod;
+    s.nSamples   = _nSamples;
+    s.oversample = _oversample;
+    s.backend    = _backend;
+    s.fpwBins    = _fpwBins;
+    s.minPoints  = _minPts;
+    s.preWhiten  = _pwConfig;
+    // Series toggled earlier but not shown now (say, all points flagged) keep
+    // their toggles too.
+    QStringList keys = _userEnabled.keys() + _pwEnabled.keys();
+    for (const auto& ser : _series) keys << makeKey(ser.source, ser.filter);
+    for (const QString& k : keys)
+        s.series.insert(k, {isSeriesEnabled(k), isSeriesPreWhitened(k)});
+    return s;
+}
+
 bool PeriodogramPanel::suggestAutoBounds(double& minP, double& maxP) const
 {
     // Resolve bounds per source (aggregating its filters), then take the most
@@ -1265,6 +1285,7 @@ struct LoadPayload {
     Periodogram::Result                              combined;
     QHash<QString, PeriodogramPanel::DisplayCurve>   display;
     int loaded = 0, stale = 0, summaries = 0;
+    bool evicted = false;   ///< removed from the periodogram store
 };
 // Worker payload for the aggregate-only path (fresh compute / axis toggle).
 struct AggPayload {
@@ -1298,6 +1319,9 @@ void PeriodogramPanel::loadFromCacheAsync()
     const QHash<QString,bool> userEnabled = _userEnabled;
     const QStringList         sourceOrder = _sourceOrder;
     const XAxis               mode        = _xAxis;
+    // One view per panel, however often its series are set again.
+    const bool                countView   = !_viewCounted;
+    _viewCounted = true;
 
     auto* watcher = new QFutureWatcher<LoadPayload>(this);
     connect(watcher, &QFutureWatcher<LoadPayload>::finished, this,
@@ -1325,7 +1349,11 @@ void PeriodogramPanel::loadFromCacheAsync()
             _statusLabel->setText(msg);
             emit statusMessage(msg);
         } else {
-            const QString msg = QString("%1 series - click Compute").arg(_series.size());
+            const QString msg = p.evicted
+                ? QString("%1 series · removed from the periodogram store to save "
+                          "disk space; its settings are restored - click Compute")
+                      .arg(_series.size())
+                : QString("%1 series - click Compute").arg(_series.size());
             _statusLabel->setText(msg);
             emit statusMessage(msg);
         }
@@ -1334,10 +1362,16 @@ void PeriodogramPanel::loadFromCacheAsync()
     });
 
     watcher->setFuture(QtConcurrent::run(
-        [dbm, starId, series, minPts, userEnabled, sourceOrder, mode]() -> LoadPayload {
+        [dbm, starId, series, minPts, userEnabled, sourceOrder, mode, countView]() -> LoadPayload {
             LoadPayload p;
+            const QString kind = PeriodogramStoreEntry::kLightcurve;
+            const auto entry = dbm->periodogramStoreEntry(kind, starId);
+            if (entry && countView) dbm->markPeriodogramViewed(kind, starId);
             auto records = dbm->loadStarPeriodograms(starId);
-            if (records.empty()) return p;
+            if (records.empty()) {
+                p.evicted = entry && !entry->hasData;
+                return p;
+            }
 
             QSet<QString> known;
             for (const auto& s : series) known.insert(makeKey(s.source, s.filter));
@@ -1425,6 +1459,7 @@ void PeriodogramPanel::persistToCacheAsync()
     const int                                bins      = _fpwBins;
     const Periodogram::PreWhitenConfig       pwCfg     = _pwConfig;
     const QHash<QString,bool>                pwEnabled = _pwEnabled;
+    const QString                            settings  = currentSettings().toJson();
 
     auto cfgFor = [pwCfg, pwEnabled](const QString& key) {
         Periodogram::PreWhitenConfig c = pwCfg;
@@ -1444,7 +1479,8 @@ void PeriodogramPanel::persistToCacheAsync()
                                     cfgFor(k)) });
     }
 
-    auto future = QtConcurrent::run([dbm, starId, series, perSeries, backend, bins, cfgFor]() {
+    auto future = QtConcurrent::run([dbm, starId, series, perSeries, backend, bins, cfgFor,
+                                     settings]() {
         std::vector<std::shared_ptr<PeriodogramRecord>> recs;
         recs.reserve(perSeries.size());
         for (const auto& s : series) {
@@ -1461,7 +1497,7 @@ void PeriodogramPanel::persistToCacheAsync()
             r->computedAt = QDateTime::currentDateTime();
             recs.push_back(r);
         }
-        const bool ok = dbm->saveStarPeriodograms(starId, recs);
+        const bool ok = dbm->saveStarPeriodograms(starId, recs, settings);
         LOG_INFO("Periodogram",
             QString("Persisted %1 records for star %2 (ok=%3)")
                 .arg(recs.size()).arg(starId).arg(ok));

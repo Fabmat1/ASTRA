@@ -149,6 +149,9 @@ private slots:
     double peakErrorFor(double period) const;
 
     void pushSeriesIntoPanel();
+    /// Puts the settings the star's periodogram was last computed with back
+    /// into the controls, from the periodogram store (kept after eviction).
+    void restorePeriodogramSettings();
     void rebuildPeaksTable();
     void refreshPeakSourceCombo();
     double currentSelectedPeriod() const;

@@ -560,13 +560,20 @@ QWidget* SettingsDialog::createLightcurveFetchPage()
 
     outer->addLayout(form);
 
-    _fullPeriodograms = new QCheckBox("Keep full-resolution periodograms on disk");
-    _fullPeriodograms->setToolTip(
-        "Off: a saved periodogram keeps the strongest peaks at full resolution and "
-        "a coarse envelope elsewhere, a few hundred kB instead of up to hundreds "
-        "of MB. Compute brings back full resolution whenever it is needed.");
-    _fullPeriodograms->setChecked(_settings->storeFullPeriodograms());
-    outer->addWidget(_fullPeriodograms);
+    // ── Periodogram store ───────────────────────────────────────────
+    auto* pgBox  = new QGroupBox("Periodogram store");
+    auto* pgForm = new QFormLayout(pgBox);
+    _pgStoreViewedSpin = new QSpinBox;
+    _pgStoreViewedSpin->setRange(0, 100000);
+    _pgStoreViewedSpin->setValue(_settings->periodogramStoreMostViewed());
+    _pgStoreViewedSpin->setToolTip("Periodograms kept because they are opened most often.");
+    pgForm->addRow("Keep most viewed:", _pgStoreViewedSpin);
+    _pgStoreRecentSpin = new QSpinBox;
+    _pgStoreRecentSpin->setRange(1, 100000);
+    _pgStoreRecentSpin->setValue(_settings->periodogramStoreMostRecent());
+    _pgStoreRecentSpin->setToolTip("Periodograms kept because they were computed most recently.");
+    pgForm->addRow("Keep most recent:", _pgStoreRecentSpin);
+    outer->addWidget(pgBox);
 
     // ── Test row ────────────────────────────────────────────────────
     auto* testRow = new QHBoxLayout;
@@ -715,8 +722,9 @@ void SettingsDialog::apply()
 
     if (_updateOnStartup)
         _settings->setCheckUpdatesOnStartup(_updateOnStartup->isChecked());
-    if (_fullPeriodograms)
-        _settings->setStoreFullPeriodograms(_fullPeriodograms->isChecked());
+    if (_pgStoreViewedSpin && _pgStoreRecentSpin)
+        _settings->setPeriodogramStoreLimits(_pgStoreViewedSpin->value(),
+                                             _pgStoreRecentSpin->value());
 
     // Numbers & copying
     if (_copyContentCombo) {

@@ -413,6 +413,7 @@ set(ASTRA_CORE_SOURCES
     # rv
     src/rv/Periodogram.cpp
     src/rv/PeriodogramRecord.cpp
+    src/rv/PeriodogramSettings.cpp
     src/rv/RVDetectability.cpp
     src/rv/RVErrorMC.cpp
     src/rv/RVMCMC.cpp
@@ -571,6 +572,7 @@ set(ASTRA_CORE_HEADERS
     # rv
     src/rv/Periodogram.h
     src/rv/PeriodogramRecord.h
+    src/rv/PeriodogramSettings.h
     src/rv/RVDetectability.h
     src/rv/RVErrorMC.h
     src/rv/RVMCMC.h
@@ -733,6 +735,7 @@ set(ASTRA_UI_SOURCES
     src/ui/widgets/FlowLayout.cpp
     src/ui/widgets/GridSelectorWidget.cpp
     src/ui/widgets/PlotKeyNavigator.cpp
+    src/ui/widgets/PlotRightDragZoom.cpp
     src/ui/widgets/QuantityDelegate.cpp
     src/ui/widgets/QuantityLabel.cpp
     src/ui/widgets/QuantityRenderer.cpp
@@ -868,6 +871,7 @@ set(ASTRA_UI_HEADERS
     src/ui/widgets/FlowLayout.h
     src/ui/widgets/GridSelectorWidget.h
     src/ui/widgets/PlotKeyNavigator.h
+    src/ui/widgets/PlotRightDragZoom.h
     src/ui/widgets/PreciseDoubleSpinBox.h
     src/ui/widgets/QuantityDelegate.h
     src/ui/widgets/QuantityLabel.h
@@ -1497,6 +1501,8 @@ if(BUILD_TESTING)
             tests/unit/io/star_package.cpp
             tests/unit/rv/rv_error_mc.cpp
             tests/unit/db/delete_star.cpp
+            tests/unit/db/periodogram_store.cpp
+            tests/unit/fitting/grid_edge_limits.cpp
             tests/unit/db/copy_stars.cpp
             tests/unit/db/save_photometry.cpp
             tests/unit/remote/batch_settings.cpp

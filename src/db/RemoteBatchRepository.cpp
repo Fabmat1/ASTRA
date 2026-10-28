@@ -17,6 +17,12 @@ using SqlValue::textOrNull;
 
 QString nowIso() { return QDateTime::currentDateTimeUtc().toString(Qt::ISODate); }
 
+// Item states after which nothing reads the job again: its result has been
+// stored, or it never will be. The job is by far the largest part of a row
+// (tens of kB, up to a MB), so settled items drop it and keep only the
+// bookkeeping and measured cost.
+const char* const kSettledStates = "('consumed', 'failed', 'cancelled', 'lost')";
+
 RemoteBatchRow readBatch(const QSqlQuery& q)
 {
     RemoteBatchRow r;
@@ -171,7 +177,7 @@ int RemoteBatchRepository::countBatches()
 bool RemoteBatchRepository::saveItem(const RemoteBatchItemRow& row)
 {
     QSqlQuery q(_db.threadConnection());
-    q.prepare(R"(
+    q.prepare(QStringLiteral(R"(
         INSERT INTO remote_batch_items
             (id, item_key, batch_id, host_id, project_id, star_id,
              mass_fit_attempt_id, state, tier, retries, n_spectra, task_index,
@@ -193,8 +199,10 @@ bool RemoteBatchRepository::saveItem(const RemoteBatchItemRow& row)
             wall_seconds = excluded.wall_seconds,
             cpu_seconds = excluded.cpu_seconds,
             peak_rss_bytes = excluded.peak_rss_bytes,
-            updated_at = excluded.updated_at
-    )");
+            updated_at = excluded.updated_at,
+            job_json = CASE WHEN excluded.state IN %1 THEN NULL
+                            ELSE job_json END
+    )").arg(QLatin1String(kSettledStates)));
     q.bindValue(":id", row.id);
     q.bindValue(":item_key", row.itemKey);
     q.bindValue(":batch_id", textOrNull(row.batchId));
@@ -261,6 +269,16 @@ std::vector<RemoteBatchItemRow> RemoteBatchRepository::loadUnconsumedItems()
     if (!run(q, "load unconsumed items")) return out;
     while (q.next()) out.push_back(readItem(q));
     return out;
+}
+
+int RemoteBatchRepository::dropSettledJobs()
+{
+    QSqlQuery q(_db.threadConnection());
+    q.prepare(QStringLiteral("UPDATE remote_batch_items SET job_json = NULL "
+                             "WHERE state IN %1 AND job_json IS NOT NULL")
+                  .arg(QLatin1String(kSettledStates)));
+    if (!run(q, "drop settled jobs")) return 0;
+    return q.numRowsAffected();
 }
 
 std::vector<RemoteFitUsage> RemoteBatchRepository::loadUsage(const QString& hostId,

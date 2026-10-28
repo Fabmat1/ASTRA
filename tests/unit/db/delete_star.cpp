@@ -35,6 +35,7 @@ const QStringList kChildTables = {
     "photometry", "photometric_points", "sed_models", "lightcurves",
     "lc_fits", "spectra", "spectral_fits",
     "rv_curves", "rv_points", "rv_fits", "rv_periodograms", "periodograms",
+    "periodogram_store",
     "mass_fit_attempts", "mass_fit_run_stars", "remote_fit_runs",
 };
 
@@ -101,6 +102,8 @@ TEST_CASE("deleteStar removes every row that referenced the star")
     REQUIRE(run("INSERT INTO rv_periodograms (id, curve_id, star_id) "
                 "VALUES ('RG1', 'RC1', 'S1')"));
     REQUIRE(run("INSERT INTO periodograms (id, star_id) VALUES ('PG1', 'S1')"));
+    REQUIRE(run("INSERT INTO periodogram_store (kind, owner_id, star_id) "
+                "VALUES ('rv', 'RC1', 'S1')"));
 
     // Mass-fit bookkeeping and adopted remote runs.
     REQUIRE(run("INSERT INTO mass_fit_attempts (id, run_id, star_id) "

@@ -158,11 +158,13 @@ public:
     void setRemoteGridCacheCapGb(int gb);
 
     // ── Periodograms ─────────────────────────────────────────────────────
-    /// Keep every frequency of a computed periodogram on disk. Off: only the
-    /// windows around the strongest peaks exactly, plus a coarse envelope
-    /// (PeriodogramRecord); Compute brings back full resolution.
-    bool storeFullPeriodograms() const { return _storeFullPeriodograms; }
-    void setStoreFullPeriodograms(bool on);
+    /// The periodogram store keeps this many of the most viewed periodograms
+    /// plus this many of the most recently computed ones, in full; the data of
+    /// all others is deleted (their settings are kept). Applied on every save
+    /// and at startup.
+    int  periodogramStoreMostViewed() const { return _pgStoreViewed; }
+    int  periodogramStoreMostRecent() const { return _pgStoreRecent; }
+    void setPeriodogramStoreLimits(int mostViewed, int mostRecent);
 
     // ── Updates ──────────────────────────────────────────────────────────
     bool checkUpdatesOnStartup() const { return _checkUpdatesOnStartup; }
@@ -223,7 +225,8 @@ signals:
     QString _specFetchLastOptions;
 
     bool    _checkUpdatesOnStartup = true;
-    bool    _storeFullPeriodograms = false;
+    int     _pgStoreViewed = 100;
+    int     _pgStoreRecent = 25;
     QString _skippedUpdateVersion;
 
     QString _remoteHostsJson;

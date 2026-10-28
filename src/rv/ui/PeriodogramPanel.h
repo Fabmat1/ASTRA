@@ -7,6 +7,7 @@
 #include <QFutureWatcher>
 #include <memory>
 #include "rv/Periodogram.h"
+#include "rv/PeriodogramSettings.h"
 
 class QPushButton;
 class QToolButton;
@@ -102,6 +103,10 @@ public:
                     int fpwBins = Periodogram::kFPWDefaultBins);
     Periodogram::Backend backend() const { return _backend; }
     int                  fpwBins() const { return _fpwBins; }
+
+    /// Everything a computation uses, as set (0 = auto), including the
+    /// per-series toggles: what the periodogram store keeps with the result.
+    PeriodogramSettings currentSettings() const;
 
     /// Resolve auto bounds for the currently-enabled / eligible series.
     /// Returns false if it can't make a sane suggestion.
@@ -225,6 +230,8 @@ private:
     bool _syncingX = false;
     DatabaseManager* _dbm = nullptr;
     QString          _starId;
+
+    bool _viewCounted = false;   ///< this panel's look at the stored periodogram
 
     struct CachedTag { quint64 dataHash; quint64 gridHash; };
     QHash<QString, CachedTag> _cachedTags;

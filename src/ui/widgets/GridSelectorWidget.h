@@ -15,6 +15,7 @@ class QLineEdit;
 class QLabel;
 class QPushButton;
 class QGroupBox;
+class ElidedLabel;
 
 struct GridPreset
 {
@@ -82,6 +83,7 @@ private:
     void buildUi();
     void populateCategoryCombo();
     void populateGridCombo();
+    void updatePathLabel();
 
     // localOnly drops every remote ("ssh://") base path from this scan.
     void    startScan(bool localOnly = false);
@@ -112,6 +114,7 @@ private:
     QComboBox*   _catCombo     = nullptr;
     QComboBox*   _gridCombo    = nullptr;
     QLineEdit*   _overrideEdit = nullptr;
+    ElidedLabel* _pathLabel    = nullptr;
     QLabel*      _statusLabel  = nullptr;
     QPushButton* _refreshBtn   = nullptr;
     QPushButton* _configBtn    = nullptr;

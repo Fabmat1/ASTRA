@@ -53,6 +53,15 @@ Parts partsFor(CopyContent c)
     return AllParts;
 }
 
+QString limitText(double v, int decimals, int side, const QString &unit)
+{
+    QString t = (side < 0 ? QStringLiteral("< ") : QStringLiteral("> ")) +
+                number(v, decimals);
+    if (!unit.isEmpty())
+        t += QLatin1Char(' ') + unit;
+    return t;
+}
+
 QString number(double v, int decimals)
 {
     if (!std::isfinite(v))

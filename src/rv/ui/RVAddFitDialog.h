@@ -2,6 +2,7 @@
 
 #include "rv/RVMCMC.h"
 #include "rv/Periodogram.h"
+#include "rv/PeriodogramSettings.h"
 #include "ui/widgets/PreciseDoubleSpinBox.h"
 #include <QDialog>
 #include <QList>
@@ -226,6 +227,7 @@ private:
     QPushButton*    _pgFitBtn       = nullptr;
 
     Periodogram::Result _pgRV;        // raw RV periodogram
+    PeriodogramSettings _pgComputedWith;   // what _pgRV was computed with, as entered
     Periodogram::Result _pgProduct;   // RV × selected LC
 
     // ── Bootstrap (χ² landscape) tab

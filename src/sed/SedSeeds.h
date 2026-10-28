@@ -2,8 +2,10 @@
 
 #include <QVector>
 
+#include <algorithm>
 #include <cmath>
 #include <limits>
+#include <utility>
 
 class SpectralFit;
 
@@ -14,7 +16,33 @@ namespace astra::sed {
 struct SedParamSeed {
     double value     = std::numeric_limits<double>::quiet_NaN();
     double halfWidth = std::numeric_limits<double>::quiet_NaN();
+    /// The spectral fit left the value at an edge of its grid
+    /// (SpectralFit::limits): -1 = the true value lies below, +1 = above.
+    int    limit     = 0;
     bool isSet() const { return std::isfinite(value); }
+
+    /// The [min, max] the SED fit may move the parameter in: value ±
+    /// halfWidth, kept inside [lo, hi] (the SED grid's extent along this
+    /// axis; NaN = not known, no bound), and always containing the value
+    /// itself, whatever grid it came from. For a limit the side beyond the
+    /// spectral grid's edge opens up to the SED grid's bound, when that is
+    /// known: the spectral fit only says the value lies out there.
+    std::pair<double, double> window(
+        double lo = std::numeric_limits<double>::quiet_NaN(),
+        double hi = std::numeric_limits<double>::quiet_NaN()) const
+    {
+        const double hw = std::isfinite(halfWidth) ? halfWidth : 0.0;
+        double a = value - hw, b = value + hw;
+        if (std::isfinite(lo)) {
+            if (limit < 0) a = std::min(a, lo);
+            a = std::max(a, lo);
+        }
+        if (std::isfinite(hi)) {
+            if (limit > 0) b = std::max(b, hi);
+            b = std::min(b, hi);
+        }
+        return {std::min(a, value), std::max(b, value)};
+    }
 };
 
 /// What a spectral fit says about one stellar component.

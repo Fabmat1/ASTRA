@@ -19,6 +19,7 @@
 #include "app/DataStore.h"
 
 #include <algorithm>
+#include <chrono>
 #include <QSqlQuery>
 #include <QSqlError>
 #include <QDebug>
@@ -39,6 +40,7 @@
 #include "app/Logger.h"
 #include "catalog/StarMatching.h"
 #include "app/AppPaths.h"
+#include "app/AppSettings.h"
 #include "core/Time.h"
 #include "rv/RadialVelocity.h"
 
@@ -88,6 +90,7 @@ bool DatabaseManager::openDatabase(const QString& path)
     walQuery.exec("PRAGMA synchronous=NORMAL");
     walQuery.exec("PRAGMA cache_size=10000");
 
+    prefetchDatabaseFile();
     checkIntegrity();
 
     if (!createTables()) {
@@ -104,6 +107,32 @@ bool DatabaseManager::openDatabase(const QString& path)
     //backfillSpectrumInstrumentIds();
 
     return true;
+}
+
+// The integrity check below reads every page of the file, one page at a time
+// in b-tree order. With a cold page cache (the first start after a reboot or
+// a night idle) that is hundreds of thousands of dependent random reads: 14 s
+// for a 1.4 GB database on NVMe, against 0.6 s once the file is cached. One
+// sequential pass beforehand loads the same pages in under a second, and
+// costs next to nothing when they are cached already. Readahead hints
+// (posix_fadvise WILLNEED) were measured and do not help.
+void DatabaseManager::prefetchDatabaseFile()
+{
+    const auto started = std::chrono::steady_clock::now();
+    qint64 total = 0;
+    for (const QString& path : {_db->databasePath(), _db->databasePath() + "-wal"}) {
+        QFile f(path);
+        if (!f.open(QIODevice::ReadOnly | QIODevice::Unbuffered))
+            continue;
+        QByteArray buf(8 << 20, Qt::Uninitialized);
+        qint64 n;
+        while ((n = f.read(buf.data(), buf.size())) > 0)
+            total += n;
+    }
+    const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now() - started).count();
+    LOG_INFO("Database", QString("Prefetched %1 MB in %2 ms")
+                             .arg(total >> 20).arg(ms));
 }
 
 // A damaged file still opens and still answers most reads, but every write
@@ -219,6 +248,9 @@ bool DatabaseManager::createTables()
             he REAL,
             e_he REAL,
             e_he_up REAL,
+            teff_limit INTEGER DEFAULT 0,
+            logg_limit INTEGER DEFAULT 0,
+            he_limit INTEGER DEFAULT 0,
             e_he_down REAL,
             logp REAL,
             deltaRV REAL,
@@ -570,6 +602,8 @@ bool DatabaseManager::createTables()
             -- Both components' element abundances as JSON; a column per
             -- element per component would be 144 of them.
             abundances_json TEXT,
+            -- Parameters pinned at a grid edge, as JSON (see SpectrumRepository)
+            param_limits TEXT,
             -- Fitted telluric component of this spectrum
             has_telluric INTEGER DEFAULT 0,
             telluric_airmass REAL,
@@ -714,6 +748,24 @@ bool DatabaseManager::createTables()
             computed_at TEXT,
             data_file TEXT,
             FOREIGN KEY(star_id) REFERENCES stars(id) ON DELETE CASCADE
+        )
+    )";
+
+    // The periodogram store: one entry per star light-curve periodogram ("lc",
+    // owner = star) and per RV-curve periodogram ("rv", owner = curve). An
+    // entry outlives the periodogram's data when the store evicts it, keeping
+    // the settings it was computed with (PeriodogramSettings JSON).
+    QString createPeriodogramStoreTable = R"(
+        CREATE TABLE IF NOT EXISTS periodogram_store (
+            kind TEXT NOT NULL,
+            owner_id TEXT NOT NULL,
+            star_id TEXT,
+            settings_json TEXT,
+            computed_at TEXT,
+            view_count INTEGER DEFAULT 0,
+            last_viewed_at TEXT,
+            has_data INTEGER DEFAULT 0,
+            PRIMARY KEY (kind, owner_id)
         )
     )";
 
@@ -891,6 +943,7 @@ bool DatabaseManager::createTables()
         createInstrumentsTable,
         createInstrumentModesTable,
         createPeriodogramsTable,
+        createPeriodogramStoreTable,
         createMassFitPlansTable,
         createMassFitRunsTable,
         createMassFitRunStarsTable,
@@ -1108,6 +1161,10 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE stars ADD COLUMN e_logg_down REAL",
         "ALTER TABLE stars ADD COLUMN e_he_up REAL",
         "ALTER TABLE stars ADD COLUMN e_he_down REAL",
+        // Atmospheric values the fit left at a grid edge (SpectralFit::limits)
+        "ALTER TABLE stars ADD COLUMN teff_limit INTEGER DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN logg_limit INTEGER DEFAULT 0",
+        "ALTER TABLE stars ADD COLUMN he_limit INTEGER DEFAULT 0",
         "ALTER TABLE stars ADD COLUMN rv_e_k_up REAL",
         "ALTER TABLE stars ADD COLUMN rv_e_k_down REAL",
         "ALTER TABLE stars ADD COLUMN rv_e_period_up REAL",
@@ -1207,6 +1264,8 @@ bool DatabaseManager::runMigrations()
         // Per-element abundances of both components, as JSON (see
         // SpectrumRepository) - 144 real columns would be absurd.
         "ALTER TABLE spectral_fits ADD COLUMN abundances_json TEXT",
+        // Parameters left at a grid edge: limits, not measurements.
+        "ALTER TABLE spectral_fits ADD COLUMN param_limits TEXT",
 
         // Fitted telluric component
         "ALTER TABLE spectral_fits ADD COLUMN has_telluric INTEGER DEFAULT 0",
@@ -1302,6 +1361,14 @@ bool DatabaseManager::runMigrations()
                              "matching").arg(pending.size()));
         }
     }
+
+    // Settled remote batch items used to keep their submitted job forever;
+    // a bulk refit left 700+ MB of them, half the database. Saving an item
+    // as settled drops it now; this clears what older versions kept.
+    if (const int n = _remoteBatch->dropSettledJobs(); n > 0)
+        LOG_INFO("Database",
+                 QString("Cleared the stored job of %1 settled remote batch "
+                         "item(s)").arg(n));
 
     // One-time cleanup of galactic kinematics that were computed from a
     // placeholder radial velocity. Bulk catalog imports store a missing RV as
@@ -1540,6 +1607,9 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
     const int idxELoggDown = rec.indexOf("e_logg_down");
     const int idxEHeUp = rec.indexOf("e_he_up");
     const int idxEHeDown = rec.indexOf("e_he_down");
+    const int idxTeffLimit = rec.indexOf("teff_limit");
+    const int idxLoggLimit = rec.indexOf("logg_limit");
+    const int idxHeLimit   = rec.indexOf("he_limit");
     const int idxRvEKUp = rec.indexOf("rv_e_k_up");
     const int idxRvEKDown = rec.indexOf("rv_e_k_down");
     const int idxRvK2 = rec.indexOf("rv_k2");
@@ -1665,6 +1735,9 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
         star->setELoggDown(SqlValue::toDoubleOrNaN(query, idxELoggDown));
         star->setEHeUp(SqlValue::toDoubleOrNaN(query, idxEHeUp));
         star->setEHeDown(SqlValue::toDoubleOrNaN(query, idxEHeDown));
+        star->setTeffLimit(query.value(idxTeffLimit).toInt());
+        star->setLoggLimit(query.value(idxLoggLimit).toInt());
+        star->setHeLimit(query.value(idxHeLimit).toInt());
 
         // Only touch an element the row actually has a value for: the setters
         // allocate the star's per-element storage, and most stars have none.
@@ -2306,8 +2379,13 @@ bool DatabaseManager::deleteRadialVelocityPoint(const QString& pointId)
 }
 
 bool DatabaseManager::saveStarPeriodograms(const QString& starId,
-    const std::vector<std::shared_ptr<PeriodogramRecord>>& records)
-{ return _periodograms->saveAllForStar(starId, records); }
+    const std::vector<std::shared_ptr<PeriodogramRecord>>& records,
+    const QString& settingsJson)
+{
+    const bool ok = _periodograms->saveAllForStar(starId, records, settingsJson);
+    enforcePeriodogramStore();
+    return ok;
+}
 
 std::vector<std::shared_ptr<PeriodogramRecord>>
 DatabaseManager::loadStarPeriodograms(const QString& starId)
@@ -2321,8 +2399,13 @@ bool DatabaseManager::deleteStarPeriodograms(const QString& starId)
 { return _periodograms->deleteAllForStar(starId); }
 
 bool DatabaseManager::saveCurveRVPeriodograms(const QString& starId, const QString& curveId,
-    const std::vector<std::shared_ptr<PeriodogramRecord>>& records)
-{ return _periodograms->saveAllForCurve(starId, curveId, records); }
+    const std::vector<std::shared_ptr<PeriodogramRecord>>& records,
+    const QString& settingsJson)
+{
+    const bool ok = _periodograms->saveAllForCurve(starId, curveId, records, settingsJson);
+    enforcePeriodogramStore();
+    return ok;
+}
 
 std::vector<std::shared_ptr<PeriodogramRecord>>
 DatabaseManager::loadCurveRVPeriodograms(const QString& curveId)
@@ -2330,6 +2413,23 @@ DatabaseManager::loadCurveRVPeriodograms(const QString& curveId)
 
 bool DatabaseManager::deleteCurveRVPeriodograms(const QString& curveId)
 { return _periodograms->deleteAllForCurve(curveId); }
+
+std::optional<PeriodogramStoreEntry>
+DatabaseManager::periodogramStoreEntry(const QString& kind, const QString& ownerId)
+{ return _periodograms->storeEntry(kind, ownerId); }
+
+void DatabaseManager::markPeriodogramViewed(const QString& kind, const QString& ownerId)
+{ _periodograms->markViewed(kind, ownerId); }
+
+int DatabaseManager::enforcePeriodogramStore(int keepViewed, int keepRecent)
+{ return _periodograms->enforceStore(keepViewed, keepRecent); }
+
+int DatabaseManager::enforcePeriodogramStore()
+{
+    const AppSettings settings;
+    return enforcePeriodogramStore(settings.periodogramStoreMostViewed(),
+                                   settings.periodogramStoreMostRecent());
+}
 
 bool DatabaseManager::saveStarPhotPeaks(const QString& starId,
                                         const QString& peaksJson)

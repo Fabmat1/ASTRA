@@ -367,7 +367,7 @@ void SpectraPanel::setupUi()
         markCustomZoom();
     });
     connect(_panelPlot, &QCustomPlot::mouseMove, this, [this](QMouseEvent* ev) {
-        if (!(ev->buttons() & Qt::LeftButton)) return;
+        if (!(ev->buttons() & (Qt::LeftButton | Qt::RightButton))) return;
         const int k = panelAt(ev->pos());
         if (k < 0) return;
         _panelInfos[k].custom = true;
@@ -390,17 +390,17 @@ void SpectraPanel::setupUi()
     connect(_mainPlot, &QCustomPlot::mouseWheel, this,
             [this]() { markCustomZoom(); });
     connect(_mainPlot, &QCustomPlot::mouseMove, this, [this](QMouseEvent* ev) {
-        if (ev->buttons() & Qt::LeftButton) markCustomZoom();
+        if (ev->buttons() & (Qt::LeftButton | Qt::RightButton)) markCustomZoom();
     });
     connect(_residualPlot, &QCustomPlot::mouseWheel, this,
             [this]() { markCustomZoom(); });
     connect(_residualPlot, &QCustomPlot::mouseMove, this, [this](QMouseEvent* ev) {
-        if (ev->buttons() & Qt::LeftButton) markCustomZoom();
+        if (ev->buttons() & (Qt::LeftButton | Qt::RightButton)) markCustomZoom();
     });
     connect(_abundancePlot, &QCustomPlot::mouseWheel, this,
             [this]() { markCustomZoom(); });
     connect(_abundancePlot, &QCustomPlot::mouseMove, this, [this](QMouseEvent* ev) {
-        if (ev->buttons() & Qt::LeftButton) markCustomZoom();
+        if (ev->buttons() & (Qt::LeftButton | Qt::RightButton)) markCustomZoom();
     });
 
     // ── Keyboard navigation while the mouse hovers a plot ──

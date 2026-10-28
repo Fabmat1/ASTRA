@@ -177,6 +177,15 @@ public:
     QMap<QString, FittedAbundance> abundances;    ///< component 1
     QMap<QString, FittedAbundance> abundances2;   ///< component 2
 
+    // ── Parameters pinned at a grid edge ────────────────────────────────────
+    // By name: "teff", "logg", "he", "vsini", "rv", "z", "zeta", "xi", and the
+    // same with a "2" for component 2. -1 = at the low edge of the model grid,
+    // so the true value lies below it (an upper limit); +1 = at the high edge
+    // (a lower limit). The backend's error there means nothing, so such a
+    // parameter carries none (0). Absent = a measurement.
+    QMap<QString, int> limits;
+    int limitOf(const QString& param) const { return limits.value(param, 0); }
+
     // ── Fitted telluric component (per spectrum) ────────────────────────────
     bool   hasTelluric        = false;
     double telluricAirmass    = AsymErr::unset;

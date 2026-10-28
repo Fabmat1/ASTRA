@@ -107,6 +107,16 @@ public:
     void setEHeUp(double e)   { _e_he_up = e; }
     void setEHeDown(double e) { _e_he_down = e; }
 
+    // A value the spectral fit left at an edge of its model grid is a limit
+    // and carries no error: -1 = upper limit (at the low edge), +1 = lower
+    // limit (at the high edge), 0 = a measurement. See SpectralFit::limits.
+    int  getTeffLimit() const { return _teff_limit; }
+    int  getLoggLimit() const { return _logg_limit; }
+    int  getHeLimit() const   { return _he_limit; }
+    void setTeffLimit(int side) { _teff_limit = side; }
+    void setLoggLimit(int side) { _logg_limit = side; }
+    void setHeLimit(int side)   { _he_limit = side; }
+
     // ── Element abundances ──────────────────────────────────────────────────
     // One slot per element in astra::elements::all(), indexed the same way;
     // taken from component 1 of the star's best spectral fit. The value is
@@ -554,6 +564,10 @@ private:
     double _e_logg_down = AsymErr::unset;
     double _e_he_up     = AsymErr::unset;
     double _e_he_down   = AsymErr::unset;
+
+    int _teff_limit = 0;
+    int _logg_limit = 0;
+    int _he_limit   = 0;
 
     // Element abundances, parallel to astra::elements::all(). Sized lazily by
     // ensureAbundanceStorage() so that a Star costs nothing extra until one is

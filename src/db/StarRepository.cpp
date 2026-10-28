@@ -617,6 +617,7 @@ static const QString& saveStarSql()
             gmag, e_gmag, bp, e_bp, rp, e_rp, bp_rp,
             spec_class, teff, e_teff, logg, e_logg, he, e_he,
             e_teff_up, e_teff_down, e_logg_up, e_logg_down, e_he_up, e_he_down,
+            teff_limit, logg_limit, he_limit,
             logp, deltaRV, e_deltaRV, rv_avg, e_rv_avg, rv_med, e_rv_med,
             n_spectra, n_fit_spectra,
             rv_timespan, rv_npoints, rv_k, rv_e_k,
@@ -664,6 +665,7 @@ static const QString& saveStarSql()
             :gmag, :e_gmag, :bp, :e_bp, :rp, :e_rp, :bp_rp,
             :spec_class, :teff, :e_teff, :logg, :e_logg, :he, :e_he,
             :e_teff_up, :e_teff_down, :e_logg_up, :e_logg_down, :e_he_up, :e_he_down,
+            :teff_limit, :logg_limit, :he_limit,
             :logp, :deltaRV, :e_deltaRV, :rv_avg, :e_rv_avg, :rv_med, :e_rv_med,
             :n_spectra, :n_fit_spectra,
             :rv_timespan, :rv_npoints, :rv_k, :rv_e_k,
@@ -765,6 +767,9 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
     query.bindValue(":e_logg_down", SqlValue::fromDouble(star->getELoggDown()));
     query.bindValue(":e_he_up", SqlValue::fromDouble(star->getEHeUp()));
     query.bindValue(":e_he_down", SqlValue::fromDouble(star->getEHeDown()));
+    query.bindValue(":teff_limit", star->getTeffLimit());
+    query.bindValue(":logg_limit", star->getLoggLimit());
+    query.bindValue(":he_limit", star->getHeLimit());
 
     query.bindValue(":logp", star->getLogP());
     query.bindValue(":deltaRV", star->getDeltaRV());
@@ -980,6 +985,7 @@ bool StarRepository::deleteStar(const QString& projectId, const QString& starId)
 
     // ── Periodograms, mass-fit bookkeeping and adopted remote runs ──────────
     ok &= exec("periodograms", "star_id = :star_id", ":star_id", starId);
+    ok &= exec("periodogram_store", "star_id = :star_id", ":star_id", starId);
     ok &= exec("mass_fit_attempts", "star_id = :star_id", ":star_id", starId);
     ok &= exec("mass_fit_run_stars", "star_id = :star_id", ":star_id", starId);
     ok &= exec("remote_fit_runs", "star_id = :star_id", ":star_id", starId);
@@ -1046,6 +1052,7 @@ static const QString& updateStarRowSql()
             e_teff_up = :e_teff_up, e_teff_down = :e_teff_down,
             e_logg_up = :e_logg_up, e_logg_down = :e_logg_down,
             e_he_up = :e_he_up, e_he_down = :e_he_down,
+            teff_limit = :teff_limit, logg_limit = :logg_limit, he_limit = :he_limit,
             logp = :logp, deltaRV = :deltaRV, e_deltaRV = :e_deltaRV,
             rv_avg = :rv_avg, e_rv_avg = :e_rv_avg, rv_med = :rv_med, e_rv_med = :e_rv_med,
             n_spectra = :n_spectra, n_fit_spectra = :n_fit_spectra,
@@ -1165,6 +1172,9 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
     query.bindValue(":e_logg_down", SqlValue::fromDouble(star->getELoggDown()));
     query.bindValue(":e_he_up", SqlValue::fromDouble(star->getEHeUp()));
     query.bindValue(":e_he_down", SqlValue::fromDouble(star->getEHeDown()));
+    query.bindValue(":teff_limit", star->getTeffLimit());
+    query.bindValue(":logg_limit", star->getLoggLimit());
+    query.bindValue(":he_limit", star->getHeLimit());
 
     query.bindValue(":logp", star->getLogP());
     query.bindValue(":deltaRV", star->getDeltaRV());

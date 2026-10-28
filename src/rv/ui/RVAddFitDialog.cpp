@@ -2686,6 +2686,7 @@ void RVAddFitDialog::pgPopulateLcList()
         return;
     }
     _pgLcList->setEnabled(true);
+    _dbm->markPeriodogramViewed(PeriodogramStoreEntry::kLightcurve, _star->getId());
 
     // Per-source aggregates in first-appearance order, plus a combined product.
     QStringList sources;
@@ -2722,19 +2723,36 @@ void RVAddFitDialog::pgPopulateLcList()
 void RVAddFitDialog::pgLoadPersisted()
 {
     if (!_dbm || !_curve) return;
+    const QString kind  = PeriodogramStoreEntry::kRV;
+    const auto    entry = _dbm->periodogramStoreEntry(kind, _curve->getId());
+    if (entry) _dbm->markPeriodogramViewed(kind, _curve->getId());
+
     auto recs = _dbm->loadCurveRVPeriodograms(_curve->getId());
     for (const auto& r : recs) {
         if (!r || !r->result.isValid()) continue;
         if (r->source == "product") _pgProduct = r->result;
         else                        _pgRV      = r->result;
     }
+
+    // The settings as entered (kept even when the store has removed the
+    // periodogram); without them, the stored grid's range and size.
+    std::optional<PeriodogramSettings> s =
+        entry ? PeriodogramSettings::fromJson(entry->settingsJson) : std::nullopt;
+    if (!s && _pgRV.isValid()) s = PeriodogramSettings::fromGrid(_pgRV.grid);
+    if (s) {
+        if (_pgMinP)       _pgMinP->setValue(s->minPeriod);
+        if (_pgMaxP)       _pgMaxP->setValue(s->maxPeriod);
+        if (_pgNSamp)      _pgNSamp->setValue(s->nSamples);
+        if (_pgOversample) _pgOversample->setValue(s->oversample);
+    }
+
     if (_pgRV.isValid()) {
-        if (_pgMinP) _pgMinP->setValue(1.0 / (_pgRV.grid.f0 + _pgRV.grid.df * (_pgRV.grid.Nf - 1)));
-        if (_pgMaxP) _pgMaxP->setValue(_pgRV.grid.f0 > 0 ? 1.0 / _pgRV.grid.f0 : 0.0);
-        if (_pgNSamp) _pgNSamp->setValue(_pgRV.grid.Nf);
         if (_pgInfoLabel)
             _pgInfoLabel->setText(QString("Loaded: %1 bins (cached).").arg(_pgRV.grid.Nf));
         pgReplot();
+    } else if (entry && !entry->hasData && _pgInfoLabel) {
+        _pgInfoLabel->setText("Removed from the periodogram store to save disk "
+                              "space; its settings are restored. Click Compute.");
     }
 }
 
@@ -2751,7 +2769,8 @@ void RVAddFitDialog::pgPersist()
         recs.push_back(r);
     }
     if (!recs.empty())
-        _dbm->saveCurveRVPeriodograms(_star->getId(), _curve->getId(), recs);
+        _dbm->saveCurveRVPeriodograms(_star->getId(), _curve->getId(), recs,
+                                      _pgComputedWith.toJson());
 }
 
 void RVAddFitDialog::pgUpdateProduct()
@@ -2943,6 +2962,12 @@ void RVAddFitDialog::onPgCompute()
             "Invalid grid. Check the period bounds / sample count.");
         return;
     }
+
+    _pgComputedWith            = PeriodogramSettings{};
+    _pgComputedWith.minPeriod  = _pgMinP->value();
+    _pgComputedWith.maxPeriod  = _pgMaxP->value();
+    _pgComputedWith.nSamples   = _pgNSamp->value();
+    _pgComputedWith.oversample = _pgOversample->value();
 
     auto* progress = new QProgressDialog(
         QString("Computing RV periodogram (%1 bins)…").arg(grid.Nf),

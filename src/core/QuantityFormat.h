@@ -65,6 +65,10 @@ Parts partsFor(CopyContent c);
 /// "round to that power of ten" (decimals = -2 gives 25000 for 24973).
 QString number(double v, int decimals);
 
+/// A value that is only a limit: "< v unit" for side -1 (an upper limit),
+/// "> v unit" for +1. With `unit` empty, just the bound.
+QString limitText(double v, int decimals, int side, const QString &unit = QString());
+
 /// Decimals that show `err` to three significant digits, or roughly six
 /// significant digits of `value` when there is no error. For call sites whose
 /// magnitudes vary too widely for one fixed precision, such as fit result

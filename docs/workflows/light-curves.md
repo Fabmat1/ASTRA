@@ -59,6 +59,12 @@ periods (**Set as Best Period** feeds the rest of ASTRA), the
 **Periodogram** tab computes periodograms, and the **Previews** tab steps
 through survey cutouts with ++left++ / ++right++.
 
+Computed periodograms are saved in full in a **periodogram store** that keeps
+the 100 most viewed and the 25 most recently computed ones (Settings /
+Lightcurve Fetching / Periodogram store). Large periodograms can take hundreds of MB
+each, so the data of any other one is deleted. Its settings stay: opening it
+again restores them, and **Compute** brings it back as it was.
+
 The **Light Curves** panel in the detail window offers overlay/stacked views,
 folding, drag-to-flag outliers, and per-series binning and normalization.
 

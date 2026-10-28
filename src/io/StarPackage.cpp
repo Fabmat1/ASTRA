@@ -321,6 +321,14 @@ QJsonObject fitToJson(const SpectralFit &f, BlobPool &bp) {
     if (!abund.isEmpty())
         o["abund"] = abund;
 
+    // Parameters pinned at a grid edge (SpectralFit::limits)
+    if (!f.limits.isEmpty()) {
+        QJsonObject lim;
+        for (auto it = f.limits.constBegin(); it != f.limits.constEnd(); ++it)
+            lim.insert(it.key(), it.value());
+        o["limits"] = lim;
+    }
+
     // Fitted telluric component
     o["hasTelluric"] = f.hasTelluric;
     pD(o, "tellAirmass", f.telluricAirmass);
@@ -425,6 +433,11 @@ std::shared_ptr<SpectralFit> fitFromJson(const QJsonObject &o, BlobReader &br) {
     const QJsonObject abund = o.value(QLatin1String("abund")).toObject();
     f->abundances  = abundanceMapFromJson(abund.value("c1").toObject());
     f->abundances2 = abundanceMapFromJson(abund.value("c2").toObject());
+
+    const QJsonObject lim = o.value(QLatin1String("limits")).toObject();
+    for (auto it = lim.constBegin(); it != lim.constEnd(); ++it)
+        if (const int side = it.value().toInt(0); side != 0)
+            f->limits.insert(it.key(), side < 0 ? -1 : 1);
 
     f->hasTelluric          = rB(o, "hasTelluric");
     f->telluricAirmass      = rD(o, "tellAirmass");
@@ -1234,6 +1247,9 @@ QJsonObject starToJson(Star &s, BlobPool &bp,
     pD(o, "e_logg_down", s.getELoggDown());
     pD(o, "e_he_up", s.getEHeUp());
     pD(o, "e_he_down", s.getEHeDown());
+    o["teff_limit"] = s.getTeffLimit();
+    o["logg_limit"] = s.getLoggLimit();
+    o["he_limit"]   = s.getHeLimit();
     // Element abundances, keyed like the database columns. Only elements the
     // star actually has a value for are written; reading them all would
     // allocate the star's lazy per-element storage for nothing.
@@ -1437,6 +1453,9 @@ starFromJson(const QJsonObject &o, BlobReader &br,
     s->setELoggDown(rD(o, "e_logg_down"));
     s->setEHeUp(rD(o, "e_he_up"));
     s->setEHeDown(rD(o, "e_he_down"));
+    s->setTeffLimit(o.value("teff_limit").toInt(0));
+    s->setLoggLimit(o.value("logg_limit").toInt(0));
+    s->setHeLimit(o.value("he_limit").toInt(0));
     {
         const auto &elements = astra::elements::all();
         for (int i = 0; i < elements.size(); ++i) {

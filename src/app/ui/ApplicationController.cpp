@@ -36,6 +36,11 @@ ApplicationController::ApplicationController(QObject *parent)
     _backgroundTaskManager = std::make_unique<BackgroundTaskManager>(this);
     _settings = std::make_unique<AppSettings>(this);
 
+    // Saving a periodogram applies the store limits; this catches limits
+    // lowered in the settings and periodograms from before the store.
+    _databaseManager->enforcePeriodogramStore(_settings->periodogramStoreMostViewed(),
+                                              _settings->periodogramStoreMostRecent());
+
     // Grid base paths of the form ssh://<host>/<path> are served by this
     // provider from inside GAEL; local paths are untouched. Installed once
     // for the process, it dispatches per host itself.

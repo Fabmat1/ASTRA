@@ -89,7 +89,8 @@ private:
 
     // Updates page
     QCheckBox*       _updateOnStartup  = nullptr;
-    QCheckBox*       _fullPeriodograms = nullptr;
+    QSpinBox*        _pgStoreViewedSpin = nullptr;
+    QSpinBox*        _pgStoreRecentSpin = nullptr;
     QLabel*          _updateStatus     = nullptr;
     QPushButton*     _updateCheckBtn   = nullptr;
     QPushButton*     _updateInstallBtn = nullptr;

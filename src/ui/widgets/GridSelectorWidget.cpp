@@ -2,6 +2,7 @@
 #include "remote/RemoteHostRegistry.h"
 #include "app/Logger.h"
 #include "app/ui/UiIcons.h"
+#include "ui/widgets/ElidedLabel.h"
 
 #include "app/Logger.h"
 #include <QApplication>
@@ -283,6 +284,14 @@ void GridSelectorWidget::buildUi()
     _gridCombo->setMinimumContentsLength(20);
     g->addWidget(_gridCombo, r++, 1, 1, 2);
 
+    // Grid names repeat across installations and categories; the path says
+    // which one it is.
+    g->addWidget(new QLabel("Path:"), r, 0);
+    _pathLabel = new ElidedLabel;
+    _pathLabel->setElideMode(Qt::ElideMiddle);
+    _pathLabel->setTextInteractionFlags(Qt::TextSelectableByMouse);
+    g->addWidget(_pathLabel, r++, 1, 1, 2);
+
     g->addWidget(new QLabel("Override:"), r, 0);
     _overrideEdit = new QLineEdit;
     _overrideEdit->setPlaceholderText(
@@ -322,6 +331,8 @@ void GridSelectorWidget::buildUi()
     g->addLayout(bar, r, 0, 1, 3);
     outer->addWidget(_groupBox);
 
+    connect(this, &GridSelectorWidget::selectionChanged,
+            this, &GridSelectorWidget::updatePathLabel);
     connect(_catCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, [this](int){ _hasExplicitSelection = true;
                                populateGridCombo(); emit selectionChanged(); });
@@ -821,10 +832,17 @@ void GridSelectorWidget::populateGridCombo()
                 .arg(dg.loggMax, 0, 'f', 1)
             : dg.displayName;
         _gridCombo->addItem(label, dg.relativePath);
+        _gridCombo->setItemData(_gridCombo->count() - 1, dg.fullPath, Qt::ToolTipRole);
     }
     int idx = _gridCombo->findData(prev);
     if (idx >= 0) _gridCombo->setCurrentIndex(idx);
     _gridCombo->blockSignals(false);
+    updatePathLabel();
+}
+
+void GridSelectorWidget::updatePathLabel()
+{
+    if (_pathLabel) _pathLabel->setFullText(selectedFullPath());
 }
 
 bool GridSelectorWidget::hasSelection() const

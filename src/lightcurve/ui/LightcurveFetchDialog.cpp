@@ -921,7 +921,51 @@ QWidget* LightcurveFetchDialog::buildPeriodogramTab()
     auto* l = new QVBoxLayout(wrap);
     l->setContentsMargins(0, 0, 0, 0);
     l->addWidget(splitter, 1);
+
+    restorePeriodogramSettings();
     return wrap;
+}
+
+void LightcurveFetchDialog::restorePeriodogramSettings()
+{
+    if (!_dbm || !_star || !_periodogramPanel) return;
+    const auto entry = _dbm->periodogramStoreEntry(PeriodogramStoreEntry::kLightcurve,
+                                                   _star->getId());
+    if (!entry) return;
+    const auto stored = PeriodogramSettings::fromJson(entry->settingsJson);
+    if (!stored) return;
+    const PeriodogramSettings& s = *stored;
+
+    // Through the controls: their handlers hand the values on to the panel.
+    if (const int i = _backendCombo->findData(static_cast<int>(s.backend)); i >= 0)
+        _backendCombo->setCurrentIndex(i);
+    _fpwBinsSpin->setValue(s.fpwBins);
+    _minPSpin->setValue(s.minPeriod);
+    _maxPSpin->setValue(s.maxPeriod);
+    _nSampSpin->setValue(s.nSamples);
+    _osSpin->setValue(s.oversample);
+    if (s.minPoints >= 0) _minPtsSpin->setValue(s.minPoints);
+    if (s.preWhiten) {
+        const auto& pw = *s.preWhiten;
+        if (const int i = _pwModeCombo->findData(static_cast<int>(pw.mode)); i >= 0)
+            _pwModeCombo->setCurrentIndex(i);
+        _pwHarmonicsSpin->setValue(pw.harmonics);
+        _pwBinsSpin->setValue(pw.templateBins);
+        _pwMultiplesSpin->setValue(pw.subharmonics);
+        _pwSolarCheck->setChecked(pw.cycles & Periodogram::CycleSolarDay);
+        _pwSiderealCheck->setChecked(pw.cycles & Periodogram::CycleSiderealDay);
+        _pwMonthCheck->setChecked(pw.cycles & Periodogram::CycleSynodicMonth);
+        _pwYearCheck->setChecked(pw.cycles & Periodogram::CycleYear);
+    }
+    onBackendChanged();
+    onPreWhitenChanged();
+    _periodogramPanel->setGridParameters(s.minPeriod, s.maxPeriod, s.nSamples,
+                                         s.oversample);
+    // The series list is built from the panel's toggles once the series arrive.
+    for (auto it = s.series.constBegin(); it != s.series.constEnd(); ++it) {
+        _periodogramPanel->setSeriesEnabled(it.key(), it->enabled);
+        _periodogramPanel->setSeriesPreWhitened(it.key(), it->preWhiten);
+    }
 }
 
 QWidget* LightcurveFetchDialog::buildPeriodogramControls()
