@@ -21,6 +21,17 @@
     implemented.
 -->
 
+## v0.10.0 (2026-10-28)
+
+### Added
+- **An AI assistant inside ASTRA.** ASTRA now optionally can make use of a user's API key to host an in-app AI agent. You can toggle all AI features off in settings.
+- **AI agents on your computer can use ASTRA.** Claude Code, Codex, opencode and other MCP clients can read and change your data and drive ASTRA's windows, with ASTRA open or closed.
+- **ASTRA data in your own Python scripts.** The bundled `astra` Python package reads projects, stars, spectra, fits, RV curves and light curves straight into numpy and pandas, and **export_data** writes them to CSV, JSON or `.npy` files.
+
+### Changed
+- **Smaller databases after batched remote fitting.** Finished remote fits no longer keep a copy of the job they were sent. Existing ones are cleared on the first start.
+- ASTRA starts much faster after a reboot or overnight.
+
 ## v0.9.3 (2026-10-27)
 
 ### Changed

@@ -1,4 +1,5 @@
 #include "app/ui/ProjectView.h"
+#include "app/DataChangeBus.h"
 #include "importwizard/StarImportWizard.h"
 #include "ui/widgets/BooleanColumnDelegate.h"
 #include "app/ui/ColumnConfigDialog.h"
@@ -94,6 +95,35 @@ ProjectView::ProjectView(ApplicationController* controller, QWidget *parent)
                     });
         }
     }
+
+    // Writers outside this view (the AI tools, background services) post
+    // their changes here. Single stars repaint their row; added or removed
+    // stars change the row set, so the model is rebuilt, coalesced because
+    // an agent may add stars in many small calls.
+    auto* bus = &DataChangeBus::instance();
+    auto* rebuild = new QTimer(this);
+    rebuild->setSingleShot(true);
+    rebuild->setInterval(150);
+    connect(rebuild, &QTimer::timeout, this, &ProjectView::refreshTable);
+    auto isMine = [this](const QString& projectId) {
+        return _tableModel && _currentProject && _currentProject->getId() == projectId;
+    };
+    connect(bus, &DataChangeBus::starChanged, this,
+            [this, isMine](const QString& projectId, const QString& starId, const QStringList&) {
+                if (isMine(projectId)) _tableModel->starDataChanged(starId);
+            });
+    connect(bus, &DataChangeBus::starDataChanged, this,
+            [this, isMine](const QString& projectId, const QString& starId, const QString&) {
+                if (isMine(projectId)) _tableModel->starDataChanged(starId);
+            });
+    connect(bus, &DataChangeBus::starsAdded, this,
+            [rebuild, isMine](const QString& projectId, const QStringList&) {
+                if (isMine(projectId)) rebuild->start();
+            });
+    connect(bus, &DataChangeBus::starsRemoved, this,
+            [rebuild, isMine](const QString& projectId, const QStringList&) {
+                if (isMine(projectId)) rebuild->start();
+            });
 }
 
 ProjectView::~ProjectView()
@@ -1219,6 +1249,12 @@ void ProjectView::onShowDetailWindow()
         return;
     }
 
+    openDetailFor(star);
+}
+
+StarDetailView* ProjectView::openDetailFor(const std::shared_ptr<Star>& star)
+{
+    if (!star || !_currentProject) return nullptr;
     // Launch the detail window (WA_DeleteOnClose handles cleanup)
     StarDetailView* detailView = new StarDetailView(
         star, _controller->databaseManager(), _controller, _currentProject->getId());
@@ -1226,6 +1262,7 @@ void ProjectView::onShowDetailWindow()
     detailView->show();
     detailView->raise();
     detailView->activateWindow();
+    return detailView;
 }
 
 void ProjectView::onConfigureColumns()
@@ -1307,6 +1344,7 @@ void ProjectView::onCreatePlot()
                                          getSelectedStars(),
                                          this);
     dialog->setAttribute(Qt::WA_DeleteOnClose);
+    dialog->setProperty("astra.kind", QStringLiteral("plot_tool"));
 
     // Clicking a point with "Open star details on click" enabled opens the
     // same detail window as double-clicking the star's table row.

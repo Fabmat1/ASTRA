@@ -216,6 +216,18 @@ public:
     // unattended fit decided, such as the mass fitting manager's results table.
     void showStarSpectraFits(const QString& starId);
 
+    /// Opens the detail window of exactly this star (the menu action and the
+    /// double-click resolve their star first, then come here).
+    StarDetailView* openDetailFor(const std::shared_ptr<Star>& star);
+
+    // For the AI tools that drive the table (ai/ui/UiTools).
+    QTableView*           starTable() const { return _starTable; }
+    StarTableModel*       tableModel() const { return _tableModel; }
+    StarFilterProxyModel* proxyModel() const { return _proxyModel; }
+    StarFilterWidget*     filterWidget() const { return _filterWidget; }
+    /// Shows these columns (field keys) and saves them with the project.
+    void setVisibleColumns(const std::vector<QString>& columns) { applyColumns(columns); }
+
   public slots:
     void onAddStar();
     void onImportStars();

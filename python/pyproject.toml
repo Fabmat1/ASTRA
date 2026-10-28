@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astra-data"
+version = "0.1.0"
+description = "Read ASTRA's database and .asd data files from Python, and talk to a running ASTRA"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = ["numpy>=1.17"]
+
+[project.optional-dependencies]
+zstd = ["zstandard"]
+pandas = ["pandas"]
+all = ["zstandard", "pandas"]
+test = ["pytest", "zstandard", "pandas"]
+
+[tool.setuptools]
+packages = ["astra"]

@@ -790,6 +790,14 @@ void FilterConditionRow::selectColumnKey(const QString& key)
     _currentKey = key;
 }
 
+void FilterConditionRow::setExpression(const QString& text)
+{
+    selectColumnKey(kExprKey);
+    populateOperators();
+    _valueEdit1->setText(text);
+    emit conditionChanged();
+}
+
 void FilterConditionRow::onColumnChanged(int index)
 {
     Q_UNUSED(index);
@@ -1166,6 +1174,17 @@ void StarFilterWidget::setColumns(const QStringList& projectColumnKeys)
 void StarFilterWidget::connectToProxy(StarFilterProxyModel* proxy)
 {
     _proxy = proxy;
+    // The count also changes when the stars themselves do (a project loads,
+    // stars are added or removed), not only when a filter changes.
+    connect(proxy, &QAbstractItemModel::modelReset, this, &StarFilterWidget::updateFilterCountLabel,
+            Qt::UniqueConnection);
+    connect(proxy, &QAbstractItemModel::layoutChanged, this, &StarFilterWidget::updateFilterCountLabel,
+            Qt::UniqueConnection);
+    connect(proxy, &QAbstractItemModel::rowsInserted, this, &StarFilterWidget::updateFilterCountLabel,
+            Qt::UniqueConnection);
+    connect(proxy, &QAbstractItemModel::rowsRemoved, this, &StarFilterWidget::updateFilterCountLabel,
+            Qt::UniqueConnection);
+    updateFilterCountLabel();
 }
 
 int StarFilterWidget::activeFilterCount() const
@@ -1237,6 +1256,31 @@ void StarFilterWidget::applyFilters()
         conditions.append(row->getCondition());
     }
     _proxy->setFilterConditions(conditions);
+}
+
+void StarFilterWidget::setQuickSearch(const QString& text)
+{
+    _searchEdit->setText(text);
+}
+
+QString StarFilterWidget::quickSearch() const
+{
+    return _searchEdit->text();
+}
+
+void StarFilterWidget::setExpressionFilters(const QStringList& expressions, bool matchAll)
+{
+    while (!_filterRows.isEmpty()) {
+        auto* row = _filterRows.takeLast();
+        _filterRowsLayout->removeWidget(row);
+        row->deleteLater();
+    }
+    _logicCombo->setCurrentIndex(matchAll ? 0 : 1);
+    for (const QString& e : expressions) {
+        addFilterRow();
+        _filterRows.last()->setExpression(e);
+    }
+    onAnyConditionChanged();
 }
 
 void StarFilterWidget::clearAllFilters()

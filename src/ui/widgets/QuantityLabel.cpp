@@ -57,6 +57,8 @@ void QuantityLabel::setQuantity(const Quantity &q)
     _q         = q;
     _selection = 0;
     _hover     = -1;
+    // The value is painted, so screen readers and the AI tools read it here.
+    setAccessibleName(QuantityFormat::plainText(q));
     relayout();
 }
 

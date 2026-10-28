@@ -24,6 +24,11 @@
 #include "remote/ui/RemoteFitsDialog.h"
 #include "remote/RemoteFitService.h"
 #include "spectra/ui/SpectrumFetchSessionsDialog.h"
+#if ASTRA_WITH_AI
+#include "ai/AiSettings.h"
+#include "ai/ui/AiController.h"
+#include "ai/ui/AiFab.h"
+#endif
 #include <QAction>
 #include <QActionGroup>
 #include <QCloseEvent>
@@ -53,6 +58,7 @@ MainWindow::MainWindow(ApplicationController* controller, QWidget *parent)
     setupUi();
     setupMenus();
     createActions();
+    setupAi();
 
     // Let every QuantityLabel offer a shortcut to the copy-format settings
     // from its context menu without threading the controller through panels.
@@ -89,6 +95,11 @@ MainWindow::MainWindow(ApplicationController* controller, QWidget *parent)
         } else {
             WhatsNewDialog::markVersionSeen();
         }
+
+#if ASTRA_WITH_AI
+        // 3. Once: whether AI agents on this computer may use ASTRA.
+        if (_ai) _ai->askAboutAgentsOnce();
+#endif
     });
 
     // Silent check for a newer release on GitHub (deferred so the window is up).
@@ -581,10 +592,7 @@ void MainWindow::createActions()
             "All your data in one place! :)");
     });
 
-    connect(_settingsAction, &QAction::triggered, this, [this] {
-        SettingsDialog dlg(_controller->settings(), this);
-        dlg.exec();
-    });
+    connect(_settingsAction, &QAction::triggered, this, [this] { showSettings(); });
 
     // Manual "Check for Updates" - always reports the outcome, even when the
     // app is already current or a previously-skipped version is available.
@@ -632,6 +640,42 @@ void MainWindow::showProjectSelection()
     _projectSelectionView->refreshProjects();
     updateMenuBarForProjectView(false);
     _closeProjectAction->setEnabled(false);
+}
+
+void MainWindow::showSettings(const QString& page)
+{
+    SettingsDialog dlg(_controller->settings(), this, page);
+    dlg.exec();
+}
+
+void MainWindow::setupAi()
+{
+#if ASTRA_WITH_AI
+    if (!astra::ai::AiSettings::availableOnThisMachine()) return;
+    _ai = new astra::ai::ui::AiController(_controller, this);
+
+    // The round button floats over the star table's bottom-right corner.
+    _aiFab = new astra::ai::ui::AiFab(_projectView->starTable());
+    connect(_aiFab, &QAbstractButton::clicked, _ai, &astra::ai::ui::AiController::toggleChat);
+
+    _aiChatAction = _viewMenu->addAction(tr("AI &Assistant"));
+    _aiChatAction->setShortcut(QKeySequence(QStringLiteral("Ctrl+Shift+A")));
+    _aiChatAction->setObjectName(QStringLiteral("actionAiAssistant"));
+    connect(_aiChatAction, &QAction::triggered, _ai, &astra::ai::ui::AiController::toggleChat);
+
+    auto apply = [this](bool available) {
+        _aiFab->setVisible(available);
+        _aiChatAction->setVisible(available);
+        _aiChatAction->setEnabled(available);
+    };
+    connect(_ai, &astra::ai::ui::AiController::chatAvailabilityChanged, this, apply);
+    apply(_ai->settings()->chatActive());
+#endif
+}
+
+bool MainWindow::isShowingProject() const
+{
+    return _centralStack && _centralStack->currentWidget() == _projectView;
 }
 
 void MainWindow::showProject(const QString& projectId)

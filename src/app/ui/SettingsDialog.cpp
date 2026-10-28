@@ -1,5 +1,8 @@
 #include "app/ui/SettingsDialog.h"
 #include "remote/ui/RemoteHostsSettingsPage.h"
+#if ASTRA_WITH_AI
+#include "ai/ui/AiSettingsPage.h"
+#endif
 #include "fitting/ui/SpectralFitDefaultsPage.h"
 #include "app/AppSettings.h"
 #include "fitting/IsisEnvironment.h"
@@ -197,6 +200,9 @@ void SettingsDialog::setupUi()
     _topicList->addItem("Spectral Fitting");
     _topicList->addItem("Remote Hosts");
     _topicList->addItem("Updates");
+#if ASTRA_WITH_AI
+    _topicList->addItem("AI");
+#endif
 
     _pages = new QStackedWidget;
     _pages->addWidget(createGeneralPage());
@@ -210,6 +216,10 @@ void SettingsDialog::setupUi()
     _pages->addWidget(_specFitDefaultsPage);
     _pages->addWidget(createRemoteHostsPage());
     _pages->addWidget(createUpdatesPage());
+#if ASTRA_WITH_AI
+    _aiPage = new astra::ai::ui::AiSettingsPage;
+    _pages->addWidget(_aiPage);
+#endif
 
     connect(_topicList, &QListWidget::currentRowChanged,
             _pages, &QStackedWidget::setCurrentIndex);
@@ -687,6 +697,9 @@ QWidget* SettingsDialog::createSpectraFetchPage()
 
 void SettingsDialog::apply()
 {
+#if ASTRA_WITH_AI
+    if (_aiPage) _aiPage->apply();
+#endif
     _settings->setIsisBinaryPath(_isisEdit->text().trimmed());
     _settings->setSedFitBinaryPath(_sedFitEdit->text().trimmed());
     QStringList paths;

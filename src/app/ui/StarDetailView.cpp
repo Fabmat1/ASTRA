@@ -5,6 +5,7 @@
 #include "db/DatabaseManager.h"
 #include "app/Logger.h"
 #include "app/AppSettings.h"
+#include "app/DataChangeBus.h"
 
 #include "app/ui/panels/DetailPanel.h"
 #include "app/ui/panels/DetailPanelFactory.h"
@@ -53,9 +54,34 @@ StarDetailView::StarDetailView(std::shared_ptr<Star> star,
     setupUi();
     buildGrid();
 
-    _star->setSummaryChangedCallback([this]() {
-        for (auto* p : _panels) if (p) p->onSummaryChanged();
-    });
+    // Found by the AI tools (list_windows, open_star_detail).
+    setProperty("astra.kind", QStringLiteral("star_detail"));
+    setProperty("astra.starId", _star->getId());
+
+    // The star announces summary changes on the bus rather than to one view:
+    // a callback slot holds a single listener, so a second window on the same
+    // star used to take it from the first.
+    {
+        const QString starId = _star->getId(), projectId = _projectId;
+        _star->setSummaryChangedCallback([projectId, starId]() {
+            DataChangeBus::instance().postStarChanged(projectId, starId);
+        });
+    }
+    auto* bus = &DataChangeBus::instance();
+    connect(bus, &DataChangeBus::starChanged, this,
+            [this](const QString&, const QString& starId, const QStringList&) {
+                if (_star && starId == _star->getId())
+                    for (auto* p : _panels) if (p) p->onSummaryChanged();
+            });
+    connect(bus, &DataChangeBus::starDataChanged, this,
+            [this](const QString&, const QString& starId, const QString&) {
+                if (_star && starId == _star->getId())
+                    for (auto* p : _panels) if (p) p->refresh();
+            });
+    connect(bus, &DataChangeBus::starsRemoved, this,
+            [this](const QString&, const QStringList& ids) {
+                if (_star && ids.contains(_star->getId())) close();
+            });
 
     _star->computeSummaryMetricsFull([this]() {
         if (_dbm) _dbm->updateStarRow(_projectId, _star);
@@ -70,9 +96,35 @@ StarDetailView::StarDetailView(std::shared_ptr<Star> star,
 
 StarDetailView::~StarDetailView()
 {
-    // Star outlives this view (project-owned); detach so the lambda
-    // doesn't fire into a dangling `this`.
-    if (_star) _star->setSummaryChangedCallback(nullptr);
+}
+
+bool StarDetailView::isPopulated() const
+{
+    for (const auto& p : _populateQueue)
+        if (!p.isNull()) return false;
+    return true;
+}
+
+bool StarDetailView::openTool(const QString& tool)
+{
+    if (tool == QLatin1String("spectra"))            onViewFitSpectra();
+    else if (tool == QLatin1String("rv"))            onViewAdjustRV();
+    else if (tool == QLatin1String("sed"))           onViewFitSED();
+    else if (tool == QLatin1String("lightcurves"))   onFetchLightcurves();
+    else if (tool == QLatin1String("cmd"))           onShowCMD();
+    else if (tool == QLatin1String("orbit"))         onCalculateOrbit();
+    else if (tool == QLatin1String("observability")) onShowObservability();
+    else if (tool == QLatin1String("simbad"))        onShowInSimbad();
+    else if (tool == QLatin1String("share"))         onShareStar();
+    else return false;
+    return true;
+}
+
+QStringList StarDetailView::toolNames()
+{
+    return {QStringLiteral("spectra"), QStringLiteral("rv"), QStringLiteral("sed"),
+            QStringLiteral("lightcurves"), QStringLiteral("cmd"), QStringLiteral("orbit"),
+            QStringLiteral("observability"), QStringLiteral("simbad"), QStringLiteral("share")};
 }
 
 

@@ -15,6 +15,8 @@ ElidedLabel::ElidedLabel(const QString& text, QWidget* parent)
 void ElidedLabel::setFullText(const QString& text)
 {
     _full = text;
+    // What is shown may be cut short; the accessible name is the whole text.
+    setAccessibleName(text);
     updateElision();
     // The hints are derived from the full text, so a re-elision never changes
     // them; a new text does.

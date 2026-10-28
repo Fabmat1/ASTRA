@@ -4,6 +4,7 @@
 #include "app/ui/UpdateManager.h"
 
 #include <QApplication>
+#include <QFontInfo>
 #include <QCheckBox>
 #include <QDialogButtonBox>
 #include <QFile>
@@ -36,7 +37,7 @@ constexpr const char* kNewsPath      = ":/changelog/NEWS.md";
 // the palette here would return stale defaults).
 struct Palette {
     QColor bg, fg, surface, muted, accent, newsBg, newBadgeBg, badgeFg;
-    int    monoPt = 9;   ///< Point size for monospaced runs, see themePalette().
+    int    monoPx = 12;  ///< Pixel size for monospaced runs, see themePalette().
 };
 
 QColor blend(const QColor& a, const QColor& b, double t)
@@ -46,12 +47,14 @@ QColor blend(const QColor& a, const QColor& b, double t)
                   int(a.blue()  + (b.blue()  - a.blue())  * t));
 }
 
-/// Resolve the colours (and the monospace point size) the document is rendered
-/// with. `basePt` is the point size of the widget the text lands in; a bare
+/// Resolve the colours (and the monospace size) the document is rendered
+/// with. `basePx` is the pixel size the body text actually renders at; a bare
 /// `font-family:monospace` is resolved by Qt at the fixed font's *own* size,
 /// which is bigger than the surrounding text and breaks the line rhythm, so
-/// monospaced runs are pinned just below the body text instead.
-Palette themePalette(int basePt = -1)
+/// monospaced runs are pinned just below the body text instead. Pixels, not
+/// points: a theme may size the text in px, and then the widget's point size
+/// is -1 and the desktop's font size is no guide at all.
+Palette themePalette(int basePx = -1)
 {
     Palette p;
     const QVariant vbg = qApp->property("themeBg");
@@ -71,9 +74,11 @@ Palette themePalette(int basePt = -1)
     p.newBadgeBg = dark ? QColor(0x2c, 0x4c, 0x33) : QColor(0xd4, 0xf2, 0xdd);
     p.badgeFg    = dark ? QColor(0xef, 0xef, 0xef) : QColor(0x2a, 0x2a, 0x2a);
 
-    int base = basePt;
-    if (base <= 0) base = QApplication::font().pointSize();
-    p.monoPt = base > 0 ? qMax(7, base - 1) : 9;
+    int base = basePx;
+    if (base <= 0) base = QFontInfo(QApplication::font()).pixelSize();
+    // A fixed-width face looks larger than a proportional one of the same
+    // size (wider glyphs, taller x-height), hence a little under the body.
+    p.monoPx = base > 0 ? qMax(9, qRound(base * 0.92)) : 12;
     return p;
 }
 
@@ -88,8 +93,8 @@ Palette themePalette(int basePt = -1)
 QString monoStyle(const Palette& p)
 {
     return QStringLiteral("font-family:'FiraCode','DejaVu Sans Mono',monospace; "
-                          "font-size:%1pt; color:%2;")
-        .arg(p.monoPt)
+                          "font-size:%1px; color:%2;")
+        .arg(p.monoPx)
         .arg(p.fg.name());
 }
 
@@ -429,8 +434,11 @@ WhatsNewDialog::WhatsNewDialog(QWidget* parent)
 void WhatsNewDialog::buildDocument()
 {
     // Size monospaced runs against the font the text actually renders in, which
-    // the theme's QSS may have changed from the application default.
-    const Palette p = themePalette(_browser->font().pointSize());
+    // the theme's QSS may have changed from the application default. That font
+    // is only in place once the stylesheet has polished the browser, and this
+    // runs before the dialog is first shown.
+    _browser->ensurePolished();
+    const Palette p = themePalette(QFontInfo(_browser->font()).pixelSize());
     const QVector<ChangelogEntry> entries = loadEntries();
 
     if (entries.isEmpty()) {

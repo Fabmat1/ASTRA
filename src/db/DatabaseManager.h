@@ -78,6 +78,9 @@ public:
         const std::vector<QString>& starIds, const QString& targetProjectId,
         const std::function<void(int percent, const QString& phase)>& progress = {});
     std::vector<std::shared_ptr<Star>> loadStars(const QString& projectId);
+    /// One star by id, from whichever project holds it; null when there is
+    /// none. projectId (optional) receives that project's id.
+    std::shared_ptr<Star> loadStar(const QString& starId, QString* projectId = nullptr);
     bool updateStar(const QString& projectId, std::shared_ptr<Star> star);
     bool deleteStar(const QString& projectId, const QString& starId);
     size_t getStarCountForProject(const QString& projectId);
@@ -223,6 +226,9 @@ public:
         const QString& runId, const QString& starId = {});
 
   private:
+    std::vector<std::shared_ptr<Star>> loadStarsWhere(const QString& column,
+                                                      const QString& value,
+                                                      QString* firstProjectId);
     //void backfillSpectrumInstrumentIds();
     bool createTables();
     bool createIndexes();

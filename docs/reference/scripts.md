@@ -9,6 +9,13 @@ useful on their own for working with ASTRA data outside the app.
     The scripts need **Python 3** with **numpy**, and **gnuplot** for plotting.
     Both are listed in the [installation instructions](../installation.md).
 
+!!! tip "The `astra` Python package"
+    For loading ASTRA data into your own scripts and notebooks, the `astra`
+    package that ships with ASTRA is the more complete option: it reads
+    spectra, fits, RV curves, light curves and periodograms into numpy and
+    pandas, and can make changes through the running ASTRA. See
+    [Python Access](../ai/python.md).
+
 ## Scripts for users
 
 ### `astra_data.py`

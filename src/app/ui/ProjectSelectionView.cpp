@@ -260,6 +260,10 @@ ProjectCard::ProjectCard(const QString& id, const QString& name,
     setFixedSize(CARD_W, CARD_H + WIDGET_PAD_B);
     setCursor(Qt::PointingHandCursor);
     setAttribute(Qt::WA_Hover, true);
+    // Painted by hand, so name it for screen readers and the AI tools.
+    setAccessibleName(tr("Project %1 (%n stars)", nullptr, starCount).arg(name));
+    setAccessibleDescription(description);
+    setProperty("astra.clickable", true);
 
     if (!imagePath.isEmpty()) {
         QPixmap p(imagePath);
@@ -717,6 +721,8 @@ NewProjectCard::NewProjectCard(QWidget* parent) : QWidget(parent)
     setFixedSize(CARD_W, CARD_H + WIDGET_PAD_B);
     setCursor(Qt::PointingHandCursor);
     setAttribute(Qt::WA_Hover, true);
+    setAccessibleName(tr("New project"));
+    setProperty("astra.clickable", true);
 }
 
 void NewProjectCard::paintEvent(QPaintEvent*)

@@ -316,6 +316,7 @@ set(ASTRA_CORE_SOURCES
     src/app/DataStore.cpp
     src/app/StoreMigration.cpp
     src/app/Logger.cpp
+    src/app/DataChangeBus.cpp
 
     # catalog
     src/catalog/CatalogQueryWorkers.cpp
@@ -330,6 +331,7 @@ set(ASTRA_CORE_SOURCES
     src/core/Instrument.cpp
     src/core/InstrumentMode.cpp
     src/core/Project.cpp
+    src/core/StarFieldRegistry.cpp
     src/core/QuantityFormat.cpp
     src/core/Star.cpp
     src/core/Stats.cpp
@@ -338,6 +340,7 @@ set(ASTRA_CORE_SOURCES
     # db
     src/db/DBAccess.cpp
     src/db/DatabaseManager.cpp
+    src/db/StarLoaders.cpp
     src/db/InstrumentRepository.cpp
     src/db/MassFitRepository.cpp
     src/db/PeriodogramRepository.cpp
@@ -459,6 +462,8 @@ set(ASTRA_CORE_HEADERS
     src/app/AppPaths.h
     src/app/AppSettings.h
     src/app/HeadlessRuns.h
+    src/app/HeadlessContext.h
+    src/app/DataChangeBus.h
     src/app/MaintenanceMode.h
     src/app/ServiceContext.h
     src/app/ArrayCodec.h
@@ -483,6 +488,7 @@ set(ASTRA_CORE_HEADERS
     src/core/Instrument.h
     src/core/InstrumentMode.h
     src/core/Project.h
+    src/core/StarFieldRegistry.h
     src/core/PhaseUtils.h
     src/core/Quantity.h
     src/core/QuantityFormat.h
@@ -494,6 +500,7 @@ set(ASTRA_CORE_HEADERS
     # db
     src/db/DBAccess.h
     src/db/DatabaseManager.h
+    src/db/StarLoaders.h
     src/db/InstrumentRepository.h
     src/db/MassFitRepository.h
     src/db/PeriodogramRepository.h
@@ -885,6 +892,88 @@ set(ASTRA_UI_HEADERS
     src/ui/widgets/SegmentedControl.h
 )
 
+# ── AI integration (MCP server, AI tools, built-in chat) ─────────────────────
+# Everything under src/ai. Configure with -DASTRA_WITH_AI=OFF for a build that
+# contains no AI features at all; users of a normal build can also switch them
+# off in Settings > AI, and ASTRA_DISABLE_AI=1 does so for a whole machine.
+option(ASTRA_WITH_AI "Build the AI integration (MCP server, AI chat)" ON)
+if(ASTRA_WITH_AI)
+    list(APPEND ASTRA_CORE_SOURCES
+        src/ai/AiHost.cpp
+        src/ai/AiRuntime.cpp
+        src/ai/AiSettings.cpp
+        src/ai/AuditLog.cpp
+        src/ai/HeadlessAiHost.cpp
+        src/ai/LocalSocketServer.cpp
+        src/ai/McpSession.cpp
+        src/ai/McpStdio.cpp
+        src/ai/PermissionGate.cpp
+        src/ai/Tool.cpp
+        src/ai/ToolRegistry.cpp
+        src/ai/tools/ExportTools.cpp
+        src/ai/tools/JobTools.cpp
+        src/ai/tools/PhotometryTools.cpp
+        src/ai/tools/ProjectStarTools.cpp
+        src/ai/tools/RvTools.cpp
+        src/ai/tools/SpectraTools.cpp
+        src/ai/tools/ToolHelpers.cpp
+    )
+    list(APPEND ASTRA_CORE_HEADERS
+        src/ai/AiHost.h
+        src/ai/AiRuntime.h
+        src/ai/AiSettings.h
+        src/ai/AuditLog.h
+        src/ai/HeadlessAiHost.h
+        src/ai/LocalSocketServer.h
+        src/ai/McpSession.h
+        src/ai/McpStdio.h
+        src/ai/PermissionGate.h
+        src/ai/Tool.h
+        src/ai/ToolRegistry.h
+        src/ai/tools/ToolHelpers.h
+    )
+    list(APPEND ASTRA_CORE_SOURCES
+        src/ai/ChatSession.cpp
+        src/ai/LlmClient.cpp
+        src/ai/PythonRunner.cpp
+        src/ai/Reviewer.cpp
+        src/ai/tools/PythonTools.cpp
+    )
+    list(APPEND ASTRA_CORE_HEADERS
+        src/ai/ChatSession.h
+        src/ai/LlmClient.h
+        src/ai/PythonRunner.h
+        src/ai/Reviewer.h
+    )
+    list(APPEND ASTRA_UI_SOURCES
+        src/ai/ui/ActivityDialog.cpp
+        src/ai/ui/AgentConnectDialog.cpp
+        src/ai/ui/AiController.cpp
+        src/ai/ui/AiFab.cpp
+        src/ai/ui/AiSettingsPage.cpp
+        src/ai/ui/ApprovalCard.cpp
+        src/ai/ui/ChatDock.cpp
+        src/ai/ui/GuiAiHost.cpp
+        src/ai/ui/InspectorTools.cpp
+        src/ai/ui/PlotTools.cpp
+        src/ai/ui/UiToolSupport.cpp
+        src/ai/ui/UiWindows.cpp
+        src/ai/ui/WindowTools.cpp
+    )
+    list(APPEND ASTRA_UI_HEADERS
+        src/ai/ui/ActivityDialog.h
+        src/ai/ui/AgentConnectDialog.h
+        src/ai/ui/AiController.h
+        src/ai/ui/AiFab.h
+        src/ai/ui/AiSettingsPage.h
+        src/ai/ui/ApprovalCard.h
+        src/ai/ui/ChatDock.h
+        src/ai/ui/GuiAiHost.h
+        src/ai/ui/UiToolSupport.h
+        src/ai/ui/UiWindows.h
+    )
+endif()
+
 # ── astra_core: every Core-only translation unit ─────────────────────────────
 # The application and all test binaries link this, so a test never has to
 # re-list the sources it needs.  Third-party dependencies are attached here
@@ -986,6 +1075,8 @@ set(ASTRA_COMMON_DEFINES
 
 target_compile_definitions(astra_core
     PUBLIC  ${ASTRA_COMMON_DEFINES}
+            ASTRA_WITH_AI=$<BOOL:${ASTRA_WITH_AI}>
+            ASTRA_SOURCE_PYTHON_DIR="${CMAKE_CURRENT_SOURCE_DIR}/python"
     PRIVATE ASTRA_DATA_DIR="${ASTRA_DATA_DIR}"
 )
 target_compile_definitions(ASTRA PRIVATE ASTRA_DATA_DIR="${ASTRA_DATA_DIR}")
@@ -1224,6 +1315,16 @@ if(ASTRA_HAVE_SEDFIT)
         DESTINATION "${CMAKE_INSTALL_DATADIR}/astra/sedfit/refdata")
 endif()
 
+# ── ASTRA's Python package for AI agents and the chat's run_python ──────────
+# Found at runtime next to the binary as <prefix>/share/astra/python (see
+# PythonEnvironment::packageDir).
+if(ASTRA_WITH_AI)
+    install(DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}/python/"
+        DESTINATION "${CMAKE_INSTALL_DATADIR}/astra/python"
+        PATTERN "__pycache__" EXCLUDE
+        PATTERN "*.egg-info"  EXCLUDE)
+endif()
+
 # ── Bundle lightcurvequery Python sources (if the submodule is present) ─────
 # Shipped read-only; ASTRA copies them into a writable dir and builds a venv at
 # runtime. Excludes VCS metadata, build caches, the submodule's own venv and
@@ -1460,6 +1561,14 @@ if(BUILD_TESTING)
     # more than it buys.  Grouping is by TEST_SUITE instead:
     #     ./astra_tests -ts=core        run one domain
     #     ./astra_tests -ltc            list the test cases
+    set(ASTRA_AI_UNIT_TESTS "")
+    if(ASTRA_WITH_AI)
+        set(ASTRA_AI_UNIT_TESTS
+            tests/unit/ai/llm_client.cpp
+            tests/unit/ai/mcp_protocol.cpp
+            tests/unit/ai/permission_gate.cpp
+            tests/unit/ai/star_fields.cpp)
+    endif()
     add_library(doctest INTERFACE)
     target_include_directories(doctest INTERFACE
         ${CMAKE_CURRENT_SOURCE_DIR}/external/doctest)
@@ -1514,6 +1623,7 @@ if(BUILD_TESTING)
             tests/unit/fitting/adopted_fit.cpp
             tests/unit/sed/sed_seeds.cpp
             tests/unit/spectra/panel_plan.cpp
+            ${ASTRA_AI_UNIT_TESTS}
     )
 
     # ── Convenience target ───────────────────────────────────────────────

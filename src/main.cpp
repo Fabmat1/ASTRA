@@ -14,11 +14,16 @@
 #include <QDebug>
 #include <QFont>
 #include <QFontDatabase>
+#include <cstdio>
+#include <cstring>
 #include "astra_version.h"
 #include "remote/ui/AskPass.h"
 #include "remote/ui/RemoteSelfTest.h"
 #include "app/MaintenanceMode.h"
 #include "app/HeadlessRuns.h"
+#if ASTRA_WITH_AI
+#include "ai/McpStdio.h"
+#endif
 
 int main(int argc, char *argv[])
 {
@@ -35,6 +40,17 @@ int main(int argc, char *argv[])
     // `astra --remote-gridtest ...`: streamed vs local grid comparison.
     if (const int rc = astra::remote::runRemoteGridTest(argc, argv); rc >= 0)
         return rc;
+
+#if ASTRA_WITH_AI
+    // `astra --mcp`: the MCP server AI agents start (see ai/McpStdio.h).
+    if (const int rc = runMcpMode(argc, argv); rc >= 0)
+        return rc;
+#else
+    if (argc >= 2 && std::strcmp(argv[1], "--mcp") == 0) {
+        std::fprintf(stderr, "astra --mcp: this build of ASTRA was made without AI features\n");
+        return 2;
+    }
+#endif
 
     // `astra --fetch-spectra | --mass-fit | --mass-fit-resume ...`: long
     // jobs without the window (see app/HeadlessRuns.h).

@@ -26,6 +26,7 @@ class MassFitManagerDialog;
 class UpdateManager;
 struct UpdateInfo;
 struct ThemeInfo;
+namespace astra::ai::ui { class AiController; class AiFab; }
 
 class MainWindow : public QMainWindow
 {
@@ -38,7 +39,14 @@ public:
     void updateMenuBarForProjectView(bool projectOpen);
     void importStarPackage(const QString &path);
 
-public slots: void showProjectSelection();
+    ProjectView* projectView() const { return _projectView; }
+    /// Which page the central area shows: the project picker or a project.
+    bool isShowingProject() const;
+
+public slots:
+    /// Opens Settings, on `page` when given (e.g. "AI").
+    void showSettings(const QString& page = QString());
+    void showProjectSelection();
     void showProject(const QString& projectId);
     void openProjectDialog();
     void removeProjectDialog();
@@ -65,6 +73,12 @@ private:
     void onUpdateAvailable(const UpdateInfo& info);
     void promptInstallUpdate(const UpdateInfo& info);
     UpdateManager* _updater = nullptr;
+
+    // AI integration (see ai/ui/AiController.h); null in builds without AI.
+    void setupAi();
+    astra::ai::ui::AiController* _ai = nullptr;
+    astra::ai::ui::AiFab*        _aiFab = nullptr;
+    QAction*                     _aiChatAction = nullptr;
 
     ApplicationController* _controller;
     QStackedWidget* _centralStack;

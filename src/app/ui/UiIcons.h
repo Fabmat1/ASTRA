@@ -73,6 +73,17 @@ enum class Role {
     // locks the RV and light-curve panels onto a common x axis.
     LinkOn,
     LinkOff,
+
+    // The AI assistant: the round chat button over the star table and the
+    // status-bar indicator of connected AI agents.
+    Assistant,
+
+    // The chat's own controls: past conversations, start a new one, send the
+    // message, stop the answer being written.
+    History,
+    NewChat,
+    Send,
+    Stop,
 };
 
 // Themed icon for `role`, rendered at `px` logical pixels.

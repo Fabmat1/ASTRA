@@ -72,6 +72,12 @@ nav:
       - Fetching Spectra: workflows/spectra-fetching.md
       - SED & Spectral Fitting: workflows/sed-spectral.md
       - Remote Fitting: workflows/remote-fitting.md
+  - AI:
+      - Overview: ai/index.md
+      - AI Assistant: ai/assistant.md
+      - Permissions & Activity: ai/permissions.md
+      - AI Agents (MCP): ai/agents.md
+      - Python Access: ai/python.md
   - Reference:
       - Database & Files: reference/database.md
       - Python Scripts: reference/scripts.md

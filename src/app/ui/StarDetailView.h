@@ -39,6 +39,16 @@ public:
         _filteredProvider = std::move(filtered);
     }
 
+    // For the AI tools (ai/ui/UiTools).
+    std::shared_ptr<Star> star() const { return _star; }
+    const QVector<DetailPanel*>& panels() const { return _panels; }
+    /// True once every panel has drawn its first content.
+    bool isPopulated() const;
+    /// Opens one of the sidebar's tools by name (see toolNames()), exactly as
+    /// its button does. False for an unknown name.
+    bool openTool(const QString& tool);
+    static QStringList toolNames();
+
 protected:
     bool event(QEvent* e) override;
     bool eventFilter(QObject* watched, QEvent* e) override;

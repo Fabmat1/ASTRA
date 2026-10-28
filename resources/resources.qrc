@@ -52,6 +52,11 @@
         <file>fonts/DejaVuSans.ttf</file>
         <file>fonts/DejaVuSans-Bold.ttf</file>
         <file>icons/check.svg</file>
+        <file>icons/sparkle.svg</file>
+        <file>icons/history.svg</file>
+        <file>icons/compose.svg</file>
+        <file>icons/send.svg</file>
+        <file>icons/stop.svg</file>
         <file>icons/menu-check.svg</file>
         <file>icons/radio.svg</file>
         <file>icons/arrow-down.svg</file>

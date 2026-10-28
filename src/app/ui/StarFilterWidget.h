@@ -196,6 +196,9 @@ public:
 
     FilterCondition getCondition() const;
 
+    /// Switches the row to a free-form expression ("plx > 5 * e_plx").
+    void setExpression(const QString& text);
+
 signals:
     void conditionChanged();
     void removeRequested();
@@ -244,6 +247,12 @@ public:
     void connectToProxy(StarFilterProxyModel* proxy);
     int activeFilterCount() const;
     QWidget* advancedPanelWidget() const;
+
+    // Set filters as a user would, so the panel shows what is applied. Used
+    // by the AI tools; expressions use the "Expression" condition syntax.
+    void    setQuickSearch(const QString& text);
+    QString quickSearch() const;
+    void    setExpressionFilters(const QStringList& expressions, bool matchAll = true);
 
 signals:
     void filtersChanged();

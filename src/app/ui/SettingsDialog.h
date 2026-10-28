@@ -20,9 +20,11 @@ class QComboBox;
 class QuantityLabel;
 namespace astra::remote { class RemoteHostsSettingsPage; }
 class SpectralFitDefaultsPage;
+namespace astra::ai::ui { class AiSettingsPage; }
 
 class SettingsDialog : public QDialog
 {
+    Q_OBJECT
 public:
     /// `page` selects the topic to open on, e.g. "Numbers & Copying".
     explicit SettingsDialog(AppSettings* settings, QWidget* parent = nullptr,
@@ -45,6 +47,7 @@ private:
 
     astra::remote::RemoteHostsSettingsPage* _remoteHostsPage = nullptr;
     SpectralFitDefaultsPage* _specFitDefaultsPage = nullptr;
+    astra::ai::ui::AiSettingsPage* _aiPage = nullptr;
 
     QLineEdit *_lcurveDirEdit = nullptr;
     QLabel  *_lcurveStatusLbl = nullptr;

@@ -40,6 +40,8 @@ public:
     void addStar(std::shared_ptr<Star> star);
     void removeStar(std::shared_ptr<Star> star);
     std::shared_ptr<Star> getStar(const QString& sourceId) const;
+    /// The loaded star with this database id (getStar() matches the source id).
+    std::shared_ptr<Star> findById(const QString& starId) const;
     std::vector<std::shared_ptr<Star>> getAllStars() const;
     size_t getStarCount() const;
     bool starsLoaded() const;

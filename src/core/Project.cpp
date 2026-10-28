@@ -126,6 +126,13 @@ std::shared_ptr<Star> Project::getStar(const QString& sourceId) const
     return nullptr;
 }
 
+std::shared_ptr<Star> Project::findById(const QString& starId) const
+{
+    for (const auto& star : _stars)
+        if (star && star->getId() == starId) return star;
+    return nullptr;
+}
+
 size_t Project::getStarCount() const
 {
     if (!_stars.empty()) {

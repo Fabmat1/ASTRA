@@ -82,6 +82,11 @@ QString templateFor(UiIcons::Role role)
     case UiIcons::Role::ToggleOff:           return QStringLiteral(":/icons/circle.svg");
     case UiIcons::Role::Edit:                return QStringLiteral(":/icons/pencil.svg");
     case UiIcons::Role::LinkOn:              return QStringLiteral(":/icons/link.svg");
+    case UiIcons::Role::Assistant:           return QStringLiteral(":/icons/sparkle.svg");
+    case UiIcons::Role::History:             return QStringLiteral(":/icons/history.svg");
+    case UiIcons::Role::NewChat:             return QStringLiteral(":/icons/compose.svg");
+    case UiIcons::Role::Send:                return QStringLiteral(":/icons/send.svg");
+    case UiIcons::Role::Stop:                return QStringLiteral(":/icons/stop.svg");
     case UiIcons::Role::LinkOff:             return QStringLiteral(":/icons/link-off.svg");
     }
     return QString();

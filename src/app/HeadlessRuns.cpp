@@ -2,6 +2,7 @@
 
 #include "app/AppPaths.h"
 #include "app/AppSettings.h"
+#include "app/HeadlessContext.h"
 #include "app/Logger.h"
 #include "app/ServiceContext.h"
 #include "core/Project.h"
@@ -30,17 +31,6 @@
 #include <csignal>
 
 namespace {
-
-class HeadlessContext : public ServiceContext {
-public:
-    DatabaseManager* databaseManager() const override { return dbm; }
-    AppSettings*     settings() const override { return appSettings; }
-    std::shared_ptr<Project> getCurrentProject() const override { return project; }
-
-    DatabaseManager*         dbm = nullptr;
-    AppSettings*             appSettings = nullptr;
-    std::shared_ptr<Project> project;
-};
 
 QString argValue(int argc, char** argv, const char* name, const QString& def = {})
 {

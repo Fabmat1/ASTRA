@@ -39,6 +39,11 @@ public:
                                std::vector<std::shared_ptr<Star>> selectedStars,
                                QWidget* parent = nullptr);
 
+    // Presets: full dialog configuration as JSON (see PlotPresetStore).
+    // Public for the AI tools, which read and set whole plot configurations.
+    QJsonObject capturePresetConfig();
+    void        applyPresetConfig(const QJsonObject& cfg);
+
 signals:
     // Emitted when the user clicks a plotted point while "Open star details
     // on click" is enabled (scatter and sky map only).
@@ -122,9 +127,6 @@ private:
     bool editOverlayDialog(OverlayConfig& ov);
     bool editTextOverlayDialog(OverlayConfig& ov);
 
-    // Presets: full dialog configuration as JSON (see PlotPresetStore)
-    QJsonObject capturePresetConfig();
-    void        applyPresetConfig(const QJsonObject& cfg);
     void        updateActivePresetThumbnail();
     bool loadTrackFile(OverlayConfig& ov, QString* err);
     void drawOverlays();

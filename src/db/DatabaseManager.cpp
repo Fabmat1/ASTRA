@@ -1495,6 +1495,20 @@ QString DatabaseManager::getDataDirectory() const
 
 std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& projectId)
 {
+    return loadStarsWhere(QStringLiteral("project_id"), projectId, nullptr);
+}
+
+std::shared_ptr<Star> DatabaseManager::loadStar(const QString& starId, QString* projectId)
+{
+    auto stars = loadStarsWhere(QStringLiteral("id"), starId, projectId);
+    return stars.empty() ? nullptr : stars.front();
+}
+
+// column is "project_id" or "id"; never user input.
+std::vector<std::shared_ptr<Star>> DatabaseManager::loadStarsWhere(const QString& column,
+                                                                   const QString& value,
+                                                                   QString* firstProjectId)
+{
     std::vector<std::shared_ptr<Star>> stars;
 
     QSqlQuery query(_db->threadConnection());
@@ -1503,8 +1517,8 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
     // that cache alone peaked at 686 MB; forward-only holds one row at a time
     // and peaks at 22 MB. The loop below only ever moves forward.
     query.setForwardOnly(true);
-    query.prepare("SELECT * FROM stars WHERE project_id = :project_id");
-    query.bindValue(":project_id", projectId);
+    query.prepare(QStringLiteral("SELECT * FROM stars WHERE %1 = :value").arg(column));
+    query.bindValue(":value", value);
 
     if (!query.exec()) {
         LOG_ERROR("Database", QString("Failed to load stars: %1").arg(query.lastError().text()));
@@ -1690,12 +1704,15 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStars(const QString& pro
                              rec.indexOf("abund_" + el.dbSuffix + "_limit")});
 
     // Pre-allocate
-    const size_t estimatedCount = _stars->getStarCountForProject(projectId);
-    stars.reserve(estimatedCount);
+    if (column == QLatin1String("project_id"))
+        stars.reserve(_stars->getStarCountForProject(value));
+    const int idxProjectId = rec.indexOf("project_id");
 
     while (query.next()) {
         auto star = std::make_shared<Star>();
-        
+        if (firstProjectId && stars.empty())
+            *firstProjectId = query.value(idxProjectId).toString();
+
         star->setId(query.value(idxId).toString());
         star->setAlias(query.value(idxAlias).toString());
         star->setSourceId(query.value(idxSourceId).toString());
