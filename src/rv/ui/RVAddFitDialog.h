@@ -252,12 +252,13 @@ private:
     QPushButton*    _bsDetectBtn    = nullptr;
     QListWidget*    _bsPeaksList    = nullptr;
     QCheckBox*      _bsAliasGroup   = nullptr;   // treat an alias comb as 1 peak
-    QDoubleSpinBox* _bsAliasSens    = nullptr;   // envelope width ×alias spacing
+    QDoubleSpinBox* _bsAliasSens    = nullptr;   // envelope width ×alias pitch
     QDoubleSpinBox* _bsPeriodTol    = nullptr;   // ×σ_P prior width for re-fit
     QPushButton*    _bsFitBtn       = nullptr;
 
     Periodogram::Grid _bsGrid;          // frequency grid scanned
     QVector<double>   _bsChi2;          // data χ² per grid cell (freq order)
+    QVector<double>   _bsFitF;          // frequency each cell's fit settled on
     // χ² of the wrapping (alias-envelope) function, same grid as _bsChi2.
     // Empty unless alias grouping produced one; drawn on top of the landscape.
     QVector<double>   _bsEnvelope;

@@ -5,7 +5,9 @@
 #include "db/DatabaseManager.h"
 #include "rv/RVErrorMC.h"
 #include "core/AsymmetricErrors.h"
+#include "core/QuantityFormat.h"
 #include "rv/PeriodogramRecord.h"
+#include "rv/AliasEnvelope.h"
 #include "lightcurve/Photometry.h"
 #include "rv/RadialVelocity.h"
 #include "core/Star.h"
@@ -1284,11 +1286,13 @@ double fitCellChi2Kepler(const std::vector<double>& t,
                          double Kmin, double Kmax, double gMin, double gMax,
                          double eMin, double eMax,
                          const std::vector<int>* comp = nullptr,
-                         bool fitK2 = false)
+                         bool fitK2 = false,
+                         double* Pout = nullptr)
 {
     const int N = int(t.size());
     const bool sb2 = fitK2 && comp && int(comp->size()) == N;
     const int  np  = sb2 ? 7 : 6;     // [P, K, γ, φ, e, ω(, K2)]
+    if (Pout) *Pout = 0.0;
     if (N < np || !(P0 > 0)) return std::numeric_limits<double>::infinity();
 
     auto isSec = [&](int i) { return sb2 && (*comp)[i] >= 2; };
@@ -1297,6 +1301,7 @@ double fitCellChi2Kepler(const std::vector<double>& t,
     const double chi2Circ = fitCellChi2(t, y, sigma, P0, Pmin, Pmax,
                                         Kmin, Kmax, gMin, gMax, &c,
                                         comp, fitK2);
+    if (Pout) *Pout = c.P;
     if (!std::isfinite(chi2Circ) || !(c.P > 0.0)) return chi2Circ;
 
     eMax = std::min(eMax, 0.95);
@@ -1406,7 +1411,11 @@ double fitCellChi2Kepler(const std::vector<double>& t,
         }
     }
 
-    return std::isfinite(chi2) ? std::min(chi2, chi2Circ) : chi2Circ;
+    if (std::isfinite(chi2) && chi2 < chi2Circ) {
+        if (Pout) *Pout = p[0];
+        return chi2;
+    }
+    return chi2Circ;
 }
 
 // 4×4 matrix inverse via Gauss-Jordan. Returns false if singular.
@@ -3265,10 +3274,11 @@ void RVAddFitDialog::buildBootstrapTab(QWidget* parent)
     _bsAliasSens->setValue(2.0);
     _bsAliasSens->setEnabled(false);
     _bsAliasSens->setToolTip(
-        "Width of the envelope in multiples of the measured spacing between "
-        "distinguishable minima. Larger merges more aliases into a single "
-        "peak; smaller resolves the comb into more, narrower groups. The "
-        "envelope is drawn on the plot, so the effect is visible immediately.");
+        "Half-width of the envelope in multiples of the alias comb's pitch "
+        "(measured from the landscape). Larger merges more aliases into a "
+        "single peak; smaller resolves the comb into more, narrower groups. "
+        "The envelope is drawn on the plot, so the effect is visible "
+        "immediately.");
     aliasRow->addWidget(_bsAliasSens, 1);
     peakLay->addLayout(aliasRow);
 
@@ -3459,6 +3469,9 @@ void RVAddFitDialog::onBsRun()
     }
     auto chi2 = std::make_shared<std::vector<double>>(Nf,
                     std::numeric_limits<double>::infinity());
+    // Frequency each cell's fit settled on. A cell holds the best χ² anywhere
+    // inside it, so this, not the cell centre, is where that χ² lives.
+    auto fitF = std::make_shared<std::vector<double>>(Nf, 0.0);
     auto progress = std::make_shared<std::atomic<int>>(0);
 
     auto* dlg = new QProgressDialog(
@@ -3487,7 +3500,7 @@ void RVAddFitDialog::onBsRun()
     QPointer<QProgressDialog> pd   = dlg;
 
     std::thread driver([self, pd, grid, Nf, dof, t, y, s, cmp, sb2,
-                        chi2, progress, cancelled,
+                        chi2, fitF, progress, cancelled,
                         Kmin, Kmax, gMin, gMax, ecc, eMin, eMax]() mutable
     {
         const double f0 = grid.f0, df = grid.df;
@@ -3505,12 +3518,20 @@ void RVAddFitDialog::onBsRun()
                 const double Pmin = (fHi > 0.0) ? 1.0 / fHi : 1.0 / fi;
                 const double Pmax = (fLo > 0.0) ? 1.0 / fLo : 1.0 / (0.5 * fi);
                 const std::vector<int>* cp = sb2 ? cmp.get() : nullptr;
-                (*chi2)[i] = ecc
-                    ? fitCellChi2Kepler(*t, *y, *s, 1.0 / fi, Pmin, Pmax,
-                                        Kmin, Kmax, gMin, gMax, eMin, eMax,
-                                        cp, sb2)
-                    : fitCellChi2(*t, *y, *s, 1.0 / fi, Pmin, Pmax,
-                                  Kmin, Kmax, gMin, gMax, nullptr, cp, sb2);
+                double Pfit = 0.0;
+                if (ecc) {
+                    (*chi2)[i] = fitCellChi2Kepler(*t, *y, *s, 1.0 / fi,
+                                                   Pmin, Pmax, Kmin, Kmax,
+                                                   gMin, gMax, eMin, eMax,
+                                                   cp, sb2, &Pfit);
+                } else {
+                    CellFit cf;
+                    (*chi2)[i] = fitCellChi2(*t, *y, *s, 1.0 / fi, Pmin, Pmax,
+                                             Kmin, Kmax, gMin, gMax, &cf,
+                                             cp, sb2);
+                    Pfit = cf.P;
+                }
+                (*fitF)[i] = (Pfit > 0.0) ? 1.0 / Pfit : fi;
                 progress->fetch_add(1);
             }
         };
@@ -3528,7 +3549,7 @@ void RVAddFitDialog::onBsRun()
         }
         for (auto& th : pool) th.join();
 
-        QMetaObject::invokeMethod(qApp, [self, pd, grid, dof, chi2, cancelled, ecc]() mutable {
+        QMetaObject::invokeMethod(qApp, [self, pd, grid, dof, chi2, fitF, cancelled, ecc]() mutable {
             // Read the cancel state BEFORE closing: QProgressDialog::close()
             // emits canceled() synchronously, which would otherwise flip the
             // flag and make a normal finish look cancelled.
@@ -3542,6 +3563,7 @@ void RVAddFitDialog::onBsRun()
 
             self->_bsGrid = grid;
             self->_bsChi2 = QVector<double>(chi2->begin(), chi2->end());
+            self->_bsFitF = QVector<double>(fitF->begin(), fitF->end());
 
             double cmin = std::numeric_limits<double>::infinity();
             for (double v : *chi2) if (std::isfinite(v)) cmin = std::min(cmin, v);
@@ -3666,9 +3688,12 @@ void RVAddFitDialog::bsAddPeakItem(double period, double sigma,
 {
     if (!_bsPeaksList || !(period > 0)) return;
     const double s = (sigma > 0 && std::isfinite(sigma)) ? sigma : 0.0;
+    // Precision follows σ_P: a sparse curve with overestimated errors gives
+    // σ_P far below 1e-6 d, which a fixed six decimals showed as ± 0.000000.
+    const int dec = std::clamp(QuantityFormat::autoDecimals(period, s), 6, 12);
     QString text = QString("P = %1 ± %2 d   (χ² %3, P=%4%%5)")
-        .arg(period, 0, 'f', 6)
-        .arg(s,      0, 'f', 6)
+        .arg(QuantityFormat::number(period, dec))
+        .arg(s > 0 ? QString::number(s, 'g', 2) : QStringLiteral("?"))
         .arg(chi2,   0, 'f', 2)
         .arg(prob * 100.0, 0, 'f', 1)
         .arg(nAlias > 1 ? QString(", %1 aliases").arg(nAlias) : QString());
@@ -3679,49 +3704,6 @@ void RVAddFitDialog::bsAddPeakItem(double period, double sigma,
     item->setData(Qt::UserRole + 3, nAlias);
     item->setSelected(true);
 }
-
-// ───────────────────────────────────────────────────────────────────
-namespace {
-
-// Sliding-window minimum, half-width w, edges clamped. Monotonic deque, O(N):
-// the landscape can hold millions of cells and the window is typically a large
-// fraction of an alias period, so the naive O(N·w) scan is not an option.
-QVector<double> slidingMin(const QVector<double>& v, int w)
-{
-    const int n = v.size();
-    QVector<double> out(n);
-    std::deque<int> dq;                 // indices, values increasing
-    for (int j = 0; j < n; ++j) {
-        while (!dq.empty() && v[dq.back()] >= v[j]) dq.pop_back();
-        dq.push_back(j);
-        const int i = j - w;            // the output whose window ends at j
-        if (i < 0) continue;
-        while (dq.front() < i - w) dq.pop_front();
-        out[i] = v[dq.front()];
-    }
-    for (int i = std::max(0, n - w); i < n; ++i) {   // truncated tail windows
-        while (dq.front() < i - w) dq.pop_front();
-        out[i] = v[dq.front()];
-    }
-    return out;
-}
-
-// Sliding-window mean, half-width w, edges clamped (prefix sums, O(N)).
-QVector<double> slidingMean(const QVector<double>& v, int w)
-{
-    const int n = v.size();
-    QVector<double> out(n);
-    std::vector<double> pre(n + 1, 0.0);
-    for (int i = 0; i < n; ++i) pre[i + 1] = pre[i] + v[i];
-    for (int i = 0; i < n; ++i) {
-        const int lo = std::max(0, i - w);
-        const int hi = std::min(n - 1, i + w);
-        out[i] = (pre[hi + 1] - pre[lo]) / double(hi - lo + 1);
-    }
-    return out;
-}
-
-} // namespace
 
 // ───────────────────────────────────────────────────────────────────
 void RVAddFitDialog::onBsDetectPeaks()
@@ -3746,13 +3728,25 @@ void RVAddFitDialog::onBsDetectPeaks()
     for (int k = 0; k < Nf; ++k) Zland += like(_bsChi2[k]);
     const double invZ = (Zland > 0.0) ? 1.0 / Zland : 0.0;
 
-    // ── every strict local minimum, parabolically refined ────────────────
+    // ── every strict local minimum ───────────────────────────────────────
     // Each carries the posterior mass of its own χ² basin: walk outward to the
     // crest on either side (where the landscape turns back down towards a
     // neighbouring minimum) and sum L there. Strict comparisons keep adjacent
     // basins disjoint, so the masses sum to ≤ 1 - the remainder is mass in
     // minima that were not selected. This answers "is this the correct period
     // over the whole scanned range?", not "which of these candidates wins?".
+    //
+    // A cell's χ² is the best fit anywhere inside the cell, at the frequency
+    // the fit settled on (_bsFitF), so that frequency and χ² are the minimum
+    // itself. No parabola through three cells: on sparse data an alias is
+    // often narrower than a cell, the three values are not samples of one
+    // parabola, and the extrapolated vertex went far below χ²_min (negative
+    // χ² values, periods off by up to half a cell).
+    const bool haveFitF = _bsFitF.size() >= Nf;
+    auto cellF = [&](int k) {
+        const double fc = f0 + k * h;
+        return (haveFitF && _bsFitF[k] > 0.0) ? _bsFitF[k] : fc;
+    };
     struct Minimum {
         int    idx;                       // grid cell
         double P, sigP, chi2v, mass;
@@ -3762,18 +3756,27 @@ void RVAddFitDialog::onBsDetectPeaks()
         const double ym = _bsChi2[i-1], y0 = _bsChi2[i], yp = _bsChi2[i+1];
         if (!std::isfinite(y0) || !(y0 < ym) || !(y0 < yp)) continue;
 
-        const double fi = f0 + i * h;
-        double fPeak = fi, chi2v = y0, sigP = 0.0;
-        const double denom = (ym - 2.0*y0 + yp);   // > 0 for a strict minimum
-        if (std::isfinite(ym) && std::isfinite(yp) && denom > 0.0) {
-            const double kk = (ym - yp) / (2.0 * denom);   // vertex offset (cells)
-            fPeak = fi + kk * h;
-            chi2v = y0 - (yp - ym)*(yp - ym) / (8.0 * denom);
-            // Δ(rescaled χ²)=1 ⇒ σ_f = h·√(2·s/denom); σ_P = σ_f / f².
-            const double sigF = h * std::sqrt(2.0 * _bsScale / denom);
-            if (fPeak > 0.0) sigP = sigF / (fPeak * fPeak);
-        }
+        const double fPeak = cellF(i);
         if (!(fPeak > 0.0)) continue;
+
+        // σ_f where the profile χ² rises by one rescaled unit, from the secant
+        // curvature towards each neighbour's own best-fit point (both lie on
+        // the profile): a = Δχ²/Δf², σ_f = √(s/a). Narrower than a cell is
+        // fine and expected when the rescaled errors are small.
+        double aSum = 0.0;
+        int    aN   = 0;
+        for (int nb : {i - 1, i + 1}) {
+            const double dc = _bsChi2[nb] - y0;
+            const double dF = cellF(nb) - fPeak;
+            if (!std::isfinite(dc) || !(dc > 0.0) || !(std::abs(dF) > 1e-3 * h))
+                continue;
+            aSum += dc / (dF * dF);
+            ++aN;
+        }
+        const double sigF = (aN > 0) ? std::sqrt(_bsScale * aN / aSum)
+                                     : h / std::sqrt(12.0);
+        const double sigP  = sigF / (fPeak * fPeak);
+        const double chi2v = y0;
 
         int lo = i, hi = i;
         while (lo > 0      && _bsChi2[lo-1] > _bsChi2[lo]) --lo;
@@ -3789,9 +3792,9 @@ void RVAddFitDialog::onBsDetectPeaks()
                           && mins.size() >= 2;
 
     // Minima ranked by posterior mass, then thinned so the same dip cannot be
-    // reported twice through the jitter on its floor. Serves as the ungrouped
-    // candidate list and, in grouped mode, as the sample the alias pitch is
-    // measured from.
+    // reported twice through the jitter on its floor (the ungrouped list). The
+    // separation is relative, i.e. a fixed distance on the log-period axis the
+    // landscape is drawn on.
     constexpr double kMinRelSep = 0.02;
     QVector<int> byMass(mins.size());
     std::iota(byMass.begin(), byMass.end(), 0);
@@ -3825,23 +3828,14 @@ void RVAddFitDialog::onBsDetectPeaks()
         // ── alias grouping ───────────────────────────────────────────────
         // Sparse sampling reproduces one true period as a comb of nearly
         // equally deep minima, splitting its posterior across dozens of
-        // entries. The median gap between the strongest distinguishable minima
-        // measures the comb's pitch; a few unrelated minima in between do not
-        // move a median.
-        const QVector<int> sep = separated(200);
-        QVector<double> fx;
-        fx.reserve(sep.size());
-        for (int k : sep) fx.append(1.0 / mins[k].P);
-        std::sort(fx.begin(), fx.end());
-        QVector<double> gaps;
-        gaps.reserve(std::max<qsizetype>(0, fx.size() - 1));
-        for (int k = 1; k < fx.size(); ++k) gaps.append(fx[k] - fx[k-1]);
-        std::sort(gaps.begin(), gaps.end());
-        double pitch = gaps.isEmpty() ? h : gaps[gaps.size() / 2];
-        if (!(pitch > 0.0)) pitch = h;
-
+        // entries. The comb is usually nested (close pairs of aliases, pairs
+        // repeating at a wider pitch, lobes of those), and the envelope must
+        // bridge the teeth without bridging the lobes, so its width comes from
+        // the comb's pitch (see AliasEnvelope::combPitch).
+        const int pitchCells = AliasEnvelope::combPitch(_bsChi2.mid(0, Nf),
+                                              _bsChi2Min, _bsScale);
         const double sens = _bsAliasSens ? _bsAliasSens->value() : 2.0;
-        int w = int(std::lround(sens * pitch / h));        // half-width, cells
+        int w = int(std::lround(sens * pitchCells));       // half-width, cells
         w = std::clamp(w, 1, std::max(1, Nf / 4));
 
         // The wrapping function: a running minimum over roughly one alias pitch
@@ -3856,16 +3850,10 @@ void RVAddFitDialog::onBsDetectPeaks()
         for (int k = 0; k < Nf; ++k)
             filled[k] = std::isfinite(_bsChi2[k]) ? _bsChi2[k] : cWorst;
 
-        _bsEnvelope = slidingMean(slidingMin(filled, w), w);
+        _bsEnvelope = AliasEnvelope::slidingMean(AliasEnvelope::slidingMin(filled, w), w);
 
-        // Split at the crests of the envelope: one segment per lobe. The
-        // ≥/> pair puts the boundary at the last cell of a flat crest.
-        QVector<int> crest;
-        crest.append(0);
-        for (int i = 1; i < Nf - 1; ++i)
-            if (_bsEnvelope[i] >= _bsEnvelope[i-1] && _bsEnvelope[i] > _bsEnvelope[i+1])
-                crest.append(i);
-        crest.append(Nf - 1);
+        // Split at the crests of the envelope: one segment per lobe.
+        const QVector<int> crest = AliasEnvelope::lobeBoundaries(_bsEnvelope);
 
         int mi = 0;                       // mins is in increasing-index order
         for (int b = 0; b + 1 < crest.size(); ++b) {
