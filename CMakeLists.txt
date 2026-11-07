@@ -1616,6 +1616,7 @@ if(BUILD_TESTING)
             tests/unit/fitting/grid_edge_limits.cpp
             tests/unit/db/copy_stars.cpp
             tests/unit/db/save_photometry.cpp
+            tests/unit/db/instrument_resolve.cpp
             tests/unit/remote/batch_settings.cpp
             tests/unit/remote/slurm_limits.cpp
             tests/unit/remote/batch_service.cpp

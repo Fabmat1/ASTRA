@@ -14,6 +14,8 @@ class LightcurveFetchService;
 class MassFitService;
 class SpectrumFetchService;
 
+namespace astra::remote { class SshGridProvider; }
+
 namespace astra::ai {
 
 class HeadlessAiHost : public AiHost {
@@ -41,6 +43,10 @@ private:
     std::unique_ptr<DatabaseManager> _dbm;
     std::unique_ptr<AppSettings>     _settings;
     HeadlessContext                  _ctx;
+    /// Serves grid base paths of the form ssh://<host>/... to GAEL, as the
+    /// window and the headless runs do; without it a fit on a streamed grid
+    /// fails with "Grid not found".
+    std::shared_ptr<astra::remote::SshGridProvider> _gridProvider;
     mutable std::vector<std::shared_ptr<Project>> _projects;
     mutable bool _projectsLoaded = false;
     std::unique_ptr<SpectrumFetchService>   _specFetch;

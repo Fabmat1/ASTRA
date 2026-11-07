@@ -954,6 +954,17 @@ void registerSpectraTools(AiRuntime& rt)
                 spec->setInstrument(display);
                 spec->setInstrumentId(inst->getId());
                 spec->setModeKey(modeKey);
+                // The mode carries the fit defaults (range, resolution,
+                // anchors): say when none was matched rather than storing a
+                // spectrum that silently fits with the instrument's fallbacks.
+                if (modeKey.isEmpty() && !inst->modes().isEmpty()) {
+                    QStringList keys;
+                    for (const auto& m : inst->modes()) keys << m.key();
+                    warnings << QStringLiteral("\"%1\" matched the instrument %2 but none of its modes "
+                                               "(%3); the spectrum has no mode. Pass e.g. \"%2 %4\".")
+                                    .arg(instArg, inst->getName(), keys.join(QStringLiteral(", ")),
+                                         keys.first());
+                }
             } else {
                 const auto instruments = db->getAllInstruments();
                 const auto wl = spec->getWavelengths();

@@ -484,10 +484,16 @@ InstrumentRepository::resolveInstrumentString(const QString& input,
         if (!inst) return nullptr;
 
         if (modeKey && !modePart.isEmpty()) {
-            // Try case-insensitive match on mode key, then display name
+            // Try case-insensitive match on mode key, then display name;
+            // separators are decoration here too ("OSIRIS R2000B" is the
+            // display name of the key "OSIRIS_R2000B").
+            const QString squashedMode = instrumentNameKey(modePart);
             for (const auto& m : inst->modes()) {
                 if (m.key().compare(modePart, Qt::CaseInsensitive) == 0 ||
-                    m.displayName().compare(modePart, Qt::CaseInsensitive) == 0)
+                    m.displayName().compare(modePart, Qt::CaseInsensitive) == 0 ||
+                    (!squashedMode.isEmpty() &&
+                     (instrumentNameKey(m.key()) == squashedMode ||
+                      instrumentNameKey(m.displayName()) == squashedMode)))
                 {
                     *modeKey = m.key();
                     return inst;
@@ -508,6 +514,15 @@ InstrumentRepository::resolveInstrumentString(const QString& input,
 
     // 1. Try the whole string as an instrument name.
     if (auto inst = tryMatch(s, {})) return inst;
+
+    // 1b. The form ASTRA itself displays: "Name (Mode)", e.g.
+    //     "GTC (OSIRIS R2000B)". Splitting that on separators gave the mode
+    //     "(OSIRIS_R2000B)", which matched nothing, so the mode was dropped
+    //     without a word.
+    static const QRegularExpression bracketed(
+        QStringLiteral("^\\s*(.+?)\\s*\\(\\s*(.+?)\\s*\\)\\s*$"));
+    if (const auto m = bracketed.match(s); m.hasMatch())
+        if (auto inst = tryMatch(m.captured(1), m.captured(2))) return inst;
 
     // 2. Try (first token) as instrument, (rest) as mode.
     if (parts.size() >= 2) {

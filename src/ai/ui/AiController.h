@@ -61,6 +61,9 @@ private:
     void applySettings();
     void updateStatusChip();
     void startServer();
+    /// After asking a headless server to hand over: start listening, asking
+    /// again if another headless server got the socket first.
+    void retryServerAfterHandoff(int attempt);
 
     ApplicationController* _controller;
     QPointer<MainWindow>   _window;

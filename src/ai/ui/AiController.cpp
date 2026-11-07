@@ -121,12 +121,7 @@ void AiController::startServer()
     // aside (two processes must not edit the same database), then retry.
     if (LocalSocketServer::requestHandoff()) {
         LOG_INFO("AI", "Asked the background AI server to hand over to the window");
-        QTimer::singleShot(1200, this, [this] {
-            QString e2;
-            if (!_server->start(&e2))
-                LOG_WARNING("AI", QStringLiteral("MCP server not started: %1").arg(e2));
-            updateStatusChip();
-        });
+        retryServerAfterHandoff(1);
         if (_window)
             _window->statusBar()->showMessage(
                 tr("An AI agent was using ASTRA in the background; the window takes over. "
@@ -134,6 +129,34 @@ void AiController::startServer()
         return;
     }
     LOG_WARNING("AI", QStringLiteral("MCP server not started: %1").arg(err));
+}
+
+void AiController::retryServerAfterHandoff(int attempt)
+{
+    // Bridges that relayed through the server we just asked to leave try to
+    // join the window for a few seconds before serving on their own, but one
+    // can still win the socket first. It is then the headless server: ask it
+    // to hand over too, a few times, rather than giving up and leaving every
+    // agent without the window.
+    constexpr int kMaxAttempts = 6;
+    QTimer::singleShot(1200, this, [this, attempt] {
+        if (!settings()->mcpActive() || _server->isListening()) { updateStatusChip(); return; }
+        QString err;
+        if (_server->start(&err)) {
+            if (attempt > 1)
+                LOG_INFO("AI", QStringLiteral("MCP server started after %1 handover attempts").arg(attempt));
+            updateStatusChip();
+            return;
+        }
+        if (attempt < kMaxAttempts && LocalSocketServer::requestHandoff()) {
+            LOG_INFO("AI", QStringLiteral("Another background AI server took over; asking it to hand over "
+                                          "(attempt %1)").arg(attempt + 1));
+            retryServerAfterHandoff(attempt + 1);
+            return;
+        }
+        LOG_WARNING("AI", QStringLiteral("MCP server not started: %1").arg(err));
+        updateStatusChip();
+    });
 }
 
 void AiController::updateStatusChip()

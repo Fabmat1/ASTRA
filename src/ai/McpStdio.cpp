@@ -10,6 +10,7 @@
 
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -17,6 +18,7 @@
 #include <QLockFile>
 #include <QHash>
 #include <QJsonArray>
+#include <QRandomGenerator>
 #include <QThread>
 
 #include <csignal>
@@ -161,26 +163,70 @@ private:
         }
     }
 
+    /// attach(), retried for up to totalMs. Used whenever the process we
+    /// relayed through goes away: it may be a headless server stepping aside
+    /// for a window that starts listening about a second later, and racing
+    /// that window for the socket leaves it without a server and us without
+    /// the window.
+    bool attachWithin(int totalMs)
+    {
+        QElapsedTimer t;
+        t.start();
+        do {
+            if (attach(200)) return true;
+            // Jitter: several bridges relaying through the same server all
+            // lose it at once.
+            QThread::msleep(100 + QRandomGenerator::global()->bounded(150));
+        } while (t.elapsed() < totalMs);
+        return false;
+    }
+
     void astraGone()
     {
         if (_quitting) return;
         _sock.release()->deleteLater();
+        failInFlight(QStringLiteral("The ASTRA process this request went through stopped or handed "
+                                    "over to the window; retry if needed."));
+        if (attachWithin(kRejoinMs)) return;
         std::fprintf(stderr, "astra --mcp: the ASTRA window closed; continuing without it\n");
-        failInFlight(QStringLiteral("The ASTRA window closed while this request ran. ASTRA now serves "
-                                    "without a window (data and job tools only); retry if needed."));
         startHeadless();
     }
 
     // ── Headless ────────────────────────────────────────────────────────
+    /// How long a bridge keeps trying to join another ASTRA before it opens
+    /// the database itself. Longer than the window's handover retry (1.2 s).
+    static constexpr int kRejoinMs = 4000;
+
     void startHeadless()
+    {
+        // Two processes must not serve, or edit, the same data root. If
+        // another one won the socket since we last looked (a window that just
+        // opened, another bridge that lost its upstream with us), join it.
+        for (int attempt = 0; attempt < 3; ++attempt) {
+            if (serveHeadless(/*mustOwnSocket=*/attempt < 2)) return;
+            LOG_INFO("AI", QStringLiteral("Another ASTRA process serves this data root; joining it"));
+            if (attachWithin(kRejoinMs)) return;
+        }
+    }
+
+    /// Opens the database and serves the agent ourselves. With mustOwnSocket,
+    /// gives up (returns false, nothing kept open) when another process
+    /// already listens on the AI socket.
+    bool serveHeadless(bool mustOwnSocket)
     {
         if (!g_loggerStarted) {
             Logger::initialize(QStringLiteral("ASTRA-mcp"));
             g_loggerStarted = true;
         }
-        LOG_INFO("AI", QStringLiteral("astra --mcp serving %1 without a window").arg(AppPaths::root()));
-        std::fprintf(stderr, "astra --mcp: no ASTRA window open; serving %s without a window\n",
-                     qPrintable(AppPaths::root()));
+        // Cheap check before opening the database: is someone listening?
+        if (mustOwnSocket) {
+            QLocalSocket probe;
+            probe.connectToServer(astra::ai::LocalSocketServer::serverName());
+            if (probe.waitForConnected(300)) {
+                probe.disconnectFromServer();
+                return false;
+            }
+        }
         _host = std::make_unique<astra::ai::HeadlessAiHost>();
         _runtime = std::make_unique<astra::ai::AiRuntime>(_host.get());
         astra::ai::registerCoreTools(*_runtime);
@@ -188,10 +234,22 @@ private:
         // Later agents relay through us instead of opening the database again.
         _server = std::make_unique<astra::ai::LocalSocketServer>(_runtime.get());
         QString err;
-        if (!_server->start(&err))
-            LOG_WARNING("AI", QStringLiteral("MCP socket not started: %1").arg(err));
+        if (!_server->start(&err)) {
+            if (mustOwnSocket) {
+                stopHeadless();
+                return false;
+            }
+            // Last resort: serve this agent alone. Nobody can ask us to hand
+            // over, so say so where the user will look.
+            LOG_WARNING("AI", QStringLiteral("MCP socket not started: %1; serving this agent without "
+                                             "it, and a window opened later will not take over")
+                                  .arg(err));
+        }
         connect(_server.get(), &astra::ai::LocalSocketServer::handoffRequested, this, &Bridge::handOver,
                 Qt::QueuedConnection);
+        LOG_INFO("AI", QStringLiteral("astra --mcp serving %1 without a window").arg(AppPaths::root()));
+        std::fprintf(stderr, "astra --mcp: no ASTRA window open; serving %s without a window\n",
+                     qPrintable(AppPaths::root()));
 
         QDir().mkpath(AppPaths::root() + QStringLiteral("/ai"));
         _lock = std::make_unique<QLockFile>(AppPaths::root() + QStringLiteral("/ai/headless-mcp.lock"));
@@ -201,6 +259,7 @@ private:
         _session = _runtime->createMcpSession(nullptr);
         connect(_session, &astra::ai::McpSession::outgoing, this, &Bridge::toAgent);
         replayInitialize();
+        return true;
     }
 
     void stopHeadless()
@@ -221,10 +280,7 @@ private:
         failInFlight(QStringLiteral("The ASTRA window opened and took over; retry this request."));
         stopHeadless();
         // The window starts its own server right after asking us to leave.
-        for (int i = 0; i < 50; ++i) {
-            if (attach(200)) return;
-            QThread::msleep(100);
-        }
+        if (attachWithin(5000)) return;
         std::fprintf(stderr, "astra --mcp: could not attach to the window; serving without it again\n");
         startHeadless();
     }
