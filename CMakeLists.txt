@@ -459,6 +459,7 @@ set(ASTRA_CORE_SOURCES
     src/remote/SshGridProvider.cpp
 
     # rv
+    src/rv/AliasEnvelope.cpp
     src/rv/Periodogram.cpp
     src/rv/PeriodogramRecord.cpp
     src/rv/PeriodogramSettings.cpp
@@ -1650,6 +1651,7 @@ if(BUILD_TESTING)
             tests/unit/fitting/fit_window.cpp
             tests/unit/fitting/line_core.cpp
             tests/unit/massfit/plan_extensions.cpp
+            tests/unit/rv/alias_envelope.cpp
             tests/unit/rv/periodogram.cpp
             tests/unit/rv/periodogram_store.cpp
             tests/unit/io/star_package.cpp
