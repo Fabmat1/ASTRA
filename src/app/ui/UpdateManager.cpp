@@ -73,15 +73,39 @@ QVector<int> versionComponents(QString v)
     return parts;
 }
 
-/// The architecture tokens this machine accepts in an asset name.
-QStringList hostArchTokens()
+/// The spellings of one CPU architecture in asset names.
+QStringList archTokens(const QString& arch)
 {
-    const QString arch = QSysInfo::currentCpuArchitecture();
     if (arch == QLatin1String("arm64"))
         return {QStringLiteral("arm64"), QStringLiteral("aarch64")};
     if (arch == QLatin1String("x86_64"))
         return {QStringLiteral("x86_64"), QStringLiteral("amd64")};
     return {arch};
+}
+
+/// The architecture tokens this machine accepts in an asset name.
+QStringList hostArchTokens()
+{
+    return archTokens(QSysInfo::currentCpuArchitecture());
+}
+
+/// The tokens of the architecture this binary was built for, when that is not
+/// the machine's own: ASTRA running under emulation, which is how the x86_64
+/// Windows build runs on ARM. Empty when build and host agree.
+QStringList emulatedArchTokens()
+{
+    const QString build = QSysInfo::buildCpuArchitecture();
+    if (build == QSysInfo::currentCpuArchitecture())
+        return {};
+    return archTokens(build);
+}
+
+bool nameHasAnyToken(const QString& assetName, const QStringList& tokens)
+{
+    for (const QString& t : tokens)
+        if (assetName.contains(t, Qt::CaseInsensitive))
+            return true;
+    return false;
 }
 
 bool namesArch(const QString& assetName)
@@ -474,10 +498,15 @@ void UpdateManager::onReleaseReply(QNetworkReply* reply, bool respectSkip)
     // Locate this platform's asset: the .AppImage on Linux, the .dmg on macOS,
     // and only when its name matches this machine's architecture (an arm64 .dmg
     // is useless on an Intel Mac). Assets without any arch marker are accepted
-    // when they are the only candidate.
+    // when they are the only candidate. A native asset always wins; failing
+    // that, one for the architecture this binary itself was built for is taken,
+    // since the copy that is running proves the machine can run it. That is the
+    // x86_64 Windows installer on an ARM machine, where it is the only one.
     {
         const QStringList archs = hostArchTokens();
+        const QStringList emulatedArchs = emulatedArchTokens();
         QJsonObject match;
+        QJsonObject emulatedMatch;
         QJsonObject archless;
         int archlessCount = 0;
         QStringList assetNames;
@@ -493,15 +522,15 @@ void UpdateManager::onReleaseReply(QNetworkReply* reply, bool respectSkip)
                 ++archlessCount;
                 continue;
             }
-            for (const QString& t : archs) {
-                if (name.contains(t, Qt::CaseInsensitive)) {
-                    match = a;
-                    break;
-                }
-            }
-            if (!match.isEmpty())
+            if (nameHasAnyToken(name, archs)) {
+                match = a;
                 break;
+            }
+            if (emulatedMatch.isEmpty() && nameHasAnyToken(name, emulatedArchs))
+                emulatedMatch = a;
         }
+        if (match.isEmpty())
+            match = emulatedMatch;
         if (match.isEmpty() && archlessCount == 1)
             match = archless;
 

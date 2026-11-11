@@ -43,12 +43,27 @@ set(CMAKE_CXX_EXTENSIONS ${ASTRA_CXX_EXTENSIONS})
 # directory-level compile options land on windres' command line too -- and
 # windres treats an unrecognised option as a fatal usage error, so an unguarded
 # -march here takes the resource compile down with it.
+#
+# ASTRA_X86_MARCH selects that baseline. The default, x86-64-v3, is AVX2/FMA
+# (Haswell / Zen 1 and newer). The Windows installer is built once per entry
+# of ASTRA_WIN_VARIANTS in build-windows.sh, each with its own value here, and
+# picks the right payload on the target machine: x86-64 is the plain baseline
+# every 64-bit CPU runs, including x64 emulation on ARM.
+set(ASTRA_X86_MARCH "x86-64-v3" CACHE STRING
+    "x86 -march baseline for every target (x86-64, x86-64-v2, x86-64-v3, ...)")
+set(ASTRA_TARGET_IS_X86 FALSE)
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|amd64|AMD64|i[3-6]86)$")
+    set(ASTRA_TARGET_IS_X86 TRUE)
+    message(STATUS "x86 instruction-set baseline: -march=${ASTRA_X86_MARCH}")
     add_compile_options(
         "$<$<NOT:$<COMPILE_LANGUAGE:RC>>:-mtune=generic>"
-        # AVX2/FMA. Use x86-64-v2 if you support older CPUs.
-        "$<$<NOT:$<COMPILE_LANGUAGE:RC>>:-march=x86-64-v3>"
+        "$<$<NOT:$<COMPILE_LANGUAGE:RC>>:-march=${ASTRA_X86_MARCH}>"
     )
+    # Shown in the About box, so a bug report can say which of the Windows
+    # installer's builds is the installed one. On this one file only: a global
+    # definition would recompile everything whenever the baseline changes.
+    set_source_files_properties(src/app/ui/MainWindow.cpp PROPERTIES
+        COMPILE_DEFINITIONS "ASTRA_BUILD_ISA=\"${ASTRA_X86_MARCH}\"")
 endif()
 
 # MinGW's assembler defaults to the COFF section limit (32767). qcustomplot.cpp
@@ -274,6 +289,36 @@ add_subdirectory("${ASTRA_GAEL_SOURCE_DIR}" gael-build EXCLUDE_FROM_ALL)
 # EXCLUDE_FROM_ALL) so `cmake --build` always produces it alongside ASTRA.
 if(ASTRA_HAVE_SEDFIT)
     add_subdirectory(external/SEDplusplus)
+
+    # SEDplusplus compiles its fast_ext kernel (src/fastext.cpp) with explicit
+    # -mavx2 -mfma on x86 no matter what baseline the rest of the build uses.
+    # ASTRA never switches fast_ext on, but a build for a baseline below AVX2
+    # must not carry AVX2 code at all, so on such a baseline the per-file
+    # options are replaced with the portable set SEDplusplus itself uses off
+    # x86. Done from here, through the target's directory scope, so the
+    # submodule stays untouched.
+    if(ASTRA_TARGET_IS_X86 AND TARGET sedfit)
+        include(CheckCXXSourceCompiles)
+        set(_astra_saved_required_flags "${CMAKE_REQUIRED_FLAGS}")
+        set(CMAKE_REQUIRED_FLAGS "-march=${ASTRA_X86_MARCH}")
+        string(MAKE_C_IDENTIFIER "ASTRA_MARCH_HAS_AVX2_FMA_${ASTRA_X86_MARCH}"
+               _astra_avx2_var)
+        check_cxx_source_compiles("
+            #if !defined(__AVX2__) || !defined(__FMA__)
+            #error baseline lacks AVX2/FMA
+            #endif
+            int main() { return 0; }" ${_astra_avx2_var})
+        set(CMAKE_REQUIRED_FLAGS "${_astra_saved_required_flags}")
+        if(NOT ${_astra_avx2_var})
+            message(STATUS
+                "-march=${ASTRA_X86_MARCH} has no AVX2/FMA: building the "
+                "sedfit fast_ext kernel without its explicit SIMD flags")
+            set_source_files_properties(
+                "${CMAKE_CURRENT_SOURCE_DIR}/external/SEDplusplus/src/fastext.cpp"
+                TARGET_DIRECTORY sedfit
+                PROPERTIES COMPILE_OPTIONS "-O3;-fno-math-errno")
+        endif()
+    endif()
 endif()
 
 

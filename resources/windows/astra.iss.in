@@ -1,9 +1,14 @@
 ; Inno Setup script for the ASTRA Windows installer.
 ;
-; Not used directly: build-windows.sh substitutes the @TOKENS@ and hands the
-; result to ISCC. Editing this file by hand and running ISCC on it will fail on
-; the unsubstituted paths, which is the intent -- the staged tree only exists
-; after the build script has deployed the DLL closure into it.
+; Not used directly: build-windows.sh substitutes the at-sign tokens and hands
+; the result to ISCC. Editing this file by hand and running ISCC on it will
+; fail on the unsubstituted paths, which is the intent -- the staged tree only
+; exists after the build script has deployed the DLL closure into it.
+;
+; One installer for every machine. It carries ASTRA compiled for several
+; x86-64 levels (ASTRA_WIN_VARIANTS in build-windows.sh), probes the CPU before
+; copying anything, and installs the fastest build that CPU can run. See the
+; [Code] section at the end.
 ;
 ; The installer is per-user by default (PrivilegesRequired=lowest), so a
 ; researcher on a managed university machine can install ASTRA without an admin
@@ -14,6 +19,8 @@
 #define AppPublisher  "Fabian Mattig"
 #define AppURL        "https://github.com/Fabmat1/ASTRA"
 #define AppExeName    "ASTRA.exe"
+; The x86-64 levels packed into this installer, space separated.
+#define Variants      "@VARIANTS@"
 
 [Setup]
 ; AppId is what Windows keys the installed program on. It must never change,
@@ -34,11 +41,16 @@ DisableProgramGroupPage=yes
 PrivilegesRequired=lowest
 PrivilegesRequiredOverridesAllowed=dialog
 
-; ASTRA is built -march=x86-64-v3 (AVX2), and every 64-bit Windows machine that
-; can run that is x64compatible. Blocking the 32-bit and ARM-emulation cases
-; here beats an illegal-instruction crash on first launch.
+; ASTRA is a 64-bit x86 program. x64compatible is every Windows that can run
+; one: x64 itself, and ARM64 Windows 11 through its x64 emulation. 32-bit
+; Windows and ARM64 Windows 10 (which emulates 32-bit x86 only) are refused
+; here with Setup's own message. Which x86-64 level gets installed is decided
+; per machine in [Code].
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
+; Qt 6 does not run below Windows 10 1809. Refusing here names the reason; the
+; alternative is a missing-entry-point dialog on first launch.
+MinVersion=10.0.17763
 
 OutputDir=@OUT_DIR@
 OutputBaseFilename=@OUT_BASENAME@
@@ -60,9 +72,19 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
 
 [Files]
-; The staged tree is already complete -- build-windows.sh ran windeployqt and
-; resolved the non-Qt DLL closure into it -- so this is a straight copy.
-Source: "@STAGE_DIR@\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+; The CPU probe, run from the temp directory by InitializeSetup and never
+; installed. It has to stay the first entry: with solid compression, reaching a
+; file means decompressing everything stored before it.
+Source: "@PROBE@"; Flags: dontcopy
+; Everything the variants have in common: Qt, the runtime DLLs, all the data.
+; build-windows.sh ran windeployqt and resolved the DLL closure for each
+; variant, then moved the files that came out identical in all of them here.
+Source: "@COMMON_DIR@\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+; What each variant compiled for itself (ASTRA.exe, sedfit.exe, the lcurve
+; binaries), one line per variant, each guarded by Check: IsVariant('<name>').
+; Same relative paths in every variant, so installing a different one over an
+; existing copy, as an update on a new machine may, replaces it cleanly.
+#include "@VARIANT_FILES@"
 
 [Icons]
 Name: "{autoprograms}\{#AppName}"; Filename: "{app}\bin\{#AppExeName}"
@@ -76,3 +98,199 @@ Filename: "{app}\bin\{#AppExeName}"; Description: "{cm:LaunchProgram,{#StringCha
 ; behind makes the uninstall look incomplete in Explorer.
 Type: dirifempty; Name: "{app}\bin"
 Type: dirifempty; Name: "{app}"
+
+[Code]
+// Choosing the build to install.
+//
+// BuiltVariants names the payloads in this installer by x86-64 level:
+// "x86-64" is level 1, "x86-64-vN" is level N. astra-cpulevel.exe (built from
+// resources/windows/cpulevel.c) reports the level of this machine as its exit
+// code, 10 + level. The highest variant at or below that level is installed.
+//
+// Two deliberate exceptions:
+//   * On ARM64 the lowest variant is installed, whatever the probe says. The
+//     instruction sets the x64 emulator offers depend on the Windows build and
+//     on per-program compatibility settings, so what the probe is offered is
+//     no promise about what ASTRA.exe will be offered later.
+//   * /VARIANT=<name> on the command line overrides the choice, for support
+//     and for testing a variant on a machine that would not get it.
+//
+// A probe that cannot run counts as level 1: the slow build that works beats
+// the fast one that might not.
+const
+  BuiltVariants = '{#Variants}';
+  // Not written inline where it is used: a line that starts with a character
+  // code is taken for a preprocessor directive.
+  BlankLine = #13#10#13#10;
+
+var
+  ChosenVariant: String;
+  ChosenReason: String;
+
+function VariantLevel(const Name: String): Integer;
+begin
+  if Name = 'x86-64' then
+    Result := 1
+  else if Pos('x86-64-v', Name) = 1 then
+    Result := StrToIntDef(Copy(Name, 9, Length(Name)), 0)
+  else
+    Result := 0;
+end;
+
+function VariantLabel(const Name: String): String;
+begin
+  case VariantLevel(Name) of
+    1: Result := Name + ' (any 64-bit processor)';
+    2: Result := Name + ' (SSE4.2)';
+    3: Result := Name + ' (AVX2)';
+    4: Result := Name + ' (AVX-512)';
+  else
+    Result := Name;
+  end;
+end;
+
+// Removes and returns the first name of a space-separated list.
+function PopVariant(var Rest: String): String;
+var
+  P: Integer;
+begin
+  Rest := Trim(Rest);
+  P := Pos(' ', Rest);
+  if P = 0 then
+  begin
+    Result := Rest;
+    Rest := '';
+  end
+  else
+  begin
+    Result := Copy(Rest, 1, P - 1);
+    Rest := Copy(Rest, P + 1, Length(Rest));
+  end;
+end;
+
+function IsBuiltVariant(const Name: String): Boolean;
+var
+  Rest: String;
+begin
+  Result := False;
+  Rest := BuiltVariants;
+  while (Rest <> '') and not Result do
+    Result := PopVariant(Rest) = Name;
+end;
+
+function ProbeCpuLevel: Integer;
+var
+  ExitCode: Integer;
+begin
+  Result := 1;
+  try
+    ExtractTemporaryFile('astra-cpulevel.exe');
+  except
+    Log('CPU probe could not be extracted (' + GetExceptionMessage +
+        '); assuming x86-64 level 1');
+    Exit;
+  end;
+  if not Exec(ExpandConstant('{tmp}\astra-cpulevel.exe'), '', '', SW_HIDE,
+              ewWaitUntilTerminated, ExitCode) then
+    Log(Format('CPU probe did not start (error %d); assuming x86-64 level 1',
+               [ExitCode]))
+  else if (ExitCode < 11) or (ExitCode > 14) then
+    Log(Format('CPU probe exited with %d, which is not a level; assuming ' +
+               'x86-64 level 1', [ExitCode]))
+  else
+    Result := ExitCode - 10;
+end;
+
+// Sets ChosenVariant and ChosenReason. On failure ChosenVariant is empty and
+// ChosenReason is the message to show.
+procedure ChooseVariant;
+var
+  Rest, Name, Forced: String;
+  Level, CpuLevel, Best: Integer;
+  WantLowest: Boolean;
+begin
+  ChosenVariant := '';
+
+  Forced := ExpandConstant('{param:VARIANT|}');
+  if Forced <> '' then
+  begin
+    if IsBuiltVariant(Forced) then
+    begin
+      ChosenVariant := Forced;
+      ChosenReason := 'requested with /VARIANT';
+    end
+    else
+      ChosenReason := 'This installer has no "' + Forced +
+        '" build of ASTRA.' + BlankLine +
+        'Builds it contains: ' + BuiltVariants;
+    Exit;
+  end;
+
+  CpuLevel := ProbeCpuLevel;
+  WantLowest := IsArm64;
+  Best := 0;
+  Rest := BuiltVariants;
+  while Rest <> '' do
+  begin
+    Name := PopVariant(Rest);
+    Level := VariantLevel(Name);
+    if (Level >= 1) and (Level <= CpuLevel) then
+      if (Best = 0) or (WantLowest and (Level < Best)) or
+         ((not WantLowest) and (Level > Best)) then
+      begin
+        Best := Level;
+        ChosenVariant := Name;
+      end;
+  end;
+
+  if ChosenVariant = '' then
+    ChosenReason := 'This installer only contains ASTRA builds for newer ' +
+      'processors (' + BuiltVariants + '), and the processor in this ' +
+      'computer supports x86-64 level ' + IntToStr(CpuLevel) + '.' + BlankLine +
+      'Please report this at {#AppURL}/issues.'
+  else if WantLowest then
+    ChosenReason := 'runs through the x64 emulation of Windows on ARM'
+  else
+    ChosenReason := 'the fastest build this processor supports (x86-64 level ' +
+      IntToStr(CpuLevel) + ')';
+end;
+
+function InitializeSetup: Boolean;
+begin
+  ChooseVariant;
+  Result := ChosenVariant <> '';
+  if Result then
+    Log('Installing the ' + ChosenVariant + ' build: ' + ChosenReason)
+  else
+    SuppressibleMsgBox(ChosenReason, mbCriticalError, MB_OK, IDOK);
+end;
+
+// Check function of the per-variant [Files] entries.
+function IsVariant(const Name: String): Boolean;
+begin
+  Result := Name = ChosenVariant;
+end;
+
+procedure AppendMemo(var Memo: String; const Part, NewLine: String);
+begin
+  if Part = '' then
+    Exit;
+  if Memo <> '' then
+    Memo := Memo + NewLine + NewLine;
+  Memo := Memo + Part;
+end;
+
+// The "Ready to Install" summary, with the chosen build added to it.
+function UpdateReadyMemo(Space, NewLine, MemoUserInfoInfo, MemoDirInfo,
+  MemoTypeInfo, MemoComponentsInfo, MemoGroupInfo, MemoTasksInfo: String): String;
+begin
+  Result := '';
+  AppendMemo(Result, MemoUserInfoInfo, NewLine);
+  AppendMemo(Result, MemoDirInfo, NewLine);
+  AppendMemo(Result, MemoTypeInfo, NewLine);
+  AppendMemo(Result, MemoComponentsInfo, NewLine);
+  AppendMemo(Result, MemoGroupInfo, NewLine);
+  AppendMemo(Result, MemoTasksInfo, NewLine);
+  AppendMemo(Result, 'Processor build:' + NewLine + Space +
+    VariantLabel(ChosenVariant) + NewLine + Space + ChosenReason, NewLine);
+end;

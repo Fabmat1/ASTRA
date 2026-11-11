@@ -587,7 +587,11 @@ void MainWindow::createActions()
     connect(_aboutAction, &QAction::triggered, [this]() {
         QMessageBox::about(this, "About ASTRA",
             "ASTRA - Advanced STellar astrophysics Research and Analysis tool\n\n"
-            "Version " ASTRA_VERSION_STRING "\n\n"
+            "Version " ASTRA_VERSION_STRING
+#ifdef ASTRA_BUILD_ISA
+            " (" ASTRA_BUILD_ISA ")"
+#endif
+            "\n\n"
             "A modern Qt6 application for managing and analyzing stellar astrophysics data.\n"
             "All your data in one place! :)");
     });

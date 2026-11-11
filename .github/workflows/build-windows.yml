@@ -5,6 +5,11 @@ name: Windows build (x86_64)
 # and MSVC has no Fortran compiler, so a Visual Studio build cannot even
 # configure. build-windows.sh does the actual work and is the same script a
 # developer runs locally, so what ships is what was tested.
+#
+# One installer for every 64-bit Windows: the script compiles ASTRA once per
+# x86-64 level in ASTRA_WIN_VARIANTS (default: x86-64-v3 for AVX2 machines and
+# plain x86-64 for older CPUs and x64 emulation on ARM), and the installer
+# picks between them on the target machine. That is two full compiles per run.
 
 on:
   # Manual trigger from the Actions tab — pick any version string.
@@ -30,8 +35,8 @@ jobs:
   build:
     runs-on: windows-2025
     # A cold run installs the MSYS2 toolchain and builds CCfits from source on
-    # top of ASTRA itself. Cached runs are much shorter, but ASTRA is a large
-    # C++ target and MinGW is not fast.
+    # top of ASTRA itself, once per variant. Cached runs are much shorter, but
+    # ASTRA is a large C++ target and MinGW is not fast.
     timeout-minutes: 180
     steps:
       - name: Check out sources (with submodules)

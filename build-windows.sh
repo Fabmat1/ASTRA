@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
 # Build a self-contained ASTRA installer (.exe) for 64-bit Windows.
 #
+# One installer serves every machine: ASTRA is compiled once per x86-64 level
+# in ASTRA_WIN_VARIANTS, the installer carries all of them (files that come out
+# identical are stored once), and on the target it runs a small CPU probe and
+# copies the fastest build that CPU can execute. On ARM it installs the lowest
+# level, which runs under Windows 11's x64 emulation.
+#
 # Usage:   ./build-windows.sh [VERSION]
 #          Run it from an MSYS2 **UCRT64** shell, not from msys2/mingw32/clang64.
 #
@@ -20,10 +26,17 @@
 #                            installer — it does not stamp the binary.
 #   ISCC                   = path to Inno Setup's ISCC.exe, if it is not on PATH
 #                            and not in the default install location.
+#   ASTRA_WIN_VARIANTS     = x86-64 levels to build and pack, space separated
+#                            (default: "x86-64-v3 x86-64"). Each is one full
+#                            compile of ASTRA, GAEL, sedfit and lcurve with
+#                            that -march. x86-64-v3 is AVX2/FMA; x86-64 is the
+#                            plain baseline every 64-bit CPU runs. Keep x86-64
+#                            in the list, or the installer has to refuse the
+#                            machines below the lowest level it carries.
 #   ASTRA_BUNDLE_LCURVE=0  = do not build/bundle the lcurve fitting binaries
-#   LCURVE_REPO / LCURVE_REF / LCURVE_ARCH
-#                          = source, ref and -march baseline for that build
-#                            (defaults: the public repo, main, x86-64-v3)
+#   LCURVE_REPO / LCURVE_REF
+#                          = source and ref for that build (defaults: the
+#                            public repo, main). Its -march follows the variant.
 #
 # Toolchain: MSYS2 UCRT64 (mingw-w64 GCC). Not MSVC — GAEL declares
 # `LANGUAGES C CXX Fortran` and there is no Fortran compiler in the MSVC
@@ -63,6 +76,18 @@ CCFITS_URLS=(
 )
 OUT_BASENAME="astra-${VERSION}-x86_64-setup"
 
+# The payloads to build. Names are -march values and x86-64 psABI levels at the
+# same time, which is what lets the installer compare them against the level
+# its CPU probe reports (resources/windows/cpulevel.c).
+read -r -a VARIANTS <<< "${ASTRA_WIN_VARIANTS:-x86-64-v3 x86-64}"
+variant_level() {  # x86-64 -> 1, x86-64-vN -> N
+  case "$1" in
+    x86-64)        echo 1 ;;
+    x86-64-v[234]) echo "${1##*-v}" ;;
+    *)             return 1 ;;
+  esac
+}
+
 # ── 0. Sanity checks ────────────────────────────────────────────────────────
 [[ -f "${SRC_DIR}/CMakeLists.txt" ]] || { echo "Run from the ASTRA repo root."; exit 1; }
 if [[ "${MSYSTEM:-}" != "UCRT64" ]]; then
@@ -71,7 +96,20 @@ if [[ "${MSYSTEM:-}" != "UCRT64" ]]; then
   exit 1
 fi
 
-echo ">>> ASTRA ${VERSION}  |  ${MSYSTEM}  |  $(uname -s) $(uname -r)"
+((${#VARIANTS[@]})) || { echo "ASTRA_WIN_VARIANTS is empty."; exit 1; }
+declare -A _seen_variant=()
+for _v in "${VARIANTS[@]}"; do
+  variant_level "${_v}" >/dev/null || {
+    echo "ASTRA_WIN_VARIANTS: '${_v}' is not one of x86-64, x86-64-v2, x86-64-v3, x86-64-v4."
+    exit 1
+  }
+  [[ -z "${_seen_variant[${_v}]:-}" ]] || { echo "ASTRA_WIN_VARIANTS lists '${_v}' twice."; exit 1; }
+  _seen_variant[${_v}]=1
+done
+[[ -n "${_seen_variant[x86-64]:-}" ]] || \
+  echo "!!! ASTRA_WIN_VARIANTS has no x86-64 baseline: the installer will refuse older CPUs."
+
+echo ">>> ASTRA ${VERSION}  |  ${MSYSTEM}  |  $(uname -s) $(uname -r)  |  ${VARIANTS[*]}"
 
 # ── 1. Toolchain and dependencies ───────────────────────────────────────────
 # One list, used both here and (via the same script) by CI, so what ships is
@@ -211,7 +249,7 @@ else
   touch "${CCFITS_STAMP}"
 fi
 
-# ── 4. Configure ────────────────────────────────────────────────────────────
+# ── 4. Shared setup for the per-variant builds ──────────────────────────────
 if [[ -z "${ASTRA_VERSION_OVERRIDE:-}" ]]; then
   echo "!!! ASTRA_VERSION_OVERRIDE is unset — the binary will self-report a"
   echo "!!! development version and the in-app updater will treat it as such."
@@ -220,7 +258,6 @@ fi
 export CCACHE_DIR="${CACHE}/ccache"
 mkdir -p "${CCACHE_DIR}"
 
-
 # GAEL wants Python3 with the Development and NumPy components. On a GitHub
 # runner there is a second Python in C:/hostedtoolcache that CMake finds first,
 # and it has neither -- so point FindPython3 at MSYS2's explicitly rather than
@@ -228,50 +265,37 @@ mkdir -p "${CCACHE_DIR}"
 # not understand /ucrt64.
 UCRT_PREFIX="$(cygpath -m /ucrt64)"
 
-cmake -S "${SRC_DIR}" -B "${BUILD_DIR}" -G Ninja \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DASTRA_VERSION_OVERRIDE="${ASTRA_VERSION_OVERRIDE:-}" \
-  -DCMAKE_PREFIX_PATH="${CCFITS_PREFIX}" \
-  -DPython3_ROOT_DIR="${UCRT_PREFIX}" \
-  -DPython3_EXECUTABLE="${UCRT_PREFIX}/bin/python3.exe" \
-  -DPython3_FIND_STRATEGY=LOCATION \
-  -DPython3_FIND_REGISTRY=NEVER \
-  -DCMAKE_INSTALL_PREFIX="${STAGE_DIR}" \
-  -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-  -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
-  -DBUILD_TESTING=OFF
+# Every compile command of a variant has to carry that variant's -march and no
+# other, and below x86-64-v3 nothing may switch a newer instruction set back on
+# for a single file. Nobody builds these on the old CPU they are meant for, so
+# a stray flag (a submodule's -march=native, a per-file -mavx2) would ship
+# unnoticed and surface as an illegal-instruction crash on a user's machine.
+# Checked against the compile database, where it is exact.
+assert_isa_flags() {  # $1 = compile_commands.json, $2 = variant
+  local cc="$1" variant="$2" found
+  [[ -f "${cc}" ]] || { echo "::error::no compile database at ${cc}"; exit 1; }
+  found="$({ grep -oE -- '-m(arch|cpu)=[A-Za-z0-9_.+-]+' "${cc}" || true; } | sort -u | tr '\n' ' ')"
+  [[ "${found}" == "-march=${variant} " ]] || {
+    echo "::error::${cc}: expected only -march=${variant}, found: ${found:-none}"; exit 1; }
+  if (($(variant_level "${variant}") < 3)); then
+    found="$({ grep -oE -- '-m(avx|fma|bmi|f16c|lzcnt|movbe|xsave)[A-Za-z0-9_.]*' "${cc}" || true; } | sort -u | tr '\n' ' ')"
+    [[ -z "${found}" ]] || {
+      echo "::error::${cc}: ${variant} build compiles files with ${found}"; exit 1; }
+  fi
+}
 
-# ── 5. Build and stage ──────────────────────────────────────────────────────
-# -k 0 keeps going after the first error. A Windows build breaking is almost
-# always a batch of related portability errors, and one CI round that reports
-# all of them beats N rounds that report one each.
-cmake --build "${BUILD_DIR}" -j "${JOBS}" -- -k 0
-
-rm -rf "${STAGE_DIR}"
-cmake --install "${BUILD_DIR}"
-
-BIN_DIR="${STAGE_DIR}/bin"
-[[ -f "${BIN_DIR}/ASTRA.exe" ]] || { echo "No ASTRA.exe in ${BIN_DIR}"; exit 1; }
-
-# ── 5b. lcurve fitting binaries ─────────────────────────────────────────────
+# ── 4b. lcurve sources (built per variant in step 5b) ───────────────────────
 # ASTRA shells out to lcurve_levmarq / lcurve_mcmc / lcurve_simplex to fit a
 # light curve, and to lcurve_re (the forward model) for the fit dialog's model
 # preview. Built from source here, exactly as build-appimage.sh and
 # build-macos.sh do, so every release picks up the current lcurve_re HEAD.
-#
-# They land in libexec/astra/lcurve, which is where ASTRA looks: the runtime
-# path comes from ASTRA_LCURVE_BUNDLE_RELDIR ("../libexec/astra/lcurve"),
-# computed from the install layout in CMakeLists.txt. Step 7 gives the
-# directory its own DLL closure, since Windows resolves imports next to the
-# .exe and these do not sit beside ASTRA.exe.
 if [[ "${ASTRA_BUNDLE_LCURVE:-1}" == "1" ]]; then
   LCURVE_REPO="${LCURVE_REPO:-https://github.com/Fabmat1/lcurve_re.git}"
   LCURVE_REF="${LCURVE_REF:-main}"
   LCURVE_SRC="${CACHE}/lcurve_re"
-  LCURVE_BUILD="${LCURVE_SRC}/build-windows"
   LCURVE_BINS=(lcurve_levmarq lcurve_mcmc lcurve_simplex lcurve_re)
 
-  echo ">>> Building lcurve (${LCURVE_REF})"
+  echo ">>> Fetching lcurve (${LCURVE_REF})"
   if [[ -d "${LCURVE_SRC}/.git" ]]; then
     # reset --hard, not checkout: the cached clone still carries the previous
     # run's -march rewrite in its working tree, and a plain checkout refuses to
@@ -282,6 +306,9 @@ if [[ "${ASTRA_BUNDLE_LCURVE:-1}" == "1" ]]; then
     rm -rf "${LCURVE_SRC}"
     git clone --depth 1 --branch "${LCURVE_REF}" "${LCURVE_REPO}" "${LCURVE_SRC}"
   fi
+  # Build tree of the single-variant layout this script used to have; it sits
+  # in the CI cache and would only take up room there.
+  rm -rf "${LCURVE_SRC}/build-windows"
 
   # gnuplot-iostream is a header-only build dependency (new_helpers.h includes
   # it unconditionally). MSYS2 has no package for it, and ASTRA never lets
@@ -292,56 +319,12 @@ if [[ "${ASTRA_BUNDLE_LCURVE:-1}" == "1" ]]; then
   [[ -f "${GP_INC}/gnuplot-iostream.h" ]] || \
     curl -fsSL -o "${GP_INC}/gnuplot-iostream.h" \
       https://raw.githubusercontent.com/dstahlke/gnuplot-iostream/master/gnuplot-iostream.h
-
-  # lcurve_re's Release flags hardcode -march=native, which would tune the
-  # binaries to whatever CPU the runner happened to have. Pin ASTRA's own
-  # baseline (CMakeLists.txt: -march=x86-64-v3, AVX2/FMA) instead.
-  LCURVE_ARCH="${LCURVE_ARCH:-x86-64-v3}"
-  sed -i "s/-march=native/-march=${LCURVE_ARCH}/" "${LCURVE_SRC}/CMakeLists.txt"
-  grep -q -- "-march=native" "${LCURVE_SRC}/CMakeLists.txt" \
-    && { echo "::error::lcurve_re still requests -march=native"; exit 1; }
-
   GP_INC_NATIVE="$(cygpath -m "${GP_INC}")"
-  cmake -S "${LCURVE_SRC}" -B "${LCURVE_BUILD}" -G Ninja \
-    -DCMAKE_BUILD_TYPE=Release \
-    -DLCURVE_ENABLE_CUDA=OFF \
-    -DGNUPLOT_IOSTREAM_INCLUDE_DIR="${GP_INC_NATIVE}" \
-    -DCMAKE_C_COMPILER_LAUNCHER=ccache \
-    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
-  cmake --build "${LCURVE_BUILD}" -j "${JOBS}" --target "${LCURVE_BINS[@]}"
-
-  LCURVE_DEST="${STAGE_DIR}/libexec/astra/lcurve"
-  mkdir -p "${LCURVE_DEST}"
-  for b in "${LCURVE_BINS[@]}"; do
-    [[ -f "${LCURVE_BUILD}/${b}.exe" ]] \
-      || { echo "::error::lcurve build produced no ${b}.exe"; exit 1; }
-    cp -f "${LCURVE_BUILD}/${b}.exe" "${LCURVE_DEST}/"
-  done
-  echo ">>> lcurve staged at libexec/astra/lcurve ($(ls "${LCURVE_DEST}" | tr '\n' ' '))"
 else
   echo ">>> ASTRA_BUNDLE_LCURVE=0 - light-curve fitting will need a user-installed lcurve"
 fi
 
-# ── 6. Qt deployment ────────────────────────────────────────────────────────
-# Copies the Qt DLLs plus the platform/imageformat/sqldrivers plugins ASTRA
-# needs. The SQLite driver in particular is not a link-time dependency — the
-# app loads it by name at runtime — so nothing else would pull it in.
-echo ">>> windeployqt"
-windeployqt.exe \
-  --release \
-  --no-translations \
-  --no-system-d3d-compiler \
-  --no-opengl-sw \
-  --no-compiler-runtime \
-  "$(cygpath -w "${BIN_DIR}/ASTRA.exe")"
-
-[[ -f "${BIN_DIR}/sqldrivers/qsqlite.dll" ]] || {
-  echo "::warning::qsqlite.dll was not deployed — ASTRA cannot open its database."
-  mkdir -p "${BIN_DIR}/sqldrivers"
-  cp "/ucrt64/share/qt6/plugins/sqldrivers/qsqlite.dll" "${BIN_DIR}/sqldrivers/"
-}
-
-# ── 7. Non-Qt DLL closure ───────────────────────────────────────────────────
+# ── 4c. DLL closure helpers (used per variant in step 7) ────────────────────
 # windeployqt only knows about Qt. OpenBLAS, gfortran's runtime, Boost, TBB,
 # FFTW, cfitsio, GSL and libstdc++/libgcc/libwinpthread all still have to come
 # along or the app dies at load time on a machine without MSYS2.
@@ -381,36 +364,203 @@ deploy_dll_closure() {  # $1 = directory holding the .exe(s) to satisfy
   done
 }
 
-echo ">>> Resolving DLL dependencies"
-# Every directory that holds an executable needs its own closure: Windows
-# resolves imports next to the .exe, and the helper binaries live in their own
-# libexec subdirectories, not beside ASTRA.exe.
-while read -r exe_dir; do
-  echo "    ${exe_dir#${STAGE_DIR}/}"
-  deploy_dll_closure "${exe_dir}"
-done < <(find "${STAGE_DIR}" -name '*.exe' -printf '%h\n' | sort -u)
+# ── 5-7. Build, stage and deploy one complete tree per variant ──────────────
+# Each variant gets its own build directory and its own staged tree, and each
+# tree is finished and checked as if it were the only one: Qt deployed, DLL
+# closure resolved, imports verified. Step 8 then folds what the trees have in
+# common back together.
+rm -rf "${STAGE_DIR}"
 
-# A missing import here means the app would fail to start with an unhelpful
-# "0xc0000135" dialog, or a plugin that silently never loads, so check rather
-# than trust. Each PE is checked against the directory of the executable it
-# belongs to, since that is where Windows will look.
-missing=0
-while read -r exe_dir; do
-  while read -r pe; do
-    while read -r dll; do
-      [[ -n "${dll}" ]] || continue
-      [[ -f "${exe_dir}/${dll}" ]] && continue
-      [[ -f "/ucrt64/bin/${dll}" ]] || continue   # system DLL
-      echo "::error::${pe#${STAGE_DIR}/} imports ${dll}, which was not deployed"
-      missing=1
-    done < <(imports_of "${pe}")
-  done < <(find "${exe_dir}" \( -name '*.exe' -o -name '*.dll' \))
-done < <(find "${STAGE_DIR}" -name '*.exe' -printf '%h\n' | sort -u)
-((missing == 0)) || exit 1
+for VARIANT in "${VARIANTS[@]}"; do
+  V_BUILD="${BUILD_DIR}/${VARIANT}"
+  V_STAGE="${STAGE_DIR}/${VARIANT}"
+  BIN_DIR="${V_STAGE}/bin"
+  echo
+  echo ">>> ── Variant ${VARIANT} ──────────────────────────────────────────"
 
-echo ">>> Staged tree: $(du -sh "${STAGE_DIR}" | cut -f1)"
+  # ── 5. Configure, build, install ──────────────────────────────────────────
+  cmake -S "${SRC_DIR}" -B "${V_BUILD}" -G Ninja \
+    -DCMAKE_BUILD_TYPE=Release \
+    -DASTRA_X86_MARCH="${VARIANT}" \
+    -DASTRA_VERSION_OVERRIDE="${ASTRA_VERSION_OVERRIDE:-}" \
+    -DCMAKE_PREFIX_PATH="${CCFITS_PREFIX}" \
+    -DPython3_ROOT_DIR="${UCRT_PREFIX}" \
+    -DPython3_EXECUTABLE="${UCRT_PREFIX}/bin/python3.exe" \
+    -DPython3_FIND_STRATEGY=LOCATION \
+    -DPython3_FIND_REGISTRY=NEVER \
+    -DCMAKE_INSTALL_PREFIX="${V_STAGE}" \
+    -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+    -DCMAKE_CXX_COMPILER_LAUNCHER=ccache \
+    -DBUILD_TESTING=OFF
+  assert_isa_flags "${V_BUILD}/compile_commands.json" "${VARIANT}"
 
-# ── 8. Installer ────────────────────────────────────────────────────────────
+  # -k 0 keeps going after the first error. A Windows build breaking is almost
+  # always a batch of related portability errors, and one CI round that reports
+  # all of them beats N rounds that report one each.
+  cmake --build "${V_BUILD}" -j "${JOBS}" -- -k 0
+  cmake --install "${V_BUILD}"
+
+  [[ -f "${BIN_DIR}/ASTRA.exe" ]] || { echo "No ASTRA.exe in ${BIN_DIR}"; exit 1; }
+
+  # ── 5b. lcurve fitting binaries ───────────────────────────────────────────
+  # They land in libexec/astra/lcurve, which is where ASTRA looks: the runtime
+  # path comes from ASTRA_LCURVE_BUNDLE_RELDIR ("../libexec/astra/lcurve"),
+  # computed from the install layout in CMakeLists.txt. Step 7 gives the
+  # directory its own DLL closure, since Windows resolves imports next to the
+  # .exe and these do not sit beside ASTRA.exe.
+  if [[ "${ASTRA_BUNDLE_LCURVE:-1}" == "1" ]]; then
+    LCURVE_BUILD="${LCURVE_SRC}/build-windows-${VARIANT}"
+    echo ">>> Building lcurve (${LCURVE_REF}, ${VARIANT})"
+
+    # lcurve_re's Release flags hardcode -march=native, which would tune the
+    # binaries to whatever CPU the runner happened to have. Pin this variant's
+    # baseline instead. The checkout first undoes the previous variant's
+    # rewrite, which otherwise leaves no -march=native for sed to find.
+    git -C "${LCURVE_SRC}" checkout -q -- CMakeLists.txt
+    sed -i "s/-march=native/-march=${VARIANT}/" "${LCURVE_SRC}/CMakeLists.txt"
+    grep -q -- "-march=native" "${LCURVE_SRC}/CMakeLists.txt" \
+      && { echo "::error::lcurve_re still requests -march=native"; exit 1; }
+
+    cmake -S "${LCURVE_SRC}" -B "${LCURVE_BUILD}" -G Ninja \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
+      -DLCURVE_ENABLE_CUDA=OFF \
+      -DGNUPLOT_IOSTREAM_INCLUDE_DIR="${GP_INC_NATIVE}" \
+      -DCMAKE_C_COMPILER_LAUNCHER=ccache \
+      -DCMAKE_CXX_COMPILER_LAUNCHER=ccache
+    assert_isa_flags "${LCURVE_BUILD}/compile_commands.json" "${VARIANT}"
+    cmake --build "${LCURVE_BUILD}" -j "${JOBS}" --target "${LCURVE_BINS[@]}"
+
+    LCURVE_DEST="${V_STAGE}/libexec/astra/lcurve"
+    mkdir -p "${LCURVE_DEST}"
+    for b in "${LCURVE_BINS[@]}"; do
+      [[ -f "${LCURVE_BUILD}/${b}.exe" ]] \
+        || { echo "::error::lcurve build produced no ${b}.exe"; exit 1; }
+      cp -f "${LCURVE_BUILD}/${b}.exe" "${LCURVE_DEST}/"
+    done
+    echo ">>> lcurve staged at libexec/astra/lcurve ($(ls "${LCURVE_DEST}" | tr '\n' ' '))"
+  fi
+
+  # ── 6. Qt deployment ──────────────────────────────────────────────────────
+  # Copies the Qt DLLs plus the platform/imageformat/sqldrivers plugins ASTRA
+  # needs. The SQLite driver in particular is not a link-time dependency — the
+  # app loads it by name at runtime — so nothing else would pull it in.
+  echo ">>> windeployqt"
+  windeployqt.exe \
+    --release \
+    --no-translations \
+    --no-system-d3d-compiler \
+    --no-opengl-sw \
+    --no-compiler-runtime \
+    "$(cygpath -w "${BIN_DIR}/ASTRA.exe")"
+
+  [[ -f "${BIN_DIR}/sqldrivers/qsqlite.dll" ]] || {
+    echo "::warning::qsqlite.dll was not deployed — ASTRA cannot open its database."
+    mkdir -p "${BIN_DIR}/sqldrivers"
+    cp "/ucrt64/share/qt6/plugins/sqldrivers/qsqlite.dll" "${BIN_DIR}/sqldrivers/"
+  }
+
+  # ── 7. Non-Qt DLL closure ─────────────────────────────────────────────────
+  echo ">>> Resolving DLL dependencies"
+  # Every directory that holds an executable needs its own closure: Windows
+  # resolves imports next to the .exe, and the helper binaries live in their own
+  # libexec subdirectories, not beside ASTRA.exe.
+  while read -r exe_dir; do
+    echo "    ${exe_dir#${V_STAGE}/}"
+    deploy_dll_closure "${exe_dir}"
+  done < <(find "${V_STAGE}" -name '*.exe' -printf '%h\n' | sort -u)
+
+  # A missing import here means the app would fail to start with an unhelpful
+  # "0xc0000135" dialog, or a plugin that silently never loads, so check rather
+  # than trust. Each PE is checked against the directory of the executable it
+  # belongs to, since that is where Windows will look.
+  missing=0
+  while read -r exe_dir; do
+    while read -r pe; do
+      while read -r dll; do
+        [[ -n "${dll}" ]] || continue
+        [[ -f "${exe_dir}/${dll}" ]] && continue
+        [[ -f "/ucrt64/bin/${dll}" ]] || continue   # system DLL
+        echo "::error::${pe#${STAGE_DIR}/} imports ${dll}, which was not deployed"
+        missing=1
+      done < <(imports_of "${pe}")
+    done < <(find "${exe_dir}" \( -name '*.exe' -o -name '*.dll' \))
+  done < <(find "${V_STAGE}" -name '*.exe' -printf '%h\n' | sort -u)
+  ((missing == 0)) || exit 1
+
+  echo ">>> Staged tree (${VARIANT}): $(du -sh "${V_STAGE}" | cut -f1)"
+done
+
+# ── 8. Fold the variants together ───────────────────────────────────────────
+# The trees differ only in what was compiled here (ASTRA.exe, sedfit.exe, the
+# lcurve binaries). Qt, the MSYS2 DLLs and all the data are byte-identical
+# copies, so packing every tree whole would roughly double the download for
+# nothing. Every file that is the same in all variants moves to common/, which
+# the installer copies unconditionally; what stays behind in a variant's
+# directory is exactly what that variant overrides. Compared by content, not by
+# a list of names, so nothing here needs to know which files a build produces.
+#
+# After this step the per-variant directories are no longer runnable trees:
+# install common/ and one variant over each other to get one, as setup does.
+COMMON_DIR="${STAGE_DIR}/common"
+fold_common_files() {
+  local first="${VARIANTS[0]}" rel v same
+  mkdir -p "${COMMON_DIR}"
+  # Keep the directory skeleton, so a directory that is empty by design still
+  # gets created on install once the pruning below has removed it per variant.
+  while IFS= read -r -d '' rel; do
+    mkdir -p "${COMMON_DIR}/${rel}"
+  done < <(cd "${STAGE_DIR}/${first}" && find . -mindepth 1 -type d -printf '%P\0')
+  while IFS= read -r -d '' rel; do
+    same=1
+    for v in "${VARIANTS[@]:1}"; do
+      cmp -s "${STAGE_DIR}/${first}/${rel}" "${STAGE_DIR}/${v}/${rel}" || { same=0; break; }
+    done
+    ((same)) || continue
+    mv "${STAGE_DIR}/${first}/${rel}" "${COMMON_DIR}/${rel}"
+    for v in "${VARIANTS[@]:1}"; do
+      rm -f "${STAGE_DIR}/${v}/${rel}"
+    done
+  done < <(cd "${STAGE_DIR}/${first}" && find . -type f -printf '%P\0')
+  for v in "${VARIANTS[@]}"; do
+    find "${STAGE_DIR}/${v}" -mindepth 1 -depth -type d -empty -delete
+  done
+}
+
+echo
+echo ">>> Folding files shared by all variants into common/"
+fold_common_files
+echo "    common: $(du -sh "${COMMON_DIR}" | cut -f1)"
+for _v in "${VARIANTS[@]}"; do
+  echo "    ${_v}: $(du -sh "${STAGE_DIR}/${_v}" | cut -f1), $(find "${STAGE_DIR}/${_v}" -type f | wc -l) file(s)"
+done
+# With more than one variant, each must still own its ASTRA.exe: if the
+# executables compared equal, the -march never reached the compiler.
+if ((${#VARIANTS[@]} > 1)); then
+  for _v in "${VARIANTS[@]}"; do
+    [[ -f "${STAGE_DIR}/${_v}/bin/ASTRA.exe" ]] || {
+      echo "::error::variant ${_v} has no ASTRA.exe of its own after folding"; exit 1; }
+  done
+fi
+
+# ── 9. CPU probe ────────────────────────────────────────────────────────────
+# What the installer runs to decide which variant to copy. Always compiled for
+# the plain baseline and linked statically, since it has to run on the very
+# machines the choice exists for, before anything is installed.
+PROBE="${BUILD_DIR}/astra-cpulevel.exe"
+gcc -Os -Wall -Wextra -march=x86-64 -mtune=generic -static -s \
+    -o "${PROBE}" "${SRC_DIR}/resources/windows/cpulevel.c"
+while read -r dll; do
+  [[ -f "/ucrt64/bin/${dll}" ]] && {
+    echo "::error::astra-cpulevel.exe imports ${dll}; it must depend on system DLLs only"; exit 1; }
+done < <(imports_of "${PROBE}")
+probe_rc=0
+"${PROBE}" || probe_rc=$?
+((probe_rc >= 11 && probe_rc <= 14)) || {
+  echo "::error::astra-cpulevel.exe exited with ${probe_rc}, expected 11 to 14"; exit 1; }
+echo ">>> CPU probe built; this machine is x86-64 level $((probe_rc - 10))"
+
+# ── 10. Installer ───────────────────────────────────────────────────────────
 find_iscc() {
   if command -v iscc >/dev/null 2>&1; then command -v iscc; return; fi
   if [[ -n "${ISCC:-}" && -f "${ISCC}" ]]; then echo "${ISCC}"; return; fi
@@ -429,6 +579,17 @@ ISCC_BIN="$(find_iscc)" || {
 }
 echo ">>> Inno Setup: ${ISCC_BIN}"
 
+# One [Files] line per variant that kept files of its own, each guarded by the
+# installer's IsVariant() check. Written to a file the script #includes rather
+# than substituted into it, because it is a variable number of lines.
+VARIANT_FILES_ISS="${BUILD_DIR}/astra-variant-files.iss"
+: > "${VARIANT_FILES_ISS}"
+for _v in "${VARIANTS[@]}"; do
+  [[ -n "$(find "${STAGE_DIR}/${_v}" -type f -print -quit)" ]] || continue
+  printf 'Source: "%s\\*"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion; Check: IsVariant('"'%s'"')\n' \
+    "$(cygpath -w "${STAGE_DIR}/${_v}")" "${_v}" >> "${VARIANT_FILES_ISS}"
+done
+
 # Windows paths are full of backslashes, and a backslash in a sed replacement
 # is an escape -- "C:\Users\..." would silently become "C:Users...", and a \U
 # would upper-case the rest of the line. Double them before substituting.
@@ -436,22 +597,29 @@ sed_escape() { printf '%s' "$1" | sed -e 's/[\\&|]/\\&/g'; }
 
 ISS="${BUILD_DIR}/astra.iss"
 sed -e "s|@VERSION@|$(sed_escape "${VERSION}")|g" \
-    -e "s|@STAGE_DIR@|$(sed_escape "$(cygpath -w "${STAGE_DIR}")")|g" \
+    -e "s|@COMMON_DIR@|$(sed_escape "$(cygpath -w "${COMMON_DIR}")")|g" \
+    -e "s|@VARIANTS@|$(sed_escape "${VARIANTS[*]}")|g" \
+    -e "s|@VARIANT_FILES@|$(sed_escape "$(cygpath -w "${VARIANT_FILES_ISS}")")|g" \
+    -e "s|@PROBE@|$(sed_escape "$(cygpath -w "${PROBE}")")|g" \
     -e "s|@ICON@|$(sed_escape "$(cygpath -w "${SRC_DIR}/resources/windows/astra.ico")")|g" \
     -e "s|@OUT_DIR@|$(sed_escape "$(cygpath -w "${SRC_DIR}")")|g" \
     -e "s|@OUT_BASENAME@|$(sed_escape "${OUT_BASENAME}")|g" \
     "${SRC_DIR}/resources/windows/astra.iss.in" > "${ISS}"
+if grep -n '@[A-Z_]*@' "${ISS}"; then
+  echo "::error::unsubstituted token(s) left in ${ISS}"; exit 1
+fi
 
 "${ISCC_BIN}" "$(cygpath -w "${ISS}")"
 
 OUT_EXE="${SRC_DIR}/${OUT_BASENAME}.exe"
 [[ -f "${OUT_EXE}" ]] || { echo "Inno Setup produced no ${OUT_BASENAME}.exe"; exit 1; }
 
-# ── 9. Checksum ─────────────────────────────────────────────────────────────
+# ── 11. Checksum ────────────────────────────────────────────────────────────
 # Same "<hex>  <filename>" shape the AppImage and .dmg publish, because
 # UpdateManager parses all three with one reader.
 ( cd "${SRC_DIR}" && sha256sum "${OUT_BASENAME}.exe" > "${OUT_BASENAME}.exe.sha256" )
 
 echo
 echo ">>> Done: ${OUT_EXE}  ($(du -h "${OUT_EXE}" | cut -f1))"
+echo ">>> Variants: ${VARIANTS[*]}"
 cat "${SRC_DIR}/${OUT_BASENAME}.exe.sha256"

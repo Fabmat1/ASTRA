@@ -66,6 +66,29 @@ The installer is per-user by default, so it needs no administrator rights;
 choose to elevate during setup if you would rather install into
 `C:\Program Files`.
 
+The one installer covers every supported machine:
+
+| System | What gets installed |
+|---|---|
+| Windows 10 (1809 or later) or Windows 11, Intel/AMD processor with AVX2 (roughly 2013 and newer) | the AVX2 build (`x86-64-v3`) |
+| The same, on an older processor or a budget one without AVX2 (many Pentium, Celeron and Atom chips) | the baseline build (`x86-64`), which needs nothing beyond a 64-bit processor |
+| Windows 11 on ARM (Snapdragon and similar) | the baseline build, run through Windows' built-in x64 emulation |
+
+The installer checks the processor itself and picks the build; the *Ready to
+Install* page names the one it chose, and so does **Help → About ASTRA** afterwards.
+Both builds have the same features. The baseline one can be slower in the
+fitting code. In-app updates go through the same installer, so
+they keep choosing correctly, also after a move to a different computer.
+
+32-bit Windows, Windows 8.1 and older, and Windows 10 on ARM (which cannot run
+64-bit x86 programs) are not supported.
+
+??? note "Forcing a build"
+    To install a specific build regardless of the processor, for example to
+    compare the two, start the installer from a terminal with
+    `/VARIANT=x86-64` or `/VARIANT=x86-64-v3`. Forcing the AVX2 build onto a
+    processor without AVX2 gives an ASTRA that crashes on start.
+
 Everything ASTRA links is bundled, including the `lcurve` fitting binaries and
 `sedfit`. One feature shells out to tools you install yourself:
 
