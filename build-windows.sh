@@ -115,6 +115,7 @@ echo ">>> ASTRA ${VERSION}  |  ${MSYSTEM}  |  $(uname -s) $(uname -r)  |  ${VARI
 # One list, used both here and (via the same script) by CI, so what ships is
 # what a developer building locally gets.
 PACMAN_PKGS=(
+  diffutils                             # cmp, for fold_common_files below
   mingw-w64-ucrt-x86_64-gcc
   mingw-w64-ucrt-x86_64-gcc-fortran     # GAEL declares `LANGUAGES ... Fortran`
   mingw-w64-ucrt-x86_64-cmake
@@ -505,6 +506,10 @@ done
 COMMON_DIR="${STAGE_DIR}/common"
 fold_common_files() {
   local first="${VARIANTS[0]}" rel v same
+  # Without cmp every comparison below would read as "differs" and each
+  # variant would silently keep its own copy of Qt and the data.
+  command -v cmp >/dev/null 2>&1 || {
+    echo "::error::cmp not found (MSYS2 package diffutils)"; exit 1; }
   mkdir -p "${COMMON_DIR}"
   # Keep the directory skeleton, so a directory that is empty by design still
   # gets created on install once the pruning below has removed it per variant.

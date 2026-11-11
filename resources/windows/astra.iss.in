@@ -190,10 +190,12 @@ begin
         '); assuming x86-64 level 1');
     Exit;
   end;
+  // The [ExitCode] arguments below must not start a line: Inno Setup reads
+  // any line that begins with a bracket as a section tag, also in [Code].
   if not Exec(ExpandConstant('{tmp}\astra-cpulevel.exe'), '', '', SW_HIDE,
               ewWaitUntilTerminated, ExitCode) then
-    Log(Format('CPU probe did not start (error %d); assuming x86-64 level 1',
-               [ExitCode]))
+    Log(Format('CPU probe did not start (error %d); ' +
+               'assuming x86-64 level 1', [ExitCode]))
   else if (ExitCode < 11) or (ExitCode > 14) then
     Log(Format('CPU probe exited with %d, which is not a level; assuming ' +
                'x86-64 level 1', [ExitCode]))

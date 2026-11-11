@@ -125,6 +125,35 @@ jobs:
             astra-*-setup.exe.sha256
           if-no-files-found: error
 
+      # A setup .exe that compiles says nothing about whether it installs, and
+      # every installed copy updates itself by running the next one. So before
+      # anything is published: install it, start what it installed, and replay
+      # the in-app update from two older releases, the first whose ASTRA could
+      # update itself and the last one built before the installer carried more
+      # than one build. A failure here keeps the installer off the release.
+      - name: Fetch older installers
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p old-installers
+          for tag in v0.7.2 v0.10.0; do
+            gh release download "${tag}" --pattern '*-setup.exe' --dir old-installers
+          done
+
+      - name: Smoke-test the installer
+        shell: pwsh
+        run: |
+          $variants = (Select-String -Path build-windows/astra.iss -Pattern '^#define Variants\s+"(.*)"').Matches[0].Groups[1].Value -split ' '
+          $opts = @{
+            Setup       = (Get-Item astra-*-setup.exe).FullName
+            Variants    = $variants
+            UpgradeFrom = (Get-ChildItem old-installers -Filter *.exe | Sort-Object Name).FullName
+          }
+          # Only a build stamped with a release version carries one to check.
+          if ('${{ steps.ver.outputs.stamp }}') { $opts.ExpectVersion = '${{ steps.ver.outputs.version }}' }
+          & resources/windows/smoke-test.ps1 @opts
+
       # On tag pushes, and on a manual run that named a release tag: attach the
       # installer to that release (creating it if it doesn't exist yet).
       - name: Attach to GitHub release
