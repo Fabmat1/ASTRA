@@ -1,5 +1,7 @@
 #include "remote/SshGridProvider.h"
 
+#include "app/AppSettings.h"
+#include "app/Logger.h"
 #include "remote/RemoteHostRegistry.h"
 #include "remote/SshFileStreamChannel.h"
 
@@ -26,6 +28,22 @@ QString qstr(const std::string& s) { return QString::fromStdString(s); }
 SshGridProvider::SshGridProvider(std::shared_ptr<GridDiskCache> cache)
     : _cache(std::move(cache))
 {
+}
+
+std::shared_ptr<SshGridProvider> SshGridProvider::install(const AppSettings& settings)
+{
+    auto provider = std::make_shared<SshGridProvider>(
+        std::make_shared<GridDiskCache>(settings.effectiveRemoteGridCacheDir(),
+                                        qint64(settings.remoteGridCacheCapGb()) << 30));
+    provider->setLogCallback([](const QString& m) { LOG_INFO("GridStream", m); });
+    specfit::set_grid_data_provider(provider);
+    return provider;
+}
+
+void SshGridProvider::uninstall(const std::shared_ptr<SshGridProvider>& provider)
+{
+    if (provider && specfit::grid_data_provider() == provider)
+        specfit::set_grid_data_provider(nullptr);
 }
 
 void SshGridProvider::setLogCallback(std::function<void(const QString&)> cb)

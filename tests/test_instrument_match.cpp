@@ -129,6 +129,20 @@ int main() {
                     QStringLiteral("WiFeS"), "genuine WiFeS B3000");
     }
 
+    // GTC OSIRIS+ R2000B as reduced by the GTC PypeIt pipeline: the header
+    // says INSTRUME='OSIRIS' and nothing about the telescope the entry is
+    // named for, so the hint has to land through the mode's display name.
+    {
+        const std::vector<double> wl = linearGrid(3960.0, 5675.0, 0.86);
+        expectMatch(instruments, QStringLiteral("OSIRIS"), wl,
+                    QStringLiteral("GTC"), "GTC OSIRIS R2000B");
+        const InstrumentMatch m = matchSpectrumToInstrument(
+            instruments, QStringLiteral("OSIRIS"), wl);
+        check(m.modeKey == QStringLiteral("OSIRIS_R2000B"),
+              "GTC OSIRIS R2000B: mode '" + m.modeKey.toStdString() +
+                  "', expected 'OSIRIS_R2000B'");
+    }
+
     // The bidirectional hint: "LAMOST/LRS" must count as a hint match for
     // the instrument named "LAMOST" (name contained in the hint).
     {

@@ -1,7 +1,8 @@
 #pragma once
 
 /*  AiHost for `astra --mcp` without a window: the database and settings of
- *  this process, no current project, no UI tools.                          */
+ *  this process, no current project, no UI tools. Local fits can use grids
+ *  streamed from remote hosts, as they can with the window open.           */
 
 #include "ai/AiHost.h"
 #include "app/HeadlessContext.h"
@@ -13,6 +14,7 @@ class DatabaseManager;
 class LightcurveFetchService;
 class MassFitService;
 class SpectrumFetchService;
+namespace astra::remote { class SshGridProvider; }
 
 namespace astra::ai {
 
@@ -41,6 +43,8 @@ private:
     std::unique_ptr<DatabaseManager> _dbm;
     std::unique_ptr<AppSettings>     _settings;
     HeadlessContext                  _ctx;
+    /// Serves ssh:// grid paths to GAEL; see remote/SshGridProvider.h.
+    std::shared_ptr<astra::remote::SshGridProvider> _gridProvider;
     mutable std::vector<std::shared_ptr<Project>> _projects;
     mutable bool _projectsLoaded = false;
     std::unique_ptr<SpectrumFetchService>   _specFetch;

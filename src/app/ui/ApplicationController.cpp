@@ -12,7 +12,6 @@
 #include "remote/RemoteBatchService.h"
 #include "remote/RemoteFitService.h"
 #include "remote/SshGridProvider.h"
-#include "remote/GridDiskCache.h"
 #include <algorithm>
 #include <QApplication>
 #include <QFile>
@@ -45,13 +44,7 @@ ApplicationController::ApplicationController(QObject *parent)
     // Grid base paths of the form ssh://<host>/<path> are served by this
     // provider from inside GAEL; local paths are untouched. Installed once
     // for the process, it dispatches per host itself.
-    {
-        auto cache = std::make_shared<astra::remote::GridDiskCache>(
-            _settings->effectiveRemoteGridCacheDir(),
-            qint64(_settings->remoteGridCacheCapGb()) << 30);
-        _gridProvider = std::make_shared<astra::remote::SshGridProvider>(cache);
-        specfit::set_grid_data_provider(_gridProvider);
-    }
+    _gridProvider = astra::remote::SshGridProvider::install(*_settings);
 
     // Remote fitting needs the database (runs outlive dialogs and sessions)
     // and registers itself so any fit worker thread can reach it.

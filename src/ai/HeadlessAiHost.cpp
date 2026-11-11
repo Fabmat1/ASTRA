@@ -5,6 +5,7 @@
 #include "db/DatabaseManager.h"
 #include "lightcurve/LightcurveFetchService.h"
 #include "massfit/MassFitService.h"
+#include "remote/SshGridProvider.h"
 #include "spectra/SpectrumFetchService.h"
 
 #include <algorithm>
@@ -17,6 +18,9 @@ HeadlessAiHost::HeadlessAiHost()
 {
     _ctx.dbm = _dbm.get();
     _ctx.appSettings = _settings.get();
+    // As in ApplicationController: fits started by an agent search the grids
+    // of hosts that stream them, and GAEL reads those through this provider.
+    _gridProvider = astra::remote::SshGridProvider::install(*_settings);
 }
 
 HeadlessAiHost::~HeadlessAiHost()
@@ -25,6 +29,8 @@ HeadlessAiHost::~HeadlessAiHost()
     _massFit.reset();
     _lcFetch.reset();
     _specFetch.reset();
+    // A window taking over installs its own provider in its own process.
+    astra::remote::SshGridProvider::uninstall(_gridProvider);
 }
 
 SpectrumFetchService* HeadlessAiHost::spectrumFetchService()

@@ -1204,6 +1204,26 @@
                     }
                 }
             ]
+        },
+        {
+            "name": "GTC",
+            "full_name": "Gran Telescopio Canarias (Roque de los Muchachos)",
+            "latitude": 28.75678,
+            "longitude": -17.89203,
+            "altitude": 2267.0,
+            "modes": [
+                {
+                    "key": "OSIRIS_R2000B",
+                    "display_name": "OSIRIS R2000B",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "R2000B",
+                        "resolution_coefficients": [1488.0, 0.1808],
+                        "wavelength_min": 3950.0,
+                        "wavelength_max": 5700.0
+                    }
+                }
+            ]
         }
     ]
 }

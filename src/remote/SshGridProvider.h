@@ -14,6 +14,8 @@
 #include <string>
 #include <vector>
 
+class AppSettings;
+
 namespace astra::remote {
 
 /*  Serves GAEL's grid reads from remote hosts over SSH.
@@ -34,6 +36,18 @@ namespace astra::remote {
 class SshGridProvider : public specfit::GridDataProvider {
 public:
     explicit SshGridProvider(std::shared_ptr<GridDiskCache> cache);
+
+    /*  Builds the provider on the user's grid cache settings and installs it
+     *  in GAEL for the whole process.  Every way ASTRA starts that can run a
+     *  local fit calls this once (the window, the headless runs, the
+     *  windowless MCP server); without it a fit on a streamed grid fails as
+     *  soon as GAEL opens the grid.  Provider messages go to the log file.
+     *  The caller keeps the pointer and passes it to uninstall() when done.  */
+    static std::shared_ptr<SshGridProvider> install(const AppSettings& settings);
+
+    /*  Takes `provider` out of GAEL again, unless another one was installed
+     *  since.  Fits that already hold it finish with it.                     */
+    static void uninstall(const std::shared_ptr<SshGridProvider>& provider);
 
     bool handles(const std::string& path) const override;
     bool exists(const std::string& virtualPath) override;

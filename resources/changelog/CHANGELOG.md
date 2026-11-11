@@ -21,6 +21,19 @@
     implemented.
 -->
 
+## v0.10.1 (2026-11-11)
+
+### Added
+- **One Windows installer for every PC.** The setup now also runs on processors without AVX2 and on ARM machines, and installs the fastest build your processor supports.
+- AI agents can fit with model grids streamed from a remote host while the ASTRA window is closed.
+- GTC OSIRIS R2000B is a built-in instrument.
+
+### Changed
+- **Much faster fits with vsini free.** About 3x on sdB-type grids and up to 100x on synthe grids, with far less memory.
+
+### Fixed
+- Spectral fits no longer fail when a continuum anchor range is cut short by the edge of the spectrum.
+
 ## v0.10.0 (2026-10-28)
 
 ### Added
