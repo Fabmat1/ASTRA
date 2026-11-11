@@ -157,14 +157,22 @@ void RVImportPointsDialog::setupUi()
     _defaultErrEdit = new QLineEdit;
     _defaultErrEdit->setPlaceholderText("default error [km/s]");
     _defaultErrEdit->setToolTip(
-        "RV error [km/s] given to rows that have none (no error column, or a "
-        "blank or zero cell, and no systematic error). Needed only when such "
-        "rows exist: a point without an error would get infinite weight in a fit.");
+        "Formal RV error [km/s] given to rows that have none (no error column, "
+        "or a blank or zero cell). Required when a row would otherwise have no "
+        "error at all: such a point would get infinite weight in a fit.");
     colGrid->addWidget(_defaultErrEdit, row++, 2);
 
     colGrid->addWidget(new QLabel("Systematic RV error column:"), row, 0);
     _sysErrColCombo = new QComboBox;
-    colGrid->addWidget(_sysErrColCombo, row++, 1);
+    colGrid->addWidget(_sysErrColCombo, row, 1);
+    _flatSysEdit = new QLineEdit;
+    _flatSysEdit->setPlaceholderText("flat systematic [km/s]");
+    _flatSysEdit->setToolTip(
+        "Systematic RV error [km/s] given to every point, for tables without a "
+        "systematic error column. It is added in quadrature to each point's "
+        "formal error and can be changed later for many points at once in the "
+        "RV points table.");
+    colGrid->addWidget(_flatSysEdit, row++, 2);
 
     colGrid->addWidget(new QLabel("Instrument column:"), row, 0);
     _instColCombo = new QComboBox;
@@ -194,8 +202,15 @@ void RVImportPointsDialog::setupUi()
             this, [this](const QString&) { _scaleNote.clear(); });
     connect(_epochOffsetEdit, &QLineEdit::textChanged,
             this, [this](const QString&) { refreshPreview(); });
-    connect(_defaultErrEdit, &QLineEdit::textChanged,
-            this, [this](const QString&) { refreshPreview(); });
+    for (auto* e : {_defaultErrEdit, _flatSysEdit})
+        connect(e, &QLineEdit::textChanged,
+                this, [this](const QString&) { refreshPreview(); });
+    // The flat value stands in for a column, so it only applies without one.
+    auto syncFlatSys = [this](int) {
+        _flatSysEdit->setEnabled(_sysErrColCombo->currentIndex() <= 0);
+    };
+    connect(_sysErrColCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
+            this, syncFlatSys);
     for (auto* c : {_rvColCombo, _errColCombo, _sysErrColCombo, _instColCombo,
                     _compColCombo})
         connect(c, QOverload<int>::of(&QComboBox::currentIndexChanged),
@@ -380,6 +395,8 @@ void RVImportPointsDialog::fillColumnCombo(QComboBox* combo, int selected)
 
 void RVImportPointsDialog::applyColumnGuess()
 {
+    // fillColumnCombo() blocks signals, so the flat-systematic field is
+    // re-synced by hand at the end.
     // Placeholder names say nothing; a '#' header or a real one does.
     bool named = false;
     for (int i = 0; i < _columns.size(); ++i)
@@ -392,6 +409,7 @@ void RVImportPointsDialog::applyColumnGuess()
     fillColumnCombo(_sysErrColCombo, g.sysError);
     fillColumnCombo(_instColCombo,   g.instrument);
     fillColumnCombo(_compColCombo,   g.component);
+    _flatSysEdit->setEnabled(_sysErrColCombo->currentIndex() <= 0);
 }
 
 void RVImportPointsDialog::applyScaleGuess()
@@ -504,6 +522,14 @@ double RVImportPointsDialog::defaultError() const
     return (ok && v > 0.0) ? v : std::numeric_limits<double>::quiet_NaN();
 }
 
+double RVImportPointsDialog::flatSystematic() const
+{
+    if (_sysErrColCombo->currentIndex() > 0) return 0.0;
+    bool ok = false;
+    const double v = RVTableGuess::parseNumber(_flatSysEdit->text(), &ok);
+    return (ok && v > 0.0) ? v : 0.0;
+}
+
 TimeScale RVImportPointsDialog::selectedScale() const
 {
     switch (_timeTypeCombo->currentIndex()) {
@@ -543,6 +569,7 @@ RVImportPointsDialog::ParseResult RVImportPointsDialog::parseRows() const
     const bool   iso    = isoDates();
     const double offset = iso ? 0.0 : epochOffset();
     const double defErr = defaultError();
+    const double flatSys = flatSystematic();
     const auto   defInst = defaultInstrument();
 
     auto cell = [](const QStringList& row, int col) {
@@ -577,12 +604,17 @@ RVImportPointsDialog::ParseResult RVImportPointsDialog::parseRows() const
         bool ok = false;
         double v = number(row, errCol, &ok);
         if (ok && v > 0.0) p.errFormal = v;
-        v = number(row, sysErrCol, &ok);
-        if (ok && v > 0.0) p.errSys = v;
-        if (p.errFormal <= 0.0 && p.errSys <= 0.0) {
-            ++res.missingError;
+        if (sysErrCol >= 0) {
+            v = number(row, sysErrCol, &ok);
+            if (ok && v > 0.0) p.errSys = v;
+        } else {
+            p.errSys = flatSys;
+        }
+        if (p.errFormal <= 0.0) {
+            ++res.missingFormal;
             if (!std::isnan(defErr)) { p.errFormal = defErr; p.errDefaulted = true; }
         }
+        if (p.errFormal <= 0.0 && p.errSys <= 0.0) ++res.unweighted;
 
         const QString comp = cell(row, compCol).trimmed().toLower();
         if (comp == "2" || comp == "2.0" || comp == "b" || comp == "s" ||
@@ -702,17 +734,23 @@ void RVImportPointsDialog::refreshPreview()
                    .arg(res.firstImplausible, 0, 'f', 4)
                    .arg(_timeTypeCombo->currentText());
     }
-    if (res.missingError > 0) {
+    if (res.missingFormal > 0) {
         const double defErr = defaultError();
-        if (std::isnan(defErr)) {
+        if (!std::isnan(defErr)) {
+            msg << QString("%1 row(s) use the default RV error of %2 km/s.")
+                       .arg(res.missingFormal).arg(defErr);
+        } else if (res.unweighted > 0) {
             blocked = true;
             msg << QString("<b>%1 row(s) have no RV error: enter a default RV "
-                           "error to import them.</b>").arg(res.missingError);
+                           "error to import them.</b>").arg(res.unweighted);
         } else {
-            msg << QString("%1 row(s) use the default RV error of %2 km/s.")
-                       .arg(res.missingError).arg(defErr);
+            msg << QString("%1 row(s) have no formal RV error and carry only "
+                           "the systematic one; enter a default RV error to "
+                           "give them one.").arg(res.missingFormal);
         }
     }
+    if (const double flat = flatSystematic(); flat > 0.0)
+        msg << QString("Every point gets a systematic error of %1 km/s.").arg(flat);
     if (!res.unknownInstruments.isEmpty()) {
         QStringList names = res.unknownInstruments.mid(0, 5);
         if (res.unknownInstruments.size() > 5) names << "…";
@@ -768,11 +806,11 @@ void RVImportPointsDialog::onAccept()
                 .arg(_timeTypeCombo->currentText()));
         return;
     }
-    if (res.missingError > 0 && std::isnan(defaultError())) {
+    if (res.unweighted > 0) {
         QMessageBox::warning(this, "RV error needed",
             QString("%1 row(s) have no RV error. Enter a default RV error "
                     "[km/s] for them, then import again.")
-                .arg(res.missingError));
+                .arg(res.unweighted));
         _defaultErrEdit->setFocus();
         return;
     }

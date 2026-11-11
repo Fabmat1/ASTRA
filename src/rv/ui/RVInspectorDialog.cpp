@@ -34,6 +34,8 @@
 #include <QMenu>
 #include <QSet>
 #include <QMessageBox>
+#include <QMetaProperty>
+#include <QHash>
 #include <QCoreApplication>
 #include <QProgressDialog>
 #include <QPushButton>
@@ -87,6 +89,38 @@ public:
 
 private:
     DatabaseManager* _dbm = nullptr;
+};
+
+// Editing one σ_systematic cell while several rows are selected sets them
+// all: the systematic error is usually one value per instrument or campaign,
+// and typing it once per row was the only way before.
+class SystematicErrorDelegate : public QStyledItemDelegate
+{
+public:
+    SystematicErrorDelegate(QTableView* view, RVPointsTableModel* model)
+        : QStyledItemDelegate(view), _view(view), _model(model) {}
+
+    void setModelData(QWidget* editor, QAbstractItemModel* model,
+                      const QModelIndex& idx) const override
+    {
+        QList<int> rows;
+        if (_view && _view->selectionModel())
+            for (const QModelIndex& r : _view->selectionModel()->selectedRows())
+                rows << r.row();
+        if (rows.size() < 2 || !rows.contains(idx.row()) || !_model) {
+            QStyledItemDelegate::setModelData(editor, model, idx);
+            return;
+        }
+        const QByteArray prop = editor->metaObject()->userProperty().name();
+        bool ok = false;
+        const double v = editor->property(prop).toString().trimmed().toDouble(&ok);
+        if (!ok || v < 0.0) return;
+        _model->setSystematicErrorForRows(rows, v);
+    }
+
+private:
+    QTableView*         _view;
+    RVPointsTableModel* _model;
 };
 } // namespace
 
@@ -172,6 +206,11 @@ int RVPointsTableModel::columnCount(const QModelIndex& p) const
 
 QVariant RVPointsTableModel::headerData(int section, Qt::Orientation o, int role) const
 {
+    if (role == Qt::ToolTipRole && o == Qt::Horizontal && section == ColErrSystematic)
+        return QStringLiteral(
+            "Systematic RV error [km/s], added in quadrature to the formal one. "
+            "To set many points at once, select their rows and edit one cell "
+            "(F2), or use \"Set σ_sys…\" for whole instruments.");
     if (role != Qt::DisplayRole || o != Qt::Horizontal) return {};
     switch (section) {
         case ColMJD:           return "MJD";
@@ -1067,6 +1106,9 @@ void RVInspectorDialog::setupUi()
     _pointsTable->setItemDelegateForColumn(
         RVPointsTableModel::ColInstrument,
         new InstrumentColumnDelegate(_dbm, _pointsTable));
+    _pointsTable->setItemDelegateForColumn(
+        RVPointsTableModel::ColErrSystematic,
+        new SystematicErrorDelegate(_pointsTable, _pointsModel));
     connect(_pointsTable, &QWidget::customContextMenuRequested,
             this, &RVInspectorDialog::onTableContextMenu);
     tableLay->addWidget(_pointsTable);
@@ -1074,11 +1116,16 @@ void RVInspectorDialog::setupUi()
     auto* pointBtnRow = new QHBoxLayout;
     _addPointBtn     = new QPushButton("Add manual point…");
     _importPointsBtn = new QPushButton("Import from CSV…");
+    _sysErrBtn       = new QPushButton("Set σ_sys…");
+    _sysErrBtn->setToolTip(
+        "Set the systematic RV error of the selected points, of all points of "
+        "one instrument, or of every point.");
     _actionBtn       = new QPushButton("Remove selected");
     _actionBtn->setEnabled(false);
     pointBtnRow->addStretch();
     pointBtnRow->addWidget(_addPointBtn);
     pointBtnRow->addWidget(_importPointsBtn);
+    pointBtnRow->addWidget(_sysErrBtn);
     pointBtnRow->addWidget(_actionBtn);
     tableLay->addLayout(pointBtnRow);
 
@@ -1086,6 +1133,10 @@ void RVInspectorDialog::setupUi()
             this, &RVInspectorDialog::onAddManualPoint);
     connect(_importPointsBtn, &QPushButton::clicked,
             this, &RVInspectorDialog::onImportPointsFromCsv);
+    connect(_sysErrBtn, &QPushButton::clicked, this, [this]() {
+        const QList<int> rows = selectedRows();
+        onSetSystematicError(rows, rows.isEmpty() ? -1 : rows.first());
+    });
     connect(_actionBtn,   &QPushButton::clicked,
             this, &RVInspectorDialog::onPointActionClicked);
     connect(_pointsTable->selectionModel(), &QItemSelectionModel::selectionChanged,
@@ -1181,6 +1232,10 @@ void RVInspectorDialog::onTableContextMenu(const QPoint& pos)
             : (n > 1 ? QString("Move to primary component (%1)").arg(n)
                      : QString("Move to primary component")));
 
+    menu.addSeparator();
+    QAction* sysAct = menu.addAction(
+        n > 1 ? QString("Set σ_sys… (%1)").arg(n) : QString("Set σ_sys…"));
+
     QAction* chosen = menu.exec(_pointsTable->viewport()->mapToGlobal(pos));
     if (chosen == resetAct) {
         _pointsModel->resetRowsToFit(sel.resettable);
@@ -1194,7 +1249,86 @@ void RVInspectorDialog::onTableContextMenu(const QPoint& pos)
     } else if (chosen == compAct) {
         _pointsModel->setComponentForRows(rows, targetComp);
         onPointSelectionChanged();
+    } else if (chosen == sysAct) {
+        onSetSystematicError(rows, idx.row());
     }
+}
+
+void RVInspectorDialog::onSetSystematicError(const QList<int>& selected,
+                                             int anchorRow)
+{
+    if (!_pointsModel) return;
+    const int total = _pointsModel->pointCount();
+    if (total == 0) {
+        QMessageBox::information(this, "Set systematic error",
+                                 "There are no RV points yet.");
+        return;
+    }
+
+    // Rows per instrument, in order of first appearance.
+    QStringList instNames;
+    QHash<QString, QList<int>> rowsByInst;
+    QList<int> allRows;
+    for (int r = 0; r < total; ++r) {
+        allRows << r;
+        const QString name = _pointsModel->instrumentNameAt(r);
+        if (name.isEmpty()) continue;
+        if (!rowsByInst.contains(name)) instNames << name;
+        rowsByInst[name] << r;
+    }
+
+    QDialog dlg(this);
+    dlg.setWindowTitle("Set systematic error");
+    auto* form = new QFormLayout(&dlg);
+
+    auto* value = new QDoubleSpinBox;
+    value->setRange(0.0, 1000.0);
+    value->setDecimals(3);
+    value->setSingleStep(0.1);
+    value->setSuffix(" km/s");
+    if (anchorRow >= 0) {
+        if (auto p = _pointsModel->pointAt(anchorRow))
+            value->setValue(p->getRVErrorSystematic());
+    }
+    form->addRow("σ_systematic:", value);
+
+    auto* scope = new QComboBox;
+    if (!selected.isEmpty())
+        scope->addItem(QString("Selected points (%1)").arg(selected.size()),
+                       QVariant::fromValue(selected));
+    const QString anchorInst = anchorRow >= 0
+        ? _pointsModel->instrumentNameAt(anchorRow) : QString();
+    int defaultScope = selected.size() > 1 ? 0 : -1;
+    for (const QString& name : instNames) {
+        if (defaultScope < 0 && name == anchorInst) defaultScope = scope->count();
+        scope->addItem(QString("All %1 points (%2)").arg(name)
+                           .arg(rowsByInst[name].size()),
+                       QVariant::fromValue(rowsByInst[name]));
+    }
+    scope->addItem(QString("All points (%1)").arg(total),
+                   QVariant::fromValue(allRows));
+    // A single clicked row most likely stands for its instrument; with no
+    // instrument to go by, the whole curve.
+    scope->setCurrentIndex(defaultScope >= 0 ? defaultScope : scope->count() - 1);
+    form->addRow("Apply to:", scope);
+
+    auto* note = new QLabel(
+        "<i>Added in quadrature to each point's formal error. Points keep their "
+        "source: a fit-derived point stays linked to its fit.</i>");
+    note->setWordWrap(true);
+    form->addRow(note);
+
+    auto* buttons = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel);
+    connect(buttons, &QDialogButtonBox::accepted, &dlg, &QDialog::accept);
+    connect(buttons, &QDialogButtonBox::rejected, &dlg, &QDialog::reject);
+    form->addRow(buttons);
+    value->setFocus();
+    value->selectAll();
+
+    if (dlg.exec() != QDialog::Accepted) return;
+
+    const QList<int> rows = scope->currentData().value<QList<int>>();
+    _pointsModel->setSystematicErrorForRows(rows, value->value());
 }
 
 QList<int> RVInspectorDialog::selectedRows() const
@@ -1376,6 +1510,47 @@ int RVPointsTableModel::setComponentForRows(const QList<int>& rows, int componen
     if (_star) _star->markSummaryDirty();
     reload();
     return static_cast<int>(changed.size());
+}
+
+int RVPointsTableModel::setSystematicErrorForRows(const QList<int>& rows,
+                                                  double sysError)
+{
+    if (!_curve || !(sysError >= 0.0) || !std::isfinite(sysError)) return 0;
+
+    std::vector<std::shared_ptr<RadialVelocityPoint>> changed;
+    int firstRow = -1, lastRow = -1;
+    for (int row : rows) {
+        if (row < 0 || row >= static_cast<int>(_points.size())) continue;
+        auto& p = _points[row];
+        if (!p || p->getRVErrorSystematic() == sysError) continue;
+        // Same as a single-cell edit: the systematic error is the user's, not
+        // the fit's, so the point keeps its source.
+        p->setRVErrorSystematic(sysError);
+        p->setRVManualErrorSystematic(sysError);
+        changed.push_back(p);
+        firstRow = firstRow < 0 ? row : std::min(firstRow, row);
+        lastRow  = std::max(lastRow, row);
+    }
+    if (changed.empty()) return 0;
+
+    const bool useTx = _dbm && _dbm->beginTransaction();
+    _curve->beginBatchUpdate();
+    for (auto& p : changed) _curve->persistPoint(p);
+    _curve->notifyChanged();
+    _curve->endBatchUpdate();
+    if (useTx) _dbm->commitTransaction();
+
+    if (_star) _star->markSummaryDirty();
+    emit dataChanged(index(firstRow, 0), index(lastRow, ColCount - 1));
+    emit pointEdited(index(firstRow, 0));
+    return static_cast<int>(changed.size());
+}
+
+QString RVPointsTableModel::instrumentNameAt(int row) const
+{
+    if (row < 0 || row >= static_cast<int>(_points.size()) || !_points[row])
+        return QString();
+    return resolveInstrumentName(_points[row]);
 }
 
 int RVPointsTableModel::resetRowsToFit(const QList<int>& rows)

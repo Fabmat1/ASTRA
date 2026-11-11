@@ -21,6 +21,16 @@
     implemented.
 -->
 
+## v0.10.2 (2026-11-11)
+
+### Added
+- RV CSV import detects headers, columns and the time scale on its own, and offers a default RV error and a flat systematic error for tables without those columns.
+- Set the systematic RV error of many points at once in the RV points table.
+- A progress dialog while RV points are imported.
+
+### Fixed
+- RV points imported or added to a star created in the same session were silently lost.
+
 ## v0.10.1 (2026-11-11)
 
 ### Added

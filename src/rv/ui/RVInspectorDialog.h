@@ -89,6 +89,14 @@ public:
     /// epochs. Returns how many points actually changed.
     int setComponentForRows(const QList<int>& rows, int component);
 
+    /// Set the systematic RV error of every row in `rows`, persisting in one
+    /// transaction with one change notification. Returns how many changed.
+    int setSystematicErrorForRows(const QList<int>& rows, double sysError);
+
+    /// The instrument name shown for `row`, empty when it has none.
+    QString instrumentNameAt(int row) const;
+    int pointCount() const { return static_cast<int>(_points.size()); }
+
 signals:
     void pointEdited(const QModelIndex& row);
 
@@ -213,6 +221,9 @@ private slots:
     void onImportPointsFromCsv();
     /// Tell the user points were not stored because the star has no RV curve.
     void reportNoCurve(int nPoints);
+    /// Ask for a systematic error and the points it applies to (the
+    /// selection, one instrument's points, or all), then set it in one batch.
+    void onSetSystematicError(const QList<int>& selected, int anchorRow);
     void onPointActionClicked();
     void onPointSelectionChanged();
 
@@ -248,6 +259,7 @@ private:
 
     QPushButton* _addPointBtn    = nullptr;
     QPushButton* _importPointsBtn = nullptr;
+    QPushButton* _sysErrBtn       = nullptr;
     QPushButton* _actionBtn = nullptr;
 
 };

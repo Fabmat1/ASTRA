@@ -68,6 +68,9 @@ private:
     /// The RV error given to rows without one; NaN when the field is blank or
     /// not a positive number.
     double defaultError() const;
+    /// The systematic error given to every row when no systematic column is
+    /// mapped; 0 when the field is blank.
+    double flatSystematic() const;
 
     // Resolve a free-text instrument token (from the instrument column) to a
     // known Instrument, falling back to the default-instrument selector.
@@ -90,7 +93,8 @@ private:
         int     unparsed = 0;        // no readable time or RV
         int     implausible = 0;     // timestamp impossible on the scale
         double  firstImplausible = 0.0;
-        int     missingError = 0;    // rows that need the default error
+        int     missingFormal = 0;   // rows without a formal error
+        int     unweighted = 0;      // rows left with no error at all
         int     withoutInstrument = 0;
         QStringList unknownInstruments;
     };
@@ -134,6 +138,7 @@ private:
     QComboBox*  _compColCombo     = nullptr;   // per-row stellar component (1/2)
     QComboBox*  _instCombo        = nullptr;   // default / fallback instrument
     QLineEdit*  _defaultErrEdit   = nullptr;   // RV error for rows without one
+    QLineEdit*  _flatSysEdit      = nullptr;   // systematic error without a column
 
     QTableWidget* _preview    = nullptr;
     QLabel*       _status     = nullptr;
