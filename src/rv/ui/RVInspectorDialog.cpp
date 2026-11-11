@@ -34,6 +34,8 @@
 #include <QMenu>
 #include <QSet>
 #include <QMessageBox>
+#include <QCoreApplication>
+#include <QProgressDialog>
 #include <QPushButton>
 #include <QSplitter>
 #include <QStyledItemDelegate>
@@ -1393,34 +1395,46 @@ int RVPointsTableModel::resetRowsToFit(const QList<int>& rows)
     return n;
 }
 
-void RVPointsTableModel::appendPoint(std::shared_ptr<RadialVelocityPoint> p)
+bool RVPointsTableModel::appendPoint(std::shared_ptr<RadialVelocityPoint> p)
 {
-    if (!p || !_star) return;
-    _star->ensureRVCurveSynced();      // creates curve if missing
-    _curve = _star->getRVCurve();
-    if (!_curve) return;
-
-    _curve->addRVPoint(p);             // assigns id + curveId, dedup-safe
-    _curve->persistPoint(p);
-    _star->markSummaryDirty();
-    reload();
+    if (!p) return false;
+    return appendPoints({p}) == 1;
 }
 
-void RVPointsTableModel::appendPoints(
-    const std::vector<std::shared_ptr<RadialVelocityPoint>>& pts)
+int RVPointsTableModel::appendPoints(
+    const std::vector<std::shared_ptr<RadialVelocityPoint>>& pts,
+    const std::function<void(int)>& progress)
 {
-    if (pts.empty() || !_star) return;
+    if (pts.empty() || !_star) return 0;
     _star->ensureRVCurveSynced();      // creates curve if missing
     _curve = _star->getRVCurve();
-    if (!_curve) return;
+    if (!_curve) {
+        LOG_ERROR("Tools", QString("RV Inspector: star %1 has no RV curve and "
+                                   "none could be created; %2 point(s) not stored")
+            .arg(_star->getId()).arg(pts.size()));
+        return 0;
+    }
 
+    // One transaction - per-row commits fsync individually - and one change
+    // notification, since each one rebuilds every listening RV plot and the
+    // star summary. Per-point notifications were what made a few hundred
+    // imported points take visibly long.
+    const bool useTx = _dbm && _dbm->beginTransaction();
+    _curve->beginBatchUpdate();
+    int stored = 0;
     for (const auto& p : pts) {
         if (!p) continue;
         _curve->addRVPoint(p);         // assigns id + curveId, dedup-safe
         _curve->persistPoint(p);
+        ++stored;
+        if (progress) progress(stored);
     }
+    _curve->endBatchUpdate();
+    if (useTx) _dbm->commitTransaction();
+
     _star->markSummaryDirty();
     reload();
+    return stored;
 }
 
 void RVInspectorDialog::onAddManualPoint()
@@ -1430,8 +1444,19 @@ void RVInspectorDialog::onAddManualPoint()
     auto p = dlg.result();
     if (!p) return;
 
-    _pointsModel->appendPoint(p);
+    if (!_pointsModel->appendPoint(p)) {
+        reportNoCurve(1);
+        return;
+    }
     if (_plotPanel) _plotPanel->refresh();
+}
+
+void RVInspectorDialog::reportNoCurve(int nPoints)
+{
+    QMessageBox::critical(this, "RV points not stored",
+        QString("%1 RV point(s) could not be stored: this star has no RV curve "
+                "and ASTRA could not create one. Reopening the project usually "
+                "fixes this; please report it if it does not.").arg(nPoints));
 }
 
 void RVInspectorDialog::onImportPointsFromCsv()
@@ -1442,11 +1467,33 @@ void RVInspectorDialog::onImportPointsFromCsv()
     auto pts = dlg.results();
     if (pts.empty()) return;
 
-    _pointsModel->appendPoints(pts);
+    const int total = static_cast<int>(pts.size());
+    QProgressDialog progress(QString("Importing %1 RV point%2...")
+                                 .arg(total).arg(total != 1 ? "s" : ""),
+                             QString(), 0, total, this);
+    progress.setWindowTitle("Import RV points");
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setCancelButton(nullptr);   // one transaction; nothing to undo halfway
+    progress.setMinimumDuration(0);
+    progress.setValue(0);
+    QCoreApplication::processEvents();
+
+    const int stored = _pointsModel->appendPoints(pts, [&](int n) {
+        progress.setValue(n);
+        if (n % 20 == 0) QCoreApplication::processEvents();
+    });
+    if (stored == 0) {
+        progress.close();
+        reportNoCurve(total);
+        return;
+    }
+    progress.setLabelText("Updating plots...");
+    QCoreApplication::processEvents();
     if (_plotPanel) _plotPanel->refresh();
+    progress.close();
 
     LOG_INFO("Tools", QString("RV Inspector: imported %1 RV point(s) from CSV")
-        .arg(pts.size()));
+        .arg(stored));
 }
 
 void RVInspectorDialog::onPointSelectionChanged()

@@ -466,6 +466,7 @@ set(ASTRA_CORE_SOURCES
     src/rv/RVDetectability.cpp
     src/rv/RVErrorMC.cpp
     src/rv/RVMCMC.cpp
+    src/rv/RVTableGuess.cpp
     src/rv/RadialVelocity.cpp
 
     # sed
@@ -629,6 +630,7 @@ set(ASTRA_CORE_HEADERS
     src/rv/RVDetectability.h
     src/rv/RVErrorMC.h
     src/rv/RVMCMC.h
+    src/rv/RVTableGuess.h
     src/rv/RadialVelocity.h
 
     # sed
@@ -1656,6 +1658,7 @@ if(BUILD_TESTING)
             tests/unit/rv/periodogram_store.cpp
             tests/unit/io/star_package.cpp
             tests/unit/rv/rv_error_mc.cpp
+            tests/unit/rv/rv_table_guess.cpp
             tests/unit/db/delete_star.cpp
             tests/unit/db/periodogram_store.cpp
             tests/unit/fitting/grid_edge_limits.cpp

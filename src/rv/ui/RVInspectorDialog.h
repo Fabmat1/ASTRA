@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 
 #include <QDialog>
 #include <QWidget>
@@ -74,8 +75,14 @@ public:
     int  removePoints(const QList<int>& rows);
 
     std::shared_ptr<RadialVelocityPoint> pointAt(int row) const;
-    void appendPoint(std::shared_ptr<RadialVelocityPoint> p);
-    void appendPoints(const std::vector<std::shared_ptr<RadialVelocityPoint>>& pts);
+    /// Add points to the star's RV curve, creating the curve if needed.
+    /// Returns false / the number stored; zero means the star has no curve
+    /// and none could be created, which the caller has to report.
+    bool appendPoint(std::shared_ptr<RadialVelocityPoint> p);
+    /// `progress`, when given, is called with the number of points stored so
+    /// far, so a caller can drive a progress dialog.
+    int  appendPoints(const std::vector<std::shared_ptr<RadialVelocityPoint>>& pts,
+                      const std::function<void(int)>& progress = {});
 
     /// Move every row of `rows` to the given component (1 or 2), persisting in
     /// one batch. Manual fix for SB2 fitter component swaps at crossing
@@ -204,6 +211,8 @@ public:
 private slots:
     void onAddManualPoint();
     void onImportPointsFromCsv();
+    /// Tell the user points were not stored because the star has no RV curve.
+    void reportNoCurve(int nPoints);
     void onPointActionClicked();
     void onPointSelectionChanged();
 

@@ -5,6 +5,7 @@
 #include "spectra/Spectrum.h"
 #include "core/Instrument.h"
 #include "rv/RadialVelocity.h"
+#include "rv/RVTableGuess.h"
 #include "core/Time.h"
 #include "db/DatabaseManager.h"
 
@@ -23,6 +24,8 @@
 #include <QDialogButtonBox>
 #include <QFileDialog>
 #include <QMessageBox>
+#include <QProgressDialog>
+#include <QCoreApplication>
 #include <QFile>
 #include <QTextStream>
 #include <QRegularExpression>
@@ -30,6 +33,40 @@
 #include <QUuid>
 
 #include <cmath>
+#include <limits>
+
+namespace {
+
+// Order of the time-scale combo. ISO dates are read to MJD (UTC).
+enum ScaleIndex { kMJD, kBJD, kJD, kHJD, kBTJD, kBKJD, kTCB, kISO };
+
+int indexForScale(TimeScale s)
+{
+    switch (s) {
+    case TimeScale::MJD:     return kMJD;
+    case TimeScale::BJD:     return kBJD;
+    case TimeScale::JD:      return kJD;
+    case TimeScale::HJD:     return kHJD;
+    case TimeScale::BTJD:    return kBTJD;
+    case TimeScale::BKJD:    return kBKJD;
+    case TimeScale::GaiaTCB: return kTCB;
+    case TimeScale::Unknown: return kMJD;
+    }
+    return kMJD;
+}
+
+bool isBarycentric(TimeScale s)
+{
+    return s == TimeScale::BJD || s == TimeScale::BTJD ||
+           s == TimeScale::BKJD || s == TimeScale::GaiaTCB;
+}
+
+QString crushName(const QString& s)
+{
+    return s.toLower().remove(' ').remove('-').remove('_').remove('/');
+}
+
+}   // namespace
 
 // ════════════════════════════════════════════════════════════════
 // Construction / UI
@@ -41,7 +78,7 @@ RVImportPointsDialog::RVImportPointsDialog(std::shared_ptr<Star> star,
     : QDialog(parent), _star(std::move(star)), _dbm(dbm)
 {
     setWindowTitle("Import RV points from CSV");
-    resize(700, 600);
+    resize(720, 640);
     setupUi();
 }
 
@@ -68,14 +105,20 @@ void RVImportPointsDialog::setupUi()
     optRow->addWidget(_delimCombo);
     _headerCheck = new QCheckBox("First row is header");
     _headerCheck->setChecked(true);
+    _headerCheck->setToolTip(
+        "Detected from the file: a first row with text where the rows below "
+        "hold numbers is a header. A '#'-commented line right above the data "
+        "is used for column names when there is no header row.");
     optRow->addWidget(_headerCheck);
     optRow->addStretch();
     outer->addLayout(optRow);
 
     connect(_delimCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
             this, &RVImportPointsDialog::onReloadFile);
-    connect(_headerCheck, &QCheckBox::toggled,
-            this, &RVImportPointsDialog::onReloadFile);
+    connect(_headerCheck, &QCheckBox::toggled, this, [this](bool) {
+        _headerChosen = true;
+        onReloadFile();
+    });
 
     // ── Column mapping ───────────────────────────────────────────
     auto* colGroup = new QGroupBox("Column Mapping");
@@ -87,10 +130,12 @@ void RVImportPointsDialog::setupUi()
     colGrid->addWidget(_timeColCombo, row, 1);
     _timeTypeCombo = new QComboBox;
     _timeTypeCombo->addItems({"MJD", "BJD", "JD", "HJD",
-                              "BTJD (TESS)", "BKJD (Kepler)", "Gaia TCB"});
+                              "BTJD (TESS)", "BKJD (Kepler)", "Gaia TCB",
+                              "ISO date (UTC)"});
     _timeTypeCombo->setToolTip(
-        "Scale of the timestamp column. HJD is converted to MJD and BJD using "
-        "the row's instrument and the star's coordinates.");
+        "Scale of the timestamp column, guessed from its name and its values. "
+        "MJD, JD, HJD and ISO dates are converted to BJD using the row's "
+        "instrument and the star's coordinates.");
     colGrid->addWidget(_timeTypeCombo, row++, 2);
 
     colGrid->addWidget(new QLabel("Epoch offset:"), row, 0);
@@ -99,7 +144,7 @@ void RVImportPointsDialog::setupUi()
     _epochOffsetEdit->setToolTip(
         "Added to every timestamp before it is read on the scale above, for "
         "tables that tabulate a reduced Julian date such as HJD-2450000. "
-        "Filled in automatically when the file states it.");
+        "Filled in automatically when the file states it or the values imply it.");
     colGrid->addWidget(_epochOffsetEdit, row++, 1);
 
     colGrid->addWidget(new QLabel("RV column [km/s]:"), row, 0);
@@ -108,7 +153,14 @@ void RVImportPointsDialog::setupUi()
 
     colGrid->addWidget(new QLabel("RV error column:"), row, 0);
     _errColCombo = new QComboBox;
-    colGrid->addWidget(_errColCombo, row++, 1);
+    colGrid->addWidget(_errColCombo, row, 1);
+    _defaultErrEdit = new QLineEdit;
+    _defaultErrEdit->setPlaceholderText("default error [km/s]");
+    _defaultErrEdit->setToolTip(
+        "RV error [km/s] given to rows that have none (no error column, or a "
+        "blank or zero cell, and no systematic error). Needed only when such "
+        "rows exist: a point without an error would get infinite weight in a fit.");
+    colGrid->addWidget(_defaultErrEdit, row++, 2);
 
     colGrid->addWidget(new QLabel("Systematic RV error column:"), row, 0);
     _sysErrColCombo = new QComboBox;
@@ -125,14 +177,24 @@ void RVImportPointsDialog::setupUi()
         "1 = primary, 2 = secondary. Rows without a value are primary.");
     colGrid->addWidget(_compColCombo, row++, 1);
 
+    colGrid->setColumnStretch(1, 1);
     colGroup->setLayout(colGrid);
     outer->addWidget(colGroup);
 
+    for (auto* c : {_timeColCombo, _rvColCombo, _errColCombo, _sysErrColCombo,
+                    _instColCombo, _compColCombo})
+        fillColumnCombo(c, -1);
+
     connect(_timeColCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int) { refreshPreview(); });
+            this, [this](int) { applyScaleGuess(); refreshPreview(); });
+    // A scale or offset the user picks replaces whatever the guess said.
     connect(_timeTypeCombo, QOverload<int>::of(&QComboBox::currentIndexChanged),
-            this, [this](int) { refreshPreview(); });
+            this, [this](int) { _scaleNote.clear(); refreshPreview(); });
+    connect(_epochOffsetEdit, &QLineEdit::textEdited,
+            this, [this](const QString&) { _scaleNote.clear(); });
     connect(_epochOffsetEdit, &QLineEdit::textChanged,
+            this, [this](const QString&) { refreshPreview(); });
+    connect(_defaultErrEdit, &QLineEdit::textChanged,
             this, [this](const QString&) { refreshPreview(); });
     for (auto* c : {_rvColCombo, _errColCombo, _sysErrColCombo, _instColCombo,
                     _compColCombo})
@@ -171,12 +233,11 @@ void RVImportPointsDialog::setupUi()
     instLay->addLayout(instRow);
 
     auto* note = new QLabel(
-        "<i>BJD is computed from MJD/JD using each point's instrument "
-        "(matched from the instrument column above, else the default "
-        "instrument) together with the star's coordinates. Timestamps "
-        "already in a barycentric scale (BJD, BTJD, BKJD, Gaia TCB) need no "
-        "instrument. Instruments can still be reassigned per point afterwards "
-        "in the RV points table.</i>");
+        "<i>Every point gets the instrument named in the instrument column, "
+        "else the default instrument. MJD, JD, HJD and ISO timestamps need it, "
+        "with the star's coordinates, to compute BJD; timestamps already on a "
+        "barycentric scale (BJD, BTJD, BKJD, Gaia TCB) do not. Instruments can "
+        "still be reassigned per point afterwards in the RV points table.</i>");
     note->setWordWrap(true);
     instLay->addWidget(note);
     instGroup->setLayout(instLay);
@@ -210,7 +271,7 @@ void RVImportPointsDialog::setupUi()
 }
 
 // ════════════════════════════════════════════════════════════════
-// CSV helpers
+// File reading
 // ════════════════════════════════════════════════════════════════
 
 QChar RVImportPointsDialog::delimiter() const
@@ -223,8 +284,6 @@ QChar RVImportPointsDialog::delimiter() const
         default: return '\0';  // auto-detect
     }
 }
-
-
 
 bool RVImportPointsDialog::loadFile()
 {
@@ -241,53 +300,117 @@ bool RVImportPointsDialog::loadFile()
 
     QTextStream in(&file);
     QStringList lines;
+    // The comment directly above the data: some tables put their header
+    // there ("# BJD RV err") so that numpy.loadtxt skips it.
+    QString commentAboveData;
     while (!in.atEnd()) {
         QString line = in.readLine().trimmed();
         if (line.isEmpty()) continue;
         // Comment lines are not data, but they are not noise either: a VizieR
         // export states a column's epoch offset only there.
-        if (line.startsWith('#')) { _metadataLines << line; continue; }
+        if (line.startsWith('#')) {
+            _metadataLines << line;
+            if (lines.isEmpty()) commentAboveData = line;
+            continue;
+        }
         lines << line;
     }
     file.close();
     if (lines.isEmpty()) return false;
 
+    // Sniff the delimiter on a data line when there is one: a header row of
+    // plain words separated by single spaces says less than the numbers do.
     QChar delim = delimiter();
-    if (delim == '\0') delim = DelimitedTable::detectDelimiter(lines.first());
+    if (delim == '\0')
+        delim = DelimitedTable::detectDelimiter(lines.size() > 1 ? lines[1] : lines[0]);
 
-    int startRow = 0;
-    if (_headerCheck->isChecked()) {
-        _columns = DelimitedTable::splitLine(lines[0], delim);
-        startRow = 1;
+    std::vector<QStringList> cells;
+    cells.reserve(lines.size());
+    for (const QString& l : lines)
+        cells.push_back(DelimitedTable::splitLine(l, delim));
+
+    if (!_headerChosen) {
+        const std::vector<QStringList> below(
+            cells.begin() + 1, cells.begin() + std::min<size_t>(cells.size(), 6));
+        _hasHeader = RVTableGuess::looksLikeHeader(cells[0], below);
+        QSignalBlocker block(_headerCheck);
+        _headerCheck->setChecked(_hasHeader);
     } else {
-        int ncols = DelimitedTable::splitLine(lines[0], delim).size();
-        for (int i = 0; i < ncols; ++i)
-            _columns << QString("Column_%1").arg(i);
+        _hasHeader = _headerCheck->isChecked();
     }
-    for (int i = startRow; i < lines.size(); ++i)
-        _rows.push_back(DelimitedTable::splitLine(lines[i], delim));
 
+    QStringList names;
+    if (_hasHeader) {
+        names = cells.front();
+        _rows.assign(cells.begin() + 1, cells.end());
+    } else {
+        _rows = std::move(cells);
+        if (!commentAboveData.isEmpty() && !_rows.empty()) {
+            QString c = commentAboveData;
+            c.remove(QRegularExpression(QStringLiteral("^#+")));
+            const QStringList commentCells = DelimitedTable::splitLine(c.trimmed(), delim);
+            const std::vector<QStringList> below(
+                _rows.begin(), _rows.begin() + std::min<size_t>(_rows.size(), 5));
+            if (commentCells.size() == _rows.front().size() &&
+                RVTableGuess::looksLikeHeader(commentCells, below))
+                names = commentCells;
+        }
+    }
+
+    // Ragged tables: name every column any of the first rows reaches, and
+    // give blank header cells (a pandas index column) a usable label.
+    int width = names.size();
+    for (size_t r = 0; r < std::min<size_t>(_rows.size(), 200); ++r)
+        width = std::max<int>(width, _rows[r].size());
+    for (int i = 0; i < width; ++i) {
+        const QString n = i < names.size() ? names[i].trimmed() : QString();
+        _columns << (n.isEmpty() ? QString("Column %1").arg(i + 1) : n);
+    }
     return true;
 }
 
-void RVImportPointsDialog::populateColumnCombo(QComboBox* combo,
-                                               const QStringList& patterns)
+void RVImportPointsDialog::fillColumnCombo(QComboBox* combo, int selected)
 {
-    combo->blockSignals(true);
+    QSignalBlocker block(combo);
     combo->clear();
     combo->addItem("(none)");
     combo->addItems(_columns);
+    combo->setCurrentIndex(selected >= 0 && selected < _columns.size() ? selected + 1 : 0);
+}
 
-    int bestIdx = 0;
-    for (int i = 0; i < _columns.size(); ++i) {
-        QString col = _columns[i].toLower();
-        for (const QString& pat : patterns) {
-            if (col == pat || col.contains(pat)) { bestIdx = i + 1; break; }
-        }
-        if (bestIdx > 0) break;
+void RVImportPointsDialog::applyColumnGuess()
+{
+    // Placeholder names say nothing; a '#' header or a real one does.
+    bool named = false;
+    for (int i = 0; i < _columns.size(); ++i)
+        if (_columns[i] != QString("Column %1").arg(i + 1)) { named = true; break; }
+
+    const auto g = RVTableGuess::guessColumns(_columns, _rows, named);
+    fillColumnCombo(_timeColCombo,   g.time);
+    fillColumnCombo(_rvColCombo,     g.rv);
+    fillColumnCombo(_errColCombo,    g.error);
+    fillColumnCombo(_sysErrColCombo, g.sysError);
+    fillColumnCombo(_instColCombo,   g.instrument);
+    fillColumnCombo(_compColCombo,   g.component);
+}
+
+void RVImportPointsDialog::applyScaleGuess()
+{
+    _scaleNote.clear();
+    const int col = _timeColCombo->currentIndex() - 1;
+    if (col < 0 || col >= _columns.size()) return;
+
+    const auto g = RVTableGuess::guessTimeScale(_columns[col], _metadataLines,
+                                                _rows, col);
+    {
+        QSignalBlocker b1(_timeTypeCombo);
+        QSignalBlocker b2(_epochOffsetEdit);
+        _timeTypeCombo->setCurrentIndex(g.iso ? kISO : indexForScale(g.scale));
+        _epochOffsetEdit->setText(g.offset == 0.0
+                                      ? QString()
+                                      : QString::number(g.offset, 'f', 1));
     }
-    combo->setCurrentIndex(bestIdx);
-    combo->blockSignals(false);
+    _scaleNote = g.note;
 }
 
 // ════════════════════════════════════════════════════════════════
@@ -299,9 +422,6 @@ void RVImportPointsDialog::buildInstrumentLookup()
     _instByKey.clear();
     if (!_dbm) return;
 
-    auto crush = [](const QString& s) {
-        return s.toLower().remove(' ').remove('-').remove('_').remove('/');
-    };
     for (const auto& inst : _dbm->getAllInstruments()) {
         if (!inst) continue;
         if (!inst->getId().isEmpty())
@@ -309,29 +429,28 @@ void RVImportPointsDialog::buildInstrumentLookup()
         const QString name = inst->getName();
         if (!name.isEmpty()) {
             _instByKey.insert(name.trimmed().toLower(), inst);
-            _instByKey.insert(crush(name), inst);
+            _instByKey.insert(crushName(name), inst);
         }
     }
 }
 
-std::shared_ptr<Instrument> RVImportPointsDialog::resolveRowInstrument(
-    const QStringList& row, int instCol) const
+std::shared_ptr<Instrument> RVImportPointsDialog::matchInstrument(
+    const QString& rawToken) const
 {
-    if (instCol >= 0 && instCol < row.size()) {
-        const QString token = row[instCol].trimmed();
-        if (!token.isEmpty()) {
-            auto it = _instByKey.find(token.toLower());
-            if (it != _instByKey.end()) return it.value();
-            QString crushed = token.toLower().remove(' ').remove('-')
-                                   .remove('_').remove('/');
-            it = _instByKey.find(crushed);
-            if (it != _instByKey.end()) return it.value();
-            // Also match against an "Instrument/Mode" prefix.
-            it = _instByKey.find(token.section('/', 0, 0).trimmed().toLower());
-            if (it != _instByKey.end()) return it.value();
-        }
-    }
-    // Fallback: the default instrument selector.
+    const QString token = rawToken.trimmed();
+    if (token.isEmpty()) return nullptr;
+    auto it = _instByKey.find(token.toLower());
+    if (it != _instByKey.end()) return it.value();
+    it = _instByKey.find(crushName(token));
+    if (it != _instByKey.end()) return it.value();
+    // Also match against an "Instrument/Mode" prefix.
+    it = _instByKey.find(token.section('/', 0, 0).trimmed().toLower());
+    if (it != _instByKey.end()) return it.value();
+    return nullptr;
+}
+
+std::shared_ptr<Instrument> RVImportPointsDialog::defaultInstrument() const
+{
     const QString defId = _instCombo->currentData().toString();
     if (!defId.isEmpty() && _dbm)
         return _dbm->getInstrumentById(defId);
@@ -349,6 +468,8 @@ void RVImportPointsDialog::onBrowse()
         "Data Files (*.csv *.txt *.dat *.tsv);;All Files (*)");
     if (file.isEmpty()) return;
     _fileEdit->setText(file);
+    // A new file gets its header detected again.
+    _headerChosen = false;
     onReloadFile();
 }
 
@@ -358,287 +479,346 @@ void RVImportPointsDialog::onReloadFile()
 
     if (!loadFile()) {
         QMessageBox::warning(this, "Load Error",
-            "Could not read or parse the selected file.");
+            "Could not read the selected file, or it holds no data rows.");
         _status->setText("Failed to load file.");
         _buttons->button(QDialogButtonBox::Ok)->setEnabled(false);
         return;
     }
 
-    populateColumnCombo(_timeColCombo,
-        {"mjd", "bjd", "time", "jd", "timestamp", "epoch"});
-    populateColumnCombo(_rvColCombo,
-        {"rv", "vrad", "radial_velocity", "v_rad", "radvel", "velocity"});
-    populateColumnCombo(_errColCombo,
-        {"rv_err", "rv_error", "e_rv", "vrad_err", "vrad_error", "e_vrad",
-         "sigma_rv", "err"});
-    populateColumnCombo(_sysErrColCombo,
-        {"sys", "systematic", "sys_err", "sys_error", "rv_sys", "sigma_sys"});
-    populateColumnCombo(_instColCombo,
-        {"instrument", "inst", "telescope", "spectrograph", "detector"});
-    populateColumnCombo(_compColCombo,
-        {"component", "comp", "star_component"});
-
-    // Auto-detect the time scale from the chosen column's name.
-    int timeIdx = _timeColCombo->currentIndex() - 1;
-    if (timeIdx >= 0 && timeIdx < _columns.size()) {
-        const QString tn = _columns[timeIdx].toLower();
-        // Longest names first: "btjd" also contains "jd", and "hjd" has to be
-        // recognised before the bare-JD fallback claims it.
-        if      (tn.contains("btjd")) _timeTypeCombo->setCurrentIndex(4);
-        else if (tn.contains("bkjd")) _timeTypeCombo->setCurrentIndex(5);
-        else if (tn.contains("tcb"))  _timeTypeCombo->setCurrentIndex(6);
-        else if (tn.contains("bjd"))  _timeTypeCombo->setCurrentIndex(1);
-        else if (tn.contains("hjd"))  _timeTypeCombo->setCurrentIndex(3);
-        else if (tn.contains("jd") && !tn.contains("mjd"))
-                                      _timeTypeCombo->setCurrentIndex(2);
-        else                          _timeTypeCombo->setCurrentIndex(0);
-
-        // ... and the epoch offset from whatever the file says about that
-        // column. A VizieR table names the column plain "HJD" and mentions the
-        // reduction only in its '#Column' description.
-        _epochOffsetEdit->setText(QString::number(
-            Time::epochOffsetFor(_columns[timeIdx], _metadataLines), 'f', 1));
-    }
-
+    applyColumnGuess();
+    applyScaleGuess();
     refreshPreview();
 }
 
 double RVImportPointsDialog::epochOffset() const
 {
     bool ok = false;
-    const double v = _epochOffsetEdit->text().trimmed().toDouble(&ok);
+    const double v = RVTableGuess::parseNumber(_epochOffsetEdit->text(), &ok);
     return ok ? v : 0.0;
+}
+
+double RVImportPointsDialog::defaultError() const
+{
+    bool ok = false;
+    const double v = RVTableGuess::parseNumber(_defaultErrEdit->text(), &ok);
+    return (ok && v > 0.0) ? v : std::numeric_limits<double>::quiet_NaN();
 }
 
 TimeScale RVImportPointsDialog::selectedScale() const
 {
     switch (_timeTypeCombo->currentIndex()) {
-        case 0: return TimeScale::MJD;
-        case 1: return TimeScale::BJD;
-        case 2: return TimeScale::JD;
-        case 3: return TimeScale::HJD;
-        case 4: return TimeScale::BTJD;
-        case 5: return TimeScale::BKJD;
-        case 6: return TimeScale::GaiaTCB;
-        default: return TimeScale::MJD;
+        case kMJD:  return TimeScale::MJD;
+        case kBJD:  return TimeScale::BJD;
+        case kJD:   return TimeScale::JD;
+        case kHJD:  return TimeScale::HJD;
+        case kBTJD: return TimeScale::BTJD;
+        case kBKJD: return TimeScale::BKJD;
+        case kTCB:  return TimeScale::GaiaTCB;
+        case kISO:  return TimeScale::MJD;
+        default:    return TimeScale::MJD;
     }
 }
+
+bool RVImportPointsDialog::isoDates() const
+{
+    return _timeTypeCombo->currentIndex() == kISO;
+}
+
+// ════════════════════════════════════════════════════════════════
+// Row parsing (shared by the preview and the import)
+// ════════════════════════════════════════════════════════════════
+
+RVImportPointsDialog::ParseResult RVImportPointsDialog::parseRows() const
+{
+    ParseResult res;
+    const int timeCol = _timeColCombo->currentIndex() - 1;
+    const int rvCol   = _rvColCombo->currentIndex() - 1;
+    if (timeCol < 0 || rvCol < 0) return res;
+
+    const int errCol    = _errColCombo->currentIndex() - 1;
+    const int sysErrCol = _sysErrColCombo->currentIndex() - 1;
+    const int instCol   = _instColCombo->currentIndex() - 1;
+    const int compCol   = _compColCombo->currentIndex() - 1;
+    const TimeScale scale = selectedScale();
+    const bool   iso    = isoDates();
+    const double offset = iso ? 0.0 : epochOffset();
+    const double defErr = defaultError();
+    const auto   defInst = defaultInstrument();
+
+    auto cell = [](const QStringList& row, int col) {
+        return (col >= 0 && col < row.size()) ? row[col] : QString();
+    };
+    auto number = [&](const QStringList& row, int col, bool* ok) {
+        return RVTableGuess::parseNumber(cell(row, col), ok);
+    };
+
+    QSet<QString> unknown;
+    res.rows.reserve(_rows.size());
+    for (const QStringList& row : _rows) {
+        bool okT = false, okV = false;
+        double t = 0.0;
+        if (iso) okT = RVTableGuess::parseIsoDateMjd(cell(row, timeCol), &t);
+        else     t = number(row, timeCol, &okT) + offset;
+        const double rv = number(row, rvCol, &okV);
+        if (!okT || !okV) { ++res.unparsed; continue; }
+
+        // A value that cannot be a timestamp on the chosen scale is a missing
+        // epoch offset, not an epoch. Converting it anyway is what put an MJD
+        // of -2391132 in the database, so it is counted and reported instead.
+        if (!iso && !Time::isPlausibleFor(t, scale)) {
+            if (res.implausible++ == 0) res.firstImplausible = t;
+            continue;
+        }
+
+        ParsedRow p;
+        p.value = t;
+        p.rv    = rv;
+
+        bool ok = false;
+        double v = number(row, errCol, &ok);
+        if (ok && v > 0.0) p.errFormal = v;
+        v = number(row, sysErrCol, &ok);
+        if (ok && v > 0.0) p.errSys = v;
+        if (p.errFormal <= 0.0 && p.errSys <= 0.0) {
+            ++res.missingError;
+            if (!std::isnan(defErr)) { p.errFormal = defErr; p.errDefaulted = true; }
+        }
+
+        const QString comp = cell(row, compCol).trimmed().toLower();
+        if (comp == "2" || comp == "2.0" || comp == "b" || comp == "s" ||
+            comp == "sec" || comp == "secondary")
+            p.component = 2;
+
+        const QString token = cell(row, instCol).trimmed();
+        p.inst = matchInstrument(token);
+        if (!p.inst) {
+            if (!token.isEmpty()) unknown.insert(token);
+            p.inst = defInst;
+        }
+        if (!p.inst) ++res.withoutInstrument;
+
+        res.rows.push_back(std::move(p));
+    }
+    res.unknownInstruments = unknown.values();
+    std::sort(res.unknownInstruments.begin(), res.unknownInstruments.end());
+    return res;
+}
+
+Time RVImportPointsDialog::makeTime(const ParsedRow& r) const
+{
+    // The Time ctor handles fixed-offset scales (JD↔MJD, BTJD/BKJD/Gaia TCB
+    // → BJD). MJD/JD still need a barycentric correction, and HJD a
+    // heliocentric one first, both performed via the row's instrument;
+    // resolveScales walks HJD → MJD → BJD, and the first leg only needs the
+    // coordinates, so an HJD row still yields an MJD without an instrument.
+    Time t(r.value, selectedScale());
+    const double ra  = _star ? _star->getRa()  : std::numeric_limits<double>::quiet_NaN();
+    const double dec = _star ? _star->getDec() : std::numeric_limits<double>::quiet_NaN();
+    if (!std::isnan(ra) && !std::isnan(dec))
+        t.resolveScales(r.inst.get(), ra, dec);
+    return t;
+}
+
+// ════════════════════════════════════════════════════════════════
+// Preview
+// ════════════════════════════════════════════════════════════════
 
 void RVImportPointsDialog::refreshPreview()
 {
     const int timeCol = _timeColCombo->currentIndex() - 1;
     const int rvCol   = _rvColCombo->currentIndex() - 1;
+    const bool showComp = _compColCombo->currentIndex() > 0;
 
     _preview->clear();
-    _preview->setColumnCount(5);
-    _preview->setHorizontalHeaderLabels(
-        {"MJD", "BJD", "RV [km/s]", "σ", "Instrument"});
+    QStringList headers{"MJD", "BJD", "RV [km/s]", "σ [km/s]", "Instrument"};
+    if (showComp) headers << "Comp.";
+    _preview->setColumnCount(headers.size());
+    _preview->setHorizontalHeaderLabels(headers);
     _preview->horizontalHeader()->setSectionResizeMode(QHeaderView::Stretch);
 
-    const bool ready = timeCol >= 0 && rvCol >= 0 && !_rows.empty();
-    _buttons->button(QDialogButtonBox::Ok)->setEnabled(ready);
-    if (!ready) {
+    auto* okBtn = _buttons->button(QDialogButtonBox::Ok);
+    if (_rows.empty()) {
         _preview->setRowCount(0);
-        if (!_rows.empty())
-            _status->setText("Map at least the timestamp and RV columns.");
+        okBtn->setEnabled(false);
+        return;
+    }
+    if (timeCol < 0 || rvCol < 0) {
+        _preview->setRowCount(0);
+        okBtn->setEnabled(false);
+        _status->setText(timeCol < 0 && rvCol < 0
+            ? "Map the timestamp and RV columns."
+            : timeCol < 0 ? "Map the timestamp column."
+                          : "Map the RV column.");
         return;
     }
 
-    const int errCol    = _errColCombo->currentIndex() - 1;
-    const int sysErrCol = _sysErrColCombo->currentIndex() - 1;
-    const int instCol   = _instColCombo->currentIndex() - 1;
-    const TimeScale scale  = selectedScale();
-    const double    offset = epochOffset();
+    const ParseResult res = parseRows();
+    const int valid = static_cast<int>(res.rows.size());
 
-    const double ra  = _star ? _star->getRa()  : std::numeric_limits<double>::quiet_NaN();
-    const double dec = _star ? _star->getDec() : std::numeric_limits<double>::quiet_NaN();
-    const bool haveCoords = !std::isnan(ra) && !std::isnan(dec);
-
-    const int maxPreview = std::min<int>(50, static_cast<int>(_rows.size()));
-    _preview->setRowCount(maxPreview);
-
-    int valid = 0;
-    int implausible = 0;
-    double firstImplausible = 0.0;
-    bool needsInstrument = false;
-    for (int r = 0; r < static_cast<int>(_rows.size()); ++r) {
-        const QStringList& row = _rows[r];
-        if (timeCol >= row.size() || rvCol >= row.size()) continue;
-        bool okT, okV;
-        double tVal = row[timeCol].toDouble(&okT) + offset;
-        double rv   = row[rvCol].toDouble(&okV);
-        if (!okT || !okV) continue;
-
-        // A value that cannot be a timestamp on the chosen scale is a missing
-        // epoch offset, not an epoch. Converting it anyway is what put an MJD
-        // of -2391132 in the database, so it is counted and reported instead.
-        if (!Time::isPlausibleFor(tVal, scale)) {
-            if (implausible++ == 0) firstImplausible = tVal;
-            continue;
+    const int shown = std::min(50, valid);
+    _preview->setRowCount(shown);
+    for (int r = 0; r < shown; ++r) {
+        const ParsedRow& p = res.rows[r];
+        const Time t = makeTime(p);
+        auto setCell = [&](int c, const QString& s, bool dim = false,
+                           Qt::Alignment align = Qt::AlignRight | Qt::AlignVCenter) {
+            auto* it = new QTableWidgetItem(s);
+            it->setTextAlignment(align);
+            if (dim) it->setForeground(Qt::gray);
+            _preview->setItem(r, c, it);
+        };
+        const auto mjd = t.mjd();
+        const auto bjd = t.bjd();
+        setCell(0, mjd ? QString::number(*mjd, 'f', 6) : "-", !mjd);
+        setCell(1, bjd ? QString::number(*bjd, 'f', 6) : "not calculated", !bjd);
+        setCell(2, QString::number(p.rv, 'f', 4));
+        const double err = std::sqrt(p.errFormal * p.errFormal + p.errSys * p.errSys);
+        if (err > 0.0) {
+            setCell(3, QString::number(err, 'f', 4) + (p.errDefaulted ? " (default)" : ""),
+                    p.errDefaulted);
+        } else {
+            setCell(3, "missing", true);
         }
-
-        auto inst = resolveRowInstrument(row, instCol);
-
-        Time t(tVal, scale);
-        // resolveScales walks HJD → MJD → BJD; the first leg only needs the
-        // coordinates, so an HJD row still yields an MJD without an instrument.
-        if (haveCoords) t.resolveScales(inst.get(), ra, dec);
-        if (!t.hasBjd()) needsInstrument = true;
-
-        if (r < maxPreview) {
-            auto setCell = [&](int c, const QString& s, bool dim = false,
-                               Qt::Alignment align = Qt::AlignRight | Qt::AlignVCenter) {
-                auto* it = new QTableWidgetItem(s);
-                it->setTextAlignment(align);
-                if (dim) it->setForeground(Qt::gray);
-                _preview->setItem(r, c, it);
-            };
-            auto mjd = t.mjd();
-            auto bjd = t.bjd();
-            setCell(0, mjd ? QString::number(*mjd, 'f', 6) : "-", !mjd);
-            setCell(1, bjd ? QString::number(*bjd, 'f', 6) : "not calculated", !bjd);
-            setCell(2, QString::number(rv, 'f', 4));
-
-            double err = 0.0;
-            if (errCol >= 0 && errCol < row.size()) err = row[errCol].toDouble();
-            if (sysErrCol >= 0 && sysErrCol < row.size()) {
-                double s = row[sysErrCol].toDouble();
-                err = std::sqrt(err * err + s * s);
-            }
-            setCell(3, QString::number(err, 'f', 4));
-            setCell(4, inst ? inst->getName() : QString("-"), !inst,
-                    Qt::AlignLeft | Qt::AlignVCenter);
-        }
-        ++valid;
+        setCell(4, p.inst ? p.inst->getName() : QString("-"), !p.inst,
+                Qt::AlignLeft | Qt::AlignVCenter);
+        if (showComp) setCell(5, QString::number(p.component));
     }
 
-    QString msg = QString("%1 of %2 rows parse as valid RV points.")
-                      .arg(valid).arg(_rows.size());
-    if (implausible > 0) {
-        msg += QString(" %1 row(s) hold a value (%2) that cannot be a %3 - "
+    QStringList msg;
+    msg << QString("%1 of %2 rows parse as valid RV points.")
+               .arg(valid).arg(_rows.size());
+    if (res.unparsed > 0)
+        msg << QString("%1 row(s) skipped: no readable time or RV.").arg(res.unparsed);
+    if (!_scaleNote.isEmpty())
+        msg << _scaleNote;
+
+    bool blocked = valid == 0;
+    if (res.implausible > 0) {
+        blocked = true;
+        msg << QString("%1 row(s) hold a value (%2) that cannot be a %3: "
                        "this is a reduced Julian date; set the epoch offset "
                        "(commonly 2450000) or correct the scale.")
-                   .arg(implausible)
-                   .arg(firstImplausible, 0, 'f', 4)
+                   .arg(res.implausible)
+                   .arg(res.firstImplausible, 0, 'f', 4)
                    .arg(_timeTypeCombo->currentText());
     }
-    if (needsInstrument) {
+    if (res.missingError > 0) {
+        const double defErr = defaultError();
+        if (std::isnan(defErr)) {
+            blocked = true;
+            msg << QString("<b>%1 row(s) have no RV error: enter a default RV "
+                           "error to import them.</b>").arg(res.missingError);
+        } else {
+            msg << QString("%1 row(s) use the default RV error of %2 km/s.")
+                       .arg(res.missingError).arg(defErr);
+        }
+    }
+    if (!res.unknownInstruments.isEmpty()) {
+        QStringList names = res.unknownInstruments.mid(0, 5);
+        if (res.unknownInstruments.size() > 5) names << "…";
+        msg << QString("Instrument values not recognised (%1); those rows use "
+                       "the default instrument.").arg(names.join(", "));
+    }
+    const bool barycentric = !isoDates() && isBarycentric(selectedScale());
+    if (!barycentric && res.withoutInstrument > 0) {
+        const bool haveCoords = _star && !std::isnan(_star->getRa()) &&
+                                !std::isnan(_star->getDec());
         if (!haveCoords)
-            msg += " Star has no coordinates – BJD cannot be computed for "
+            msg << "Star has no coordinates: BJD cannot be computed for "
                    "non-barycentric timestamps.";
         else
-            msg += " Map an instrument column or pick a default instrument to "
-                   "convert MJD/JD/HJD timestamps to BJD (can also be assigned "
-                   "per point afterwards).";
+            msg << QString("%1 row(s) have no instrument: pick a default "
+                           "instrument to convert their timestamps to BJD (it "
+                           "can also be assigned per point afterwards).")
+                       .arg(res.withoutInstrument);
     }
-    _status->setText(msg);
+
+    _status->setText(msg.join(' '));
+    okBtn->setEnabled(!blocked);
 }
+
+// ════════════════════════════════════════════════════════════════
+// Import
+// ════════════════════════════════════════════════════════════════
 
 void RVImportPointsDialog::onAccept()
 {
-    const int timeCol   = _timeColCombo->currentIndex() - 1;
-    const int rvCol     = _rvColCombo->currentIndex() - 1;
-    const int errCol    = _errColCombo->currentIndex() - 1;
-    const int sysErrCol = _sysErrColCombo->currentIndex() - 1;
-
+    const int timeCol = _timeColCombo->currentIndex() - 1;
+    const int rvCol   = _rvColCombo->currentIndex() - 1;
     if (timeCol < 0 || rvCol < 0) {
         QMessageBox::warning(this, "Missing Columns",
             "Please map at least the timestamp and RV columns.");
         return;
     }
 
-    const int instCol = _instColCombo->currentIndex() - 1;
-    const int compCol = _compColCombo->currentIndex() - 1;
-    const TimeScale scale  = selectedScale();
-    const double    offset = epochOffset();
+    const ParseResult res = parseRows();
 
-    const double ra  = _star ? _star->getRa()  : std::numeric_limits<double>::quiet_NaN();
-    const double dec = _star ? _star->getDec() : std::numeric_limits<double>::quiet_NaN();
-    const bool haveCoords = !std::isnan(ra) && !std::isnan(dec);
+    if (res.implausible > 0) {
+        // Refuse rather than import a subset: a table with a reduced epoch
+        // column has it on every row, so "some rows were skipped" would mean
+        // the offset is wrong, not that a few rows are odd.
+        QMessageBox::warning(this, "Epoch offset needed",
+            QString("%1 row(s) hold a value such as %2, which cannot be a %3: "
+                    "a full Julian date is around 2.45 million.\n\n"
+                    "This table tabulates a reduced Julian date. Set the epoch "
+                    "offset (2450000 is the usual one) or pick the scale the "
+                    "column is really on, then import again.")
+                .arg(res.implausible)
+                .arg(res.firstImplausible, 0, 'f', 4)
+                .arg(_timeTypeCombo->currentText()));
+        return;
+    }
+    if (res.missingError > 0 && std::isnan(defaultError())) {
+        QMessageBox::warning(this, "RV error needed",
+            QString("%1 row(s) have no RV error. Enter a default RV error "
+                    "[km/s] for them, then import again.")
+                .arg(res.missingError));
+        _defaultErrEdit->setFocus();
+        return;
+    }
+    if (res.rows.empty()) {
+        QMessageBox::warning(this, "No Points",
+            "No valid RV points were parsed from the table.");
+        return;
+    }
+
+    // Barycentric corrections run per row; show progress when that takes a
+    // moment on a long table.
+    const int total = static_cast<int>(res.rows.size());
+    QProgressDialog progress("Converting timestamps...", QString(), 0, total, this);
+    progress.setWindowTitle("Import RV points");
+    progress.setWindowModality(Qt::WindowModal);
+    progress.setCancelButton(nullptr);
+    progress.setMinimumDuration(300);
 
     std::vector<std::shared_ptr<RadialVelocityPoint>> out;
-    int implausible = 0;
-    double firstImplausible = 0.0;
-    for (const QStringList& row : _rows) {
-        if (timeCol >= row.size() || rvCol >= row.size()) continue;
-        bool okT, okV;
-        double tVal = row[timeCol].toDouble(&okT) + offset;
-        double rv   = row[rvCol].toDouble(&okV);
-        if (!okT || !okV) continue;
-
-        // Same guard as the preview, and this is the one that matters: a
-        // reduced Julian date read as a full one writes an epoch that is wrong
-        // by the offset and looks like a number, so it has to stop here rather
-        // than reach the database.
-        if (!Time::isPlausibleFor(tVal, scale)) {
-            if (implausible++ == 0) firstImplausible = tVal;
-            continue;
-        }
-
-        auto inst = resolveRowInstrument(row, instCol);
+    out.reserve(total);
+    for (int i = 0; i < total; ++i) {
+        const ParsedRow& r = res.rows[i];
 
         auto p = std::make_shared<RadialVelocityPoint>();
         p->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
         p->setSource("csv_import");
         p->setRVSource(RadialVelocityPoint::RVSource::Manual);
-        if (compCol >= 0 && compCol < row.size()) {
-            bool okC; const int c = row[compCol].trimmed().toInt(&okC);
-            if (okC && c == 2) p->setComponent(2);
-        }
+        p->setComponent(r.component);
+        p->setTime(makeTime(r));
+        if (r.inst) p->setInstrument(r.inst);
 
-        // Build the timestamp; the Time ctor handles fixed-offset scales
-        // (JD↔MJD, BTJD/BKJD/Gaia TCB → BJD). MJD/JD still need a
-        // barycentric correction, and HJD a heliocentric one first, both
-        // performed via the row's instrument.
-        Time t(tVal, scale);
-        p->setTime(t);
-        if (haveCoords)
-            p->time().resolveScales(inst.get(), ra, dec);
-        if (inst) p->setInstrument(inst);
-
-        double errFormal = 0.0;
-        if (errCol >= 0 && errCol < row.size()) {
-            bool ok; double v = row[errCol].toDouble(&ok);
-            if (ok) errFormal = v;
-        }
-        double errSys = 0.0;
-        if (sysErrCol >= 0 && sysErrCol < row.size()) {
-            bool ok; double v = row[sysErrCol].toDouble(&ok);
-            if (ok && v > 0.0) errSys = v;
-        }
-
-        p->setRV(rv);
-        p->setRVErrorFormal(errFormal);
-        p->setRVErrorSystematic(errSys);
+        p->setRV(r.rv);
+        p->setRVErrorFormal(r.errFormal);
+        p->setRVErrorSystematic(r.errSys);
         // Manual snapshot so values survive any later "reset to fit".
-        p->setRVManual(rv);
-        p->setRVManualErrorFormal(errFormal);
-        p->setRVManualErrorSystematic(errSys);
+        p->setRVManual(r.rv);
+        p->setRVManualErrorFormal(r.errFormal);
+        p->setRVManualErrorSystematic(r.errSys);
 
         out.push_back(std::move(p));
+        if (i % 25 == 0) {
+            progress.setValue(i);
+            QCoreApplication::processEvents();
+        }
     }
-
-    if (implausible > 0) {
-        // Refuse rather than import a subset: a table with a reduced epoch
-        // column has it on every row, so "some rows were skipped" would mean
-        // the offset is wrong, not that a few rows are odd.
-        QMessageBox::warning(this, "Epoch offset needed",
-            QString("%1 row(s) hold a value such as %2, which cannot be a %3 - "
-                    "a full Julian date is around 2.45 million.\n\n"
-                    "This table tabulates a reduced Julian date. Set the epoch "
-                    "offset (2450000 is the usual one) or pick the scale the "
-                    "column is really on, then import again.")
-                .arg(implausible)
-                .arg(firstImplausible, 0, 'f', 4)
-                .arg(_timeTypeCombo->currentText()));
-        return;
-    }
-
-    if (out.empty()) {
-        QMessageBox::warning(this, "No Points",
-            "No valid RV points were parsed from the table.");
-        return;
-    }
+    progress.setValue(total);
 
     _results = std::move(out);
     accept();
