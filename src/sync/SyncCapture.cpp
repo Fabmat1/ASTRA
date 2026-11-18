@@ -3,6 +3,7 @@
 #include "app/Logger.h"
 #include "sync/SyncSchema.h"
 
+#include <QDateTime>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QStringList>
@@ -335,6 +336,14 @@ bool createSyncTables(const QSqlDatabase& db, QString* error)
                            "by_device TEXT, by_hlc INTEGER, old BLOB)"),
             QStringLiteral("CREATE INDEX IF NOT EXISTS sync_history_row "
                            "ON sync_history (tbl, pk)"),
+            // Data files sync has looked at, and files a received row needs
+            // that are not here yet (see BlobIndex).
+            QStringLiteral("CREATE TABLE IF NOT EXISTS sync_blobs ("
+                           "relpath TEXT PRIMARY KEY, size INTEGER NOT NULL, "
+                           "mtime INTEGER NOT NULL, hash BLOB NOT NULL) WITHOUT ROWID"),
+            QStringLiteral("CREATE TABLE IF NOT EXISTS sync_blob_wanted ("
+                           "relpath TEXT PRIMARY KEY, size INTEGER NOT NULL, "
+                           "hash BLOB NOT NULL, peer TEXT) WITHOUT ROWID"),
             // A row that turned out to duplicate another (same UNIQUE key,
             // created independently on two machines): ids of the loser are
             // read as the winner's from then on.
@@ -357,6 +366,12 @@ bool SyncCapture::install(const QSqlDatabase& db, QString* error)
         if (metaValue(db, QStringLiteral("device_id")).isEmpty() &&
             !setMetaValue(db, QStringLiteral("device_id"),
                           QUuid::createUuid().toString(QUuid::WithoutBraces)))
+            return false;
+        // Data files last written before this moment are as they were when
+        // sync was switched on; see BlobIndex::check().
+        if (metaValue(db, QStringLiteral("installed_at")).isEmpty() &&
+            !setMetaValue(db, QStringLiteral("installed_at"),
+                          QString::number(QDateTime::currentMSecsSinceEpoch())))
             return false;
 
         return ensureLocked(db, error);

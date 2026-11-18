@@ -1,10 +1,12 @@
 #include "sync/SyncStore.h"
 
 #include "app/Logger.h"
+#include "sync/BlobIndex.h"
 #include "sync/Hlc.h"
 #include "sync/SyncCapture.h"
 #include "sync/SyncSchema.h"
 
+#include <QDir>
 #include <QHash>
 #include <QSqlError>
 #include <QSqlQuery>
@@ -37,11 +39,15 @@ struct Captured {
     bool        existed = false;
     bool        exists  = false;
     QStringList cells;          // changed cells, when it existed and still does
+    QStringList paths;          // values of the path columns, when it exists
 };
 
 }   // namespace
 
-SyncStore::SyncStore(const QSqlDatabase& db) : _db(db) {}
+SyncStore::SyncStore(const QSqlDatabase& db, const QString& dataRoot)
+    : _db(db), _root(dataRoot.isEmpty() ? QString() : QDir::cleanPath(dataRoot))
+{
+}
 
 bool SyncStore::isInstalled() const
 {
@@ -186,6 +192,9 @@ bool SyncStore::flushInTransaction(FlushResult* result, int maxRows, QString* er
         return clear.exec();
     };
 
+    BlobIndex blobs(_db, _root);
+    const qint64 baseline = meta(QStringLiteral("installed_at")).toLongLong();
+
     int budget = maxRows;
     for (const TablePolicy& policy : syncedTables()) {
         if (budget <= 0) { out.more = true; break; }
@@ -223,12 +232,21 @@ bool SyncStore::flushInTransaction(FlushResult* result, int maxRows, QString* er
             join << QStringLiteral("t.%1 = p.%1").arg(quoted(k));
         }
 
+        // Data files are hashed while the write lock is held, so tables that
+        // have them go in smaller batches.
+        QStringList pathColumns;
+        if (!_root.isEmpty())
+            for (const QString& column : policy.paths)
+                if (table.columns.contains(column)) pathColumns << column;
+        const int limit = pathColumns.isEmpty() ? budget : qMin(budget, 500);
+
         QString sql = QStringLiteral("SELECT p.rowid, p._existed, (t.rowid IS NOT NULL), ") +
                       keyColumns.join(QStringLiteral(", "));
         if (!flags.isEmpty()) sql += QStringLiteral(", ") + flags.join(QStringLiteral(", "));
+        for (const QString& column : pathColumns) sql += QStringLiteral(", t.") + quoted(column);
         sql += QStringLiteral(" FROM %1 p LEFT JOIN %2 t ON %3 ORDER BY p.rowid LIMIT %4")
                    .arg(quoted(shadowName), quoted(policy.name), join.join(QStringLiteral(" AND ")))
-                   .arg(budget);
+                   .arg(limit);
 
         std::vector<Captured> rows;
         qint64 lastRowid = 0;
@@ -248,6 +266,9 @@ bool SyncStore::flushInTransaction(FlushResult* result, int maxRows, QString* er
                 if (row.existed && row.exists)
                     for (int i = 0; i < cells.size(); ++i)
                         if (q.value(3 + nKey + i).toInt() != 0) row.cells << cells.at(i);
+                if (row.exists)
+                    for (int i = 0; i < pathColumns.size(); ++i)
+                        row.paths << q.value(3 + nKey + int(cells.size()) + i).toString();
                 rows.push_back(std::move(row));
             }
         }
@@ -268,6 +289,20 @@ bool SyncStore::flushInTransaction(FlushResult* result, int maxRows, QString* er
                     ++out.cellsChanged;
                 }
             }
+            // The row's data files. A save writes the file and then the row,
+            // so every saved row passes here, changed or not. For a row that
+            // was just created the files travel with it; they are only
+            // indexed. For a row that was there, a file with new content is a
+            // change of its own.
+            for (int i = 0; i < row.paths.size(); ++i) {
+                const QString rel = blobs.relative(row.paths.at(i));
+                if (rel.isEmpty()) continue;
+                if (blobs.check(rel, baseline) == BlobIndex::Change::Changed && row.existed) {
+                    ok = ok && record(policy.name, row.pk, kBlobCellPrefix + pathColumns.at(i));
+                    ++out.cellsChanged;
+                    ++out.filesChanged;
+                }
+            }
             // Neither before nor now: created and deleted between two flushes.
             if (!ok) { fail(put, QStringLiteral("flush of ") + policy.name, error); return rollback(); }
         }
@@ -278,7 +313,9 @@ bool SyncStore::flushInTransaction(FlushResult* result, int maxRows, QString* er
         if (!done.exec()) { fail(done, QStringLiteral("flush of ") + policy.name, error); return rollback(); }
 
         budget -= int(rows.size());
-        if (budget <= 0) out.more = true;
+        // A full batch: this table may hold more. Stop here so the lock is
+        // given back; the next call carries on.
+        if (int(rows.size()) >= limit) { out.more = true; break; }
     }
 
     if (out.entries() > 0 &&
@@ -301,6 +338,7 @@ bool SyncStore::flushAll(FlushResult* total, QString* error)
         sum.rowsCreated  += one.rowsCreated;
         sum.rowsDeleted  += one.rowsDeleted;
         sum.cellsChanged += one.cellsChanged;
+        sum.filesChanged += one.filesChanged;
         if (!one.more) break;
     }
     if (total) *total = sum;

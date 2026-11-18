@@ -47,6 +47,7 @@ struct ApplyResult {
     int cellsWritten = 0;   ///< cells of existing rows taken from the change set
     int cellsKept    = 0;   ///< cells where the local write was the later one
     int rowsDeferred = 0;   ///< held back by the gate
+    int filesWanted  = 0;   ///< data files put on the want list
     int conflicts    = 0;   ///< overwritten or deleted although changed here, unsent
 
     QSet<QString> stars;                 ///< stars whose rows changed
@@ -99,6 +100,20 @@ public:
                ChangeSet* deferred, QString* error = nullptr);
 
     int inboxSize() const;
+
+    // ── data files ──────────────────────────────────────────────────────
+    /// Files that rows applied here need and that are not here yet (or are
+    /// here with other content). The transport asks the peer for them.
+    QList<BlobRef> wantedFiles(int limit, const QString& fromPeer = {}) const;
+    int wantedFileCount() const;
+    /// Sender side: the content of a file, as long as it still is what the
+    /// receiver asked for. False when it is gone or was rewritten since; the
+    /// receiver then stops asking (fileUnavailable) and the newer content
+    /// follows with its own change.
+    bool readFile(const BlobRef& ref, QByteArray* data);
+    /// Receiver side: verifies and stores a file that arrived.
+    bool storeFile(const BlobRef& ref, const QByteArray& data, QString* error = nullptr);
+    void fileUnavailable(const BlobRef& ref);
 
 private:
     QSqlDatabase _db;

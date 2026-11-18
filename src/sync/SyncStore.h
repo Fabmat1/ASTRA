@@ -19,6 +19,7 @@ struct FlushResult {
     int rowsCreated  = 0;
     int rowsDeleted  = 0;
     int cellsChanged = 0;   ///< cell entries written for rows that still exist
+    int filesChanged = 0;   ///< of those, data files whose content changed
     bool more        = false;   ///< the batch limit was reached; call again
 
     int entries() const { return rowsCreated + rowsDeleted + cellsChanged; }
@@ -28,7 +29,9 @@ class SyncStore {
 public:
     /// `db` is the connection every call runs on. Flushing takes the write
     /// lock, so outside of tests it should be a connection of its own.
-    explicit SyncStore(const QSqlDatabase& db);
+    /// With a `dataRoot` the flush also looks at the data files of the rows
+    /// it examines: a file whose content changed is a change of its row.
+    explicit SyncStore(const QSqlDatabase& db, const QString& dataRoot = {});
 
     bool isInstalled() const;
     QString deviceId() const;
@@ -65,6 +68,7 @@ public:
 
 private:
     QSqlDatabase _db;
+    QString      _root;
 };
 
 }   // namespace astra::sync

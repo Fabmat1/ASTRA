@@ -104,6 +104,8 @@ QByteArray ChangeSet::encode() const
                 s << row.columns.at(i);
                 writeValue(s, row.values.value(i), row.rootRelative.value(i, false));
             }
+            s << quint32(row.blobs.size());
+            for (const BlobRef& b : row.blobs) s << b.column << b.relPath << b.size << b.hash;
         }
     }
 
@@ -163,6 +165,12 @@ bool ChangeSet::decode(const QByteArray& bytes, ChangeSet* out, QString* error)
             row.columns << column;
             row.values << value;
             row.rootRelative << rootRelative;
+        }
+        s >> n;
+        for (quint32 i = 0; i < n && s.status() == QDataStream::Ok; ++i) {
+            BlobRef b;
+            s >> b.column >> b.relPath >> b.size >> b.hash;
+            row.blobs << b;
         }
         cs.rows << row;
     }

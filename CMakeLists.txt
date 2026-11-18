@@ -1028,6 +1028,7 @@ endif()
 option(ASTRA_WITH_SYNC "Build the multi-device sync engine" ON)
 if(ASTRA_WITH_SYNC)
     list(APPEND ASTRA_CORE_SOURCES
+        src/sync/BlobIndex.cpp
         src/sync/ChangeSet.cpp
         src/sync/SyncCapture.cpp
         src/sync/SyncEngine.cpp
@@ -1035,6 +1036,7 @@ if(ASTRA_WITH_SYNC)
         src/sync/SyncStore.cpp
     )
     list(APPEND ASTRA_CORE_HEADERS
+        src/sync/BlobIndex.h
         src/sync/ChangeSet.h
         src/sync/Hlc.h
         src/sync/SyncCapture.h
@@ -1644,7 +1646,8 @@ if(BUILD_TESTING)
     if(ASTRA_WITH_SYNC)
         set(ASTRA_SYNC_UNIT_TESTS
             tests/unit/sync/capture.cpp
-            tests/unit/sync/merge.cpp)
+            tests/unit/sync/merge.cpp
+            tests/unit/sync/blobs.cpp)
     endif()
     add_library(doctest INTERFACE)
     target_include_directories(doctest INTERFACE

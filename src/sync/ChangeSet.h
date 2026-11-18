@@ -8,6 +8,8 @@
 // files are sent relative to the data root and put back under the
 // receiver's own root.
 
+#include "sync/BlobIndex.h"
+
 #include <QByteArray>
 #include <QList>
 #include <QString>
@@ -39,6 +41,9 @@ struct RowChange {
     QStringList       columns;
     QVariantList      values;           ///< one per column, typed as stored
     QList<bool>       rootRelative;     ///< value is a path below the data root
+    /// The data files the row's path columns name, as the sender has them,
+    /// and the files those depend on (column empty).
+    QList<BlobRef>    blobs;
 
     QVariant value(const QString& column, bool* found = nullptr) const;
 };

@@ -23,6 +23,7 @@ void ApplyResult::add(const ApplyResult& o)
     cellsWritten += o.cellsWritten;
     cellsKept    += o.cellsKept;
     rowsDeferred += o.rowsDeferred;
+    filesWanted  += o.filesWanted;
     conflicts    += o.conflicts;
     stars.unite(o.stars);
     projectsChanged    = projectsChanged || o.projectsChanged;
@@ -49,7 +50,7 @@ QString rowKey(const QString& table, const QString& pk)
 class Work {
 public:
     Work(const QSqlDatabase& db, SyncStore& store, const QString& root, const QString& self)
-        : db(db), store(store), root(root), self(self)
+        : db(db), store(store), root(root), self(self), blobs(db, root)
     {
     }
 
@@ -57,7 +58,24 @@ public:
     SyncStore&   store;
     QString      root;
     QString      self;
+    BlobIndex    blobs;
     QString      error;
+
+    /// Describes the file a path column names and the files it depends on.
+    void addBlobs(RowChange* row, const QString& column)
+    {
+        const qsizetype i = row->columns.indexOf(column);
+        if (i < 0 || !row->rootRelative.value(i, false)) return;
+        const QString rel = row->values.at(i).toString();
+        BlobRef ref = blobs.describe(rel);
+        if (!ref.isValid()) return;                 // the row names a file that is not there
+        ref.column = column;
+        row->blobs << ref;
+        for (const QString& dep : blobs.dependencies(rel)) {
+            const BlobRef d = blobs.describe(dep);
+            if (d.isValid()) row->blobs << d;
+        }
+    }
 
     bool fail(const QString& what)
     {
@@ -333,19 +351,35 @@ bool makeRowChange(Work& w, const QString& tableName, const QString& pk,
         // clock the row has.
         out->full = true;
         for (const LocalEntry& e : all) out->entries << e.clock;
-        return w.fillValues(t, t.columns, out);
+        if (!w.fillValues(t, t.columns, out)) return false;
+        if (const TablePolicy* policy = policyFor(tableName))
+            for (const QString& column : policy->paths) w.addBlobs(out, column);
+        return true;
     }
 
-    QStringList columns;
+    const TablePolicy* policy = policyFor(tableName);
+    QStringList columns, fileColumns;
     for (const ClockEntry& e : inRange) {
+        if (e.cell.startsWith(kBlobCellPrefix)) {
+            // The content of a data file changed.
+            const QString column = e.cell.mid(kBlobCellPrefix.size());
+            if (!policy || !policy->paths.contains(column) || !t.columns.contains(column)) continue;
+            out->entries << e;
+            if (!columns.contains(column)) columns << column;
+            fileColumns << column;
+            continue;
+        }
         const QStringList of = w.columnsOf(tableName, e.cell);
         if (of.isEmpty()) continue;       // a cell this version no longer has
         out->entries << e;
-        columns << of;
+        for (const QString& c : of)
+            if (!columns.contains(c)) columns << c;
     }
     if (out->entries.isEmpty()) return false;
     // The row is gone but its tombstone is not flushed yet: it follows.
-    return w.fillValues(t, columns, out);
+    if (!w.fillValues(t, columns, out)) return false;
+    for (const QString& column : fileColumns) w.addBlobs(out, column);
+    return true;
 }
 
 // ── apply ───────────────────────────────────────────────────────────────────
@@ -717,6 +751,7 @@ private:
             for (const ClockEntry& e : row.entries)
                 if (!w.putEntry(row.table, row.pk, e)) return false;
             if (rewritten && !markRewritten(t, row)) return false;
+            for (const BlobRef& ref : row.blobs) wantFile(ref);
             ++result.rowsInserted;
             touchBestFitGroup(t, row.pk);
             return true;
@@ -754,8 +789,74 @@ private:
             ++result.cellsWritten;
             if (cell == kBestFitColumn) touchBestFitGroup(t, row.pk);
         }
+        // Data files: the content of each is a cell of its own ("~column").
+        for (const BlobRef& ref : row.blobs) {
+            if (ref.column.isEmpty()) continue;
+            const QString cell = kBlobCellPrefix + ref.column;
+            const ClockEntry* own = findEntry(row.entries, cell);
+            if (!own && !row.full) continue;
+            ClockEntry incoming = own ? *own : created;
+            incoming.cell = cell;
+            if (!newer(incoming, toClock(local, cell))) continue;
+            // The file itself follows; a file rewritten here that the sender
+            // had not seen stays in the trash until then.
+            if (overwritesUnseen(local, cell, incoming)) ++result.conflicts;
+            wantFile(ref);
+            for (const BlobRef& dep : row.blobs)
+                if (dep.column.isEmpty()) wantFile(dep);
+            if (!w.putEntry(row.table, row.pk, incoming)) return false;
+        }
         if (rewritten && !markRewritten(t, row)) return false;
         return true;
+    }
+
+    void wantFile(const BlobRef& ref)
+    {
+        if (w.blobs.want(ref, delta.fromDevice)) ++result.filesWanted;
+    }
+
+    /// The data files of a row that is about to be deleted go to the trash.
+    /// With the star goes everything else filed under it, and the rows of
+    /// tables that are not synced but belong to it (periodograms, job
+    /// bookkeeping), which nothing else would ever remove.
+    void discardFiles(const TableInfo& t, const QString& pk)
+    {
+        if (const TablePolicy* policy = policyFor(t.name)) {
+            QStringList columns;
+            for (const QString& c : policy->paths)
+                if (t.columns.contains(c)) columns << c;
+            QVariantList values;
+            if (!columns.isEmpty() && w.readRow(t, pk, columns, &values))
+                for (const QVariant& v : values) {
+                    const QString rel = w.blobs.relative(v.toString());
+                    if (!rel.isEmpty()) w.blobs.moveToTrash(rel);
+                }
+        }
+        if (t.name != QLatin1String("stars")) return;
+
+        w.blobs.moveToTrash(QStringLiteral("data/stars/") + pk);
+        static const QStringList localTables = {
+            QStringLiteral("periodograms"),      QStringLiteral("rv_periodograms"),
+            QStringLiteral("periodogram_store"), QStringLiteral("mass_fit_attempts"),
+            QStringLiteral("mass_fit_run_stars"), QStringLiteral("remote_fit_runs"),
+        };
+        for (const QString& name : localTables) {
+            if (!hasColumn(name, QStringLiteral("star_id"))) continue;   // not created yet
+            QSqlQuery q(w.db);
+            q.prepare(QStringLiteral("DELETE FROM %1 WHERE star_id = ?").arg(quoted(name)));
+            q.addBindValue(pk);
+            q.exec();
+        }
+    }
+
+    /// inspect() gives nothing for a table without a primary key.
+    bool hasColumn(const QString& table, const QString& column)
+    {
+        QSqlQuery q(w.db);
+        if (q.exec(QStringLiteral("PRAGMA table_info(%1)").arg(quoted(table))))
+            while (q.next())
+                if (q.value(1).toString() == column) return true;
+        return false;
     }
 
     /// After resolveReferences() changed a value: the cells holding ids of
@@ -795,6 +896,7 @@ private:
             if (!keepInHistory(t, row.pk, kDeletedCell, t.columns, conflict, *dead)) return false;
             if (conflict) ++result.conflicts;
             touchBestFitGroup(t, row.pk);
+            discardFiles(t, row.pk);
             if (!deleteRow(t, row.pk)) return false;
             ++result.rowsDeleted;
         }
@@ -854,7 +956,7 @@ private:
 // ── SyncEngine ──────────────────────────────────────────────────────────────
 
 SyncEngine::SyncEngine(const QSqlDatabase& db, const QString& dataRoot)
-    : _db(db), _root(QDir::cleanPath(dataRoot)), _store(db), _self(_store.deviceId())
+    : _db(db), _root(QDir::cleanPath(dataRoot)), _store(db, _root), _self(_store.deviceId())
 {
 }
 
@@ -919,6 +1021,31 @@ int SyncEngine::inboxSize() const
 {
     QSqlQuery q(_db);
     return q.exec(QStringLiteral("SELECT COUNT(*) FROM sync_inbox")) && q.next() ? q.value(0).toInt() : 0;
+}
+
+QList<BlobRef> SyncEngine::wantedFiles(int limit, const QString& fromPeer) const
+{
+    return BlobIndex(_db, _root).wanted(limit, fromPeer);
+}
+
+int SyncEngine::wantedFileCount() const
+{
+    return BlobIndex(_db, _root).wantedCount();
+}
+
+bool SyncEngine::readFile(const BlobRef& ref, QByteArray* data)
+{
+    return BlobIndex(_db, _root).read(ref, data);
+}
+
+bool SyncEngine::storeFile(const BlobRef& ref, const QByteArray& data, QString* error)
+{
+    return BlobIndex(_db, _root).store(ref, data, error);
+}
+
+void SyncEngine::fileUnavailable(const BlobRef& ref)
+{
+    BlobIndex(_db, _root).forget(ref);
 }
 
 bool SyncEngine::buildDelta(const QString& peerId, int maxEntries, ChangeSet* out, QString* error)
