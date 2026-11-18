@@ -1,12 +1,10 @@
 #include "ai/HeadlessAiHost.h"
 
 #include "app/AppSettings.h"
-#include "app/Logger.h"
 #include "core/Project.h"
 #include "db/DatabaseManager.h"
 #include "lightcurve/LightcurveFetchService.h"
 #include "massfit/MassFitService.h"
-#include "remote/GridDiskCache.h"
 #include "remote/SshGridProvider.h"
 #include "spectra/SpectrumFetchService.h"
 
@@ -20,17 +18,9 @@ HeadlessAiHost::HeadlessAiHost()
 {
     _ctx.dbm = _dbm.get();
     _ctx.appSettings = _settings.get();
-
-    // As in ApplicationController and HeadlessRuns: grid paths of the form
-    // ssh://<host>/... are served by this provider from inside GAEL. It is
-    // installed process-wide, so the bridge removes it again when it hands
-    // over to the window.
-    _gridProvider = std::make_shared<astra::remote::SshGridProvider>(
-        std::make_shared<astra::remote::GridDiskCache>(
-            _settings->effectiveRemoteGridCacheDir(),
-            qint64(_settings->remoteGridCacheCapGb()) << 30));
-    _gridProvider->setLogCallback([](const QString& m) { LOG_INFO("GridStream", m); });
-    specfit::set_grid_data_provider(_gridProvider);
+    // As in ApplicationController: fits started by an agent search the grids
+    // of hosts that stream them, and GAEL reads those through this provider.
+    _gridProvider = astra::remote::SshGridProvider::install(*_settings);
 }
 
 HeadlessAiHost::~HeadlessAiHost()
@@ -39,8 +29,8 @@ HeadlessAiHost::~HeadlessAiHost()
     _massFit.reset();
     _lcFetch.reset();
     _specFetch.reset();
-    specfit::set_grid_data_provider(nullptr);
-    _gridProvider.reset();
+    // A window taking over installs its own provider in its own process.
+    astra::remote::SshGridProvider::uninstall(_gridProvider);
 }
 
 SpectrumFetchService* HeadlessAiHost::spectrumFetchService()

@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 
 #include <QDialog>
 #include <QWidget>
@@ -74,13 +75,27 @@ public:
     int  removePoints(const QList<int>& rows);
 
     std::shared_ptr<RadialVelocityPoint> pointAt(int row) const;
-    void appendPoint(std::shared_ptr<RadialVelocityPoint> p);
-    void appendPoints(const std::vector<std::shared_ptr<RadialVelocityPoint>>& pts);
+    /// Add points to the star's RV curve, creating the curve if needed.
+    /// Returns false / the number stored; zero means the star has no curve
+    /// and none could be created, which the caller has to report.
+    bool appendPoint(std::shared_ptr<RadialVelocityPoint> p);
+    /// `progress`, when given, is called with the number of points stored so
+    /// far, so a caller can drive a progress dialog.
+    int  appendPoints(const std::vector<std::shared_ptr<RadialVelocityPoint>>& pts,
+                      const std::function<void(int)>& progress = {});
 
     /// Move every row of `rows` to the given component (1 or 2), persisting in
     /// one batch. Manual fix for SB2 fitter component swaps at crossing
     /// epochs. Returns how many points actually changed.
     int setComponentForRows(const QList<int>& rows, int component);
+
+    /// Set the systematic RV error of every row in `rows`, persisting in one
+    /// transaction with one change notification. Returns how many changed.
+    int setSystematicErrorForRows(const QList<int>& rows, double sysError);
+
+    /// The instrument name shown for `row`, empty when it has none.
+    QString instrumentNameAt(int row) const;
+    int pointCount() const { return static_cast<int>(_points.size()); }
 
 signals:
     void pointEdited(const QModelIndex& row);
@@ -204,6 +219,11 @@ public:
 private slots:
     void onAddManualPoint();
     void onImportPointsFromCsv();
+    /// Tell the user points were not stored because the star has no RV curve.
+    void reportNoCurve(int nPoints);
+    /// Ask for a systematic error and the points it applies to (the
+    /// selection, one instrument's points, or all), then set it in one batch.
+    void onSetSystematicError(const QList<int>& selected, int anchorRow);
     void onPointActionClicked();
     void onPointSelectionChanged();
 
@@ -239,6 +259,7 @@ private:
 
     QPushButton* _addPointBtn    = nullptr;
     QPushButton* _importPointsBtn = nullptr;
+    QPushButton* _sysErrBtn       = nullptr;
     QPushButton* _actionBtn = nullptr;
 
 };

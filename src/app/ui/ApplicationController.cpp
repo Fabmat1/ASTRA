@@ -12,7 +12,6 @@
 #include "remote/RemoteBatchService.h"
 #include "remote/RemoteFitService.h"
 #include "remote/SshGridProvider.h"
-#include "remote/GridDiskCache.h"
 #include <algorithm>
 #include <QApplication>
 #include <QFile>
@@ -45,13 +44,7 @@ ApplicationController::ApplicationController(QObject *parent)
     // Grid base paths of the form ssh://<host>/<path> are served by this
     // provider from inside GAEL; local paths are untouched. Installed once
     // for the process, it dispatches per host itself.
-    {
-        auto cache = std::make_shared<astra::remote::GridDiskCache>(
-            _settings->effectiveRemoteGridCacheDir(),
-            qint64(_settings->remoteGridCacheCapGb()) << 30);
-        _gridProvider = std::make_shared<astra::remote::SshGridProvider>(cache);
-        specfit::set_grid_data_provider(_gridProvider);
-    }
+    _gridProvider = astra::remote::SshGridProvider::install(*_settings);
 
     // Remote fitting needs the database (runs outlive dialogs and sessions)
     // and registers itself so any fit worker thread can reach it.
@@ -202,14 +195,24 @@ bool ApplicationController::saveStarsToProject(std::shared_ptr<Project> project,
 {
     if (!project) return false;
     LOG_INFO("Controller", QString("Saving %1 stars to project %2").arg(stars.size()).arg(project->getName()));
-    
-    // Add stars to project
+
+    // Stars new to the project were built in memory and carry none of the DB
+    // hooks a loaded star has: no RV curve factory, so adding RV points to
+    // them silently went nowhere until the project was reopened, and no
+    // summary persist callback. Stars already in the project keep theirs.
+    std::vector<std::shared_ptr<Star>> fresh;
     for (const auto& star : stars) {
+        if (star && !project->findById(star->getId()))
+            fresh.push_back(star);
         project->addStar(star);
     }
-    
-    // Save to database
-    return _databaseManager->saveStars(project->getId(), stars);
+
+    // Save first: the RV curve factory writes a curve row that references the
+    // star row.
+    const bool ok = _databaseManager->saveStars(project->getId(), stars);
+    if (!fresh.empty())
+        attachStarLoaders(_databaseManager.get(), fresh, project->getId());
+    return ok;
 }
 
 bool ApplicationController::deleteStarFromProject(std::shared_ptr<Project> project, std::shared_ptr<Star> star)
