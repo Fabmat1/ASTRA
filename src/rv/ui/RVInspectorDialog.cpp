@@ -938,11 +938,19 @@ void RVSolutionsWidget::onDeleteSolution()
         return;
     }
 
+    const int deletedRow = _list->currentRow();
     curve->removeRVFit(fitId);
 
+    // Keep the marker where the deleted fit was: the fit that moved up into
+    // its row, or the new last row if the last one was deleted. rebuildList()
+    // may already have restored that row with signals blocked, so refresh the
+    // editor and plot explicitly instead of relying on currentRowChanged.
     rebuildList();
-    if (_list->count() > 0) _list->setCurrentRow(0);
-    else { _displayed.reset(); emit displayedFitChanged(nullptr); }
+    const int n = _list->count();
+    _list->blockSignals(true);
+    _list->setCurrentRow(n > 0 ? std::clamp(deletedRow, 0, n - 1) : -1);
+    _list->blockSignals(false);
+    onSelectionChanged();
 
     if (wasBest && _star) _star->markSummaryDirty();
     LOG_INFO("Tools", QString("RV Inspector: deleted fit %1").arg(fitId));
