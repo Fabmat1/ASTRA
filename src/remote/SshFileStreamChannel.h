@@ -35,8 +35,12 @@ public:
     bool ping(QString* err = nullptr);
 
     /*  -1 when the file does not exist (err left empty) or on transport
-     *  failure (err set).                                                   */
-    qint64 stat(const QString& remotePath, QString* err = nullptr);
+     *  failure (err set).  When the server says a directory on the way is
+     *  missing (ERR 410) err is set as for an unknown answer, and
+     *  `dirMissing` (optional) is set true so a caller probing for a whole
+     *  grid can tell "not on this host" from an outage.                     */
+    qint64 stat(const QString& remotePath, QString* err = nullptr,
+                bool* dirMissing = nullptr);
 
     /*  Fetch whole files.  Each is written to "<local>.part" and renamed
      *  once exactly the announced byte count arrived, so no torn file can

@@ -7,6 +7,8 @@
 #
 #   PING              ->  PONG
 #   STAT <path>       ->  SIZE <bytes>            | ERR <code> <msg>
+#                         (404 absent, 410 a directory on the way absent,
+#                          503 cannot tell)
 #   GET <path>        ->  DATA <bytes>\n<bytes raw>| ERR <code> <msg>
 #   TAIL <off> <path> ->  DATA <bytes>\n<bytes raw> (from offset to EOF)
 #   LIST <depth> <dir>->  BEGIN ... one path per line ... END
@@ -28,12 +30,23 @@ while read -r cmd a b; do
       # read and the file is not in it. A dead mount or an unreadable
       # directory is 503, so the caller does not take an outage for a hole
       # in a model grid.
+      # 410 when a directory on the way does not exist, but the nearest one
+      # that does can be listed: the whole subtree is absent from this host
+      # (a grid kept on another host), not unreachable.
       if [ -f "$a" ]; then
         printf 'SIZE %s\n' "$(wc -c < "$a")"
       elif [ -r "${a%/*}" ] && ls "${a%/*}" >/dev/null 2>&1; then
         printf 'ERR 404 %s\n' "$a"
       else
-        printf 'ERR 503 %s\n' "$a"
+        d="${a%/*}"
+        while [ -n "$d" ] && [ ! -e "$d" ]; do d="${d%/*}"; done
+        [ -n "$d" ] || d=/
+        if [ "$d" != "${a%/*}" ] && [ -d "$d" ] && [ -r "$d" ] &&
+           ls "$d" >/dev/null 2>&1; then
+          printf 'ERR 410 %s\n' "$a"
+        else
+          printf 'ERR 503 %s\n' "$a"
+        fi
       fi ;;
     GET)
       if [ -f "$a" ] && cp "$a" "$tmp" 2>/dev/null; then

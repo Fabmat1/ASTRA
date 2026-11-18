@@ -80,7 +80,18 @@ bool SshGridProvider::exists(const std::string& virtualPath)
         throw std::runtime_error(QStringLiteral("grid file on %1: no connection to that host")
                                      .arg(host).toStdString());
     QString err;
-    if (chan->stat(remote, &err) >= 0) return true;
+    bool    dirMissing = false;
+    if (chan->stat(remote, &err, &dirMissing) >= 0) return true;
+    /*  Grid lookup walks the base paths in order, and a grid usually lives
+     *  on one host only (synthe on taurus, steven on indus). A grid.fits
+     *  whose directory is absent from a listable tree is "not here, try the
+     *  next base". Model files keep throwing: a grid directory vanishing
+     *  mid-fit is an outage, never a hole to interpolate across.          */
+    if (dirMissing && remote.endsWith(QLatin1String("/grid.fits"))) {
+        log(QStringLiteral("%1 has no %2; trying the next grid base path.")
+                .arg(host, remote.chopped(int(sizeof("/grid.fits")) - 1)));
+        return false;
+    }
     if (!err.isEmpty())
         throw std::runtime_error(QStringLiteral("grid file on %1: %2")
                                      .arg(host, err).toStdString());

@@ -190,8 +190,10 @@ bool SshFileStreamChannel::ping(QString* err)
     return true;
 }
 
-qint64 SshFileStreamChannel::stat(const QString& remotePath, QString* err)
+qint64 SshFileStreamChannel::stat(const QString& remotePath, QString* err,
+                                  bool* dirMissing)
 {
+    if (dirMissing) *dirMissing = false;
     if (!safePath(remotePath)) {
         if (err) *err = QStringLiteral("unsafe path: %1").arg(remotePath);
         return -1;
@@ -206,6 +208,7 @@ qint64 SshFileStreamChannel::stat(const QString& remotePath, QString* err)
         return -1;
     }
     if (line.startsWith("SIZE ")) return line.mid(5).toLongLong();
+    if (line.startsWith("ERR 410") && dirMissing) *dirMissing = true;
     // ERR 404 leaves err empty: the file definitely does not exist. Anything
     // else (ERR 503, a garbled reply) means the answer is not known.
     if (!line.startsWith("ERR 404") && err)
