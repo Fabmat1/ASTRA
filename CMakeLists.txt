@@ -1030,22 +1030,32 @@ if(ASTRA_WITH_SYNC)
     list(APPEND ASTRA_CORE_SOURCES
         src/sync/BlobIndex.cpp
         src/sync/ChangeSet.cpp
+        src/sync/Frame.cpp
+        src/sync/PeerStore.cpp
         src/sync/Reconciler.cpp
+        src/sync/RootPresence.cpp
         src/sync/SyncCapture.cpp
+        src/sync/SyncCli.cpp
         src/sync/SyncEngine.cpp
         src/sync/SyncIdentity.cpp
         src/sync/SyncSchema.cpp
+        src/sync/SyncSession.cpp
         src/sync/SyncStore.cpp
     )
     list(APPEND ASTRA_CORE_HEADERS
         src/sync/BlobIndex.h
         src/sync/ChangeSet.h
+        src/sync/Frame.h
+        src/sync/PeerStore.h
         src/sync/Reconciler.h
+        src/sync/RootPresence.h
         src/sync/Hlc.h
         src/sync/SyncCapture.h
+        src/sync/SyncCli.h
         src/sync/SyncEngine.h
         src/sync/SyncIdentity.h
         src/sync/SyncSchema.h
+        src/sync/SyncSession.h
         src/sync/SyncStore.h
     )
 endif()
@@ -1652,7 +1662,9 @@ if(BUILD_TESTING)
             tests/unit/sync/capture.cpp
             tests/unit/sync/merge.cpp
             tests/unit/sync/blobs.cpp
-            tests/unit/sync/reconcile.cpp)
+            tests/unit/sync/reconcile.cpp
+            tests/unit/sync/session.cpp
+            tests/unit/sync/process.cpp)
     endif()
     add_library(doctest INTERFACE)
     target_include_directories(doctest INTERFACE
@@ -1664,6 +1676,9 @@ if(BUILD_TESTING)
         TIMEOUT 300
         LIBS    doctest
         DEFINES ASTRA_TEST_REFERENCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/reference"
+                # The application itself, for the cases that run it as a child
+                # process; they are skipped while it has not been built.
+                ASTRA_APP_FOR_TESTS="$<TARGET_FILE:ASTRA>"
         SOURCES
             # The Qt resource bundle: several Core units read their reference
             # data from it (the TESS sector table, the Claret limb-darkening

@@ -728,6 +728,14 @@ private:
         const ClockEntry* incomingRow = findEntry(row.entries, kRowCell);
         const ClockEntry created = incomingRow ? *incomingRow : ClockEntry{};
 
+        if (row.full) {             // whatever happens to it below, it has arrived
+            QSqlQuery q(w.db);
+            q.prepare(QStringLiteral("DELETE FROM sync_rows_wanted WHERE tbl = ? AND pk = ?"));
+            q.addBindValue(row.table);
+            q.addBindValue(row.pk);
+            q.exec();
+        }
+
         if (!exists) {
             if (tombstone != local.constEnd() && !newer(created, tombstone->clock)) {
                 ++result.cellsKept;         // deleted here after the row was made
@@ -755,6 +763,33 @@ private:
             ++result.rowsInserted;
             touchBestFitGroup(t, row.pk);
             return true;
+        }
+
+        // The whole row as the sender has it, stamped later than anything
+        // known about it here (a row chosen to win at pairing, or made again
+        // on the other side): take it as one, with the sender's entries, in
+        // place of an entry per cell.
+        if (row.full && incomingRow) {
+            bool laterThanAll = true;
+            for (const LocalEntry& e : local) laterThanAll = laterThanAll && newer(created, e.clock);
+            if (laterThanAll) {
+                bool conflict = false;
+                for (const LocalEntry& e : local) conflict = conflict || unseenByPeer(e, created);
+                if (conflict) {
+                    if (!keepInHistory(t, row.pk, kRowCell, t.columns, true, created)) return false;
+                    ++result.conflicts;
+                }
+                QStringList columns;
+                for (const auto& [cell, of] : w.cells(row.table)) columns << of;
+                if (!writeColumns(t, row, columns) || !w.clearEntries(row.table, row.pk)) return false;
+                for (const ClockEntry& e : row.entries)
+                    if (!w.putEntry(row.table, row.pk, e)) return false;
+                for (const BlobRef& ref : row.blobs) wantFile(ref);
+                if (rewritten && !markRewritten(t, row)) return false;
+                result.cellsWritten += int(w.cells(row.table).size());
+                touchBestFitGroup(t, row.pk);
+                return true;
+            }
         }
 
         // The row is here: cell by cell, the later write stays.
@@ -1023,6 +1058,31 @@ int SyncEngine::inboxSize() const
     return q.exec(QStringLiteral("SELECT COUNT(*) FROM sync_inbox")) && q.next() ? q.value(0).toInt() : 0;
 }
 
+QList<QPair<QString, QString>> SyncEngine::wantedRows(int limit, const QString& fromPeer) const
+{
+    QList<QPair<QString, QString>> out;
+    QSqlQuery q(_db);
+    if (fromPeer.isEmpty()) {
+        q.prepare(QStringLiteral("SELECT tbl, pk FROM sync_rows_wanted LIMIT ?"));
+    } else {
+        q.prepare(QStringLiteral("SELECT tbl, pk FROM sync_rows_wanted WHERE peer = ? LIMIT ?"));
+        q.addBindValue(fromPeer);
+    }
+    q.addBindValue(limit);
+    if (q.exec())
+        while (q.next()) out.append({q.value(0).toString(), q.value(1).toString()});
+    return out;
+}
+
+bool SyncEngine::hasNewsFor(const QString& peerId)
+{
+    if (_store.hasPending()) return true;
+    QSqlQuery q(_db);
+    q.prepare(QStringLiteral("SELECT 1 FROM sync_clock WHERE seq > ? LIMIT 1"));
+    q.addBindValue(ackedSeq(peerId));
+    return q.exec() && q.next();
+}
+
 QList<BlobRef> SyncEngine::wantedFiles(int limit, const QString& fromPeer) const
 {
     return BlobIndex(_db, _root).wanted(limit, fromPeer);
@@ -1199,6 +1259,16 @@ bool SyncEngine::apply(const ChangeSet& delta, const ApplyGate* gate, ApplyResul
 
     Applier applier(w, delta, gate, &out, deferred);
     if (!applier.run()) return failed();
+
+    for (const auto& [table, pk] : out.wanted) {
+        QSqlQuery q(_db);
+        q.prepare(QStringLiteral("INSERT OR REPLACE INTO sync_rows_wanted (tbl, pk, peer) "
+                                 "VALUES (?, ?, ?)"));
+        q.addBindValue(table);
+        q.addBindValue(pk);
+        q.addBindValue(delta.fromDevice);
+        if (!q.exec()) { w.fail(q, QStringLiteral("noting a wanted row")); return failed(); }
+    }
 
     if (!w.exec(QStringLiteral("UPDATE sync_ctl SET applying = 0")) || !w.storeCounters())
         return failed();

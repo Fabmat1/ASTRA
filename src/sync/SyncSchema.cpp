@@ -156,6 +156,23 @@ TableInfo inspect(const QSqlDatabase& db, const QString& table)
     return info;
 }
 
+QString schemaFingerprint(const QSqlDatabase& db)
+{
+    QCryptographicHash h(QCryptographicHash::Sha1);
+    for (const TablePolicy& policy : syncedTables()) {
+        const TableInfo t = inspect(db, policy.name);
+        h.addData(policy.name.toUtf8());
+        QStringList columns = t.columns;
+        columns.sort();
+        for (const QString& c : columns) {
+            h.addData(QByteArrayView("\x1f", 1));
+            h.addData(c.toUtf8());
+        }
+        h.addData(QByteArrayView("\x1e", 1));
+    }
+    return QString::fromLatin1(h.result().toHex().left(16));
+}
+
 QString TableInfo::fingerprint() const
 {
     QCryptographicHash h(QCryptographicHash::Sha1);

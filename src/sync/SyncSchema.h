@@ -77,6 +77,11 @@ QList<Reference> referencesTo(const QString& table);
 /// or it has no primary key.
 TableInfo inspect(const QSqlDatabase& db, const QString& table);
 
+/// One hash over the columns of every synced table. Two databases exchange
+/// changes only when it is the same on both: a version of ASTRA that does not
+/// know a column would drop it from every row it writes.
+QString schemaFingerprint(const QSqlDatabase& db);
+
 /// The cell a column belongs to. Empty for columns that are never tracked
 /// (key columns and the policy's frozen ones).
 QString cellFor(const TableInfo& table, const QString& column);

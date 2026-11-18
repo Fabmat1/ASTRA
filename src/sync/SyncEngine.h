@@ -107,6 +107,11 @@ public:
                ChangeSet* deferred, QString* error = nullptr);
 
     int inboxSize() const;
+    /// Rows applied change sets referred to that are not here (see
+    /// ApplyResult::wanted), remembered until they arrive.
+    QList<QPair<QString, QString>> wantedRows(int limit, const QString& fromPeer = {}) const;
+    /// True when there is something the peer has not been sent yet.
+    bool hasNewsFor(const QString& peerId);
 
     // ── data files ──────────────────────────────────────────────────────
     /// Files that rows applied here need and that are not here yet (or are

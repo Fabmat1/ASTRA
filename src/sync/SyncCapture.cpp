@@ -344,6 +344,11 @@ bool createSyncTables(const QSqlDatabase& db, QString* error)
             QStringLiteral("CREATE TABLE IF NOT EXISTS sync_blob_wanted ("
                            "relpath TEXT PRIMARY KEY, size INTEGER NOT NULL, "
                            "hash BLOB NOT NULL, peer TEXT) WITHOUT ROWID"),
+            // Rows a change set had cell changes for that are not here: the
+            // peer is asked for them in full.
+            QStringLiteral("CREATE TABLE IF NOT EXISTS sync_rows_wanted ("
+                           "tbl TEXT NOT NULL, pk TEXT NOT NULL, peer TEXT, "
+                           "PRIMARY KEY (tbl, pk)) WITHOUT ROWID"),
             // A row that turned out to duplicate another (same UNIQUE key,
             // created independently on two machines): ids of the loser are
             // read as the winner's from then on.

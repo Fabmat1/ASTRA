@@ -3,6 +3,9 @@
 #include "app/ui/ApplicationController.h"
 #include "app/Logger.h"
 #include "app/AppPaths.h"
+#if ASTRA_WITH_SYNC
+#include "sync/SyncCli.h"
+#endif
 #include "db/DatabaseManager.h"
 #include <QMessageBox>
 #include "app/ui/UiIcons.h"
@@ -50,6 +53,13 @@ int main(int argc, char *argv[])
         std::fprintf(stderr, "astra --mcp: this build of ASTRA was made without AI features\n");
         return 2;
     }
+#endif
+
+#if ASTRA_WITH_SYNC
+    // `astra --sync-serve | --sync-with | --sync-allow | --sync-status ...`:
+    // sync without the window (see sync/SyncCli.h).
+    if (const int rc = astra::sync::runSyncMode(argc, argv); rc >= 0)
+        return rc;
 #endif
 
     // `astra --fetch-spectra | --mass-fit | --mass-fit-resume ...`: long
