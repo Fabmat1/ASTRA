@@ -80,7 +80,14 @@ public:
     // ── sending ─────────────────────────────────────────────────────────
     /// The changes the peer has not acknowledged yet, at most `maxEntries`
     /// clock entries. An empty set with toSeq == fromSeq means "up to date".
-    bool buildDelta(const QString& peerId, int maxEntries, ChangeSet* out, QString* error = nullptr);
+    /// Entries the peer wrote itself are left out, unless `includePeersOwn`:
+    /// a peer whose database was turned back needs its own changes again.
+    bool buildDelta(const QString& peerId, int maxEntries, ChangeSet* out,
+                    QString* error = nullptr, bool includePeersOwn = false);
+    /// The peer says how far it really has our entries. Lower than what we
+    /// noted when its database was replaced by an older one: sending starts
+    /// again from there.
+    bool setPeerCursor(const QString& peerId, qint64 seq);
     /// The named rows in full, whatever the peer has seen of them.
     bool buildRows(const QList<QPair<QString, QString>>& rows, ChangeSet* out,
                    QString* error = nullptr);

@@ -1048,7 +1048,18 @@ void SyncEngine::fileUnavailable(const BlobRef& ref)
     BlobIndex(_db, _root).forget(ref);
 }
 
-bool SyncEngine::buildDelta(const QString& peerId, int maxEntries, ChangeSet* out, QString* error)
+bool SyncEngine::setPeerCursor(const QString& peerId, qint64 seq)
+{
+    if (!addPeer(peerId)) return false;
+    QSqlQuery q(_db);
+    q.prepare(QStringLiteral("UPDATE sync_peers SET acked_seq = ? WHERE id = ?"));
+    q.addBindValue(seq);
+    q.addBindValue(peerId);
+    return q.exec();
+}
+
+bool SyncEngine::buildDelta(const QString& peerId, int maxEntries, ChangeSet* out, QString* error,
+                            bool includePeersOwn)
 {
     *out = {};
     // What was written since the last flush gets its clock entries first, so
@@ -1084,7 +1095,7 @@ bool SyncEngine::buildDelta(const QString& peerId, int maxEntries, ChangeSet* ou
                 e.hlc       = q.value(4).toLongLong();
                 e.origin    = q.value(5).toString();
                 e.originSeq = q.value(6).toLongLong();
-                if (e.origin == peerId) continue;       // the peer wrote it itself
+                if (e.origin == peerId && !includePeersOwn) continue;   // the peer wrote it itself
                 const QString table = q.value(1).toString(), pk = q.value(2).toString();
                 const QString key = rowKey(table, pk);
                 if (!entriesOf.contains(key)) {

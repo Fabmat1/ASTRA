@@ -1030,17 +1030,21 @@ if(ASTRA_WITH_SYNC)
     list(APPEND ASTRA_CORE_SOURCES
         src/sync/BlobIndex.cpp
         src/sync/ChangeSet.cpp
+        src/sync/Reconciler.cpp
         src/sync/SyncCapture.cpp
         src/sync/SyncEngine.cpp
+        src/sync/SyncIdentity.cpp
         src/sync/SyncSchema.cpp
         src/sync/SyncStore.cpp
     )
     list(APPEND ASTRA_CORE_HEADERS
         src/sync/BlobIndex.h
         src/sync/ChangeSet.h
+        src/sync/Reconciler.h
         src/sync/Hlc.h
         src/sync/SyncCapture.h
         src/sync/SyncEngine.h
+        src/sync/SyncIdentity.h
         src/sync/SyncSchema.h
         src/sync/SyncStore.h
     )
@@ -1647,7 +1651,8 @@ if(BUILD_TESTING)
         set(ASTRA_SYNC_UNIT_TESTS
             tests/unit/sync/capture.cpp
             tests/unit/sync/merge.cpp
-            tests/unit/sync/blobs.cpp)
+            tests/unit/sync/blobs.cpp
+            tests/unit/sync/reconcile.cpp)
     endif()
     add_library(doctest INTERFACE)
     target_include_directories(doctest INTERFACE
