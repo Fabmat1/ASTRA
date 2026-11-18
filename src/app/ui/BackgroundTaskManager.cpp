@@ -1109,7 +1109,11 @@ void SpectraImportTask::execute()
             return;
         }
 
-        readResult.spectrum->setBarycentricallyCorrected(entry.isBarycentricallyCorrected);
+        // The reader knows the frame of pipelines that correct it themselves
+        // (HERMES); the import table can only add to that, not clear it.
+        readResult.spectrum->setBarycentricallyCorrected(
+            entry.isBarycentricallyCorrected ||
+            readResult.spectrum->isBarycentricallyCorrected());
 
         Time t = readResult.spectrum->time();
         bool changed = false;

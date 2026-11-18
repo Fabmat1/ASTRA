@@ -809,6 +809,43 @@
             ]
         },
         {
+            "name": "HERMES",
+            "full_name": "High Efficiency and Resolution Mercator Echelle Spectrograph (Mercator 1.2m, La Palma)",
+            "latitude": 28.7622,
+            "longitude": -17.8783,
+            "altitude": 2333.0,
+            "modes": [
+                {
+                    "key": "HRF",
+                    "display_name": "HERMES HRF",
+                    "description": "High-resolution fibre",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "echelle",
+                        "resolution_coefficients": [
+                            85000.0
+                        ],
+                        "wavelength_min": 3770.0,
+                        "wavelength_max": 9000.0
+                    }
+                },
+                {
+                    "key": "LRF",
+                    "display_name": "HERMES LRF",
+                    "description": "Low-resolution fibre (high efficiency)",
+                    "data_type": "spectroscopy",
+                    "spectral": {
+                        "disperser": "echelle",
+                        "resolution_coefficients": [
+                            63000.0
+                        ],
+                        "wavelength_min": 3770.0,
+                        "wavelength_max": 9000.0
+                    }
+                }
+            ]
+        },
+        {
             "name": "ASAS-SN",
             "full_name": "All-Sky Automated Survey for Supernovae (global network; Haleakala unit)",
             "latitude": 20.7082,

@@ -2,8 +2,11 @@
 #include "app/Logger.h"
 #include "spectra/Spectrum.h"
 #include "core/Time.h"
+#include "spectra/fetch/SpectrumFrame.h"
 
 #include <fitsio.h>
+#include <QJsonDocument>
+#include <QJsonObject>
 #include <QFile>
 #include <QFileInfo>
 #include <QTextStream>
@@ -25,6 +28,13 @@ const QStringList DefaultFitsSpectrumReader::RA_KEYWORDS = {
 
 const QStringList DefaultFitsSpectrumReader::DEC_KEYWORDS = {
     "DEC", "DEC_OBJ", "OBJDEC", "DEC_TARG", "TARG_DEC", "CRVAL2", "DEC_DEG"
+};
+
+// Cards that are the exposure midpoint by definition (FITS 4.0 MJD-AVG). They
+// win over MJD-OBS, which FITS defines as the start of the observation, since
+// ASTRA stores mid-exposure MJD.
+const QStringList DefaultFitsSpectrumReader::MJD_MID_KEYWORDS = {
+    "MJD-AVG", "MJD_AVG", "MJD-MID", "MJD_MID"
 };
 
 const QStringList DefaultFitsSpectrumReader::MJD_KEYWORDS = {
@@ -103,6 +113,85 @@ std::optional<double> mjdFromFitsDateTime(const QString& raw)
     const QDateTime j2000(QDate(2000, 1, 1), QTime(12, 0), QTimeZone::utc());
     const double jd = 2451545.0 + j2000.msecsTo(dt) / 86400000.0;
     return jd - Time::MJD_OFFSET;
+}
+
+QString readKeyString(fitsfile* fptr, const char* key)
+{
+    int  st                = 0;
+    char val[FLEN_VALUE]   = {0};
+    if (fits_read_key(fptr, TSTRING, key, val, nullptr, &st) != 0)
+        return {};
+    return QString::fromLatin1(val).trimmed();
+}
+
+// How pixel i (0-based) maps to a wavelength in Angstrom on a 1-D image axis.
+enum class WcsAxis { Linear, Ln, Log10, FitsLog };
+
+// Linear is the default. IRAF marks log10 sampling with DC-FLAG = 1 (LAMOST,
+// many echelle reductions). The FITS standard's logarithmic algorithm is the
+// "-LOG" CTYPE suffix (WAVE-LOG, AWAV-LOG): lambda = CRVAL exp(w / CRVAL).
+// Pipelines also write free-form types: HERMES uses CTYPE1 =
+// 'log(wavelength)' with CRVAL1 = ln(lambda). For those the base is read off
+// the value, since no optical/IR start wavelength puts ln and log10 in the
+// same range: log10 of 100 A..300 kA is 2..5.5, ln of 300 A..400 kA is 5.7..13.
+WcsAxis wcsAxisOf(fitsfile* fptr, double crval1)
+{
+    int st = 0, dcFlag = 0;
+    if (fits_read_key(fptr, TINT, "DC-FLAG", &dcFlag, nullptr, &st) == 0 &&
+        dcFlag == 1)
+        return WcsAxis::Log10;
+
+    const QString ctype = readKeyString(fptr, "CTYPE1").toUpper();
+    if (ctype.endsWith(QLatin1String("-LOG")))
+        return WcsAxis::FitsLog;
+    if (ctype.contains(QLatin1String("LOG"))) {
+        if (crval1 > 2.0 && crval1 <= 5.5) return WcsAxis::Log10;
+        if (crval1 > 5.5 && crval1 <= 13.0) return WcsAxis::Ln;
+    }
+    return WcsAxis::Linear;
+}
+
+// Pipelines that put the wavelengths on the barycentric frame themselves,
+// recognised from the header because the file says so nowhere explicitly.
+//
+// HERMES (Mercator, La Palma): the order-merged products (CTYPE1
+// 'log(wavelength)', *_log_merged_c*.fits) are barycentric and in air. BVCOR
+// is the correction the pipeline applied. Checked on eight HR fibre spectra
+// reduced in 2025 and 2026: the O2 A- and B-band telluric lines sit at
+// v = BVCOR to within 0.3 km/s against an air-wavelength transmission model,
+// where a topocentric spectrum would put them at 0 km/s. The fibre mode
+// (HRF/LRF) is appended to the instrument name so it selects the mode.
+void readPipelineFrame(fitsfile* fptr, SpectrumMetadata& metadata)
+{
+    int st = 0;
+    if (fits_movabs_hdu(fptr, 1, nullptr, &st) != 0)
+        return;
+
+    const QString instrume = readKeyString(fptr, "INSTRUME");
+    const QString telescop = readKeyString(fptr, "TELESCOP");
+    if (instrume.compare(QLatin1String("HERMES"), Qt::CaseInsensitive) == 0 &&
+        telescop.contains(QLatin1String("Mercator"), Qt::CaseInsensitive)) {
+        const QString fibmode = readKeyString(fptr, "FIBMODE").toUpper();
+        if (fibmode == QLatin1String("HRF") || fibmode == QLatin1String("LRF"))
+            metadata.instrument = QStringLiteral("HERMES %1").arg(fibmode);
+
+        double bvcor = 0.0;
+        st = 0;
+        const bool hasBvcor =
+            fits_read_key(fptr, TDOUBLE, "BVCOR", &bvcor, nullptr, &st) == 0;
+        const bool merged = readKeyString(fptr, "CTYPE1")
+                                .contains(QLatin1String("log"), Qt::CaseInsensitive);
+        if (hasBvcor && merged) {
+            metadata.barycentricCorrected = true;
+            metadata.barycorrKms          = bvcor;
+        }
+
+        // The BJD card is the barycentric midpoint on the UTC scale: it sits
+        // 69.2 s (TT - UTC) before astropy's BJD_TDB for the DATE-AVG epoch
+        // in all eight files checked. ASTRA's BJD is TDB, so drop the card
+        // and let the import compute it from the midpoint MJD and the site.
+        metadata.bjd.reset();
+    }
 }
 
 }   // namespace
@@ -260,6 +349,8 @@ SpectrumMetadata DefaultFitsSpectrumReader::readMetadata(const QString& filepath
         numHdus = 1;
 
     std::optional<QString> dateObs;
+    std::optional<QString> dateAvg;
+    bool mjdIsMidpoint = false;
     for (int hdu = 1; hdu <= numHdus; ++hdu) {
         status = 0;
         if (fits_movabs_hdu(fptr, hdu, nullptr, &status) != 0)
@@ -269,8 +360,14 @@ SpectrumMetadata DefaultFitsSpectrumReader::readMetadata(const QString& filepath
             metadata.ra = findCoordinateHeader(fptr, RA_KEYWORDS, /*isRA=*/true);
         if (!metadata.dec.has_value())
             metadata.dec = findCoordinateHeader(fptr, DEC_KEYWORDS, /*isRA=*/false);
+        if (!metadata.mjd.has_value()) {
+            metadata.mjd  = findDoubleHeader(fptr, MJD_MID_KEYWORDS);
+            mjdIsMidpoint = metadata.mjd.has_value();
+        }
         if (!metadata.mjd.has_value())
             metadata.mjd = findDoubleHeader(fptr, MJD_KEYWORDS);
+        if (!dateAvg.has_value())
+            dateAvg = findStringHeader(fptr, {"DATE-AVG", "DATE_AVG"});
         if (!metadata.bjd.has_value())
             metadata.bjd = findDoubleHeader(fptr, BJD_KEYWORDS);
         if (!metadata.hjd.has_value())
@@ -324,8 +421,21 @@ SpectrumMetadata DefaultFitsSpectrumReader::readMetadata(const QString& filepath
                        .arg(*dateObsMjd, 0, 'f', 6);
             metadata.mjd = dateObsMjd;
         }
+
+        // DATE-AVG is the exposure midpoint (FITS 4.0), so it replaces a
+        // start-of-exposure MJD-OBS / DATE-OBS. HERMES files both: MJD-OBS at
+        // the start, DATE-AVG and BJD at the middle of the exposure.
+        const std::optional<double> dateAvgMjd =
+            dateAvg.has_value() ? mjdFromFitsDateTime(dateAvg.value())
+                                : std::nullopt;
+        if (!mjdIsMidpoint && dateAvgMjd.has_value() &&
+            (!metadata.mjd.has_value() ||
+             std::abs(*dateAvgMjd - *metadata.mjd) < 1.5))
+            metadata.mjd = dateAvgMjd;
     }
-    
+
+    readPipelineFrame(fptr, metadata);
+
     // Check for Gaia source ID in header
     auto sourceId = findStringHeader(fptr, {"GAIA_ID", "GAIAID", "SOURCE_ID", "SOURCEID", "GAIA_DR3"});
     if (!metadata.sourceId.has_value() && metadata.objectName.has_value()) {
@@ -627,8 +737,17 @@ SpectrumReadResult DefaultFitsSpectrumReader::readSpectrum(const QString& filepa
             tmpStatus = 0;
             fits_read_key(fptr, TDOUBLE, "CRPIX1", &crpix1, nullptr, &tmpStatus);
 
+            const WcsAxis axis = wcsAxisOf(fptr, crval1);
             for (long i = 0; i < npixels; ++i) {
-                wavelengths[i] = crval1 + (i + 1 - crpix1) * cdelt1;
+                const double w = crval1 + (i + 1 - crpix1) * cdelt1;
+                switch (axis) {
+                case WcsAxis::Linear:  wavelengths[i] = w; break;
+                case WcsAxis::Ln:      wavelengths[i] = std::exp(w); break;
+                case WcsAxis::Log10:   wavelengths[i] = std::pow(10.0, w); break;
+                case WcsAxis::FitsLog:
+                    wavelengths[i] = crval1 * std::exp((i + 1 - crpix1) * cdelt1 / crval1);
+                    break;
+                }
             }
 
             // Companion uncertainty vector, if present with matching length.
@@ -772,7 +891,17 @@ SpectrumReadResult DefaultFitsSpectrumReader::readSpectrum(const QString& filepa
     if (result.metadata.instrument.has_value()) {
         result.spectrum->setInstrument(result.metadata.instrument.value());
     }
-    
+    if (result.metadata.barycentricCorrected.value_or(false)) {
+        result.spectrum->setBarycentricallyCorrected(true);
+        if (result.metadata.barycorrKms.has_value()) {
+            QJsonObject meta;
+            meta[QLatin1String(SpecFetch::kBarycorrMetaKey)] =
+                *result.metadata.barycorrKms;
+            result.spectrum->setOriginMeta(QString::fromUtf8(
+                QJsonDocument(meta).toJson(QJsonDocument::Compact)));
+        }
+    }
+
     result.success = true;
     
     LOG_DEBUG("SpectrumReader", QString("Successfully read spectrum with %1 points") 

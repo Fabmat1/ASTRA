@@ -24,7 +24,12 @@ struct SpectrumMetadata {
     std::optional<QString> instrument;
     std::optional<QString> objectName;
     std::optional<QString> sourceId;
-    
+    /// Set when the file is known to be on the barycentric wavelength frame
+    /// (a pipeline that applies the correction itself). barycorrKms is the
+    /// shift the pipeline applied, which seeds the telluric component.
+    std::optional<bool>   barycentricCorrected;
+    std::optional<double> barycorrKms;
+
     QStringList warnings;
     QStringList errors;
     
@@ -75,6 +80,7 @@ private:
     // Header field names to search for (in order of preference)
     static const QStringList RA_KEYWORDS;
     static const QStringList DEC_KEYWORDS;
+    static const QStringList MJD_MID_KEYWORDS;
     static const QStringList MJD_KEYWORDS;
     static const QStringList BJD_KEYWORDS;
     static const QStringList HJD_KEYWORDS;

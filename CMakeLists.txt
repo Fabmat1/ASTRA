@@ -1626,6 +1626,7 @@ if(BUILD_TESTING)
             tests/unit/fitting/adopted_fit.cpp
             tests/unit/sed/sed_seeds.cpp
             tests/unit/spectra/panel_plan.cpp
+            tests/unit/spectra/fits_reader_wcs.cpp
             ${ASTRA_AI_UNIT_TESTS}
     )
 
