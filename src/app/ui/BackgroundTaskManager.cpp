@@ -10,6 +10,7 @@
 #include "core/Project.h"
 #include "rv/RadialVelocity.h"
 #include "spectra/Spectrum.h"
+#include "core/StableIds.h"
 #include "core/Star.h"
 #include "core/Time.h"
 #include "spectra/matchSpectraToInstrument.h"
@@ -2180,7 +2181,7 @@ void RVExtractionTask::executeFromTable()
         const bool isNewCurve = !curve;
         if (isNewCurve) {
             curve = std::make_shared<RadialVelocityCurve>();
-            curve->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+            curve->setId(astra::ids::rvCurveIdFor(star->getId()));
         }
 
         // Incoming timestamps are compared on whichever scale they end up

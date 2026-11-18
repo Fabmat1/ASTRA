@@ -1,5 +1,6 @@
 #include "rv/RadialVelocity.h"
 #include "core/PhaseUtils.h"
+#include "core/StableIds.h"
 #include "core/Stats.h"
 #include "spectra/Spectrum.h"
 #include "core/Instrument.h"
@@ -307,8 +308,12 @@ void RadialVelocityCurve::addRVPoint(std::shared_ptr<RadialVelocityPoint> point)
     }
 
     // ── New point: make sure persistence keys are populated ────────────────
+    // A point measured on a spectrum is the curve's one point for that
+    // spectrum and component (the loop above), so its id follows from them.
     if (point->getId().isEmpty())
-        point->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        point->setId(sid.isEmpty() || _id.isEmpty()
+                         ? QUuid::createUuid().toString(QUuid::WithoutBraces)
+                         : astra::ids::rvPointIdFor(_id, sid, point->getComponent()));
     point->setCurveId(_id);
 
     _rvPoints.push_back(point);

@@ -3,6 +3,7 @@
 #include "app/Logger.h"
 #include "core/Instrument.h"
 #include "core/Star.h"
+#include "core/StableIds.h"
 #include "db/DatabaseManager.h"
 #include "lightcurve/Photometry.h"
 #include "rv/RadialVelocity.h"
@@ -33,7 +34,8 @@ void attachStarLoaders(DatabaseManager* dbMgr, const std::vector<std::shared_ptr
             -> std::shared_ptr<RadialVelocityCurve>
         {
             auto curve = std::make_shared<RadialVelocityCurve>();
-            curve->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+            // Only reached for a star that has no curve yet; see StableIds.h.
+            curve->setId(astra::ids::rvCurveIdFor(starId));
             curve->setStarId(starId);
 
             curve->setPointPersistCallback(

@@ -740,6 +740,16 @@ void Star::setRVCurve(std::shared_ptr<RadialVelocityCurve> curve)
 }
 
 
+void Star::dropLoadedChildren()
+{
+    _photometry.reset();
+    _spectra.clear();
+    _rvCurve.reset();
+    _photometryLoaded = false;
+    _spectraLoaded = false;
+    _RVLoaded = false;
+}
+
 void Star::setPhotometry(std::shared_ptr<Photometry> photometry)
 {
     _photometry = photometry;

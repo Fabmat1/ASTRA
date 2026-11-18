@@ -1,4 +1,5 @@
 #include "importwizard/ImportStagingArea.h"
+#include "core/StableIds.h"
 
 #include "db/DatabaseManager.h"
 #include "app/Logger.h"
@@ -348,7 +349,7 @@ bool ImportStagingArea::stageLightcurve(const QString& starId,
     auto phot = star->getPhotometry();
     if (!phot) {
         phot = std::make_shared<Photometry>();
-        phot->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
+        phot->setId(astra::ids::photometryIdFor(starId));
         star->setPhotometry(phot);
     }
 

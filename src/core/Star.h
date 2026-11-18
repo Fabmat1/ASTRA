@@ -461,6 +461,12 @@ public:
     /// nothing to keep in step.
     void appendLoadedSpectra(const std::vector<std::shared_ptr<Spectrum>>& added);
 
+    /// Forgets the photometry, spectra and RV curve held in memory, so the
+    /// next access reads them from the database again. For when their rows
+    /// were changed behind this object's back (DatabaseManager::refreshStar).
+    /// The summary fields are left alone; nothing is recomputed or written.
+    void dropLoadedChildren();
+
 
     // Fast field access using function pointers
     using FieldGetter = std::function<QVariant(const Star*)>;

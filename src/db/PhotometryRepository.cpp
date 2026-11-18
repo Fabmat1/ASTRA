@@ -1,6 +1,7 @@
 #include "db/PhotometryRepository.h"
 #include "db/DBAccess.h"
 #include "db/SqlValue.h"
+#include "core/StableIds.h"
 #include "lightcurve/Photometry.h"
 #include <QSqlQuery>
 #include <QSqlError>
@@ -17,21 +18,30 @@ PhotometryRepository::PhotometryRepository(DBAccess& db) : _db(db) {}
 bool PhotometryRepository::savePhotometry(const QString& starId,
                                      std::shared_ptr<Photometry> photometry)
 {
+    // A star has one photometry row (star_id is UNIQUE). The row the database
+    // already has for this star is the one to write to: saving under another
+    // id used to replace it through that constraint, which left its
+    // lightcurves, fits and SED models pointing at a row that was gone.
+    {
+        QSqlQuery q(_db.threadConnection());
+        q.prepare("SELECT id FROM photometry WHERE star_id = :star_id");
+        q.bindValue(":star_id", starId);
+        if (q.exec() && q.next()) {
+            const QString existing = q.value(0).toString();
+            if (!existing.isEmpty() && existing != photometry->getId()) {
+                if (!photometry->getId().isEmpty())
+                    LOG_WARNING("Photometry",
+                                QString("Photometry %1 of star %2 is stored as %3; using that row.")
+                                    .arg(photometry->getId(), starId, existing));
+                photometry->setId(existing);
+            }
+        }
+    }
     if (photometry->getId().isEmpty()) {
-        photometry->setId(_db.generateUUID());
+        photometry->setId(astra::ids::photometryIdFor(starId));
     }
 
     QString dataDir = QFileInfo(_db.databasePath()).absolutePath() + "/data";
-
-    // Save main photometry record
-    QSqlQuery query(_db.threadConnection());
-    query.prepare(R"(
-        INSERT OR REPLACE INTO photometry (id, star_id, photometric_points_file)
-        VALUES (:id, :star_id, :points_file)
-    )");
-
-    query.bindValue(":id", photometry->getId());
-    query.bindValue(":star_id", starId);
 
     // Save photometric points to compressed file
     QString pointsFile;
@@ -40,25 +50,41 @@ bool PhotometryRepository::savePhotometry(const QString& starId,
                                                        photometry->getId());
         photometry->savePhotometricPointsToFile(pointsFile);
     }
+
+    // Canonical SED photometry points (single source of truth). The column
+    // stays NULL for a star without any, as it always has.
+    QString sedPointsFile;
+    if (photometry->hasSedPhotometryPoints()) {
+        const QString path = DataStore::sedPhotometryPointsPath(
+            dataDir, starId, photometry->getId());
+        if (photometry->saveSedPhotometryPointsToFile(path)) {
+            photometry->setSedPhotometryPointsFile(path);
+            sedPointsFile = path;
+        }
+    }
+
+    // One statement for the whole row. This was INSERT OR REPLACE of three
+    // columns followed by a separate UPDATE for sed_points_file, so the row
+    // lost that column in between and was deleted and re-created on every
+    // save. An upsert changes the row in place.
+    QSqlQuery query(_db.threadConnection());
+    query.prepare(R"(
+        INSERT INTO photometry (id, star_id, photometric_points_file, sed_points_file)
+        VALUES (:id, :star_id, :points_file, :sed_points_file)
+        ON CONFLICT(id) DO UPDATE SET
+            star_id                 = excluded.star_id,
+            photometric_points_file = excluded.photometric_points_file,
+            sed_points_file         = excluded.sed_points_file
+    )");
+    query.bindValue(":id", photometry->getId());
+    query.bindValue(":star_id", starId);
     query.bindValue(":points_file", pointsFile);
+    query.bindValue(":sed_points_file",
+                    sedPointsFile.isEmpty() ? QVariant() : QVariant(sedPointsFile));
 
     if (!query.exec()) {
         LOG_ERROR("Photometry", QString("Failed to save photometry: %1").arg(query.lastError().text()));
         return false;
-    }
-
-    // Canonical SED photometry points (single source of truth).
-    if (photometry->hasSedPhotometryPoints()) {
-        QString sedPointsFile = DataStore::sedPhotometryPointsPath(
-            dataDir, starId, photometry->getId());
-        if (photometry->saveSedPhotometryPointsToFile(sedPointsFile)) {
-            photometry->setSedPhotometryPointsFile(sedPointsFile);
-            QSqlQuery sq(_db.threadConnection());
-            sq.prepare("UPDATE photometry SET sed_points_file = :f WHERE id = :id");
-            sq.bindValue(":f",  sedPointsFile);
-            sq.bindValue(":id", photometry->getId());
-            sq.exec();
-        }
     }
 
     // Photometric points: the in-memory list is the whole set (loadPhotometry
@@ -100,7 +126,9 @@ bool PhotometryRepository::savePhotometry(const QString& starId,
             )
         )");
 
-        pointQuery.bindValue(":id", _db.generateUUID());
+        // The id follows from the content, so a save that changes nothing
+        // puts back the very rows it deleted.
+        pointQuery.bindValue(":id", astra::ids::photometricPointIdFor(photometry->getId(), key));
         pointQuery.bindValue(":photometry_id", photometry->getId());
         pointQuery.bindValue(":instrument", point.instrument);
         pointQuery.bindValue(":filter", point.filter);
@@ -154,7 +182,7 @@ bool PhotometryRepository::savePhotometry(const QString& starId,
     for (const auto& source : photometry->getLightcurveSources()) {
         QString lightcurveId = lightcurveIdOf.value(source);
         if (lightcurveId.isEmpty())
-            lightcurveId = _db.generateUUID();
+            lightcurveId = astra::ids::lightcurveIdFor(photometry->getId(), source);
 
         // A lightcurve that was never loaded has not changed: its row keeps
         // the file it has. Writing to the canonical path only when the data
@@ -301,7 +329,7 @@ bool PhotometryRepository::saveSEDModelForStar(const QString& starId,
     }
 
     if (photometryId.isEmpty()) {
-        photometryId = _db.generateUUID();
+        photometryId = astra::ids::photometryIdFor(starId);
         QSqlQuery ins(db);
         ins.prepare(R"(
             INSERT INTO photometry (id, star_id, photometric_points_file)
@@ -336,7 +364,7 @@ bool PhotometryRepository::saveSedPhotometryPointsForStar(
             photometryId = q.value(0).toString();
     }
     if (photometryId.isEmpty()) {
-        photometryId = photometry->getId().isEmpty() ? _db.generateUUID()
+        photometryId = photometry->getId().isEmpty() ? astra::ids::photometryIdFor(starId)
                                                      : photometry->getId();
         QSqlQuery ins(db);
         ins.prepare(R"(
@@ -450,7 +478,7 @@ bool PhotometryRepository::saveLightcurveForStar(const QString& starId,
         photometryId = _db.generateUUID();
     } else {
         // No row for this star, and the in-memory id (if any) is unused.
-        photometryId = idByMem.isEmpty() ? _db.generateUUID() : idByMem;
+        photometryId = idByMem.isEmpty() ? astra::ids::photometryIdFor(starId) : idByMem;
     }
 
     // ── Ensure the photometry row exists, without clobbering it ───
@@ -493,7 +521,8 @@ bool PhotometryRepository::saveLightcurveForStar(const QString& starId,
         q.bindValue(":source", source);
         if (q.exec() && q.next()) lightcurveId = q.value(0).toString();
     }
-    if (lightcurveId.isEmpty()) lightcurveId = _db.generateUUID();
+    if (lightcurveId.isEmpty())
+        lightcurveId = astra::ids::lightcurveIdFor(photometryId, source);
 
     // ── Write the binary lightcurve file (includes userFlagged in v2) ──
     QString lcFile = DataStore::lightcurvePath(dataDir, starId,

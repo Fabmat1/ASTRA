@@ -1504,10 +1504,21 @@ std::shared_ptr<Star> DatabaseManager::loadStar(const QString& starId, QString* 
     return stars.empty() ? nullptr : stars.front();
 }
 
-// column is "project_id" or "id"; never user input.
+bool DatabaseManager::refreshStar(const std::shared_ptr<Star>& star, QString* projectId)
+{
+    if (!star || star->getId().isEmpty()) return false;
+    if (loadStarsWhere(QStringLiteral("id"), star->getId(), projectId, star).empty())
+        return false;
+    star->dropLoadedChildren();
+    return true;
+}
+
+// column is "project_id" or "id"; never user input. With `into`, the (single)
+// row is read into that object instead of a new one.
 std::vector<std::shared_ptr<Star>> DatabaseManager::loadStarsWhere(const QString& column,
                                                                    const QString& value,
-                                                                   QString* firstProjectId)
+                                                                   QString* firstProjectId,
+                                                                   const std::shared_ptr<Star>& into)
 {
     std::vector<std::shared_ptr<Star>> stars;
 
@@ -1709,7 +1720,14 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStarsWhere(const QString
     const int idxProjectId = rec.indexOf("project_id");
 
     while (query.next()) {
-        auto star = std::make_shared<Star>();
+        auto star = into ? into : std::make_shared<Star>();
+        if (into) {
+            // The two fields below that are only set when the row has a
+            // value: start them empty, as a new object would.
+            if (!stars.empty()) break;      // one object, one row
+            star->clearAbundances();
+            star->setBibcodes({});
+        }
         if (firstProjectId && stars.empty())
             *firstProjectId = query.value(idxProjectId).toString();
 

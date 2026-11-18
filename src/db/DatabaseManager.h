@@ -81,6 +81,14 @@ public:
     /// One star by id, from whichever project holds it; null when there is
     /// none. projectId (optional) receives that project's id.
     std::shared_ptr<Star> loadStar(const QString& starId, QString* projectId = nullptr);
+    /// Reads the star's row again into the object the caller already holds,
+    /// and drops its loaded photometry, spectra and RV curve so they are read
+    /// again on next use. For rows changed by something other than this
+    /// object (another process, an incoming sync): views keep their pointer
+    /// and see the new values. False when the star no longer exists; the
+    /// object is then left untouched. projectId (optional) receives the
+    /// project that holds the star now.
+    bool refreshStar(const std::shared_ptr<Star>& star, QString* projectId = nullptr);
     bool updateStar(const QString& projectId, std::shared_ptr<Star> star);
     bool deleteStar(const QString& projectId, const QString& starId);
     size_t getStarCountForProject(const QString& projectId);
@@ -228,7 +236,8 @@ public:
   private:
     std::vector<std::shared_ptr<Star>> loadStarsWhere(const QString& column,
                                                       const QString& value,
-                                                      QString* firstProjectId);
+                                                      QString* firstProjectId,
+                                                      const std::shared_ptr<Star>& into = nullptr);
     //void backfillSpectrumInstrumentIds();
     bool createTables();
     bool createIndexes();
