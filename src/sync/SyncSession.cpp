@@ -133,7 +133,12 @@ Frame SyncResponder::hello(const QJsonObject& o)
     if (!SyncCapture::isInstalled(_ctx.db))
         return notReady(o, QStringLiteral("not_enabled"));
 
-    if (const QString why = incompatibility(o, _ctx); !why.isEmpty()) return Frame::error(why);
+    if (QString why = incompatibility(o, _ctx); !why.isEmpty()) {
+        // Perhaps only because this database has not been opened since
+        // ASTRA was updated here.
+        if (_ctx.updateSchema && _ctx.updateSchema()) why = incompatibility(o, _ctx);
+        if (!why.isEmpty()) return Frame::error(why);
+    }
 
     // Is this database what this machine thinks it is?
     IdentityCheck id = _identity.check();
@@ -343,6 +348,13 @@ SyncClient::Hello SyncClient::hello(QString* code, QString* error)
 
     Frame reply;
     if (!_channel->request(Frame::json(Msg::Hello, o), &reply)) {
+        // Refused for having other columns: perhaps this database is the
+        // one that is behind. Bring it up to date and ask once more.
+        if (_ctx.updateSchema && !_schemaRetried &&
+            _channel->error().contains(QLatin1String("different columns"))) {
+            _schemaRetried = true;
+            if (_ctx.updateSchema()) return hello(code, error);
+        }
         fail(error, QStringLiteral("No answer to hello."));
         return Hello::Failed;
     }

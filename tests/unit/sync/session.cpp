@@ -348,6 +348,39 @@ TEST_CASE("databases of different versions do not exchange changes")
     QString code, error;
     CHECK(client.hello(&code, &error) == SyncClient::Hello::Failed);
     CHECK(error.contains("Update ASTRA"));
+
+    // A side that can bring its database up to date does so and goes on:
+    // usually it is only behind because it was not opened since the update.
+    int updates = 0;
+    SyncContext connecting = a.context();
+    connecting.updateSchema = [&] {
+        ++updates;
+        return a.d().run("ALTER TABLE stars ADD COLUMN from_a_newer_version REAL");
+    };
+    SyncResponder responder2(b.context(), true);
+    Loopback channel2(responder2);
+    SyncClient able(&channel2, connecting, peer);
+    CHECK(able.hello(&code, &error) == SyncClient::Hello::Paired);
+    CHECK(updates == 1);
+
+    // The same on the answering side.
+    REQUIRE(a.d().run("ALTER TABLE spectra ADD COLUMN even_newer REAL"));
+    SyncContext answering = b.context();
+    answering.updateSchema = [&] { return b.d().run("ALTER TABLE spectra ADD COLUMN even_newer REAL"); };
+    SyncResponder responder3(answering, true);
+    Loopback channel3(responder3);
+    SyncClient again(&channel3, a.context(), peer);
+    CHECK(again.hello(&code, &error) == SyncClient::Hello::Paired);
+
+    // Truly different versions still stop, also after the attempt.
+    REQUIRE(b.d().run("ALTER TABLE rv_points ADD COLUMN only_there REAL"));
+    SyncContext stuck = a.context();
+    stuck.updateSchema = [] { return true; };
+    SyncResponder responder4(b.context(), true);
+    Loopback channel4(responder4);
+    SyncClient unable(&channel4, stuck, peer);
+    CHECK(unable.hello(&code, &error) == SyncClient::Hello::Failed);
+    CHECK(error.contains("Update ASTRA"));
 }
 
 TEST_CASE("sync not switched on at the other end: the request waits there")

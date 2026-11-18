@@ -48,6 +48,22 @@
 #endif
 
 DatabaseManager::DatabaseManager(QObject *parent)
+    : DatabaseManager(Closed{}, parent)
+{
+    _db->setDatabasePath(AppPaths::database());
+    QDir().mkpath(QFileInfo(_db->databasePath()).absolutePath());
+    openDatabase();
+}
+
+bool DatabaseManager::bringSchemaUpToDate(const QString& path)
+{
+    DatabaseManager dbm(Closed{}, nullptr);
+    const bool ok = dbm.openDatabase(path);
+    dbm.closeDatabase();
+    return ok;
+}
+
+DatabaseManager::DatabaseManager(Closed, QObject *parent)
     : QObject(parent)
     , _db(std::make_unique<DBAccess>())
     , _projects(std::make_unique<ProjectRepository>(*_db))
@@ -61,9 +77,6 @@ DatabaseManager::DatabaseManager(QObject *parent)
     , _remoteFit(std::make_unique<RemoteFitRepository>(*_db))
     , _remoteBatch(std::make_unique<RemoteBatchRepository>(*_db))
 {
-    _db->setDatabasePath(AppPaths::database());
-    QDir().mkpath(QFileInfo(_db->databasePath()).absolutePath());
-    openDatabase();
 }
 
 DatabaseManager::~DatabaseManager()

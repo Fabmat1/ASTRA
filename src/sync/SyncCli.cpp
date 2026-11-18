@@ -1,6 +1,7 @@
 #include "sync/SyncCli.h"
 
 #include "app/AppPaths.h"
+#include "db/DatabaseManager.h"
 #include "sync/Frame.h"
 #include "sync/PeerStore.h"
 #include "sync/RootPresence.h"
@@ -121,7 +122,16 @@ struct Database {
         q.exec(QStringLiteral("PRAGMA synchronous=NORMAL"));
         return true;
     }
-    SyncContext context() const { return {db, root, configDir}; }
+    SyncContext context() const
+    {
+        SyncContext ctx(db, root, configDir);
+        const QString file = root + QStringLiteral("/astra.db");
+        ctx.updateSchema = [file] {
+            say(QStringLiteral("Bringing the database up to date with this version of ASTRA..."));
+            return DatabaseManager::bringSchemaUpToDate(file);
+        };
+        return ctx;
+    }
 
     /// Switches sync on if it was off, and makes this machine the owner of
     /// the device id.

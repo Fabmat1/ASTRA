@@ -115,8 +115,30 @@ TEST_CASE("first pairing: both sides keep what only they had")
         // Where the row differed, A's whole row was taken.
         CHECK(d->one("SELECT alias || '/' || gmag FROM stars WHERE id = 'S1'") == "desktop name/13.0");
     }
-    // B's version of the row it lost is kept in its history.
-    CHECK(b->one("SELECT COUNT(*) FROM sync_history WHERE tbl = 'stars' AND pk = 'S1'").toInt() >= 0);
+    // B's version of the row it lost is kept in its history, although
+    // nothing about it was tracked before the pairing, and can be put back.
+    REQUIRE(b->one("SELECT COUNT(*) FROM sync_history WHERE tbl = 'stars' AND pk = 'S1'") == "1");
+    {
+        QSqlQuery q(b->db);
+        REQUIRE(q.exec("SELECT id, old FROM sync_history WHERE tbl = 'stars' AND pk = 'S1'"));
+        REQUIRE(q.next());
+        const qint64 historyId = q.value(0).toLongLong();
+        ChangeSet kept;
+        REQUIRE(ChangeSet::decode(q.value(1).toByteArray(), &kept));
+        CHECK(kept.rows.first().value("alias").toString() == "laptop name");
+        CHECK(kept.rows.first().value("gmag").toDouble() == 12.0);
+        q.finish();
+
+        QString error;
+        REQUIRE_MESSAGE(b->engine->restoreFromHistory(historyId, &error), error.toStdString());
+        settle({a.get(), b.get()});
+        CHECK(a->one("SELECT alias || '/' || gmag FROM stars WHERE id = 'S1'") == "laptop name/12.0");
+        // Back to the pairing's outcome for the rest of this case.
+        REQUIRE(a->run("UPDATE stars SET alias = 'desktop name', gmag = 13.0 WHERE id = 'S1'"));
+        settle({a.get(), b.get()});
+    }
+    // Rows that were the same on both sides left nothing behind.
+    CHECK(a->one("SELECT COUNT(*) FROM sync_history") == "0");
 
     // From here on the two are an ordinary pair.
     REQUIRE(b->run("UPDATE stars SET gmag = 11.5 WHERE id = 'S1'"));

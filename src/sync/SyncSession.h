@@ -20,6 +20,8 @@
 #include <QSqlDatabase>
 #include <QString>
 
+#include <functional>
+
 namespace astra::sync {
 
 inline constexpr int kProtocolVersion = 1;
@@ -38,6 +40,12 @@ struct SyncContext {
     QSqlDatabase db;
     QString      root;          ///< data root
     QString      configDir;     ///< per-machine directory for identity and peers
+    /// Brings this database's tables and columns up to date, the way opening
+    /// it in the application does. Called when the other side turns out to
+    /// have other columns: a database that has not been opened since ASTRA
+    /// was updated is behind, and that is no reason to stop. May be empty
+    /// (the application's own database is always current).
+    std::function<bool()> updateSchema;
 
     SyncContext(const QSqlDatabase& db, const QString& root, const QString& configDir)
         : db(db), root(root), configDir(configDir)
@@ -120,6 +128,7 @@ private:
     Peer          _target;
     bool          _peerRolledBack = false;
     bool          _selfRolledBack = false;
+    bool          _schemaRetried  = false;
 };
 
 }   // namespace astra::sync

@@ -52,6 +52,12 @@ public:
 
     bool openDatabase(const QString& path = "");
     void closeDatabase();
+
+    /// Brings the schema of the database file at `path` up to date (tables,
+    /// columns, indexes, default instruments), as opening it in the
+    /// application does, and closes it again. For command-line modes that
+    /// then work on the file through a connection of their own.
+    static bool bringSchemaUpToDate(const QString& path);
     bool isOpen() const;
 
     // Empty when the last integrity check passed; otherwise the SQLite
@@ -240,6 +246,9 @@ public:
         const QString& runId, const QString& starId = {});
 
   private:
+    /// Sets everything up but opens nothing; see bringSchemaUpToDate().
+    struct Closed {};
+    DatabaseManager(Closed, QObject* parent);
     std::vector<std::shared_ptr<Star>> loadStarsWhere(const QString& column,
                                                       const QString& value,
                                                       QString* firstProjectId,

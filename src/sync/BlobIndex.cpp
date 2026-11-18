@@ -235,6 +235,16 @@ bool BlobIndex::store(const BlobRef& ref, const QByteArray& data, QString* error
     if (!QDir().mkpath(QFileInfo(target).absolutePath()))
         return fail(QStringLiteral("cannot create the folder of ") + ref.relPath);
 
+    // Other content under that name: it is kept for as long as the history.
+    if (QFileInfo(target).isFile() && hashFile(target) != ref.hash) {
+        const QString day = QDateTime::currentDateTimeUtc().toString(QStringLiteral("yyyyMMdd"));
+        QString kept = absolute(kTrashDir + QLatin1Char('/') + day + QLatin1Char('/') + ref.relPath);
+        for (int n = 1; QFileInfo::exists(kept); ++n)
+            kept = absolute(kTrashDir + QLatin1Char('/') + day + QLatin1Char('/') + ref.relPath) +
+                   QLatin1Char('.') + QString::number(n);
+        if (QDir().mkpath(QFileInfo(kept).absolutePath())) QFile::copy(target, kept);
+    }
+
     // QSaveFile writes beside the target and renames, so a reader sees the
     // old file or the new one, never half of it.
     QSaveFile f(target);

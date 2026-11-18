@@ -611,6 +611,23 @@ private:
         return q.exec() || w.fail(q, QStringLiteral("updating ") + t.name);
     }
 
+    /// True when any of `columns` holds another value here than in `row`.
+    bool differsFromLocal(const TableInfo& t, const RowChange& row, const QStringList& columns)
+    {
+        QStringList present;
+        for (const QString& c : columns)
+            if (row.columns.contains(c) && t.columns.contains(c)) present << c;
+        QVariantList mine;
+        if (present.isEmpty() || !w.readRow(t, row.pk, present, &mine)) return false;
+        for (qsizetype i = 0; i < present.size(); ++i) {
+            const QVariant theirs = localValue(row, row.columns.indexOf(present.at(i)));
+            const QVariant& here = mine.at(i);
+            if (theirs.isNull() != here.isNull()) return true;
+            if (!theirs.isNull() && theirs != here) return true;
+        }
+        return false;
+    }
+
     bool deleteRow(const TableInfo& t, const QString& pk)
     {
         QSqlQuery q(w.db);
@@ -776,12 +793,16 @@ private:
             if (laterThanAll) {
                 bool conflict = false;
                 for (const LocalEntry& e : local) conflict = conflict || unseenByPeer(e, created);
-                if (conflict) {
-                    if (!keepInHistory(t, row.pk, kRowCell, t.columns, true, created)) return false;
-                    ++result.conflicts;
-                }
                 QStringList columns;
                 for (const auto& [cell, of] : w.cells(row.table)) columns << of;
+                // The row as it was here goes into the history whenever it is
+                // not the same: at a first pairing nothing is tracked yet, so
+                // "changed here and unseen" cannot tell, but the loser of a
+                // pairing is exactly what someone may want back.
+                if (conflict || differsFromLocal(t, row, columns)) {
+                    if (!keepInHistory(t, row.pk, kRowCell, t.columns, conflict, created)) return false;
+                    if (conflict) ++result.conflicts;
+                }
                 if (!writeColumns(t, row, columns) || !w.clearEntries(row.table, row.pk)) return false;
                 for (const ClockEntry& e : row.entries)
                     if (!w.putEntry(row.table, row.pk, e)) return false;
