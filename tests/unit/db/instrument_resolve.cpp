@@ -13,6 +13,8 @@
 #include "core/InstrumentMode.h"
 #include "db/DatabaseManager.h"
 
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QTemporaryDir>
 
 #include <memory>
@@ -68,6 +70,42 @@ TEST_CASE("resolveInstrumentString keeps the mode of every spelling")
 
     // The other mode is not confused with this one.
     CHECK(resolvedMode(dbm, "GTC (OSIRIS R1000B)", "GTC") == QStringLiteral("OSIRIS_R1000B"));
+}
+
+TEST_CASE("saving an instrument under a name that exists writes to that instrument")
+{
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    DatabaseManager dbm;
+    REQUIRE(dbm.openDatabase(tmp.filePath("astra_test.db")));
+
+    // The default instruments contain a GTC. A spectrum refers to it by id.
+    const auto builtin = dbm.getInstrumentByName("GTC");
+    REQUIRE(builtin);
+    const QString id = builtin->getId();
+
+    auto mine = makeGtc();          // made without knowing the stored one
+    REQUIRE(mine->getId() != id);
+    REQUIRE(dbm.saveInstrument(mine));
+
+    // Same row, same id; the modes are the saved ones, and nothing is left of
+    // a second instrument, neither in the database nor in the lookups.
+    CHECK(mine->getId() == id);
+    QSqlQuery q(QSqlDatabase::database());
+    REQUIRE(q.exec("SELECT COUNT(*), MIN(id) FROM instruments WHERE name = 'GTC'"));
+    REQUIRE(q.next());
+    CHECK(q.value(0).toInt() == 1);
+    CHECK(q.value(1).toString() == id);
+    REQUIRE(q.exec("SELECT COUNT(*) FROM instrument_modes WHERE instrument_id NOT IN "
+                   "(SELECT id FROM instruments)"));
+    REQUIRE(q.next());
+    CHECK(q.value(0).toInt() == 0);
+
+    const auto byName = dbm.getInstrumentByName("GTC");
+    const auto byId   = dbm.getInstrumentById(id);
+    REQUIRE(byName);
+    CHECK(byName == byId);
+    CHECK(byName->modes().size() == 2);
 }
 
 TEST_CASE("an instrument whose own name has brackets still matches by name")

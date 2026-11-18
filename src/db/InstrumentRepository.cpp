@@ -389,6 +389,25 @@ bool InstrumentRepository::saveInstrument(std::shared_ptr<Instrument> instrument
 {
     if (!instrument) return false;
 
+    // An instrument is known by its name (instruments.name is UNIQUE), and
+    // spectra refer to it by id. Saving one whose name is already stored
+    // under another id therefore writes to that row: INSERT OR REPLACE under
+    // a new id used to delete the stored row through the constraint, leaving
+    // its modes behind and both objects in the caches, so which of the two a
+    // lookup by name returned depended on hash order.
+    {
+        QSqlQuery q(_db.threadConnection());
+        q.prepare("SELECT id FROM instruments WHERE name = :name");
+        q.bindValue(":name", instrument->getName());
+        if (q.exec() && q.next()) {
+            const QString stored = q.value(0).toString();
+            if (!stored.isEmpty() && stored != instrument->getId()) {
+                uncacheInstrument(instrument->getId());
+                instrument->setId(stored);
+            }
+        }
+    }
+
     if (instrument->getId().isEmpty())
         instrument->setId(QUuid::createUuid().toString(QUuid::WithoutBraces));
 
