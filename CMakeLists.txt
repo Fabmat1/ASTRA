@@ -1022,6 +1022,28 @@ if(ASTRA_WITH_AI)
     )
 endif()
 
+# ── Sync between a user's own machines ───────────────────────────────────────
+# Everything under src/sync. A database is only touched by it once the user
+# switches sync on for it; -DASTRA_WITH_SYNC=OFF leaves the code out entirely.
+option(ASTRA_WITH_SYNC "Build the multi-device sync engine" ON)
+if(ASTRA_WITH_SYNC)
+    list(APPEND ASTRA_CORE_SOURCES
+        src/sync/ChangeSet.cpp
+        src/sync/SyncCapture.cpp
+        src/sync/SyncEngine.cpp
+        src/sync/SyncSchema.cpp
+        src/sync/SyncStore.cpp
+    )
+    list(APPEND ASTRA_CORE_HEADERS
+        src/sync/ChangeSet.h
+        src/sync/Hlc.h
+        src/sync/SyncCapture.h
+        src/sync/SyncEngine.h
+        src/sync/SyncSchema.h
+        src/sync/SyncStore.h
+    )
+endif()
+
 # ── astra_core: every Core-only translation unit ─────────────────────────────
 # The application and all test binaries link this, so a test never has to
 # re-list the sources it needs.  Third-party dependencies are attached here
@@ -1124,6 +1146,7 @@ set(ASTRA_COMMON_DEFINES
 target_compile_definitions(astra_core
     PUBLIC  ${ASTRA_COMMON_DEFINES}
             ASTRA_WITH_AI=$<BOOL:${ASTRA_WITH_AI}>
+            ASTRA_WITH_SYNC=$<BOOL:${ASTRA_WITH_SYNC}>
             ASTRA_SOURCE_PYTHON_DIR="${CMAKE_CURRENT_SOURCE_DIR}/python"
     PRIVATE ASTRA_DATA_DIR="${ASTRA_DATA_DIR}"
 )
@@ -1617,6 +1640,12 @@ if(BUILD_TESTING)
             tests/unit/ai/permission_gate.cpp
             tests/unit/ai/star_fields.cpp)
     endif()
+    set(ASTRA_SYNC_UNIT_TESTS "")
+    if(ASTRA_WITH_SYNC)
+        set(ASTRA_SYNC_UNIT_TESTS
+            tests/unit/sync/capture.cpp
+            tests/unit/sync/merge.cpp)
+    endif()
     add_library(doctest INTERFACE)
     target_include_directories(doctest INTERFACE
         ${CMAKE_CURRENT_SOURCE_DIR}/external/doctest)
@@ -1677,6 +1706,7 @@ if(BUILD_TESTING)
             tests/unit/spectra/panel_plan.cpp
             tests/unit/spectra/fits_reader_wcs.cpp
             ${ASTRA_AI_UNIT_TESTS}
+            ${ASTRA_SYNC_UNIT_TESTS}
     )
 
     # ── Convenience target ───────────────────────────────────────────────

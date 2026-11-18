@@ -43,6 +43,9 @@
 #include "app/AppSettings.h"
 #include "core/Time.h"
 #include "rv/RadialVelocity.h"
+#if ASTRA_WITH_SYNC
+#include "sync/SyncCapture.h"
+#endif
 
 DatabaseManager::DatabaseManager(QObject *parent)
     : QObject(parent)
@@ -93,18 +96,32 @@ bool DatabaseManager::openDatabase(const QString& path)
     prefetchDatabaseFile();
     checkIntegrity();
 
-    if (!createTables()) {
-        return false;
+    {
+#if ASTRA_WITH_SYNC
+        // Bringing the schema up to date, backfilling new columns and applying
+        // the default instruments is done by every install in the same way.
+        // In a database that takes part in sync these writes are not changes
+        // to send to the other machines, so capture is off while they run.
+        astra::sync::SyncCapture::Suppress noCapture(_db->database());
+#endif
+        if (!createTables()) {
+            return false;
+        }
+
+        runMigrations();
+
+        if (!createIndexes()) {
+            return false;
+        }
+
+        _instruments->initializeInstruments();
+        //backfillSpectrumInstrumentIds();
     }
 
-    runMigrations();
-
-    if (!createIndexes()) {
-        return false;
-    }
-
-    _instruments->initializeInstruments();
-    //backfillSpectrumInstrumentIds();
+#if ASTRA_WITH_SYNC
+    // Columns a migration just added get their place in the capture triggers.
+    astra::sync::SyncCapture::ensure(_db->database());
+#endif
 
     return true;
 }
