@@ -81,6 +81,9 @@ public:
     /// Moves a data file (or a whole directory) out of the way into the
     /// trash below the root, where it stays until it is purged.
     bool moveToTrash(const QString& relPath);
+    /// Puts the most recently trashed copy of the file back, if there is one
+    /// and nothing is in its place.
+    bool restoreFromTrash(const QString& relPath);
     /// Deletes trash older than `days`. Returns how many entries went.
     int purgeTrash(int days);
 

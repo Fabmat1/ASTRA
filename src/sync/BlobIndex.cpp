@@ -294,6 +294,21 @@ bool BlobIndex::moveToTrash(const QString& relPath)
     return true;
 }
 
+bool BlobIndex::restoreFromTrash(const QString& relPath)
+{
+    if (!isSafeRelative(relPath)) return false;
+    const QString target = absolute(relPath);
+    if (QFileInfo::exists(target)) return false;
+    QDir trash(absolute(kTrashDir));
+    QStringList days = trash.entryList(QDir::Dirs | QDir::NoDotAndDotDot, QDir::Name);
+    for (auto day = days.crbegin(); day != days.crend(); ++day) {
+        const QString source = trash.filePath(*day + QLatin1Char('/') + relPath);
+        if (!QFileInfo(source).isFile()) continue;
+        return QDir().mkpath(QFileInfo(target).absolutePath()) && QFile::rename(source, target);
+    }
+    return false;
+}
+
 int BlobIndex::purgeTrash(int days)
 {
     QDir trash(absolute(kTrashDir));

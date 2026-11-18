@@ -1038,7 +1038,9 @@ if(ASTRA_WITH_SYNC)
         src/sync/SyncCli.cpp
         src/sync/SyncEngine.cpp
         src/sync/SyncIdentity.cpp
+        src/sync/SyncLink.cpp
         src/sync/SyncSchema.cpp
+        src/sync/SyncService.cpp
         src/sync/SyncSession.cpp
         src/sync/SyncStore.cpp
     )
@@ -1054,7 +1056,9 @@ if(ASTRA_WITH_SYNC)
         src/sync/SyncCli.h
         src/sync/SyncEngine.h
         src/sync/SyncIdentity.h
+        src/sync/SyncLink.h
         src/sync/SyncSchema.h
+        src/sync/SyncService.h
         src/sync/SyncSession.h
         src/sync/SyncStore.h
     )
@@ -1664,7 +1668,8 @@ if(BUILD_TESTING)
             tests/unit/sync/blobs.cpp
             tests/unit/sync/reconcile.cpp
             tests/unit/sync/session.cpp
-            tests/unit/sync/process.cpp)
+            tests/unit/sync/process.cpp
+            tests/unit/sync/service.cpp)
     endif()
     add_library(doctest INTERFACE)
     target_include_directories(doctest INTERFACE

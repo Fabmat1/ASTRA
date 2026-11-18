@@ -503,8 +503,10 @@ bool SyncClient::poll(bool* news, QString* error)
     Frame reply;
     if (!_channel->request(Frame::json(Msg::Poll, {}), &reply)) return fail(error);
     const bool theirs = reply.object().value(QStringLiteral("news")).toBool();
+    // What waits in the inbox for a window to close is not news for the
+    // connection: applying it is this side's own business.
     const bool mine = _engine.hasNewsFor(_target.id) || _engine.wantedFileCount() > 0 ||
-                      !_engine.wantedRows(1, _target.id).isEmpty() || _engine.inboxSize() > 0;
+                      !_engine.wantedRows(1, _target.id).isEmpty();
     if (news) *news = theirs || mine;
     return true;
 }

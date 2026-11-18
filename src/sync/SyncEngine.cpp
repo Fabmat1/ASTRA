@@ -28,6 +28,7 @@ void ApplyResult::add(const ApplyResult& o)
     stars.unite(o.stars);
     projectsChanged    = projectsChanged || o.projectsChanged;
     instrumentsChanged = instrumentsChanged || o.instrumentsChanged;
+    everything         = everything || o.everything;
     for (const auto& w : o.wanted)
         if (!wanted.contains(w)) wanted << w;
 }
@@ -1056,6 +1057,114 @@ int SyncEngine::inboxSize() const
 {
     QSqlQuery q(_db);
     return q.exec(QStringLiteral("SELECT COUNT(*) FROM sync_inbox")) && q.next() ? q.value(0).toInt() : 0;
+}
+
+bool SyncEngine::restoreFromHistory(qint64 historyId, QString* error)
+{
+    auto fail = [&](const QString& what) {
+        QSqlQuery rollback(_db);
+        rollback.exec(QStringLiteral("ROLLBACK"));
+        if (error) *error = what;
+        return false;
+    };
+
+    QString table, pk, cell;
+    ChangeSet kept;
+    {
+        QSqlQuery q(_db);
+        q.prepare(QStringLiteral("SELECT tbl, pk, cell, old FROM sync_history WHERE id = ?"));
+        q.addBindValue(historyId);
+        if (!q.exec() || !q.next()) {
+            if (error) *error = QStringLiteral("That history entry no longer exists.");
+            return false;
+        }
+        table = q.value(0).toString();
+        pk    = q.value(1).toString();
+        cell  = q.value(2).toString();
+        if (!ChangeSet::decode(q.value(3).toByteArray(), &kept) || kept.rows.isEmpty()) {
+            if (error) *error = QStringLiteral("That history entry cannot be read.");
+            return false;
+        }
+    }
+    const RowChange& old = kept.rows.first();
+    const TableInfo t = inspect(_db, table);
+    if (!t.exists()) {
+        if (error) *error = QStringLiteral("The table of that entry no longer exists.");
+        return false;
+    }
+
+    BlobIndex blobs(_db, _root);
+    QStringList columns, marks, sets;
+    QVariantList values;
+    QStringList files;
+    for (qsizetype i = 0; i < old.columns.size(); ++i) {
+        if (!t.columns.contains(old.columns.at(i))) continue;
+        QVariant v = old.values.at(i);
+        if (old.rootRelative.value(i, false)) {
+            files << v.toString();
+            v = blobs.absolute(v.toString());
+        }
+        columns << quoted(old.columns.at(i));
+        marks << QStringLiteral("?");
+        sets << quoted(old.columns.at(i)) + QStringLiteral(" = ?");
+        values << v;
+    }
+
+    QStringList where;
+    for (const QString& k : t.pk) where << quoted(k) + QStringLiteral(" = ?");
+    const QStringList keyValues = decodePk(pk);
+
+    // Capture stays on: this is a change made here.
+    QSqlQuery begin(_db);
+    if (!begin.exec(QStringLiteral("BEGIN IMMEDIATE"))) {
+        if (error) *error = begin.lastError().text();
+        return false;
+    }
+
+    QSqlQuery exists(_db);
+    exists.prepare(QStringLiteral("SELECT 1 FROM %1 WHERE %2")
+                       .arg(quoted(table), where.join(QStringLiteral(" AND "))));
+    for (const QString& k : keyValues) exists.addBindValue(k);
+    const bool there = exists.exec() && exists.next();
+    exists.finish();
+
+    QSqlQuery write(_db);
+    if (cell == kDeletedCell) {
+        if (there) return fail(QStringLiteral("That row exists again; nothing to put back."));
+        write.prepare(QStringLiteral("INSERT INTO %1 (%2) VALUES (%3)")
+                          .arg(quoted(table), columns.join(QStringLiteral(", ")),
+                               marks.join(QStringLiteral(", "))));
+        for (const QVariant& v : values) write.addBindValue(v);
+    } else {
+        if (!there) return fail(QStringLiteral("The row that entry belongs to is gone."));
+        write.prepare(QStringLiteral("UPDATE %1 SET %2 WHERE %3")
+                          .arg(quoted(table), sets.join(QStringLiteral(", ")),
+                               where.join(QStringLiteral(" AND "))));
+        for (const QVariant& v : values) write.addBindValue(v);
+        for (const QString& k : keyValues) write.addBindValue(k);
+    }
+    if (!write.exec()) return fail(write.lastError().text());
+
+    QSqlQuery drop(_db);
+    drop.prepare(QStringLiteral("DELETE FROM sync_history WHERE id = ?"));
+    drop.addBindValue(historyId);
+    if (!drop.exec()) return fail(drop.lastError().text());
+
+    QSqlQuery commit(_db);
+    if (!commit.exec(QStringLiteral("COMMIT"))) return fail(commit.lastError().text());
+
+    if (cell == kDeletedCell)
+        for (const QString& rel : files) blobs.restoreFromTrash(rel);
+    return true;
+}
+
+void SyncEngine::pruneHistory()
+{
+    QSqlQuery q(_db);
+    q.prepare(QStringLiteral("DELETE FROM sync_history WHERE at < ?"));
+    q.addBindValue(QDateTime::currentMSecsSinceEpoch() - kHistoryDays * 86400000LL);
+    q.exec();
+    BlobIndex(_db, _root).purgeTrash(kHistoryDays);
 }
 
 QList<QPair<QString, QString>> SyncEngine::wantedRows(int limit, const QString& fromPeer) const

@@ -53,6 +53,9 @@ struct ApplyResult {
     QSet<QString> stars;                 ///< stars whose rows changed
     bool projectsChanged    = false;
     bool instrumentsChanged = false;
+    /// Something changed that this result cannot name (a row put back from
+    /// the history): read everything on screen again.
+    bool everything         = false;
 
     /// Rows a change set had cell changes for that do not exist here: the
     /// sender has to send them in full (buildRows()).
@@ -126,6 +129,14 @@ public:
     /// Receiver side: verifies and stores a file that arrived.
     bool storeFile(const BlobRef& ref, const QByteArray& data, QString* error = nullptr);
     void fileUnavailable(const BlobRef& ref);
+
+    // ── history ─────────────────────────────────────────────────────────
+    /// Puts back what sync_history entry `historyId` kept: the old values of
+    /// an overwritten cell, or a deleted row with its data files from the
+    /// trash. Written like any local change, so it travels to the peers.
+    bool restoreFromHistory(qint64 historyId, QString* error = nullptr);
+    /// Drops history entries and trashed files older than kHistoryDays.
+    void pruneHistory();
 
 private:
     QSqlDatabase _db;

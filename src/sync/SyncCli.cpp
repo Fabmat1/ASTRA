@@ -1,13 +1,12 @@
 #include "sync/SyncCli.h"
 
 #include "app/AppPaths.h"
-#include "remote/RemoteHost.h"
-#include "remote/SshConnection.h"
 #include "sync/Frame.h"
 #include "sync/PeerStore.h"
 #include "sync/RootPresence.h"
 #include "sync/SyncCapture.h"
 #include "sync/SyncIdentity.h"
+#include "sync/SyncLink.h"
 #include "sync/SyncSession.h"
 #include "sync/SyncStore.h"
 
@@ -288,37 +287,7 @@ bool startLink(QProcess& link, const Args& a, const Peer& peer, QString* error)
         return true;
     }
 
-    QString script = QStringLiteral("exec ") +
-                     (peer.remoteCommand.isEmpty() ? QStringLiteral("ASTRA") : peer.remoteCommand) +
-                     QStringLiteral(" --sync-serve");
-    if (!peer.remoteRoot.isEmpty()) script += QStringLiteral(" --root ") + peer.remoteRoot;
-    if (script.contains(QLatin1Char(';')) || script.contains(QLatin1Char('|')) ||
-        script.contains(QLatin1Char('&')) || script.contains(QLatin1Char('`')) ||
-        script.contains(QLatin1Char('$')) || script.contains(QLatin1Char('"'))) {
-        *error = QStringLiteral("The remote command or data root contains characters that "
-                                "cannot be passed safely to the remote shell.");
-        return false;
-    }
-    const QString command = remote::SshConnection::shellCommand(script);
-    if (command.isEmpty()) {
-        *error = QStringLiteral("The remote command or data root contains characters that "
-                                "cannot be passed safely to the remote shell.");
-        return false;
-    }
-
-    remote::RemoteHost host;
-    host.destination = peer.destination;
-    host.name        = peer.destination;
-    remote::SshConnection connection(host);
-    if (!connection.ensureMaster(error, true)) return false;
-
-    remote::SshConnection::prepareSshProcess(link);
-    link.start(remote::SshConnection::sshProgram(), connection.sshArguments(true) << command);
-    if (!link.waitForStarted(15000)) {
-        *error = QStringLiteral("could not start ssh: ") + link.errorString();
-        return false;
-    }
-    return true;
+    return startSshLink(link, peer, error, true);
 }
 
 int with(const Args& a)
