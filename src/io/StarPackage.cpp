@@ -250,6 +250,7 @@ QJsonObject fitToJson(const SpectralFit &f, BlobPool &bp) {
     o["modelId"]   = f.modelId;
     o["isBestFit"] = f.isBestFit;
     o["isFlagged"] = f.isFlagged;
+    if (f.isAdopted) o["isAdopted"] = true;
     o["created"]   = dtToIso(f.creationDate);
 
     pD(o, "teff", f.teff);
@@ -369,6 +370,7 @@ std::shared_ptr<SpectralFit> fitFromJson(const QJsonObject &o, BlobReader &br) {
     f->modelId      = rS(o, "modelId");
     f->isBestFit    = rB(o, "isBestFit");
     f->isFlagged    = rB(o, "isFlagged");
+    f->isAdopted    = rB(o, "isAdopted");
     f->creationDate = dtFromIso(rS(o, "created"));
 
     f->teff                 = rD(o, "teff");

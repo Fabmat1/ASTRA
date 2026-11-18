@@ -37,6 +37,7 @@
 #include "db/DatabaseManager.h"
 #include "db/MassFitRepository.h"
 #include "fitting/FitBackendRegistry.h"
+#include "fitting/AdoptedFit.h"
 #include "fitting/FitJobFactory.h"
 #include "fitting/FitTypesJson.h"
 #include "fitting/UserFitDefaults.h"
@@ -1416,7 +1417,7 @@ void JobRegistry::finishFit(Job& j)
         best = true;
     }
     if (best) db->updateBestFit(sp->getId(), fitId);
-    const bool paramsChanged = best && fit::applyFitParamsToStar(star, fitObj);
+    const bool paramsChanged = best && fit::applyAdoptedFitToStar(star);
     int nFit = 0;
     for (const auto& s : star->getSpectra())
         if (s && s->getBestFit()) ++nFit;

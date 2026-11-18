@@ -21,6 +21,18 @@
     implemented.
 -->
 
+## Unreleased
+
+### Added
+- Choose which fit a star's Teff, log g and He come from: tick **Adopted** next to the model selector in the spectra panel. With several fits marked, the one with the lowest reduced chi2 is used. The fit in use is labelled `[star]` in the list, and fits without a stored model are now listed too so they can be picked.
+
+### Changed
+- Without a marked fit, a star's atmospheric parameters now come from the best fit with the lowest reduced chi2 among all its spectra, and from the earliest spectrum when fits tie or carry no chi2. Before, it was whichever best fit happened to load first or was ticked last, so the values of stars with several fitted spectra can change the next time the star is opened.
+
+### Fixed
+- Saving an instrument under the name of an existing one no longer leaves two copies behind; the existing instrument is updated.
+- Saving photometry no longer replaces the star's photometry row, which could detach its lightcurves, fits and SED models.
+
 ## v0.10.2 (2026-11-11)
 
 ### Added

@@ -109,6 +109,9 @@ public:
                                   const QString& instrumentId,
                                   const QString& modeKey);
     bool updateSpectralFitFlag(const QString& fitId, bool flagged);
+    /// Marks a fit as one the star's parameters may be taken from; see
+    /// fitting/AdoptedFit.h for how the star's fit is chosen among them.
+    bool updateSpectralFitAdopted(const QString& fitId, bool adopted);
     bool updateBestFit(const QString& spectrumId, const QString& bestFitId);
     QSet<QString> spectrumOriginIdsForProject(const QString& projectId);
     /// Spectrum counts per instrument mode over a star sample, and the ids /

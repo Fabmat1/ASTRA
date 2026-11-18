@@ -215,7 +215,7 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
     QSqlQuery query(_db.threadConnection());
     query.prepare(R"(
         INSERT OR REPLACE INTO spectral_fits (
-            id, spectrum_id, creation_date, model_id, is_best_fit, is_flagged,
+            id, spectrum_id, creation_date, model_id, is_best_fit, is_flagged, is_adopted,
             teff, teff_error, logg, logg_error, he, he_error,
             vsini, vsini_error, radial_velocity, radial_velocity_error,
             chi2, metallicity, metallicity_error,
@@ -242,7 +242,7 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
             n_data_points, n_free_parameters, converged, iterations,
             model_data_file
         ) VALUES (
-            :id, :spectrum_id, :creation_date, :model_id, :is_best_fit, :is_flagged,
+            :id, :spectrum_id, :creation_date, :model_id, :is_best_fit, :is_flagged, :is_adopted,
             :teff, :teff_error, :logg, :logg_error, :he, :he_error,
             :vsini, :vsini_error, :radial_velocity, :radial_velocity_error,
             :chi2, :metallicity, :metallicity_error,
@@ -277,6 +277,7 @@ bool SpectrumRepository::saveSpectralFit(const QString& starId,
     query.bindValue(":model_id", fit->modelId);
     query.bindValue(":is_best_fit", fit->isBestFit ? 1 : 0);
     query.bindValue(":is_flagged", fit->isFlagged ? 1 : 0);
+    query.bindValue(":is_adopted", fit->isAdopted ? 1 : 0);
     query.bindValue(":teff", fit->teff);
     query.bindValue(":teff_error", fit->teffError);
     query.bindValue(":logg", fit->logg);
@@ -457,6 +458,7 @@ std::vector<std::shared_ptr<SpectralFit>> SpectrumRepository::loadSpectralFits(c
         fit->modelId = query.value("model_id").toString();
         fit->isBestFit = query.value("is_best_fit").toInt() == 1;
         fit->isFlagged = query.value("is_flagged").toInt() == 1;
+        fit->isAdopted = query.value("is_adopted").toInt() == 1;
         fit->teff = query.value("teff").toDouble();
         fit->teffError = query.value("teff_error").toDouble();
         fit->logg = query.value("logg").toDouble();
@@ -577,6 +579,15 @@ bool SpectrumRepository::updateSpectralFitFlag(const QString& fitId, bool flagge
     QSqlQuery q(_db.threadConnection());
     q.prepare("UPDATE spectral_fits SET is_flagged = :f WHERE id = :id");
     q.bindValue(":f", flagged ? 1 : 0);
+    q.bindValue(":id", fitId);
+    return q.exec();
+}
+
+bool SpectrumRepository::updateSpectralFitAdopted(const QString& fitId, bool adopted)
+{
+    QSqlQuery q(_db.threadConnection());
+    q.prepare("UPDATE spectral_fits SET is_adopted = :a WHERE id = :id");
+    q.bindValue(":a", adopted ? 1 : 0);
     q.bindValue(":id", fitId);
     return q.exec();
 }

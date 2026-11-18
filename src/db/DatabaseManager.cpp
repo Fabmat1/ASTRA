@@ -1078,6 +1078,7 @@ bool DatabaseManager::runMigrations()
 
         "ALTER TABLE spectra        ADD COLUMN is_flagged INTEGER DEFAULT 0",
         "ALTER TABLE spectral_fits  ADD COLUMN is_flagged INTEGER DEFAULT 0",
+        "ALTER TABLE spectral_fits  ADD COLUMN is_adopted INTEGER DEFAULT 0",
 
         "ALTER TABLE rv_points      ADD COLUMN is_flagged INTEGER DEFAULT 0",
         "ALTER TABLE rv_points ADD COLUMN rv_manual REAL",
@@ -2250,6 +2251,12 @@ bool DatabaseManager::updateSpectrumInstrument(const QString& spectrumId,
     if (!_spectra) return false;
     return _spectra->updateSpectrumInstrument(spectrumId, instrument,
                                               instrumentId, modeKey);
+}
+
+bool DatabaseManager::updateSpectralFitAdopted(const QString& fitId, bool adopted)
+{
+    if (!_spectra) return false;
+    return _spectra->updateSpectralFitAdopted(fitId, adopted);
 }
 
 bool DatabaseManager::updateSpectralFitFlag(const QString& fitId, bool flagged)

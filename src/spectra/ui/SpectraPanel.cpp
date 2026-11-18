@@ -5,8 +5,11 @@
 #include "core/Quantity.h"
 #include "spectra/Spectrum.h"
 #include "core/QuantityFormat.h"
+#include "fitting/AdoptedFit.h"
 #include "fitting/ElementAbundances.h"
+#include "app/DataChangeBus.h"
 #include "app/Logger.h"
+#include "db/DatabaseManager.h"
 #include "plotting/qcustomplot.h"
 #include "ui/widgets/FlowLayout.h"
 #include "ui/widgets/PlotKeyNavigator.h"
@@ -203,6 +206,18 @@ void SpectraPanel::setupUi()
     _fitCombo->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
     _fitCombo->setMaximumWidth(350);
     tbLayout->addWidget(_fitCombo);
+
+    _adoptCheck = new QCheckBox("Adopted");
+    _adoptCheck->setToolTip(
+        "Take the star's Teff, log g and He from this fit.\n\n"
+        "With several fits marked, the one with the lowest reduced chi2 is "
+        "used, and the earliest spectrum among fits that tie or have no chi2. "
+        "With no fit marked, the same choice is made among the best fits of "
+        "all spectra. The fit in use is labelled [star] in the list.");
+    _adoptCheck->setFocusPolicy(Qt::NoFocus);
+    _adoptCheck->setVisible(false);
+    tbLayout->addWidget(_adoptCheck);
+    connect(_adoptCheck, &QCheckBox::toggled, this, &SpectraPanel::onAdoptToggled);
 
     _solarRelCheck = new QCheckBox("[X/H]");
     _solarRelCheck->setToolTip(
@@ -464,6 +479,7 @@ void SpectraPanel::setupUi()
         // updateSpectrumDisplay() routes to the abundance plot while that view
         // is active, so switching fits updates whichever plot is on screen.
         updateSpectrumDisplay();
+        updateAdoptCheck();
         emit selectionChanged(currentSpectrumId(), currentFitId());
     });
     connect(_modeGroup, &QButtonGroup::idClicked, this, [this](int id) {
@@ -635,9 +651,13 @@ void SpectraPanel::displaySpectrum(int index)
 
     auto fits = spec->getSpectralFits();
     auto bestFit = spec->getBestFit();
+    // The fit the star's parameters are taken from, to mark it in the list.
+    const auto starFit = _ctx.star
+        ? astra::fitting::chooseAdoptedFit(_ctx.star->getSpectra(), true).fit : nullptr;
     int selectIdx = 0;
     int bestIdx = -1;
     int firstValidIdx = -1;
+    int bestNoModelIdx = -1;
 
     for (int i = 0; i < static_cast<int>(fits.size()); ++i) {
         auto& fit = fits[i];
@@ -645,39 +665,33 @@ void SpectraPanel::displaySpectrum(int index)
         if (fit->modelWavelengths.empty() && !fit->getModelDataFile().isEmpty())
             fit->loadDataFromFile(fit->getModelDataFile());
 
-        if (fit->modelWavelengths.empty())
-            continue;
+        // A fit without stored model arrays (imported parameters) has
+        // nothing to draw, but it can still be the one the star's parameters
+        // are taken from, so it is listed and can be marked as adopted.
+        const bool hasModel = !fit->modelWavelengths.empty();
+        const bool isBest   = bestFit && fit->getId() == bestFit->getId();
 
-        QString label;
-        if (bestFit && fit->getId() == bestFit->getId())
-            label = "★ ";
-
-        if (!fit->modelId.isEmpty())
-            label += fit->modelId;
-        else
-            label += QString("Fit %1").arg(fit->getId().left(8));
-
-        QStringList params;
-        if (!std::isnan(fit->teff) && fit->teff > 0)
-            params << QString("Teff=%1").arg(fit->teff, 0, 'f', 0);
-        if (!std::isnan(fit->logg) && fit->logg != 0)
-            params << QString("logg=%1").arg(fit->logg, 0, 'f', 2);
-        if (!params.isEmpty())
-            label += " (" + params.join(", ") + ")";
-
+        QString label = fitComboLabel(*fit, isBest, starFit && fit->getId() == starFit->getId());
+        if (!hasModel) label += QStringLiteral(" (no model stored)");
         _fitCombo->addItem(label, QVariant(i));
 
         int comboPos = _fitCombo->count() - 1;
-        if (firstValidIdx < 0)
-            firstValidIdx = comboPos;
-        if (bestFit && fit->getId() == bestFit->getId())
-            bestIdx = comboPos;
+        if (hasModel) {
+            if (firstValidIdx < 0) firstValidIdx = comboPos;
+            if (isBest) bestIdx = comboPos;
+        } else if (isBest) {
+            bestNoModelIdx = comboPos;
+        }
     }
 
+    // A model to show comes first, as before; the best fit without one only
+    // when the spectrum has no model at all.
     if (bestIdx >= 0)
         selectIdx = bestIdx;
     else if (firstValidIdx >= 0)
         selectIdx = firstValidIdx;
+    else if (bestNoModelIdx >= 0)
+        selectIdx = bestNoModelIdx;
 
     // While the co-add is on screen the fit selector applies to nothing.
     bool hasFits = (_fitCombo->count() > 1) && !_coaddActive;
@@ -685,6 +699,7 @@ void SpectraPanel::displaySpectrum(int index)
     updateToolbarVisibility();
     _fitCombo->setCurrentIndex(selectIdx);
     _fitCombo->blockSignals(false);
+    updateAdoptCheck();
 
     // A new spectrum is shown in the user's own mode again (or Raw when its
     // fit has no rebinned arrays), with every panel at its home window.
@@ -1675,6 +1690,81 @@ bool SpectraPanel::eventFilter(QObject* watched, QEvent* ev)
 // Abundance view
 // ─────────────────────────────────────────────────────────────────────────────
 
+QString SpectraPanel::fitComboLabel(const SpectralFit& fit, bool isBest, bool definesStar) const
+{
+    QString label = isBest ? QStringLiteral("★ ") : QString();
+    label += fit.modelId.isEmpty() ? QStringLiteral("Fit %1").arg(fit.getId().left(8))
+                                   : fit.modelId;
+
+    QStringList params;
+    if (!std::isnan(fit.teff) && fit.teff > 0)
+        params << QStringLiteral("Teff=%1").arg(fit.teff, 0, 'f', 0);
+    if (!std::isnan(fit.logg) && fit.logg != 0)
+        params << QStringLiteral("logg=%1").arg(fit.logg, 0, 'f', 2);
+    if (!params.isEmpty())
+        label += QStringLiteral(" (") + params.join(QStringLiteral(", ")) + QLatin1Char(')');
+
+    // [star]: the star's Teff, log g and He are this fit's.
+    if (fit.isAdopted) label += QStringLiteral(" [adopted]");
+    if (definesStar)   label += QStringLiteral(" [star]");
+    return label;
+}
+
+void SpectraPanel::updateAdoptCheck()
+{
+    if (!_adoptCheck) return;
+    const auto fit = currentFit();
+    const QSignalBlocker block(_adoptCheck);
+    _adoptCheck->setEnabled(static_cast<bool>(fit));
+    _adoptCheck->setChecked(fit && fit->isAdopted);
+}
+
+void SpectraPanel::onAdoptToggled(bool adopted)
+{
+    const auto fit = currentFit();
+    if (!fit || fit->isAdopted == adopted) return;
+
+    if (_ctx.dbm && !_ctx.dbm->updateSpectralFitAdopted(fit->getId(), adopted)) {
+        LOG_ERROR("SpectraPanel", QString("Could not store the adopted mark of fit %1")
+                                      .arg(fit->getId()));
+        updateAdoptCheck();
+        return;
+    }
+    fit->isAdopted = adopted;
+
+    // Marking a fit can change which one the star takes its parameters from.
+    const bool starChanged = _ctx.star && astra::fitting::applyAdoptedFitToStar(_ctx.star);
+    if (starChanged && _ctx.dbm && !_ctx.projectId.isEmpty())
+        _ctx.dbm->updateStarRow(_ctx.projectId, _ctx.star);
+
+    // The marks in the list follow, on every spectrum's entries.
+    const auto starFit = _ctx.star
+        ? astra::fitting::chooseAdoptedFit(_ctx.star->getSpectra(), true).fit : nullptr;
+    if (_currentSpectrumIndex >= 0 &&
+        _currentSpectrumIndex < static_cast<int>(_sortedSpectra.size())) {
+        const auto& spec = _sortedSpectra[_currentSpectrumIndex];
+        const auto fits  = spec->getSpectralFits();
+        const auto best  = spec->getBestFit();
+        for (int c = 0; c < _fitCombo->count(); ++c) {
+            const int i = _fitCombo->itemData(c).toInt();
+            if (i < 0 || i >= static_cast<int>(fits.size())) continue;
+            const auto& f = fits[static_cast<size_t>(i)];
+            QString label = fitComboLabel(*f, best && f->getId() == best->getId(),
+                                          starFit && f->getId() == starFit->getId());
+            if (f->modelWavelengths.empty()) label += QStringLiteral(" (no model stored)");
+            _fitCombo->setItemText(c, label);
+        }
+    }
+
+    if (starChanged) {
+        if (_ctx.star && !_ctx.projectId.isEmpty())
+            DataChangeBus::instance().postStarChanged(
+                _ctx.projectId, _ctx.star->getId(),
+                {QStringLiteral("teff"), QStringLiteral("logg"), QStringLiteral("he")});
+        emit starParametersChanged();
+    }
+}
+
 std::shared_ptr<SpectralFit> SpectraPanel::currentFit() const
 {
     if (_currentSpectrumIndex < 0 ||
@@ -1723,6 +1813,7 @@ void SpectraPanel::updateToolbarVisibility()
 {
     _modelLabel->setVisible(_toolbarHasFits);
     _fitCombo->setVisible(_toolbarHasFits);
+    _adoptCheck->setVisible(_toolbarHasFits && !_showingAbundances);
     _solarRelCheck->setVisible(_showingAbundances);
     // The view bar belongs to the per-spectrum view; which of its toggles
     // show is decided by updateSpectrumDisplay() from the selected fit.

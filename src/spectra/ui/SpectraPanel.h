@@ -84,11 +84,19 @@ public:
 signals:
     void selectionChanged(const QString& spectrumId, const QString& fitId);
     void fitPreviewEdited(const FitPreviewConfig& cfg);
+    /// A fit was marked or unmarked as adopted here and the star's Teff,
+    /// log g or He changed with it.
+    void starParametersChanged();
 
 private:
 
     void setupUi();
     void populate() override;
+    /// Shows whether the selected fit is marked adopted, without firing.
+    void updateAdoptCheck();
+    void onAdoptToggled(bool adopted);
+    /// "sdOstar2020 (Teff=..., logg=...)" with the best / adopted / star marks.
+    QString fitComboLabel(const SpectralFit& fit, bool isBest, bool definesStar) const;
     /// Drop the user's zoom and redraw at the auto-fitted ranges.
     void resetZoomView();
     /// Remember that the user zoomed/panned and reveal the reset button.
@@ -176,6 +184,7 @@ private:
     QCheckBox*   _errCheck        = nullptr;  // error band
     QCheckBox*   _residCheck      = nullptr;  // residual strip (full view)
     QCheckBox*   _solarRelCheck   = nullptr;  // abundance view: [X/H]
+    QCheckBox*   _adoptCheck      = nullptr;  // the selected fit is adopted for the star
     QLabel*      _modelLabel   = nullptr;
     QCustomPlot* _mainPlot     = nullptr;
     QCustomPlot* _residualPlot = nullptr;

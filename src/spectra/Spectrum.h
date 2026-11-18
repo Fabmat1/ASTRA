@@ -77,6 +77,10 @@ public:
     QString modelId;
     bool isBestFit;
     bool isFlagged;
+    /// The user picked this fit as one the star's atmospheric parameters may
+    /// be taken from (see fitting/AdoptedFit.h). Independent of isBestFit,
+    /// which is per spectrum and decides the radial velocity.
+    bool isAdopted = false;
 
     // Model data - not loaded by default
     std::vector<double> modelWavelengths;

@@ -76,6 +76,26 @@ into ASTRA.
 <!-- TODO: document supported grid formats and how components/abundances are
      parameterized. -->
 
+### Which fit the star's parameters come from
+
+A spectrum has one **best fit** (the star in the fit list), and its radial
+velocity is taken from it. The star itself carries a single Teff, log g and He,
+taken from one fit among all its spectra:
+
+- If you ticked **Adopted** for one or more fits (next to the model selector
+  in the spectra panel of the star view), the choice is made among those. One
+  ticked fit is simply that fit.
+- Otherwise it is made among the best fits of all spectra.
+
+Within that set the fit with the lowest reduced chi2 is used. Among fits that
+tie, or that carry no chi2 (imported parameters), it is the one on the
+earliest spectrum. Flagged fits and fits on flagged spectra are left out. The
+fit in use is labelled `[star]` in the model selector, a ticked fit
+`[adopted]`.
+
+A reduced chi2 is only comparable between fits made the same way; when fits
+come from different grids or noise settings, tick the one you trust.
+
 ## SED fitting
 
 **View / Fit SED** opens **SED Analysis**:

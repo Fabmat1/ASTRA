@@ -11,6 +11,7 @@
 #include "core/Star.h"
 #include "core/Time.h"
 #include "db/DatabaseManager.h"
+#include "fitting/AdoptedFit.h"
 #include "fitting/FitJobFactory.h"
 #include "rv/RadialVelocity.h"
 #include "spectra/Spectrum.h"
@@ -233,6 +234,7 @@ QJsonObject fitJson(const SpectralFit& f, bool full)
     QJsonObject o;
     o.insert(QStringLiteral("id"), f.getId());
     o.insert(QStringLiteral("is_best"), f.isBestFit);
+    if (f.isAdopted) o.insert(QStringLiteral("is_adopted"), true);
     o.insert(QStringLiteral("flagged"), f.isFlagged);
     o.insert(QStringLiteral("model"), f.modelId);
     o.insert(QStringLiteral("created"), f.creationDate.isValid() ? QJsonValue(f.creationDate.toString(Qt::ISODate)) : QJsonValue());
@@ -370,7 +372,7 @@ bool applyBestFit(AiHost& host, const SpectrumRef& r, const std::shared_ptr<Spec
         throw ToolError(QStringLiteral("Writing the best fit failed; see ASTRA's log."));
     r.spectrum->setBestFitById(fitId);
 
-    const bool paramsChanged = fit && astra::fitting::applyFitParamsToStar(r.star, fit);
+    const bool paramsChanged = astra::fitting::applyAdoptedFitToStar(r.star);
     int nFit = 0;
     for (const auto& sp : r.star->getSpectra())
         if (sp->getBestFit()) ++nFit;

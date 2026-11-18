@@ -1,4 +1,5 @@
 #include "core/Star.h"
+#include "fitting/AdoptedFit.h"
 #include "fitting/ElementAbundances.h"
 #include "lightcurve/Photometry.h"
 #include "spectra/Spectrum.h"
@@ -605,14 +606,16 @@ void Star::recomputeSpectraMetrics()
     _teff_limit = 0; _logg_limit = 0; _he_limit = 0;
     clearAbundances();
 
-    for (const auto& spec : _spectra) {
-        if (!spec) continue;
-        auto fit = spec->getBestFit();
-        if (!fit) continue;
-        ++_nFitSpectra;
+    for (const auto& spec : _spectra)
+        if (spec && spec->getBestFit()) ++_nFitSpectra;
 
-        // Use first valid best fit for atmospheric params
-        if (_teff == 0 && fit->teff > 0) {
+    // The atmospheric parameters come from the adopted fit: among the fits
+    // the user marked as adopted, or else among the spectra's best fits, the
+    // one with the lowest reduced chi2 (see fitting/AdoptedFit.h). This used
+    // to be the first best fit in the order the rows happened to load in.
+    {
+        const auto fit = astra::fitting::chooseAdoptedFit(_spectra, true).fit;
+        if (fit) {
             _teff   = fit->teff;
             _e_teff = fit->teffError;
             _logg   = fit->logg;

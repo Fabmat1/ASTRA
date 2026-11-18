@@ -6,6 +6,7 @@
 #include "core/Instrument.h"
 #include "core/InstrumentMode.h"
 #include "db/DatabaseManager.h"
+#include "fitting/AdoptedFit.h"
 #include "fitting/FitJobFactory.h"
 #include "app/Logger.h"
 #include "spectra/matchSpectraToInstrument.h"
@@ -718,15 +719,19 @@ void SpectraFitDialog::setBestFitTied(const QString& fitId, bool markBest)
                 if (_dbm) _dbm->updateBestFit(s->getId(), QString());
             }
         }
+        // The star may have been taking its parameters from one of them.
+        propagateBestFitParams(nullptr);
     }
 }
 
 void SpectraFitDialog::propagateBestFitParams(
     const std::shared_ptr<SpectralFit>& fit)
 {
-    // The copying itself lives in FitJobFactory so that the mass fitter adopts
-    // a fit by exactly the same rules as a user ticking the best-fit box here.
-    if (astra::fitting::applyFitParamsToStar(_star, fit)) {
+    // A best fit ticked or cleared can change which fit the star's
+    // parameters come from (fitting/AdoptedFit.h); it is not necessarily the
+    // one just ticked. The mass fitter and the agent tools go the same way.
+    Q_UNUSED(fit)
+    if (astra::fitting::applyAdoptedFitToStar(_star)) {
         if (_dbm && !_projectId.isEmpty())
             _dbm->updateStarRow(_projectId, _star);
         emit starParametersChanged();

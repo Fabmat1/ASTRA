@@ -6,6 +6,7 @@
 
 #include "db/DatabaseManager.h"
 #include "fitting/FitBackendRegistry.h"
+#include "fitting/AdoptedFit.h"
 #include "fitting/FitJobFactory.h"
 #include "fitting/IFitBackend.h"
 #include "fitting/StdStreamRedirector.h"
@@ -1327,7 +1328,15 @@ void MassFitService::applyAdoption(Run* r, const StarOutcome& outcome)
         }
     }
 
-    if (!fit::applyFitParamsToStar(star, outcome.adoptedFit)) return;
+    // The fits adopted per spectrum are marked best above. Which of a star's
+    // best fits its parameters come from is decided in one place, for every
+    // way a fit can become one (fitting/AdoptedFit.h). Without the spectra in
+    // memory the star row is left for the next recompute, as before.
+    if (!star->hasSpectraLoaded()) {
+        if (!fit::applyFitParamsToStar(star, outcome.adoptedFit)) return;
+    } else if (!fit::applyAdoptedFitToStar(star)) {
+        return;
+    }
 
     dbm->updateStarRow(r->projectId, star);
     emit starParametersChanged(outcome.starId);

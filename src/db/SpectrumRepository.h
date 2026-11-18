@@ -52,6 +52,7 @@ class SpectrumRepository {
                                   const QString &instrumentId,
                                   const QString &modeKey);
     bool updateSpectralFitFlag(const QString &fitId, bool flagged);
+    bool updateSpectralFitAdopted(const QString &fitId, bool adopted);
     bool updateBestFit(const QString &spectrumId, const QString &bestFitId);
 
     /// How many spectra a star has, and how many of them carry a best fit.
