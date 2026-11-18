@@ -17,6 +17,8 @@ class QProgressBar;
 QT_END_NAMESPACE
 
 class ApplicationController;
+namespace astra::sync { class SyncService; }
+namespace astra::sync::ui { class SyncWindowGlue; }
 class ProjectSelectionView;
 class InstrumentConfigView;
 class ProjectView;
@@ -46,6 +48,8 @@ public:
 public slots:
     /// Opens Settings, on `page` when given (e.g. "AI").
     void showSettings(const QString& page = QString());
+    /// The sync service, or null in a build without sync.
+    astra::sync::SyncService* syncServiceOrNull() const;
     void showProjectSelection();
     void showProject(const QString& projectId);
     void openProjectDialog();
@@ -146,6 +150,7 @@ private:
     // Spectrum fetch status-bar widget
     void setupSpecFetchStatusWidget();
     QWidget*      _specFetchWidget   = nullptr;
+    astra::sync::ui::SyncWindowGlue* _syncGlue = nullptr;
     QToolButton*  _specFetchBtn      = nullptr;
     QProgressBar* _specFetchProgress = nullptr;
     // True while the status widget is showing the archive-search phase, so a

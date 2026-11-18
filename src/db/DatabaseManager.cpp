@@ -2253,6 +2253,11 @@ bool DatabaseManager::updateSpectrumInstrument(const QString& spectrumId,
                                               instrumentId, modeKey);
 }
 
+void DatabaseManager::reloadInstruments()
+{
+    if (_instruments) _instruments->loadInstrumentsFromDatabase();
+}
+
 bool DatabaseManager::updateSpectralFitAdopted(const QString& fitId, bool adopted)
 {
     if (!_spectra) return false;

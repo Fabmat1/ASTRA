@@ -72,6 +72,7 @@ nav:
       - Fetching Spectra: workflows/spectra-fetching.md
       - SED & Spectral Fitting: workflows/sed-spectral.md
       - Remote Fitting: workflows/remote-fitting.md
+      - Syncing Between Machines: workflows/sync.md
   - AI:
       - Overview: ai/index.md
       - AI Assistant: ai/assistant.md

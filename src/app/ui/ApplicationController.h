@@ -19,6 +19,7 @@ class LightcurveFetchService;
 class SpectrumFetchService;
 class MassFitService;
 namespace astra::remote { class SshGridProvider; class RemoteFitService; class RemoteBatchService; }
+namespace astra::sync { class SyncService; struct ApplyResult; }
 
 
 class ApplicationController : public QObject, public ServiceContext
@@ -60,12 +61,22 @@ public:
 
     /// Lazily created app-wide engine for mass spectrum fitting runs.
     MassFitService* massFitService();
+    /// True while a mass fitting run is active, without creating the service.
+    bool massFitActive() const;
+
+#if ASTRA_WITH_SYNC
+    /// Sync of this data root with the user's other machines; see
+    /// sync/SyncService.h. Null when the database could not be opened.
+    astra::sync::SyncService* syncService() const { return _syncService.get(); }
+#endif
 
 signals:
     void projectCreated(const QString& projectId);
     void projectOpened(const QString& projectId);
     void projectClosed();
     void projectDeleted(const QString& projectId);
+    /// The list of projects was read again (rows changed by a sync).
+    void projectsReloaded();
 
 private:
     std::unique_ptr<DatabaseManager> _databaseManager;
@@ -81,6 +92,10 @@ private:
     std::shared_ptr<astra::remote::SshGridProvider> _gridProvider;
     std::unique_ptr<astra::remote::RemoteFitService> _remoteFitService;
     std::unique_ptr<astra::remote::RemoteBatchService> _remoteBatchService;
+#if ASTRA_WITH_SYNC
+    std::unique_ptr<astra::sync::SyncService> _syncService;
+    void onSyncApplied(const astra::sync::ApplyResult& result);
+#endif
 
     void loadProjects();
 };

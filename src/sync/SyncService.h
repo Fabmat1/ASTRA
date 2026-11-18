@@ -61,6 +61,7 @@ struct SyncStatus {
     int     waitingToApply = 0;      ///< change sets held back by the gate
     int     filesToFetch   = 0;
     int     conflicts      = 0;      ///< history entries flagged as conflicts
+    int     unsent         = 0;      ///< changes a connected device has not got yet
     QList<PeerStatus>     peers;
     QList<PairingRequest> requests;  ///< devices asking to pair with this one
 

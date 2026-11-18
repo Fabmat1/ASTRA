@@ -1,4 +1,7 @@
 #include "app/ui/SettingsDialog.h"
+#if ASTRA_WITH_SYNC
+#include "sync/ui/SyncSettingsPage.h"
+#endif
 #include "remote/ui/RemoteHostsSettingsPage.h"
 #if ASTRA_WITH_AI
 #include "ai/ui/AiSettingsPage.h"
@@ -162,9 +165,12 @@ private:
 // =====================================================================
 
 SettingsDialog::SettingsDialog(AppSettings* settings, QWidget* parent,
-                               const QString& page)
-    : QDialog(parent), _settings(settings)
+                               const QString& page, astra::sync::SyncService* sync)
+    : QDialog(parent), _settings(settings), _sync(sync)
 {
+    // Settings hold no rows of the database: changes from another machine
+    // may be applied while they are open (see sync/ui/SyncWindowGlue).
+    setProperty("astra.syncSafe", true);
     setupUi();
     if (!page.isEmpty()) {
         const auto hits = _topicList->findItems(page, Qt::MatchExactly);
@@ -199,6 +205,9 @@ void SettingsDialog::setupUi()
     _topicList->addItem("Spectra Fetching");
     _topicList->addItem("Spectral Fitting");
     _topicList->addItem("Remote Hosts");
+#if ASTRA_WITH_SYNC
+    if (_sync) _topicList->addItem("Sync");
+#endif
     _topicList->addItem("Updates");
 #if ASTRA_WITH_AI
     _topicList->addItem("AI");
@@ -215,6 +224,9 @@ void SettingsDialog::setupUi()
     _specFitDefaultsPage = new SpectralFitDefaultsPage;
     _pages->addWidget(_specFitDefaultsPage);
     _pages->addWidget(createRemoteHostsPage());
+#if ASTRA_WITH_SYNC
+    if (_sync) _pages->addWidget(new astra::sync::ui::SyncSettingsPage(_sync));
+#endif
     _pages->addWidget(createUpdatesPage());
 #if ASTRA_WITH_AI
     _aiPage = new astra::ai::ui::AiSettingsPage;

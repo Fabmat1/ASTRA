@@ -1062,6 +1062,14 @@ if(ASTRA_WITH_SYNC)
         src/sync/SyncSession.h
         src/sync/SyncStore.h
     )
+    list(APPEND ASTRA_UI_SOURCES
+        src/sync/ui/SyncSettingsPage.cpp
+        src/sync/ui/SyncWindowGlue.cpp
+    )
+    list(APPEND ASTRA_UI_HEADERS
+        src/sync/ui/SyncSettingsPage.h
+        src/sync/ui/SyncWindowGlue.h
+    )
 endif()
 
 # ── astra_core: every Core-only translation unit ─────────────────────────────

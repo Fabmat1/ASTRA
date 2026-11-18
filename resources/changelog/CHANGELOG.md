@@ -24,6 +24,7 @@
 ## Unreleased
 
 ### Added
+- **Sync between your machines** (Settings > Sync): keeps a database and its data files the same on several computers over SSH. Changes are merged row by row, also after both machines were used while apart; nothing is overwritten wholesale. The first pairing compares the two databases and asks once whose rows win where they differ. What another machine replaced or deleted is kept for 30 days and can be put back. Restored backups and copied databases are recognised. Command line: `ASTRA --sync-with`, `--sync-allow`, `--sync-status`. See the new "Syncing Between Machines" page of the documentation. Do not use it together with Syncthing or a cloud folder on the same data folder.
 - Choose which fit a star's Teff, log g and He come from: tick **Adopted** next to the model selector in the spectra panel. With several fits marked, the one with the lowest reduced chi2 is used. The fit in use is labelled `[star]` in the list, and fits without a stored model are now listed too so they can be picked.
 
 ### Changed

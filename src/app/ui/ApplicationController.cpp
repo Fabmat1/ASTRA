@@ -12,6 +12,10 @@
 #include "remote/RemoteBatchService.h"
 #include "remote/RemoteFitService.h"
 #include "remote/SshGridProvider.h"
+#if ASTRA_WITH_SYNC
+#include "app/DataChangeBus.h"
+#include "sync/SyncService.h"
+#endif
 #include <algorithm>
 #include <QApplication>
 #include <QFile>
@@ -63,6 +67,18 @@ ApplicationController::ApplicationController(QObject *parent)
 
     loadProjects();
     LOG_INFO("Controller", QString("Loaded %1 projects").arg(_projects.size()));
+
+#if ASTRA_WITH_SYNC
+    // Sync with the user's other machines. It does nothing to a database it
+    // was not switched on for. Rows it changes behind the window's back are
+    // reported, and the objects on screen are read again.
+    if (_databaseManager->isOpen()) {
+        _syncService = std::make_unique<astra::sync::SyncService>(
+            AppPaths::root(), astra::sync::SyncService::defaultConfigDir(), this);
+        connect(_syncService.get(), &astra::sync::SyncService::applied, this,
+                &ApplicationController::onSyncApplied);
+    }
+#endif
     
     auto endTime = std::chrono::high_resolution_clock::now();
     auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(endTime - startTime);
@@ -76,6 +92,11 @@ ApplicationController::~ApplicationController()
     // as "stop these fits" and kill jobs meant to outlive this session. And
     // the mass fitter's workers must be gone before the remote services
     // they are blocked in are destroyed.
+#if ASTRA_WITH_SYNC
+    // First: it writes to the database on its own connection and reports to
+    // objects that are about to go.
+    _syncService.reset();
+#endif
     if (_remoteBatchService) _remoteBatchService->shutdown();
     if (_remoteFitService)   _remoteFitService->beginShutdown();
     _massFitService.reset();
@@ -248,6 +269,62 @@ void ApplicationController::loadProjects()
 {
     _projects = _databaseManager->loadProjects();
 }
+
+bool ApplicationController::massFitActive() const
+{
+    return _massFitService && _massFitService->hasActiveRuns();
+}
+
+#if ASTRA_WITH_SYNC
+void ApplicationController::onSyncApplied(const astra::sync::ApplyResult& result)
+{
+    DataChangeBus& bus = DataChangeBus::instance();
+
+    if (result.instrumentsChanged || result.everything) _databaseManager->reloadInstruments();
+    if (result.projectsChanged || result.everything) {
+        loadProjects();
+        bus.postProjectsChanged();
+        emit projectsReloaded();
+    }
+
+    // The open project's stars are objects the views hold on to: each one
+    // that changed is read again in place, so nothing on screen (and nothing
+    // a later save writes) is older than the database.
+    const auto project = _currentProject;
+    if (!project || !project->starsLoaded()) return;
+
+    QSet<QString> ids = result.stars;
+    if (result.everything)
+        for (const auto& star : project->getAllStars()) ids.insert(star->getId());
+
+    QStringList added, removed;
+    std::vector<std::shared_ptr<Star>> gone;
+    for (const QString& id : ids) {
+        if (auto star = project->findById(id)) {
+            QString projectId;
+            if (!_databaseManager->refreshStar(star, &projectId) || projectId != project->getId()) {
+                gone.push_back(star);       // deleted, or moved to another project
+                removed << id;
+                continue;
+            }
+            bus.postStarChanged(project->getId(), id);
+            bus.postStarDataChanged(project->getId(), id, QStringLiteral("sync"));
+        } else {
+            QString projectId;
+            auto fresh = _databaseManager->loadStar(id, &projectId);
+            if (!fresh || projectId != project->getId()) continue;
+            attachStarLoaders(_databaseManager.get(), {fresh}, projectId);
+            project->addStar(fresh);
+            added << id;
+        }
+    }
+    if (!gone.empty()) {
+        project->removeStars(gone);
+        bus.postStarsRemoved(project->getId(), removed);
+    }
+    if (!added.isEmpty()) bus.postStarsAdded(project->getId(), added);
+}
+#endif
 
 bool ApplicationController::saveSpectrumToProject(const QString& projectId, const QString& starId, std::shared_ptr<Spectrum> spectrum)
 {

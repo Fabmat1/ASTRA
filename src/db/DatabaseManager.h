@@ -151,6 +151,9 @@ public:
     bool saveLightcurveForStar(const QString& starId, const QString& source, Photometry* photometry);
     bool removeLightcurve(const QString& starId, const QString& source);
     void initializeInstruments();
+    /// Reads the instruments again after their rows were changed by something
+    /// other than this object (an incoming sync).
+    void reloadInstruments();
     std::shared_ptr<Instrument> getInstrumentById(const QString& id) const;
     std::shared_ptr<Instrument> getInstrumentByName(const QString& name) const;
     std::vector<std::shared_ptr<Instrument>> getAllInstruments() const;

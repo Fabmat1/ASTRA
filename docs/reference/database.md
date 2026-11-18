@@ -35,11 +35,20 @@ your data into notebooks and custom analysis scripts.
 
 ## Sharing data
 
-For moving stars between machines or colleagues, don't copy database files -
-use `.astra` share packages
+To keep your own machines the same, use the built-in sync
+(see [Syncing Between Your Machines](../workflows/sync.md)). Don't copy the
+database file around, and don't put the data folder under a file sync tool:
+a database copied while it is open is easily damaged, and a newer one easily
+replaced by an older.
+
+For passing stars to colleagues, use `.astra` share packages
 (see [Catalog Management](../workflows/catalog-management.md#sharing-stars-with-colleagues)),
 which bundle a star with its spectra, RVs, fits, and light curves and merge
 cleanly into any project.
+
+A database with sync switched on holds a few extra tables whose names start
+with `sync_`. They record which values changed when and on which machine and
+hold no data of their own.
 
 <!-- TODO: document the .asd file format and the .astra package format at a
      high level, and confirm the exact app-data paths on each platform. -->

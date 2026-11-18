@@ -3,6 +3,7 @@
 #include <QDialog>
 
 class AppSettings;
+namespace astra::sync { class SyncService; }
 class UpdateManager;
 struct UpdateInfo;
 class QListWidget;
@@ -28,7 +29,8 @@ class SettingsDialog : public QDialog
 public:
     /// `page` selects the topic to open on, e.g. "Numbers & Copying".
     explicit SettingsDialog(AppSettings* settings, QWidget* parent = nullptr,
-                            const QString& page = QString());
+                            const QString& page = QString(),
+                            astra::sync::SyncService* sync = nullptr);
 
 private slots:
     void apply();
@@ -52,6 +54,7 @@ private:
     QLineEdit *_lcurveDirEdit = nullptr;
     QLabel  *_lcurveStatusLbl = nullptr;
     AppSettings*   _settings;
+    astra::sync::SyncService* _sync = nullptr;   ///< null: no Sync page
 
     QListWidget*   _topicList = nullptr;
     QStackedWidget* _pages    = nullptr;

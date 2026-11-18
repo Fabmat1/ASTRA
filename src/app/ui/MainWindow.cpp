@@ -8,6 +8,9 @@
 #include "app/ui/ApplicationController.h"
 #include "app/ui/FirstRunDialog.h"
 #include "app/ui/SettingsDialog.h"
+#if ASTRA_WITH_SYNC
+#include "sync/ui/SyncWindowGlue.h"
+#endif
 #include "ui/widgets/QuantityLabel.h"
 #include "app/ui/WhatsNewDialog.h"
 #include "io/ui/StarShare.h"
@@ -65,7 +68,7 @@ MainWindow::MainWindow(ApplicationController* controller, QWidget *parent)
     QuantityLabel::setSettingsInvoker([this](QWidget* origin) {
         SettingsDialog dlg(_controller->settings(),
                            origin ? origin->window() : this,
-                           "Numbers & Copying");
+                           "Numbers & Copying", syncServiceOrNull());
         dlg.exec();
     });
     setupThemeMenu();
@@ -154,6 +157,16 @@ void MainWindow::setupUi()
     setupLcFetchStatusWidget();
     setupSpecFetchStatusWidget();
     setupMassFitStatusWidget();
+#if ASTRA_WITH_SYNC
+    // Sync's place in the status bar, its questions, and the report of which
+    // windows are open (what holds incoming changes back).
+    _syncGlue = new astra::sync::ui::SyncWindowGlue(
+        this, _controller, [this](const QString& page) { showSettings(page); });
+    connect(_controller, &ApplicationController::projectsReloaded, this, [this] {
+        if (_centralStack->currentWidget() == _projectSelectionView)
+            _projectSelectionView->refreshProjects();
+    });
+#endif
 
     statusBar()->showMessage("Ready");
 }
@@ -648,8 +661,17 @@ void MainWindow::showProjectSelection()
 
 void MainWindow::showSettings(const QString& page)
 {
-    SettingsDialog dlg(_controller->settings(), this, page);
+    SettingsDialog dlg(_controller->settings(), this, page, syncServiceOrNull());
     dlg.exec();
+}
+
+astra::sync::SyncService* MainWindow::syncServiceOrNull() const
+{
+#if ASTRA_WITH_SYNC
+    return _controller ? _controller->syncService() : nullptr;
+#else
+    return nullptr;
+#endif
 }
 
 void MainWindow::setupAi()
@@ -1138,5 +1160,11 @@ void MainWindow::closeEvent(QCloseEvent* event)
             return;
         }
     }
+#if ASTRA_WITH_SYNC
+    if (_syncGlue && !_syncGlue->confirmClose()) {
+        event->ignore();
+        return;
+    }
+#endif
     QMainWindow::closeEvent(event);
 }

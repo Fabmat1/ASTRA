@@ -76,6 +76,7 @@ bool SyncStatus::operator==(const SyncStatus& o) const
     if (enabled != o.enabled || restored != o.restored || blocked != o.blocked ||
         deviceName != o.deviceName || deviceId != o.deviceId ||
         waitingToApply != o.waitingToApply || filesToFetch != o.filesToFetch ||
+        unsent != o.unsent ||
         conflicts != o.conflicts || peers.size() != o.peers.size() ||
         requests.size() != o.requests.size())
         return false;
@@ -505,6 +506,13 @@ private:
             link->status.name        = link->peer.name.isEmpty() ? link->peer.destination : link->peer.name;
             link->status.destination = link->peer.destination;
             status.peers << link->status;
+            // What a device that is connected right now has not received.
+            if (link->paired) {
+                QSqlQuery q(_db);
+                q.prepare(QStringLiteral("SELECT COUNT(*) FROM sync_clock WHERE seq > ?"));
+                q.addBindValue(engine.ackedSeq(link->peer.id));
+                if (q.exec() && q.next()) status.unsent = qMax(status.unsent, q.value(0).toInt());
+            }
         }
 
         status.waitingToApply = engine.inboxSize();
