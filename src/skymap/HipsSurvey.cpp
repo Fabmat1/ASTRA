@@ -43,14 +43,14 @@ const QList<HipsSurvey>& hipsSurveys()
           { "https://skies.esac.esa.int/Integral/color" } },
 
         // ── X-ray ──────────────────────────────────────────────────────────
-        { "JAXA/P/SWIFT/BAT/Image", "Swift BAT 70-month", Regime::XRay, "14-195 keV",
+        { "JAXA/P/SWIFT/BAT/Image", "Swift BAT 70 month", Regime::XRay, "14-195 keV",
           { "https://data.darts.isas.jaxa.jp/pub/HiPS/SWIFT-BAT_Image" } },
         { "cxc.harvard.edu/P/cda/hips/allsky/rgb", "Chandra ACIS color", Regime::XRay, "0.5-7 keV",
           QStringList{ "https://cdaftp.cfa.harvard.edu/cxc-hips" }
               + cds("CHANDRA/cxc.harvard.edu_P_cda_hips_allsky_rgb") },
         { "ESDC/P/XMM/EPIC-RGB", "XMM-Newton EPIC color", Regime::XRay, "0.2-12 keV",
           { "https://esdchips.esac.esa.int/XMM-Newton/EPIC-RGB" } },
-        { "erosita/dr1/rate/rgb", "eROSITA-DE DR1 color", Regime::XRay, "0.2-2.3 keV",
+        { "erosita/dr1/rate/rgb", "eROSITA DR1 color", Regime::XRay, "0.2-2.3 keV",
           QStringList{ "https://erosita.mpe.mpg.de/erodat/static/hips/eRASS1_RGB_Rate_c010" }
               + cds("erosita/erosita_P_dr1_rate_rgb") },
         { "CDS/P/RASS", "ROSAT All-Sky Survey", Regime::XRay, "0.1-2.4 keV",
@@ -81,16 +81,16 @@ const QList<HipsSurvey>& hipsSurveys()
               + cds("DSS/DSS2Merged") },
         { "CDS/P/DSS2/blue", "DSS2 blue", Regime::Optical, "B plates",
           cds("DSS/DSS2-blue-XJ-S") },
-        { "CDS/P/PanSTARRS/DR1/color-i-r-g", "Pan-STARRS DR1 color (i, r, g)", Regime::Optical, "g, r, i",
+        { "CDS/P/PanSTARRS/DR1/color-i-r-g", "Pan-STARRS DR1 color", Regime::Optical, "g, r, i",
           QStringList{ "https://stpubdata.s3.us-east-1.amazonaws.com/mast/skybackgrounds/PanSTARRS" }
               + cds("Pan-STARRS/DR1/color-i-r-g") },
-        { "CDS/P/PanSTARRS/DR1/color-z-zg-g", "Pan-STARRS DR1 color (z, g)", Regime::Optical, "g, z",
+        { "CDS/P/PanSTARRS/DR1/color-z-zg-g", "Pan-STARRS DR1 z/g", Regime::Optical, "g, z",
           cds("Pan-STARRS/DR1/color-z-zg-g") },
         { "CDS/P/SDSS9/color", "SDSS DR9 color", Regime::Optical, "g, r, i",
           QStringList{ "https://irsa.ipac.caltech.edu/data/hips/CDS/SDSS/DR9/color",
                        "https://skies.esac.esa.int/SDSS9Color" }
               + cds("SDSS/DR9/color") },
-        { "CDS/P/DESI-Legacy-Surveys/DR10/color", "DESI Legacy Surveys DR10", Regime::Optical, "g, r, i, z",
+        { "CDS/P/DESI-Legacy-Surveys/DR10/color", "Legacy Surveys DR10", Regime::Optical, "g, r, i, z",
           cds("DESI-legacy-surveys/DR10/CDS_P_DESI-Legacy-Surveys_DR10_color") },
         { "CDS/P/DES-DR2/ColorIRG", "DES DR2 color", Regime::Optical, "g, r, i",
           cds("DES/DR2/CDS_P_DES-DR2_ColorIRG") },

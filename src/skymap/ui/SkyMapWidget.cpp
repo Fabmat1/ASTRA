@@ -1,6 +1,7 @@
 #include "skymap/ui/SkyMapWidget.h"
 
 #include "skymap/HipsSurvey.h"
+#include "skymap/ui/HipsRender.h"
 #include "skymap/ui/HipsTileLoader.h"
 
 #include <QAction>
@@ -66,40 +67,6 @@ inline double angleBetween(const Vec3& a, const Vec3& b)
     return std::atan2(std::sqrt(dot(c, c)), dot(a, b));
 }
 
-// Bilinear sample at continuous pixel position (fx, fy), pixel centres at
-// integer + 0.5, clamped to the image. Returns non-premultiplied ARGB.
-inline QRgb sampleBilinear(const QImage& img, double fx, double fy)
-{
-    const int w = img.width(), h = img.height();
-    fx = std::clamp(fx - 0.5, 0.0, double(w - 1));
-    fy = std::clamp(fy - 0.5, 0.0, double(h - 1));
-    const int x0 = int(fx), y0 = int(fy);
-    const int x1 = std::min(x0 + 1, w - 1), y1 = std::min(y0 + 1, h - 1);
-    const double tx = fx - x0, ty = fy - y0;
-    const QRgb* r0 = reinterpret_cast<const QRgb*>(img.constScanLine(y0));
-    const QRgb* r1 = reinterpret_cast<const QRgb*>(img.constScanLine(y1));
-    const QRgb a = r0[x0], b = r0[x1], c = r1[x0], d = r1[x1];
-    auto lerp = [&](int ca, int cb, int cc, int cd) {
-        const double top = ca + (cb - ca) * tx;
-        const double bot = cc + (cd - cc) * tx;
-        return int(top + (bot - top) * ty + 0.5);
-    };
-    return qRgba(lerp(qRed(a), qRed(b), qRed(c), qRed(d)),
-                 lerp(qGreen(a), qGreen(b), qGreen(c), qGreen(d)),
-                 lerp(qBlue(a), qBlue(b), qBlue(c), qBlue(d)),
-                 lerp(qAlpha(a), qAlpha(b), qAlpha(c), qAlpha(d)));
-}
-
-inline QRgb overBackground(QRgb c)
-{
-    const int a = qAlpha(c);
-    if (a == 255) return c | 0xff000000u;
-    auto mix = [a](int fg, int bg) { return (fg * a + bg * (255 - a) + 127) / 255; };
-    return qRgb(mix(qRed(c), kSkyBackground.red()),
-                mix(qGreen(c), kSkyBackground.green()),
-                mix(qBlue(c), kSkyBackground.blue()));
-}
-
 // Rows [y0, y1) of the frame, rendered by one worker.
 struct Strip { int y0, y1; };
 
@@ -129,14 +96,6 @@ QString formatSexagesimal(double value, int fieldsPrecision, bool sign)
                                   fieldsPrecision, c);
     if (sign) s.prepend(neg ? '-' : '+');
     return s;
-}
-
-QString formatAngle(double arcsec)
-{
-    if (arcsec >= 3600.0) return QString::number(arcsec / 3600.0, 'g', 3) + QStringLiteral("°");
-    if (arcsec >= 60.0)   return QString::number(arcsec / 60.0, 'g', 3) + QStringLiteral("′");
-    if (arcsec >= 1.0)    return QString::number(arcsec, 'g', 3) + QStringLiteral("″");
-    return QString::number(arcsec, 'f', 2) + QStringLiteral("″");
 }
 
 void drawPanel(QPainter& p, const QRectF& r)
@@ -315,19 +274,9 @@ double SkyMapWidget::fieldOfViewArcsec() const
 
 // ── view geometry ───────────────────────────────────────────────────────────
 
-SkyMapWidget::Basis SkyMapWidget::basisAt(double raDeg, double decDeg)
-{
-    const double a = raDeg * kDeg, d = decDeg * kDeg;
-    Basis b;
-    b.c = { std::cos(d) * std::cos(a), std::cos(d) * std::sin(a), std::sin(d) };
-    b.e = { -std::sin(a), std::cos(a), 0.0 };
-    b.n = { -std::sin(d) * std::cos(a), -std::sin(d) * std::sin(a), std::cos(d) };
-    return b;
-}
-
 Vec3 SkyMapWidget::widgetToVec(const QPointF& p) const
 {
-    const Basis b = basisAt(_centerRa, _centerDec);
+    const TangentBasis b = tangentBasisAt(_centerRa, _centerDec);
     const double s = _scale * kArcsec;
     const double xi  = -(p.x() - width() / 2.0) * s;    // east is left
     const double eta = -(p.y() - height() / 2.0) * s;   // north is up
@@ -336,7 +285,7 @@ Vec3 SkyMapWidget::widgetToVec(const QPointF& p) const
 
 bool SkyMapWidget::vecToWidget(const Vec3& v, QPointF& p) const
 {
-    const Basis b = basisAt(_centerRa, _centerDec);
+    const TangentBasis b = tangentBasisAt(_centerRa, _centerDec);
     const double dc = dot(v, b.c);
     if (dc <= 1e-9) return false;   // behind the tangent plane
     const double s = _scale * kArcsec;
@@ -387,7 +336,7 @@ void SkyMapWidget::renderFrame()
         _frame = QImage(w, h, QImage::Format_RGB32);
     _frame.setDevicePixelRatio(dpr);
 
-    const Basis b = basisAt(_centerRa, _centerDec);
+    const TangentBasis b = tangentBasisAt(_centerRa, _centerDec);
     const double radPerDevPx = _scale * kArcsec / dpr;
 
     _hipsStatus.clear();
@@ -414,7 +363,7 @@ void SkyMapWidget::renderFrame()
     _frameDirty = false;
 }
 
-void SkyMapWidget::renderHips(const Basis& b, double radPerDevPx, int w, int h)
+void SkyMapWidget::renderHips(const TangentBasis& b, double radPerDevPx, int, int)
 {
     const HipsTileLoader::SurveyState& st = _loader->survey(_surveyId);
     if (st.status != HipsTileLoader::Status::Ready) {
@@ -426,138 +375,32 @@ void SkyMapWidget::renderHips(const Basis& b, double radPerDevPx, int w, int h)
         return;
     }
 
-    const HipsProperties& p = st.props;
-    const bool galactic = p.galactic;
-    int bits = 0;
-    while ((1 << bits) < p.tileWidth) ++bits;
-
-    // The coarsest tile order whose pixels are no larger than a screen pixel;
-    // the deepest order when even that is coarser (the image is magnified).
-    const double devArcsec = radPerDevPx / kArcsec;
-    int order = p.maxOrder;
-    for (int o = p.minOrder; o <= p.maxOrder; ++o) {
-        if (Healpix::cellSizeArcsec(o + bits) <= devArcsec) { order = o; break; }
-    }
-
-    auto pixelVec = [&](double x, double y) {
-        const double xi  = -(x - w / 2.0) * radPerDevPx;
-        const double eta = -(y - h / 2.0) * radPerDevPx;
-        Vec3 v = add(b.c, add(mul(b.e, xi), mul(b.n, eta)));
-        return galactic ? Healpix::icrsToGalactic(v) : v;
-    };
-
-    // Which tiles does the view touch? Sample a grid fine enough that no tile
-    // at this order (at least ~one screen tile wide) slips between samples.
-    struct Need { qint64 npix; double dist2; };
-    QHash<qint64, double> needed;
-    const int step = 16;
-    for (int y = 0; y <= h + step - 1; y += step) {
-        const double yy = std::min(y, h - 1) + 0.5;
-        for (int x = 0; x <= w + step - 1; x += step) {
-            const double xx = std::min(x, w - 1) + 0.5;
-            const Healpix::FacePos fp = Healpix::facePos(pixelVec(xx, yy));
-            const double ns = std::ldexp(1.0, order);
-            const qint64 npix = Healpix::xyf2nest(order, qint64(fp.x * ns), qint64(fp.y * ns), fp.face);
-            const double d2 = (xx - w / 2.0) * (xx - w / 2.0) + (yy - h / 2.0) * (yy - h / 2.0);
-            auto it = needed.find(npix);
-            if (it == needed.end()) needed.insert(npix, d2);
-            else if (d2 < *it) *it = d2;
-        }
-    }
-    std::vector<Need> list;
-    list.reserve(needed.size());
-    for (auto it = needed.cbegin(); it != needed.cend(); ++it) list.push_back({ it.key(), it.value() });
-    std::sort(list.begin(), list.end(), [](const Need& a, const Need& c) { return a.dist2 < c.dist2; });
-
-    // Ask for coarse ancestors first: they arrive quickly and fill the view
-    // with a soft preview while the sharp tiles load.
-    QVector<TileKey> wanted;
-    const int coarse = std::max(p.minOrder, order - 2);
-    if (coarse < order) {
-        QSet<qint64> seen;
-        for (const Need& n : list) {
-            const qint64 a = n.npix >> (2 * (order - coarse));
-            if (!seen.contains(a)) { seen.insert(a); wanted.push_back({ coarse, a }); }
-        }
-    }
-    for (const Need& n : list) wanted.push_back({ order, n.npix });
-    _loader->setWanted(_surveyId, wanted);
-
-    // Every tile the renderer may use, at this order or any coarser one
-    // already in memory.
-    auto lutKey = [](int o, qint64 npix) { return (quint64(o) << 58) | quint64(npix); };
-    QHash<quint64, const QImage*> lut;
-    int haveSharp = 0, missingSharp = 0;
-    for (const Need& n : list) {
-        for (int o = order; o >= p.minOrder; --o) {
-            const qint64 np = n.npix >> (2 * (order - o));
-            const quint64 key = lutKey(o, np);
-            if (lut.contains(key)) break;
-            if (const QImage* img = _loader->tile(_surveyId, { o, np })) {
-                lut.insert(key, img);
-                if (o == order) ++haveSharp;
-                break;
-            }
-            if (o == order && _loader->isMissing(_surveyId, { o, np })) ++missingSharp;
-        }
-    }
-
-    const int minOrder = p.minOrder;
-    const int tileW = p.tileWidth;
-    std::vector<Strip> strips = makeStrips(h);
-    QtConcurrent::blockingMap(strips, [&](const Strip& s) {
-        quint64 lastKey = ~quint64(0);
-        const QImage* lastImg = nullptr;
-        for (int y = s.y0; y < s.y1; ++y) {
-            QRgb* out = reinterpret_cast<QRgb*>(_frame.scanLine(y));
-            for (int x = 0; x < w; ++x) {
-                const Healpix::FacePos fp = Healpix::facePos(pixelVec(x + 0.5, y + 0.5));
-                QRgb col = kSkyBackground.rgb();
-                for (int o = order; o >= minOrder; --o) {
-                    const double ns = std::ldexp(1.0, o);
-                    const double fx = fp.x * ns, fy = fp.y * ns;
-                    const qint64 tx = qint64(fx), ty = qint64(fy);
-                    const quint64 key = lutKey(o, Healpix::xyf2nest(o, tx, ty, fp.face));
-                    const QImage* img;
-                    if (key == lastKey) img = lastImg;
-                    else {
-                        img = lut.value(key, nullptr);
-                        if (img) { lastKey = key; lastImg = img; }
-                    }
-                    if (!img) continue;
-                    // HiPS tile layout: image column follows the face y axis,
-                    // image row (from the top) the face x axis.
-                    const double row = (fx - tx) * tileW;
-                    const double colPx = (fy - ty) * tileW;
-                    col = overBackground(sampleBilinear(*img, colPx, row));
-                    break;
-                }
-                out[x] = col;
-            }
-        }
-    });
+    const HipsRenderStats stats = SkyMap::renderHips(*_loader, _surveyId, st.props, b, radPerDevPx,
+                                                     _frame, false, kSkyBackground.rgb(), true);
+    _loader->setWanted(_surveyId, stats.wanted);
 
     const int pending = _loader->pendingCount(_surveyId);
     if (pending > 0)
         _hipsStatus = tr("Loading %n tile(s)...", nullptr, pending);
-    if (missingSharp > 0 && haveSharp == 0 && missingSharp == int(list.size())) {
+    if (stats.missing > 0 && stats.have == 0 && stats.missing == stats.needed) {
         _noCoverage = true;
         _hipsStatus = tr("No coverage at this position");
-    } else if (_loader->errorCount(_surveyId) > 0 && pending == 0 && haveSharp < int(list.size()) - missingSharp) {
+    } else if (_loader->errorCount(_surveyId) > 0 && pending == 0
+               && stats.have < stats.needed - stats.missing) {
         _hipsStatus = tr("Some tiles could not be downloaded");
     }
-    _hipsDetail = QStringLiteral("%1 · order %2%3")
+    _hipsDetail = QStringLiteral("%1 \u00b7 order %2%3")
                       .arg(QUrl(st.baseUrl).host())
-                      .arg(order)
-                      .arg(st.fromCache ? tr(" · offline, cached tiles only") : QString());
+                      .arg(stats.order)
+                      .arg(st.fromCache ? tr(" \u00b7 offline, cached tiles only") : QString());
 }
 
-void SkyMapWidget::renderLocal(const Basis& b, double radPerDevPx, int w, int h)
+void SkyMapWidget::renderLocal(const TangentBasis& b, double radPerDevPx, int w, int h)
 {
     const QImage& img = _localImage;
     if (img.isNull()) { _frame.fill(kSkyBackground); return; }
 
-    const Basis lb = basisAt(_localRa, _localDec);
+    const TangentBasis lb = tangentBasisAt(_localRa, _localDec);
     const double radPerImgPx = _localScale * kArcsec;
     const double refX = img.width() / 2.0;
     const double refY = img.height() / 2.0;
@@ -577,7 +420,7 @@ void SkyMapWidget::renderLocal(const Basis& b, double radPerDevPx, int w, int h)
                     const double ix = refX - (dot(v, lb.e) / dc) / radPerImgPx;
                     const double iy = refY - (dot(v, lb.n) / dc) / radPerImgPx;
                     if (ix >= 0 && iy >= 0 && ix < img.width() && iy < img.height())
-                        col = overBackground(sampleBilinear(img, ix, iy));
+                        col = compositeOver(sampleImageBilinear(img, ix, iy), bg);
                 }
                 out[x] = col;
             }
@@ -612,7 +455,7 @@ void SkyMapWidget::drawLocalFootprint(QPainter& p)
 {
     if (_localImage.isNull()) return;
     // Outline the image's extent, so its edge is not mistaken for empty sky.
-    const Basis lb = basisAt(_localRa, _localDec);
+    const TangentBasis lb = tangentBasisAt(_localRa, _localDec);
     const double r = _localScale * kArcsec;
     const double hw = _localImage.width() / 2.0 * r, hh = _localImage.height() / 2.0 * r;
     QPolygonF poly;
@@ -760,7 +603,7 @@ void SkyMapWidget::drawScaleBar(QPainter& p)
     QFont f = font();
     f.setBold(true);
     p.setFont(f);
-    const QString label = formatAngle(len);
+    const QString label = formatSkyAngle(len);
     const QFontMetricsF fm(f);
     QPainterPath path;
     path.addText(QPointF((a.x() + b.x()) / 2 - fm.horizontalAdvance(label) / 2, a.y() - 7), f, label);
@@ -864,8 +707,8 @@ void SkyMapWidget::drawInfoPanels(QPainter& p)
     // Bottom right: cursor position and field of view.
     QString pos;
     if (_cursorInside) pos = formatCoords(widgetToVec(_cursor));
-    const QString fov = tr("FoV %1 × %2").arg(formatAngle(_scale * width()),
-                                                    formatAngle(_scale * height()));
+    const QString fov = tr("FoV %1 × %2").arg(formatSkyAngle(_scale * width()),
+                                                    formatSkyAngle(_scale * height()));
     const QString text = pos.isEmpty() ? fov : pos + QStringLiteral("   ") + fov;
     const double tw = fm.horizontalAdvance(text);
     QRectF cb(width() - tw - 2 * pad - 10, height() - lh - 2 * pad - 10, tw + 2 * pad, lh + 2 * pad);
@@ -968,7 +811,7 @@ QString SkyMapWidget::gaiaSourceText(const GaiaFieldSource& s, bool html) const
     if (_hasTarget) {
         const double sep = angleBetween(Healpix::vecFromLonLat(s.ra, s.dec),
                                         Healpix::vecFromLonLat(_targetRa, _targetDec)) / kArcsec;
-        l << tr("%1 from the target").arg(formatAngle(sep));
+        l << tr("%1 from the target").arg(formatSkyAngle(sep));
     }
     if (html) {
         l[0] = QStringLiteral("<b>") + l[0].toHtmlEscaped() + QStringLiteral("</b>");
@@ -1014,7 +857,7 @@ void SkyMapWidget::mouseMoveEvent(QMouseEvent* e)
         const Vec3 pc = _pressCenter;
         double ra0, dec0;
         Healpix::lonLatFromVec(pc, ra0, dec0);
-        const Basis b = basisAt(ra0, dec0);
+        const TangentBasis b = tangentBasisAt(ra0, dec0);
         const double s = _pressScale * kArcsec;
         const double xi = d.x() * s, eta = d.y() * s;   // move the centre opposite to the drag
         setCenter(normalized(add(b.c, add(mul(b.e, xi), mul(b.n, eta)))));

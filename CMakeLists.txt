@@ -757,7 +757,9 @@ set(ASTRA_UI_SOURCES
     src/lightcurve/ui/LightcurveFetchSessionsDialog.cpp
 
     # skymap/ui
+    src/skymap/ui/HipsRender.cpp
     src/skymap/ui/HipsTileLoader.cpp
+    src/skymap/ui/SkyLayerList.cpp
     src/skymap/ui/SkyMapWidget.cpp
 
     # massfit/ui
@@ -896,7 +898,9 @@ set(ASTRA_UI_HEADERS
     src/lightcurve/ui/LightcurveFetchSessionsDialog.h
 
     # skymap/ui
+    src/skymap/ui/HipsRender.h
     src/skymap/ui/HipsTileLoader.h
+    src/skymap/ui/SkyLayerList.h
     src/skymap/ui/SkyMapWidget.h
 
     # massfit/ui

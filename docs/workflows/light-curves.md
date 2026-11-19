@@ -66,9 +66,12 @@ pan, scroll to zoom, double-click to centre, **Reset view** (or ++home++) to
 return to a 3′ field on the star. Right-click copies coordinates or a Gaia
 source id.
 
-The image layer is chosen from the drop-down, or stepped with ++left++ /
-++right++. Layers keep the view's centre, zoom and orientation (north up, east
-left), so a source can be followed from survey to survey:
+The image layer is picked from the column of cards on the left, or stepped
+with ++left++ / ++right++ (which skip greyed cards). Each card shows a small
+preview of its source around the star; a card is greyed when the survey does
+not cover the star's position or none of its servers answers. Layers keep the
+view's centre, zoom and orientation (north up, east left), so a source can be
+followed from survey to survey:
 
 - **Fetched previews**: the TESS FFI, ZTF, DSS2 Red and Pan-STARRS cutouts
   lightcurvequery saved when the light curves were fetched. Each covers a 3′

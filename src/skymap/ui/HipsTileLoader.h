@@ -69,6 +69,11 @@ public:
     /// already in flight finish and are cached.
     void setWanted(const QString& id, const QVector<TileKey>& keys);
 
+    /// Tiles wanted at low priority (thumbnails). Added to what is already
+    /// queued, never replaces it, and served only when the view's own
+    /// wish list is empty.
+    void requestBackground(const QString& id, const QVector<TileKey>& keys);
+
     /// Tiles queued or in flight for `id`.
     int pendingCount(const QString& id) const;
     /// Tiles that failed for a reason other than "not in the survey".
@@ -86,6 +91,8 @@ private:
     struct Request { QString id; TileKey key; };
 
     void startResolve(const QString& id);
+    /// Queue `keys` for `id`, loading any already on disk straight away.
+    void enqueue(const QString& id, const QVector<TileKey>& keys, bool background);
     void pump();
     void fetch(const Request& r);
     void decode(const QString& id, const TileKey& key, const QByteArray& bytes, bool writeToDisk);
@@ -99,7 +106,9 @@ private:
     QCache<QString, QImage>          _memory;
     QHash<QString, QSet<TileKey>>    _missing;
     QHash<QString, int>              _errors;
-    QVector<Request>                 _queue;
+    QVector<Request>                 _queue;         // what the view needs now
+    QVector<Request>                 _background;    // thumbnails, after _queue
+    QSet<QString>                    _backgroundKeys;
     QSet<QString>                    _inFlight;    // memKeys being fetched or decoded
     int                              _activeFetches = 0;
 };

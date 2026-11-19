@@ -200,9 +200,12 @@ bool HipsTileLoader::isMissing(const QString& id, const TileKey& key) const
 
 int HipsTileLoader::pendingCount(const QString& id) const
 {
+    // The view's own queue and everything in flight; thumbnail requests still
+    // waiting in the background queue are not the view's business.
     int n = 0;
     for (const Request& r : _queue)
         if (r.id == id) ++n;
+
     const QString prefix = id + '|';
     for (const QString& k : _inFlight)
         if (k.startsWith(prefix)) ++n;
@@ -212,6 +215,16 @@ int HipsTileLoader::pendingCount(const QString& id) const
 void HipsTileLoader::setWanted(const QString& id, const QVector<TileKey>& keys)
 {
     _queue.clear();
+    enqueue(id, keys, false);
+}
+
+void HipsTileLoader::requestBackground(const QString& id, const QVector<TileKey>& keys)
+{
+    enqueue(id, keys, true);
+}
+
+void HipsTileLoader::enqueue(const QString& id, const QVector<TileKey>& keys, bool background)
+{
     const SurveyState& s = survey(id);
     if (s.status != Status::Ready) return;
 
@@ -244,15 +257,27 @@ void HipsTileLoader::setWanted(const QString& id, const QVector<TileKey>& keys)
             }));
             continue;
         }
-        _queue.append({ id, k });
+        if (background) {
+            if (_backgroundKeys.contains(mk)) continue;
+            _backgroundKeys.insert(mk);
+            _background.append({ id, k });
+        } else {
+            _queue.append({ id, k });
+        }
     }
     pump();
 }
 
 void HipsTileLoader::pump()
 {
-    while (_activeFetches < kMaxActiveFetches && !_queue.isEmpty()) {
-        const Request r = _queue.takeFirst();
+    while (_activeFetches < kMaxActiveFetches && (!_queue.isEmpty() || !_background.isEmpty())) {
+        Request r;
+        if (!_queue.isEmpty()) {
+            r = _queue.takeFirst();
+        } else {
+            r = _background.takeFirst();
+            _backgroundKeys.remove(memKey(r.id, r.key));
+        }
         const SurveyState& s = _surveys[r.id];
         if (s.status != Status::Ready || s.fromCache) continue;
         const QString mk = memKey(r.id, r.key);

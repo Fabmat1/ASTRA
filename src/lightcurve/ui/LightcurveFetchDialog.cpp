@@ -20,6 +20,7 @@
 #include "ui/widgets/PreciseDoubleSpinBox.h"
 #include "app/ui/UiIcons.h"
 #include "skymap/HipsSurvey.h"
+#include "skymap/ui/SkyLayerList.h"
 #include "skymap/ui/SkyMapWidget.h"
 #include "ui/widgets/FlowLayout.h"
 
@@ -56,8 +57,6 @@
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
-#include <QStandardItem>
-#include <QStandardItemModel>
 #include <QStandardPaths>
 #include <QTabWidget>
 #include <QTableWidget>
@@ -1953,15 +1952,15 @@ void LightcurveFetchDialog::onSetupEnvClicked()
 
 // ── Crowding tab: sky map ─────────────────────────────────────────────────
 //
-// The tab is a pannable sky map around the star (SkyMap::SkyMapWidget). Its
-// layers are the crowding previews lightcurvequery saved for this star (a 3'
-// north-up field each, placed on the sky through that known geometry) and
-// HiPS surveys from gamma rays to radio. The map keeps its centre and zoom
-// when the layer changes, so the same patch of sky can be compared across
-// surveys.
+// The tab is a pannable sky map around the star (SkyMap::SkyMapWidget) with a
+// column of cards to pick its image layer (SkyMap::SkyLayerList): the crowding
+// previews lightcurvequery saved for this star (a 3' north-up field each,
+// placed on the sky through that known geometry) and HiPS surveys from gamma
+// rays to radio, each previewed around the star and greyed out where it has
+// no coverage. The map keeps its centre and zoom when the layer changes, so
+// the same patch of sky can be compared across surveys.
 
 static const QString kSkyLocalPrefix = QStringLiteral("local:");
-static const QString kSkyHipsPrefix  = QStringLiteral("hips:");
 static const char*   kSkyLayerSetting = "lightcurve/skyMapLayer";
 static const char*   kSkyGaiaSetting  = "lightcurve/skyMapGaia";
 // Since lightcurvequery a703e2b (2026-05-22) every preview PNG is
@@ -1989,11 +1988,30 @@ QString LightcurveFetchDialog::previewPath(const QString& filename) const
 QWidget* LightcurveFetchDialog::buildPreviewsTab()
 {
     auto* page = new QWidget;
-    auto* root = new QVBoxLayout(page);
+    auto* root = new QHBoxLayout(page);
     root->setContentsMargins(8, 8, 8, 8);
-    root->setSpacing(6);
 
-    // ── toolbar: layer selection, overlays, view ──────────────────────────
+    auto* split = new QSplitter(Qt::Horizontal);
+    split->setChildrenCollapsible(false);
+    root->addWidget(split);
+
+    // ── left: one card per image source, previewed around the star ────────
+    _skyMap = new SkyMap::SkyMapWidget;
+    _skyLayerList = new SkyMap::SkyLayerList(_skyMap->tileLoader());
+    _skyLayerList->setToolTip(QString());
+    _skyLayerList->addHeader(tr("Fetched previews (3′ field)"));
+    for (const auto& e : previewEntries())
+        _skyLayerList->addLayer(kSkyLocalPrefix + e.filename, e.title, tr("lightcurvequery"),
+                                e.description);
+    _skyLayerList->addHipsSurveys();
+    split->addWidget(_skyLayerList);
+
+    // ── right: view controls, the map, a description of the layer ─────────
+    auto* right = new QWidget;
+    auto* rightLay = new QVBoxLayout(right);
+    rightLay->setContentsMargins(0, 0, 0, 0);
+    rightLay->setSpacing(6);
+
     auto* barHost = new QWidget;
     auto* bar = new FlowLayout(barHost, 0, 8, 6);
     bar->setCentersItemsVertically(true);
@@ -2002,45 +2020,10 @@ QWidget* LightcurveFetchDialog::buildPreviewsTab()
     _nextPreviewBtn = new QPushButton(tr("Next"));
     UiIcons::apply(_prevPreviewBtn, UiIcons::Role::NavigatePrev);
     UiIcons::applyTrailing(_nextPreviewBtn, UiIcons::Role::NavigateNext);
-    _prevPreviewBtn->setToolTip(tr("Previous image layer (Left arrow)"));
-    _nextPreviewBtn->setToolTip(tr("Next image layer (Right arrow)"));
+    _prevPreviewBtn->setToolTip(tr("Previous image source with coverage (Left arrow)"));
+    _nextPreviewBtn->setToolTip(tr("Next image source with coverage (Right arrow)"));
     connect(_prevPreviewBtn, &QPushButton::clicked, this, [this]{ stepPreview(-1); });
     connect(_nextPreviewBtn, &QPushButton::clicked, this, [this]{ stepPreview(+1); });
-
-    _skyLayerCombo = new QComboBox;
-    _skyLayerCombo->setMaxVisibleItems(32);
-    _skyLayerCombo->setSizeAdjustPolicy(QComboBox::AdjustToContents);
-    _skyLayerCombo->setToolTip(tr("Image shown under the overlays. The view keeps its "
-                                  "centre and zoom when you switch."));
-    auto* model = new QStandardItemModel(_skyLayerCombo);
-    auto addHeader = [model](const QString& text) {
-        auto* it = new QStandardItem(text);
-        it->setFlags(Qt::NoItemFlags);
-        QFont f = it->font();
-        f.setBold(true);
-        it->setFont(f);
-        model->appendRow(it);
-    };
-    auto addLayer = [model](const QString& text, const QString& key, const QString& tip) {
-        auto* it = new QStandardItem(QStringLiteral("   ") + text);
-        it->setData(key, Qt::UserRole);
-        it->setToolTip(tip);
-        model->appendRow(it);
-    };
-    addHeader(tr("Fetched previews (3′ field)"));
-    for (const auto& e : previewEntries())
-        addLayer(e.title, kSkyLocalPrefix + e.filename, e.description);
-    bool firstRegime = true;
-    SkyMap::Regime regime = SkyMap::Regime::Gamma;
-    for (const SkyMap::HipsSurvey& s : SkyMap::hipsSurveys()) {
-        if (firstRegime || s.regime != regime) {
-            addHeader(SkyMap::regimeName(s.regime));
-            regime = s.regime;
-            firstRegime = false;
-        }
-        addLayer(s.title, kSkyHipsPrefix + s.id, QStringLiteral("%1 (%2)").arg(s.band, s.id));
-    }
-    _skyLayerCombo->setModel(model);
 
     _skyGaiaCheck = new QCheckBox(tr("Gaia DR3 sources"));
     _skyGaiaCheck->setToolTip(tr("Mark Gaia DR3 sources in view. Orange: within %1 mag of "
@@ -2059,27 +2042,29 @@ QWidget* LightcurveFetchDialog::buildPreviewsTab()
     _skyCrowdsapLabel->setTextFormat(Qt::RichText);
 
     bar->addWidget(_prevPreviewBtn);
-    bar->addWidget(_skyLayerCombo);
     bar->addWidget(_nextPreviewBtn);
     bar->addWidget(_skyGaiaCheck);
     bar->addWidget(resetBtn);
     bar->addWidget(_skyRetryBtn);
     bar->addWidget(_skyCrowdsapLabel);
-    root->addWidget(barHost);
-
-    // ── the map ───────────────────────────────────────────────────────────
-    _skyMap = new SkyMap::SkyMapWidget;
-    root->addWidget(_skyMap, 1);
+    rightLay->addWidget(barHost);
+    rightLay->addWidget(_skyMap, 1);
 
     _skyLayerDesc = new QLabel;
     _skyLayerDesc->setWordWrap(true);
     _skyLayerDesc->setStyleSheet("color: gray;");
-    root->addWidget(_skyLayerDesc);
+    rightLay->addWidget(_skyLayerDesc);
+
+    split->addWidget(right);
+    split->setStretchFactor(0, 0);
+    split->setStretchFactor(1, 1);
+    split->setSizes({ 290, 1000 });
 
     {
         bool ok = false;
         const qint64 gaiaId = _star->getSourceId().toLongLong(&ok);
         _skyMap->setTarget(_star->getRa(), _star->getDec(), ok ? gaiaId : 0, _star->getGmag());
+        _skyLayerList->setTarget(_star->getRa(), _star->getDec());
     }
 
     // Restore the last layer; otherwise start on the TESS cutout when there is
@@ -2089,14 +2074,13 @@ QWidget* LightcurveFetchDialog::buildPreviewsTab()
     if (want.isEmpty())
         want = QFileInfo::exists(previewPath("tess_preview.png"))
                    ? kSkyLocalPrefix + "tess_preview.png"
-                   : kSkyHipsPrefix + "CDS/P/DSS2/color";
-    int idx = _skyLayerCombo->findData(want, Qt::UserRole);
-    if (idx < 0) idx = _skyLayerCombo->findData(kSkyHipsPrefix + "CDS/P/DSS2/color", Qt::UserRole);
-    _skyLayerCombo->setCurrentIndex(idx);
+                   : SkyMap::kHipsLayerPrefix + "CDS/P/DSS2/color";
+    if (!_skyLayerList->setCurrentKey(want))
+        _skyLayerList->setCurrentKey(SkyMap::kHipsLayerPrefix + "CDS/P/DSS2/color");
     _skyGaiaCheck->setChecked(settings.value(kSkyGaiaSetting, true).toBool());
 
-    connect(_skyLayerCombo, &QComboBox::currentIndexChanged, this, [this](int) {
-        QSettings().setValue(kSkyLayerSetting, _skyLayerCombo->currentData(Qt::UserRole));
+    connect(_skyLayerList, &SkyMap::SkyLayerList::currentKeyChanged, this, [this](const QString& key) {
+        QSettings().setValue(kSkyLayerSetting, key);
         applySkyLayer();
     });
     connect(_skyGaiaCheck, &QCheckBox::toggled, this, [this](bool on) {
@@ -2123,23 +2107,14 @@ QWidget* LightcurveFetchDialog::buildPreviewsTab()
 
 void LightcurveFetchDialog::stepPreview(int delta)
 {
-    if (!_skyLayerCombo) return;
-    const int n = _skyLayerCombo->count();
-    int i = _skyLayerCombo->currentIndex();
-    for (int step = 0; step < n; ++step) {
-        i = ((i + delta) % n + n) % n;
-        if (_skyLayerCombo->itemData(i, Qt::UserRole).isValid()) {   // skip headers
-            _skyLayerCombo->setCurrentIndex(i);
-            return;
-        }
-    }
+    if (_skyLayerList) _skyLayerList->step(delta);
 }
 
 void LightcurveFetchDialog::applySkyLayer()
 {
     if (!_skyMap || !_skyMapActivated) return;
 
-    const QString key = _skyLayerCombo->currentData(Qt::UserRole).toString();
+    const QString key = _skyLayerList->currentKey();
     const QString hint = tr("Drag to pan, scroll to zoom, double-click to centre, "
                             "right-click for more.");
 
@@ -2181,12 +2156,34 @@ void LightcurveFetchDialog::applySkyLayer()
         return;
     }
 
-    const QString id = key.mid(kSkyHipsPrefix.size());
+    const QString id = key.mid(SkyMap::kHipsLayerPrefix.size());
     _skyMap->showHipsSurvey(id);
     if (const SkyMap::HipsSurvey* s = SkyMap::findHipsSurvey(id))
         _skyLayerDesc->setText(QStringLiteral("%1 · %2 · %3.  %4")
                                    .arg(SkyMap::regimeName(s->regime), s->band, s->id, hint));
     _skyLayerDesc->setToolTip(QString());
+}
+
+void LightcurveFetchDialog::refreshLocalPreviewCards()
+{
+    using State = SkyMap::SkyLayerList::State;
+    const int px = int(std::lround(SkyMap::SkyLayerList::kThumbPx * _skyLayerList->devicePixelRatioF()));
+    for (const auto& e : previewEntries()) {
+        const QString key = kSkyLocalPrefix + e.filename;
+        const QString path = previewPath(e.filename);
+        QImage img;
+        if (!QFileInfo::exists(path) || !img.load(path) || img.isNull()) {
+            _skyLayerList->setLayerPreview(key, QImage(), State::Unavailable, tr("Not fetched yet"));
+            continue;
+        }
+        const bool onSky = img.width() == kPreviewPixels && img.height() == kPreviewPixels;
+        QImage thumb = img.scaled(px, px, onSky ? Qt::IgnoreAspectRatio : Qt::KeepAspectRatio,
+                                  Qt::SmoothTransformation);
+        thumb.setDevicePixelRatio(_skyLayerList->devicePixelRatioF());
+        _skyLayerList->setLayerPreview(key, thumb, State::Ready,
+                                       onSky ? tr("3′ around the star")
+                                             : tr("Older format, not on the sky"));
+    }
 }
 
 void LightcurveFetchDialog::refreshPreviewsTab()
@@ -2213,28 +2210,16 @@ void LightcurveFetchDialog::refreshPreviewsTab()
         _skyCrowdsapLabel->setToolTip(QString());
     }
 
-    // Mark the previews lightcurvequery has not saved (yet).
-    auto* model = qobject_cast<QStandardItemModel*>(_skyLayerCombo->model());
-    for (int i = 0; model && i < model->rowCount(); ++i) {
-        QStandardItem* it = model->item(i);
-        const QString key = it->data(Qt::UserRole).toString();
-        if (!key.startsWith(kSkyLocalPrefix)) continue;
-        const QString file = key.mid(kSkyLocalPrefix.size());
-        for (const auto& e : previewEntries()) {
-            if (e.filename != file) continue;
-            const bool have = QFileInfo::exists(previewPath(file));
-            it->setText(QStringLiteral("   ") + e.title + (have ? QString() : tr("  (not fetched)")));
-        }
-    }
-
-    // The map only goes online once the tab is actually shown.
+    // The map and the survey previews only go online once the tab is shown.
     if (!_skyMapActivated && _tabs && _tabs->currentIndex() == _previewsTabIdx) {
         _skyMapActivated = true;
+        refreshLocalPreviewCards();
+        _skyLayerList->startPreviews();
         _skyMap->setGaiaMarkersVisible(_skyGaiaCheck->isChecked());
         applySkyLayer();
-    } else if (_skyMapActivated
-               && _skyLayerCombo->currentData(Qt::UserRole).toString().startsWith(kSkyLocalPrefix)) {
-        applySkyLayer();   // a fetch may just have saved this preview
+    } else if (_skyMapActivated) {
+        refreshLocalPreviewCards();   // a fetch may just have saved a preview
+        if (_skyLayerList->currentKey().startsWith(kSkyLocalPrefix)) applySkyLayer();
     }
 }
 

@@ -35,7 +35,7 @@ class LCPanel;
 class QTreeWidget;
 class QTreeWidgetItem;
 class LCFit;
-namespace SkyMap { class SkyMapWidget; }
+namespace SkyMap { class SkyMapWidget; class SkyLayerList; }
 
 class LightcurveFetchDialog : public QDialog
 {
@@ -163,7 +163,8 @@ private slots:
     void     refreshFitSourceCombo();
     void     refreshFitFilterCombo();
     void     refreshPreviewsTab();
-    void     applySkyLayer();           // show the layer picked in _skyLayerCombo
+    void     applySkyLayer();           // show the layer picked in _skyLayerList
+    void     refreshLocalPreviewCards(); // cards of the lightcurvequery previews
     QString  previewDir() const;
     QString  previewPath(const QString& filename) const;
 
@@ -264,7 +265,7 @@ private slots:
     // Crowding tab: sky map around the star
     int                   _previewsTabIdx   = -1;
     SkyMap::SkyMapWidget* _skyMap           = nullptr;
-    QComboBox*            _skyLayerCombo    = nullptr;
+    SkyMap::SkyLayerList* _skyLayerList     = nullptr;
     QCheckBox*            _skyGaiaCheck     = nullptr;
     QPushButton*          _skyRetryBtn      = nullptr;
     QLabel*               _skyCrowdsapLabel = nullptr;

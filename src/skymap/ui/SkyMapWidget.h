@@ -29,6 +29,7 @@ class QTimer;
 namespace SkyMap {
 
 class HipsTileLoader;
+struct TangentBasis;
 
 class SkyMapWidget : public QWidget
 {
@@ -67,6 +68,9 @@ public:
     /// Multiply the zoom by `factor` (> 1 zooms in), about the view centre.
     void zoomBy(double factor);
 
+    /// The tile loader, shared with the layer list's thumbnails.
+    HipsTileLoader* tileLoader() const { return _loader; }
+
     /// Width of the shorter side of the view, in arcseconds.
     double fieldOfViewArcsec() const;
 
@@ -92,12 +96,6 @@ protected:
 private:
     enum class Layer { None, Hips, Local, Flat };
 
-    // Tangent-plane frame at a sky position: centre, east and north unit vectors.
-    struct Basis {
-        Healpix::Vec3 c, e, n;
-    };
-    static Basis basisAt(double raDeg, double decDeg);
-
     // Sky <-> widget (logical pixel) coordinates in the current view.
     Healpix::Vec3 widgetToVec(const QPointF& p) const;
     bool          vecToWidget(const Healpix::Vec3& v, QPointF& p) const;
@@ -110,8 +108,8 @@ private:
 
     // Rendering
     void renderFrame();
-    void renderHips(const Basis& b, double radPerDevPx, int w, int h);
-    void renderLocal(const Basis& b, double radPerDevPx, int w, int h);
+    void renderHips(const TangentBasis& b, double radPerDevPx, int w, int h);
+    void renderLocal(const TangentBasis& b, double radPerDevPx, int w, int h);
 
     // Overlays
     void drawGaiaMarkers(QPainter& p);
