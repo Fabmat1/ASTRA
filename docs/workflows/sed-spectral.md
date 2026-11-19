@@ -55,6 +55,23 @@ Open a star's detail window and click **View / Fit Spectra** to open
   stored per instrument mode: **Save as mode default** in the fit window, or
   the **Spectral Fit Defaults** tab when editing a mode under **Data /
   Instruments...**.
+- Without a mode default, the fit setup proposes a window for each spectrum
+  from its own data: the fit range is the spectrum's coverage, less ends whose
+  S/N falls far below the rest. Ignored are the interstellar Ca II H+K and Na D
+  lines, 4610-4655 Å and the strong telluric bands, and at a resolving power
+  of 5000 and above also the 8130-8330 Å water band, which at low resolution
+  stays in because it holds the Paschen jump. The continuum spline gets single
+  knots placed between the lines: the knots tuned for the RVVD refit where
+  the spectrum covers them, and knots placed by the same rules everywhere
+  else, closer together at higher resolution. Gaps in the data get a knot on
+  either side. While **Fit telluric transmission** is on, the telluric bands
+  are fitted instead of ignored.
+- **Start values for this spectrum** (a collapsed line under the fit range)
+  gives the current spectrum its own start for each untied parameter, for
+  example its own RV start when the spectra of a joint fit sit at very
+  different velocities. Unticked rows start from the stellar components.
+  **All spectra from their best fits** fills them in for every spectrum that
+  has a best fit; the spectra list names the spectra with starts of their own.
 - **Co-Add** tab - stack spectra and fit the stack. See
   [Co-adding spectra](#co-adding-spectra).
 

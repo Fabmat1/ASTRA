@@ -200,6 +200,26 @@ void FitComponentsWidget::rebuildComponentRows()
             });
         }
 
+        // RV is always fitted, so no freeze box: this only moves where the
+        // solver starts, which matters when the chi2 landscape has several
+        // minima (low S/N, large RV amplitude).
+        {
+            auto* rvSpin = makeDoubleSpin(-2000.0, 2000.0, 1, c.vrad, 10.0);
+            rvSpin->setToolTip(
+                "Start value of the radial velocity for every spectrum. The fit "
+                "finds the nearest chi2 minimum, so start near the expected RV "
+                "when a fit locks onto a wrong one.\n"
+                "While RV is untied, a spectrum can also start from its own "
+                "value: Current spectrum > Start values for this spectrum.");
+            double* vPtr = &c.vrad;
+            connect(rvSpin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                    this, [this, vPtr](double v){
+                *vPtr = v;
+                emit componentsChanged();
+            });
+            form->addRow("RV start [km/s]", rvSpin);
+        }
+
         // Component 1's surface ratio is 1 and frozen by definition, so only
         // the later components get an editable one.
         if (i > 0) {

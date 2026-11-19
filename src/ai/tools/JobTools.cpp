@@ -2459,7 +2459,7 @@ void registerJobTools(AiRuntime& rt)
                      QStringLiteral("Make the new fit the spectrum's best fit: if_none (default), always, never"))
             .object(QStringLiteral("overrides"), QStringLiteral(
                 "Merged over the defaults: {\"components\": [ {gridPath, teff, logg, vsini, he, z, zeta, "
-                "xi, freezeTeff, freezeLogg, freezeHe, freezeVsini, freezeZ, surRatio, freezeSurRatio, "
+                "xi, vrad (RV start value in km/s; RV is always fitted), freezeTeff, freezeLogg, freezeHe, freezeVsini, freezeZ, surRatio, freezeSurRatio, "
                 "abundances {EL: value}, freezeAbundances {EL: bool}} per component; extra entries add "
                 "components ], \"spectrum\": {wlMin, wlMax, ignore [{wlLow, wlHigh}], anchors [{wlLow, "
                 "wlHigh, spacing}], resOffset, resSlope, trimBlue, trimRed, maskArmSeams, seamPad}, "

@@ -30,6 +30,7 @@ class QLineEdit;
 class QGroupBox;
 class QScrollArea;
 class QLabel;
+class QToolButton;
 class FitProgressDialog;
 
 namespace astra::fitting { class FitWorker; }
@@ -86,6 +87,22 @@ private:
 
     void rebuildIgnoreRows();
     void rebuildAnchorRows();
+
+    // ── Per-spectrum start values of the untied parameters ─────────────
+    // Seldom needed (a joint fit whose spectra sit at very different RVs), so
+    // the editor stays one collapsed line under the fit range until opened.
+    QWidget* buildStartValuesSection();
+    /// The untied-parameter list as typed, normalised and without repeats.
+    QStringList untiedParams() const;
+    /// Rebuilds the rows for the current spectrum: one per component and
+    /// untied parameter. Hidden entirely when nothing is untied.
+    void rebuildStartRows();
+    void updateStartsHeader();
+    /// "RV -310, vsini 50" for a spectrum's own starts; empty when it has none
+    /// that the current untied list would honour.
+    QString startsSummary(const PerSpec& cfg) const;
+    /// Spectrum list texts, which name the spectra with starts of their own.
+    void refreshItemLabels();
 
     /// The spectra a run would actually cover: marked in the list, and - when
     /// "skip spectra that already have a best fit" is on - not already
@@ -168,6 +185,10 @@ private:
     QPushButton*    _copyToInstrumentBtn = nullptr;
     QPushButton* _saveAsModeDefaultBtn   = nullptr;
     QPushButton* _resetToModeDefaultBtn  = nullptr;
+
+    QWidget*     _startsHost   = nullptr;   // the whole collapsible block
+    QToolButton* _startsHeader = nullptr;
+    QWidget*     _startsRows   = nullptr;   // rebuilt per spectrum
 
     // Global options
     QComboBox*      _backendCombo       = nullptr;

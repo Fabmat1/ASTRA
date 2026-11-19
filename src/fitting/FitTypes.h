@@ -23,6 +23,10 @@ struct StellarComponent {
     double zeta   = 0.0;     // macroturbulence
     double xi     = 0.0;     // microturbulence
     double z      = 0.0;     // metallicity
+    // Start value of the radial velocity [km/s]. Always fitted; the solver
+    // only finds the nearest chi2 minimum, so a low-S/N spectrum of a star
+    // with a large RV can need a start near the true value.
+    double vrad   = 0.0;
     bool freezeTeff  = false;
     bool freezeLogg  = false;
     bool freezeVsini = true;
@@ -46,6 +50,14 @@ struct StellarComponent {
     QMap<QString, double> abundances;
     QMap<QString, bool>   freezeAbundances;
 };
+
+// Start values one spectrum takes in place of the components' own: one map per
+// component, in component order, keyed by the parameter name the backends untie
+// by ("vrad", "vsini", "teff", "logg", "he", "z", "zeta", "xi", "sur_ratio", or
+// an element such as "FE"). Only an untied parameter has a value of its own per
+// spectrum, so only those are honoured (SpectralFitJob::untiedParams); an entry
+// for anything else is dropped when the job is built.
+using PerSpectrumStarts = QVector<QMap<QString, double>>;
 
 struct IgnoreRegion {
     double wlLow  = 0.0;
@@ -88,6 +100,11 @@ struct SpectrumFitConfig {
     // Genuinely per-observation, so the "copy to …" buttons leave them be.
     double airmass = 1.0;    // 0 = no tellurics in this spectrum
     double pwv     = 1.0;    // [mm]
+
+    // Start values of untied parameters for this spectrum alone, e.g. an RV
+    // start near this epoch's velocity. Empty = the components' own starts.
+    // Per-observation like the telluric seeds, so nothing copies them.
+    PerSpectrumStarts startValues;
 };
 
 struct SpectrumFile {
@@ -123,6 +140,9 @@ struct Observation {
     QVector<IgnoreRegion>     ignore;
     QVector<ContinuumAnchor>  anchors;
     QVector<SpectrumFile>     files;
+    // Untied parameters this observation starts from instead of the
+    // components' values; see PerSpectrumStarts.
+    PerSpectrumStarts         startValues;
 };
 
 struct IsisOptions {

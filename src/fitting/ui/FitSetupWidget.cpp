@@ -50,6 +50,8 @@
 #include <QDialogButtonBox>
 #include <QApplication>
 #include <QClipboard>
+#include <QAbstractSpinBox>
+#include <QToolButton>
 
 #include <algorithm>
 #include <cmath>
@@ -203,10 +205,267 @@ void FitSetupWidget::setupUi()
         connect(_ctx.panel, &SpectraPanel::selectionChanged,
                 this, &FitSetupWidget::onPanelSelectionChanged);
     }
+    // The per-spectrum start rows follow the untied list and show the
+    // components' values as the fallback, so both rebuild them.
+    connect(_untiedEdit, &QLineEdit::textChanged, this, [this]{
+        rebuildStartRows();
+        refreshItemLabels();
+    });
+    connect(_componentsWidget, &FitComponentsWidget::componentsChanged,
+            this, [this]{ rebuildStartRows(); });
+
     // This page is a tall scrolling form, so no field on it may react to the
     // wheel (rows rebuilt later guard their own widgets as they are created).
     astra::blockWheelScrollingRecursive(this);
     updateBackendSpecificUi();
+}
+
+// ────────────────────────────────────────────────────────────────────
+// Per-spectrum start values
+// ────────────────────────────────────────────────────────────────────
+namespace {
+
+QString startParamLabel(const QString& key)
+{
+    if (key == QLatin1String("vrad"))      return QStringLiteral("RV [km/s]");
+    if (key == QLatin1String("vsini"))     return QStringLiteral("vsini [km/s]");
+    if (key == QLatin1String("teff"))      return QStringLiteral("Teff [K]");
+    if (key == QLatin1String("logg"))      return QStringLiteral("log g");
+    if (key == QLatin1String("he"))        return QStringLiteral("log(He/H)");
+    if (key == QLatin1String("z"))         return QStringLiteral("[M/H]");
+    if (key == QLatin1String("zeta"))      return QStringLiteral("ζ");
+    if (key == QLatin1String("xi"))        return QStringLiteral("ξ");
+    if (key == QLatin1String("sur_ratio")) return QStringLiteral("Surface ratio");
+    return QStringLiteral("log n(%1)").arg(key);
+}
+
+QString startParamShort(const QString& key)
+{
+    if (key == QLatin1String("vrad"))      return QStringLiteral("RV");
+    if (key == QLatin1String("he"))        return QStringLiteral("He");
+    if (key == QLatin1String("sur_ratio")) return QStringLiteral("sur");
+    return key;
+}
+
+int startParamDecimals(const QString& key)
+{
+    if (key == QLatin1String("teff")) return 0;
+    if (key == QLatin1String("vrad") || key == QLatin1String("vsini")) return 1;
+    return 3;
+}
+
+}   // namespace
+
+QWidget* FitSetupWidget::buildStartValuesSection()
+{
+    _startsHost = new QWidget;
+    auto* v = new QVBoxLayout(_startsHost);
+    v->setContentsMargins(0, 2, 0, 2);
+    v->setSpacing(2);
+
+    _startsHeader = new QToolButton;
+    _startsHeader->setToolButtonStyle(Qt::ToolButtonTextBesideIcon);
+    _startsHeader->setArrowType(Qt::RightArrow);
+    _startsHeader->setCheckable(true);
+    _startsHeader->setAutoRaise(true);
+    _startsHeader->setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Fixed);
+    _startsHeader->setToolTip(
+        "Start values of the untied parameters for this spectrum alone.\n"
+        "A joint fit starts every spectrum from the components above; a "
+        "spectrum whose RV is far from that start can lock onto the wrong "
+        "minimum, so give it a start of its own here.");
+
+    auto* body = new QWidget;
+    body->setVisible(false);
+    auto* bodyLayout = new QVBoxLayout(body);
+    bodyLayout->setContentsMargins(12, 0, 0, 2);
+    bodyLayout->setSpacing(2);
+
+    _startsRows = new QWidget;
+    new QFormLayout(_startsRows);
+    bodyLayout->addWidget(_startsRows);
+
+    auto* btnRow = new QHBoxLayout;
+    auto* fromFitsBtn = new QPushButton(tr("All spectra from their best fits"));
+    fromFitsBtn->setToolTip(
+        "Give every spectrum with a best fit its own start values: the untied "
+        "parameters' values of that fit. Spectra without a best fit keep "
+        "theirs.");
+    auto* clearBtn = new QPushButton(tr("Clear all spectra"));
+    clearBtn->setToolTip("Start every spectrum from the components' values again.");
+    btnRow->addWidget(fromFitsBtn);
+    btnRow->addWidget(clearBtn);
+    btnRow->addStretch();
+    bodyLayout->addLayout(btnRow);
+
+    connect(_startsHeader, &QToolButton::toggled, body, [this, body](bool on){
+        body->setVisible(on);
+        _startsHeader->setArrowType(on ? Qt::DownArrow : Qt::RightArrow);
+    });
+    connect(fromFitsBtn, &QPushButton::clicked, this, [this]{
+        commitEditorToState();
+        const QStringList untied = untiedParams();
+        const int nComp = _componentsWidget->count();
+        int n = 0;
+        for (const auto& s : _sortedSpectra) {
+            const auto best = s->getBestFit();
+            if (!best) continue;
+            const auto starts = fit::startsFromFit(*best, untied, nComp);
+            if (starts.isEmpty()) continue;
+            auto& cfg = _configs[s->getId()];
+            if (cfg.startValues.size() < starts.size())
+                cfg.startValues.resize(starts.size());
+            for (int c = 0; c < starts.size(); ++c)
+                for (auto it = starts[c].cbegin(); it != starts[c].cend(); ++it)
+                    cfg.startValues[c].insert(it.key(), it.value());
+            ++n;
+        }
+        LOG_INFO("FitSetup", QString("Per-spectrum start values taken from the "
+                                     "best fits of %1 spectra").arg(n));
+        rebuildStartRows();
+        refreshItemLabels();
+    });
+    connect(clearBtn, &QPushButton::clicked, this, [this]{
+        for (auto it = _configs.begin(); it != _configs.end(); ++it)
+            it->startValues.clear();
+        rebuildStartRows();
+        refreshItemLabels();
+    });
+
+    v->addWidget(_startsHeader);
+    v->addWidget(body);
+    return _startsHost;
+}
+
+QStringList FitSetupWidget::untiedParams() const
+{
+    QStringList out;
+    if (!_untiedEdit) return out;
+    for (const auto& p : _untiedEdit->text().split(',', Qt::SkipEmptyParts)) {
+        const QString key = fit::untieParamKey(p);
+        if (!key.isEmpty() && !out.contains(key)) out << key;
+    }
+    return out;
+}
+
+QString FitSetupWidget::startsSummary(const PerSpec& cfg) const
+{
+    const QStringList untied = untiedParams();
+    const int nComp = _componentsWidget ? _componentsWidget->count() : 1;
+    const auto starts = fit::untiedStartsOnly(cfg.startValues, untied, nComp);
+    QStringList parts;
+    for (int c = 0; c < starts.size(); ++c)
+        for (auto it = starts[c].cbegin(); it != starts[c].cend(); ++it)
+            parts << QStringLiteral("%1%2 %3")
+                         .arg(startParamShort(it.key()),
+                              nComp > 1 ? QString::number(c + 1) : QString(),
+                              QString::number(it.value(), 'f',
+                                              startParamDecimals(it.key())));
+    if (parts.size() > 2)
+        return QStringLiteral("%1, %2 +%3").arg(parts[0], parts[1]).arg(parts.size() - 2);
+    return parts.join(QStringLiteral(", "));
+}
+
+void FitSetupWidget::updateStartsHeader()
+{
+    if (!_startsHeader) return;
+    const QString sum = _configs.contains(_currentId)
+                            ? startsSummary(_configs[_currentId]) : QString();
+    _startsHeader->setText(sum.isEmpty()
+        ? tr("Start values for this spectrum: from the components")
+        : tr("Start values for this spectrum: %1").arg(sum));
+}
+
+void FitSetupWidget::rebuildStartRows()
+{
+    if (!_startsRows) return;
+    auto* form = static_cast<QFormLayout*>(_startsRows->layout());
+    while (form->rowCount() > 0) form->removeRow(0);
+
+    const QStringList untied = untiedParams();
+    _startsHost->setVisible(!untied.isEmpty());
+    if (untied.isEmpty() || !_configs.contains(_currentId)) {
+        updateStartsHeader();
+        return;
+    }
+
+    const auto comps = _componentsWidget->components();
+    const QString id = _currentId;
+    for (int c = 0; c < comps.size(); ++c) {
+        for (const QString& key : untied) {
+            // Component 1's surface ratio is 1 by definition.
+            if (key == QLatin1String("sur_ratio") && c == 0) continue;
+
+            double global = fit::componentStartValue(comps[c], key);
+            const bool known = std::isfinite(global);
+            if (!known) global = 0.0;
+
+            const auto& cfg = _configs[id];
+            const bool own = c < cfg.startValues.size()
+                             && cfg.startValues[c].contains(key);
+            const double val = own ? cfg.startValues[c].value(key) : global;
+
+            const int dec = startParamDecimals(key);
+            auto* spin = makeDoubleSpin(-1e9, 1e9, dec, val,
+                                        key == QLatin1String("teff") ? 100.0
+                                        : dec == 1 ? 10.0 : 0.05);
+            spin->setEnabled(own);
+            auto* cb = new QCheckBox(tr("own"));
+            cb->setChecked(own);
+            cb->setToolTip(known
+                ? tr("Off: this spectrum starts at the component's %1.")
+                      .arg(QString::number(global, 'f', dec))
+                : tr("Off: this spectrum starts where the grid's default puts it."));
+
+            auto* row = new QHBoxLayout;
+            row->addWidget(cb);
+            row->addWidget(spin, 1);
+            const QString label = comps.size() > 1
+                ? QStringLiteral("%1, comp. %2").arg(startParamLabel(key)).arg(c + 1)
+                : startParamLabel(key);
+            form->addRow(label, row);
+
+            auto store = [this, id, c, key](bool on, double v) {
+                if (!_configs.contains(id)) return;
+                auto& sv = _configs[id].startValues;
+                if (on) {
+                    if (sv.size() <= c) sv.resize(c + 1);
+                    sv[c].insert(key, v);
+                } else if (c < sv.size()) {
+                    sv[c].remove(key);
+                    while (!sv.isEmpty() && sv.last().isEmpty()) sv.removeLast();
+                }
+                updateStartsHeader();
+                refreshItemLabels();
+            };
+            connect(cb, &QCheckBox::toggled, this, [spin, store, global](bool on){
+                spin->setEnabled(on);
+                if (!on) { const QSignalBlocker b(spin); spin->setValue(global); }
+                store(on, spin->value());
+            });
+            connect(spin, QOverload<double>::of(&QDoubleSpinBox::valueChanged),
+                    this, [cb, store](double v){ if (cb->isChecked()) store(true, v); });
+        }
+    }
+    astra::blockWheelScrollingRecursive(_startsRows);
+    updateStartsHeader();
+}
+
+void FitSetupWidget::refreshItemLabels()
+{
+    if (!_spectraList) return;
+    const QSignalBlocker block(_spectraList);
+    for (int i = 0; i < _spectraList->count() &&
+                    i < (int)_sortedSpectra.size(); ++i) {
+        const auto& s = _sortedSpectra[i];
+        QString text = spectrumLabel(s, i);
+        const auto it = _configs.constFind(s->getId());
+        if (it != _configs.constEnd()) {
+            const QString sum = startsSummary(*it);
+            if (!sum.isEmpty()) text += QStringLiteral("   · start %1").arg(sum);
+        }
+        _spectraList->item(i)->setText(text);
+    }
 }
 
 // ────────────────────────────────────────────────────────────────────
@@ -389,6 +648,7 @@ QGroupBox* FitSetupWidget::buildPerSpectrumSection()
     form->addRow("Telluric seeds:", _telluricSeedRow);
 
     v->addLayout(form);
+    v->addWidget(buildStartValuesSection());
 
     // Infer from fits
     _inferCheck = new QCheckBox("Infer ignore regions and range from best fit");
@@ -560,7 +820,9 @@ QGroupBox* FitSetupWidget::buildGlobalSection()
     _telluricCheck = new QCheckBox("Fit telluric transmission");
     _telluricCheck->setToolTip(
         "Model the Earth's atmosphere as a multiplicative component. Needs the "
-        "ESO transmission library and does nothing blueward of ~5700 Å.");
+        "ESO transmission library and does nothing blueward of ~5700 Å.\n"
+        "The standard telluric ignore regions (O2 A and B, the water bands) "
+        "are fitted through instead of left out while this is on.");
     form->addRow("", _telluricCheck);
     // The per-spectrum airmass/pwv seeds only mean anything with this on.
     if (_telluricSeedRow) {
@@ -731,6 +993,7 @@ void FitSetupWidget::refreshSpectraList()
             fresh.inferFromFits = prev.inferFromFits;
             fresh.airmass       = prev.airmass;
             fresh.pwv           = prev.pwv;
+            fresh.startValues   = prev.startValues;
             _configs[id]        = fresh;
             if (id == _currentId) currentRederived = true;
         }
@@ -776,6 +1039,7 @@ void FitSetupWidget::refreshSpectraList()
         onSpectrumListRowChanged(-1);
     }
 
+    refreshItemLabels();
     refreshRunSelectionUi();
 }
 
@@ -864,6 +1128,7 @@ void FitSetupWidget::onSpectrumListRowChanged(int row)
     loadStateToEditor();
     rebuildIgnoreRows();
     rebuildAnchorRows();
+    rebuildStartRows();
     pushPreviewToPanel();
 }
 
@@ -907,6 +1172,11 @@ void FitSetupWidget::commitEditorToState()
 {
     if (_suppressCommit) return;
     if (_currentId.isEmpty() || !_configs.contains(_currentId)) return;
+    // Keyboard tracking is off, so a start value typed without Return has not
+    // reached the config yet; interpreting it stores it through its signal.
+    if (_startsRows)
+        for (auto* sp : _startsRows->findChildren<QAbstractSpinBox*>())
+            sp->interpretText();
     auto& c = _configs[_currentId];
     c.wlMin      = _wlMinSpin->value();
     c.wlMax      = _wlMaxSpin->value();
@@ -1021,7 +1291,18 @@ FitSetupWidget::PerSpec FitSetupWidget::makeDefaultConfig(
 {
     QString modeKey;
     auto inst = instrumentForSpectrum(s, &modeKey);
-    return fit::makeDefaultConfig(s, inst, modeKey);
+    PerSpec cfg = fit::makeDefaultConfig(s, inst, modeKey);
+    // This config belongs to one spectrum, so its noisy ends can go straight
+    // into the fit range, where the user sees and edits them, instead of
+    // being cut silently at run time.
+    const auto wl = s->getWavelengths();
+    if (wl.size() >= 2) {
+        const auto [mn, mx] = std::minmax_element(wl.begin(), wl.end());
+        cfg.wlMin = std::max(cfg.wlMin, *mn + cfg.trimBlue);
+        cfg.wlMax = std::min(cfg.wlMax, *mx - cfg.trimRed);
+        cfg.trimBlue = cfg.trimRed = 0.0;
+    }
+    return cfg;
 }
 
 void FitSetupWidget::onSaveAsUserDefault()
@@ -1100,7 +1381,11 @@ void FitSetupWidget::onResetToModeDefault()
         if (s->getId() == _currentId) { sp = s; break; }
     if (!sp) return;
 
+    // The mode supplies windows and regions, not where this spectrum's
+    // parameters start, so those survive the reset.
+    const auto keepStarts = _configs.value(_currentId).startValues;
     _configs[_currentId] = makeDefaultConfig(sp);
+    _configs[_currentId].startValues = keepStarts;
     loadStateToEditor();
     rebuildIgnoreRows();
     rebuildAnchorRows();
@@ -1191,10 +1476,7 @@ fit::JobGlobals FitSetupWidget::collectGlobals() const
         g.basePaths.append(p);
     g.workerThreads = settings.fitWorkerThreads();
 
-    QStringList ut;
-    for (const auto& p : _untiedEdit->text().split(',', Qt::SkipEmptyParts))
-        ut << p.trimmed();
-    g.untiedParams = ut;
+    g.untiedParams = untiedParams();
 
     return g;
 }

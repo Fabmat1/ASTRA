@@ -1,4 +1,5 @@
 #include "fitting/FitJobFactory.h"
+#include "fitting/FitDefaults.h"
 #include "spectra/CoaddRecipe.h"
 
 #include "core/Star.h"
@@ -18,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <type_traits>
 
 namespace astra::fitting {
 
@@ -51,39 +53,53 @@ SpectrumFitConfig makeObservedDefaultConfig(const std::shared_ptr<Spectrum>& s,
 {
     SpectrumFitConfig cfg;
 
-    // 1. Wavelength range from spectrum data, as fallback
-    auto wl = s->getWavelengths();
-    if (!wl.empty()) { cfg.wlMin = wl.front(); cfg.wlMax = wl.back(); }
+    const InstrumentMode* mode =
+        (inst && !modeKey.isEmpty()) ? inst->mode(modeKey) : nullptr;
+    const bool hasSpec = mode && mode->hasSpectralProperties();
 
-    // 2. Hardcoded sensible defaults
-    cfg.ignore = {
-        { 3932.0, 3935.0 }, { 3967.0, 3970.0 },
-        { 4610.0, 4655.0 }, { 5888.0, 5892.0 },
-        { 5894.0, 5898.0 },
-    };
-    cfg.anchors = {
-        { 3000.0,  3850.0,  50.0 },
-        { 3850.0,  4050.0, 100.0 },
-        { 4050.0,  4550.0, 100.0 },
-        { 4550.0, 15050.0, 200.0 },
-    };
+    // 1. The data: its coverage, gaps, noisy ends and sampling. The window is
+    //    the spectrum's own range; without data (a mass-fit plan's mode, the
+    //    instrument editor) it is the mode's range, else the optical.
+    if (s && !s->hasData()) {
+        if (!s->getDataFile().isEmpty()) s->loadDataFromFile(s->getDataFile());
+        else if (!s->getFile().isEmpty()) s->loadFromFile(s->getFile());
+    }
+    std::vector<double> wl, fl;
+    if (s) {
+        const auto w = s->getWavelengths();
+        const auto f = s->getFluxes();
+        std::vector<size_t> idx;
+        for (size_t i = 0; i < std::min(w.size(), f.size()); ++i)
+            if (std::isfinite(w[i])) idx.push_back(i);
+        std::sort(idx.begin(), idx.end(), [&](size_t a, size_t b) { return w[a] < w[b]; });
+        for (size_t i : idx) { wl.push_back(w[i]); fl.push_back(f[i]); }
+    }
+    const bool haveData = wl.size() >= 2 && wl.back() > wl.front();
+    if (haveData) {
+        cfg.wlMin = wl.front();
+        cfg.wlMax = wl.back();
+        const auto [tb, tr] = noisyEndTrims(wl, fl);
+        cfg.trimBlue = tb;
+        cfg.trimRed  = tr;
+    } else if (hasSpec && mode->spectral().wavelengthMax > mode->spectral().wavelengthMin
+               && mode->spectral().wavelengthMin > 0.0) {
+        cfg.wlMin = mode->spectral().wavelengthMin;
+        cfg.wlMax = mode->spectral().wavelengthMax;
+    } else {
+        cfg.wlMin = 3600.0;
+        cfg.wlMax = 9100.0;
+    }
+
+    // 2. Resolution: the instrument mode's R(lambda), linearised to GAEL's
+    //    res_offset + res_slope * lambda across the window. Without one, the
+    //    generic 0.37 * lambda the fit has always assumed.
     cfg.resOffset = 0.0;
     cfg.resSlope  = 0.37037;
-
-    // 3. Overlay instrument-mode defaults if available
-    if (!inst || modeKey.isEmpty()) return cfg;
-
-    const auto* mode = inst->mode(modeKey);
-    if (!mode || !mode->hasSpectralProperties()) return cfg;
-
-    const auto& spec = mode->spectral();
-
-    // Derive the actual resolution from the instrument mode's R(λ) model.
-    // GAEL expresses resolution as the linear form res_offset + res_slope·λ,
-    // which is exactly the constant/linear ResolutionModel coefficients.
-    const auto& resModel = spec.resolution;
-    if (resModel.isValid()) {
+    bool resolutionKnown = false;
+    if (hasSpec && mode->spectral().resolution.isValid()) {
+        const auto& resModel = mode->spectral().resolution;
         const auto& c = resModel.coefficients;
+        resolutionKnown = true;
         if (c.size() == 1) {
             cfg.resOffset = c[0];
             cfg.resSlope  = 0.0;
@@ -91,8 +107,6 @@ SpectrumFitConfig makeObservedDefaultConfig(const std::shared_ptr<Spectrum>& s,
             cfg.resOffset = c[0];
             cfg.resSlope  = c[1];
         } else {
-            // Higher-order model: linearise R(λ) across the fit band so the
-            // offset+slope form best approximates the true resolution there.
             const double lo = cfg.wlMin, hi = cfg.wlMax;
             if (hi > lo) {
                 const double rlo = resModel.at(lo), rhi = resModel.at(hi);
@@ -105,22 +119,53 @@ SpectrumFitConfig makeObservedDefaultConfig(const std::shared_ptr<Spectrum>& s,
         }
     }
 
-    // Explicit per-mode fit defaults (if a user saved them) take precedence.
-    const auto& d = spec.fitDefaults;
+    // 3. Regions and knots for that range and resolution. The resolving
+    //    power only picks the low- or higher-resolution rules, so for a
+    //    spectrum no mode describes its sampling is a good enough guess.
+    const double mid = 0.5 * (cfg.wlMin + cfg.wlMax);
+    double R = cfg.resOffset + cfg.resSlope * mid;
+    if (!resolutionKnown && haveData) {
+        const double rs = resolvingPowerFromSampling(wl);
+        if (rs > 0.0) R = rs;
+    }
+    cfg.ignore = standardIgnoreRegions(cfg.wlMin, cfg.wlMax, R);
+
+    QVector<IgnoreRegion> holes;
+    if (haveData) {
+        holes = samplingGaps(wl);
+        holes += unusableRegions(wl, fl);
+    }
+    if (s)
+        for (const auto& [lo, hi] : SpecFetch::armOverlapsFromOriginMeta(s->getOriginMeta()))
+            holes.append({ lo - cfg.seamPad, hi + cfg.seamPad });
+    cfg.anchors = suggestContinuumKnots(cfg.wlMin + cfg.trimBlue,
+                                        cfg.wlMax - cfg.trimRed, R,
+                                        cfg.ignore, holes);
+    // Nothing to place a knot on (a very short or line-filled stretch): one
+    // range across the window still gives the spline something to fit.
+    if (cfg.anchors.isEmpty()) {
+        const double span = cfg.wlMax - cfg.wlMin;
+        cfg.anchors = { { cfg.wlMin, cfg.wlMax, std::max(10.0, span / 10.0) } };
+    }
+
+    // 4. Explicit per-mode fit defaults (if a user saved them) take
+    //    precedence. A list saved exactly as the old built-in fallback is that
+    //    fallback written back by "Save as mode default", not a choice, so the
+    //    rules above stand in for it.
+    if (!hasSpec) return cfg;
+    const auto& d = mode->spectral().fitDefaults;
     if (d.wlMin)     cfg.wlMin     = *d.wlMin;
     if (d.wlMax)     cfg.wlMax     = *d.wlMax;
     if (d.resOffset) cfg.resOffset = *d.resOffset;
     if (d.resSlope)  cfg.resSlope  = *d.resSlope;
-    if (!d.ignore.isEmpty()) {
-        cfg.ignore.clear();
-        for (const auto& r : d.ignore)
-            cfg.ignore.append({r.wlLow, r.wlHigh});
-    }
-    if (!d.anchors.isEmpty()) {
-        cfg.anchors.clear();
-        for (const auto& a : d.anchors)
-            cfg.anchors.append({a.wlLow, a.wlHigh, a.spacing});
-    }
+    QVector<IgnoreRegion> savedIgnore;
+    for (const auto& r : d.ignore) savedIgnore.append({r.wlLow, r.wlHigh});
+    if (!savedIgnore.isEmpty() && !isLegacyDefaultIgnore(savedIgnore))
+        cfg.ignore = savedIgnore;
+    QVector<ContinuumAnchor> savedAnchors;
+    for (const auto& a : d.anchors) savedAnchors.append({a.wlLow, a.wlHigh, a.spacing});
+    if (!savedAnchors.isEmpty() && !isLegacyDefaultAnchors(savedAnchors))
+        cfg.anchors = savedAnchors;
     return cfg;
 }
 
@@ -235,6 +280,7 @@ FitWindow refineFitWindow(const SpectrumFitConfig& cfg,
 
     QVector<IgnoreRegion> all = cfg.ignore;
     all += unusableRegions(wl, fl);
+    all += samplingGaps(wl);
     if (cfg.maskArmSeams)
         for (const auto& [lo, hi] : armSeams)
             all.append({ lo - std::max(0.0, cfg.seamPad), hi + std::max(0.0, cfg.seamPad) });
@@ -425,6 +471,116 @@ QVector<StellarComponent> componentsFromResult(
     return out;
 }
 
+// ────────────────────────────────────────────────────────────────────
+// Per-spectrum start values
+// ────────────────────────────────────────────────────────────────────
+
+namespace {
+
+/// The member of @p c a canonical untie name addresses; nullptr otherwise.
+template <class C>
+auto* startField(C& c, const QString& lower)
+{
+    using D = std::conditional_t<std::is_const_v<C>, const double, double>;
+    D* p = nullptr;
+    if      (lower == QLatin1String("vrad"))      p = &c.vrad;
+    else if (lower == QLatin1String("vsini"))     p = &c.vsini;
+    else if (lower == QLatin1String("teff"))      p = &c.teff;
+    else if (lower == QLatin1String("logg"))      p = &c.logg;
+    else if (lower == QLatin1String("he"))        p = &c.he;
+    else if (lower == QLatin1String("z"))         p = &c.z;
+    else if (lower == QLatin1String("zeta"))      p = &c.zeta;
+    else if (lower == QLatin1String("xi"))        p = &c.xi;
+    else if (lower == QLatin1String("sur_ratio")) p = &c.surRatio;
+    return p;
+}
+
+}   // namespace
+
+QString untieParamKey(const QString& name)
+{
+    const QString t = name.trimmed();
+    const QString lower = t.toLower();
+    StellarComponent probe;
+    return startField(probe, lower) ? lower : t.toUpper();
+}
+
+double componentStartValue(const StellarComponent& c, const QString& name)
+{
+    const QString key = untieParamKey(name);
+    if (const double* p = startField(c, key)) return *p;
+    const auto it = c.abundances.constFind(key);
+    return it != c.abundances.constEnd() ? it.value()
+                                         : std::numeric_limits<double>::quiet_NaN();
+}
+
+bool setComponentStartValue(StellarComponent& c, const QString& name, double v)
+{
+    const QString key = untieParamKey(name);
+    if (double* p = startField(c, key)) { *p = v; return true; }
+    if (key.isEmpty()) return false;
+    c.abundances.insert(key, v);
+    return true;
+}
+
+bool isUntiedName(const QString& name, const QStringList& untied)
+{
+    const QString key = untieParamKey(name);
+    for (const auto& u : untied)
+        if (untieParamKey(u) == key) return true;
+    return false;
+}
+
+PerSpectrumStarts untiedStartsOnly(const PerSpectrumStarts& starts,
+                                   const QStringList& untied,
+                                   int nComponents)
+{
+    PerSpectrumStarts out;
+    for (int c = 0; c < starts.size() && c < nComponents; ++c) {
+        QMap<QString, double> m;
+        for (auto it = starts[c].cbegin(); it != starts[c].cend(); ++it)
+            if (std::isfinite(it.value()) && isUntiedName(it.key(), untied))
+                m.insert(untieParamKey(it.key()), it.value());
+        out.append(m);
+    }
+    while (!out.isEmpty() && out.last().isEmpty()) out.removeLast();
+    return out;
+}
+
+PerSpectrumStarts startsFromFit(const SpectralFit& fit,
+                                const QStringList& untied,
+                                int nComponents)
+{
+    const int nFit = std::max(1, fit.nComponents);
+    PerSpectrumStarts out;
+    for (int c = 0; c < nComponents && c < std::min(nFit, 2); ++c) {
+        const bool two = (c == 1);
+        QMap<QString, double> m;
+        for (const auto& u : untied) {
+            const QString key = untieParamKey(u);
+            double v = std::numeric_limits<double>::quiet_NaN();
+            if      (key == QLatin1String("vrad"))  v = two ? fit.radialVelocity2  : fit.radialVelocity;
+            else if (key == QLatin1String("vsini")) v = two ? fit.vsini2           : fit.vsini;
+            else if (key == QLatin1String("teff"))  v = two ? fit.teff2            : fit.teff;
+            else if (key == QLatin1String("logg"))  v = two ? fit.logg2            : fit.logg;
+            else if (key == QLatin1String("he"))    v = two ? fit.he2              : fit.he;
+            else if (key == QLatin1String("z"))     v = two ? fit.metallicity2     : fit.metallicity;
+            else if (key == QLatin1String("zeta"))  v = two ? fit.macroturbulence2 : fit.macroturbulence;
+            else if (key == QLatin1String("xi"))    v = two ? fit.microturbulence2 : fit.microturbulence;
+            else if (key == QLatin1String("sur_ratio")) { if (two) v = fit.surRatio; }
+            else {
+                const auto& ab = two ? fit.abundances2 : fit.abundances;
+                const auto it = ab.constFind(key);
+                if (it != ab.constEnd()) v = it->value;
+            }
+            if (std::isfinite(v)) m.insert(key, v);
+        }
+        out.append(m);
+    }
+    while (!out.isEmpty() && out.last().isEmpty()) out.removeLast();
+    return out;
+}
+
 SpectralFitJob buildJob(const std::vector<std::shared_ptr<Spectrum>>& spectra,
                         const QHash<QString, SpectrumFitConfig>& configs,
                         const QVector<StellarComponent>& components,
@@ -485,11 +641,19 @@ SpectralFitJob buildJob(const std::vector<std::shared_ptr<Spectrum>>& spectra,
         QString path = exportSpectrumToTemp(s, dir);
         if (path.isEmpty()) continue;
 
+        // A fit that models the atmosphere needs the telluric bands it
+        // models, so the standard ones are lifted from the ignore list.
+        SpectrumFitConfig effCfg = cfg;
+        if (job.addTelluricModel)
+            effCfg.ignore.erase(std::remove_if(effCfg.ignore.begin(), effCfg.ignore.end(),
+                                               isStandardTelluricBand),
+                                effCfg.ignore.end());
+
         // The window this spectrum's own data allows: trimmed ends, unusable
         // stretches and arm seams left out, anchors only where data can pin
         // them. See refineFitWindow().
         const FitWindow win = refineFitWindow(
-            cfg, s->getWavelengths(), s->getFluxes(),
+            effCfg, s->getWavelengths(), s->getFluxes(),
             SpecFetch::armOverlapsFromOriginMeta(s->getOriginMeta()));
         if (win.empty() || win.anchors.isEmpty()) {
             LOG_WARNING("FitSetup",
@@ -514,6 +678,8 @@ SpectralFitJob buildJob(const std::vector<std::shared_ptr<Spectrum>>& spectra,
         obs.waveCut = { win.wlMin, win.wlMax };
         obs.ignore  = win.ignore;
         obs.anchors = win.anchors;
+        obs.startValues = untiedStartsOnly(cfg.startValues, job.untiedParams,
+                                           int(job.components.size()));
 
         SpectrumFile f;
         f.filename   = path;

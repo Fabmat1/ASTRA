@@ -402,6 +402,7 @@ set(ASTRA_CORE_SOURCES
     src/fitting/ElementAbundances.cpp
     src/fitting/FitBackendRegistry.cpp
     src/fitting/FitJobFactory.cpp
+    src/fitting/FitDefaults.cpp
     src/fitting/FitTypesJson.cpp
     src/fitting/UserFitDefaults.cpp
     src/fitting/AdoptedFit.cpp
@@ -572,6 +573,7 @@ set(ASTRA_CORE_HEADERS
     src/fitting/ElementAbundances.h
     src/fitting/FitBackendRegistry.h
     src/fitting/FitJobFactory.h
+    src/fitting/FitDefaults.h
     src/fitting/FitTypes.h
     src/fitting/FitTypesJson.h
     src/fitting/UserFitDefaults.h
@@ -1744,6 +1746,7 @@ if(BUILD_TESTING)
             tests/unit/observing/observability.cpp
             tests/unit/fitting/fit_types_json.cpp
             tests/unit/fitting/fit_window.cpp
+            tests/unit/fitting/fit_defaults.cpp
             tests/unit/fitting/line_core.cpp
             tests/unit/massfit/plan_extensions.cpp
             tests/unit/rv/alias_envelope.cpp

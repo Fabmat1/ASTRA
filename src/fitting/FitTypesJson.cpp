@@ -97,6 +97,37 @@ ContinuumAnchor continuumAnchorFromJson(const QJsonObject& o)
     return v;
 }
 
+// ── PerSpectrumStarts ────────────────────────────────────────────────────
+// [ {"vrad": -310}, {} ]: one object per component.
+
+namespace {
+
+QJsonArray startsToJson(const PerSpectrumStarts& v)
+{
+    QJsonArray a;
+    for (const auto& m : v) {
+        QJsonObject c;
+        for (auto it = m.cbegin(); it != m.cend(); ++it) c[it.key()] = it.value();
+        a.append(c);
+    }
+    return a;
+}
+
+PerSpectrumStarts startsFromJson(const QJsonObject& o, const char* key)
+{
+    PerSpectrumStarts v;
+    for (const auto& cv : o.value(key).toArray()) {
+        QMap<QString, double> m;
+        const QJsonObject c = cv.toObject();
+        for (auto it = c.constBegin(); it != c.constEnd(); ++it)
+            if (it.value().isDouble()) m.insert(it.key(), it.value().toDouble());
+        v.append(m);
+    }
+    return v;
+}
+
+}   // namespace
+
 // ── SpectrumFitConfig ────────────────────────────────────────────────────
 
 QJsonObject toJson(const SpectrumFitConfig& v)
@@ -118,6 +149,7 @@ QJsonObject toJson(const SpectrumFitConfig& v)
     o["seamPad"]       = v.seamPad;
     o["airmass"]       = v.airmass;
     o["pwv"]           = v.pwv;
+    if (!v.startValues.isEmpty()) o["startValues"] = startsToJson(v.startValues);
     return o;
 }
 
@@ -134,6 +166,7 @@ QJsonObject toJson(const StellarComponent& v)
     o["zeta"]     = v.zeta;
     o["xi"]       = v.xi;
     o["z"]        = v.z;
+    o["vrad"]     = v.vrad;
 
     o["freezeTeff"]  = v.freezeTeff;
     o["freezeLogg"]  = v.freezeLogg;
@@ -174,6 +207,7 @@ StellarComponent stellarComponentFromJson(const QJsonObject& o)
     v.zeta     = json::readDouble(o, "zeta",  v.zeta);
     v.xi       = json::readDouble(o, "xi",    v.xi);
     v.z        = json::readDouble(o, "z",     v.z);
+    v.vrad     = json::readDouble(o, "vrad",  v.vrad);
 
     v.freezeTeff  = json::readBool(o, "freezeTeff",  v.freezeTeff);
     v.freezeLogg  = json::readBool(o, "freezeLogg",  v.freezeLogg);
@@ -381,6 +415,7 @@ QJsonObject toJson(const Observation& v)
                                  [](const ContinuumAnchor& a) { return toJson(a); });
     o["files"]   = json::toArray(v.files,
                                  [](const SpectrumFile& f) { return toJson(f); });
+    if (!v.startValues.isEmpty()) o["startValues"] = startsToJson(v.startValues);
     return o;
 }
 
@@ -396,6 +431,7 @@ Observation observationFromJson(const QJsonObject& o)
     v.anchors = json::fromArray<ContinuumAnchor>(o, "anchors",
                                                  continuumAnchorFromJson);
     v.files   = json::fromArray<SpectrumFile>(o, "files", spectrumFileFromJson);
+    v.startValues = startsFromJson(o, "startValues");
     return v;
 }
 

@@ -2,6 +2,7 @@
 #include "app/AppPaths.h"
 #include "app/AppSettings.h"
 #include "fitting/IsisEnvironment.h"
+#include "fitting/FitJobFactory.h"
 
 #include <algorithm>
 #include <cmath>
@@ -460,7 +461,20 @@ QString IsisBackend::generateScript(const SpectralFitJob& job)
     if (grids.isEmpty()) grids << "\"sdB/processed/\"";
     out << "variable modelgrid = [" << grids.join(", ") << "];\n\n";
 
-    const bool multi = job.components.size() > 1;
+    // ISIS's automated script sets each start on every dataset at once, so a
+    // per-spectrum start can only travel when there is a single spectrum, and
+    // then it simply is the component's start. run() says so otherwise.
+    QVector<StellarComponent> components = job.components;
+    int nFiles = 0;
+    for (const auto& o : job.observations) nFiles += o.files.size();
+    if (nFiles == 1)
+        for (const auto& o : job.observations)
+            for (int c = 0; c < o.startValues.size() && c < components.size(); ++c)
+                for (auto it = o.startValues[c].cbegin();
+                     it != o.startValues[c].cend(); ++it)
+                    setComponentStartValue(components[c], it.key(), it.value());
+
+    const bool multi = components.size() > 1;
     QStringList names, values, freeze;
     auto add = [&](const QString& prefix, const QString& n,
                     double v, bool fz) {
@@ -468,10 +482,10 @@ QString IsisBackend::generateScript(const SpectralFitJob& job)
         values << QString::number(v);
         freeze << (fz ? "1" : "0");
     };
-    for (int i = 0; i < job.components.size(); ++i) {
-        const auto& c = job.components[i];
+    for (int i = 0; i < components.size(); ++i) {
+        const auto& c = components[i];
         const QString pfx = multi ? QString("c%1_").arg(i + 1) : QString();
-        add(pfx, "vrad",  0.0,     false);
+        add(pfx, "vrad",  c.vrad,  false);
         add(pfx, "vsini", c.vsini, c.freezeVsini);
         add(pfx, "zeta",  c.zeta,  c.freezeZeta);
         add(pfx, "teff",  c.teff,  c.freezeTeff);
@@ -648,6 +662,18 @@ SpectralFitResult IsisBackend::run(const SpectralFitJob& job,
                 onLog(QStringLiteral("Note: continuum jitter (K = %1) is a GAEL "
                                       "feature; ISIS ignores it.")
                           .arg(job.contJitterK));
+
+            int nFiles = 0;
+            bool ownStarts = false;
+            for (const auto& o : job.observations) {
+                nFiles += o.files.size();
+                for (const auto& m : o.startValues) ownStarts |= !m.isEmpty();
+            }
+            if (ownStarts && nFiles > 1)
+                onLog(QStringLiteral(
+                    "Warning: per-spectrum start values are a GAEL feature in a "
+                    "joint fit; ISIS starts every spectrum from the components' "
+                    "values."));
 
             if (job.components.size() > 1 && job.autoFreezeSurRatio
                 && (job.surRatioThres != 5.0 || job.c2DetectionThres != 0.05))

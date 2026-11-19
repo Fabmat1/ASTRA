@@ -53,6 +53,7 @@ TEST_CASE("FitTypesJson: a stellar component round trips")
     c.he    = -1.75;
     c.vsini = 12.5;
     c.z     = -0.3;
+    c.vrad  = -310.0;
 
     const StellarComponent back = stellarComponentFromJson(toJson(c));
     CHECK(back.gridPath == c.gridPath);
@@ -61,6 +62,7 @@ TEST_CASE("FitTypesJson: a stellar component round trips")
     CHECK(back.he == doctest::Approx(c.he));
     CHECK(back.vsini == doctest::Approx(c.vsini));
     CHECK(back.z == doctest::Approx(c.z));
+    CHECK(back.vrad == doctest::Approx(c.vrad));
 }
 
 TEST_CASE("FitTypesJson: ISIS options round trip")
@@ -158,6 +160,8 @@ TEST_CASE("FitTypesJson: a missing key falls back to the struct default")
     const StellarComponent compDefault;
     CHECK(comp.teff == doctest::Approx(compDefault.teff));
     CHECK(comp.logg == doctest::Approx(compDefault.logg));
+    // Plans and settings written before the RV start existed start at 0.
+    CHECK(comp.vrad == doctest::Approx(0.0));
 
     // The composite readers must survive it too, rather than throwing or
     // producing something unusable.

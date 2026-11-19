@@ -58,9 +58,11 @@ std::shared_ptr<Instrument> instrumentForSpectrum(
 // Configuration
 // ────────────────────────────────────────────────────────────────────
 
-/// Default fit configuration for one spectrum, in three layers: the data's own
-/// wavelength extent, hardcoded fallback ignore regions and anchor bands, then
-/// the instrument mode's resolution model and saved GaelFitDefaults on top.
+/// Default fit configuration for one spectrum, in three layers: what the
+/// data itself says (its coverage, with noisy ends as trimBlue/trimRed), the
+/// suggested regions and continuum knots for that range and resolution (see
+/// FitDefaults.h), then the instrument mode's resolution model and saved
+/// GaelFitDefaults on top. Loads the spectrum's data when it is not loaded.
 /// @p inst and @p modeKey are already resolved by the caller.
 SpectrumFitConfig makeDefaultConfig(const std::shared_ptr<Spectrum>& s,
                                     const std::shared_ptr<Instrument>& inst,
@@ -104,6 +106,44 @@ QVector<StellarComponent> componentsFromResult(
     int specIndex);
 
 // ────────────────────────────────────────────────────────────────────
+// Per-spectrum start values
+// ────────────────────────────────────────────────────────────────────
+
+/// A parameter name as the backends spell it: the canonical ones in lower
+/// case ("Vrad" -> "vrad"), anything else is an element, in upper case.
+QString untieParamKey(const QString& name);
+
+/// The start value parameter @p name has in @p c: what a spectrum without a
+/// start of its own begins at. Names are the backends' untie names ("vrad",
+/// "vsini", "teff", "logg", "he", "z", "zeta", "xi", "sur_ratio"; case does
+/// not matter) or an element ("FE"), which reads the component's abundance
+/// seed. NaN when the name is unknown or the element has no seed.
+double componentStartValue(const StellarComponent& c, const QString& name);
+
+/// Writes a start value into @p c by the same names; false for an unknown one.
+bool setComponentStartValue(StellarComponent& c, const QString& name, double v);
+
+/// Whether @p name is in @p untied, comparing the canonical names without
+/// regard to case (users type "Vrad"; GAEL wants "vrad").
+bool isUntiedName(const QString& name, const QStringList& untied);
+
+/// The part of @p starts a job can honour: entries for components that exist
+/// and for parameters that are untied, so a per-spectrum value never leaks
+/// into a parameter shared by all spectra. Canonical names come out in the
+/// lower case the backends use. Trailing empty components are dropped.
+PerSpectrumStarts untiedStartsOnly(const PerSpectrumStarts& starts,
+                                   const QStringList& untied,
+                                   int nComponents);
+
+/// The untied parameters' values in @p fit, in the shape a spectrum's
+/// startValues takes, so a joint fit can start every spectrum where its own
+/// earlier fit ended. Components beyond the fit's are left out, and so are
+/// values the fit does not hold (NaN, an element it did not model).
+PerSpectrumStarts startsFromFit(const SpectralFit& fit,
+                                const QStringList& untied,
+                                int nComponents);
+
+// ────────────────────────────────────────────────────────────────────
 // Job assembly
 // ────────────────────────────────────────────────────────────────────
 
@@ -137,8 +177,8 @@ struct FitWindow {
 ///  1. The window is the config's wlMin..wlMax, cut to the spectrum's own
 ///     coverage less cfg.trimBlue / cfg.trimRed.
 ///  2. Ignored are the config's regions, the stretches unusableRegions()
-///     finds, and - when cfg.maskArmSeams - each of @p armSeams widened by
-///     cfg.seamPad.
+///     finds, gaps in the sampling (samplingGaps()), and - when
+///     cfg.maskArmSeams - each of @p armSeams widened by cfg.seamPad.
 ///  3. An ignored stretch touching an end of the window moves that end
 ///     instead: the backend puts a continuum anchor right at each end of the
 ///     data, and one there with no usable pixel beside it is frozen at a
@@ -166,7 +206,8 @@ QString exportSpectrumToTemp(const std::shared_ptr<Spectrum>& s,
 /// Assembles one joint job: one observation per enabled spectrum that has
 /// continuum anchors, in the order @p spectra are given. Spectra without a
 /// config, disabled ones, ones without anchors and ones whose export yields no
-/// data are skipped. @p tempFilesOut receives the temporary directory holding
+/// data are skipped. Each observation carries its config's start values for
+/// the untied parameters (untiedStartsOnly()). @p tempFilesOut receives the temporary directory holding
 /// the exported spectra, which the caller owns and must clean up.
 SpectralFitJob buildJob(const std::vector<std::shared_ptr<Spectrum>>& spectra,
                         const QHash<QString, SpectrumFitConfig>& configs,

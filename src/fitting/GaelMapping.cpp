@@ -25,6 +25,7 @@ static specfit::api::StellarComponentInit toGael(const StellarComponent& c)
     d.zeta  = c.zeta;   d.freeze_zeta  = c.freezeZeta;
     d.xi    = c.xi;     d.freeze_xi    = c.freezeXi;
     d.z     = c.z;      d.freeze_z     = c.freezeZ;
+    d.vrad  = c.vrad;   d.freeze_vrad  = false;
 
     // Component 1's ratio is forced to 1/frozen inside GAEL, so passing ours
     // through unconditionally keeps the mapping literal.
@@ -80,6 +81,12 @@ static specfit::api::ObservationInput toGael(const Observation& o)
         d.cspline_anchorpoints.push_back({ a.wlLow, a.wlHigh, a.spacing });
     for (const auto& f : o.files)
         d.files.push_back(toGael(f));
+    for (const auto& m : o.startValues) {
+        std::map<std::string, double> c;
+        for (auto it = m.cbegin(); it != m.cend(); ++it)
+            c.emplace(toStd(it.key()), it.value());
+        d.start_values.push_back(std::move(c));
+    }
     return d;
 }
 

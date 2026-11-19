@@ -37,6 +37,11 @@ public:
     /// interprets every pending editor first.
     QVector<astra::fitting::StellarComponent> components() const;
 
+    /// How many components are configured. Unlike components() this does not
+    /// commit pending typed values, so it is safe inside other widgets'
+    /// signal handlers.
+    int count() const { return int(_components.size()); }
+
     /// Upper bound on the number of components the user may add; 0 (the
     /// default) leaves it unbounded, which is what the single-star dialog
     /// has always allowed.

@@ -969,8 +969,21 @@ bool InstrumentConfigView::editModeDialog(InstrumentMode& mode, bool isNew)
     // What the spectral fit window starts from for spectra of this mode.
     // An empty list means "not set": the fit falls back to the built-in one,
     // which is what an unticked group shows.
-    const astra::fitting::SpectrumFitConfig builtin =
-        astra::fitting::makeDefaultConfig(std::make_shared<Spectrum>(), nullptr, {});
+    // The built-in lists follow the mode's own wavelength range and
+    // resolution, so they are worked out for this mode with its saved fit
+    // defaults left out.
+    const astra::fitting::SpectrumFitConfig builtin = [&] {
+        InstrumentMode bare = mode;
+        if (bare.hasSpectralProperties()) {
+            SpectralProperties sp = bare.spectral();
+            sp.fitDefaults = GaelFitDefaults{};
+            bare.setSpectralProperties(sp);
+        }
+        auto probe = std::make_shared<Instrument>();
+        probe->addMode(bare);
+        return astra::fitting::makeDefaultConfig(std::make_shared<Spectrum>(),
+                                                 probe, bare.key());
+    }();
     const GaelFitDefaults savedFit = mode.hasSpectralProperties()
                                          ? mode.spectral().fitDefaults
                                          : GaelFitDefaults{};
@@ -980,7 +993,9 @@ bool InstrumentConfigView::editModeDialog(InstrumentMode& mode, bool isNew)
     auto* fitIntro = new QLabel(tr(
         "Starting point of the spectral fit window for spectra of this mode. "
         "\"Save as mode default\" in the fit window writes the same values. "
-        "An unticked list uses ASTRA's built-in one, shown greyed out."));
+        "An unticked list uses ASTRA's built-in one, shown greyed out: worked "
+        "out from this mode's wavelength range and resolution here, and from "
+        "each spectrum's own range and resolution in the fit window."));
     fitIntro->setWordWrap(true);
     fitLayout->addWidget(fitIntro);
 
