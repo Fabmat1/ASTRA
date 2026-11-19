@@ -42,8 +42,8 @@ A summary box reports everything that was imported.
 
 ## Adding and fixing single stars
 
-- **Stars → Add Star…** - add one star by any identifier and resolve it from
-  Gaia/SIMBAD.
+- **Stars → Add Star…** - add one star by any identifier and resolve it
+  (SIMBAD, or MAST/NED/Sesame + Gaia DR3 + TIC when SIMBAD is down).
 - **Re-identify Star** - re-point a star at a different nearby Gaia source if
   the initial cross-match was wrong.
 

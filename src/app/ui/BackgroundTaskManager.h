@@ -98,6 +98,8 @@ private:
 
     // Positional cross-match (stars without a Gaia source id), via TAP upload
     QString buildPositionalQuery() const;
+    // The same crossmatch for the ESA Gaia archive, columns aliased to VizieR's.
+    QString buildPositionalQueryForGaiaArchive() const;
     QByteArray
     buildPositionVOTable(const std::vector<std::shared_ptr<Star>> &stars) const;
     int

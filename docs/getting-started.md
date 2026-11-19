@@ -53,8 +53,11 @@ There are two ways in:
 
 **Stars → Add Star…** opens a dialog where you enter any identifier you have
 (alias, Gaia DR3 ID, TIC, J-name, or coordinates) and click
-**Resolve from Gaia / SIMBAD**. ASTRA fills in astrometry and Gaia photometry
-and can query SIMBAD for bibliography codes.
+**Resolve**. ASTRA fills in the identifiers, astrometry and Gaia photometry,
+and can query SIMBAD for bibliography codes. SIMBAD is asked first (CDS, then
+its Harvard mirror); if it is unreachable, the name is resolved through MAST,
+NED or Sesame, the Gaia DR3 source is found by a cone search (VizieR or the ESA
+Gaia archive) and the TIC comes from MAST. Only the bibliography needs SIMBAD.
 
 <div class="media-placeholder screenshot">
   <div class="mp-icon">🖼️</div>

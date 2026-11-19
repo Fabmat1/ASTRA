@@ -530,11 +530,72 @@ QString GaiaQueryTask::sendUploadQuery(const QString    &adql,
 
     const CdsTap::Response resp =
         CdsTap::postVizierMultipart(_networkManager, makeBody, 300000);
-    if (!resp.ok()) {
+    if (resp.ok())
+        return QString::fromUtf8(resp.body);
+    if (!resp.unavailable || resp.cancelled) {
         error = resp.error;
         return QString();
     }
-    return QString::fromUtf8(resp.body);
+
+    // Every VizieR TAP front end is down: the same crossmatch on the ESA Gaia
+    // archive, with its columns renamed to VizieR's so the parser is shared.
+    const QString archiveAdql = buildPositionalQueryForGaiaArchive();
+    if (archiveAdql.isEmpty()) {
+        error = resp.error;
+        return QString();
+    }
+    LOG_WARNING("Gaia", QString("VizieR unavailable (%1); crossmatching on the "
+                                "ESA Gaia archive").arg(resp.error));
+    auto makeArchiveBody = [&archiveAdql, &votable]() {
+        QHttpMultiPart *multiPart =
+            new QHttpMultiPart(QHttpMultiPart::FormDataType);
+        auto addField = [multiPart](const QString &name, const QString &value) {
+            QHttpPart part;
+            part.setHeader(QNetworkRequest::ContentDispositionHeader,
+                           QVariant(QString("form-data; name=\"%1\"").arg(name)));
+            part.setBody(value.toUtf8());
+            multiPart->append(part);
+        };
+        addField("REQUEST", "doQuery");
+        addField("LANG", "ADQL");
+        addField("FORMAT", "csv");
+        addField("UPLOAD", "stars,param:upltable");
+        addField("QUERY", archiveAdql);
+        QHttpPart tablePart;
+        tablePart.setHeader(QNetworkRequest::ContentTypeHeader,
+                            QVariant("application/x-votable+xml"));
+        tablePart.setHeader(
+            QNetworkRequest::ContentDispositionHeader,
+            QVariant("form-data; name=\"upltable\"; filename=\"upltable.xml\""));
+        tablePart.setBody(votable);
+        multiPart->append(tablePart);
+        return multiPart;
+    };
+    CdsTap::Request archiveReq(300000);
+    archiveReq.maxAttempts = 2;
+    const CdsTap::Response archive = CdsTap::postGaiaArchiveMultipart(
+        _networkManager, makeArchiveBody, archiveReq);
+    if (!archive.ok()) {
+        error = QString("VizieR: %1; ESA Gaia archive: %2")
+                    .arg(resp.error, archive.error);
+        return QString();
+    }
+    return QString::fromUtf8(archive.body);
+}
+
+QString GaiaQueryTask::buildPositionalQueryForGaiaArchive() const {
+    QString select;
+    if (!CdsTap::gaiaArchiveSelectList(
+            {"Source", "RA_ICRS", "DE_ICRS", "pmRA", "pmDE", "e_pmRA", "e_pmDE",
+             "Plx", "e_Plx", "Gmag", "e_Gmag", "BPmag", "e_BPmag", "RPmag",
+             "e_RPmag", "pmRApmDEcor", "PlxpmRAcor", "PlxpmDEcor"},
+            QStringLiteral("g"), select))
+        return QString();
+    return QStringLiteral("SELECT tup.idx AS idx, %1 "
+                          "FROM gaiadr3.gaia_source AS g, TAP_UPLOAD.stars AS tup "
+                          "WHERE 1=CONTAINS(POINT('ICRS', g.ra, g.dec), "
+                          "CIRCLE('ICRS', tup.ra, tup.dec, 0.000556))")
+        .arg(select);
 }
 
 QStringList GaiaQueryTask::sourceIdsOf(
@@ -909,54 +970,23 @@ void SimbadQueryTask::execute()
     
     emit progress(QString("SIMBAD: Querying bibliography for %1 stars...").arg(_stars.size()));
     
-    QNetworkRequest request{QUrl(CdsTap::simbadScriptUrl())};
-    request.setRawHeader("User-Agent", "ASTRA/1.0");
-    
-    QHttpMultiPart* multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
-    
-    QHttpPart scriptPart;
-    scriptPart.setHeader(QNetworkRequest::ContentDispositionHeader, 
-        QVariant("form-data; name=\"scriptFile\"; filename=\"script.txt\""));
-    scriptPart.setHeader(QNetworkRequest::ContentTypeHeader, QVariant("text/plain"));
-    scriptPart.setBody(script.toUtf8());
-    multiPart->append(scriptPart);
-    
-    LOG_DEBUG("SIMBAD", "Sending POST request to SIMBAD");
-    
-    QNetworkReply* reply = _networkManager->post(request, multiPart);
-    multiPart->setParent(reply);
-    
-    QEventLoop loop;
-    QTimer timeoutTimer;
-    timeoutTimer.setSingleShot(true);
-    
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    connect(&timeoutTimer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    
-    timeoutTimer.start(300000);
-    loop.exec();
-    
-    if (!timeoutTimer.isActive()) {
-        reply->abort();
-        LOG_ERROR("SIMBAD", "Query timed out after 5 minutes");
-        emit finished(false, "SIMBAD: Query timed out");
-        reply->deleteLater();
+    // CDS first, the CfA mirror when CDS is down.
+    CdsTap::Request simbadReq(300000);
+    simbadReq.maxAttempts = 3;
+    const CdsTap::Response simbadResp =
+        CdsTap::postSimbadScript(_networkManager, script, simbadReq);
+
+    if (!simbadResp.ok()) {
+        LOG_ERROR("SIMBAD", QString("No SIMBAD mirror answered: %1").arg(simbadResp.error));
+        emit finished(false, QString("SIMBAD: %1").arg(simbadResp.error));
         _networkManager->deleteLater();
         return;
     }
-    
-    if (reply->error() != QNetworkReply::NoError) {
-        LOG_ERROR("SIMBAD", QString("Network error: %1").arg(reply->errorString()));
-        emit finished(false, QString("SIMBAD: Network error - %1").arg(reply->errorString()));
-        reply->deleteLater();
-        _networkManager->deleteLater();
-        return;
-    }
-    
+
     emit progress("SIMBAD: Parsing response...");
-    
-    QString response = QString::fromUtf8(reply->readAll());
-    reply->deleteLater();
+
+    QString response = QString::fromUtf8(simbadResp.body);
+    LOG_INFO("SIMBAD", QString("Answered by %1").arg(simbadResp.url));
     
     LOG_DEBUG("SIMBAD", QString("Received response: %1 bytes").arg(response.size()));
     

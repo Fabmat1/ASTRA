@@ -38,57 +38,21 @@ void SimbadWorker::process()
         return;
     }
     
-    QTemporaryFile scriptFile;
-    if (!scriptFile.open()) {
-        emit error("Failed to create temporary script file");
-        return;
-    }
-    scriptFile.write(script.toUtf8());
-    scriptFile.flush();
-    QString scriptPath = scriptFile.fileName();
-    scriptFile.close();
-    
     emit progress(0, _stars.size(), "Sending query to SIMBAD...");
-    
-    QNetworkRequest request{QUrl(CdsTap::simbadScriptUrl())};
-    request.setRawHeader("User-Agent", "ASTRA/1.0");
-    
-    QHttpMultiPart* multiPart = new QHttpMultiPart(QHttpMultiPart::FormDataType);
-    
-    QFile* file = new QFile(scriptPath);
-    if (!file->open(QIODevice::ReadOnly)) {
-        emit error("Failed to open script file");
-        delete multiPart;
+
+    // CDS first, the CfA mirror when CDS is down.
+    CdsTap::Request req(60000);
+    req.maxAttempts = 3;
+    const CdsTap::Response resp =
+        CdsTap::postSimbadScript(_networkManager, script, req);
+    if (!resp.ok()) {
+        emit error(QString("SIMBAD: %1").arg(resp.error));
         return;
     }
-    
-    QHttpPart scriptPart;
-    scriptPart.setHeader(QNetworkRequest::ContentDispositionHeader, 
-        QVariant("form-data; name=\"scriptFile\"; filename=\"script.txt\""));
-    scriptPart.setHeader(QNetworkRequest::ContentTypeHeader, QVariant("text/plain"));
-    scriptPart.setBody(script.toUtf8());
-    multiPart->append(scriptPart);
-    
-    QNetworkReply* reply = _networkManager->post(request, multiPart);
-    multiPart->setParent(reply);
-    
-    QEventLoop loop;
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    
-    QTimer::singleShot(60000, &loop, &QEventLoop::quit);
-    
-    loop.exec();
-    
-    if (reply->error() != QNetworkReply::NoError) {
-        emit error(QString("Network error: %1").arg(reply->errorString()));
-        reply->deleteLater();
-        return;
-    }
-    
+
     emit progress(_stars.size() / 2, _stars.size(), "Parsing SIMBAD response...");
-    
-    QString response = QString::fromUtf8(reply->readAll());
-    reply->deleteLater();
+
+    QString response = QString::fromUtf8(resp.body);
     
     QMap<QString, QStringList> bibcodes = parseSimbadResponse(response);
     

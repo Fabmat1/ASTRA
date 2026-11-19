@@ -367,6 +367,7 @@ set(ASTRA_CORE_SOURCES
     src/catalog/CatalogQueryWorkers.cpp
     src/catalog/CdsTapClient.cpp
     src/catalog/CrossRefResolver.cpp
+    src/catalog/StarResolver.cpp
 
     # core
     src/core/BarycentricCorrection.cpp
@@ -523,6 +524,7 @@ set(ASTRA_CORE_HEADERS
     src/catalog/CatalogQueryWorkers.h
     src/catalog/CdsTapClient.h
     src/catalog/CrossRefResolver.h
+    src/catalog/StarResolver.h
     src/catalog/StarMatching.h
     src/catalog/StarSearchQuery.h
 
@@ -1623,6 +1625,7 @@ if(BUILD_TESTING)
     astra_add_test(quantity_format  TARGET test_quantityformat LABELS utils formatting)
     astra_add_test(star_search      LABELS utils search)
     astra_add_test(star_matching    LABELS utils import)
+    astra_add_test(star_resolver    LABELS utils catalog)
     astra_add_test(wavelength_convert LABELS utils spectrafetch)
     astra_add_test(spectrum_frame   LABELS utils spectrafetch TIMEOUT 60)
     astra_add_test(arm_join         LABELS utils spectrafetch)

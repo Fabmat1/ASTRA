@@ -19,8 +19,10 @@ sections of the [workflow guides](../workflows/sed-spectral.md)).
 1. Open **Stars → Add Star…**
 2. Enter any identifier you have: an alias, a Gaia DR3 source ID, a TIC
    number, a J-name, or RA/Dec coordinates.
-3. Click **Resolve from Gaia / SIMBAD**. ASTRA fills in the astrometry and
-   Gaia photometry, and can also query SIMBAD for bibliography codes.
+3. Click **Resolve**. ASTRA fills in the identifiers, astrometry and Gaia
+   photometry, and can also query SIMBAD for bibliography codes. When SIMBAD
+   is down, MAST, NED, the ESA Gaia archive and the TIC stand in; the status
+   line says which services answered.
 4. Confirm. The star appears in the star table.
 
 Double-click the new row to open its **Star Detail** window. The Summary

@@ -2,6 +2,7 @@
 #include "core/SkyGeometry.h"
 #include "core/Star.h"
 #include "catalog/CdsTapClient.h"
+#include "catalog/StarResolver.h"
 #include "app/Logger.h"
 
 #include <QApplication>
@@ -92,11 +93,14 @@ void AddStarDialog::setupUi()
 
     // Resolve row
     auto* resolveRow = new QHBoxLayout();
-    _resolveBtn = new QPushButton("Resolve from Gaia / SIMBAD", this);
+    _resolveBtn = new QPushButton("Resolve", this);
     _resolveBtn->setToolTip(
-        "Use whichever identifiers/coords are filled in to query SIMBAD "
-        "(for cross-IDs and coordinates) and Gaia DR3 via VizieR "
-        "(for astrometry and photometry). Empty fields are filled in.");
+        "Use whichever identifiers/coords are filled in to find the star: "
+        "SIMBAD (CDS or its CfA mirror) for cross-IDs and coordinates, and "
+        "when SIMBAD is unreachable the MAST/NED/Sesame name resolvers, a "
+        "Gaia DR3 cone search and the TIC at MAST. Gaia DR3 astrometry and "
+        "photometry come from VizieR or the ESA Gaia archive. Only empty "
+        "fields are filled in.");
 
     _bibliographyCheck = new QCheckBox("Query bibliography (SIMBAD)", this);
     _bibliographyCheck->setChecked(true);
@@ -310,18 +314,26 @@ void AddStarDialog::onResolve()
 
     LOG_INFO("AddStarDialog", "Resolve clicked");
 
-    // --- Decide the SIMBAD query string -----------------------------------
-    QString gaiaIdField = _sourceIdEdit->text().trimmed();
-    QString ticField    = _ticEdit->text().trimmed();
-    QString jnameField  = _jnameEdit->text().trimmed();
-    QString aliasField  = _aliasEdit->text().trimmed();
-    double  ra          = parseDoubleOrNaN(_raEdit);
-    double  dec         = parseDoubleOrNaN(_decEdit);
+    const QString gaiaIdField = _sourceIdEdit->text().trimmed();
+    const QString ticField    = _ticEdit->text().trimmed();
+    const QString jnameField  = _jnameEdit->text().trimmed();
+    const QString aliasField  = _aliasEdit->text().trimmed();
+    double        ra          = parseDoubleOrNaN(_raEdit);
+    double        dec         = parseDoubleOrNaN(_decEdit);
+
+    // Radius for matching the position to a Gaia source / TIC entry. A
+    // J-designation only fixes a bin, so it gets the bin's size.
+    double matchRadius = StarResolver::kDefaultMatchArcsec;
 
     // Derive coords from JName up-front (so we have a fallback path).
     if (!jnameField.isEmpty() && (std::isnan(ra) || std::isnan(dec))) {
-        double jRa, jDec;
-        if (parseJnameToCoords(jnameField, jRa, jDec)) {
+        double jRa, jDec, jRadius;
+        if (StarResolver::positionFromDesignation(jnameField, jRa, jDec, jRadius)) {
+            matchRadius = jRadius;
+        } else if (!parseJnameToCoords(jnameField, jRa, jDec)) {
+            jRa = jDec = std::numeric_limits<double>::quiet_NaN();
+        }
+        if (!std::isnan(jRa) && !std::isnan(jDec)) {
             if (std::isnan(ra))  { ra  = jRa;  setDoubleIfEmpty(_raEdit,  jRa); }
             if (std::isnan(dec)) { dec = jDec; setDoubleIfEmpty(_decEdit, jDec); }
         }
@@ -354,204 +366,140 @@ void AddStarDialog::onResolve()
 
     LOG_INFO("AddStarDialog", QString("SIMBAD query: %1").arg(simbadQuery));
 
-    ResolvedIds ids;
-    QString err;
-    bool simbadOk = resolveSimbad(simbadQuery, ids, err);
-    if (!simbadOk) {
-        LOG_WARNING("AddStarDialog", QString("SIMBAD failed: %1").arg(err));
-        setStatus(QString("SIMBAD: %1").arg(err), true);
-    } else {
+    QStringList sources;    // services that contributed, for the status line
+    QStringList problems;   // what could not be filled, and why
+
+    StarResolver::SimbadIds ids;
+    const StarResolver::Outcome simbad =
+        StarResolver::simbadIdentify(_network, simbadQuery, ids);
+    if (simbad.ok) {
         LOG_INFO("AddStarDialog",
             QString("SIMBAD ok: main='%1' gaia='%2' tic='%3' ra=%4 dec=%5")
                 .arg(ids.mainId, ids.sourceId, ids.tic)
                 .arg(ids.ra).arg(ids.dec));
+        sources << simbad.service;
+        setTextIfEmpty(_sourceIdEdit, ids.sourceId);
+        setTextIfEmpty(_ticEdit,      ids.tic);
+        setTextIfEmpty(_aliasEdit,    ids.mainId);
+        setDoubleIfEmpty(_raEdit,     ids.ra);
+        setDoubleIfEmpty(_decEdit,    ids.dec);
+    } else {
+        LOG_WARNING("AddStarDialog", QString("SIMBAD failed: %1").arg(simbad.error));
+        problems << QString("SIMBAD %1").arg(simbad.unavailable ? "unreachable" : simbad.error);
+    }
+    setStatus("Resolving without SIMBAD...");
+    QApplication::processEvents();
+
+    // --- Position, when nothing has given one yet -------------------------
+    // A Gaia id needs none: the Gaia record below brings it.
+    ra  = parseDoubleOrNaN(_raEdit);
+    dec = parseDoubleOrNaN(_decEdit);
+    const bool haveGaiaId = !_sourceIdEdit->text().trimmed().isEmpty();
+    if ((std::isnan(ra) || std::isnan(dec)) && !haveGaiaId) {
+        if (!ticField.isEmpty()) {
+            StarResolver::TicEntry t;
+            const auto o = StarResolver::ticById(_network, ticField, t);
+            if (o.ok) {
+                ra = t.ra; dec = t.dec;
+                sources << o.service;
+            } else {
+                problems << QString("TIC lookup: %1").arg(o.error);
+            }
+        }
+        if ((std::isnan(ra) || std::isnan(dec)) && !aliasField.isEmpty()) {
+            double r = 0, d = 0, rad = 0;
+            if (StarResolver::positionFromDesignation(aliasField, r, d, rad)) {
+                ra = r; dec = d; matchRadius = rad;
+                sources << "position from the name";
+            } else {
+                StarResolver::NamedPosition p;
+                const auto o = StarResolver::resolveName(_network, aliasField, p);
+                if (o.ok) {
+                    ra = p.ra; dec = p.dec;
+                    sources << o.service;
+                } else {
+                    problems << o.error;
+                }
+            }
+        }
+        setDoubleIfEmpty(_raEdit,  ra);
+        setDoubleIfEmpty(_decEdit, dec);
     }
 
-    if (!ids.sourceId.isEmpty()) setTextIfEmpty(_sourceIdEdit, ids.sourceId);
-    if (!ids.tic.isEmpty())      setTextIfEmpty(_ticEdit,      ids.tic);
-    if (!ids.mainId.isEmpty())   setTextIfEmpty(_aliasEdit,    ids.mainId);
-    if (!std::isnan(ids.ra))     setDoubleIfEmpty(_raEdit,     ids.ra);
-    if (!std::isnan(ids.dec))    setDoubleIfEmpty(_decEdit,    ids.dec);
-
-    // Synthesise JName if still empty.
-    {
-        double curRa  = parseDoubleOrNaN(_raEdit);
-        double curDec = parseDoubleOrNaN(_decEdit);
-        if (_jnameEdit->text().trimmed().isEmpty()
-            && !std::isnan(curRa) && !std::isnan(curDec))
-        {
-            _jnameEdit->setText(jnameFromCoords(curRa, curDec));
+    // --- Gaia DR3 source at that position ---------------------------------
+    if (_sourceIdEdit->text().trimmed().isEmpty() && !std::isnan(ra) && !std::isnan(dec)) {
+        std::vector<StarResolver::GaiaSource> found;
+        const auto o = StarResolver::gaiaCone(_network, ra, dec, matchRadius, found);
+        if (o.ok && !found.empty()) {
+            const auto& g = found.front();
+            _sourceIdEdit->setText(g.sourceId);
+            sources << QString("Gaia DR3 match at %1\" (%2%3)")
+                           .arg(g.sepArcsec, 0, 'f', 2)
+                           .arg(o.service)
+                           .arg(found.size() > 1
+                                    ? QString(", %1 sources within %2\", nearest taken")
+                                          .arg(found.size()).arg(matchRadius, 0, 'f', 1)
+                                    : QString());
+        } else if (o.ok) {
+            problems << QString("no Gaia DR3 source within %1\"").arg(matchRadius, 0, 'f', 1);
+        } else {
+            problems << QString("Gaia cone search: %1").arg(o.error);
         }
     }
 
+    // --- Gaia DR3 record ---------------------------------------------------
     QString sourceIdForGaia = digitsOnly(_sourceIdEdit->text().trimmed());
     if (sourceIdForGaia.isEmpty())
         sourceIdForGaia = _sourceIdEdit->text().trimmed();
 
     if (!sourceIdForGaia.isEmpty()) {
-        QString gaiaErr;
-        bool    gaiaViaAsu = false;
+        setStatus("Fetching Gaia DR3...");
+        QApplication::processEvents();
+        QString gaiaErr, via;
         LOG_INFO("AddStarDialog",
-            QString("Querying Gaia DR3 / VizieR for source_id=%1").arg(sourceIdForGaia));
-        if (!fetchGaiaDR3(sourceIdForGaia, gaiaErr, gaiaViaAsu)) {
-            LOG_WARNING("AddStarDialog", QString("Gaia DR3 failed: %1").arg(gaiaErr));
-            setStatus(QString("%1Gaia: %2")
-                          .arg(simbadOk ? "Resolved IDs; " : "")
-                          .arg(gaiaErr), true);
-            setBusy(false);
-            return;
-        }
-        setStatus(gaiaViaAsu
-                      ? "Resolved IDs and Gaia DR3 astrometry/photometry "
-                        "(VizieR TAP down; used the ASU interface)."
-                      : "Resolved IDs and Gaia DR3 astrometry/photometry.",
-                  false);
-    } else {
-        setStatus(simbadOk
-            ? "Resolved IDs (no Gaia DR3 source_id; Gaia data skipped)."
-            : "No identifiers could be resolved.", !simbadOk);
-    }
-
-    setBusy(false);
-}
-
-// ------------------------------------------------------------------
-// SIMBAD
-// ------------------------------------------------------------------
-
-bool AddStarDialog::resolveSimbad(const QString& queryStr, ResolvedIds& out, QString& err)
-{
-    static const QString kBegin = "==ASTRABEGIN==";
-    static const QString kEnd   = "==ASTRAEND==";
-
-    // SINGLE-LINE format string - avoids any chance of line-continuation
-    // breaking on whitespace / CRLF normalisation.
-    QString script;
-    script  = "format object f1 \"";
-    script += kBegin + "\\n";
-    script += "MAIN=%MAIN_ID\\n";
-    script += "GAIA=%IDLIST(Gaia DR3)\\n";
-    script += "TIC=%IDLIST(TIC)\\n";
-    script += "RA=%COO(d;A;ICRS;J2000;2000)\\n";
-    script += "DEC=%COO(d;D;ICRS;J2000;2000)\\n";
-    script += kEnd + "\"\n";
-    script += queryStr + "\n";
-
-    LOG_DEBUG("AddStarDialog",
-        QString("SIMBAD script (%1 bytes):\n%2").arg(script.size()).arg(script));
-
-    QNetworkRequest req(QUrl("https://simbad.cds.unistra.fr/simbad/sim-script"));
-    req.setRawHeader("User-Agent", "ASTRA/1.0");
-    req.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
-                     QNetworkRequest::NoLessSafeRedirectPolicy);
-
-    auto* mp = new QHttpMultiPart(QHttpMultiPart::FormDataType);
-    QHttpPart part;
-    part.setHeader(QNetworkRequest::ContentDispositionHeader,
-        QVariant("form-data; name=\"scriptFile\"; filename=\"q.txt\""));
-    part.setHeader(QNetworkRequest::ContentTypeHeader, QVariant("text/plain"));
-    part.setBody(script.toUtf8());
-    mp->append(part);
-
-    QNetworkReply* reply = _network->post(req, mp);
-    mp->setParent(reply);
-
-    QEventLoop loop;
-    QTimer timeout;
-    timeout.setSingleShot(true);
-    connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-    connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
-    timeout.start(30000);
-    loop.exec();
-
-    if (!timeout.isActive()) {
-        reply->abort();
-        reply->deleteLater();
-        err = "timed out";
-        LOG_WARNING("AddStarDialog", "SIMBAD timed out after 30s");
-        return false;
-    }
-    if (reply->error() != QNetworkReply::NoError) {
-        err = reply->errorString();
-        LOG_ERROR("AddStarDialog", QString("SIMBAD network error: %1").arg(err));
-        reply->deleteLater();
-        return false;
-    }
-
-    const QString body = QString::fromUtf8(reply->readAll());
-    reply->deleteLater();
-
-    LOG_DEBUG("AddStarDialog",
-        QString("SIMBAD response (%1 bytes):\n%2")
-            .arg(body.size()).arg(body));      // log full body for debugging
-
-    // SIMBAD echoes the script back inside ::script::, which contains the
-    // literal "==ASTRABEGIN==" / "==ASTRAEND==" tokens. Restrict the search
-    // to the ::data:: section to avoid matching that echo.
-    const int dataIdx   = body.indexOf("::data::");
-    const int searchPos = (dataIdx >= 0) ? dataIdx : 0;
-
-    int b = body.indexOf(kBegin, searchPos);
-    int e = (b >= 0) ? body.indexOf(kEnd, b + kBegin.size()) : -1;
-
-    if (b < 0 || e < 0) {
-        // Pull a useful reason out of SIMBAD's ::error:: block if present.
-        int errIdx = body.indexOf("::error::");
-        if (errIdx >= 0) {
-            QString reason;
-            const QStringList lines = body.mid(errIdx).split('\n');
-            for (int i = 1; i < lines.size(); ++i) {
-                QString t = lines[i].trimmed();
-                if (t.isEmpty() || t.startsWith("::") || t.startsWith('[')) continue;
-                reason = t;
-                break;
-            }
-            err = reason.isEmpty() ? "object not found" : reason;
+            QString("Querying Gaia DR3 for source_id=%1").arg(sourceIdForGaia));
+        if (fetchGaiaDR3(sourceIdForGaia, gaiaErr, via)) {
+            sources << QString("Gaia DR3 (%1)").arg(via);
         } else {
-            err = "no data block in response";
-        }
-        LOG_WARNING("AddStarDialog",
-            QString("SIMBAD parse failure (%1). First 500 bytes of body:\n%2")
-                .arg(err).arg(body.left(500)));
-        return false;
-    }
-
-    const QString block = body.mid(b + kBegin.size(), e - b - kBegin.size());
-    LOG_DEBUG("AddStarDialog", QString("SIMBAD data block:\n%1").arg(block));
-
-    for (const QString& rawLine : block.split('\n', Qt::SkipEmptyParts)) {
-        QString line = rawLine.trimmed();
-        if (line.isEmpty()) continue;
-        int eq = line.indexOf('=');
-        if (eq <= 0) continue;
-        const QString key = line.left(eq).trimmed();
-        const QString val = line.mid(eq + 1).trimmed();
-        if (val == "~" || val.isEmpty()) continue;
-
-        if (key == "MAIN") {
-            out.mainId = val;
-        } else if (key == "GAIA") {
-            const QString num = digitsOnly(val);
-            if (!num.isEmpty()) out.sourceId = num;
-        } else if (key == "TIC") {
-            const QString num = digitsOnly(val);
-            if (!num.isEmpty()) out.tic = num;
-        } else if (key == "RA") {
-            bool ok; double v = val.toDouble(&ok);
-            if (ok) out.ra = v;
-        } else if (key == "DEC") {
-            bool ok; double v = val.toDouble(&ok);
-            if (ok) out.dec = v;
+            LOG_WARNING("AddStarDialog", QString("Gaia DR3 failed: %1").arg(gaiaErr));
+            problems << QString("Gaia DR3: %1").arg(gaiaErr);
         }
     }
-    return true;
+
+    // --- TIC at the (now best) position -----------------------------------
+    ra  = parseDoubleOrNaN(_raEdit);
+    dec = parseDoubleOrNaN(_decEdit);
+    if (_ticEdit->text().trimmed().isEmpty() && !std::isnan(ra) && !std::isnan(dec)) {
+        StarResolver::TicEntry t;
+        const auto o = StarResolver::ticCone(_network, ra, dec,
+                                             StarResolver::kDefaultMatchArcsec, t);
+        if (o.ok) {
+            _ticEdit->setText(t.tic);
+            sources << QString("TIC match at %1\" (MAST)").arg(t.sepArcsec, 0, 'f', 2);
+        } else {
+            problems << QString("TIC: %1").arg(o.error);
+        }
+    }
+
+    // Synthesise JName if still empty.
+    if (_jnameEdit->text().trimmed().isEmpty() && !std::isnan(ra) && !std::isnan(dec))
+        _jnameEdit->setText(jnameFromCoords(ra, dec));
+
+    const bool resolvedAnything =
+        !_sourceIdEdit->text().trimmed().isEmpty() || (!std::isnan(ra) && !std::isnan(dec));
+    QString msg = sources.isEmpty() ? QString("Nothing resolved.")
+                                    : QString("Filled from: %1.").arg(sources.join("; "));
+    if (!problems.isEmpty())
+        msg += QString(" Not available: %1.").arg(problems.join("; "));
+    setStatus(msg, !resolvedAnything);
+    setBusy(false);
 }
 
 // ------------------------------------------------------------------
 // VizieR / Gaia DR3
 // ------------------------------------------------------------------
 
-bool AddStarDialog::fetchGaiaDR3(const QString& sourceId, QString& err, bool& viaAsu)
+bool AddStarDialog::fetchGaiaDR3(const QString& sourceId, QString& err, QString& via)
 {
     CdsTap::VizierLookup lookup;
     lookup.table     = "I/355/gaiadr3";
@@ -568,7 +516,9 @@ bool AddStarDialog::fetchGaiaDR3(const QString& sourceId, QString& err, bool& vi
         err = resp.error;
         return false;
     }
-    viaAsu = resp.viaAsu;
+    via = resp.viaGaiaArchive ? QStringLiteral("ESA Gaia archive, VizieR down")
+        : resp.viaAsu         ? QStringLiteral("VizieR ASU, TAP down")
+                              : QStringLiteral("VizieR");
 
     QString body = QString::fromUtf8(resp.body);
 

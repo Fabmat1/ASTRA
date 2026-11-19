@@ -27,8 +27,26 @@ class QUrlQuery;
 namespace CdsTap {
 
 // Canonical service endpoints (the u-strasbg.fr names are legacy aliases).
-QString            simbadScriptUrl();
 const QStringList &vizierMirrors();
+
+// SIMBAD is served by CDS and mirrored at the CfA (simbad.harvard.edu), which
+// answers sim-script and sim-tap identically. Base URLs without a path, CDS
+// first. CDS was down for weeks in November 2026 while the CfA kept working.
+// The environment variable ASTRA_SIMBAD_MIRRORS (comma-separated bases)
+// replaces the list.
+const QStringList &simbadMirrors();
+
+// The SIMBAD base to point a browser at: the mirror that last answered a
+// query, else CDS unless CDS has failed recently.
+QString simbadWebBase();
+
+// ESA's own Gaia archive, independent of CDS: the fallback for the Gaia DR3
+// lookups when every VizieR front end is down.
+QString gaiaArchiveTapUrl();
+
+// Whether a host has failed at the transport level within the last few
+// minutes (see Request::trackHealth).
+bool isHostDown(const QString &url);
 
 struct Response {
     QByteArray body;
@@ -46,6 +64,8 @@ struct Response {
     bool       unavailable = false;
     // Answered by a VizieR ASU mirror because TAPVizieR was unavailable.
     bool       viaAsu = false;
+    // Answered by the ESA Gaia archive because TAPVizieR was unavailable.
+    bool       viaGaiaArchive = false;
 
     bool ok() const { return error.isEmpty(); }
 };
@@ -72,6 +92,12 @@ struct Request {
     // Off for services whose front end stalls Qt's HTTP/2 negotiation on a
     // fresh connection (China-VO / LAMOST): they are then spoken to in 1.1.
     bool allowHttp2 = true;
+    // Remember hosts that fail at the transport level (timeout, connection
+    // refused, an HTML error page instead of a TAP document) for a few
+    // minutes, try them last, and give up early once every endpoint of the
+    // call is known down. Set by the mirror-rotating helpers below; off for
+    // generic GETs, where a 404 may just mean a missing file.
+    bool trackHealth = false;
 
     Request() = default;
     Request(int ms) : timeoutMs(ms) {}   // NOLINT(google-explicit-constructor)
@@ -103,6 +129,32 @@ Response postMultipart(QNetworkAccessManager                     *nam,
 Response get(QNetworkAccessManager *nam, const QString &url,
              const Request &req);
 
+// SIMBAD sim-script (the script as the multipart "scriptFile") and sim-tap
+// (sync TAP form), rotated over simbadMirrors(). A SIMBAD "::error::" block
+// is a successful reply here; the caller parses it.
+Response postSimbadScript(QNetworkAccessManager *nam, const QString &script,
+                          const Request &req);
+Response postSimbadTap(QNetworkAccessManager *nam, const QUrlQuery &form,
+                       const Request &req);
+
+// Sync TAP form against the ESA Gaia archive (gaiaArchiveTapUrl()).
+Response postGaiaArchiveForm(QNetworkAccessManager *nam, const QUrlQuery &form,
+                             const Request &req);
+Response postGaiaArchiveMultipart(QNetworkAccessManager                     *nam,
+                                  const std::function<QHttpMultiPart *()> &makeBody,
+                                  const Request                            &req);
+
+// The gaiadr3.gaia_source expression for a VizieR I/355/gaiadr3 column, or
+// an empty string for a column with no mapping. Magnitude errors are derived
+// the way VizieR derives them (flux error plus the band zero-point error), so
+// the values agree with VizieR's to the printed digit.
+QString gaiaArchiveExpression(const QString &vizierColumn);
+
+// "expr AS \"Col\", ..." for `columns`, each expression prefixed with
+// `tableAlias.` when one is given. False when any column has no mapping.
+bool gaiaArchiveSelectList(const QStringList &columns, const QString &tableAlias,
+                           QString &out);
+
 // The rows of one VizieR table whose integer `keyColumn` is one of `keys`:
 // the Gaia DR3 by-source_id lookups. Unlike free ADQL this has an ASU
 // (viz-bin) equivalent, and the ASU front ends are separate services from the
@@ -122,12 +174,13 @@ struct AsuMirror {
     bool    acceptsLists;
 };
 
-// CDS first, CfA second. The other VizieR mirrors (IDIA, NAOJ, IUCAA,
-// China-VO, INASAN) timed out or refused connections when this was written.
+// CDS first, then CfA and IDIA (Cape Town). NAOJ, IUCAA, China-VO and INASAN
+// timed out or refused connections when this was written; IDIA, like the
+// CfA, answers one key per request.
 const QList<AsuMirror> &vizierAsuMirrors();
 
 // Runs the lookup on TAPVizieR and, when TAP is unavailable, repeats it on
-// the ASU mirrors. Either way the body is CSV with `columns` as the header,
+// the ESA Gaia archive (I/355/gaiadr3 only) and then the ASU mirrors. Either way the body is CSV with `columns` as the header,
 // so callers parse one format. A query TAP rejects is not retried on ASU.
 Response lookupVizier(QNetworkAccessManager *nam, const VizierLookup &lookup,
                       const Request &req);

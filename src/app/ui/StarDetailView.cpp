@@ -1,4 +1,5 @@
 #include "app/ui/StarDetailView.h"
+#include "catalog/CdsTapClient.h"
 #include "core/Star.h"
 #include "core/Project.h"
 #include "app/ui/ApplicationController.h"
@@ -25,6 +26,8 @@
 #include "sed/ui/SEDFitDialog.h"
 #include "fitting/ui/SpectraFitDialog.h"
 
+#include <QApplication>
+#include <QNetworkAccessManager>
 #include <QDesktopServices>
 #include <QEvent>
 #include <QHBoxLayout>
@@ -721,8 +724,34 @@ void StarDetailView::onShareStar() {
 void StarDetailView::onShowInSimbad()
 {
     if (!_star) return;
-    QString url = QString("https://simbad.cds.unistra.fr/simbad/sim-id?Ident=Gaia+DR3+%1&submit=submit+id")
-                      .arg(_star->getSourceId());
+
+    // CDS unless it has failed recently or fails a quick probe now; then the
+    // CfA mirror, which serves the same pages.
+    const QString cds = CdsTap::simbadMirrors().first();
+    if (!CdsTap::isHostDown(cds)) {
+        QNetworkAccessManager nam;
+        CdsTap::Request probe(4000);
+        probe.maxAttempts = 1;
+        probe.trackHealth = true;
+        QApplication::setOverrideCursor(Qt::BusyCursor);
+        CdsTap::get(&nam, cds + QStringLiteral("/simbad/"), probe);
+        QApplication::restoreOverrideCursor();
+    }
+    const QString base = CdsTap::simbadWebBase();
+
+    QString url;
+    const QString sid = _star->getSourceId().trimmed();
+    if (!sid.isEmpty()) {
+        url = QString("%1/simbad/sim-id?Ident=Gaia+DR3+%2&submit=submit+id").arg(base, sid);
+    } else if (Star::isSet(_star->getRa()) && Star::isSet(_star->getDec())) {
+        url = QString("%1/simbad/sim-coo?Coord=%2+%3&Radius=5&Radius.unit=arcsec")
+                  .arg(base)
+                  .arg(_star->getRa(), 0, 'f', 6)
+                  .arg(_star->getDec(), 0, 'f', 6);
+    } else {
+        url = QString("%1/simbad/sim-id?Ident=%2&submit=submit+id")
+                  .arg(base, QString::fromUtf8(QUrl::toPercentEncoding(_star->getAlias())));
+    }
     QDesktopServices::openUrl(QUrl(url));
 }
 

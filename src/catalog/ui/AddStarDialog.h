@@ -15,8 +15,9 @@ class Star;
 
 /**
  * Dialog to add a single star to a project. Fields can be filled manually
- * or auto-resolved from SIMBAD + Gaia DR3 (VizieR) starting from any of:
- * Gaia DR3 source_id, TIC, JName, or RA/Dec.
+ * or auto-resolved (StarResolver: SIMBAD, else MAST/NED/Sesame + Gaia DR3
+ * cone + MAST TIC) starting from any of: Gaia DR3 source_id, TIC, JName,
+ * alias, or RA/Dec.
  *
  * Empty numeric fields are stored as NaN on the resulting Star.
  */
@@ -37,21 +38,13 @@ private slots:
     void onResolve();
 
 private:
-    struct ResolvedIds {
-        QString sourceId;
-        QString tic;
-        QString mainId;
-        double  ra  = std::numeric_limits<double>::quiet_NaN();
-        double  dec = std::numeric_limits<double>::quiet_NaN();
-    };
-
     void setupUi();
     void setStatus(const QString& msg, bool isError = false);
     void setBusy(bool busy);
 
     // Synchronous query helpers (use QEventLoop with a timeout).
-    bool resolveSimbad(const QString& queryStr, ResolvedIds& out, QString& err);
-    bool fetchGaiaDR3(const QString& sourceId, QString& err, bool& viaAsu);
+    // `via` names the service that answered.
+    bool fetchGaiaDR3(const QString& sourceId, QString& err, QString& via);
 
     // Misc helpers
     static double  parseDoubleOrNaN(QLineEdit* le);
