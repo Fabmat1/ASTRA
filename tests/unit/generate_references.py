@@ -24,6 +24,7 @@ CHI2_VERSION = 1
 BARYCENTRIC_VERSION = 2
 GALACTIC_VERSION = 1
 ALTAZ_VERSION = 1
+HEALPIX_VERSION = 1
 
 
 def kepler_table() -> dict:
@@ -297,6 +298,51 @@ def altaz_table() -> dict:
     }
 
 
+def healpix_table() -> dict:
+    """NESTED cell indices from astropy-healpix, for the HiPS tile lookup.
+
+    Directions cover both polar caps, the equatorial belt, the face corners
+    and seams (longitudes on multiples of 45 degrees, |z| = 2/3), and points
+    a hair from each pole, at the orders a HiPS renderer uses: tile orders 3
+    to 11 and tile-pixel orders up to 20.
+    """
+    import numpy as np
+    from astropy_healpix import HEALPix
+    import astropy.units as u
+
+    rng = np.random.default_rng(20261119)
+    lon = list(rng.uniform(0.0, 360.0, 60))
+    lat = list(np.degrees(np.arcsin(rng.uniform(-1.0, 1.0, 60))))
+    z23 = math.degrees(math.asin(2.0 / 3.0))
+    special = [
+        # Exact face vertices (e.g. lon 45, lat 0) are left out: which of the
+        # touching cells owns one is a rounding decision, not geometry.
+        (0.0, 1e-6), (45.0 + 1e-6, 1e-6), (90.0 - 1e-6, -1e-6), (359.999999, 0.0),
+        (10.0, z23), (10.0, -z23), (100.0, z23 + 1e-7), (100.0, -z23 - 1e-7),
+        (45.0, 60.0), (135.0, -60.0), (0.0, 89.9999), (200.0, -89.9999),
+        (12.3, 89.999999), (321.0, -89.999999), (180.0, 41.8103149),
+        (266.4168, -29.0078), (83.6331, 22.0145), (279.2347, 38.7837),
+    ]
+    for a, b in special:
+        lon.append(a)
+        lat.append(b)
+
+    orders = [0, 3, 6, 9, 11, 12, 15, 18, 20]
+    cases = []
+    for order in orders:
+        hp = HEALPix(nside=2 ** order, order="nested")
+        idx = hp.lonlat_to_healpix(np.array(lon) * u.deg, np.array(lat) * u.deg)
+        for a, b, i in zip(lon, lat, idx):
+            cases.append({"order": order, "lon": float(a), "lat": float(b), "nest": int(i)})
+
+    return {
+        "version": HEALPIX_VERSION,
+        "description": "HEALPix NESTED indices of (lon, lat) directions",
+        "generator": "astropy-healpix",
+        "cases": cases,
+    }
+
+
 def main() -> int:
     out_dir = Path(sys.argv[1]) if len(sys.argv) > 1 else REFERENCE_DIR
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -304,7 +350,8 @@ def main() -> int:
     tables = {"kepler.json": kepler_table, "chi2.json": chi2_table,
               "barycentric_parts.json": barycentric_parts_table,
               "galactic.json": galactic_table,
-              "altaz.json": altaz_table}
+              "altaz.json": altaz_table,
+              "healpix.json": healpix_table}
     for name, build in tables.items():
         path = out_dir / name
         try:

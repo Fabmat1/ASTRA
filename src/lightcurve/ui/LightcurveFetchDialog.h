@@ -2,7 +2,6 @@
 
 #include <QDialog>
 #include <QList>
-#include <QPixmap>
 #include <QTextEdit>
 #include <memory>
 #include "rv/ui/PeriodogramPanel.h"
@@ -36,6 +35,7 @@ class LCPanel;
 class QTreeWidget;
 class QTreeWidgetItem;
 class LCFit;
+namespace SkyMap { class SkyMapWidget; }
 
 class LightcurveFetchDialog : public QDialog
 {
@@ -49,8 +49,6 @@ public:
     ~LightcurveFetchDialog() override;
 
 protected:
-    bool eventFilter(QObject* watched, QEvent* event) override;
-
     LCPanel*          lcPanel()         const { return _lcPanel; }
     PeriodogramPanel* periodogramPanel() const { return _periodogramPanel; }
 
@@ -165,10 +163,9 @@ private slots:
     void     refreshFitSourceCombo();
     void     refreshFitFilterCombo();
     void     refreshPreviewsTab();
-    void     rescalePreviewImage();     // re-fit _previewPixmap to the (settled) label size
+    void     applySkyLayer();           // show the layer picked in _skyLayerCombo
     QString  previewDir() const;
     QString  previewPath(const QString& filename) const;
-    double   readCrowdsapFile(const QString& path) const;
 
     void     refreshExistingFitsTree();
     void     updateSelectedFitDetails();
@@ -264,14 +261,17 @@ private slots:
     QPushButton*     _importCsvBtn = nullptr;
     QPushButton*     _setupEnvBtn  = nullptr;
 
-    int     _previewsTabIdx   = -1;
-    QLabel*      _previewTitle      = nullptr;
-    QLabel*      _previewDesc       = nullptr;
-    QLabel*      _previewImage      = nullptr;
-    QPixmap      _previewPixmap;                  // unscaled source for the current preview
-    QPushButton* _prevPreviewBtn    = nullptr;
-    QPushButton* _nextPreviewBtn    = nullptr;
-    int          _previewIndex      = 0;
+    // Crowding tab: sky map around the star
+    int                   _previewsTabIdx   = -1;
+    SkyMap::SkyMapWidget* _skyMap           = nullptr;
+    QComboBox*            _skyLayerCombo    = nullptr;
+    QCheckBox*            _skyGaiaCheck     = nullptr;
+    QPushButton*          _skyRetryBtn      = nullptr;
+    QLabel*               _skyCrowdsapLabel = nullptr;
+    QLabel*               _skyLayerDesc     = nullptr;
+    QPushButton*          _prevPreviewBtn   = nullptr;
+    QPushButton*          _nextPreviewBtn   = nullptr;
+    bool                  _skyMapActivated  = false;   // goes online on first view
 
     void stepPreview(int delta);
 

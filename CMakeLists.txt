@@ -439,6 +439,11 @@ set(ASTRA_CORE_SOURCES
     src/lightcurve/Photometry.cpp
     src/lightcurve/TessSectors.cpp
 
+    # skymap
+    src/skymap/GaiaFieldQuery.cpp
+    src/skymap/Healpix.cpp
+    src/skymap/HipsSurvey.cpp
+
     # massfit
     src/massfit/MassFitPlan.cpp
     src/massfit/MassFitService.cpp
@@ -605,6 +610,11 @@ set(ASTRA_CORE_HEADERS
     src/lightcurve/Photometry.h
     src/lightcurve/TessSectors.h
 
+    # skymap
+    src/skymap/GaiaFieldQuery.h
+    src/skymap/Healpix.h
+    src/skymap/HipsSurvey.h
+
     # massfit
     src/massfit/MassFitPlan.h
     src/massfit/MassFitService.h
@@ -744,6 +754,10 @@ set(ASTRA_UI_SOURCES
     src/lightcurve/ui/LightcurveFetchDialog.cpp
     src/lightcurve/ui/LightcurveFetchSessionsDialog.cpp
 
+    # skymap/ui
+    src/skymap/ui/HipsTileLoader.cpp
+    src/skymap/ui/SkyMapWidget.cpp
+
     # massfit/ui
     src/massfit/ui/MassFitManagerDialog.cpp
     src/massfit/ui/MassFitPlanDialog.cpp
@@ -878,6 +892,10 @@ set(ASTRA_UI_HEADERS
     src/lightcurve/ui/LightcurveCredentialPrompts.h
     src/lightcurve/ui/LightcurveFetchDialog.h
     src/lightcurve/ui/LightcurveFetchSessionsDialog.h
+
+    # skymap/ui
+    src/skymap/ui/HipsTileLoader.h
+    src/skymap/ui/SkyMapWidget.h
 
     # massfit/ui
     src/massfit/ui/MassFitManagerDialog.h
@@ -1715,6 +1733,7 @@ if(BUILD_TESTING)
             tests/unit/spectra/lamost_uncatalogued.cpp
             tests/unit/rv/rvfit.cpp
             tests/unit/lightcurve/lcfit_physics.cpp
+            tests/unit/skymap/healpix.cpp
             tests/unit/kinematics/galactic.cpp
             tests/unit/observing/observability.cpp
             tests/unit/fitting/fit_types_json.cpp

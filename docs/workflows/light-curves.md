@@ -56,8 +56,40 @@ mapping, time-scale selection, and quality cuts) or in bulk through the
 
 The **Light Curves** dialog's **Viewer** tab manages sources and folding
 periods (**Set as Best Period** feeds the rest of ASTRA), the
-**Periodogram** tab computes periodograms, and the **Previews** tab steps
-through survey cutouts with ++left++ / ++right++.
+**Periodogram** tab computes periodograms, and the **Crowding** tab shows a
+sky map around the star for judging blends.
+
+### Crowding sky map
+
+The **Crowding** tab is a pannable sky map in the spirit of Aladin: drag to
+pan, scroll to zoom, double-click to centre, **Reset view** (or ++home++) to
+return to a 3′ field on the star. Right-click copies coordinates or a Gaia
+source id.
+
+The image layer is chosen from the drop-down, or stepped with ++left++ /
+++right++. Layers keep the view's centre, zoom and orientation (north up, east
+left), so a source can be followed from survey to survey:
+
+- **Fetched previews**: the TESS FFI, ZTF, DSS2 Red and Pan-STARRS cutouts
+  lightcurvequery saved when the light curves were fetched. Each covers a 3′
+  field, outlined on the map. Previews saved by lightcurvequery before
+  2026-05-22 are plots rather than sky images; they are shown as they are,
+  without overlays, and fetching again replaces them.
+- **HiPS surveys** from gamma rays to radio (Fermi, Swift BAT, Chandra,
+  XMM-Newton, eROSITA, ROSAT, GALEX, DSS2, Pan-STARRS, SDSS, Legacy Surveys,
+  2MASS, WISE, Spitzer, Planck, NVSS, RACS, LoTSS, ...). Each survey lists all
+  servers known to carry it and uses whichever answers, so it stays usable
+  while one host (CDS, for example) is down. Tiles are cached under
+  `cache/hips/` in the data directory (pruned at 1 GB).
+
+**Gaia DR3 sources** marks the Gaia sources in view; markers grow with
+brightness, and orange ones are within 2.5 mag of the star (bright enough to
+add at least ~10 % of its flux to a blended aperture). Hover a marker for its
+photometry, astrometry and separation; click to pin the details. Positions are
+Gaia's (epoch 2016.0).
+
+The TESS **CROWDSAP** (the fraction of flux in the SPOC aperture that comes
+from the star) is shown above the map whenever it is known.
 
 Computed periodograms are saved in full in a **periodogram store** that keeps
 the 100 most viewed and the 25 most recently computed ones (Settings /
