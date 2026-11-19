@@ -17,6 +17,7 @@
 #include "fitting/FitJobFactory.h"
 #include "core/Instrument.h"
 #include "spectra/SpectrumPanelPlan.h"
+#include "spectra/CoaddRecipe.h"
 
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -210,6 +211,7 @@ void SpectraPanel::setupUi()
     _adoptCheck = new QCheckBox("Adopted");
     _adoptCheck->setToolTip(
         "Take the star's Teff, log g and He from this fit.\n\n"
+        "An adopted fit of a saved co-add wins over fits of single spectra. "
         "With several fits marked, the one with the lowest reduced chi2 is "
         "used, and the earliest spectrum among fits that tie or have no chi2. "
         "With no fit marked, the same choice is made among the best fits of "
@@ -488,6 +490,9 @@ void SpectraPanel::setupUi()
         _hasCustomZoom = false;     // the flux scale changes entirely
         _panelZoom.clear();
         saveViewSettings();
+        // The co-add's mode is a different stack, which the Co-Add tab
+        // builds; it hands the result back through showCoadd().
+        if (_coaddActive) { emit coaddStackRequested(); return; }
         updateSpectrumDisplay();
     });
     connect(_layoutGroup, &QButtonGroup::idClicked, this, [this](int) {
@@ -554,11 +559,7 @@ void SpectraPanel::populate()
     // of instrument-name prefix. Time::sortValue() yields a comparable epoch
     // even when only an MJD or only a BJD is present.
     _sortedSpectra = spectra;
-    std::sort(_sortedSpectra.begin(), _sortedSpectra.end(),
-              [](const std::shared_ptr<Spectrum>& a,
-                 const std::shared_ptr<Spectrum>& b) {
-                  return a->time().sortValue() < b->time().sortValue();
-              });
+    std::sort(_sortedSpectra.begin(), _sortedSpectra.end(), spectrumDisplayLess);
 
     // Assign tab colors by instrument
     QMap<QString, QColor> instrumentColors;
@@ -579,6 +580,12 @@ void SpectraPanel::populate()
         int tabIdx = _tabBar->addTab(label);
 
         QString tooltip;
+        if (spec->isCoaddProduct()) {
+            const auto r = astra::spectra::coaddRecipeOf(*spec);
+            tooltip += QString("Saved co-add of %1 spectra (%2 stack)\n")
+                .arg(r ? r->members.size() : 0)
+                .arg(r ? astra::spectra::stackDisplayName(r->stack) : QString());
+        }
         if (!spec->getInstrument().isEmpty())
             tooltip += spec->getInstrument();
         if (spec->getMJD() > 0)
@@ -590,7 +597,9 @@ void SpectraPanel::populate()
         _tabBar->setTabToolTip(tabIdx, tooltip.trimmed());
 
         QString inst = spec->getInstrument();
-        if (instrumentColors.contains(inst))
+        if (spec->isDerived())
+            _tabBar->setTabTextColor(tabIdx, PanelUtils::fitCurveColor());
+        else if (instrumentColors.contains(inst))
             _tabBar->setTabTextColor(tabIdx, instrumentColors[inst]);
     }
 
@@ -718,12 +727,32 @@ void SpectraPanel::displaySpectrum(int index)
 // Co-add overlay
 // ─────────────────────────────────────────────────────────────────────────────
 
+struct SpectraPanel::Series {
+    std::vector<double>  x, f, s;   ///< data and its error (s may be empty)
+    std::vector<uint8_t> used;      ///< fit mask; empty: every pixel counts
+    // Model curves on the same grid, in the same flux units; empty: none.
+    std::vector<double>  m, c, comp1, comp2, tell;
+
+    bool usedAt(size_t i) const { return used.empty() || used[i] != 0; }
+};
+
+struct SpectraPanel::SliceCurves {
+    std::vector<double>  x, y;      ///< displayed data, every pixel
+    std::vector<uint8_t> used;
+    std::vector<double>  active;    ///< finite displayed data the fit used
+    std::vector<double>  model;     ///< displayed model; empty when hidden
+    std::vector<double>  overlay;   ///< components, telluric and continuum
+    QCPGraph* modelGraph  = nullptr;
+    int       modelCurves = 0;
+};
+
 void SpectraPanel::showCoadd(const CoaddDisplay& coadd)
 {
     // Entering co-add mode drops a zoom left over from the per-epoch view,
     // which would rarely land anywhere useful on the stacked range. A zoom set
-    // *within* co-add mode survives the restacks that follow.
-    if (!_coaddActive) _hasCustomZoom = false;
+    // *within* co-add mode survives the restacks that follow, unless the stack
+    // itself changed: its flux scale is then a different one.
+    if (!_coaddActive || coadd.stack != _coadd.stack) _hasCustomZoom = false;
 
     _coadd       = coadd;
     _coaddActive = true;
@@ -747,8 +776,11 @@ void SpectraPanel::clearCoadd()
 
     _coaddActive = false;
     _coadd = CoaddDisplay{};
+    for (auto* item : _coaddDepthItems) _mainPlot->removeItem(item);
+    _coaddDepthItems.clear();
 
     _tabBar->setVisible(true);
+    updateToolbarVisibility();
     // The fit widgets' visibility is owned by displaySpectrum(); re-running it
     // restores both them and the per-spectrum plot.
     if (_currentSpectrumIndex >= 0)
@@ -757,127 +789,98 @@ void SpectraPanel::clearCoadd()
         updateSpectrumDisplay();
 }
 
+astra::spectra::CoaddStack SpectraPanel::preferredCoaddStack() const
+{
+    using astra::spectra::CoaddStack;
+    return _preferredMode == DisplayRaw      ? CoaddStack::Raw
+         : _preferredMode == DisplayRebinned ? CoaddStack::Flux
+                                             : CoaddStack::Normalized;
+}
+
 void SpectraPanel::updateCoaddDisplay()
 {
+    using astra::spectra::CoaddStack;
+
+    for (auto* item : _coaddDepthItems) _mainPlot->removeItem(item);
+    _coaddDepthItems.clear();
+
+    const size_t n = _coadd.wavelengths.size();
+    Series S;
+    if (n > 0 && _coadd.fluxes.size() == n) {
+        S.x = _coadd.wavelengths;
+        S.f = _coadd.fluxes;
+        if (_coadd.sigmas.size() == n)    S.s = _coadd.sigmas;
+        if (_coadd.model.size() == n)     S.m = _coadd.model;
+        if (_coadd.continuum.size() == n) S.c = _coadd.continuum;
+        // Series::used is the fit's mask (1 = used), the co-add's the reverse.
+        if (_coadd.ignored.size() == n &&
+            std::any_of(_coadd.ignored.begin(), _coadd.ignored.end(),
+                        [](uint8_t v) { return v != 0; })) {
+            S.used.resize(n);
+            for (size_t i = 0; i < n; ++i) S.used[i] = _coadd.ignored[i] ? 0 : 1;
+        }
+    }
+
+    // ── The view bar, as for a single spectrum ──
+    const int mode = _coadd.stack == CoaddStack::Raw  ? DisplayRaw
+                   : _coadd.stack == CoaddStack::Flux ? DisplayRebinned
+                                                      : DisplayNormalized;
+    setModeButton(mode);
+    _modeGroup->button(DisplayNormalized)->setEnabled(_coadd.fitStacksAvailable);
+    _modeGroup->button(DisplayRebinned)->setEnabled(_coadd.fitStacksAvailable);
+    _modeGroup->button(DisplayNormalized)->parentWidget()->setVisible(true);
+    const bool panels = panelsShown();
+    const bool normalized = mode == DisplayNormalized;
+    _modelCheck->setVisible(!S.m.empty());
+    _contCheck->setVisible(!S.c.empty());
+    _contCheck->setEnabled(true);
+    _componentsCheck->setVisible(false);
+    _telluricCheck->setVisible(false);
+    _errCheck->setVisible(!S.s.empty());
+    _residCheck->setVisible(!S.m.empty() && !panels);
+    for (auto* b : _layoutGroup->buttons()) b->setEnabled(_coadd.modeSpectrum != nullptr);
+
     applyPlotVisibility();
-    _axisSyncTimer->stop();
-    disconnect(_axisSyncConn1);
-    disconnect(_axisSyncConn2);
+    // A Normalized stack is normalized already and carries no continuum, so
+    // nothing is divided; Flux and Raw draw their continuum.
+    if (panels)
+        renderPanels(S, nullptr, normalized, _coadd.modeSpectrum);
+    else
+        renderFull(S, nullptr, normalized);
 
-    // Restacking replaces every plottable, so a zoom the user set on the
-    // co-add has to be captured here and put back at the end - both axes.
-    // Otherwise changing the selection or the normalization would throw away
-    // the region they were looking at.
-    const bool restoreZoom = _hasCustomZoom && _mainPlot->graphCount() > 0;
-    const QCPRange savedXRange = _mainPlot->xAxis->range();
-    const QCPRange savedYRange = _mainPlot->yAxis->range();
-
-    _mainPlot->clearPlottables();
-    _mainPlot->legend->setVisible(false);
-    _residualPlot->setVisible(false);
-
-    const auto& wl = _coadd.wavelengths;
-    const auto& fl = _coadd.fluxes;
-
-    _mainPlot->xAxis->setTickLabels(true);
-    _mainPlot->xAxis->setLabel("Wavelength [Å]");
-    _mainPlot->yAxis->setLabel("Normalized Flux");
-
-    if (wl.empty() || fl.size() != wl.size()) {
-        _infoLabel->setText(_coadd.caption);
-        _mainPlot->replot();
-        return;
-    }
-
-    QVector<double> wlVec = PanelUtils::toQVec(wl);
-    QVector<double> flVec = PanelUtils::toQVec(fl);
-
-    // ── Error band ──
-    const bool hasErrors = (_coadd.sigmas.size() == wl.size());
-    if (hasErrors) {
-        QVector<double> upper(wlVec.size()), lower(wlVec.size());
-        for (int i = 0; i < wlVec.size(); ++i) {
-            const double e = std::isfinite(_coadd.sigmas[i])
-                             ? _coadd.sigmas[i] : 0.0;
-            upper[i] = fl[i] + e;
-            lower[i] = fl[i] - e;
+    // ── Shade where the stack is shallower than its deepest part ──
+    // Those stretches gained less from co-adding (often only one spectrum
+    // covers them), which is worth seeing before trusting a line there.
+    if (!panels && !S.x.empty() && _coadd.counts.size() == n) {
+        const int maxCount = *std::max_element(_coadd.counts.begin(), _coadd.counts.end());
+        if (maxCount > 1) {
+            QColor shade = PanelUtils::towardBg(PanelUtils::plotAnnotationColor(), 0.75);
+            shade.setAlpha(60);
+            size_t i = 0;
+            while (i < n) {
+                if (_coadd.counts[i] >= maxCount) { ++i; continue; }
+                const size_t start = i;
+                while (i < n && _coadd.counts[i] < maxCount) ++i;
+                const double lo = start > 0 ? 0.5 * (S.x[start - 1] + S.x[start]) : S.x[start];
+                const double hi = i < n ? 0.5 * (S.x[i - 1] + S.x[i]) : S.x[n - 1];
+                auto* rect = new QCPItemRect(_mainPlot);
+                rect->setLayer(QStringLiteral("background"));
+                rect->setClipToAxisRect(true);
+                rect->topLeft->setTypeX(QCPItemPosition::ptPlotCoords);
+                rect->topLeft->setTypeY(QCPItemPosition::ptAxisRectRatio);
+                rect->bottomRight->setTypeX(QCPItemPosition::ptPlotCoords);
+                rect->bottomRight->setTypeY(QCPItemPosition::ptAxisRectRatio);
+                rect->topLeft->setCoords(lo, 0.0);
+                rect->bottomRight->setCoords(hi, 1.0);
+                rect->setPen(Qt::NoPen);
+                rect->setBrush(shade);
+                _coaddDepthItems << rect;
+            }
+            _mainPlot->replot();
         }
-
-        QCPGraph* up = _mainPlot->addGraph();
-        up->setData(wlVec, upper);
-        up->setPen(Qt::NoPen);
-        up->removeFromLegend();
-
-        QCPGraph* lo = _mainPlot->addGraph();
-        lo->setData(wlVec, lower);
-        lo->setPen(Qt::NoPen);
-        lo->removeFromLegend();
-
-        up->setBrush(QBrush(PanelUtils::errorBandFor(PanelUtils::dataLineColor())));
-        up->setChannelFillGraph(lo);
-    }
-
-    // ── Regions carried by a single spectrum are drawn dimmed, so the parts of
-    //    the stack that gained no depth from co-adding are obvious. ──
-    const bool hasCounts = (_coadd.counts.size() == wl.size());
-    int maxCount = 0;
-    if (hasCounts)
-        maxCount = *std::max_element(_coadd.counts.begin(), _coadd.counts.end());
-
-    QColor dataColor = PanelUtils::dataLineColor();
-
-    if (hasCounts && maxCount > 1) {
-        // Regions with no co-add depth are dimmed by mixing toward the plot
-        // background rather than by dropping alpha. Alpha compounds with the
-        // now-dimmer data colour and made these stretches nearly invisible on
-        // dark themes; a background mix keeps the same relative step on both
-        // polarities.
-        QColor shallowColor = PanelUtils::towardBg(dataColor, 0.45);
-
-        QVector<double> deepFl(wlVec.size()), shallowFl(wlVec.size());
-        for (int i = 0; i < wlVec.size(); ++i) {
-            const bool deep = _coadd.counts[i] >= maxCount;
-            deepFl[i]    = deep ? fl[i] : qQNaN();
-            shallowFl[i] = deep ? qQNaN() : fl[i];
-        }
-
-        QCPGraph* shallow = _mainPlot->addGraph();
-        shallow->setData(wlVec, shallowFl);
-        shallow->setPen(QPen(shallowColor, 1.0));
-        shallow->removeFromLegend();
-
-        QCPGraph* deep = _mainPlot->addGraph();
-        deep->setData(wlVec, deepFl);
-        deep->setPen(QPen(dataColor, 1.2));
-        deep->removeFromLegend();
-    } else {
-        QCPGraph* g = _mainPlot->addGraph();
-        g->setData(wlVec, flVec);
-        g->setPen(QPen(dataColor, 1.2));
-        g->removeFromLegend();
-    }
-
-    // ── Ranges ──
-    if (restoreZoom) {
-        _mainPlot->xAxis->setRange(savedXRange);
-        _mainPlot->yAxis->setRange(savedYRange);
-    } else {
-        std::vector<double> finiteFlux;
-        finiteFlux.reserve(fl.size());
-        for (double v : fl) if (std::isfinite(v)) finiteFlux.push_back(v);
-
-        double xSpan = wl.back() - wl.front();
-        if (xSpan <= 0) xSpan = 100;
-
-        auto [yLo, yHi] = PanelUtils::robustRange(finiteFlux, 0.98, 0.15);
-        _mainPlot->yAxis->setRange(yLo, yHi);
-        _mainPlot->xAxis->setRange(wl.front() - xSpan * 0.01,
-                                   wl.back()  + xSpan * 0.01);
     }
 
     _infoLabel->setText(_coadd.caption);
-    _mainPlot->replot();
-
     if (_resetZoomButton)
         _resetZoomButton->setVisible(_hasCustomZoom);
 }
@@ -885,25 +888,6 @@ void SpectraPanel::updateCoaddDisplay()
 // ─────────────────────────────────────────────────────────────────────────────
 // Per-spectrum view
 // ─────────────────────────────────────────────────────────────────────────────
-
-struct SpectraPanel::Series {
-    std::vector<double>  x, f, s;   ///< data and its error (s may be empty)
-    std::vector<uint8_t> used;      ///< fit mask; empty: every pixel counts
-    // Model curves on the same grid, in the same flux units; empty: none.
-    std::vector<double>  m, c, comp1, comp2, tell;
-
-    bool usedAt(size_t i) const { return used.empty() || used[i] != 0; }
-};
-
-struct SpectraPanel::SliceCurves {
-    std::vector<double>  x, y;      ///< displayed data, every pixel
-    std::vector<uint8_t> used;
-    std::vector<double>  active;    ///< finite displayed data the fit used
-    std::vector<double>  model;     ///< displayed model; empty when hidden
-    std::vector<double>  overlay;   ///< components, telluric and continuum
-    QCPGraph* modelGraph  = nullptr;
-    int       modelCurves = 0;
-};
 
 SpectraPanel::Series SpectraPanel::buildSeries(
     const std::shared_ptr<Spectrum>& spec, const SpectralFit* fit, int mode)
@@ -962,6 +946,15 @@ SpectraPanel::Series SpectraPanel::buildSeries(
     S.f = spec->getFluxes();
     const auto err = spec->getFluxErrors();
     if (err.size() == S.x.size()) S.s = err;
+    // A saved co-add knows which of its pixels some member's fit ignored;
+    // they are drawn as excluded and kept out of the y range even before the
+    // co-add has a fit of its own.
+    if (const auto r = astra::spectra::coaddRecipeOf(*spec);
+        r && !r->ignoredRanges.isEmpty()) {
+        const auto ign = astra::spectra::rangesToMask(S.x, r->ignoredRanges);
+        S.used.resize(ign.size());
+        for (size_t i = 0; i < ign.size(); ++i) S.used[i] = ign[i] ? 0 : 1;
+    }
     if (!haveModel || S.x.empty()) return S;
 
     const auto& mw = fit->modelWavelengths;
@@ -1598,7 +1591,8 @@ void SpectraPanel::showPanelMenu(const QPoint& pos)
 bool SpectraPanel::panelsShown() const
 {
     const bool previewing = _fitOverlay && _fitOverlay->config().active;
-    return _layoutGroup && _layoutGroup->checkedId() == 0 && !_coaddActive &&
+    return _layoutGroup && _layoutGroup->checkedId() == 0 &&
+           (!_coaddActive || _coadd.modeSpectrum) &&
            !_showingAbundances && !previewing;
 }
 
@@ -1817,7 +1811,7 @@ void SpectraPanel::updateToolbarVisibility()
     _solarRelCheck->setVisible(_showingAbundances);
     // The view bar belongs to the per-spectrum view; which of its toggles
     // show is decided by updateSpectrumDisplay() from the selected fit.
-    _viewBar->setVisible(!_showingAbundances && !_coaddActive);
+    _viewBar->setVisible(!_showingAbundances);
 }
 
 void SpectraPanel::setAbundanceViewActive(bool on)
@@ -2089,6 +2083,9 @@ void SpectraPanel::updateAbundanceDisplay()
 QString SpectraPanel::formatTabLabel(
     const std::shared_ptr<Spectrum>& spec, int index) const
 {
+    if (spec->isCoaddProduct())
+        return astra::spectra::coaddTitle(*spec);
+
     QString label;
     QString inst = spec->getInstrument();
     if (inst.isEmpty()) {
@@ -2113,6 +2110,13 @@ QString SpectraPanel::formatInfo(
 {
     QStringList parts;
 
+    if (const auto r = astra::spectra::coaddRecipeOf(*spec)) {
+        parts << QString("<b>%1</b>").arg(astra::spectra::coaddTitle(*spec).toHtmlEscaped());
+        parts << QString("%1 stack").arg(astra::spectra::stackDisplayName(r->stack));
+        if (r->targetResolution > 0.0)
+            parts << QString("R = %1").arg(r->targetResolution, 0, 'f', 0);
+        parts << (r->restFrame ? QString("rest frame") : QString("observed frame"));
+    }
     if (!spec->getInstrument().isEmpty())
         parts << QString("<b>%1</b>").arg(spec->getInstrument());
     if (spec->getMJD() > 0)

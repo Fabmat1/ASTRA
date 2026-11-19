@@ -561,6 +561,8 @@ bool DatabaseManager::createTables()
             origin_id TEXT,
             is_coadd INTEGER DEFAULT 1,
             origin_meta TEXT,
+            derived_kind TEXT,
+            derived_meta TEXT,
             FOREIGN KEY(star_id) REFERENCES stars(id) ON DELETE CASCADE
         )
     )";
@@ -1321,6 +1323,11 @@ bool DatabaseManager::runMigrations()
         "ALTER TABLE spectra ADD COLUMN origin_id TEXT",
         "ALTER TABLE spectra ADD COLUMN is_coadd INTEGER DEFAULT 1",
         "ALTER TABLE spectra ADD COLUMN origin_meta TEXT",
+
+        // Products ASTRA derived from other spectra of the star (saved
+        // co-adds). NULL kind = an observed spectrum; see Spectrum::isDerived.
+        "ALTER TABLE spectra ADD COLUMN derived_kind TEXT",
+        "ALTER TABLE spectra ADD COLUMN derived_meta TEXT",
     };
 
     // Per-element abundance columns on the star, generated from the element
@@ -2228,6 +2235,11 @@ bool DatabaseManager::spectraCounts(const QString& starId, int* nSpectra,
                                    int* nFitSpectra) const
 {
     return _spectra->spectraCounts(starId, nSpectra, nFitSpectra);
+}
+
+bool DatabaseManager::hasAdoptedCoaddFit(const QString& starId) const
+{
+    return _spectra->hasAdoptedCoaddFit(starId);
 }
 
 bool DatabaseManager::saveSpectralFit(const QString& starId, const QString& spectrumId, std::shared_ptr<SpectralFit> fit)

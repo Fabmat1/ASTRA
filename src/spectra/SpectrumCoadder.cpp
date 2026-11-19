@@ -204,64 +204,211 @@ void degradeResolution(const std::vector<double>& wl,
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Normalized data extraction
+// Input extraction
 // ─────────────────────────────────────────────────────────────────────────────
 
-bool extractNormalized(const std::shared_ptr<SpectralFit>& fit,
-                       std::vector<double>& wl,
-                       std::vector<double>& flux,
-                       std::vector<double>& sigma)
+namespace {
+
+/// Linear interpolation of (x, y) at t; NaN outside [x.front(), x.back()].
+std::vector<double> interpolateOnto(const std::vector<double>& x,
+                                    const std::vector<double>& y,
+                                    const std::vector<double>& t)
 {
-    wl.clear(); flux.clear(); sigma.clear();
-    if (!fit) return false;
+    std::vector<double> out(t.size(), kNaN);
+    if (x.size() < 2 || y.size() != x.size()) return out;
+    for (size_t i = 0; i < t.size(); ++i) {
+        const double tw = t[i];
+        if (!(tw >= x.front() && tw <= x.back())) continue;
+        auto it = std::lower_bound(x.begin(), x.end(), tw);
+        if (it == x.begin()) { out[i] = y.front(); continue; }
+        if (it == x.end())   { out[i] = y.back();  continue; }
+        const size_t j = static_cast<size_t>(it - x.begin());
+        const double w0 = x[j - 1], w1 = x[j];
+        const double f = w1 > w0 ? (tw - w0) / (w1 - w0) : 0.0;
+        out[i] = y[j - 1] + f * (y[j] - y[j - 1]);
+    }
+    return out;
+}
+
+/// Nearest-sample lookup of a mask; samples outside the mask's grid are 0.
+std::vector<uint8_t> maskOnto(const std::vector<double>&  x,
+                              const std::vector<uint8_t>& m,
+                              const std::vector<double>&  t)
+{
+    std::vector<uint8_t> out(t.size(), 0);
+    if (x.size() < 2 || m.size() != x.size()) return out;
+    for (size_t i = 0; i < t.size(); ++i) {
+        const double tw = t[i];
+        if (!(tw >= x.front() && tw <= x.back())) continue;
+        auto it = std::lower_bound(x.begin(), x.end(), tw);
+        size_t j = static_cast<size_t>(it - x.begin());
+        if (j >= x.size()) j = x.size() - 1;
+        if (j > 0 && std::abs(x[j - 1] - tw) < std::abs(x[j] - tw)) --j;
+        out[i] = m[j];
+    }
+    return out;
+}
+
+/// Median of the finite, positive entries; NaN when there are none.
+double positiveMedian(std::vector<double> v)
+{
+    v.erase(std::remove_if(v.begin(), v.end(),
+                           [](double x) { return !finite(x) || x <= 0.0; }),
+            v.end());
+    if (v.empty()) return kNaN;
+    return Stats::medianUpper(std::move(v), kNaN);
+}
+
+void clearInput(CoaddInput& in)
+{
+    in.wavelengths.clear(); in.fluxes.clear(); in.sigmas.clear();
+    in.model.clear(); in.continuum.clear(); in.ignored.clear();
+}
+
+} // namespace
+
+bool extractFromFit(const std::shared_ptr<SpectralFit>& fit, CoaddStack stack,
+                    CoaddInput& in)
+{
+    clearInput(in);
+    if (!fit || stack == CoaddStack::Raw) return false;
 
     const auto& mWl = fit->modelWavelengths;
     const auto& rbF = fit->rebinnedFluxes;
     const auto& rbS = fit->rebinnedSigmas;
+    const auto& mod = fit->modelFluxes;
     const auto& spl = fit->modelSplines;
     const auto& ign = fit->modelIgnore;
 
     const size_t n = mWl.size();
     if (n < 2 || rbF.size() != n || spl.size() != n) return false;
 
-    const bool haveSigma = (rbS.size() == n);
+    const bool haveSigma  = (rbS.size() == n);
+    const bool haveModel  = (mod.size() == n);
     const bool haveIgnore = (ign.size() == n);
+    const bool normalize  = (stack == CoaddStack::Normalized);
 
-    wl.reserve(n); flux.reserve(n);
-    if (haveSigma) sigma.reserve(n);
+    in.wavelengths.reserve(n); in.fluxes.reserve(n);
+    if (haveSigma) in.sigmas.reserve(n);
+    if (haveModel) in.model.reserve(n);
+    if (!normalize) in.continuum.reserve(n);
+    in.ignored.reserve(n);
 
     size_t usable = 0;
     for (size_t i = 0; i < n; ++i) {
         if (!finite(mWl[i])) continue;
         // The model grid is sorted, but drop any repeated node so the bin
         // edges derived from it stay strictly increasing.
-        if (!wl.empty() && mWl[i] <= wl.back()) continue;
+        if (!in.wavelengths.empty() && mWl[i] <= in.wavelengths.back()) continue;
 
         // Unusable samples are masked in place rather than removed. Deleting
         // them would leave the surrounding bin edges, which come from the
         // midpoints of this grid, spanning the hole, smearing good flux
         // across it. A NaN simply contributes nothing downstream.
         //
-        // modelIgnore == 0 marks the ranges excluded from the fit (tellurics,
-        // ISM lines, detector artefacts). Their continuum normalization is not
-        // trustworthy, so they stay out of the stack; a different spectrum that
-        // does not mask the same range still fills those pixels.
-        const double s = spl[i];
-        const bool ignored = haveIgnore && ign[i] == 0;
-        const bool bad = ignored || !finite(rbF[i]) || !finite(s) || s == 0.0;
+        // Ignored samples (modelIgnore == 0) are kept: the co-add shows them,
+        // flagged, the way the single spectrum's view does.
+        const double c = spl[i];
+        const bool badCont = !finite(c) || c == 0.0;
+        const bool bad = !finite(rbF[i]) || (normalize && badCont);
+        const double div = normalize ? c : 1.0;
 
-        wl.push_back(mWl[i]);
-        flux.push_back(bad ? kNaN : rbF[i] / s);
+        in.wavelengths.push_back(mWl[i]);
+        in.fluxes.push_back(bad ? kNaN : rbF[i] / div);
         if (haveSigma) {
-            const double e = bad ? kNaN : rbS[i] / s;
-            sigma.push_back(finite(e) ? std::abs(e) : kNaN);
+            const double e = bad ? kNaN : rbS[i] / div;
+            in.sigmas.push_back(finite(e) ? std::abs(e) : kNaN);
         }
+        if (haveModel)
+            in.model.push_back(normalize && badCont ? kNaN : mod[i] / div);
+        if (!normalize)
+            in.continuum.push_back(badCont ? kNaN : c);
+        in.ignored.push_back(haveIgnore && ign[i] == 0 ? 1 : 0);
         if (!bad) ++usable;
     }
 
-    if (wl.size() < 2 || usable < 2) {
-        wl.clear(); flux.clear(); sigma.clear();
+    if (in.wavelengths.size() < 2 || usable < 2) {
+        clearInput(in);
         return false;
+    }
+    return true;
+}
+
+bool extractRaw(const Spectrum& spectrum, const SpectralFit* fit,
+                CoaddInput& in)
+{
+    clearInput(in);
+
+    const auto wl  = spectrum.getWavelengths();
+    const auto fl  = spectrum.getFluxes();
+    const auto err = spectrum.getFluxErrors();
+    const size_t n = wl.size();
+    if (n < 2 || fl.size() != n) return false;
+    const bool haveSigma = (err.size() == n);
+
+    // Strictly increasing, finite wavelengths, as the bin edges need.
+    std::vector<size_t> keep;
+    keep.reserve(n);
+    for (size_t i = 0; i < n; ++i) {
+        if (!finite(wl[i]) || wl[i] <= 0.0) continue;
+        if (!keep.empty() && wl[i] <= wl[keep.back()]) continue;
+        keep.push_back(i);
+    }
+    if (keep.size() < 2) return false;
+
+    size_t usable = 0;
+    for (size_t i : keep) {
+        in.wavelengths.push_back(wl[i]);
+        const bool bad = !finite(fl[i]);
+        in.fluxes.push_back(bad ? kNaN : fl[i]);
+        if (haveSigma) {
+            const double e = err[i];
+            in.sigmas.push_back(!bad && finite(e) && e > 0.0 ? e : kNaN);
+        }
+        if (!bad) ++usable;
+    }
+    if (usable < 2) { clearInput(in); return false; }
+
+    // Without errors on every sample the input cannot be ivar-weighted; an
+    // all-NaN sigma array is the same as none.
+    if (haveSigma &&
+        std::none_of(in.sigmas.begin(), in.sigmas.end(),
+                     [](double e) { return finite(e); }))
+        in.sigmas.clear();
+
+    if (!fit) return true;
+    const auto& mw = fit->modelWavelengths;
+    if (mw.size() < 2) return true;
+
+    if (fit->modelFluxes.size() == mw.size()) {
+        std::vector<double> m = interpolateOnto(mw, fit->modelFluxes, in.wavelengths);
+
+        // The model is in the fit's rebinned units; one least-squares factor
+        // carries it onto the observed counts, as in the single-spectrum view.
+        double num = 0.0, den = 0.0;
+        for (size_t i = 0; i < m.size(); ++i) {
+            if (!finite(m[i]) || !finite(in.fluxes[i])) continue;
+            num += in.fluxes[i] * m[i];
+            den += m[i] * m[i];
+        }
+        const double C = den > 0.0 ? num / den : 1.0;
+        for (double& v : m) v *= C;
+        in.model = std::move(m);
+
+        if (fit->modelSplines.size() == mw.size()) {
+            std::vector<double> c = interpolateOnto(mw, fit->modelSplines, in.wavelengths);
+            for (double& v : c) v *= C;
+            in.continuum = std::move(c);
+        }
+    }
+    if (fit->modelIgnore.size() == mw.size()) {
+        std::vector<uint8_t> used = maskOnto(mw, fit->modelIgnore, in.wavelengths);
+        in.ignored.resize(in.wavelengths.size(), 0);
+        const double lo = mw.front(), hi = mw.back();
+        for (size_t i = 0; i < in.ignored.size(); ++i) {
+            const double w = in.wavelengths[i];
+            in.ignored[i] = (w >= lo && w <= hi && used[i] == 0) ? 1 : 0;
+        }
     }
     return true;
 }
@@ -270,11 +417,43 @@ bool extractNormalized(const std::shared_ptr<SpectralFit>& fit,
 // Co-addition
 // ─────────────────────────────────────────────────────────────────────────────
 
+namespace {
+
+/// One input after degradation, shift and resampling onto the output grid.
+struct OnGrid {
+    const CoaddInput*    in = nullptr;
+    std::vector<double>  f, s, m, c;   ///< s, m, c may be empty
+    std::vector<uint8_t> ign;          ///< empty when nothing was ignored
+    double snr = 0.0;                  ///< median S/N of the used pixels
+};
+
+/// Resample a 0/1 mask: an output pixel is flagged when any flagged input bin
+/// overlaps it.
+std::vector<uint8_t> resampleMask(const std::vector<double>&  wl,
+                                  const std::vector<uint8_t>& m,
+                                  const std::vector<double>&  newWl)
+{
+    if (m.size() != wl.size() ||
+        std::none_of(m.begin(), m.end(), [](uint8_t v) { return v != 0; }))
+        return {};
+    std::vector<double> asD(m.size());
+    for (size_t i = 0; i < m.size(); ++i) asD[i] = m[i] ? 1.0 : 0.0;
+    std::vector<double> r, unused;
+    spectresResample(wl, asD, {}, newWl, r, unused);
+    std::vector<uint8_t> out(newWl.size(), 0);
+    for (size_t k = 0; k < r.size(); ++k)
+        out[k] = finite(r[k]) && r[k] > 0.0 ? 1 : 0;
+    return out;
+}
+
+} // namespace
+
 CoaddResult coadd(const std::vector<CoaddInput>& inputs,
                   const CoaddOptions&            options)
 {
     CoaddResult out;
     out.restFrame = options.shiftToRestFrame;
+    out.stack     = options.stack;
 
     std::vector<const CoaddInput*> usable;
     for (const auto& in : inputs)
@@ -326,7 +505,8 @@ CoaddResult coadd(const std::vector<CoaddInput>& inputs,
 
     // ── Per-spectrum preparation: degrade, then shift ───────────────────────
     struct Prepared {
-        std::vector<double> wl, flux, sigma;
+        const CoaddInput* in = nullptr;
+        std::vector<double> wl, flux, sigma, model, cont;
     };
     std::vector<Prepared> prepared;
     prepared.reserve(usable.size());
@@ -334,10 +514,20 @@ CoaddResult coadd(const std::vector<CoaddInput>& inputs,
     QStringList missingRv;
     for (const auto* in : usable) {
         Prepared p;
+        p.in = in;
         // Degrade on the native grid, in the observed frame where R(λ) is
-        // defined, before any resampling touches the sampling.
+        // defined, before any resampling touches the sampling. The model went
+        // through the instrument's resolution in the fit, so it is degraded
+        // the same way; the continuum is smooth and passes as it is.
         degradeResolution(in->wavelengths, in->fluxes, in->sigmas,
                           in->resolutionCoeffs, targetR, p.flux, p.sigma);
+        if (in->model.size() == in->wavelengths.size()) {
+            std::vector<double> unused;
+            degradeResolution(in->wavelengths, in->model, {},
+                              in->resolutionCoeffs, targetR, p.model, unused);
+        }
+        if (in->continuum.size() == in->wavelengths.size())
+            p.cont = in->continuum;
 
         p.wl = in->wavelengths;
         if (options.shiftToRestFrame) {
@@ -354,7 +544,7 @@ CoaddResult coadd(const std::vector<CoaddInput>& inputs,
 
     if (!missingRv.isEmpty()) {
         out.warnings << QObject::tr(
-            "No fitted radial velocity for %1, so it is stacked without a "
+            "No radial velocity for %1, so it is stacked without a "
             "rest-frame shift.").arg(missingRv.join(QStringLiteral(", ")));
     }
 
@@ -402,31 +592,131 @@ CoaddResult coadd(const std::vector<CoaddInput>& inputs,
     for (size_t k = 0; k < nPix; ++k)
         out.wavelengths[k] = lMin * std::exp(static_cast<double>(k) * dLnLambda);
 
-    // ── Resample and stack ──────────────────────────────────────────────────
+    // ── Resample everything onto the output grid ────────────────────────────
+    std::vector<OnGrid> grids;
+    grids.reserve(prepared.size());
+    for (const auto& p : prepared) {
+        OnGrid g;
+        g.in = p.in;
+        spectresResample(p.wl, p.flux, p.sigma, out.wavelengths, g.f, g.s);
+        if (!p.model.empty()) {
+            std::vector<double> unused;
+            spectresResample(p.wl, p.model, {}, out.wavelengths, g.m, unused);
+        }
+        if (!p.cont.empty()) {
+            std::vector<double> unused;
+            spectresResample(p.wl, p.cont, {}, out.wavelengths, g.c, unused);
+        }
+        g.ign = resampleMask(p.wl, p.in->ignored, out.wavelengths);
+
+        std::vector<double> snr;
+        if (g.s.size() == nPix) {
+            for (size_t k = 0; k < nPix; ++k) {
+                if (!g.ign.empty() && g.ign[k]) continue;
+                if (finite(g.f[k]) && finite(g.s[k]) && g.s[k] > 0.0)
+                    snr.push_back(std::abs(g.f[k]) / g.s[k]);
+            }
+        }
+        g.snr = Stats::medianUpper(std::move(snr), 0.0);
+        grids.push_back(std::move(g));
+    }
+
+    // ── Flux and Raw: bring every input to a common flux level ──────────────
+    // The highest-S/N input is the reference; each further one (by falling
+    // S/N) is scaled onto the stack built so far by the median ratio over
+    // their overlap. Inputs that overlap nothing yet are matched on their
+    // overall medians, which is all there is to go on.
+    const bool matchLevels = options.stack != CoaddStack::Normalized;
+    std::vector<size_t> order(grids.size());
+    for (size_t i = 0; i < order.size(); ++i) order[i] = i;
+    if (matchLevels) {
+        std::stable_sort(order.begin(), order.end(), [&](size_t a, size_t b) {
+            return grids[a].snr > grids[b].snr;
+        });
+        out.referenceLabel = grids[order.front()].in->label;
+    }
+
+    // ── Stack ───────────────────────────────────────────────────────────────
     out.fluxes.assign(nPix, kNaN);
     out.sigmas.assign(nPix, kNaN);
     out.counts.assign(nPix, 0);
-
     std::vector<double> sumW(nPix, 0.0), sumWF(nPix, 0.0);
+    std::vector<double> sumWM(nPix, 0.0), sumWMw(nPix, 0.0);
+    std::vector<double> sumWC(nPix, 0.0), sumWCw(nPix, 0.0);
+    std::vector<int>    countM(nPix, 0), countC(nPix, 0);
+    std::vector<uint8_t> ignored(nPix, 0);
+    bool anyModel = false, anyCont = false;
 
-    for (const auto& p : prepared) {
-        std::vector<double> rf, rs;
-        spectresResample(p.wl, p.flux, p.sigma, out.wavelengths, rf, rs);
+    std::vector<double> factorByInput(grids.size(), 1.0);
+    QStringList noOverlap;
+    const double refMedian = matchLevels ? positiveMedian(grids[order.front()].f) : kNaN;
 
-        const bool haveSigma = (rs.size() == nPix);
+    for (size_t oi = 0; oi < order.size(); ++oi) {
+        OnGrid& g = grids[order[oi]];
+
+        if (matchLevels && oi > 0) {
+            std::vector<double> ratio;
+            for (size_t k = 0; k < nPix; ++k) {
+                if (sumW[k] <= 0.0 || !finite(g.f[k]) || g.f[k] <= 0.0) continue;
+                if (ignored[k] || (!g.ign.empty() && g.ign[k])) continue;
+                const double stackNow = sumWF[k] / sumW[k];
+                if (stackNow > 0.0) ratio.push_back(stackNow / g.f[k]);
+            }
+            double factor = kNaN;
+            if (ratio.size() >= 10) {
+                factor = Stats::medianUpper(std::move(ratio), kNaN);
+            } else {
+                const double own = positiveMedian(g.f);
+                if (finite(refMedian) && finite(own) && own > 0.0)
+                    factor = refMedian / own;
+                noOverlap << g.in->label;
+            }
+            if (finite(factor) && factor > 0.0) {
+                factorByInput[order[oi]] = factor;
+                for (auto* v : {&g.f, &g.s, &g.m, &g.c})
+                    for (double& x : *v) x *= factor;
+            }
+        }
+
+        const bool haveSigma = (g.s.size() == nPix);
+        const bool haveM = (g.m.size() == nPix);
+        const bool haveC = (g.c.size() == nPix);
+        anyModel = anyModel || haveM;
+        anyCont  = anyCont  || haveC;
         for (size_t k = 0; k < nPix; ++k) {
-            if (!finite(rf[k])) continue;
+            if (!finite(g.f[k])) continue;
 
             double w = 1.0;
             if (useIvar) {
-                if (!haveSigma || !finite(rs[k]) || rs[k] <= 0.0) continue;
-                w = 1.0 / (rs[k] * rs[k]);
+                if (!haveSigma || !finite(g.s[k]) || g.s[k] <= 0.0) continue;
+                w = 1.0 / (g.s[k] * g.s[k]);
             }
             sumW[k]  += w;
-            sumWF[k] += w * rf[k];
+            sumWF[k] += w * g.f[k];
             out.counts[k] += 1;
+            if (!g.ign.empty() && g.ign[k]) ignored[k] = 1;
+            if (haveM && finite(g.m[k])) {
+                sumWM[k] += w * g.m[k]; sumWMw[k] += w; ++countM[k];
+            }
+            if (haveC && finite(g.c[k])) {
+                sumWC[k] += w * g.c[k]; sumWCw[k] += w; ++countC[k];
+            }
         }
     }
+
+    if (matchLevels) {
+        out.scaleFactors = factorByInput;
+        if (!noOverlap.isEmpty()) {
+            out.warnings << QObject::tr(
+                "%1 overlaps too little with the rest to match flux levels "
+                "there, so it is scaled by its overall median instead.")
+                .arg(noOverlap.join(QStringLiteral(", ")));
+        }
+    }
+
+    if (anyModel) out.model.assign(nPix, kNaN);
+    if (anyCont)  out.continuum.assign(nPix, kNaN);
+    out.ignored.assign(nPix, 0);
 
     std::vector<double> snr;
     size_t firstCovered = nPix, lastCovered = 0;
@@ -434,9 +724,15 @@ CoaddResult coadd(const std::vector<CoaddInput>& inputs,
         if (out.counts[k] == 0 || sumW[k] <= 0.0) continue;
 
         out.fluxes[k] = sumWF[k] / sumW[k];
+        out.ignored[k] = ignored[k];
+        // A curve only counts where every contributing input had it.
+        if (anyModel && countM[k] == out.counts[k] && sumWMw[k] > 0.0)
+            out.model[k] = sumWM[k] / sumWMw[k];
+        if (anyCont && countC[k] == out.counts[k] && sumWCw[k] > 0.0)
+            out.continuum[k] = sumWC[k] / sumWCw[k];
         if (useIvar) {
             out.sigmas[k] = 1.0 / std::sqrt(sumW[k]);
-            if (out.sigmas[k] > 0.0)
+            if (out.sigmas[k] > 0.0 && !ignored[k])
                 snr.push_back(std::abs(out.fluxes[k]) / out.sigmas[k]);
         }
         firstCovered = std::min(firstCovered, k);
@@ -446,17 +742,22 @@ CoaddResult coadd(const std::vector<CoaddInput>& inputs,
     if (firstCovered > lastCovered) {   // nothing survived
         out.wavelengths.clear(); out.fluxes.clear();
         out.sigmas.clear();      out.counts.clear();
+        out.model.clear();       out.continuum.clear();
+        out.ignored.clear();
         return out;
     }
 
     // Trim the uncovered margins so the exported table starts and ends on data.
     if (firstCovered > 0 || lastCovered + 1 < nPix) {
         const auto trim = [&](auto& v) {
+            if (v.empty()) return;
             v = std::decay_t<decltype(v)>(v.begin() + firstCovered,
                                           v.begin() + lastCovered + 1);
         };
         trim(out.wavelengths); trim(out.fluxes);
         trim(out.sigmas);      trim(out.counts);
+        trim(out.model);       trim(out.continuum);
+        trim(out.ignored);
     }
 
     out.wavelengthMin = out.wavelengths.front();
@@ -500,14 +801,24 @@ bool exportCoadd(const CoaddResult& result,
     out << "# weighting: "
         << (result.inverseVarianceWeighted ? "inverse variance" : "unweighted mean")
         << '\n'
-        << "# flux is continuum-normalized (rebinned flux / model spline)\n";
+        << "# stack: " << stackKey(result.stack) << '\n'
+        << (result.stack == CoaddStack::Normalized
+            ? "# flux is continuum-normalized (rebinned flux / model spline)\n"
+            : result.stack == CoaddStack::Flux
+            ? "# flux is the fits' rebinned flux, scaled to a common level\n"
+            : "# flux is the observed flux, scaled to a common level\n");
+    if (!result.referenceLabel.isEmpty())
+        out << "# flux level of: " << result.referenceLabel << '\n';
 
     for (const QString& line : provenance)
         out << "#   " << line << '\n';
     for (const QString& w : result.warnings)
         out << "# warning: " << w << '\n';
 
-    out << "# wavelength[A] flux sigma n_spectra\n";
+    const bool haveModel = result.model.size() == result.wavelengths.size();
+    const bool haveIgn   = result.ignored.size() == result.wavelengths.size();
+    out << "# wavelength[A] flux sigma n_spectra ignored"
+        << (haveModel ? " model" : "") << '\n';
     out.setRealNumberPrecision(10);
 
     const bool haveSigma = (result.sigmas.size() == result.wavelengths.size());
@@ -516,7 +827,10 @@ bool exportCoadd(const CoaddResult& result,
         const double s = haveSigma && std::isfinite(result.sigmas[i])
                          ? result.sigmas[i] : 0.0;
         out << result.wavelengths[i] << ' ' << result.fluxes[i] << ' '
-            << s << ' ' << result.counts[i] << '\n';
+            << s << ' ' << result.counts[i] << ' '
+            << (haveIgn && result.ignored[i] ? 1 : 0);
+        if (haveModel) out << ' ' << result.model[i];
+        out << '\n';
     }
 
     f.close();

@@ -482,6 +482,11 @@ QJsonObject spectrumToJson(Spectrum &s, BlobPool &bp,
         if (!s.getOriginMeta().isEmpty())
             o["originMeta"] = s.getOriginMeta();
     }
+    if (s.isDerived()) {
+        o["derivedKind"] = s.getDerivedKind();
+        if (!s.getDerivedMeta().isEmpty())
+            o["derivedMeta"] = s.getDerivedMeta();
+    }
 
     // Raw spectrum arrays are lazy too: loadSpectra only stores the data_file
     // path, so getWavelengths() is empty until something loads it. Pull it in
@@ -525,6 +530,8 @@ std::shared_ptr<Spectrum> spectrumFromJson(const QJsonObject &o,
     s->setOriginId(rS(o, "originId"));
     s->setIsCoadd(o.value("isCoadd").toBool(true));
     s->setOriginMeta(rS(o, "originMeta"));
+    s->setDerivedKind(rS(o, "derivedKind"));
+    s->setDerivedMeta(rS(o, "derivedMeta"));
 
     s->setData(br.getDoubles(rI(o, "b_wl", -1)),
                br.getDoubles(rI(o, "b_flux", -1)),

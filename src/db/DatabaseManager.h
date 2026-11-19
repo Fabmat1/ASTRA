@@ -133,6 +133,8 @@ public:
     /// SpectrumRepository::spectraCounts.
     bool spectraCounts(const QString& starId, int* nSpectra,
                        int* nFitSpectra) const;
+    /// See SpectrumRepository::hasAdoptedCoaddFit.
+    bool hasAdoptedCoaddFit(const QString& starId) const;
     bool saveRadialVelocityCurve(std::shared_ptr<RadialVelocityCurve> curve, const QString& starId);
     bool saveRadialVelocityPoint(std::shared_ptr<RadialVelocityPoint> point, const QString& curveId);
     bool saveRVFit(std::shared_ptr<RVFit> fit, const QString& curveId);

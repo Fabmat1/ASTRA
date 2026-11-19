@@ -587,3 +587,35 @@ void Spectrum::notifyFitChanged(const std::shared_ptr<SpectralFit>& fit)
 {
     if (_fitChangedCb) _fitChangedCb(this, fit);
 }
+// ─────────────────────────────────────────────────────────────────────────────
+// Derived products
+// ─────────────────────────────────────────────────────────────────────────────
+
+bool Spectrum::isCoaddProduct() const
+{
+    return _derivedKind == QLatin1String("coadd");
+}
+
+std::vector<std::shared_ptr<Spectrum>>
+observedSpectra(const std::vector<std::shared_ptr<Spectrum>>& spectra)
+{
+    std::vector<std::shared_ptr<Spectrum>> out;
+    out.reserve(spectra.size());
+    for (const auto& s : spectra)
+        if (s && !s->isDerived()) out.push_back(s);
+    return out;
+}
+
+bool spectrumDisplayLess(const std::shared_ptr<Spectrum>& a,
+                         const std::shared_ptr<Spectrum>& b)
+{
+    if (!a || !b) return static_cast<bool>(a) && !b;
+    if (a->isDerived() != b->isDerived()) return !a->isDerived();
+    if (a->isDerived()) {
+        // Saved co-adds carry their members' mean epoch, which is not what
+        // orders them; their recipe's creation date is not to hand here
+        // without parsing, so the id keeps the order stable.
+        return a->getId() < b->getId();
+    }
+    return a->time().sortValue() < b->time().sortValue();
+}

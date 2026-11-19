@@ -732,7 +732,9 @@ MassFitService::StarOutcome MassFitService::executeStar(const StarWork& w,
     star->setId(w.starId);
     star->setSourceId(w.starLabel);
 
-    auto spectra = dbm->loadSpectra(w.starId);
+    // Saved co-adds are not refitted in bulk; they are fitted by hand from
+    // the spectra dialog.
+    auto spectra = observedSpectra(dbm->loadSpectra(w.starId));
     if (spectra.empty())
         return fail(QStringLiteral("no spectra in the database"));
     star->setSpectra(spectra);
@@ -1333,6 +1335,8 @@ void MassFitService::applyAdoption(Run* r, const StarOutcome& outcome)
     // way a fit can become one (fitting/AdoptedFit.h). Without the spectra in
     // memory the star row is left for the next recompute, as before.
     if (!star->hasSpectraLoaded()) {
+        // A co-add fit the user adopted outranks anything a bulk run finds.
+        if (dbm->hasAdoptedCoaddFit(outcome.starId)) return;
         if (!fit::applyFitParamsToStar(star, outcome.adoptedFit)) return;
     } else if (!fit::applyAdoptedFitToStar(star)) {
         return;

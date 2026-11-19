@@ -312,6 +312,24 @@ public:
 
     bool isFetched() const                  { return !_origin.isEmpty(); }
 
+    // ── Derived products ────────────────────────────────────────────────────
+    // A row ASTRA computed from other spectra of the same star rather than an
+    // observation, e.g. a co-add saved from the spectra dialog. Empty kind =
+    // an observed spectrum. Derived rows are fitted, shown and synced like any
+    // other spectrum, but they are not an epoch: RV curves, spectrum counts
+    // and mass fits leave them out. The meta is a JSON recipe owned by the
+    // producer (spectra/CoaddRecipe.h for co-adds).
+    //
+    // Not to be confused with isCoadd() above, which says whether an *archive*
+    // product is the archive's own combination of exposures.
+    QString getDerivedKind() const              { return _derivedKind; }
+    void    setDerivedKind(const QString& k)    { _derivedKind = k; }
+    QString getDerivedMeta() const              { return _derivedMeta; }
+    void    setDerivedMeta(const QString& m)    { _derivedMeta = m; }
+    bool    isDerived() const                   { return !_derivedKind.isEmpty(); }
+    /// A co-add saved in ASTRA (derived kind "coadd").
+    bool    isCoaddProduct() const;
+
     // ── Spectral data ───────────────────────────────────────────────────────
     void setData(const std::vector<double>& wavelengths,
                  const std::vector<double>& fluxes,
@@ -369,6 +387,9 @@ private:
     bool    _isCoadd = true;
     QString _originMeta;
 
+    QString _derivedKind;
+    QString _derivedMeta;
+
     // Spectral data
     std::vector<double> _wavelengths;  // in Angstroms
     std::vector<double> _fluxes;
@@ -382,5 +403,17 @@ private:
     void notifyBestFitChanged();
 
 };
+
+/// Display order of a star's spectra: observations by epoch (Time::sortValue
+/// gives a comparable epoch from MJD or BJD), then derived products such as
+/// saved co-adds, which are not epochs, in the order they were saved.
+bool spectrumDisplayLess(const std::shared_ptr<Spectrum>& a,
+                         const std::shared_ptr<Spectrum>& b);
+
+/// The observed spectra among @p spectra, i.e. without derived products such
+/// as saved co-adds. Everything that treats spectra as epochs (RV curves,
+/// spectrum counts, mass fits) wants this.
+std::vector<std::shared_ptr<Spectrum>>
+observedSpectra(const std::vector<std::shared_ptr<Spectrum>>& spectra);
 
 #endif // SPECTRUM_H

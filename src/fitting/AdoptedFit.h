@@ -14,6 +14,9 @@ namespace astra::fitting {
 /// A star keeps one Teff, log g and He (component 1's), copied from one of
 /// the fits of its spectra. Which one:
 ///
+///   0. A fit on a saved co-add (Spectrum::isDerived) the user marked as
+///      adopted. Co-add fits outrank everything below; unmarked ones are
+///      never considered, not even as best fits.
 ///   1. The fits the user marked as adopted (SpectralFit::isAdopted, set in
 ///      the spectra panel), if there are any. One marked fit is simply that
 ///      fit; several narrow the choice down to that subset.

@@ -55,8 +55,8 @@ Open a star's detail window and click **View / Fit Spectra** to open
   stored per instrument mode: **Save as mode default** in the fit window, or
   the **Spectral Fit Defaults** tab when editing a mode under **Data /
   Instruments...**.
-- **Co-Add** tab - stack spectra (optionally shifted to rest frame using the
-  fitted RVs) and save the co-added spectrum.
+- **Co-Add** tab - stack spectra and fit the stack. See
+  [Co-adding spectra](#co-adding-spectra).
 
 For power users, **Interactive ISIS session** opens a live ISIS terminal
 seeded with the generated fit script; a fitted result can be extracted back
@@ -76,15 +76,60 @@ into ASTRA.
 <!-- TODO: document supported grid formats and how components/abundances are
      parameterized. -->
 
+### Co-adding spectra
+
+The **Co-Add** tab stacks the spectra you select in its list and shows the
+result in the spectra panel, drawn like a single spectrum: data, error band,
+model, continuum and residuals. Stretches covered by fewer spectra than the
+deepest part of the stack are shaded.
+
+What is stacked follows the **Normalized / Flux / Raw** buttons above the
+plot (the **Stack** choice in the tab is the same setting):
+
+- **Normalized** - each fit's rebinned flux divided by its continuum, with
+  the fits' models stacked the same way.
+- **Flux** - each fit's rebinned flux, model and continuum, brought to a
+  common flux level.
+- **Raw** - the observed spectra, brought to a common level. This needs no
+  fit, so spectra that were never fitted can be stacked too.
+
+Flux and Raw stacks are scaled onto the spectrum with the highest S/N, by the
+median flux ratio where the spectra overlap. All spectra are convolved down to
+the lowest resolution in the selection and combined with inverse-variance
+weights. **Shift to rest frame** removes each spectrum's radial velocity
+first: from its fit, or for a spectrum without one from the star's RV point
+for it; a spectrum with neither is stacked unshifted, with a warning.
+
+Ranges a member's fit ignored (tellurics, interstellar lines, artefacts) are
+stacked and drawn dotted, but kept out of the y range and the S/N. A pixel any
+member ignored counts as ignored in the stack.
+
+**Save as co-add...** keeps the stack as a spectrum of the star, listed after
+the observations. A saved co-add is fitted like any other spectrum in the
+**Fit Setup** tab (it is left unticked there by default). Its fit setup starts
+from the members' instrument mode, at the stack's constant resolution, with
+the ignored ranges added and no telluric component. A saved co-add is not an
+observation: it gets no RV point and does not count in the star's number of
+spectra, and mass fits leave it out.
+
+Saved co-adds are frozen. Under **Saved co-adds**, **Restack** rebuilds one
+from its spectra and options, for example after they were refitted, and flags
+its fits since they no longer match the data. **Load recipe** puts its
+spectra and options back into the tab to build a variant.
+**Export to file...** writes the current stack as an ASCII table.
+
 ### Which fit the star's parameters come from
 
 A spectrum has one **best fit** (the star in the fit list), and its radial
 velocity is taken from it. The star itself carries a single Teff, log g and He,
 taken from one fit among all its spectra:
 
-- If you ticked **Adopted** for one or more fits (next to the model selector
-  in the spectra panel of the star view), the choice is made among those. One
-  ticked fit is simply that fit.
+- If you ticked **Adopted** for a fit of a saved co-add, that fit defines the
+  star, whatever the fits of single spectra say. (With several adopted co-add
+  fits, the rule below picks among them.)
+- Otherwise, if you ticked **Adopted** for one or more fits (next to the
+  model selector in the spectra panel of the star view), the choice is made
+  among those. One ticked fit is simply that fit.
 - Otherwise it is made among the best fits of all spectra.
 
 Within that set the fit with the lowest reduced chi2 is used. Among fits that

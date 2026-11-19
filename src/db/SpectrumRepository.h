@@ -63,6 +63,11 @@ class SpectrumRepository {
     bool spectraCounts(const QString &starId, int *nSpectra,
                        int *nFitSpectra) const;
 
+    /// Whether one of the star's saved co-adds carries a fit the user adopted
+    /// for the star (see fitting/AdoptedFit.h). For code that sets the star's
+    /// atmosphere without its spectra in memory and must not overrule it.
+    bool hasAdoptedCoaddFit(const QString &starId) const;
+
     /// Spectrum counts per (instrument_id, mode_key) over @p starIds, as ONE
     /// grouped query per chunk of star ids - the scope can be a whole
     /// catalogue, so loading the spectra themselves is not an option. Rows

@@ -6,6 +6,7 @@
 
 #include "core/Star.h"
 #include "spectra/Spectrum.h"
+#include "spectra/CoaddRecipe.h"
 #include "db/DatabaseManager.h"
 #include "spectra/ui/SpectraPanel.h"
 #include "fitting/FitJobFactory.h"
@@ -71,6 +72,7 @@ using astra::makeIntSpin;
 /// after the call returns, which makes cleanup the caller's job.
 QString spectrumLabel(const std::shared_ptr<Spectrum>& s, int idx)
 {
+    if (s->isCoaddProduct()) return astra::spectra::coaddTitle(*s);
     QString l;
     if (!s->getInstrument().isEmpty()) l = s->getInstrument();
     else l = QString("#%1").arg(idx + 1);
@@ -684,6 +686,8 @@ void FitSetupWidget::refreshSpectraList()
     _sortedSpectra = _ctx.star->getSpectra();
     std::sort(_sortedSpectra.begin(), _sortedSpectra.end(),
         [](auto& a, auto& b){
+            // Saved co-adds after the observations they were stacked from.
+            if (a->isDerived() != b->isDerived()) return !a->isDerived();
             if (a->getInstrument() != b->getInstrument())
                 return a->getInstrument() < b->getInstrument();
             return a->getMJD() < b->getMJD();
@@ -712,6 +716,9 @@ void FitSetupWidget::refreshSpectraList()
         const QString attribution = attributionKey(s);
         if (!_configs.contains(id)) {
             _configs[id] = makeDefaultConfig(s);
+            // A saved co-add is fitted when asked for, never by default: it
+            // would otherwise join every run over the epochs it came from.
+            if (s->isDerived()) _configs[id].enabled = false;
         } else if (_configSource.value(id) != attribution) {
             // The spectrum was re-attributed to another instrument or mode, so
             // everything its configuration took from the old mode's defaults -

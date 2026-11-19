@@ -181,6 +181,14 @@ QJsonObject spectrumJson(const Spectrum& sp, bool coverage)
     o.insert(QStringLiteral("origin"), sp.getOrigin().isEmpty() ? QJsonValue() : QJsonValue(sp.getOrigin()));
     if (!sp.getOriginId().isEmpty()) o.insert(QStringLiteral("origin_id"), sp.getOriginId());
     if (sp.isFetched()) o.insert(QStringLiteral("is_coadd"), sp.isCoadd());
+    // A co-add saved in ASTRA: a stack of the star's other spectra, not an
+    // observation (no RV point, not counted in n_spectra).
+    if (sp.isDerived()) {
+        o.insert(QStringLiteral("derived"), sp.getDerivedKind());
+        const QJsonObject recipe =
+            QJsonDocument::fromJson(sp.getDerivedMeta().toUtf8()).object();
+        if (!recipe.isEmpty()) o.insert(QStringLiteral("derived_recipe"), recipe);
+    }
     o.insert(QStringLiteral("source_file"), sp.getFile().isEmpty() ? QJsonValue() : QJsonValue(sp.getFile()));
 
     if (coverage) {

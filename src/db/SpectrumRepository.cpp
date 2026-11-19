@@ -130,12 +130,14 @@ bool SpectrumRepository::saveSpectrum(const QString            &starId,
             id, star_id, file, instrument, instrument_id, mode_key,
             mjd, bjd, exposure_time,
             data_file, barycentric_corrected, is_flagged,
-            origin, origin_id, is_coadd, origin_meta
+            origin, origin_id, is_coadd, origin_meta,
+            derived_kind, derived_meta
         ) VALUES (
             :id, :star_id, :file, :instrument, :instrument_id, :mode_key,
             :mjd, :bjd, :exposure_time,
             :data_file, :barycentric_corrected, :is_flagged,
-            :origin, :origin_id, :is_coadd, :origin_meta
+            :origin, :origin_id, :is_coadd, :origin_meta,
+            :derived_kind, :derived_meta
         )
     )");
     
@@ -172,6 +174,14 @@ bool SpectrumRepository::saveSpectrum(const QString            &starId,
                     spectrum->getOriginMeta().isEmpty()
                         ? QVariant(QMetaType(QMetaType::QString))
                         : QVariant(spectrum->getOriginMeta()));
+    query.bindValue(":derived_kind",
+                    spectrum->getDerivedKind().isEmpty()
+                        ? QVariant(QMetaType(QMetaType::QString))
+                        : QVariant(spectrum->getDerivedKind()));
+    query.bindValue(":derived_meta",
+                    spectrum->getDerivedMeta().isEmpty()
+                        ? QVariant(QMetaType(QMetaType::QString))
+                        : QVariant(spectrum->getDerivedMeta()));
 
     if (!query.exec()) {
         LOG_ERROR("Spectra", QString("Failed to save spectrum: %1").arg(query.lastError().text()));
@@ -391,6 +401,8 @@ std::vector<std::shared_ptr<Spectrum>> SpectrumRepository::loadSpectra(const QSt
         spectrum->setIsCoadd(query.value("is_coadd").isNull()
                                  || query.value("is_coadd").toInt() != 0);
         spectrum->setOriginMeta(query.value("origin_meta").toString());
+        spectrum->setDerivedKind(query.value("derived_kind").toString());
+        spectrum->setDerivedMeta(query.value("derived_meta").toString());
 
         // Load spectral fits
         auto fits = loadSpectralFits(spectrum->getId());
@@ -668,6 +680,7 @@ bool SpectrumRepository::spectraCounts(const QString& starId, int* nSpectra,
                ) THEN 1 END)
         FROM spectra s
         WHERE s.star_id = :star_id
+          AND COALESCE(s.derived_kind, '') = ''
     )");
     query.bindValue(":star_id", starId);
 
@@ -680,6 +693,29 @@ bool SpectrumRepository::spectraCounts(const QString& starId, int* nSpectra,
     if (nSpectra)    *nSpectra    = query.value(0).toInt();
     if (nFitSpectra) *nFitSpectra = query.value(1).toInt();
     return true;
+}
+
+bool SpectrumRepository::hasAdoptedCoaddFit(const QString& starId) const
+{
+    if (starId.isEmpty()) return false;
+    QSqlQuery query(_db.threadConnection());
+    query.prepare(R"(
+        SELECT 1 FROM spectra s
+        JOIN spectral_fits f ON f.spectrum_id = s.id
+        WHERE s.star_id = :star_id
+          AND COALESCE(s.derived_kind, '') != ''
+          AND COALESCE(s.is_flagged, 0) = 0
+          AND COALESCE(f.is_flagged, 0) = 0
+          AND f.is_adopted = 1
+        LIMIT 1
+    )");
+    query.bindValue(":star_id", starId);
+    if (!query.exec()) {
+        LOG_ERROR("Spectra", QString("Failed to look up adopted co-add fits: %1")
+                                 .arg(query.lastError().text()));
+        return false;
+    }
+    return query.next();
 }
 
 QSet<QString> SpectrumRepository::originIdsForProject(const QString& projectId)
@@ -811,6 +847,7 @@ SpectrumRepository::spectraModeStats(const QStringList& starIds)
                    COUNT(DISTINCT star_id)
             FROM spectra
             WHERE star_id IN (%1)
+              AND COALESCE(derived_kind, '') = ''
             GROUP BY iid, mkey
         )").arg(placeholders(chunk.size())));
         for (const QString& id : chunk) query.addBindValue(id);
@@ -870,6 +907,7 @@ QStringList SpectrumRepository::spectrumIdsForMode(const QStringList& starIds,
         query.prepare(QStringLiteral(R"(
             SELECT id FROM spectra
             WHERE star_id IN (%1)
+              AND COALESCE(derived_kind, '') = ''
               AND COALESCE(instrument_id, '') = ?
               AND (COALESCE(instrument_id, '') = ''
                    OR COALESCE(mode_key, '') = ?)
@@ -934,6 +972,8 @@ SpectrumRepository::loadSpectraByIds(const QStringList& spectrumIds)
             spectrum->setIsCoadd(query.value("is_coadd").isNull()
                                  || query.value("is_coadd").toInt() != 0);
             spectrum->setOriginMeta(query.value("origin_meta").toString());
+            spectrum->setDerivedKind(query.value("derived_kind").toString());
+            spectrum->setDerivedMeta(query.value("derived_meta").toString());
             spectra.push_back(spectrum);
         }
     }

@@ -485,6 +485,7 @@ set(ASTRA_CORE_SOURCES
     # spectra
     src/spectra/Spectrum.cpp
     src/spectra/SpectrumCoadder.cpp
+    src/spectra/CoaddRecipe.cpp
     src/spectra/SpectrumPanelPlan.cpp
     src/spectra/SpectrumFetchService.cpp
     src/spectra/SpectrumReader.cpp
@@ -655,6 +656,7 @@ set(ASTRA_CORE_HEADERS
     # spectra
     src/spectra/Spectrum.h
     src/spectra/SpectrumCoadder.h
+    src/spectra/CoaddRecipe.h
     src/spectra/SpectrumPanelPlan.h
     src/spectra/SpectrumFetchService.h
     src/spectra/SpectrumReader.h
@@ -1763,6 +1765,7 @@ if(BUILD_TESTING)
             tests/unit/sed/sed_seeds.cpp
             tests/unit/spectra/panel_plan.cpp
             tests/unit/spectra/fits_reader_wcs.cpp
+            tests/unit/spectra/coadd.cpp
             ${ASTRA_AI_UNIT_TESTS}
             ${ASTRA_SYNC_UNIT_TESTS}
     )

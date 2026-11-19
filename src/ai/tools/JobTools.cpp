@@ -1420,7 +1420,7 @@ void JobRegistry::finishFit(Job& j)
     const bool paramsChanged = best && fit::applyAdoptedFitToStar(star);
     int nFit = 0;
     for (const auto& s : star->getSpectra())
-        if (s && s->getBestFit()) ++nFit;
+        if (s && !s->isDerived() && s->getBestFit()) ++nFit;
     star->setNFitSpectra(nFit);
     star->markSummaryDirty();
     _host->saveStarRow(pid, star, {});

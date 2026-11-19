@@ -15,6 +15,7 @@
 #include "spectra/ui/SpectrumDetailsDialog.h"
 #include "fitting/ui/FitSetupWidget.h"
 #include "spectra/ui/CoAddWidget.h"
+#include "spectra/CoaddRecipe.h"
 #include "spectra/ui/ArchiveFetchWidget.h"
 #include "ui/widgets/CheckStateDragger.h"
 #include "spectra/SpectrumReader.h"
@@ -263,6 +264,27 @@ void SpectraFitDialog::setupUi()
     _coadd = new CoAddWidget(coaddCtx);
     _rightTabs->addTab(_coadd, "Co-Add");
 
+    // A saved or restacked co-add is already in the star and the database;
+    // what is left is every view listing spectra, and the star's parameters
+    // if a restack flagged the fit they came from.
+    connect(_coadd, &CoAddWidget::coaddsChanged, this, [this] {
+        _star->markSummaryDirty();
+        refreshSpectraViews();
+        propagateBestFitParams(nullptr);
+        emit spectraUpdated();
+    });
+    connect(_coadd, &CoAddWidget::deleteCoaddRequested, this,
+            [this](const QString& id) {
+        removeSpectrum(id);
+        propagateBestFitParams(nullptr);   // it may have defined the star
+    });
+    connect(_coadd, &CoAddWidget::openSpectrumRequested, this,
+            [this, browseTab](const QString& id) {
+        _rightTabs->setCurrentWidget(browseTab);
+        if (_panel) _panel->selectSpectrumById(id);
+        syncTreeSelectionTo(id, QString());
+    });
+
     // ── Archives tab (online spectrum fetching; needs the app controller) ──
     if (_controller) {
         ArchiveFetchWidget::Context archCtx;
@@ -358,10 +380,7 @@ void SpectraFitDialog::rebuildTree()
     // instrument name. Time::sortValue() yields a comparable epoch even when
     // only an MJD or only a BJD is present, matching the SpectraPanel ordering.
     auto specs = _star->getSpectra();
-    std::sort(specs.begin(), specs.end(),
-        [](const std::shared_ptr<Spectrum>& a, const std::shared_ptr<Spectrum>& b) {
-            return a->time().sortValue() < b->time().sortValue();
-        });
+    std::sort(specs.begin(), specs.end(), spectrumDisplayLess);
     _spectra = specs;
 
     for (int i = 0; i < static_cast<int>(_spectra.size()); ++i) {
@@ -375,6 +394,21 @@ void SpectraFitDialog::rebuildTree()
             header += QString("MJD %1").arg(spec->getMJD(), 0, 'f', 4);
         }
         if (header.isEmpty()) header = QString("Spectrum #%1").arg(i + 1);
+        if (spec->isCoaddProduct()) {
+            // A saved co-add carries its members' mean epoch, which is no
+            // observation date; its title says what it is instead.
+            const auto r = astra::spectra::coaddRecipeOf(*spec);
+            header = astra::spectra::coaddTitle(*spec);
+            if (r) header += QStringLiteral("  [%1]").arg(astra::spectra::stackDisplayName(r->stack));
+            specItem->setToolTip(kColName,
+                QStringLiteral("Saved co-add of %1 spectra. Fit it in the Fit "
+                               "Setup tab; mark a fit \"Adopted\" to take the "
+                               "star's parameters from it.")
+                    .arg(r ? r->members.size() : 0));
+            QFont f = specItem->font(kColName);
+            f.setItalic(true);
+            specItem->setFont(kColName, f);
+        }
         if (spec->isFetched()) {
             // Archive provenance: origin key plus an exposure marker for
             // non-coadded parts of a fetched product.
@@ -1334,9 +1368,14 @@ void SpectraFitDialog::onRedetectAllClicked()
         return;
     }
 
-    int matched = 0;
-    for (auto& spec : _spectra)
+    // Saved co-adds take their mode from the members they were stacked from;
+    // their stacked coverage says nothing about the instrument.
+    int matched = 0, considered = 0;
+    for (auto& spec : _spectra) {
+        if (spec->isDerived()) continue;
+        ++considered;
         if (autodetectInstrument(spec, instruments)) ++matched;
+    }
 
     _star->markSummaryDirty();
     refreshSpectraViews();
@@ -1344,7 +1383,7 @@ void SpectraFitDialog::onRedetectAllClicked()
 
     QMessageBox::information(this, "Re-detect instruments/modes",
         QString("Re-detected %1 of %2 spectra.")
-            .arg(matched).arg(static_cast<int>(_spectra.size())));
+            .arg(matched).arg(considered));
 }
 
 void SpectraFitDialog::defineInstrumentManually(const QStringList& spectrumIds)

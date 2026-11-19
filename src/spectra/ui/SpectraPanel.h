@@ -6,6 +6,8 @@
 #include <vector>
 #include "fitting/ui/FitPreviewOverlay.h"
 #include "core/AsymmetricErrors.h"
+#include "spectra/CoaddRecipe.h"
+#include <memory>
 
 class Spectrum;
 class SpectralFit;
@@ -18,6 +20,7 @@ class QCPAxisRect;
 class QCPTextElement;
 class QCPAxis;
 class QCPGraph;
+class QCPAbstractItem;
 class QCustomPlot;
 class QLabel;
 class QPushButton;
@@ -36,20 +39,36 @@ public:
     void setFitPreview(const FitPreviewConfig& cfg);
     void clearFitPreview();
 
-    // ── Co-add overlay ──────────────────────────────────────────────────────
-    // While a co-add is set the panel shows the stacked spectrum instead of the
-    // per-epoch view; the spectrum tabs and fit selector are hidden, since
+    // ── Co-add preview ──────────────────────────────────────────────────────
+    // While a co-add preview is set the panel shows the stack being built in
+    // the Co-Add tab instead of the per-epoch view. It is drawn the way a
+    // single spectrum is (model, continuum, errors, residuals, excluded
+    // pixels dotted and left out of the y range), and the mode buttons pick
+    // the stack: Normalized and Flux stack the fits' data, Raw the observed
+    // spectra. The spectrum tabs and the fit selector are hidden, since
     // neither applies to it.
     struct CoaddDisplay {
-        std::vector<double> wavelengths;
-        std::vector<double> fluxes;
-        std::vector<double> sigmas;
-        std::vector<int>    counts;    ///< contributing spectra per pixel
-        QString             caption;   ///< rich text for the info strip
+        std::vector<double>  wavelengths;
+        std::vector<double>  fluxes;
+        std::vector<double>  sigmas;
+        std::vector<int>     counts;     ///< contributing spectra per pixel
+        std::vector<double>  model;      ///< empty: none
+        std::vector<double>  continuum;  ///< empty: none
+        std::vector<uint8_t> ignored;    ///< 1 = some member's fit left it out
+        astra::spectra::CoaddStack stack = astra::spectra::CoaddStack::Normalized;
+        /// Whether Normalized and Flux can be offered (some selected
+        /// spectrum has a fit with rebinned data).
+        bool fitStacksAvailable = true;
+        /// A member whose instrument mode supplies the Panels view's layout;
+        /// null: full view only.
+        std::shared_ptr<Spectrum> modeSpectrum;
+        QString caption;                 ///< rich text for the info strip
     };
     void showCoadd(const CoaddDisplay& coadd);
     void clearCoadd();
     bool showingCoadd() const { return _coaddActive; }
+    /// The stack the mode buttons ask the co-add preview for.
+    astra::spectra::CoaddStack preferredCoaddStack() const;
 
     /// Normalized: the fit's rebinned flux and model divided by its fitted
     /// continuum. Rebinned ("Flux"): the same without the division. Raw: the
@@ -87,6 +106,9 @@ signals:
     /// A fit was marked or unmarked as adopted here and the star's Teff,
     /// log g or He changed with it.
     void starParametersChanged();
+    /// A mode button was clicked while the co-add preview is on screen; the
+    /// preview should restack as preferredCoaddStack().
+    void coaddStackRequested();
 
 private:
 
@@ -206,6 +228,7 @@ private:
 
     bool         _coaddActive = false;
     CoaddDisplay _coadd;
+    QList<QCPAbstractItem*> _coaddDepthItems;  ///< shading of shallow stack regions
     QMetaObject::Connection _tabConnection;
     QMetaObject::Connection _axisSyncConn1, _axisSyncConn2;
 

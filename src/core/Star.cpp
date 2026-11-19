@@ -593,8 +593,12 @@ void Star::recomputeRVMetrics()
 
 void Star::recomputeSpectraMetrics()
 {
-    _nSpectra = static_cast<int>(_spectra.size());
+    // Saved co-adds and other derived rows are not observations of their own;
+    // they count neither as spectra nor as fitted spectra.
+    _nSpectra = 0;
     _nFitSpectra = 0;
+    for (const auto& spec : _spectra)
+        if (spec && !spec->isDerived()) ++_nSpectra;
 
     // Reset atmospheric - will be set from best fit below
     _teff = 0; _e_teff = 0;
@@ -607,7 +611,7 @@ void Star::recomputeSpectraMetrics()
     clearAbundances();
 
     for (const auto& spec : _spectra)
-        if (spec && spec->getBestFit()) ++_nFitSpectra;
+        if (spec && !spec->isDerived() && spec->getBestFit()) ++_nFitSpectra;
 
     // The atmospheric parameters come from the adopted fit: among the fits
     // the user marked as adopted, or else among the spectra's best fits, the

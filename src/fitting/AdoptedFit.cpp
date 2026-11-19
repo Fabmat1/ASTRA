@@ -71,16 +71,25 @@ AdoptedChoice pick(const std::vector<Candidate>& set, bool byUser)
 AdoptedChoice chooseAdoptedFit(const std::vector<std::shared_ptr<Spectrum>>& spectra,
                                bool allowFlagged)
 {
-    std::vector<Candidate> marked, best, flaggedBest;
+    std::vector<Candidate> markedCoadd, marked, best, flaggedBest;
     for (const auto& s : spectra) {
         if (!s) continue;
+        // A saved co-add only ever defines the star when the user adopted one
+        // of its fits, and then it outranks every single-epoch fit: stacking
+        // was done precisely to get a better atmosphere than any one epoch.
+        const bool derived = s->isDerived();
         for (const auto& f : s->getSpectralFits()) {
             if (!f || !hasTeff(*f)) continue;
             const bool usable = !s->isFlagged() && !f->isFlagged;
+            if (derived) {
+                if (f->isAdopted && usable) markedCoadd.push_back(candidate(s, f));
+                continue;
+            }
             if (f->isAdopted && usable) marked.push_back(candidate(s, f));
             if (f->isBestFit) (usable ? best : flaggedBest).push_back(candidate(s, f));
         }
     }
+    if (!markedCoadd.empty()) return pick(markedCoadd, true);
     if (!marked.empty()) return pick(marked, true);
     if (!best.empty()) return pick(best, false);
     return allowFlagged ? pick(flaggedBest, false) : AdoptedChoice{};

@@ -1,4 +1,5 @@
 #include "fitting/FitJobFactory.h"
+#include "spectra/CoaddRecipe.h"
 
 #include "core/Star.h"
 #include "spectra/Spectrum.h"
@@ -42,9 +43,11 @@ std::shared_ptr<Instrument> instrumentForSpectrum(
 // Configuration
 // ────────────────────────────────────────────────────────────────────
 
-SpectrumFitConfig makeDefaultConfig(const std::shared_ptr<Spectrum>& s,
-                                    const std::shared_ptr<Instrument>& inst,
-                                    const QString& modeKey)
+namespace {
+
+SpectrumFitConfig makeObservedDefaultConfig(const std::shared_ptr<Spectrum>& s,
+                                            const std::shared_ptr<Instrument>& inst,
+                                            const QString& modeKey)
 {
     SpectrumFitConfig cfg;
 
@@ -118,6 +121,35 @@ SpectrumFitConfig makeDefaultConfig(const std::shared_ptr<Spectrum>& s,
         for (const auto& a : d.anchors)
             cfg.anchors.append({a.wlLow, a.wlHigh, a.spacing});
     }
+    return cfg;
+}
+
+}   // namespace
+
+SpectrumFitConfig makeDefaultConfig(const std::shared_ptr<Spectrum>& s,
+                                    const std::shared_ptr<Instrument>& inst,
+                                    const QString& modeKey)
+{
+    SpectrumFitConfig cfg = makeObservedDefaultConfig(s, inst, modeKey);
+
+    // A saved co-add inherits its members' mode for the windows and anchors,
+    // but it is not an observation in that mode:
+    //  - it was convolved to one constant resolving power, which is what the
+    //    model has to be degraded to as well;
+    //  - every range a member's fit ignored stays ignored, since the stacked
+    //    pixels there carry that member's untrusted data;
+    //  - tellurics were smeared out by the rest-frame shifts (or averaged over
+    //    nights), so there is no single transmission spectrum to fit.
+    const auto recipe = s ? astra::spectra::coaddRecipeOf(*s) : std::nullopt;
+    if (!recipe) return cfg;
+
+    if (recipe->targetResolution > 0.0) {
+        cfg.resOffset = recipe->targetResolution;
+        cfg.resSlope  = 0.0;
+    }
+    for (const auto& r : recipe->ignoredRanges)
+        cfg.ignore.append({r.first, r.second});
+    cfg.airmass = 0.0;
     return cfg;
 }
 

@@ -136,6 +136,34 @@ TEST_CASE("adopted fit: fits the user marked take the place of the best fits")
     CHECK(chooseAdoptedFit(spectra).fit->getId() == "a-other");
 }
 
+TEST_CASE("adopted fit: an adopted co-add fit outranks every single-epoch fit")
+{
+    auto a = spectrumWithFit("a", 60000, 28000.0, 1000.0, 1000);
+    auto b = spectrumWithFit("b", 60010, 29000.0, 2000.0, 1000);
+    b->getBestFit()->isAdopted = true;
+
+    // A saved co-add whose fit is its best fit but not adopted: ignored, even
+    // though its chi2 is the lowest of all.
+    auto co = spectrumWithFit("co", 60005, 31000.0, 10.0, 1000);
+    co->setDerivedKind(QStringLiteral("coadd"));
+    const std::vector<std::shared_ptr<Spectrum>> spectra = {a, b, co};
+    CHECK(chooseAdoptedFit(spectra).fit->getId() == "b-fit");
+    b->getBestFit()->isAdopted = false;
+    CHECK(chooseAdoptedFit(spectra).fit->getId() == "a-fit");
+
+    // Adopted: it wins over marked and best fits alike, whatever their chi2.
+    co->getBestFit()->chi2 = 1e6;
+    co->getBestFit()->isAdopted = true;
+    b->getBestFit()->isAdopted = true;
+    AdoptedChoice choice = chooseAdoptedFit(spectra);
+    CHECK(choice.fit->getId() == "co-fit");
+    CHECK(choice.chosenByUser);
+
+    // Flagged, it no longer counts.
+    co->getBestFit()->isFlagged = true;
+    CHECK(chooseAdoptedFit(spectra).fit->getId() == "b-fit");
+}
+
 TEST_CASE("adopted fit: flagged fits, flagged spectra and fits without Teff")
 {
     auto good    = spectrumWithFit("good", 60020, 30000.0, 5000.0, 1000);

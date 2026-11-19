@@ -154,6 +154,9 @@ std::shared_ptr<RadialVelocityPoint> RadialVelocityPoint::createFromSpectralFit(
     int component)
 {
     if (!fit || !spectrum) return nullptr;
+    // A saved co-add is no epoch: its RV is the residual of the members'
+    // (rest frame) or an average over the observing dates (observed frame).
+    if (spectrum->isDerived()) return nullptr;
     if (component >= 2 && !fit->hasSecondRV()) return nullptr;
 
     auto rvPoint = std::make_shared<RadialVelocityPoint>();
