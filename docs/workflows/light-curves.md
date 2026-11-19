@@ -67,10 +67,11 @@ return to a 3′ field on the star. Right-click copies coordinates or a Gaia
 source id.
 
 The image layer is picked from the column of cards on the left, or stepped
-with ++left++ / ++right++ (which skip greyed cards). Each card shows a small
-preview of its source around the star; a card is greyed when the survey does
-not cover the star's position or none of its servers answers. Layers keep the
-view's centre, zoom and orientation (north up, east left), so a source can be
+with ++left++ / ++right++. Each card shows its source around the star as its
+background. Surveys that do not cover the star's position, or whose servers do
+not answer, are collapsed into one "N more without coverage here" row at the
+end of the list; clicking it shows them, greyed. Layers keep the view's
+centre, zoom and orientation (north up, east left), so a source can be
 followed from survey to survey:
 
 - **Fetched previews**: the TESS FFI, ZTF, DSS2 Red and Pan-STARRS cutouts

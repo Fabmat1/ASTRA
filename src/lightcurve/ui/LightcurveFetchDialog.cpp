@@ -2001,8 +2001,8 @@ QWidget* LightcurveFetchDialog::buildPreviewsTab()
     _skyLayerList->setToolTip(QString());
     _skyLayerList->addHeader(tr("Fetched previews (3′ field)"));
     for (const auto& e : previewEntries())
-        _skyLayerList->addLayer(kSkyLocalPrefix + e.filename, e.title, tr("lightcurvequery"),
-                                e.description);
+        _skyLayerList->addLayer(kSkyLocalPrefix + e.filename, e.title,
+                                tr("%1, saved by lightcurvequery").arg(e.description));
     _skyLayerList->addHipsSurveys();
     split->addWidget(_skyLayerList);
 
@@ -2167,7 +2167,8 @@ void LightcurveFetchDialog::applySkyLayer()
 void LightcurveFetchDialog::refreshLocalPreviewCards()
 {
     using State = SkyMap::SkyLayerList::State;
-    const int px = int(std::lround(SkyMap::SkyLayerList::kThumbPx * _skyLayerList->devicePixelRatioF()));
+    // Square previews; the cards crop a strip through the star.
+    const int px = int(std::lround(SkyMap::SkyLayerList::kPreviewWidth * _skyLayerList->devicePixelRatioF()));
     for (const auto& e : previewEntries()) {
         const QString key = kSkyLocalPrefix + e.filename;
         const QString path = previewPath(e.filename);
@@ -2181,8 +2182,7 @@ void LightcurveFetchDialog::refreshLocalPreviewCards()
                                   Qt::SmoothTransformation);
         thumb.setDevicePixelRatio(_skyLayerList->devicePixelRatioF());
         _skyLayerList->setLayerPreview(key, thumb, State::Ready,
-                                       onSky ? tr("3′ around the star")
-                                             : tr("Older format, not on the sky"));
+                                       onSky ? QString() : tr("Older format, not on the sky"));
     }
 }
 
