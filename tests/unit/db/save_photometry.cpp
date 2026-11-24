@@ -176,4 +176,46 @@ TEST_CASE("saving a fit without its model arrays keeps its file")
     dbm.closeDatabase();
 }
 
+TEST_CASE("re-saving photometry keeps the data of SED models never opened")
+{
+    // loadSEDModels leaves each model's curve and residual points in its data
+    // file. savePhotometry re-saves every SED model, and saveSEDModel wrote
+    // the empty in-memory arrays over that file, so any save of the star's
+    // photometry erased the plots of SED fits nobody had opened.
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    DatabaseManager dbm;
+    REQUIRE(dbm.openDatabase(tmp.filePath("astra_test.db")));
+    REQUIRE(run("INSERT INTO projects (id, name) VALUES ('P1', 't')"));
+    REQUIRE(run("INSERT INTO stars (id, project_id) VALUES ('S1', 'P1')"));
+
+    auto ph    = makePhotometry();
+    auto model = std::make_shared<SEDModel>();
+    model->setId("SED1");
+    model->modelWavelengths = {3000.0, 5500.0, 9000.0};
+    model->modelFluxes      = {1.0, 2.0, 3.0};
+    SEDPhotometryPoint p;
+    p.passband = "V";
+    model->observedPoints = {p};
+    ph->addSEDModel(model);
+    REQUIRE(dbm.savePhotometry("S1", ph));
+
+    // As a later session has it: the model's file, not its arrays.
+    auto loaded = dbm.loadPhotometry("S1");
+    REQUIRE(loaded);
+    REQUIRE(loaded->getSEDModels().size() == 1);
+    const auto lazy = loaded->getSEDModels().front();
+    REQUIRE(lazy->modelWavelengths.empty());
+    const QString file = lazy->getModelDataFile();
+    REQUIRE(QFile::exists(file));
+
+    REQUIRE(dbm.savePhotometry("S1", loaded));
+
+    SEDModel check;
+    REQUIRE(check.loadDataFromFile(file));
+    CHECK(check.modelWavelengths.size() == 3);
+    CHECK(check.observedPoints.size() == 1);
+    dbm.closeDatabase();
+}
+
 }   // TEST_SUITE("db")

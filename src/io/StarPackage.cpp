@@ -725,15 +725,29 @@ QJsonObject sedModelToJson(const SEDModel &m, BlobPool &bp) {
     for (const auto &c : m.components)
         comps.append(c.toJson());
     o["components"] = comps;
+    // The model curve and the per-fit residual points are lazy: after a
+    // normal DB load only the side-file path is set (loadSEDModels does not
+    // read it), so a fit the SED window never showed was exported without
+    // them. Read them into a temporary, as for spectral fits, so the live
+    // model shared with the UI is left as it is.
+    const SEDModel *src = &m;
+    SEDModel        loaded;
+    if (m.modelWavelengths.empty() && m.observedPoints.empty() &&
+        !m.getModelDataFile().isEmpty()) {
+        loaded = m;
+        if (loaded.loadDataFromFile(loaded.getModelDataFile()))
+            src = &loaded;
+    }
+
     QJsonArray obs;
-    for (const auto &p : m.observedPoints)
+    for (const auto &p : src->observedPoints)
         obs.append(sedPointToJson(p));
     o["observed"] = obs;
 
-    o["b_modelWl"]   = bp.addDoubles(m.modelWavelengths);
-    o["b_modelFlux"] = bp.addDoubles(m.modelFluxes);
+    o["b_modelWl"]   = bp.addDoubles(src->modelWavelengths);
+    o["b_modelFlux"] = bp.addDoubles(src->modelFluxes);
     QJsonArray cf;
-    for (const auto &comp : m.componentFluxes)
+    for (const auto &comp : src->componentFluxes)
         cf.append(bp.addDoubles(comp));
     o["b_compFlux"] = cf;
     return o;
@@ -956,6 +970,17 @@ QJsonObject photometryToJson(Photometry &ph, BlobPool &bp,
     }
     o["points"] = pts;
 
+    // The star's measured SED photometry, shared by all of its SED fits.
+    // Packages before v1.1 left it out, so an SED fit arrived with nothing
+    // to plot against.
+    if (opt.includeSEDModels || opt.includePhotometry) {
+        QJsonArray sedPts;
+        for (const auto &p : ph.getSedPhotometryPoints())
+            sedPts.append(sedPointToJson(p));
+        if (!sedPts.isEmpty())
+            o["sedPoints"] = sedPts;
+    }
+
     if (opt.includeLightcurves) {
         // A lightcurve not loaded yet is read into a temporary: loading it
         // through the live photometry would keep every exported lightcurve
@@ -1009,6 +1034,13 @@ std::shared_ptr<Photometry> photometryFromJson(const QJsonObject &o,
         p.fluxError      = rD(po, "fluxErr", 0);
         p.wavelength     = rD(po, "wl", 0);
         ph->addPhotometricPoint(p);
+    }
+    {
+        std::vector<SEDPhotometryPoint> sedPts;
+        for (const QJsonValue &v : o.value("sedPoints").toArray())
+            sedPts.push_back(sedPointFromJson(v.toObject()));
+        if (!sedPts.empty())
+            ph->setSedPhotometryPoints(sedPts);
     }
     const QJsonObject lcs = o.value("lightcurves").toObject();
     for (auto it = lcs.begin(); it != lcs.end(); ++it)

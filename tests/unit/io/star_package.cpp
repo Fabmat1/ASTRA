@@ -348,6 +348,72 @@ TEST_CASE("StarPackage: exporting does not leave lightcurves loaded on the star"
     CHECK(back[2].flux == doctest::Approx(3.0));
 }
 
+TEST_CASE("StarPackage: an SED fit travels with its model curve and photometry")
+{
+    // A project's SED models carry only the path of their data file until the
+    // SED window opens them. An export of such a star shipped the fit's
+    // parameters with no model curve and no observed points, and left out
+    // the star's measured SED photometry altogether: the receiver saw a fit
+    // with nothing plotted.
+    QTemporaryDir tmp;
+    REQUIRE(tmp.isValid());
+    const QString file = tmp.filePath("sed.asd");
+
+    SEDPhotometryPoint p;
+    p.lambda    = 5500.0;
+    p.flux      = 2.5e-13;
+    p.passband  = "V";
+    p.system    = "Johnson";
+    p.magnitude = 12.3;
+    p.flag      = 1;
+    {
+        SEDModel full;
+        full.modelWavelengths = {3000.0, 5500.0, 9000.0};
+        full.modelFluxes      = {1.0, 2.0, 3.0};
+        full.componentFluxes  = {{0.6, 1.2, 1.8}, {0.4, 0.8, 1.2}};
+        full.observedPoints   = {p};
+        REQUIRE(full.saveDataToFile(file));
+    }
+    auto model = std::make_shared<SEDModel>();
+    model->setId("sed-1");
+    model->isBestFit     = true;
+    model->numComponents = 2;
+    model->setModelDataFile(file);     // as loadSEDModels leaves it
+
+    auto ph = std::make_shared<Photometry>();
+    ph->addSEDModel(model);
+    ph->setSedPhotometryPoints({p});
+    auto star = makeStar("D1", "Sed", 5.0, 6.0);
+    star->setPhotometryLoader([ph](const QString&) { return ph; });
+
+    QString error;
+    const QByteArray bytes =
+        StarPackage::writeToBuffer({star}, StarPackage::ExportOptions{}, &error);
+    REQUIRE(!bytes.isEmpty());
+    // The live model is left as it was.
+    CHECK(model->modelWavelengths.empty());
+
+    const auto result = StarPackage::readFromBuffer(bytes);
+    REQUIRE(result.success);
+    const auto backPh = result.stars.front()->getPhotometry();
+    REQUIRE(backPh);
+    const auto models = backPh->getSEDModels();
+    REQUIRE(models.size() == 1);
+    const auto& m = *models.front();
+    REQUIRE(m.modelWavelengths.size() == 3);
+    CHECK(m.modelFluxes[1] == doctest::Approx(2.0));
+    REQUIRE(m.componentFluxes.size() == 2);
+    CHECK(m.componentFluxes[1][2] == doctest::Approx(1.2));
+    REQUIRE(m.observedPoints.size() == 1);
+    CHECK(m.observedPoints[0].passband == "V");
+
+    REQUIRE(backPh->getSedPhotometryPoints().size() == 1);
+    const auto& q = backPh->getSedPhotometryPoints()[0];
+    CHECK(q.system == "Johnson");
+    CHECK(q.flag == 1);
+    CHECK(q.magnitude == doctest::Approx(12.3));
+}
+
 }   // TEST_SUITE("io")
 
 TEST_SUITE("kinematics")

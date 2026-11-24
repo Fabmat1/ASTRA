@@ -236,11 +236,20 @@ bool PhotometryRepository::saveSEDModel(const QString& starId,
     QString dataDir   = QFileInfo(_db.databasePath()).absolutePath() + "/data";
     QString modelFile = DataStore::sedModelPath(dataDir, starId,
                                                 photometryId, model->getId());
-    model->saveDataToFile(modelFile);
-
-    QString oldFile = model->getModelDataFile();
-    if (!oldFile.isEmpty() && oldFile != modelFile && QFile::exists(oldFile))
-        QFile::remove(oldFile);
+    // The model curve and residual points load lazily, so a model saved for
+    // its values alone (savePhotometry re-saves every SED model of the star)
+    // usually has none in memory: it keeps the file it has. Writing it anyway
+    // replaced that file with an empty one, and the fit lost its plot.
+    const QString oldFile = model->getModelDataFile();
+    const bool    hasData =
+        !model->modelWavelengths.empty() || !model->observedPoints.empty();
+    if (!hasData && !oldFile.isEmpty()) {
+        modelFile = oldFile;
+    } else if (model->saveDataToFile(modelFile)) {
+        if (!oldFile.isEmpty() && oldFile != modelFile && QFile::exists(oldFile))
+            QFile::remove(oldFile);
+        model->setModelDataFile(modelFile);
+    }
 
     QSqlQuery query(_db.threadConnection());
     query.prepare(R"(

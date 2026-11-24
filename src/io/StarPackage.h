@@ -27,7 +27,7 @@ class Instrument;
 class StarPackage {
   public:
     static constexpr quint16     VERSION_MAJOR  = 1;
-    static constexpr quint16     VERSION_MINOR  = 0;
+    static constexpr quint16     VERSION_MINOR  = 1;
     static constexpr const char *FILE_EXTENSION = ".astra";
 
     struct ExportOptions {
