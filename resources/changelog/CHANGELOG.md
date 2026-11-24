@@ -29,6 +29,7 @@
 
 ### Changed
 - Without a marked fit, a star's atmospheric parameters now come from the best fit with the lowest reduced chi2 among all its spectra, and from the earliest spectrum when fits tie or carry no chi2. Before, it was whichever best fit happened to load first or was ticked last, so the values of stars with several fitted spectra can change the next time the star is opened.
+- Opening a fit page no longer asks for an SSH password for every remote host. Hosts that need a login are listed in the grid selector, with the login right there; other SSH questions open inside ASTRA instead of as separate windows.
 
 ### Fixed
 - Saving an instrument under the name of an existing one no longer leaves two copies behind; the existing instrument is updated.

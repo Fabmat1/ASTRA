@@ -106,6 +106,10 @@ int main(int argc, char *argv[])
     UiStyle::installMetricFixes(&app);
     PlotRightDragZoom::install(&app);
 
+    // SSH credential prompts come back into this process and are shown where
+    // the login was started, not as a window per prompt (see AskPass.h).
+    astra::remote::installSshPromptUi();
+
     QFontDatabase::addApplicationFont(":/fonts/FiraCode-Regular.ttf");
     QFontDatabase::addApplicationFont(":/fonts/FiraCode-Medium.ttf");
     QFontDatabase::addApplicationFont(":/fonts/FiraCode-Bold.ttf");

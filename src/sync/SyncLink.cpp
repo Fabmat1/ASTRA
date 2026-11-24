@@ -54,7 +54,7 @@ bool startSshLink(QProcess& link, const Peer& peer, QString* error, bool allowPr
     remote::SshConnection connection(host);
     if (!connection.ensureMaster(error, allowPrompt)) return false;
 
-    remote::SshConnection::prepareSshProcess(link);
+    remote::SshConnection::prepareSshProcess(link, peer.destination);
     link.start(remote::SshConnection::sshProgram(), connection.sshArguments(true) << command);
     if (!link.waitForStarted(15000)) {
         if (error) *error = QStringLiteral("Could not start ssh: ") + link.errorString();

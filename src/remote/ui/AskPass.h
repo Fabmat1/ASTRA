@@ -17,4 +17,11 @@ namespace astra::remote {
  *  exit code.                                                             */
 int runAskPassMode(int argc, char** argv);
 
+/*  Windowed app only, once the QApplication exists: start SshAuthBroker so
+ *  prompts come back into this process instead of opening a window per
+ *  prompt.  Widgets that start a login show its prompts inline (see
+ *  SshLoginPanel); a prompt nobody claimed (an explicit action such as
+ *  running a fit on a host that is not logged in) gets a dialog here.      */
+void installSshPromptUi();
+
 } // namespace astra::remote

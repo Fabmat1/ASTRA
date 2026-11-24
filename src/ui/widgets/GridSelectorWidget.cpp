@@ -1,5 +1,6 @@
 #include "ui/widgets/GridSelectorWidget.h"
 #include "remote/RemoteHostRegistry.h"
+#include "remote/ui/SshLoginPanel.h"
 #include "app/Logger.h"
 #include "app/ui/UiIcons.h"
 #include "ui/widgets/ElidedLabel.h"
@@ -36,12 +37,24 @@
 namespace {
 
 // Process-wide cache of scan results, keyed by base paths + markers.
-QHash<QString, QVector<DiscoveredGrid>> &gridScanCache() {
-    static QHash<QString, QVector<DiscoveredGrid>> cache;
+QHash<QString, GridScanResult> &gridScanCache() {
+    static QHash<QString, GridScanResult> cache;
     return cache;
 }
 
 void clearGridScanCache() { gridScanCache().clear(); }
+
+// Drops the scans that were missing `hostName` for want of a login, so the
+// next refresh lists that host.
+void forgetScansNeedingLogin(const QString &hostName) {
+    auto &cache = gridScanCache();
+    for (auto it = cache.begin(); it != cache.end();) {
+        if (it.value().loginNeeded.contains(hostName))
+            it = cache.erase(it);
+        else
+            ++it;
+    }
+}
 
 struct DirListing {
     QStringList subdirs;
@@ -328,8 +341,19 @@ void GridSelectorWidget::buildUi()
     _configBtn->setVisible(false);
     bar->addWidget(_configBtn);
 
-    g->addLayout(bar, r, 0, 1, 3);
+    g->addLayout(bar, r++, 0, 1, 3);
+
+    // Remote hosts the scan skipped because they need a password, passphrase
+    // or host key decision. The scan never asks on its own: a login is only
+    // started from here, by the user, so opening a fit page no longer brings
+    // up a credential prompt per host.
+    _loginPanel = new astra::remote::SshLoginPanel;
+    g->addWidget(_loginPanel, r++, 0, 1, 3);
     outer->addWidget(_groupBox);
+
+    connect(&astra::remote::RemoteHostRegistry::instance(),
+            &astra::remote::RemoteHostRegistry::hostLoggedIn, this,
+            &GridSelectorWidget::onHostLoggedIn);
 
     connect(this, &GridSelectorWidget::selectionChanged,
             this, &GridSelectorWidget::updatePathLabel);
@@ -376,7 +400,8 @@ void GridSelectorWidget::startScan(bool localOnly) {
     // cache: the cached entry covers the remote hosts it is meant to skip.
     auto it = gridScanCache().constFind(cacheKey);
     if (!localOnly && it != gridScanCache().constEnd()) {
-        _discovered      = it.value();
+        _discovered      = it.value().grids;
+        _loginNeeded     = it.value().loginNeeded;
         _scanIsLocalOnly = false;
         LOG_DEBUG(
             "GridScan",
@@ -391,9 +416,9 @@ void GridSelectorWidget::startScan(bool localOnly) {
     _scanIsLocalOnly = localOnly;
     setLoading(true);
 
-    auto *watcher = new QFutureWatcher<QVector<DiscoveredGrid>>(this);
+    auto *watcher = new QFutureWatcher<GridScanResult>(this);
     _scanWatcher  = watcher;
-    connect(watcher, &QFutureWatcher<QVector<DiscoveredGrid>>::finished, this,
+    connect(watcher, &QFutureWatcher<GridScanResult>::finished, this,
             &GridSelectorWidget::onScanFinished);
 
     // Snapshot inputs by value so the worker touches nothing on `this`.
@@ -452,7 +477,7 @@ void GridSelectorWidget::abandonScanForLocalOnly() {
     auto *old = _scanWatcher;
     _scanWatcher = nullptr;
     disconnect(old, nullptr, this, nullptr);
-    connect(old, &QFutureWatcher<QVector<DiscoveredGrid>>::finished, old,
+    connect(old, &QFutureWatcher<GridScanResult>::finished, old,
             &QObject::deleteLater);
 
     LOG_INFO("GridScan", "Remote grid scan abandoned, rescanning local only");
@@ -462,7 +487,9 @@ void GridSelectorWidget::abandonScanForLocalOnly() {
 void GridSelectorWidget::onScanFinished() {
     if (!_scanWatcher)
         return;
-    _discovered = _scanWatcher->result();
+    const GridScanResult result = _scanWatcher->result();
+    _discovered  = result.grids;
+    _loginNeeded = result.loginNeeded;
 
     // A local-only result is not what the full key describes, so caching it
     // would hide the remote grids from every other selector.
@@ -471,7 +498,7 @@ void GridSelectorWidget::onScanFinished() {
                                  _markers.join('|') + "##" +
                                  _skipTokens.join('|');
         gridScanCache().insert(cacheKey,
-                               _discovered); // main thread: QHash safe here
+                               result); // main thread: QHash safe here
     }
 
     _scanWatcher->deleteLater();
@@ -493,9 +520,37 @@ void GridSelectorWidget::setLoading(bool on) {
         _statusLabel->setText("Scanning grids…");
 }
 
+void GridSelectorWidget::onHostLoggedIn(const QString &hostName) {
+    forgetScansNeedingLogin(hostName);
+    // A scan already in flight started before the login and may miss the
+    // host again; let it land, then go again.
+    if (_scanWatcher && _scanWatcher->isRunning()) {
+        // Runs after onScanFinished, which caches that stale result again.
+        connect(_scanWatcher, &QFutureWatcher<GridScanResult>::finished, this,
+                [this, hostName] {
+                    forgetScansNeedingLogin(hostName);
+                    refresh();
+                },
+                Qt::SingleShotConnection);
+        return;
+    }
+    if (!_loginNeeded.contains(hostName))
+        return;
+    _loginNeeded.remove(hostName);
+    updateLoginPanel();
+    refresh();
+}
+
+void GridSelectorWidget::updateLoginPanel() {
+    QStringList hosts = _loginNeeded.keys();
+    hosts.sort();
+    _loginPanel->setHosts(hosts, _loginNeeded);
+}
+
 void GridSelectorWidget::finishPopulate() {
     populateCategoryCombo();
     populateGridCombo();
+    updateLoginPanel();
 
     if (_basePaths.isEmpty())
         _statusLabel->setText("No base paths configured");
@@ -508,6 +563,11 @@ void GridSelectorWidget::finishPopulate() {
                                   .arg(_discovered.size())
                                   .arg(_discovered.size() == 1 ? "" : "s")
                                   .arg(_scanIsLocalOnly ? " (local only)" : ""));
+    if (!_loginNeeded.isEmpty() && !_scanIsLocalOnly)
+        _statusLabel->setText(_statusLabel->text() +
+                              QString(", %1 host%2 not logged in")
+                                  .arg(_loginNeeded.size())
+                                  .arg(_loginNeeded.size() == 1 ? "" : "s"));
 
     // Apply any selection requested before the scan completed.
     if (_scanPending) {
@@ -542,7 +602,7 @@ void GridSelectorWidget::applyDefaultSelection()
     }
 }
 
-QVector<DiscoveredGrid> GridSelectorWidget::performScan(
+GridScanResult GridSelectorWidget::performScan(
     const QStringList &basePaths, const QStringList &markers,
     const QStringList &skipTokens, const QVector<GridPreset> &presets,
     const std::function<void(const QString &)> &onRemoteHost,
@@ -552,7 +612,8 @@ QVector<DiscoveredGrid> GridSelectorWidget::performScan(
     int  dirsVisited = 0, dirsPruned = 0, dirsSkipped = 0;
     long unknownTotal = 0;
 
-    QVector<DiscoveredGrid> discovered;
+    GridScanResult          result;
+    QVector<DiscoveredGrid> &discovered = result.grids;
     QSet<QString>           seen;
 
     auto shouldSkipDir = [&](const QString &name) {
@@ -582,6 +643,10 @@ QVector<DiscoveredGrid> GridSelectorWidget::performScan(
             QString hostName, remoteDir;
             if (!astra::remote::parseRemoteGridUrl(base, &hostName, &remoteDir))
                 continue;
+            // One failed login per host is enough to know; its other base
+            // paths would only fail the same way.
+            if (result.loginNeeded.contains(hostName))
+                continue;
             onRemoteHost(hostName);
             const auto remoteDone =
                 qScopeGuard([&onRemoteHost] { onRemoteHost(QString()); });
@@ -595,9 +660,16 @@ QVector<DiscoveredGrid> GridSelectorWidget::performScan(
             }
             QStringList markerPaths;
             QString err;
-            if (!chan->list(remoteDir, 6, &markerPaths, &err)) {
+            bool needsLogin = false;
+            // Never prompt from a scan: it runs whenever a fit page opens,
+            // seen or not. A host that wants credentials is offered as an
+            // inline login in the selector instead.
+            if (!chan->list(remoteDir, 6, &markerPaths, &err,
+                            /*allowPrompt=*/false, &needsLogin)) {
                 LOG_INFO("GridScan", QString("Remote listing of %1 failed: %2")
                                          .arg(base, err));
+                if (needsLogin)
+                    result.loginNeeded.insert(hostName, err);
                 continue;
             }
             for (const QString &marker : markerPaths) {
@@ -786,7 +858,7 @@ QVector<DiscoveredGrid> GridSelectorWidget::performScan(
                   .arg(timer.elapsed())
                   .arg(unknownTotal));
 
-    return discovered;
+    return result;
 }
 
 void GridSelectorWidget::populateCategoryCombo()

@@ -49,6 +49,9 @@
 #include <QPlainTextEdit>
 #include <QDialogButtonBox>
 #include <QApplication>
+#include <QEventLoop>
+#include <QFutureWatcher>
+#include <QtConcurrent>
 #include <QClipboard>
 #include <QAbstractSpinBox>
 #include <QToolButton>
@@ -1556,9 +1559,22 @@ void FitSetupWidget::onRunFit()
                 return;
             }
             if (auto* conn = reg.connection(hostId)) {
+                // Off the GUI thread, with events still running: a password
+                // prompt is answered by this very process (SshAuthBroker),
+                // so blocking here would leave it unanswerable.
                 QString cerr;
                 QApplication::setOverrideCursor(Qt::WaitCursor);
-                const bool up = conn->ensureMaster(&cerr);
+                _runButton->setEnabled(false);   // no second run meanwhile
+                QFutureWatcher<bool> watcher;
+                QEventLoop loop;
+                connect(&watcher, &QFutureWatcherBase::finished, &loop,
+                        &QEventLoop::quit);
+                watcher.setFuture(QtConcurrent::run([conn, &cerr] {
+                    return conn->ensureMaster(&cerr);
+                }));
+                if (!watcher.isFinished()) loop.exec();
+                const bool up = watcher.result();
+                _runButton->setEnabled(true);
                 QApplication::restoreOverrideCursor();
                 if (!up) {
                     QMessageBox::warning(this, "Cannot run fit",

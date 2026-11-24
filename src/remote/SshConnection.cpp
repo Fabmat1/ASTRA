@@ -1,5 +1,7 @@
 #include "remote/SshConnection.h"
 
+#include "remote/SshAuthBroker.h"
+
 #include <QCoreApplication>
 #include <QCryptographicHash>
 #include <QDir>
@@ -9,6 +11,8 @@
 #include <QProcess>
 #include <QProcessEnvironment>
 #include <QStandardPaths>
+
+#include <optional>
 
 #ifdef Q_OS_UNIX
   #include <unistd.h>
@@ -28,6 +32,24 @@ QString cachedAskPassPath()
     /*  applicationFilePath() needs an existing QCoreApplication, which the
      *  GUI always has by the time any SSH work happens.                     */
     return QCoreApplication::applicationFilePath();
+}
+
+/*  ssh's stderr after a BatchMode attempt failed: does the host want
+ *  credentials (or a host key decision) we were not allowed to ask for, as
+ *  opposed to being unreachable?                                           */
+bool looksLikeLoginNeeded(const QString& sshErr)
+{
+    static const char* const kMarkers[] = {
+        "Permission denied",
+        "Host key verification failed",
+        "No more authentication methods",
+        "Too many authentication failures",
+        "passphrase",
+        "keyboard-interactive",
+    };
+    for (const char* m : kMarkers)
+        if (sshErr.contains(QLatin1String(m), Qt::CaseInsensitive)) return true;
+    return false;
 }
 
 } // namespace
@@ -52,7 +74,8 @@ QString SshConnection::sshProgram()
     return QStringLiteral("ssh");
 }
 
-void SshConnection::prepareSshProcess(QProcess& proc)
+void SshConnection::prepareSshProcess(QProcess& proc,
+                                      const QString& destination)
 {
     QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
     env.insert(QStringLiteral("SSH_ASKPASS"), cachedAskPassPath());
@@ -63,6 +86,19 @@ void SshConnection::prepareSshProcess(QProcess& proc)
      *  it every credential prompt starts a whole second ASTRA instead of the
      *  small password dialog (see remote/AskPass.cpp).                       */
     env.insert(QStringLiteral("ASTRA_SSH_ASKPASS"), QStringLiteral("1"));
+    /*  With the windowed app's broker listening, the helper hands the prompt
+     *  to this process instead of opening a window (see SshAuthBroker.h).
+     *  instance() is only touched when the app exists: the broker is a
+     *  QObject on the GUI thread.                                           */
+    env.remove(QStringLiteral("ASTRA_SSH_ASKPASS_SOCKET"));
+    env.remove(QStringLiteral("ASTRA_SSH_DESTINATION"));
+    if (QCoreApplication::instance()) {
+        const QString sock = SshAuthBroker::instance().serverName();
+        if (!sock.isEmpty()) {
+            env.insert(QStringLiteral("ASTRA_SSH_ASKPASS_SOCKET"), sock);
+            env.insert(QStringLiteral("ASTRA_SSH_DESTINATION"), destination);
+        }
+    }
     proc.setProcessEnvironment(env);
 
     /*  Detach from the controlling terminal so ssh cannot fall back to a
@@ -104,7 +140,7 @@ QStringList SshConnection::sshArguments(bool batchMode) const
 bool SshConnection::checkMaster(bool withOverride) const
 {
     QProcess p;
-    prepareSshProcess(p);
+    prepareSshProcess(p, _host.destination);
     QStringList args{QStringLiteral("-O"), QStringLiteral("check")};
     if (withOverride)
         args << QStringLiteral("-o")
@@ -119,21 +155,37 @@ bool SshConnection::checkMaster(bool withOverride) const
     return p.exitCode() == 0;
 }
 
-bool SshConnection::ensureMaster(QString* err, bool allowPrompt)
+bool SshConnection::ensureMaster(QString* err, bool allowPrompt,
+                                 bool* needsLogin)
 {
+    if (needsLogin) *needsLogin = false;
+
     /*  A live master from the user's own ssh config (the astro hosts keep an
      *  8h ControlPersist socket) is preferred: it is already authenticated
      *  and shared with the user's terminals.                                */
-    if (checkMaster(false)) {
-        QMutexLocker lk(&_mtx);
-        _mode = MasterMode::UserConfig;
-        return true;
+    auto findLiveMaster = [this] {
+        if (checkMaster(false)) {
+            QMutexLocker lk(&_mtx);
+            _mode = MasterMode::UserConfig;
+            return true;
+        }
+        if (checkMaster(true)) {
+            QMutexLocker lk(&_mtx);
+            _mode = MasterMode::AstraMaster;
+            return true;
+        }
+        return false;
+    };
+    if (findLiveMaster()) return true;
+
+    /*  Two prompting logins at once would ask for the password twice.  The
+     *  second one waits here and then finds the first one's master.        */
+    std::optional<QMutexLocker<QMutex>> loginLock;
+    if (allowPrompt) {
+        loginLock.emplace(&_loginMtx);
+        if (findLiveMaster()) return true;
     }
-    if (checkMaster(true)) {
-        QMutexLocker lk(&_mtx);
-        _mode = MasterMode::AstraMaster;
-        return true;
-    }
+
     /*  Start ASTRA's own master.  With prompting allowed this is the one call
      *  that may ask (via askpass), so it gets a generous timeout for the user
      *  to type.  Without it the master is still opened when the host takes a
@@ -142,7 +194,7 @@ bool SshConnection::ensureMaster(QString* err, bool allowPrompt)
      *  connection dropped, someone cleared the sockets) used to give up for
      *  good, which left every remote fit of a running mass fit uncollected. */
     QProcess p;
-    prepareSshProcess(p);
+    prepareSshProcess(p, _host.destination);
     QStringList args;
     if (!allowPrompt) args << QStringLiteral("-o") << QStringLiteral("BatchMode=yes");
     args << QStringList{
@@ -163,9 +215,13 @@ bool SshConnection::ensureMaster(QString* err, bool allowPrompt)
     }
     if (p.exitCode() != 0) {
         const QString why = QString::fromUtf8(p.readAllStandardError()).trimmed();
-        if (err) *err = allowPrompt ? why
-                                    : tr("no live SSH connection to %1, and it needs a "
-                                         "password (%2)").arg(_host.destination, why);
+        const bool login = looksLikeLoginNeeded(why);
+        if (needsLogin) *needsLogin = login;
+        if (err) {
+            if (allowPrompt)  *err = why;
+            else if (login)   *err = tr("%1 needs a login (%2)").arg(_host.destination, why);
+            else              *err = tr("cannot reach %1 (%2)").arg(_host.destination, why);
+        }
         return false;
     }
     QMutexLocker lk(&_mtx);
@@ -212,7 +268,7 @@ SshConnection::ExecResult SshConnection::runSsh(const QStringList& fullArgs,
 {
     ExecResult r;
     QProcess p;
-    prepareSshProcess(p);
+    prepareSshProcess(p, _host.destination);
     p.start(sshProgram(), fullArgs);
     if (!p.waitForStarted(10000)) {
         r.errorString = tr("could not start ssh");

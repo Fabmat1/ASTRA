@@ -28,9 +28,13 @@ version, whether Slurm is available, and whether the handful of standard tools
 it needs are present. If the host runs Slurm, set **Type** to *Slurm cluster*
 and fill in the partition and the CPUs per fit.
 
-Passwords, key passphrases and keyboard-interactive prompts are asked for in a
-dialog when a connection is first opened. A connection stays open for eight
-hours, so a session normally prompts once.
+ASTRA never asks for credentials in the background. A host that needs a
+password, key passphrase, one-time code or host key confirmation is listed in
+the grid selector with a **Log in** button, and the questions then appear right
+there. Something you start explicitly, such as **Test connection** or a fit set
+to run on a host that is not logged in yet, asks in a dialog inside ASTRA
+instead. A connection stays open for eight hours, so a session normally asks
+once.
 
 ## Streamed grids
 

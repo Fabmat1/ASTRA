@@ -461,6 +461,7 @@ set(ASTRA_CORE_SOURCES
     src/remote/RemoteBatchService.cpp
     src/remote/RemoteScheduler.cpp
     src/remote/RemoteStaging.cpp
+    src/remote/SshAuthBroker.cpp
     src/remote/SshConnection.cpp
     src/remote/SshFileStreamChannel.cpp
     src/remote/SshGridProvider.cpp
@@ -634,6 +635,7 @@ set(ASTRA_CORE_HEADERS
     src/remote/RemoteBatchService.h
     src/remote/RemoteScheduler.h
     src/remote/RemoteStaging.h
+    src/remote/SshAuthBroker.h
     src/remote/SshConnection.h
     src/remote/SshFileStreamChannel.h
     src/remote/SshGridProvider.h
@@ -780,6 +782,7 @@ set(ASTRA_UI_SOURCES
     src/remote/ui/RemoteFitsDialog.cpp
     src/remote/ui/RemoteHostsSettingsPage.cpp
     src/remote/ui/RemoteSelfTest.cpp
+    src/remote/ui/SshLoginPanel.cpp
     src/remote/ui/TerminalView.cpp
 
     # rv/ui
@@ -921,6 +924,7 @@ set(ASTRA_UI_HEADERS
     src/remote/ui/RemoteFitsDialog.h
     src/remote/ui/RemoteHostsSettingsPage.h
     src/remote/ui/RemoteSelfTest.h
+    src/remote/ui/SshLoginPanel.h
     src/remote/ui/TerminalView.h
 
     # rv/ui
@@ -1765,6 +1769,7 @@ if(BUILD_TESTING)
             tests/unit/remote/batch_settings.cpp
             tests/unit/remote/slurm_limits.cpp
             tests/unit/remote/batch_service.cpp
+            tests/unit/remote/ssh_auth_broker.cpp
             tests/unit/catalog/vizier_asu.cpp
             tests/unit/sed/grid_broker.cpp
             tests/unit/fitting/user_fit_defaults.cpp

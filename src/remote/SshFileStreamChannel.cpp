@@ -54,12 +54,14 @@ void SshFileStreamChannel::shutdown()
     teardown();
 }
 
-bool SshFileStreamChannel::ensureRunning(QString* err)
+bool SshFileStreamChannel::ensureRunning(QString* err, bool allowPrompt,
+                                         bool* needsLogin)
 {
+    if (needsLogin) *needsLogin = false;
     if (_proc && _proc->state() == QProcess::Running) return true;
     teardown();
 
-    if (!_conn->ensureMaster(err, /*allowPrompt=*/true)) return false;
+    if (!_conn->ensureMaster(err, allowPrompt, needsLogin)) return false;
 
     /*  serve.sh is tiny; (re)install it whenever the channel (re)starts so a
      *  version bump or a wiped remote home never needs manual repair.       */
@@ -90,7 +92,7 @@ bool SshFileStreamChannel::ensureRunning(QString* err)
     }
 
     auto proc = std::make_unique<QProcess>();
-    SshConnection::prepareSshProcess(*proc);
+    SshConnection::prepareSshProcess(*proc, _conn->host().destination);
     proc->setProcessChannelMode(QProcess::SeparateChannels);
     QStringList args = _conn->sshArguments();
     args << QStringLiteral("sh") << servePath;
@@ -340,14 +342,16 @@ bool SshFileStreamChannel::tail(const QString& remotePath, qint64 offset,
 }
 
 bool SshFileStreamChannel::list(const QString& dir, int depth,
-                                QStringList* out, QString* err)
+                                QStringList* out, QString* err,
+                                bool allowPrompt, bool* needsLogin)
 {
+    if (needsLogin) *needsLogin = false;
     if (!safePath(dir)) {
         if (err) *err = QStringLiteral("unsafe path: %1").arg(dir);
         return false;
     }
     QMutexLocker lk(&_mtx);
-    if (!ensureRunning(err)) return false;
+    if (!ensureRunning(err, allowPrompt, needsLogin)) return false;
     const QByteArray req = "LIST " + QByteArray::number(depth) + ' ' +
                            dir.toUtf8();
     if (!writeLine(req)) { teardown(); return false; }

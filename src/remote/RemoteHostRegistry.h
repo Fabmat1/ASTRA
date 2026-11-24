@@ -69,8 +69,13 @@ public:
      *  Returns the unexpanded value if the host cannot be reached.          */
     QString resolvedWorkDir(const QString& hostId);
 
+    /*  Called after an interactive login to `hostName` succeeded, so every
+     *  view that showed it as "needs login" can rescan.                      */
+    void announceLoggedIn(const QString& hostName) { emit hostLoggedIn(hostName); }
+
 signals:
     void hostsChanged();
+    void hostLoggedIn(const QString& hostName);
 
 private:
     RemoteHostRegistry();

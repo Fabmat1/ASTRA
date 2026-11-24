@@ -43,8 +43,17 @@ public:
 
     /*  Establish (or find) a multiplexing master.  May prompt the user for
      *  credentials via askpass when allowPrompt is true.  Returns false with
-     *  a message when the host is unreachable or auth failed.               */
-    bool ensureMaster(QString* err = nullptr, bool allowPrompt = true);
+     *  a message when the host is unreachable or auth failed; `needsLogin`
+     *  (optional) is then set when the host itself answered and only
+     *  credentials (or a host key confirmation) are missing, which is what a
+     *  background caller shows as "log in" rather than as an outage.
+     *
+     *  Prompting logins to one host are serialized: a second caller waits
+     *  for the first and then reuses its master instead of asking again.
+     *  Background work (scans, pollers) must pass allowPrompt=false; only
+     *  something the user just asked for may prompt.                        */
+    bool ensureMaster(QString* err = nullptr, bool allowPrompt = true,
+                      bool* needsLogin = nullptr);
 
     struct ExecResult {
         int        exitCode = -1;
@@ -96,8 +105,11 @@ public:
     static QString     sshProgram();
 
     /*  Environment for spawned ssh processes (askpass wiring) and the child
-     *  modifier that detaches the controlling TTY.                          */
-    static void prepareSshProcess(QProcess& proc);
+     *  modifier that detaches the controlling TTY.  `destination` tags any
+     *  prompt the process raises, so SshAuthBroker can show it next to the
+     *  login that caused it.                                                */
+    static void prepareSshProcess(QProcess& proc,
+                                  const QString& destination = {});
 
 private:
     enum class MasterMode { Unknown, UserConfig, AstraMaster };
@@ -112,6 +124,7 @@ private:
 
     RemoteHost         _host;
     mutable QMutex     _mtx;
+    QMutex             _loginMtx;   // serializes prompting master starts
     MasterMode         _mode = MasterMode::Unknown;
 };
 

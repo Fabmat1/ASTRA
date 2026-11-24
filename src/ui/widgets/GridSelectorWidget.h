@@ -1,6 +1,7 @@
 #pragma once
 
 #include <QFutureWatcher>
+#include <QHash>
 #include <QStringList>
 #include <QVector>
 #include <QWidget>
@@ -16,6 +17,7 @@ class QLabel;
 class QPushButton;
 class QGroupBox;
 class ElidedLabel;
+namespace astra::remote { class SshLoginPanel; }
 
 struct GridPreset
 {
@@ -44,6 +46,15 @@ struct DiscoveredGrid
     double  loggMin = 0, loggMax = 0;
     double  heMin   = 0, heMax   = 0;
     double  zMin    = 0, zMax    = 0;
+};
+
+/// What one scan produced: the grids, plus the remote hosts that were not
+/// listed because they need an interactive login (host name -> ssh's reason).
+/// The scan never prompts; those hosts get an inline login instead.
+struct GridScanResult
+{
+    QVector<DiscoveredGrid>  grids;
+    QHash<QString, QString>  loginNeeded;
 };
 
 class GridSelectorWidget : public QWidget
@@ -89,6 +100,8 @@ private:
     void    startScan(bool localOnly = false);
     void    onScanFinished();
     void    onRemoteScanProgress(const QString &hostName);
+    void    onHostLoggedIn(const QString &hostName);
+    void    updateLoginPanel();
     void    abandonScanForLocalOnly();
     void    finishPopulate(); 
     void    setLoading(bool on);
@@ -97,7 +110,7 @@ private:
     // Runs on a worker thread. `onRemoteHost` is called with the host name
     // before each remote listing and with an empty string after it; remote
     // bases not yet started are skipped once `skipRemote` is set.
-    static QVector<DiscoveredGrid> performScan(
+    static GridScanResult performScan(
         const QStringList &basePaths, const QStringList &markers,
         const QStringList &skipTokens, const QVector<GridPreset> &presets,
         const std::function<void(const QString &)> &onRemoteHost,
@@ -109,6 +122,7 @@ private:
     QStringList             _markers{"grid.fits"};
     QVector<GridPreset>     _presets;
     QVector<DiscoveredGrid> _discovered;
+    QHash<QString, QString> _loginNeeded;   // host name -> reason
 
     QGroupBox*   _groupBox     = nullptr;
     QComboBox*   _catCombo     = nullptr;
@@ -119,8 +133,9 @@ private:
     QPushButton* _refreshBtn   = nullptr;
     QPushButton* _configBtn    = nullptr;
     QPushButton* _localOnlyBtn = nullptr;
+    astra::remote::SshLoginPanel* _loginPanel = nullptr;
 
-    QFutureWatcher<QVector<DiscoveredGrid>> *_scanWatcher = nullptr;
+    QFutureWatcher<GridScanResult>          *_scanWatcher = nullptr;
     QProgressBar                            *_spinner     = nullptr;
     std::shared_ptr<std::atomic_bool>        _scanSkipRemote;
     bool                                     _scanIsLocalOnly = false;

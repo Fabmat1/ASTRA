@@ -55,9 +55,12 @@ public:
     bool tail(const QString& remotePath, qint64 offset, QByteArray* out,
               QString* err = nullptr);
 
-    /*  Paths of grid.fits markers under `dir`, up to `depth` levels deep.   */
+    /*  Paths of grid.fits markers under `dir`, up to `depth` levels deep.
+     *  With allowPrompt false (background scans) a host that is not logged
+     *  in fails at once instead of asking, and sets `needsLogin`.           */
     bool list(const QString& dir, int depth, QStringList* out,
-              QString* err = nullptr);
+              QString* err = nullptr, bool allowPrompt = true,
+              bool* needsLogin = nullptr);
 
     void shutdown();   // polite BYE + process teardown
 
@@ -66,7 +69,8 @@ public:
     int    filesFetched() const { return _filesFetched; }
 
 private:
-    bool ensureRunning(QString* err);
+    bool ensureRunning(QString* err, bool allowPrompt = true,
+                       bool* needsLogin = nullptr);
     bool writeLine(const QByteArray& line);
     bool readLine(QByteArray* line, int timeoutMs);
     bool readExactly(qint64 n, QIODevice* dst, QByteArray* mem, int timeoutMs);
