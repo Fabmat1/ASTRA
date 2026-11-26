@@ -21,7 +21,7 @@
     implemented.
 -->
 
-## Unreleased
+## v0.11.0 (2026-11-26)
 
 ### Added
 - **Sync between your machines** (Settings > Sync): keeps your database and data files in step over SSH, merged row by row. Replaced or deleted rows can be restored for 30 days. Not for use alongside Syncthing or cloud folders; see "Syncing Between Machines" in the documentation.
@@ -45,6 +45,7 @@
 - AI agents no longer lose the connection when the ASTRA window closes or reopens.
 - The RV Inspector keeps a nearby solution selected after one is deleted.
 - Log-sampled FITS spectra and HERMES spectra are read correctly.
+- Shared stars include their SED fit curves and SED photometry, and saving photometry no longer erases SED fit data.
 
 ## v0.10.2 (2026-11-11)
 

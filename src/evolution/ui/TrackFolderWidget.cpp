@@ -22,7 +22,7 @@ TrackFolderWidget::TrackFolderWidget(QWidget* parent) : QWidget(parent)
 
     auto* row = new QHBoxLayout;
     _edit = new QLineEdit;
-    _edit->setPlaceholderText(tr("Folder with *.sdtracks.fits.gz and the Han FITS file"));
+    _edit->setPlaceholderText(tr("Tracks folder"));
     _edit->setClearButtonEnabled(true);
     _browse = new QPushButton(tr("Browse…"));
     row->addWidget(_edit, 1);
@@ -84,9 +84,7 @@ void TrackFolderWidget::rescan()
         delete it;
     }
     if (dir.isEmpty()) {
-        _status->setText(tr("No folder set. The track sets are not bundled with ASTRA: export them "
-                            "once with scripts/export_tracks.py from a checkout of sdfit, then pick "
-                            "that folder here."));
+        _status->setText(tr("No folder set."));
     } else if (!QFileInfo(dir).isDir()) {
         _status->setText(tr("This folder does not exist."));
     } else {
@@ -110,15 +108,14 @@ void TrackFolderWidget::rescan()
             if (!f.description.isEmpty()) tip = f.description + "\n" + tip;
             if (!f.sha1.isEmpty()) tip += "\nSHA-1 " + f.sha1;
             if (f.key == QLatin1String("dorman") && f.groups.isEmpty() && f.usable())
-                tip += tr("\nNo composition labels: re-export with ASTRA's export_tracks.py to "
-                          "select Dorman tracks by composition.");
+                tip += tr("\nNo composition labels");
             row->setToolTip(tip);
             _rows->insertWidget(_rows->count() - 1, row);
             usable += f.usable();
         }
-        _status->setText(fams.isEmpty() ? tr("No track sets found in this folder.")
-                         : usable == 1      ? tr("1 track set found:")
-                                            : tr("%1 track sets found:").arg(usable));
+        _status->setText(fams.isEmpty() ? tr("No track sets found.")
+                         : usable == 1      ? tr("1 track set")
+                                            : tr("%1 track sets").arg(usable));
     }
     if (changed) emit folderChanged(dir);
 }
