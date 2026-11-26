@@ -142,6 +142,7 @@ void registerCoreTools(AiRuntime& rt)
     registerExportTools(rt);
     registerJobTools(rt);
     registerPythonTools(rt);
+    registerEvolutionTools(rt);
 }
 
 } // namespace astra::ai

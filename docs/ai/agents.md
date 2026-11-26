@@ -158,6 +158,7 @@ window, plot and generic UI groups only while the ASTRA window is open.
 | Radial velocities | `get_rv_curve`, `list_rv_fits`, `get_rv_periodogram`, `add_rv_points`, `set_rv_point_active`, `set_best_rv_fit`, `delete_rv_points`, `delete_rv_fit` | no |
 | Photometry & light curves | `get_photometry`, `list_lightcurves`, `get_lightcurve`, `get_periodogram`, `list_lc_fits`, `list_sed_models`, `set_best_lc_fit`, `delete_lc_fit`, `delete_sed_model`, `remove_lightcurve` | no |
 | Jobs | `fetch_spectra`, `fetch_lightcurves`, `list_fit_plans`, `start_mass_fit`, `run_spectral_fit`, `run_rv_mcmc`, `list_jobs`, `get_job` (status, result and the tail of the log), `pause_job` (mass fits only), `resume_job`, `cancel_job` | no |
+| Evolutionary tracks | `run_track_fit` (a job), `list_track_fits`, `set_adopted_track_fit`, `delete_track_fit` | no |
 | Export | `export_data` (full-resolution CSV, JSON or `.npy` files plus a manifest, for your own scripts) | no |
 | Windows & table | `list_windows`, `open_project`, `close_project`, `open_star_detail`, `open_star_tool`, `open_window`, `close_window`, `table_select`, `table_set_filter`, `table_sort`, `table_set_columns`, `set_theme` | yes |
 | Plots | `list_plots`, `plot_set_view`, `plot_reset`, `plot_get_data`, `plot_click`, `plot_export`, `open_plot_tool`, `plot_tool_get_config`, `plot_tool_set_config` | yes |
@@ -173,7 +174,7 @@ single control, which is how an agent looks at a plot.
 
 Fetches and fits take minutes to hours, so the tools that start them
 (`fetch_spectra`, `fetch_lightcurves`, `start_mass_fit`, `run_spectral_fit`,
-`run_rv_mcmc`) return a `job_id` at once and the job runs on in the
+`run_rv_mcmc`, `run_track_fit`) return a `job_id` at once and the job runs on in the
 background. The agent then polls `get_job` for progress, the log and, once
 the job is done, its result, and can stop it with `cancel_job` (a mass fit
 also with `pause_job` and later `resume_job`, even after ASTRA was

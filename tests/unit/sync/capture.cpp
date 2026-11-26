@@ -128,6 +128,16 @@ TEST_CASE("cells: a value and its errors share one, key and frozen columns have 
     CHECK(cellFor(stars, "e_abund_fe") == "abund_fe");
     CHECK(cellFor(stars, "rv_k") == "@rv");
     CHECK(cellFor(stars, "gal_u") == "@gal");
+    // the adopted evolutionary-track fit is written as one block
+    CHECK(cellFor(stars, "trk_age") == "@trk");
+    CHECK(cellFor(stars, "trk_e_core_mass_up") == "@trk");
+    CHECK(cellFor(stars, "trk_fit_id") == "@trk");
+
+    const TableInfo trackFits = inspect(conn(), "track_fits");
+    REQUIRE(trackFits.exists());
+    CHECK(cellFor(trackFits, "age_error_up") == "age");
+    CHECK(cellFor(trackFits, "is_best_fit") == "is_best_fit");
+    CHECK(cellFor(trackFits, "adopted_manual") == "is_best_fit");  // set together
 
     const TableInfo fits = inspect(conn(), "spectral_fits");
     CHECK(cellFor(fits, "teff_error_down") == "teff");

@@ -5,6 +5,7 @@
 #include "core/Star.h"
 #include "core/StableIds.h"
 #include "db/DatabaseManager.h"
+#include "db/TrackFitRepository.h"
 #include "lightcurve/Photometry.h"
 #include "rv/RadialVelocity.h"
 #include "spectra/Spectrum.h"
@@ -24,9 +25,14 @@ void attachStarLoaders(DatabaseManager* dbMgr, const std::vector<std::shared_ptr
         return dbMgr->loadSpectra(starId);
     };
 
+    auto trackFitsLoader = [dbMgr](const QString& starId) {
+        return dbMgr->trackFits().fitsForStar(starId);
+    };
+
     for (const auto& star : stars) {
         star->setPhotometryLoader(photometryLoader);
         star->setSpectraLoader(spectraLoader);
+        star->setTrackFitsLoader(trackFitsLoader);
 
         std::weak_ptr<Star> wstar = star;
 

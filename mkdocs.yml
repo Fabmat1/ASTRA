@@ -71,6 +71,7 @@ nav:
       - Light Curves: workflows/light-curves.md
       - Fetching Spectra: workflows/spectra-fetching.md
       - SED & Spectral Fitting: workflows/sed-spectral.md
+      - Evolutionary Tracks: workflows/evolutionary-tracks.md
       - Remote Fitting: workflows/remote-fitting.md
       - Syncing Between Machines: workflows/sync.md
   - AI:

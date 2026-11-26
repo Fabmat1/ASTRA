@@ -70,5 +70,6 @@ void registerPhotometryTools(AiRuntime& rt);
 void registerExportTools(AiRuntime& rt);
 void registerJobTools(AiRuntime& rt);
 void registerPythonTools(AiRuntime& rt);
+void registerEvolutionTools(AiRuntime& rt);
 
 } // namespace astra::ai

@@ -110,6 +110,64 @@ static const QString& abundanceAssignmentList()
     return s;
 }
 
+// The evolutionary-track block (trk_*) is generated from the quantity table in
+// core/StarTrackSummary.h, like the abundances from the element table.
+static QStringList trackColumnNames()
+{
+    QStringList cols;
+    for (const auto& c : astra::tracks::starColumns()) cols << c.first;
+    return cols;
+}
+
+static const QString& trackColumnList()
+{
+    static const QString s = trackColumnNames().join(", ") + ", ";
+    return s;
+}
+
+static const QString& trackPlaceholderList()
+{
+    static const QString s = [] {
+        QStringList ph;
+        for (const QString& c : trackColumnNames()) ph << ":" + c;
+        return ph.join(", ") + ", ";
+    }();
+    return s;
+}
+
+static const QString& trackAssignmentList()
+{
+    static const QString s = [] {
+        QStringList assign;
+        for (const QString& c : trackColumnNames()) assign << c + " = :" + c;
+        return assign.join(", ") + ", ";
+    }();
+    return s;
+}
+
+// Evolutionary-track bindings shared by saveStar() and updateStarRow().
+static void bindTrackFields(QSqlQuery& query, const Star& star)
+{
+    const StarTrackSummary& t = star.getTrackSummary();
+    const bool has = t.hasFit();
+    query.bindValue(":trk_family", has ? QVariant(t.family) : QVariant());
+    query.bindValue(":trk_plane", has ? QVariant(t.plane) : QVariant());
+    query.bindValue(":trk_fit_id", has ? QVariant(t.fitId) : QVariant());
+    query.bindValue(":trk_stale", has && t.stale ? 1 : 0);
+    query.bindValue(":trk_in_region", has && t.inRegion >= 0 ? QVariant(t.inRegion) : QVariant());
+    query.bindValue(":trk_bounded", SqlValue::textOrNull(has ? t.bounded : QString()));
+    query.bindValue(":trk_inputs", SqlValue::textOrNull(has ? t.inputs : QString()));
+    query.bindValue(":trk_frac_post_ehb", SqlValue::fromDouble(has ? t.fracPostEhb : StarTrackSummary::nan));
+    for (int q = 0; q < astra::tracks::QtyCount; ++q) {
+        const double nan = StarTrackSummary::nan;
+        query.bindValue(":" + astra::tracks::starValueColumn(q), SqlValue::fromDouble(has ? t.value[q] : nan));
+        query.bindValue(":" + astra::tracks::starErrorColumn(q), SqlValue::fromDouble(has ? t.err[q] : nan));
+        query.bindValue(":" + astra::tracks::starErrorUpColumn(q), SqlValue::fromDouble(has ? t.errUp[q] : nan));
+        query.bindValue(":" + astra::tracks::starErrorDownColumn(q),
+                        SqlValue::fromDouble(has ? t.errDown[q] : nan));
+    }
+}
+
 // Preparing either of the wide star statements costs far more than running it:
 // each is roughly 6 kB of SQL with 229 placeholders, so sqlite3_prepare_v2()
 // dominates any bulk write. Measured over an 88 k-star project, re-preparing
@@ -286,6 +344,7 @@ const QList<CopyTable>& copyTables()
         {"periodograms",       "periodogram",       "star_id",       "star",       {}},
         {"rv_periodograms",    "rv_periodogram",    "curve_id",      "rv_curve",
          {{"star_id", "star"}}},
+        {"track_fits",         "track_fit",         "star_id",       "star",       {}},
     };
     return t;
 }
@@ -469,8 +528,14 @@ StarRepository::copyStarsToProject(const std::vector<QString>& starIds,
     mapSql << QStringLiteral(
                   "INSERT INTO temp.astra_copy_map (kind, old, new) SELECT 'star', s.id, %1 "
                   "FROM temp.astra_copy_src c JOIN stars s ON s.id = c.id").arg(kSqlUuid);
-    insertSql << copyInsertSql("stars", columns.value("stars"), "star",
-                               {{"id", "m.new"}, {"project_id", ":target"}});
+    {
+        // The adopted track fit is named on the star row: point the copy at the
+        // copy of that fit.
+        QHash<QString, QString> starExpr{{"id", "m.new"}, {"project_id", ":target"}};
+        if (columns.value("stars").contains("trk_fit_id") && columns.contains("track_fits"))
+            starExpr.insert("trk_fit_id", mappedExpr("trk_fit_id", "track_fit", true));
+        insertSql << copyInsertSql("stars", columns.value("stars"), "star", starExpr);
+    }
     for (const CopyTable& t : copyTables()) {
         if (!columns.contains(t.table)) continue;
         mapSql << QStringLiteral(
@@ -708,7 +773,8 @@ static const QString& saveStarSql()
             :bibcodes
         )
     )")
-        .arg(abundanceColumnList(), abundancePlaceholderList());
+        .arg(abundanceColumnList() + trackColumnList(),
+             abundancePlaceholderList() + trackPlaceholderList());
     return s;
 }
 
@@ -866,6 +932,7 @@ bool StarRepository::saveStar(const QString& projectId, std::shared_ptr<Star> st
 
     bindGalacticFields(query, *star);
     bindAbundanceFields(query, *star);
+    bindTrackFields(query, *star);
 
     // Convert bibcodes to JSON array
     QJsonArray bibcodesArray;
@@ -989,6 +1056,7 @@ bool StarRepository::deleteStar(const QString& projectId, const QString& starId)
     ok &= exec("mass_fit_attempts", "star_id = :star_id", ":star_id", starId);
     ok &= exec("mass_fit_run_stars", "star_id = :star_id", ":star_id", starId);
     ok &= exec("remote_fit_runs", "star_id = :star_id", ":star_id", starId);
+    ok &= exec("track_fits", "star_id = :star_id", ":star_id", starId);
 
     // ── The star itself ─────────────────────────────────────────────────────
     QSqlQuery query(db);
@@ -1116,7 +1184,7 @@ static const QString& updateStarRowSql()
             bibcodes = :bibcodes
         WHERE id = :id AND project_id = :project_id
     )")
-        .arg(abundanceAssignmentList());
+        .arg(abundanceAssignmentList() + trackAssignmentList());
     return s;
 }
 
@@ -1260,6 +1328,7 @@ bool StarRepository::updateStarRow(const QString& projectId, std::shared_ptr<Sta
 
     bindGalacticFields(query, *star);
     bindAbundanceFields(query, *star);
+    bindTrackFields(query, *star);
 
     query.bindValue(":has_tess", star->getHasTess() ? 1 : 0);
     query.bindValue(":has_gaia", star->getHasGaia() ? 1 : 0);

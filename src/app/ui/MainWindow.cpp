@@ -828,6 +828,11 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
                 tr("Calculate UVW space velocities and galactocentric XYZ "
                    "positions (with Monte-Carlo errors) for the selected "
                    "stars"));
+            _fitTracksAction =
+                _analysisMenu->addAction("Fit &Evolutionary Tracks...");
+            _fitTracksAction->setStatusTip(
+                tr("Fit evolutionary tracks to the stars' Teff and luminosity "
+                   "(or log g): masses and ages"));
             _rvDetectabilityAction =
                 _analysisMenu->addAction("RV &Detectability...");
             _rvDetectabilityAction->setStatusTip(
@@ -849,6 +854,8 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             connect(_createPlotAction, &QAction::triggered, _projectView, &ProjectView::onCreatePlot);
             connect(_computeKinematicsAction, &QAction::triggered, _projectView,
                     &ProjectView::onComputeGalacticKinematics);
+            connect(_fitTracksAction, &QAction::triggered, _projectView,
+                    &ProjectView::onFitEvolutionaryTracks);
             connect(_rvDetectabilityAction, &QAction::triggered, _projectView,
                     &ProjectView::onRVDetectability);
             connect(_massFitAction, &QAction::triggered, this,
@@ -891,6 +898,7 @@ void MainWindow::updateMenuBarForProjectView(bool projectOpen)
             delete _analysisMenu;
             _analysisMenu = nullptr;
             _computeKinematicsAction = nullptr;
+            _fitTracksAction = nullptr;
             _rvDetectabilityAction = nullptr;
             // Deleting the menu deletes its actions, so this pointer would
             // dangle for as long as the window lives without it.

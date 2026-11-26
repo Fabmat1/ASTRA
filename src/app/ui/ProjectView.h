@@ -234,6 +234,7 @@ public:
     void onRemoveStar();
     void onReloadMetrics();
     void onComputeGalacticKinematics();
+    void onFitEvolutionaryTracks();
     void onRVDetectability();
     void onShowDetailWindow();
     void onConfigureColumns();

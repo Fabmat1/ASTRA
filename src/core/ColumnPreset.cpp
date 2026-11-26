@@ -1,5 +1,6 @@
 #include "core/ColumnPreset.h"
 #include "fitting/ElementAbundances.h"
+#include "core/StarTrackSummary.h"
 #include <QSettings>
 #include <QJsonDocument>
 #include <QUuid>
@@ -185,6 +186,23 @@ void ColumnPresetManager::buildColumnRegistry() {
                                  "Abundances");
     }
 
+    // ── Evolutionary tracks ─────────────────────────────────────────────
+    // The adopted track fit, generated from the quantity table.
+    for (int q = 0; q < astra::tracks::QtyCount; ++q) {
+        const auto &info = astra::tracks::info(q);
+        const QString label = QString::fromUtf8(info.label);
+        const QString unit  = QString::fromUtf8(info.unit);
+        _allColumns.emplace_back(astra::tracks::starValueColumn(q),
+                                 unit.isEmpty() ? label : label + " [" + unit + "]", "Evolution");
+        _allColumns.emplace_back(astra::tracks::starErrorColumn(q), "e_" + label, "Evolution");
+    }
+    _allColumns.emplace_back("trk_frac_post_ehb", "Post-EHB fraction", "Evolution");
+    _allColumns.emplace_back("trk_family", "Track family", "Evolution");
+    _allColumns.emplace_back("trk_plane", "Track plane", "Evolution");
+    _allColumns.emplace_back("trk_in_region", "Inside tracks", "Evolution", true);
+    _allColumns.emplace_back("trk_bounded", "Bounded posteriors", "Evolution");
+    _allColumns.emplace_back("trk_stale", "Track fit stale", "Evolution", true);
+
     _columnIndex.clear();
     for (const auto &c : _allColumns)
         _columnIndex[c.key] = c;
@@ -268,6 +286,15 @@ void ColumnPresetManager::buildBuiltInPresets() {
                     "gal_x", "gal_e_x", "gal_y", "gal_e_y", "gal_z", "gal_e_z",
                     "gal_jz", "gal_ecc",
                     "gal_p_thin", "gal_p_thick", "gal_p_halo"}));
+
+    // 6. Evolution (the adopted evolutionary-track fit)
+    _builtInPresets.push_back(
+        makePreset("preset_evolution", "Evolution",
+                   {"teff", "logg", "sed_lum1",
+                    "trk_core_mass", "trk_e_core_mass", "trk_env_mass", "trk_e_env_mass",
+                    "trk_mass", "trk_e_mass", "trk_age", "trk_e_age",
+                    "trk_age_max", "trk_e_age_max", "trk_frac_post_ehb",
+                    "trk_family", "trk_in_region", "trk_bounded", "trk_stale"}));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

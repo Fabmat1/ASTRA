@@ -41,6 +41,7 @@
 #include "fitting/FitJobFactory.h"
 #include "fitting/FitTypesJson.h"
 #include "fitting/UserFitDefaults.h"
+#include "evolution/StarTracks.h"
 #include "lightcurve/LightcurveFetchService.h"
 #include "massfit/MassFitPlan.h"
 #include "massfit/MassFitService.h"
@@ -71,6 +72,7 @@
 #include <QPointer>
 #include <QRegularExpression>
 #include <QSet>
+#include <QSettings>
 #include <QThread>
 #include <QUuid>
 
@@ -629,7 +631,7 @@ QJsonObject rvFitJson(const RVFit& f)
 
 // ── The registry ─────────────────────────────────────────────────────────────
 
-enum class Kind { SpectraFetch, LightcurveFetch, MassFit, SpectralFit, RvMcmc };
+enum class Kind { SpectraFetch, LightcurveFetch, MassFit, SpectralFit, RvMcmc, TrackFit };
 
 QString kindName(Kind k)
 {
@@ -639,6 +641,7 @@ QString kindName(Kind k)
     case Kind::MassFit:         return QStringLiteral("mass_fit");
     case Kind::SpectralFit:     return QStringLiteral("spectral_fit");
     case Kind::RvMcmc:          return QStringLiteral("rv_mcmc");
+    case Kind::TrackFit:        return QStringLiteral("track_fit");
     }
     return {};
 }
@@ -657,6 +660,7 @@ struct LocalShared {
     // Outputs, written once by the worker before it posts completion.
     fit::SpectralFitResult                fitResult;
     std::shared_ptr<RVMCMC::Result>       mcmcResult;
+    std::shared_ptr<evolution::TrackRunOutcome> trackOutcome;
     QString                               workerError;
 
     void append(const QString& line)
@@ -717,6 +721,11 @@ struct Job {
     std::shared_ptr<RVMCMC::Progress> mcmcProgress;
     int  maxSolutions = 3;
     bool mcmcSetBest  = false;
+
+    // Evolutionary-track fits.
+    evolution::TrackRunRequest trackReq;
+    std::vector<evolution::TrackSkip> trackPlanSkips;
+    bool trackAdopt = true;
 
     void note(const QString& line)
     {
@@ -809,7 +818,10 @@ public:
     void pumpLocal();
     void startFit(Job& j);
     void startMcmc(Job& j);
+    void startTrack(Job& j);
     void onLocalDone(const QString& jobId);
+    /// A track run with nothing to fit: report the skips at once.
+    void finishTrackNow(Job& j) { finishTrack(j); j.finished = QDateTime::currentDateTime(); }
 
 private:
     void wireSpectra(SpectrumFetchService* s);
@@ -826,6 +838,7 @@ private:
 
     void finishFit(Job& j);
     void finishMcmc(Job& j);
+    void finishTrack(Job& j);
 
     AiHost* _host;
     std::shared_ptr<Anchor> _anchor;
@@ -1108,13 +1121,14 @@ QJsonObject JobRegistry::view(Job& j, bool detail, int tail)
         break;
     }
     case Kind::SpectralFit:
-    case Kind::RvMcmc: {
+    case Kind::RvMcmc:
+    case Kind::TrackFit: {
         state = j.state;
         {
             QMutexLocker lock(&j.local->mtx);
             if (detail) log = j.local->log;
             phase = j.local->stage;
-            if (j.kind == Kind::SpectralFit) {
+            if (j.kind == Kind::SpectralFit || j.kind == Kind::TrackFit) {
                 if (j.local->fraction >= 0) progress = progressJson(j.local->fraction, 1.0);
             }
         }
@@ -1207,7 +1221,8 @@ void JobRegistry::cancel(Job& j, const QJsonObject& args, QString* message)
         return;
     }
     case Kind::SpectralFit:
-    case Kind::RvMcmc: {
+    case Kind::RvMcmc:
+    case Kind::TrackFit: {
         if (!isActiveState(j.state))
             throw ToolError(QStringLiteral("Job %1 is already %2.").arg(j.id, j.state));
         j.keepPartial = args.value(QStringLiteral("keep_partial")).toBool(false);
@@ -1238,11 +1253,12 @@ void JobRegistry::pumpLocal()
 {
     // One local fit and one MCMC at a time: each already uses every core it
     // is given. Fits on another machine do not wait.
-    bool fitBusy = false, mcmcBusy = false;
+    bool fitBusy = false, mcmcBusy = false, trackBusy = false;
     for (const auto& j : _jobs) {
         if (j->state != QLatin1String("running")) continue;
         if (j->kind == Kind::SpectralFit && !j->remote) fitBusy = true;
         if (j->kind == Kind::RvMcmc) mcmcBusy = true;
+        if (j->kind == Kind::TrackFit) trackBusy = true;
     }
     for (const auto& j : _jobs) {
         if (j->state != QLatin1String("queued") || !j->local) continue;
@@ -1255,6 +1271,10 @@ void JobRegistry::pumpLocal()
             if (mcmcBusy) continue;
             mcmcBusy = true;
             startMcmc(*j);
+        } else if (j->kind == Kind::TrackFit) {
+            if (trackBusy) continue;
+            trackBusy = true;
+            startTrack(*j);
         }
     }
 }
@@ -1342,12 +1362,129 @@ void JobRegistry::startMcmc(Job& j)
     th->start();
 }
 
+void JobRegistry::startTrack(Job& j)
+{
+    j.state = QStringLiteral("running");
+    j.local->append(QStringLiteral("Fitting %1 star(s) with %2 (%3 walkers, %4 burn-in, %5 steps)")
+                        .arg(j.trackReq.stars.size())
+                        .arg(j.trackReq.families.join(QStringLiteral(", ")))
+                        .arg(j.trackReq.model.walkers).arg(j.trackReq.model.burn).arg(j.trackReq.model.steps));
+    std::weak_ptr<Anchor> anchor = _anchor;
+    auto shared = j.local;
+    const evolution::TrackRunRequest req = j.trackReq;
+    const QString jobId = j.id;
+    QThread* th = QThread::create([anchor, shared, req, jobId] {
+        try {
+            auto progress = [shared](int done, int total, const QString& what) {
+                QMutexLocker lock(&shared->mtx);
+                shared->stage = QStringLiteral("%1: %2 of %3").arg(what).arg(done).arg(total);
+                shared->fraction = total > 0 ? double(done) / total : 0.0;
+            };
+            shared->trackOutcome = std::make_shared<evolution::TrackRunOutcome>(
+                evolution::runTrackFits(evolution::TrackSetLibrary::shared(), req, progress, &shared->cancel));
+        } catch (const std::exception& e) {
+            shared->workerError = QString::fromUtf8(e.what());
+        } catch (...) {
+            shared->workerError = QStringLiteral("Unknown exception in the track fit.");
+        }
+        QMetaObject::invokeMethod(QCoreApplication::instance(), [anchor, jobId] {
+            if (auto a = anchor.lock()) a->reg->onLocalDone(jobId);
+        }, Qt::QueuedConnection);
+    });
+    connect(th, &QThread::finished, th, &QObject::deleteLater);
+    j.thread = th;
+    th->start();
+}
+
+void JobRegistry::finishTrack(Job& j)
+{
+    LocalShared& L = *j.local;
+    if (!L.workerError.isEmpty()) { j.state = QStringLiteral("failed"); j.error = L.workerError; return; }
+    if (!L.trackOutcome || L.trackOutcome->cancelled || L.cancel.load()) {
+        j.state = QStringLiteral("cancelled");
+        j.error = QStringLiteral("Cancelled; nothing was saved.");
+        return;
+    }
+    const evolution::TrackRunOutcome& out = *L.trackOutcome;
+
+    // Stars are looked up again: they may have been reloaded while the fits ran.
+    QHash<QString, std::shared_ptr<Star>> stars;
+    QHash<QString, QString> projectOf;
+    for (const QString& id : j.starIds) {
+        QString pid;
+        if (auto s = _host->star(id, &pid)) {
+            stars.insert(id, s);
+            projectOf.insert(id, pid);
+        }
+    }
+    evolution::TrackRunOutcome kept = out;
+    kept.fits.clear();
+    for (const auto& f : out.fits)
+        if (stars.contains(f.starId)) kept.fits.push_back(f);
+    QString err;
+    if (!kept.fits.empty() && !evolution::storeTrackFits(*_host->db(), kept, j.trackAdopt, stars, &err)) {
+        j.state = QStringLiteral("failed");
+        j.error = err;
+        return;
+    }
+    QSet<QString> touched;
+    for (const auto& f : kept.fits) touched.insert(f.starId);
+    for (const QString& id : touched) {
+        DataChangeBus::instance().postStarDataChanged(projectOf.value(id), id, QStringLiteral("tracks"));
+        DataChangeBus::instance().postStarChanged(projectOf.value(id), id);
+    }
+
+    namespace tq = astra::tracks;
+    auto valueJson = [](const evolution::TrackFitRecord& f, int q) -> QJsonValue {
+        if (!std::isfinite(f.value[q])) return QJsonValue(QJsonValue::Null);
+        return QJsonObject{{QStringLiteral("value"), num(f.value[q])},
+                           {QStringLiteral("error_up"), num(f.errUp[q])},
+                           {QStringLiteral("error_down"), num(f.errDown[q])}};
+    };
+    QJsonArray fits;
+    for (const auto& f : kept.fits) {
+        QJsonObject o;
+        o.insert(QStringLiteral("fit_id"), f.id);
+        o.insert(QStringLiteral("star_id"), f.starId);
+        if (auto s = stars.value(f.starId)) {
+            o.insert(QStringLiteral("star"), starName(*s));
+            o.insert(QStringLiteral("adopted"), s->getTrackSummary().fitId == f.id);
+        }
+        o.insert(QStringLiteral("family"), f.family);
+        o.insert(QStringLiteral("plane"), f.plane);
+        for (int q = 0; q < tq::QtyCount; ++q)
+            o.insert(QString::fromLatin1(tq::info(q).fitColumn), valueJson(f, q));
+        o.insert(QStringLiteral("in_region"), f.inRegion < 0 ? QJsonValue() : QJsonValue(f.inRegion == 1));
+        if (!f.bounded.isEmpty()) o.insert(QStringLiteral("bounded"), f.bounded);
+        o.insert(QStringLiteral("frac_post_ehb"), num(f.fracPostEhb));
+        fits.append(o);
+    }
+    auto strOrNull = [](const QString& v) { return v.isEmpty() ? QJsonValue() : QJsonValue(v); };
+    QJsonArray skipped;
+    std::vector<evolution::TrackSkip> allSkips = j.trackPlanSkips;
+    allSkips.insert(allSkips.end(), out.skipped.begin(), out.skipped.end());
+    for (const auto& sk : allSkips)
+        skipped.append(QJsonObject{{QStringLiteral("star_id"), strOrNull(sk.starId)},
+                                   {QStringLiteral("star"), strOrNull(sk.label)},
+                                   {QStringLiteral("family"), strOrNull(sk.family)},
+                                   {QStringLiteral("reason"), sk.reason}});
+    QJsonObject res;
+    res.insert(QStringLiteral("run_id"), out.runId);
+    res.insert(QStringLiteral("n_fits"), int(kept.fits.size()));
+    res.insert(QStringLiteral("fits"), fits);
+    res.insert(QStringLiteral("skipped"), skipped);
+    j.result = res;
+    j.state = QStringLiteral("finished");
+    j.error.clear();
+}
+
 void JobRegistry::onLocalDone(const QString& jobId)
 {
     Job* j = find(jobId);
     if (j && j->state == QLatin1String("running")) {
         try {
             if (j->kind == Kind::SpectralFit) finishFit(*j);
+            else if (j->kind == Kind::TrackFit) finishTrack(*j);
             else finishMcmc(*j);
         } catch (const std::exception& e) {
             j->state = QStringLiteral("failed");
@@ -1702,7 +1839,7 @@ void registerJobTools(AiRuntime& rt)
             "Every long-running job this ASTRA process knows: spectrum archive fetches, lightcurve "
             "fetches, mass-fit runs (whether an agent or the user in the window started them), and "
             "the spectral fits and RV MCMC runs agents started. Newest first. Each entry: job_id, "
-            "kind (spectra_fetch, lightcurve_fetch, mass_fit, spectral_fit, rv_mcmc), state "
+            "kind (spectra_fetch, lightcurve_fetch, mass_fit, spectral_fit, rv_mcmc, track_fit), state "
             "(queued, running, stopping, paused, awaiting_selection, finished, failed, cancelled, "
             "interrupted), phase, progress {done, total, fraction}, started (ISO time), project, "
             "n_stars, summary. With \"project\", mass-fit runs stored by earlier sessions of that "
@@ -1712,7 +1849,7 @@ void registerJobTools(AiRuntime& rt)
             .boolean(QStringLiteral("active_only"), QStringLiteral("Only jobs that are not finished, failed or cancelled"))
             .enumStr(QStringLiteral("kind"), {QStringLiteral("spectra_fetch"), QStringLiteral("lightcurve_fetch"),
                                               QStringLiteral("mass_fit"), QStringLiteral("spectral_fit"),
-                                              QStringLiteral("rv_mcmc")},
+                                              QStringLiteral("rv_mcmc"), QStringLiteral("track_fit")},
                      QStringLiteral("Only jobs of this kind"))
             .str(QStringLiteral("project"), QStringLiteral(
                 "Only jobs of this project (id or name); also lists its stored mass-fit runs"));
@@ -2779,6 +2916,154 @@ void registerJobTools(AiRuntime& rt)
             out.insert(QStringLiteral("message"), QStringLiteral("MCMC %1. Poll get_job(\"%2\").")
                 .arg(job->state == QLatin1String("queued") ? QStringLiteral("queued behind another one")
                                                            : QStringLiteral("started"), job->id));
+            return ToolResult::json(out);
+        });
+        tools->add(std::move(t));
+    }
+
+    // ── run_track_fit ───────────────────────────────────────────────────────
+    {
+        ToolDef t;
+        t.name = QStringLiteral("run_track_fit");
+        t.title = QStringLiteral("Fit evolutionary tracks");
+        t.group = QStringLiteral("jobs");
+        t.description = QStringLiteral(
+            "Fits evolutionary tracks (sdfit's MCMC, as Star Detail > Evol. Tracks) to one or more "
+            "stars: core, envelope and total mass, age, lifetime, age at core-helium "
+            "exhaustion, central helium and EEP, each as median with errors to the 15.87/84.13 % "
+            "quantiles. Inputs are the star's adopted spectroscopic Teff and log g and the SED "
+            "luminosity of the hotter SED component. plane: auto (Teff + L when the star has an "
+            "SED luminosity, else Teff + log g), hrd or kiel. families: track family keys in the "
+            "order of preference (see list_track_fits for the families available here; default "
+            "the user's last choice); the run adopts the first family's fit unless the star has "
+            "a fit the user picked by hand. Sampler settings default to the user's last run "
+            "(sdfit: 1000 walkers, 800 burn-in, 1000 steps, about 0.4 s per star and core). "
+            "skip_current leaves out stars whose adopted fit is up to date. Returns a job_id; "
+            "get_job gives the fits and the stars that were skipped, with reasons.");
+        t.inputSchema = Schema()
+            .strArray(QStringLiteral("star_ids"), QStringLiteral("Star ids"))
+            .str(QStringLiteral("star_id"), QStringLiteral("One star id (instead of star_ids)"))
+            .strArray(QStringLiteral("families"), QStringLiteral("Track family keys, preferred first"))
+            .enumStr(QStringLiteral("plane"), {QStringLiteral("auto"), QStringLiteral("hrd"), QStringLiteral("kiel")},
+                     QStringLiteral("Fit plane; default auto"))
+            .integer(QStringLiteral("walkers"), QStringLiteral("MCMC walkers"))
+            .integer(QStringLiteral("burn"), QStringLiteral("Burn-in steps"))
+            .integer(QStringLiteral("steps"), QStringLiteral("Recorded steps"))
+            .str(QStringLiteral("seed"), QStringLiteral("Run seed (decimal, up to 64 bit)"))
+            .boolean(QStringLiteral("skip_current"), QStringLiteral("Skip stars whose adopted fit is up to date; default false"))
+            .boolean(QStringLiteral("adopt"), QStringLiteral("Adopt the new fits per the rules; default true"));
+        t.risk = Risk::Modify;
+        t.summarize = [](const QJsonObject& a) {
+            const int n = a.value(QStringLiteral("star_ids")).toArray().size() +
+                          (a.contains(QStringLiteral("star_id")) ? 1 : 0);
+            return QStringLiteral("Fit evolutionary tracks to %1 star(s)").arg(n);
+        };
+        t.handler = ToolDef::sync([reg, host](const ToolCall& c) {
+            const QStringList ids = starIdArg(c);
+            QString pid;
+            std::vector<std::shared_ptr<Star>> stars;
+            for (const QString& id : ids) {
+                QString p;
+                auto s = host->star(id, &p);
+                if (!s) throw ToolError(QStringLiteral("No star %1.").arg(id));
+                if (pid.isEmpty()) pid = p;
+                stars.push_back(s);
+            }
+            auto& lib = evolution::TrackSetLibrary::shared();
+            QStringList available;
+            for (const auto& f : lib.families())
+                if (f.usable()) available << f.key;
+            if (available.isEmpty())
+                throw ToolError(QStringLiteral("No evolutionary tracks on this machine: set the tracks folder in "
+                                               "Settings > Evolutionary Tracks."));
+
+            QSettings st;
+            evolution::TrackRunRequest req;
+            for (const QJsonValue& v : c.args().value(QStringLiteral("families")).toArray()) req.families << v.toString();
+            if (req.families.isEmpty()) req.families = st.value(QStringLiteral("evolution/run/checked")).toStringList();
+            if (req.families.isEmpty()) req.families = {available.first()};
+            for (const QString& f : req.families)
+                if (!available.contains(f))
+                    throw ToolError(QStringLiteral("Unknown track family \"%1\"; available: %2.")
+                                        .arg(f, available.join(QStringLiteral(", "))));
+            for (const QString& f : req.families) {
+                const QString saved = st.value(QStringLiteral("evolution/run/subset/") + f).toString();
+                req.subsets.insert(f, saved.isEmpty()
+                                          ? evolution::TrackSetLibrary::defaultSubset(lib.family(f))
+                                          : evolution::TrackSubset::fromJson(QJsonDocument::fromJson(saved.toUtf8()).object()));
+            }
+            req.model = evolution::TrackModelSettings::fromJson(
+                QJsonDocument::fromJson(st.value(QStringLiteral("evolution/run/model")).toString().toUtf8()).object());
+            req.model.walkers = std::clamp(c.integer(QStringLiteral("walkers"), req.model.walkers), 8, 100000);
+            req.model.burn = std::clamp(c.integer(QStringLiteral("burn"), req.model.burn), 0, 1000000);
+            req.model.steps = std::clamp(c.integer(QStringLiteral("steps"), req.model.steps), 10, 1000000);
+            if (c.args().contains(QStringLiteral("seed"))) {
+                bool ok = false;
+                const quint64 seed = c.str(QStringLiteral("seed")).toULongLong(&ok);
+                if (!ok) throw ToolError(QStringLiteral("seed must be a decimal integer."));
+                req.model.seed = seed;
+            }
+            req.threads = std::max(1, QThread::idealThreadCount() - 1);
+
+            const QString plane = c.str(QStringLiteral("plane")).isEmpty() ? QStringLiteral("auto") : c.str(QStringLiteral("plane"));
+            const bool skipCurrent = c.flag(QStringLiteral("skip_current"));
+            std::vector<evolution::TrackSkip> planSkips;
+            for (const auto& s : stars) {
+                const QString label = starName(*s);
+                if (skipCurrent && s->getTrackSummary().hasFit() && !s->getTrackSummary().stale) {
+                    planSkips.push_back({s->getId(), label, QString(), QStringLiteral("adopted fit is up to date")});
+                    continue;
+                }
+                evolution::TrackStarJob job{s->getId(), label, evolution::trackInputsFromStar(*s), plane};
+                QString why;
+                if (evolution::resolvePlane(job.inputs, plane, &why).isEmpty()) {
+                    planSkips.push_back({s->getId(), label, QString(), why});
+                    continue;
+                }
+                req.stars.push_back(std::move(job));
+            }
+
+            auto j = std::make_unique<Job>();
+            j->id = QStringLiteral("tracks-%1").arg(reg->nextSeq());
+            j->kind = Kind::TrackFit;
+            j->projectId = pid;
+            j->started = QDateTime::currentDateTime();
+            j->caller = c.caller().name;
+            j->local = std::make_shared<LocalShared>();
+            for (const auto& sj : req.stars) {
+                j->starIds << sj.starId;
+                j->starSet.insert(sj.starId);
+            }
+            j->trackAdopt = c.flag(QStringLiteral("adopt"), true);
+            j->trackPlanSkips = planSkips;
+            j->title = QStringLiteral("Evolutionary tracks for %1 star(s) (%2)")
+                           .arg(req.stars.size()).arg(req.families.join(QStringLiteral(", ")));
+            QJsonObject params;
+            params.insert(QStringLiteral("families"), QJsonArray::fromStringList(req.families));
+            params.insert(QStringLiteral("plane"), plane);
+            params.insert(QStringLiteral("walkers"), req.model.walkers);
+            params.insert(QStringLiteral("burn"), req.model.burn);
+            params.insert(QStringLiteral("steps"), req.model.steps);
+            params.insert(QStringLiteral("seed"), QString::number(req.model.seed));
+            params.insert(QStringLiteral("n_skipped_before_run"), int(planSkips.size()));
+            j->params = params;
+            const bool nothing = req.stars.empty();
+            j->trackReq = std::move(req);
+            if (nothing) {
+                j->state = QStringLiteral("finished");
+                j->finished = QDateTime::currentDateTime();
+                j->local->trackOutcome = std::make_shared<evolution::TrackRunOutcome>();
+            }
+            Job* job = reg->add(std::move(j));
+            if (nothing) reg->finishTrackNow(*job);
+            else reg->pumpLocal();
+            QJsonObject out = reg->view(*job, nothing, 0);
+            out.insert(QStringLiteral("message"),
+                       nothing ? QStringLiteral("No star could be fitted; see result.skipped.")
+                               : QStringLiteral("Track fits %1. Poll get_job(\"%2\").")
+                                     .arg(job->state == QLatin1String("queued") ? QStringLiteral("queued behind another run")
+                                                                                : QStringLiteral("started"),
+                                          job->id));
             return ToolResult::json(out);
         });
         tools->add(std::move(t));

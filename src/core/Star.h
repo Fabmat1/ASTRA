@@ -8,10 +8,12 @@
 #include <functional>
 #include <unordered_map>
 #include "core/AsymmetricErrors.h"
+#include "core/StarTrackSummary.h"
 #include "rv/RadialVelocity.h"
 
 class Photometry;
 class Spectrum;
+namespace astra::evolution { struct TrackFitRecord; }
 
 class Star
 {
@@ -444,6 +446,28 @@ public:
         _RVLoader = loader;
     }
 
+    // Evolutionary tracks: the adopted fit as mirrored
+    // in the trk_* columns.  The fits themselves live in track_fits.
+    const StarTrackSummary& getTrackSummary() const { return _trackSummary; }
+    void setTrackSummary(const StarTrackSummary& s) { _trackSummary = s; }
+    /// Track fits carried by a star package: saved with the star by
+    /// DatabaseManager::saveStar and then dropped.  Empty for stars from the DB.
+    void setPendingTrackFits(std::shared_ptr<std::vector<astra::evolution::TrackFitRecord>> fits)
+    {
+        _pendingTrackFits = std::move(fits);
+    }
+    std::shared_ptr<std::vector<astra::evolution::TrackFitRecord>> pendingTrackFits() const
+    {
+        return _pendingTrackFits;
+    }
+    /// Loads the star's track fits (for packages); empty without a loader.
+    void setTrackFitsLoader(
+        std::function<std::vector<astra::evolution::TrackFitRecord>(const QString&)> loader)
+    {
+        _trackFitsLoader = std::move(loader);
+    }
+    std::vector<astra::evolution::TrackFitRecord> loadTrackFits() const;
+
     std::shared_ptr<Photometry> getPhotometry();  
     std::vector<std::shared_ptr<Spectrum>> getSpectra();  
 
@@ -608,6 +632,9 @@ private:
     std::function<std::vector<std::shared_ptr<Spectrum>>(const QString&)> _spectraLoader;
     std::function<std::shared_ptr<RadialVelocityCurve>(const QString&)> _RVLoader;
     RVCurveFactory _RVCurveFactory;
+    StarTrackSummary _trackSummary;
+    std::shared_ptr<std::vector<astra::evolution::TrackFitRecord>> _pendingTrackFits;
+    std::function<std::vector<astra::evolution::TrackFitRecord>(const QString&)> _trackFitsLoader;
 
     // Spectra counts
     int _nSpectra = 0;

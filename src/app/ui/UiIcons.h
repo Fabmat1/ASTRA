@@ -58,6 +58,10 @@ enum class Role {
     // "make this go away", and one glyph for one concept is the point.
     Remove,
 
+    // Permanently delete a stored record (a fit, a file). Distinct from
+    // Remove/Dismiss, whose X also closes windows.
+    Delete,
+
     // Re-run a query or rescan a source (Gaia lookup, grid rescan).
     Refresh,
 

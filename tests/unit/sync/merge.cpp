@@ -215,6 +215,30 @@ TEST_CASE("best fit set on both sides: one fit keeps the flag")
     CHECK(a->digest() == b->digest());
 }
 
+TEST_CASE("track fit adopted on both sides: one fit per star keeps the flag")
+{
+    World world;
+    auto a = world.device();
+    auto b = world.device();
+    REQUIRE(a->run("INSERT INTO track_fits (id, star_id, family, is_best_fit) VALUES ('T1', 'S1', 'han', 1)"));
+    REQUIRE(a->run("INSERT INTO track_fits (id, star_id, family, is_best_fit) VALUES ('T2', 'S1', 'nicolas', 0)"));
+    settle({a.get(), b.get()});
+
+    // A adopts T2 by hand; later B adopts T1 by hand.
+    REQUIRE(a->run("UPDATE track_fits SET is_best_fit = 0, adopted_manual = 0 WHERE star_id = 'S1'"));
+    REQUIRE(a->run("UPDATE track_fits SET is_best_fit = 1, adopted_manual = 1 WHERE id = 'T2'"));
+    REQUIRE(SyncStore(a->db).flushAll());
+    QThread::msleep(3);
+    REQUIRE(b->run("UPDATE track_fits SET is_best_fit = 0, adopted_manual = 0 WHERE star_id = 'S1' AND id <> 'T1'"));
+    REQUIRE(b->run("UPDATE track_fits SET adopted_manual = 1 WHERE id = 'T1'"));
+
+    settle({a.get(), b.get()});
+    CHECK(a->one("SELECT group_concat(id) FROM track_fits WHERE is_best_fit = 1") == "T1");
+    CHECK(b->one("SELECT group_concat(id) FROM track_fits WHERE is_best_fit = 1") == "T1");
+    CHECK(a->one("SELECT group_concat(id) FROM track_fits WHERE adopted_manual = 1") == "T1");
+    CHECK(a->digest() == b->digest());
+}
+
 TEST_CASE("the same row made independently: the duplicates fold into one")
 {
     World world;

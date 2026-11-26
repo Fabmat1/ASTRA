@@ -5,6 +5,7 @@
 #include <algorithm>
 
 #include <QHash>
+#include <QStringList>
 
 #include <cmath>
 #include <limits>
@@ -181,7 +182,7 @@ QString unitFor(const QString& k)
     };
     if (auto it = exact.find(k); it != exact.end()) return *it;
     auto base = k;
-    for (const char* p : {"e_", "rv_e_", "phot_e_", "sed_e_", "gal_e_"}) {
+    for (const char* p : {"e_", "rv_e_", "phot_e_", "sed_e_", "gal_e_", "trk_e_"}) {
         if (base.startsWith(QLatin1String(p))) {
             base = QString(k).replace(0, int(qstrlen(p)), QString::fromLatin1(p).remove(QLatin1String("e_")));
             break;
@@ -200,6 +201,7 @@ QString unitFor(const QString& k)
     if (base.endsWith(QLatin1String("period"))) return QStringLiteral("d");
     if (base == QLatin1String("gal_x") || base == QLatin1String("gal_y") || base == QLatin1String("gal_z"))
         return QStringLiteral("kpc");
+    if (base.startsWith(QLatin1String("trk_age"))) return QStringLiteral("Myr");
     if (base.contains(QLatin1String("mass"))) return QStringLiteral("Msun");
     if (base.contains(QLatin1String("radius"))) return QStringLiteral("Rsun");
     if (base.contains(QLatin1String("lum"))) return QStringLiteral("Lsun");
@@ -227,6 +229,9 @@ QString readOnlyReason(const QString& k)
         return QStringLiteral("Taken from the best SED fit.");
     if (k.startsWith(QLatin1String("has_")))
         return QStringLiteral("Set from the light curves the star has.");
+    if (k.startsWith(QLatin1String("trk_")))
+        return QStringLiteral("Taken from the adopted evolutionary-track fit; run or adopt another "
+                              "track fit instead.");
     if (k == QLatin1String("tess_crowdsap"))
         return QStringLiteral("Taken from the TESS light-curve headers when they are fetched.");
     return {};
@@ -279,7 +284,9 @@ StarFieldRegistry::StarFieldRegistry()
         } else {
             f.displayName = k;
             f.category = k.startsWith(QLatin1String("abund_")) || k.startsWith(QLatin1String("e_abund_"))
-                             ? QStringLiteral("Abundances") : QStringLiteral("Other");
+                             ? QStringLiteral("Abundances")
+                         : k.startsWith(QLatin1String("trk_")) ? QStringLiteral("Evolution")
+                                                               : QStringLiteral("Other");
         }
         f.unit = unitFor(k);
         if (auto it = sets.find(k); it != sets.end()) {
@@ -288,7 +295,13 @@ StarFieldRegistry::StarFieldRegistry()
             if (why.isEmpty()) { f.editable = true; f.set = it->second.set; }
             else f.note = why;
         } else {
-            f.type = k.endsWith(QLatin1String("_limit")) ? StarField::Type::Int : StarField::Type::Double;
+            static const QStringList trkText = {"trk_family", "trk_plane", "trk_fit_id",
+                                                "trk_bounded", "trk_inputs"};
+            static const QStringList trkBool = {"trk_stale", "trk_in_region"};
+            f.type = trkText.contains(k)                    ? StarField::Type::String
+                   : trkBool.contains(k)                    ? StarField::Type::Bool
+                   : k.endsWith(QLatin1String("_limit"))    ? StarField::Type::Int
+                                                            : StarField::Type::Double;
             f.note = readOnlyReason(k);
             if (f.note.isEmpty()) f.note = QStringLiteral("Derived; cannot be set directly.");
         }

@@ -56,6 +56,7 @@ protected:
 private slots:
     void onFetchLightcurves();
     void onCalculateOrbit();
+    void onFitEvolutionaryTracks();
     void onShowCMD();
     void onViewFitSpectra();
     void onViewAdjustRV();
@@ -135,6 +136,7 @@ private:
     QPushButton* _cmdButton           = nullptr;
     QPushButton* _observabilityButton = nullptr;
     QPushButton* _calcOrbitButton     = nullptr;
+    QPushButton* _evolTracksButton    = nullptr;
     QPushButton *_shareButton          = nullptr;
 
     bool _themeRefreshPending = false;

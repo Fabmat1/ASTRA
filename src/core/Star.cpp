@@ -1,4 +1,6 @@
 #include "core/Star.h"
+#include "evolution/StarTracks.h"
+#include "evolution/TrackFit.h"
 #include "fitting/AdoptedFit.h"
 #include "fitting/ElementAbundances.h"
 #include "lightcurve/Photometry.h"
@@ -40,6 +42,8 @@ std::vector<double> captureSummaryValues(const Star& s) {
         s.getSedLum1(), s.getSedELum1(),
         s.getSedMass2(), s.getSedEMass2(), s.getSedRadius2(), s.getSedERadius2(),
         s.getSedLum2(), s.getSedELum2(),
+        // a track fit turning stale is a summary change to persist
+        double(s.getTrackSummary().stale),
     };
 
     // Abundances only join the capture once the star has any: reading them
@@ -388,9 +392,43 @@ const std::unordered_map<QString, Star::FieldGetter>& Star::getFieldMap()
         m.emplace("abund_" + suffix + "_limit",
                   [i](const Star* s) { return intVar(s->getAbundanceLimit(i)); });
     }
+
+    // ── Evolutionary tracks (adopted fit) ───────────────────────────────────
+    // Four fields per quantity from the quantity table (trk_age, trk_e_age,
+    // trk_e_age_up, trk_e_age_down), plus the descriptive columns.
+    for (int q = 0; q < astra::tracks::QtyCount; ++q) {
+        m.emplace(astra::tracks::starValueColumn(q),
+                  [q](const Star* s) { return dblVar(s->getTrackSummary().value[q]); });
+        m.emplace(astra::tracks::starErrorColumn(q),
+                  [q](const Star* s) { return dblVar(s->getTrackSummary().err[q]); });
+        m.emplace(astra::tracks::starErrorUpColumn(q),
+                  [q](const Star* s) { return dblVar(s->getTrackSummary().errUp[q]); });
+        m.emplace(astra::tracks::starErrorDownColumn(q),
+                  [q](const Star* s) { return dblVar(s->getTrackSummary().errDown[q]); });
+    }
+    m.emplace("trk_family", [](const Star* s) { return QVariant(s->getTrackSummary().family); });
+    m.emplace("trk_plane", [](const Star* s) { return QVariant(s->getTrackSummary().plane); });
+    m.emplace("trk_fit_id", [](const Star* s) { return QVariant(s->getTrackSummary().fitId); });
+    m.emplace("trk_stale", [](const Star* s) {
+        return s->getTrackSummary().hasFit() ? QVariant(s->getTrackSummary().stale) : QVariant();
+    });
+    m.emplace("trk_in_region", [](const Star* s) {
+        const int r = s->getTrackSummary().inRegion;
+        return r < 0 ? QVariant() : QVariant(r == 1);
+    });
+    m.emplace("trk_bounded", [](const Star* s) { return QVariant(s->getTrackSummary().bounded); });
+    m.emplace("trk_inputs", [](const Star* s) { return QVariant(s->getTrackSummary().inputs); });
+    m.emplace("trk_frac_post_ehb",
+              [](const Star* s) { return dblVar(s->getTrackSummary().fracPostEhb); });
     return m;
     }();
     return map;
+}
+
+std::vector<astra::evolution::TrackFitRecord> Star::loadTrackFits() const
+{
+    if (_pendingTrackFits) return *_pendingTrackFits;
+    return _trackFitsLoader ? _trackFitsLoader(_id) : std::vector<astra::evolution::TrackFitRecord>();
 }
 
 QVariant Star::getFieldValue(const QString& fieldName) const
@@ -505,6 +543,9 @@ void Star::computeSummaryMetrics(const SummaryPersistCallback& onChanged)
     recomputeRVMetrics();
     recomputeSpectraMetrics();
     recomputePhotometryMetrics();
+    // An adopted track fit whose inputs (Teff, log g, L, R) moved on is stale.
+    if (_trackSummary.hasFit())
+        _trackSummary.stale = astra::evolution::trackInputsStale(*this);
 
     if (summaryChanged(before, captureSummaryValues(*this))) {
         if (onChanged) onChanged();           // persist

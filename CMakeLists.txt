@@ -397,6 +397,7 @@ set(ASTRA_CORE_SOURCES
     src/db/RemoteFitRepository.cpp
     src/db/SpectrumRepository.cpp
     src/db/StarRepository.cpp
+    src/db/TrackFitRepository.cpp
 
     # fitting
     src/fitting/ElementAbundances.cpp
@@ -415,6 +416,16 @@ set(ASTRA_CORE_SOURCES
     src/fitting/RemoteGaelBackend.cpp
     src/fitting/StdStreamRedirector.cpp
     src/fitting/SystematicErrors.cpp
+
+    # evolution
+    src/evolution/EvolutionSettings.cpp
+    src/evolution/TrackFit.cpp
+    src/evolution/StarTracks.cpp
+    src/evolution/TrackSetLibrary.cpp
+    # evolution/sdage: hot-subdwarf track fitting, imported from SdAgeInterpolation
+    src/evolution/sdage/fit.cpp
+    src/evolution/sdage/model.cpp
+    src/evolution/sdage/tracks.cpp
 
     # io
     src/io/StarPackage.cpp
@@ -551,6 +562,7 @@ set(ASTRA_CORE_HEADERS
     src/core/QuantityFormat.h
     src/core/SkyGeometry.h
     src/core/Star.h
+    src/core/StarTrackSummary.h
     src/core/Stats.h
     src/core/Time.h
 
@@ -569,6 +581,7 @@ set(ASTRA_CORE_HEADERS
     src/db/SpectrumRepository.h
     src/db/SqlValue.h
     src/db/StarRepository.h
+    src/db/TrackFitRepository.h
 
     # fitting
     src/fitting/ElementAbundances.h
@@ -594,6 +607,17 @@ set(ASTRA_CORE_HEADERS
     src/io/StarPackage.h
 
     # kinematics
+    # evolution
+    src/evolution/EvolutionSettings.h
+    src/evolution/TrackFit.h
+    src/evolution/StarTracks.h
+    src/evolution/TrackSetLibrary.h
+    src/evolution/sdage/fit.hpp
+    src/evolution/sdage/model.hpp
+    src/evolution/sdage/rng.hpp
+    src/evolution/sdage/sampler.hpp
+    src/evolution/sdage/tracks.hpp
+
     src/kinematics/GalacticCoordinates.h
     src/kinematics/GalacticPotential.h
     src/kinematics/KinematicContours.h
@@ -748,6 +772,14 @@ set(ASTRA_UI_SOURCES
     # io/ui
     src/io/ui/StarShare.cpp
 
+    # evolution/ui
+    src/evolution/ui/TrackBulkDialog.cpp
+    src/evolution/ui/TrackFitDialog.cpp
+    src/evolution/ui/TrackFolderWidget.cpp
+    src/evolution/ui/TrackPlots.cpp
+    src/evolution/ui/TrackRunSetupWidget.cpp
+    src/evolution/ui/TracksSettingsPage.cpp
+
     # kinematics/ui
     src/kinematics/ui/GalacticOrbitDialog.cpp
 
@@ -890,6 +922,14 @@ set(ASTRA_UI_HEADERS
     # io/ui
     src/io/ui/StarShare.h
 
+    # evolution/ui
+    src/evolution/ui/TrackBulkDialog.h
+    src/evolution/ui/TrackFitDialog.h
+    src/evolution/ui/TrackFolderWidget.h
+    src/evolution/ui/TrackPlots.h
+    src/evolution/ui/TrackRunSetupWidget.h
+    src/evolution/ui/TracksSettingsPage.h
+
     # kinematics/ui
     src/kinematics/ui/GalacticOrbitDialog.h
 
@@ -990,6 +1030,7 @@ if(ASTRA_WITH_AI)
         src/ai/PermissionGate.cpp
         src/ai/Tool.cpp
         src/ai/ToolRegistry.cpp
+        src/ai/tools/EvolutionTools.cpp
         src/ai/tools/ExportTools.cpp
         src/ai/tools/JobTools.cpp
         src/ai/tools/PhotometryTools.cpp
@@ -1699,7 +1740,8 @@ if(BUILD_TESTING)
             tests/unit/ai/llm_client.cpp
             tests/unit/ai/mcp_protocol.cpp
             tests/unit/ai/permission_gate.cpp
-            tests/unit/ai/star_fields.cpp)
+            tests/unit/ai/star_fields.cpp
+            tests/unit/ai/evolution_tools.cpp)
     endif()
     set(ASTRA_SYNC_UNIT_TESTS "")
     if(ASTRA_WITH_SYNC)
@@ -1747,6 +1789,10 @@ if(BUILD_TESTING)
             tests/unit/lightcurve/lcfit_physics.cpp
             tests/unit/skymap/healpix.cpp
             tests/unit/kinematics/galactic.cpp
+            tests/unit/evolution/sdage_core.cpp
+            tests/unit/evolution/sdage_golden.cpp
+            tests/unit/evolution/track_library.cpp
+            tests/unit/evolution/track_inputs.cpp
             tests/unit/observing/observability.cpp
             tests/unit/fitting/fit_types_json.cpp
             tests/unit/fitting/fit_window.cpp
@@ -1766,6 +1812,7 @@ if(BUILD_TESTING)
             tests/unit/db/save_photometry.cpp
             tests/unit/db/stable_ids.cpp
             tests/unit/db/instrument_resolve.cpp
+            tests/unit/db/track_fits.cpp
             tests/unit/remote/batch_settings.cpp
             tests/unit/remote/slurm_limits.cpp
             tests/unit/remote/batch_service.cpp

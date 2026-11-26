@@ -49,6 +49,7 @@ class SummaryPanel : public DetailPanel {
     QWidget *createOrbitalFitSection();
     QWidget *createCompanionSection(); // ← was createCompanionMassBanner
     QWidget *createGalacticSection();
+    QWidget *createTrackSection();
     QWidget *createDataInventorySection();
     QWidget *createReferencesSection();
     QFrame  *createSectionFrame(const QString &title, QWidget *content);

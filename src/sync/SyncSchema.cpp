@@ -44,6 +44,7 @@ const QList<TablePolicy>& syncedTables()
         {QStringLiteral("rv_points"), {QStringLiteral("created_at")}, {}},
         {QStringLiteral("rv_fits"), {QStringLiteral("created_at")}, {}},
         {QStringLiteral("mass_fit_plans"), {}, {}},
+        {QStringLiteral("track_fits"), {}, {}},
     };
     return tables;
 }
@@ -70,6 +71,7 @@ Owner ownerOf(const QString& table)
         {QStringLiteral("rv_curves"), {QStringLiteral("star_id"), QStringLiteral("stars")}},
         {QStringLiteral("rv_points"), {QStringLiteral("curve_id"), QStringLiteral("rv_curves")}},
         {QStringLiteral("rv_fits"), {QStringLiteral("curve_id"), QStringLiteral("rv_curves")}},
+        {QStringLiteral("track_fits"), {QStringLiteral("star_id"), QStringLiteral("stars")}},
     };
     return owners.value(table);
 }
@@ -81,6 +83,7 @@ QStringList bestFitGroup(const QString& table)
         {QStringLiteral("rv_fits"), {QStringLiteral("curve_id")}},
         {QStringLiteral("sed_models"), {QStringLiteral("photometry_id")}},
         {QStringLiteral("lc_fits"), {QStringLiteral("lightcurve_id"), QStringLiteral("filter")}},
+        {QStringLiteral("track_fits"), {QStringLiteral("star_id")}},
     };
     return groups.value(table);
 }
@@ -208,6 +211,7 @@ QString starBlock(const QString& column)
         {QStringLiteral("phot_"), QStringLiteral("@phot")},
         {QStringLiteral("gal_"), QStringLiteral("@gal")},
         {QStringLiteral("comp_"), QStringLiteral("@comp")},
+        {QStringLiteral("trk_"), QStringLiteral("@trk")},
     };
     const QString c = column.startsWith(QLatin1String("e_")) ? column.mid(2) : column;
     for (const auto& [prefix, cell] : blocks)
@@ -231,6 +235,9 @@ QString explicitCell(const QString& table, const QString& column)
           {QStringLiteral("min_rv"), QStringLiteral("@stats")},
           {QStringLiteral("max_rv"), QStringLiteral("@stats")},
           {QStringLiteral("time_baseline"), QStringLiteral("@stats")}}},
+        // Adopting a track fit sets both flags at once.
+        {QStringLiteral("track_fits"),
+         {{QStringLiteral("adopted_manual"), QStringLiteral("is_best_fit")}}},
     };
     return map.value(table).value(column);
 }

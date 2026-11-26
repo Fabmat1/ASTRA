@@ -27,6 +27,7 @@ class InstrumentRepository;
 class PeriodogramRepository;
 class MassFitRepository;
 class RemoteFitRepository;
+class TrackFitRepository;
 
 class Project;
 class Star;
@@ -243,6 +244,9 @@ public:
     // rather than wrapped method by method: only the batch service uses it.
     RemoteBatchRepository& remoteBatches();
 
+    // Evolutionary-track fits; see TrackFitRepository.
+    TrackFitRepository& trackFits();
+
     bool saveMassFitAttempt(const MassFitAttemptRow& row);
     std::vector<MassFitAttemptRow> loadMassFitAttempts(
         const QString& runId, const QString& starId = {});
@@ -274,6 +278,7 @@ public:
     std::unique_ptr<MassFitRepository> _massFit;
     std::unique_ptr<RemoteFitRepository> _remoteFit;
     std::unique_ptr<RemoteBatchRepository> _remoteBatch;
+    std::unique_ptr<TrackFitRepository> _trackFits;
 };
 
 #endif // DATABASEMANAGER_H

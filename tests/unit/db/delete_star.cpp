@@ -37,6 +37,7 @@ const QStringList kChildTables = {
     "rv_curves", "rv_points", "rv_fits", "rv_periodograms", "periodograms",
     "periodogram_store",
     "mass_fit_attempts", "mass_fit_run_stars", "remote_fit_runs",
+    "track_fits",
 };
 
 int rowCount(const QString& table)
@@ -112,6 +113,9 @@ TEST_CASE("deleteStar removes every row that referenced the star")
                 "VALUES ('MR1', 'R1', 'S1')"));
     REQUIRE(run("INSERT INTO remote_fit_runs (id, host_id, star_id) "
                 "VALUES ('RR1', 'H1', 'S1')"));
+
+    // Evolutionary-track fits.
+    REQUIRE(run("INSERT INTO track_fits (id, star_id, family) VALUES ('TF1', 'S1', 'han')"));
 
     for (const QString& table : kChildTables)
         REQUIRE_MESSAGE(rowCount(table) == 1, "setup failed for " << table.toStdString());

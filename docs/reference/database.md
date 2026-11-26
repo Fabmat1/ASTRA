@@ -46,6 +46,11 @@ For passing stars to colleagues, use `.astra` share packages
 which bundle a star with its spectra, RVs, fits, and light curves and merge
 cleanly into any project.
 
+Evolutionary-track fits (see [Evolutionary Tracks](../workflows/evolutionary-tracks.md))
+live in the table `track_fits`, one row per fit; the adopted one is repeated
+on the star row in the `trk_*` columns. The tracks themselves are never stored
+in the database: they stay in the tracks folder of each machine.
+
 A database with sync switched on holds a few extra tables whose names start
 with `sync_`. They record which values changed when and on which machine and
 hold no data of their own.

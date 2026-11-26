@@ -8,6 +8,7 @@
 #include "spectra/Spectrum.h"
 #include "core/Star.h"
 #include "core/Time.h"
+#include "evolution/TrackFit.h"
 
 #include <QBuffer>
 #include <QDateTime>
@@ -1244,6 +1245,48 @@ std::shared_ptr<RadialVelocityCurve> rvCurveFromJson(
 // ═════════════════════════════════════════════════════════════════════════════
 //  Star
 // ═════════════════════════════════════════════════════════════════════════════
+// The adopted evolutionary-track fit as mirrored on the star (trk_*).
+QJsonObject trackSummaryToJson(const StarTrackSummary &t) {
+    QJsonObject o;
+    o["family"]   = t.family;
+    o["plane"]    = t.plane;
+    o["fitId"]    = t.fitId;
+    o["stale"]    = t.stale;
+    o["inRegion"] = t.inRegion;
+    o["bounded"]  = t.bounded;
+    o["inputs"]   = t.inputs;
+    pD(o, "fracPostEhb", t.fracPostEhb);
+    QJsonObject vals;
+    for (int q = 0; q < astra::tracks::QtyCount; ++q) {
+        QJsonArray a{jD(t.value[q]), jD(t.err[q]), jD(t.errUp[q]), jD(t.errDown[q])};
+        vals[QLatin1String(astra::tracks::info(q).starKey)] = a;
+    }
+    o["values"] = vals;
+    return o;
+}
+
+StarTrackSummary trackSummaryFromJson(const QJsonObject &o) {
+    StarTrackSummary t;
+    t.family      = rS(o, "family");
+    t.plane       = rS(o, "plane");
+    t.fitId       = rS(o, "fitId");
+    t.stale       = rB(o, "stale");
+    t.inRegion    = rI(o, "inRegion", -1);
+    t.bounded     = rS(o, "bounded");
+    t.inputs      = rS(o, "inputs");
+    t.fracPostEhb = rD(o, "fracPostEhb");
+    const QJsonObject vals = o.value("values").toObject();
+    for (int q = 0; q < astra::tracks::QtyCount; ++q) {
+        const QJsonArray a = vals.value(QLatin1String(astra::tracks::info(q).starKey)).toArray();
+        auto at = [&a](int i) { return a.at(i).isDouble() ? a.at(i).toDouble() : kNaN; };
+        t.value[q]   = at(0);
+        t.err[q]     = at(1);
+        t.errUp[q]   = at(2);
+        t.errDown[q] = at(3);
+    }
+    return t;
+}
+
 QJsonObject starToJson(Star &s, BlobPool &bp,
                        const StarPackage::ExportOptions &opt,
                        std::set<QString>                &referencedInstIds) {
@@ -1452,6 +1495,8 @@ QJsonObject starToJson(Star &s, BlobPool &bp,
             o["rv"] = rvCurveToJson(*c);
         }
     }
+    if (s.getTrackSummary().hasFit())
+        o["trk"] = trackSummaryToJson(s.getTrackSummary());
     return o;
 }
 std::shared_ptr<Star>
@@ -1636,6 +1681,15 @@ starFromJson(const QJsonObject &o, BlobReader &br,
             photometryFromJson(o.value("photometry").toObject(), br));
     if (o.contains("rv"))
         s->setRVCurve(rvCurveFromJson(o.value("rv").toObject(), instById));
+    // Evolutionary tracks (package 1.2): the adopted summary and every fit
+    if (o.contains("trk"))
+        s->setTrackSummary(trackSummaryFromJson(o.value("trk").toObject()));
+    if (o.contains("trackFits")) {
+        auto fits = std::make_shared<std::vector<astra::evolution::TrackFitRecord>>();
+        for (const QJsonValue &v : o.value("trackFits").toArray())
+            fits->push_back(astra::evolution::TrackFitRecord::fromJson(v.toObject()));
+        s->setPendingTrackFits(fits);
+    }
     return s;
 }
 
@@ -1886,6 +1940,13 @@ bool writePackage(QIODevice &out, QIODevice &pool,
     for (int from = 0; from < nStars; from += round) {
         const int to = std::min(nStars, from + round);
         std::vector<std::shared_ptr<Star>> batch(stars.begin() + from, stars.begin() + to);
+        // Track fits are read from the database here, on this thread, like the
+        // lazy loads below; serialising then only reads memory.
+        std::vector<QJsonArray> trackFits(batch.size());
+        for (size_t k = 0; k < batch.size(); ++k)
+            if (batch[k])
+                for (const auto &f : batch[k]->loadTrackFits())
+                    trackFits[k].append(f.toJson());
         for (const auto &s : batch) {
             if (!s)
                 continue;
@@ -1909,6 +1970,8 @@ bool writePackage(QIODevice &out, QIODevice &pool,
             if (!batch[k])
                 continue;
             QJsonObject json = p.json;
+            if (!trackFits[k].isEmpty())
+                json["trackFits"] = trackFits[k];
             rebaseBlobRefs(json, dir.size());
             for (const QJsonValue &v : p.blobs.dir) {
                 QJsonObject e = v.toObject();

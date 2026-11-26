@@ -9,6 +9,7 @@
 
 #include "core/Star.h"
 #include "core/Time.h"
+#include "evolution/TrackFit.h"
 #include "io/StarPackage.h"
 #include "kinematics/PopulationClassifier.h"
 #include "lightcurve/Photometry.h"
@@ -412,6 +413,72 @@ TEST_CASE("StarPackage: an SED fit travels with its model curve and photometry")
     CHECK(q.system == "Johnson");
     CHECK(q.flag == 1);
     CHECK(q.magnitude == doctest::Approx(12.3));
+}
+
+TEST_CASE("StarPackage: evolutionary-track fits travel with the adopted summary")
+{
+    using astra::evolution::TrackFitRecord;
+    std::vector<TrackFitRecord> fits(2);
+    for (int i = 0; i < 2; ++i) {
+        TrackFitRecord& f = fits[i];
+        f.id = i == 0 ? "F1" : "F2";
+        f.starId = "T1";
+        f.family = i == 0 ? "han" : "nicolas";
+        f.plane = "kiel";
+        f.ok = true;
+        f.adopted = i == 1;
+        f.adoptedManual = i == 1;
+        f.seed = 0xFFFFFFFFFFFFFFF1ULL;
+        f.createdAt = QDateTime(QDate(2026, 11, 24), QTime(10, i), QTimeZone::UTC);
+        f.inputs = QJsonObject{{"teff", 30000.0}};
+        f.value[astra::tracks::CoreMass] = 0.46 + 0.01 * i;
+        f.errUp[astra::tracks::CoreMass] = 0.02;
+        f.errDown[astra::tracks::CoreMass] = 0.01;
+    }
+    auto star = makeStar("T1", "Tracks", 7.0, 8.0);
+    star->setTrackSummary(fits[1].toStarSummary());
+    star->setTrackFitsLoader([fits](const QString&) { return fits; });
+
+    QString error;
+    const QByteArray bytes =
+        StarPackage::writeToBuffer({star}, StarPackage::ExportOptions{}, &error);
+    INFO("write error: " << error.toStdString());
+    REQUIRE(!bytes.isEmpty());
+
+    const auto result = StarPackage::readFromBuffer(bytes);
+    REQUIRE(result.success);
+    const auto& back = result.stars.front();
+    const StarTrackSummary& t = back->getTrackSummary();
+    REQUIRE(t.hasFit());
+    CHECK(t.fitId == "F2");
+    CHECK(t.family == "nicolas");
+    CHECK(t.plane == "kiel");
+    CHECK(t.value[astra::tracks::CoreMass] == doctest::Approx(0.47));
+    CHECK(t.errUp[astra::tracks::CoreMass] == doctest::Approx(0.02));
+    CHECK(t.errDown[astra::tracks::CoreMass] == doctest::Approx(0.01));
+    CHECK(std::isnan(t.value[astra::tracks::Age]));
+
+    const auto pending = back->pendingTrackFits();
+    REQUIRE(pending);
+    REQUIRE(pending->size() == 2);
+    const TrackFitRecord* f2 = nullptr;
+    for (const auto& f : *pending)
+        if (f.id == "F2") f2 = &f;
+    REQUIRE(f2);
+    CHECK(f2->adopted);
+    CHECK(f2->adoptedManual);
+    CHECK(f2->seed == 0xFFFFFFFFFFFFFFF1ULL);
+    CHECK(f2->createdAt == fits[1].createdAt);
+    CHECK(f2->inputs == fits[1].inputs);
+    CHECK(f2->value[astra::tracks::CoreMass] == doctest::Approx(0.47));
+
+    // A star without track fits writes neither block.
+    auto plain = makeStar("T2", "Plain", 1.0, 2.0);
+    const auto r2 = StarPackage::readFromBuffer(
+        StarPackage::writeToBuffer({plain}, StarPackage::ExportOptions{}, &error));
+    REQUIRE(r2.success);
+    CHECK_FALSE(r2.stars.front()->getTrackSummary().hasFit());
+    CHECK_FALSE(r2.stars.front()->pendingTrackFits());
 }
 
 }   // TEST_SUITE("io")

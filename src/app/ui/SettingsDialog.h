@@ -22,6 +22,7 @@ class QuantityLabel;
 namespace astra::remote { class RemoteHostsSettingsPage; }
 class SpectralFitDefaultsPage;
 namespace astra::ai::ui { class AiSettingsPage; }
+namespace astra::evolution::ui { class TracksSettingsPage; }
 
 class SettingsDialog : public QDialog
 {
@@ -57,6 +58,7 @@ private:
     astra::sync::SyncService* _sync = nullptr;   ///< null: no Sync page
 
     QListWidget*   _topicList = nullptr;
+    astra::evolution::ui::TracksSettingsPage* _tracksPage = nullptr;
     QStackedWidget* _pages    = nullptr;
 
     // General page

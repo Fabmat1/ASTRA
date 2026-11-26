@@ -11,6 +11,8 @@
 #include "spectra/Spectrum.h"
 #include "db/DatabaseManager.h"
 #include "kinematics/StarKinematics.h"
+#include "evolution/StarTracks.h"
+#include "evolution/TrackSetLibrary.h"
 #include "core/Star.h"
 #include "app/AppPaths.h"
 #include "catalog/CrossRefResolver.h"
@@ -709,6 +711,9 @@ QWidget *SummaryPanel::buildDashboard() {
 
     if (QWidget *gal = createGalacticSection())
         layout->addWidget(gal);
+
+    if (QWidget *trk = createTrackSection())
+        layout->addWidget(trk);
 
     layout->addWidget(createDataInventorySection());
 
@@ -2873,4 +2878,61 @@ QWidget *SummaryPanel::createGalacticSection() {
     }
 
     return createSectionFrame("Galactic Kinematics", grid);
+}
+// The adopted evolutionary-track fit, when the star has one.
+QWidget *SummaryPanel::createTrackSection() {
+    const StarTrackSummary &t = _ctx.star->getTrackSummary();
+    if (!t.hasFit())
+        return nullptr;
+    namespace tq = astra::tracks;
+
+    const QColor valCol   = primaryTextColor();
+    const QColor labelCol = mutedTextColor();
+
+    std::vector<PropRow> rows;
+    auto add = [&](const QString &label, int q, const QString &name) {
+        if (!std::isfinite(t.value[q]))
+            return;
+        const tq::QtyInfo &in = tq::info(q);
+        rows.push_back(qRow(label, t.value[q], t.err[q], in.precision,
+                            QString::fromUtf8(in.unit), t.errUp[q], t.errDown[q],
+                            name));
+    };
+    add("M_core", tq::CoreMass, "M_\\mathrm{core}");
+    add("M_env", tq::EnvMass, "M_\\mathrm{env}");
+    add("M (tracks)", tq::TotalMass, "M");
+    add("Age", tq::Age, "\\tau");
+    add("Lifetime", tq::AgeMax, "\\tau_\\mathrm{max}");
+    add("Age at He exh.", tq::AgeHe0, "\\tau_\\mathrm{He0}");
+    if (std::isfinite(t.value[tq::Age]) && std::isfinite(t.value[tq::AgeMax]))
+        rows.push_back(qRow("Remaining", t.value[tq::AgeMax] - t.value[tq::Age],
+                            AsymErr::unset, 1, "Myr"));
+    add("Y_c", tq::HeCentral, "Y_\\mathrm{c}");
+
+    QWidget     *wrap = new QWidget;
+    QVBoxLayout *vl   = new QVBoxLayout(wrap);
+    vl->setContentsMargins(0, 0, 0, 0);
+    vl->setSpacing(6);
+
+    auto note = [&](const QString &text, bool italic) {
+        QLabel *l = new QLabel(text);
+        l->setWordWrap(true);
+        l->setSizePolicy(QSizePolicy::Ignored, QSizePolicy::Preferred);
+        l->setStyleSheet(QString("font-size: 10px; color: %1; background: "
+                                 "transparent; border: none;%2")
+                             .arg(mutedTextColor().name(),
+                                  italic ? " font-style: italic;" : ""));
+        vl->addWidget(l);
+    };
+    note(tr("%1 tracks, %2")
+             .arg(astra::evolution::TrackSetLibrary::displayName(t.family),
+                  t.plane == QLatin1String("kiel") ? tr("Teff + log g")
+                                                   : tr("Teff + L")),
+         false);
+    vl->addWidget(buildPropertyGrid(rows, valCol, labelCol));
+
+    const QStringList notes = astra::evolution::trackFitNotes(t.stale, t.inRegion, t.bounded, t.fracPostEhb);
+    if (!notes.isEmpty())
+        note(notes.join(QStringLiteral("  \u00b7  ")), true);
+    return createSectionFrame("Evolutionary Tracks", wrap);
 }

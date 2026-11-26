@@ -191,8 +191,8 @@ void registerWindowTools(AiRuntime& rt, GuiAiHost* host)
             "Opens one of the tools of a star's detail window, as its sidebar button does: "
             "spectra (spectral fitting), rv (RV inspector and orbit fits), sed (SED fitting), "
             "lightcurves (light curves, periodograms, LC fitting), cmd (colour-magnitude "
-            "diagram), orbit (Galactic orbit), observability, simbad (opens SIMBAD in the "
-            "browser), share. Returns the windows that opened.");
+            "diagram), orbit (Galactic orbit), tracks (evolutionary tracks), observability, simbad (opens SIMBAD in the browser), share. "
+            "Returns the windows that opened.");
         t.inputSchema = Schema()
             .str(QStringLiteral("star_id"), QStringLiteral("Star id"), true)
             .enumStr(QStringLiteral("tool"), StarDetailView::toolNames(), QStringLiteral("Which tool"), true);
@@ -232,19 +232,20 @@ void registerWindowTools(AiRuntime& rt, GuiAiHost* host)
             QStringLiteral("import_stars"), QStringLiteral("export_table"),
             QStringLiteral("configure_columns"), QStringLiteral("rv_detectability"),
             QStringLiteral("fetch_lightcurves"), QStringLiteral("fetch_spectra"),
-            QStringLiteral("galactic_kinematics")};
+            QStringLiteral("galactic_kinematics"), QStringLiteral("evolutionary_tracks")};
         ToolDef t;
         t.name = QStringLiteral("open_window");
         t.title = QStringLiteral("Open a window or dialog");
         t.description = QStringLiteral(
             "Opens one of ASTRA's windows or dialogs as its menu entry does. Table-based ones "
             "(add_star, import_stars, export_table, configure_columns, rv_detectability, "
-            "fetch_lightcurves, fetch_spectra, galactic_kinematics) work on the open project "
+            "fetch_lightcurves, fetch_spectra, galactic_kinematics, evolutionary_tracks) work on "
+            "the open project "
             "and its selected stars. Many of these are dialogs that wait for input: the result "
             "then has waiting_for_input, and you continue with ui_snapshot / ui_set_value / "
             "dialog_respond. settings takes an optional page (General, Star Detail View, "
             "Numbers & Copying, Grid Paths, Lightcurve Fetching, Lightcurve Fitting, Spectra "
-            "Fetching, Remote Hosts, Updates, AI).");
+            "Fetching, Remote Hosts, Evolutionary Tracks, Updates, AI).");
         t.inputSchema = Schema()
             .enumStr(QStringLiteral("kind"), kinds, QStringLiteral("Which window"), true)
             .str(QStringLiteral("page"), QStringLiteral("Settings page"));
@@ -281,6 +282,7 @@ void registerWindowTools(AiRuntime& rt, GuiAiHost* host)
                 else if (kind == QLatin1String("fetch_lightcurves")) pvSlot = "onFetchLightcurves";
                 else if (kind == QLatin1String("fetch_spectra")) pvSlot = "onFetchSpectra";
                 else if (kind == QLatin1String("galactic_kinematics")) pvSlot = "onComputeGalacticKinematics";
+                else if (kind == QLatin1String("evolutionary_tracks")) pvSlot = "onFitEvolutionaryTracks";
                 if (pvSlot) {
                     needsProject();
                     if (!pv || !QMetaObject::invokeMethod(pv, pvSlot))

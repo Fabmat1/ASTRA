@@ -9,6 +9,8 @@
 #include "db/PeriodogramRepository.h"
 #include "db/MassFitRepository.h"
 #include "db/SqlValue.h"
+#include "db/TrackFitRepository.h"
+#include "evolution/TrackFit.h"
 
 #include "fitting/ElementAbundances.h"
 #include "core/Project.h"
@@ -19,6 +21,7 @@
 #include "app/DataStore.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <QSqlQuery>
 #include <QSqlError>
@@ -76,6 +79,7 @@ DatabaseManager::DatabaseManager(Closed, QObject *parent)
     , _massFit(std::make_unique<MassFitRepository>(*_db))
     , _remoteFit(std::make_unique<RemoteFitRepository>(*_db))
     , _remoteBatch(std::make_unique<RemoteBatchRepository>(*_db))
+    , _trackFits(std::make_unique<TrackFitRepository>(*_db))
 {
 }
 
@@ -983,6 +987,7 @@ bool DatabaseManager::createTables()
         createRemoteFitRunsTable,
         createRemoteBatchesTable,
         createRemoteBatchItemsTable,
+        TrackFitRepository::createTableSql(),
     };
 
     for (const QString& query : queries) {
@@ -1342,6 +1347,11 @@ bool DatabaseManager::runMigrations()
                    .arg(el.dbSuffix);
     }
 
+    // Evolutionary tracks: the adopted fit mirrored on the star (trk_*), generated
+    // from the quantity table in core/StarTrackSummary.h.
+    for (const auto& [column, type] : astra::tracks::starColumns())
+        alterQueries << QString("ALTER TABLE stars ADD COLUMN %1 %2").arg(column, type);
+
     for (const QString& sql : alterQueries) {
         QSqlQuery q(_db->threadConnection());            
         q.exec(sql);
@@ -1514,6 +1524,7 @@ bool DatabaseManager::createIndexes()
         "CREATE INDEX IF NOT EXISTS idx_remote_batch_items_state ON remote_batch_items(state)",
         "CREATE INDEX IF NOT EXISTS idx_mass_fit_run_stars_run ON mass_fit_run_stars(run_id, state)",
         "CREATE INDEX IF NOT EXISTS idx_mass_fit_attempts_run ON mass_fit_attempts(run_id, star_id)",
+        "CREATE INDEX IF NOT EXISTS idx_track_fits_star ON track_fits(star_id)",
     };
 
     for (const QString& query : indexQueries) {
@@ -1741,6 +1752,23 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStarsWhere(const QString
     const int idxGalEEcc = rec.indexOf("gal_e_ecc");
     const int idxGalEEccUp = rec.indexOf("gal_e_ecc_up");
     const int idxGalEEccDown = rec.indexOf("gal_e_ecc_down");
+
+    // Evolutionary tracks (adopted fit; columns may be missing on an old schema)
+    struct TrackCols { int v, e, up, down; };
+    std::array<TrackCols, astra::tracks::QtyCount> trkCols{};
+    for (int q = 0; q < astra::tracks::QtyCount; ++q)
+        trkCols[q] = {rec.indexOf(astra::tracks::starValueColumn(q)),
+                      rec.indexOf(astra::tracks::starErrorColumn(q)),
+                      rec.indexOf(astra::tracks::starErrorUpColumn(q)),
+                      rec.indexOf(astra::tracks::starErrorDownColumn(q))};
+    const int idxTrkFamily = rec.indexOf("trk_family");
+    const int idxTrkPlane = rec.indexOf("trk_plane");
+    const int idxTrkFitId = rec.indexOf("trk_fit_id");
+    const int idxTrkStale = rec.indexOf("trk_stale");
+    const int idxTrkInRegion = rec.indexOf("trk_in_region");
+    const int idxTrkBounded = rec.indexOf("trk_bounded");
+    const int idxTrkInputs = rec.indexOf("trk_inputs");
+    const int idxTrkFracPost = rec.indexOf("trk_frac_post_ehb");
 
     // Element abundances: three columns each, in the order of the element
     // table (which is also the order of the star's abundance arrays).
@@ -1982,6 +2010,28 @@ std::vector<std::shared_ptr<Star>> DatabaseManager::loadStarsWhere(const QString
         star->setECompMassMinDown(SqlValue::toDoubleOrNaN(query, idxCompEMassMinDown));
         star->setECompMassTrueUp(SqlValue::toDoubleOrNaN(query, idxCompEMassTrueUp));
         star->setECompMassTrueDown(SqlValue::toDoubleOrNaN(query, idxCompEMassTrueDown));
+
+        {
+            StarTrackSummary trk;
+            if (idxTrkFitId >= 0) {
+                trk.fitId = query.value(idxTrkFitId).toString();
+                trk.family = query.value(idxTrkFamily).toString();
+                trk.plane = query.value(idxTrkPlane).toString();
+                trk.stale = query.value(idxTrkStale).toInt() != 0;
+                const QVariant inReg = query.value(idxTrkInRegion);
+                trk.inRegion = inReg.isNull() ? -1 : inReg.toInt();
+                trk.bounded = query.value(idxTrkBounded).toString();
+                trk.inputs = query.value(idxTrkInputs).toString();
+                trk.fracPostEhb = SqlValue::toDoubleOrNaN(query, idxTrkFracPost);
+                for (int q = 0; q < astra::tracks::QtyCount; ++q) {
+                    trk.value[q] = SqlValue::toDoubleOrNaN(query, trkCols[q].v);
+                    trk.err[q] = SqlValue::toDoubleOrNaN(query, trkCols[q].e);
+                    trk.errUp[q] = SqlValue::toDoubleOrNaN(query, trkCols[q].up);
+                    trk.errDown[q] = SqlValue::toDoubleOrNaN(query, trkCols[q].down);
+                }
+            }
+            star->setTrackSummary(trk);
+        }
         stars.push_back(std::move(star));
     }
 
@@ -2079,6 +2129,14 @@ bool DatabaseManager::saveStar(const QString& projectId, std::shared_ptr<Star> s
             if (!_rv->saveRVFit(fit, curve->getId()))
                 return false;
         }
+    }
+
+    // Track fits that came with the star (packages); stored once, then dropped.
+    if (auto fits = star->pendingTrackFits()) {
+        for (auto& f : *fits) f.starId = star->getId();
+        if (!_trackFits->saveFits(*fits))
+            return false;
+        star->setPendingTrackFits(nullptr);
     }
 
     return true;
@@ -2672,3 +2730,6 @@ std::vector<RemoteFitRunRow> DatabaseManager::loadActiveRemoteFitRuns()
 
 RemoteBatchRepository& DatabaseManager::remoteBatches()
 { return *_remoteBatch; }
+
+TrackFitRepository& DatabaseManager::trackFits()
+{ return *_trackFits; }

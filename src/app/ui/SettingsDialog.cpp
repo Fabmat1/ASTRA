@@ -20,6 +20,8 @@
 #include <QMessageBox>
 #include <QProgressDialog>
 #include <QPlainTextEdit>
+#include "evolution/ui/TracksSettingsPage.h"
+
 #include <QCheckBox>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -205,6 +207,7 @@ void SettingsDialog::setupUi()
     _topicList->addItem("Spectra Fetching");
     _topicList->addItem("Spectral Fitting");
     _topicList->addItem("Remote Hosts");
+    _topicList->addItem("Evolutionary Tracks");
 #if ASTRA_WITH_SYNC
     if (_sync) _topicList->addItem("Sync");
 #endif
@@ -224,6 +227,8 @@ void SettingsDialog::setupUi()
     _specFitDefaultsPage = new SpectralFitDefaultsPage;
     _pages->addWidget(_specFitDefaultsPage);
     _pages->addWidget(createRemoteHostsPage());
+    _tracksPage = new astra::evolution::ui::TracksSettingsPage;
+    _pages->addWidget(_tracksPage);
 #if ASTRA_WITH_SYNC
     if (_sync) _pages->addWidget(new astra::sync::ui::SyncSettingsPage(_sync));
 #endif
@@ -744,6 +749,7 @@ void SettingsDialog::apply()
 
     if (_remoteHostsPage) _remoteHostsPage->apply();
     if (_specFitDefaultsPage) _specFitDefaultsPage->apply();
+    if (_tracksPage) _tracksPage->apply();
 
     if (_updateOnStartup)
         _settings->setCheckUpdatesOnStartup(_updateOnStartup->isChecked());

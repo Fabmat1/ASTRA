@@ -1,5 +1,6 @@
 #include "io/ui/StarShare.h"
 #include "io/StarPackage.h"
+#include "evolution/TrackFit.h"
 #include "core/Star.h"
 
 #include "app/ui/ApplicationController.h"
@@ -130,6 +131,25 @@ Result runWithProgress(
 // files.
 void remapIdsForImport(const std::shared_ptr<Star> &star) {
     star->setId(freshId());
+
+    // Evolutionary-track fits: fresh ids; the star's adopted one follows.
+    if (auto fits = star->pendingTrackFits()) {
+        StarTrackSummary trk = star->getTrackSummary();
+        const QString oldAdopted = trk.fitId;
+        trk.fitId.clear();
+        for (auto &f : *fits) {
+            const QString old = f.id;
+            f.id = freshId();
+            f.starId = star->getId();
+            if (!oldAdopted.isEmpty() && old == oldAdopted)
+                trk.fitId = f.id;
+        }
+        if (trk.fitId.isEmpty())
+            trk.clear();
+        star->setTrackSummary(trk);
+    } else if (star->getTrackSummary().hasFit()) {
+        star->setTrackSummary(StarTrackSummary());  // no fit to point at
+    }
 
     std::map<QString, QString> specMap; // old spectrum id → new
     std::map<QString, QString> fitMap;  // old fit id      → new

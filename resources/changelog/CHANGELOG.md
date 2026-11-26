@@ -24,16 +24,27 @@
 ## Unreleased
 
 ### Added
-- **Sync between your machines** (Settings > Sync): keeps a database and its data files the same on several computers over SSH. Changes are merged row by row, also after both machines were used while apart; nothing is overwritten wholesale. The first pairing compares the two databases and asks once whose rows win where they differ. What another machine replaced or deleted is kept for 30 days and can be put back. Restored backups and copied databases are recognised. Command line: `ASTRA --sync-with`, `--sync-allow`, `--sync-status`. See the new "Syncing Between Machines" page of the documentation. Do not use it together with Syncthing or a cloud folder on the same data folder.
-- Choose which fit a star's Teff, log g and He come from: tick **Adopted** next to the model selector in the spectra panel. With several fits marked, the one with the lowest reduced chi2 is used. The fit in use is labelled `[star]` in the list, and fits without a stored model are now listed too so they can be picked.
+- **Sync between your machines** (Settings > Sync): keeps your database and data files in step over SSH, merged row by row. Replaced or deleted rows can be restored for 30 days. Not for use alongside Syncthing or cloud folders; see "Syncing Between Machines" in the documentation.
+- Choose which fit a star's Teff, log g and He come from with the **Adopted** checkbox in the spectra panel.
+- Saved co-adds: stack spectra in the Co-Add tab, save the stack and fit it.
+- Sky map with HiPS surveys and Gaia DR3 neighbours in the light-curve Crowding tab.
+- Start values for the RV and per spectrum in the fit setup.
+- Evolutionary track fitting: masses and ages for single stars and whole projects.
 
 ### Changed
-- Without a marked fit, a star's atmospheric parameters now come from the best fit with the lowest reduced chi2 among all its spectra, and from the earliest spectrum when fits tie or carry no chi2. Before, it was whichever best fit happened to load first or was ticked last, so the values of stars with several fitted spectra can change the next time the star is opened.
+- Without an adopted fit, a star's atmospheric parameters come from its best fit with the lowest reduced chi2, so values of stars with several fitted spectra may change.
+- Default fit windows, ignored ranges and continuum points now adapt to each spectrum.
+- Adding and re-identifying stars works without SIMBAD, using other archives when CDS is down.
+- A model grid missing on one remote host is looked up on the next one.
 - Opening a fit page no longer asks for an SSH password for every remote host. Hosts that need a login are listed in the grid selector, with the login right there; other SSH questions open inside ASTRA instead of as separate windows.
 
 ### Fixed
 - Saving an instrument under the name of an existing one no longer leaves two copies behind; the existing instrument is updated.
 - Saving photometry no longer replaces the star's photometry row, which could detach its lightcurves, fits and SED models.
+- Instrument modes given as "Name (Mode)" are recognised when spectra are imported by AI agents.
+- AI agents no longer lose the connection when the ASTRA window closes or reopens.
+- The RV Inspector keeps a nearby solution selected after one is deleted.
+- Log-sampled FITS spectra and HERMES spectra are read correctly.
 
 ## v0.10.2 (2026-11-11)
 

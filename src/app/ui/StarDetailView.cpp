@@ -20,6 +20,7 @@
 #include "io/ui/StarShare.h"
 #include "catalog/ui/CMDDialog.h"
 #include "kinematics/ui/GalacticOrbitDialog.h"
+#include "evolution/ui/TrackFitDialog.h"
 #include "lightcurve/ui/LightcurveFetchDialog.h"
 #include "observing/ui/ObservabilityDialog.h"
 #include "rv/ui/RVInspectorDialog.h"
@@ -116,6 +117,7 @@ bool StarDetailView::openTool(const QString& tool)
     else if (tool == QLatin1String("lightcurves"))   onFetchLightcurves();
     else if (tool == QLatin1String("cmd"))           onShowCMD();
     else if (tool == QLatin1String("orbit"))         onCalculateOrbit();
+    else if (tool == QLatin1String("tracks"))        onFitEvolutionaryTracks();
     else if (tool == QLatin1String("observability")) onShowObservability();
     else if (tool == QLatin1String("simbad"))        onShowInSimbad();
     else if (tool == QLatin1String("share"))         onShareStar();
@@ -127,6 +129,7 @@ QStringList StarDetailView::toolNames()
 {
     return {QStringLiteral("spectra"), QStringLiteral("rv"), QStringLiteral("sed"),
             QStringLiteral("lightcurves"), QStringLiteral("cmd"), QStringLiteral("orbit"),
+            QStringLiteral("tracks"),
             QStringLiteral("observability"), QStringLiteral("simbad"), QStringLiteral("share")};
 }
 
@@ -379,6 +382,9 @@ QWidget* StarDetailView::createButtonSidebar()
 
     _calcOrbitButton = makeButton("Galactic Orbit", "Calculate galactic orbit");
     connect(_calcOrbitButton, &QPushButton::clicked, this, &StarDetailView::onCalculateOrbit);
+
+    _evolTracksButton = makeButton("Evol. Tracks", "Fit evolutionary tracks: mass and age");
+    connect(_evolTracksButton, &QPushButton::clicked, this, &StarDetailView::onFitEvolutionaryTracks);
 
     layout->addSpacing(8);
 
@@ -712,6 +718,16 @@ void StarDetailView::onCalculateOrbit()
         for (auto* p : _panels) if (p) p->refresh();
     });
 
+    dialog->show();
+}
+
+void StarDetailView::onFitEvolutionaryTracks()
+{
+    auto* dialog = new astra::evolution::ui::TrackFitDialog(_star, _dbm, _projectId, this);
+    dialog->setAttribute(Qt::WA_DeleteOnClose);
+    connect(dialog, &astra::evolution::ui::TrackFitDialog::trackFitsChanged, this, [this]() {
+        for (auto* p : _panels) if (p) p->refresh();
+    });
     dialog->show();
 }
 

@@ -77,6 +77,7 @@ QString templateFor(UiIcons::Role role)
     case UiIcons::Role::Accept:              return QStringLiteral(":/icons/check.svg");
     case UiIcons::Role::Dismiss:             return QStringLiteral(":/icons/close.svg");
     case UiIcons::Role::Remove:              return QStringLiteral(":/icons/close.svg");
+    case UiIcons::Role::Delete:              return QStringLiteral(":/icons/trash.svg");
     case UiIcons::Role::Refresh:             return QStringLiteral(":/icons/refresh.svg");
     case UiIcons::Role::ToggleOn:            return QStringLiteral(":/icons/check.svg");
     case UiIcons::Role::ToggleOff:           return QStringLiteral(":/icons/circle.svg");

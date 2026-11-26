@@ -129,6 +129,7 @@ private:
     // Analysis menu actions
     QAction* _createPlotAction;
     QAction* _computeKinematicsAction = nullptr;
+    QAction* _fitTracksAction = nullptr;
     QAction* _rvDetectabilityAction = nullptr;
     QAction* _massFitAction = nullptr;
     QAction* _remoteFitsAction = nullptr;

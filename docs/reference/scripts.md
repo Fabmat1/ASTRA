@@ -42,6 +42,13 @@ CMD dialog. It queries VizieR's mirror of Gaia DR3 for a reference sample of
 stars. You only need this if you want to regenerate the reference CMD
 yourself.
 
+### `export_tracks.py`
+
+Exports the hot-subdwarf evolutionary track families of H. Dawson's sdfit
+into a folder ASTRA reads (Settings / Evolutionary Tracks). Run it once with
+sdfit's Python environment; see
+[Evolutionary Tracks](../workflows/evolutionary-tracks.md#the-tracks).
+
 ## Developer scripts
 
 The remaining scripts (`generate_coastlines.py`, `generate_prompt.py`,

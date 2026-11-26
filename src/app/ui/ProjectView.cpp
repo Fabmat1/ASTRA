@@ -26,6 +26,7 @@
 #include "spectra/ui/SpectrumFetchSessionsDialog.h"
 #include "app/ui/ProjectPlotDialog.h"
 #include "rv/ui/RVDetectabilityDialog.h"
+#include "evolution/ui/TrackBulkDialog.h"
 #include "fitting/ui/SpectraFitDialog.h"
 
 #include <QAction>
@@ -956,6 +957,21 @@ void ProjectView::onReloadMetrics()
               .arg(done).arg(done != 1 ? "s" : "").arg(cancelled)
         : QString("Reloaded Metrics for %1 star%2.")
               .arg(done).arg(done != 1 ? "s" : ""));
+}
+
+void ProjectView::onFitEvolutionaryTracks()
+{
+    if (!_currentProject || !_controller) {
+        QMessageBox::warning(this, "No Project", "Please open a project first.");
+        return;
+    }
+    auto* dlg = new astra::evolution::ui::TrackBulkDialog(
+        _controller->databaseManager(), _currentProject->getAllStars(),
+        getFilteredStars(), getSelectedStars(), this);
+    dlg->setAttribute(Qt::WA_DeleteOnClose);
+    connect(dlg, &astra::evolution::ui::TrackBulkDialog::trackFitsStored, this,
+            [this] { _tableModel->refresh(); });
+    dlg->show();
 }
 
 void ProjectView::onComputeGalacticKinematics()
