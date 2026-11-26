@@ -994,11 +994,19 @@ private:
                         keepClock = c;
                     }
                 }
+                // Every column of the best-fit cell is cleared on the others,
+                // so a flag written together with it (track_fits.adopted_manual)
+                // does not survive on a fit that lost the flag.
+                QStringList sets;
+                for (const QString& column : w.columnsOf(t.name, kBestFitColumn))
+                    sets << quoted(column) + QStringLiteral(" = 0");
+                if (sets.isEmpty()) sets << quoted(kBestFitColumn) + QStringLiteral(" = 0");
                 for (const QString& pk : best) {
                     if (pk == keep) continue;
                     QSqlQuery u(w.db);
-                    u.prepare(QStringLiteral("UPDATE %1 SET %2 = 0 WHERE %3 = ?")
-                                  .arg(quoted(t.name), quoted(kBestFitColumn), quoted(t.pk.first())));
+                    u.prepare(QStringLiteral("UPDATE %1 SET %2 WHERE %3 = ?")
+                                  .arg(quoted(t.name), sets.join(QStringLiteral(", ")),
+                                       quoted(t.pk.first())));
                     u.addBindValue(pk);
                     if (!u.exec()) return w.fail(u, QStringLiteral("clearing a best-fit flag"));
                 }
